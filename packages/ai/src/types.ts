@@ -1,5 +1,6 @@
 import type { TelemetryContext } from "@aos-agent/telemetry";
 import type { AnthropicOptions } from "./api/anthropic-messages.ts";
+import type { AosMessagesOptions } from "./api/aos-messages.ts";
 import type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 import type { BedrockOptions } from "./api/bedrock-converse-stream.ts";
 import type { GoogleOptions } from "./api/google-generative-ai.ts";
@@ -8,7 +9,6 @@ import type { MistralOptions } from "./api/mistral-conversations.ts";
 import type { OpenAICodexResponsesOptions } from "./api/openai-codex-responses.ts";
 import type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 import type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
-import type { AosMessagesOptions } from "./api/aos-messages.ts";
 import type { AssistantMessageDiagnostic } from "./utils/diagnostics.ts";
 import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
@@ -45,6 +45,7 @@ export type KnownProvider =
 	| "nvidia"
 	| "deepseek"
 	| "github-copilot"
+	| "cursor"
 	| "xai"
 	| "groq"
 	| "cerebras"
