@@ -3,13 +3,7 @@
  */
 
 import type { ThinkingLevel } from "@aos-agent/agent-core";
-import {
-	type Api,
-	type AuthOperationOptions,
-	type KnownProvider,
-	type Model,
-	modelsAreEqual,
-} from "@aos-agent/ai";
+import { type Api, type AuthOperationOptions, type KnownProvider, type Model, modelsAreEqual } from "@aos-agent/ai";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
@@ -30,6 +24,8 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	google: "gemini-3.1-pro-preview",
 	"google-vertex": "gemini-3.1-pro-preview",
 	"github-copilot": "gpt-5.4",
+	// Empty: Cursor catalog is discovered at runtime; prefer the first live model.
+	cursor: "",
 	openrouter: "moonshotai/kimi-k2.6",
 	"vercel-ai-gateway": "zai/glm-5.1",
 	xai: "grok-4.5",
@@ -436,7 +432,7 @@ export function resolveCliModel(options: {
 		return {
 			model: undefined,
 			warning: undefined,
-		error: `Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`,
+			error: `Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`,
 		};
 	}
 

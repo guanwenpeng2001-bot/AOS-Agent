@@ -5416,9 +5416,12 @@ export class InteractiveMode {
 				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 			} else {
 				const defaultModelId = defaultModelPerProvider[providerId];
-				selectedModel = providerModels.find((model) => model.id === defaultModelId);
+				// Prefer configured default when set; otherwise first live model (dynamic catalogs).
+				selectedModel =
+					(defaultModelId ? providerModels.find((model) => model.id === defaultModelId) : undefined) ??
+					providerModels[0];
 				if (!selectedModel) {
-					selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
+					selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 				} else {
 					try {
 						await this.session.setModel(selectedModel);
