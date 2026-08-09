@@ -1,10 +1,10 @@
 {
 	"name": "aos-agent-install",
-	"version": "0.84.1",
+	"version": "0.84.2",
 	"private": true,
 	"description": "Lockfile root used by the aos installer and updater.",
 	"dependencies": {
-		"aos-agent": "0.84.1"
+		"aos-agent": "0.84.2"
 	},
 	"overrides": {
 		"protobufjs": "7.6.5",

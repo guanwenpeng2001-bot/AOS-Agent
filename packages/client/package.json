@@ -1,6 +1,6 @@
 {
 	"name": "@aos-agent/client",
-	"version": "0.84.1",
+	"version": "0.84.2",
 	"description": "Transport-neutral client for remote AOS Agent sessions over framed CBOR bytes",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -47,7 +47,7 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@aos-agent/protocol": "file:../protocol"
+		"@aos-agent/protocol": "^0.84.2"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",

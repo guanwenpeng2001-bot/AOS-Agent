@@ -1,6 +1,6 @@
 {
 	"name": "@aos-agent/evals",
-	"version": "0.84.1",
+	"version": "0.84.2",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -9,8 +9,8 @@
 		"test": "vitest run --config vitest.test.config.ts"
 	},
 	"devDependencies": {
-		"@aos-agent/ai": "file:../ai",
-		"aos-agent": "file:../coding-agent",
+		"@aos-agent/ai": "^0.84.2",
+		"aos-agent": "^0.84.2",
 		"@types/node": "24.12.4",
 		"shx": "0.4.0",
 		"typescript": "5.9.3",
