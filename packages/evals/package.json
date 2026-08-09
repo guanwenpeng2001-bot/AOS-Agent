@@ -1,0 +1,20 @@
+{
+	"name": "@aos-agent/evals",
+	"version": "0.84.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"clean": "shx rm -rf .eval",
+		"eval": "node scripts/run-evals.mjs",
+		"test": "vitest run --config vitest.test.config.ts"
+	},
+	"devDependencies": {
+		"@aos-agent/ai": "file:../ai",
+		"aos-agent": "file:../coding-agent",
+		"@types/node": "24.12.4",
+		"shx": "0.4.0",
+		"typescript": "5.9.3",
+		"vitest-evals": "0.15.0",
+		"vitest": "4.1.9"
+	}
+}

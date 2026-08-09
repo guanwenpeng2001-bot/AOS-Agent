@@ -1,0 +1,38 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"paths": {
+			"*": ["./*"],
+			"@aos-agent/telemetry": ["./packages/telemetry/src/index.ts"],
+			"@aos-agent/telemetry/testing": ["./packages/telemetry/src/testing/index.ts"],
+			"@aos-agent/ai": ["./packages/ai/src/index.ts"],
+			"@aos-agent/ai/oauth": ["./packages/ai/src/oauth.ts"],
+			"@aos-agent/ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
+			"@aos-agent/ai/dist/*": ["./packages/ai/src/*"],
+			"@aos-agent/agent-core": ["./packages/agent/src/index.ts"],
+			"@aos-agent/agent-core/node": ["./packages/agent/src/node.ts"],
+			"@aos-agent/agent-core/session/testing": [
+				"./packages/agent/src/harness/session/testing/index.ts"
+			],
+			"@aos-agent/agent-core/*": ["./packages/agent/src/*"],
+			"@aos-agent/session-backend-sqlite-node": ["./packages/session-backends/sqlite-node/src/index.ts"],
+			"aos-agent": ["./packages/coding-agent/src/index.ts"],
+			"aos-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"aos-agent/*": ["./packages/coding-agent/src/*"],
+			"@aos-agent/protocol": ["./packages/protocol/src/index.ts"],
+			"@aos-agent/protocol/*": ["./packages/protocol/src/*"],
+			"@aos-agent/client": ["./packages/client/src/index.ts"],
+			"@aos-agent/client/*": ["./packages/client/src/*"],
+			"@aos-agent/server": ["./packages/server/src/index.ts"],
+			"@aos-agent/server/*": ["./packages/server/src/*"],
+			"typebox": ["./node_modules/typebox"],
+			"@aos-agent/tui": ["./packages/tui/src/index.ts"],
+			"@aos-agent/tui/*": ["./packages/tui/src/*"]
+		}
+	},
+	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "packages/session-backends/*/src/**/*", "packages/session-backends/*/test/**/*", "packages/coding-agent/examples/**/*"],
+	"exclude": ["**/dist/**", "packages/coding-agent/examples/extensions/gondolin/**"]
+}

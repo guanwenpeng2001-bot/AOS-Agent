@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"aos-agent": ["./src/index.ts"],
+			"aos-agent/hooks": ["./src/core/hooks/index.ts"],
+			"@aos-agent/tui": ["../tui/src/index.ts"],
+			"@aos-agent/ai": ["../ai/src/index.ts"],
+			"typebox": ["../../node_modules/typebox"]
+		},
+		"skipLibCheck": true
+	},
+	"include": ["examples/**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

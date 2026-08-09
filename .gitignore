@@ -1,0 +1,54 @@
+node_modules/
+dist/
+.artifacts/
+*.log
+.DS_Store
+*.tsbuildinfo
+.aos-agent/
+.github/
+.husky/
+REBRAND-EXECUTABLE-CHECKLIST.md
+# packages/*/node_modules/
+packages/*/dist/
+packages/*/dist-chrome/
+packages/*/dist-firefox/
+# Imported engine's hydrated build input; the AOS registry output is generated
+# under .artifacts/aos-model-registry/ for local builds and is never committed
+# or packaged by the baseline.
+packages/ai/src/providers/data/
+packages/ai/src/providers/.model-generation-*/
+packages/ai/src/providers/*.models.ts
+packages/ai/src/models.generated.ts
+packages/ai/src/image-models.generated.ts
+*.cpuprofile
+
+# Environment
+.env
+
+# Editor files
+.vscode/
+.zed/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Package specific
+.npm/
+coverage/
+.nyc_output/
+.aos-agent-config/
+tui-debug.log
+compaction-results/
+.opencode/
+syntax.jsonl
+out.jsonl
+aos-*.html
+out.html
+packages/coding-agent/binaries/
+todo.md
+plans/
+.aos-agent/hf-sessions/
+.aos-agent/hf-sessions-backup/
+collect.sh

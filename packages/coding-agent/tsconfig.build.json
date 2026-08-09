@@ -1,0 +1,19 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"paths": {
+			"@aos-agent/agent-core": ["../agent/dist/index.d.ts"],
+			"@aos-agent/agent-core/*": ["../agent/dist/*.d.ts"],
+			"@aos-agent/ai": ["../ai/dist/index.d.ts"],
+			"@aos-agent/ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
+			"@aos-agent/client": ["../client/dist/index.d.ts"],
+			"@aos-agent/protocol": ["../protocol/dist/index.d.ts"],
+			"@aos-agent/tui": ["../tui/dist/index.d.ts"],
+			"@aos-agent/tui/*": ["../tui/dist/*.d.ts", "../tui/dist/components/*.d.ts"]
+		},
+		"rootDir": "./src"
+	},
+	"include": ["src/**/*.ts", "src/**/*.d.ts"],
+	"exclude": ["node_modules", "dist"]
+}
