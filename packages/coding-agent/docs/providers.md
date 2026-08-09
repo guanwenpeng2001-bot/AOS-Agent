@@ -19,6 +19,7 @@ Use `/login` in interactive mode, then select a provider:
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
 - GitHub Copilot
+- Cursor (import private CLI credentials)
 - xAI (Grok/X subscription)
 - OpenRouter (OAuth-minted API key billed from OpenRouter credits)
 - Radius
@@ -43,6 +44,16 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 - Run `/login xai`, then select **Use a subscription**
 - `XAI_API_KEY` remains available through **Use an API key**
+
+### Cursor
+
+Cursor is a dynamic provider that requires the user-installed `cursor-agent` CLI on `PATH`.
+
+- **Subscription (Method 1):** `/login cursor` runs `cursor-agent status` / optional `cursor-agent login`, then imports `accessToken` / `refreshToken` from Cursor private storage into AOS `auth.json` as OAuth credentials. Public CLI status does not export token strings.
+- **API key:** `CURSOR_API_KEY` or interactive API-key login for Cursor User API keys.
+- Models are listed via `cursor-agent models` and cached in `models-store.json`. Requests spawn `cursor-agent` in print/stream-json mode.
+
+See Cursor's [authentication](https://docs.cursor.com/en/cli/reference/authentication) and [headless CLI](https://docs.cursor.com/en/cli/headless) documentation for CLI-owned behavior.
 
 ### OpenRouter
 
@@ -82,6 +93,7 @@ aos
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_GATEWAY_ID`) | `cloudflare-ai-gateway` |
 | Cloudflare Workers AI | `CLOUDFLARE_API_KEY` (+ `CLOUDFLARE_ACCOUNT_ID`) | `cloudflare-workers-ai` |
 | xAI | `XAI_API_KEY` | `xai` |
+| Cursor | `CURSOR_API_KEY` | `cursor` |
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Vercel AI Gateway | `AI_GATEWAY_API_KEY` | `vercel-ai-gateway` |
 | ZAI Coding Plan (Global) | `ZAI_API_KEY` | `zai` |
