@@ -6,7 +6,14 @@ This repository contains the controlled AOS Agent source baseline and its termin
 
 ## Quick start
 
-The repository is currently a source baseline rather than a published npm package. Build and install the CLI locally with Node.js 22.19 or newer:
+The current public CLI release is `aos-agent@0.84.2`. Install it globally with Node.js 22.19 or newer:
+
+```sh
+npm install --global aos-agent@0.84.2
+aos --help
+```
+
+For source development, build and install the checkout instead:
 
 ```sh
 npm install --ignore-scripts
@@ -33,7 +40,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 - session persistence, resume, branching, and context compaction;
 - configured provider APIs, custom model definitions, and reviewed user extensions.
 
-This repository is source-only: hosted services and registry publication are outside the current release boundary.
+This repository contains the source for the published `0.84.2` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
 ## Configuration
 
@@ -74,7 +81,7 @@ The source baseline is imported from an upstream open-source coding-agent baseli
 
 Keep changes inside the isolated baseline and keep AOS-specific changes separable from imported upstream source. For an upstream update, record a new immutable revision, compare legal notices and generated inputs, review the exact diff, and rerun the build and isolated `aos --help` install check.
 
-This repository currently does not publish npm packages or generated model catalogs. Any future release that distributes generated model metadata requires a separate record-level source-terms review, clean artifact and credential checks, and independent review of the upstream provenance boundary; the ignored local registry is not a release artifact.
+The immutable `v0.84.2` tag identifies the published `0.84.2` release snapshot. `main` may contain post-tag maintenance commits; those commits are not retroactively part of the `v0.84.2` tag or its package artifact. Any future release that distributes generated model metadata requires a separate record-level source-terms review, clean artifact and credential checks, and independent review of the upstream provenance boundary; the ignored local registry is not a release artifact.
 
 ## License
 

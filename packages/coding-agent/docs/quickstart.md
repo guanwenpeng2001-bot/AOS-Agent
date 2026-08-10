@@ -2,7 +2,18 @@
 
 This page gets you from a local repository checkout to a useful first AOS Agent session.
 
-## Install
+## Install the published CLI
+
+The current public release is `aos-agent@0.84.2`:
+
+```bash
+npm install --global aos-agent@0.84.2
+aos --help
+```
+
+The immutable Git tag `v0.84.2` identifies that release snapshot. Later maintenance commits on `main` are not part of the tagged release or its package artifact.
+
+## Install from source for development
 
 From the repository root, build the workspace and install the CLI into an npm prefix:
 
