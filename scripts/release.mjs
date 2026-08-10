@@ -48,6 +48,17 @@ function run(cmd, options = {}) {
 	}
 }
 
+function spawnNpm(args) {
+	const executable = process.platform === "win32" ? "npm.cmd" : "npm";
+	const file = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : executable;
+	const spawnArgs = process.platform === "win32" ? ["/d", "/s", "/c", executable, ...args] : args;
+
+	return spawnSync(file, spawnArgs, {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+}
+
 function getVersion() {
 	const pkg = JSON.parse(readFileSync("packages/ai/package.json", "utf-8"));
 	return pkg.version;
@@ -59,10 +70,7 @@ function assertPackagesAreRegisteredWithNpm() {
 
 	console.log("Checking npm package registration...");
 	for (const packageName of packageNames) {
-		const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["view", packageName, "version", "--json"], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		const result = spawnNpm(["view", packageName, "version", "--json"]);
 
 		if (result.status === 0 && result.stdout.trim()) {
 			console.log(`  ${packageName}`);
