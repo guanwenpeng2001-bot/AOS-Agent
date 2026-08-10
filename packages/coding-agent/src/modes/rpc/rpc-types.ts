@@ -10,6 +10,7 @@ import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { AutomationError, RunReceipt, RunRecord, RunRecoveryState, RunStatus } from "../../core/run-lifecycle.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -70,7 +71,21 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Automation Host (protocolVersion 1)
+	| { id?: string; type: "initialize"; protocolVersion: number }
+	| { id?: string; type: "run.start"; message: string; images?: ImageContent[] }
+	| { id?: string; type: "run.get"; runId: string }
+	| { id?: string; type: "run.cancel"; runId: string }
+	| {
+			id?: string;
+			type: "run.resume";
+			sessionPath: string;
+			sourceRunId: string;
+			message: string;
+			images?: ImageContent[];
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -287,3 +302,76 @@ export type RpcExtensionUIResponse =
 // ============================================================================
 
 export type RpcCommandType = RpcCommand["type"];
+
+// ============================================================================
+// Automation Host (protocolVersion 1)
+// ============================================================================
+
+/** Commands introduced by the Automation Host v1 protocol. */
+export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
+
+/** The full Automation Host v1 command set (initialize + run commands). */
+export type RpcAutomationCommandType = "initialize" | RpcRunCommandType;
+
+/** Data returned by a successful `initialize` (advertises the host contract). */
+export interface InitializeData {
+	host: "automation-host";
+	protocolVersion: 1;
+	sessionId: string;
+	sessionFile?: string;
+	runCommands: RpcRunCommandType[];
+}
+
+/** Data returned by a successful `run.start` / `run.resume`. */
+export interface RunAcceptedData {
+	runId: string;
+	sessionId: string;
+	attempt: number;
+	status: "accepted";
+}
+
+/** Data returned by a successful `run.get`. */
+export interface RunGetData {
+	run: RunRecord;
+	receipt?: RunReceipt;
+	recovery?: RunRecoveryState;
+}
+
+/** Data returned by a successful `run.cancel`. */
+export interface RunCancelData {
+	runId: string;
+	status: RunStatus;
+}
+
+/**
+ * Automation Host v1 responses.
+ *
+ * Success responses mirror the corresponding commands. Every failure carries a
+ * structured {@link AutomationError} instead of the legacy string `error`, so
+ * automation callers can branch on a stable `code`.
+ */
+export type RpcAutomationResponse =
+	| { id?: string; type: "response"; command: "initialize"; success: true; data: InitializeData }
+	| { id?: string; type: "response"; command: "run.start"; success: true; data: RunAcceptedData }
+	| { id?: string; type: "response"; command: "run.resume"; success: true; data: RunAcceptedData }
+	| { id?: string; type: "response"; command: "run.get"; success: true; data: RunGetData }
+	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
+	| {
+			id?: string;
+			type: "response";
+			command: RpcAutomationCommandType;
+			success: false;
+			error: AutomationError;
+	  };
+
+// Re-export the core Automation Host types for consumers.
+export type {
+	AutomationError,
+	AutomationErrorCode,
+	RunReceipt,
+	RunRecord,
+	RunRecoveryState,
+	RunStatus,
+	RunStreamEvent,
+	RunTerminalStatus,
+} from "../../core/run-lifecycle.ts";

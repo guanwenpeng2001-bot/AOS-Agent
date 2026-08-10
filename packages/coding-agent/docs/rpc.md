@@ -25,6 +25,8 @@ Common options:
 
 All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`. `bash_execution_update` events also include the `id` of their originating `bash` command.
 
+**Automation Host**: RPC mode also hosts an opt-in Automation Host protocol layer that gives automation callers a stable, versioned run lifecycle (see [Automation Host](#automation-host-protocolversion-1)). It is disabled until a client sends `initialize` with `protocolVersion: 1`, so existing clients are unaffected until they opt in.
+
 ### Framing
 
 RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter.
@@ -833,6 +835,8 @@ Each command has:
 
 Events are streamed to stdout as JSON lines during agent operation. Events do not generally include an `id` field; `bash_execution_update` includes the `id` of its originating `bash` command when one was provided.
 
+While an Automation Host run is active, session events are wrapped as run events (`run.event`, `run.started`, and the terminal events); see [Automation Host](#automation-host-protocolversion-1).
+
 ### Event Types
 
 | Event | Description |
@@ -1357,6 +1361,432 @@ Parse errors:
 }
 ```
 
+## Automation Host (protocolVersion 1)
+
+Automation Host v1 is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
+
+The Automation Host reuses the existing agent loop, `AgentSession`, session persistence, and the strict JSONL stdin/stdout transport. It is not a second agent loop and not a network service; v1 introduces no HTTP, WebSocket, database, or remote-agent layer.
+
+### Opt-in handshake
+
+Automation Host is strictly opt-in. A client that never sends `initialize` sees exactly the legacy RPC behavior described above: `prompt`, bare session events, the string `error` field, the extension UI sub-protocol, and so on. No existing client has to migrate.
+
+All `run.*` commands require a successful `initialize` first. If a client sends a `run.*` command before initializing, the host replies with the structured error `host_not_initialized`.
+
+`initialize` accepts exactly `protocolVersion: 1`. Any other version is rejected with `unsupported_protocol_version`; there is no silent downgrade and no fallback to an older contract.
+
+Request:
+```json
+{"id": "init-1", "type": "initialize", "protocolVersion": 1}
+```
+
+Response:
+```json
+{
+  "id": "init-1",
+  "type": "response",
+  "command": "initialize",
+  "success": true,
+  "data": {
+    "host": "automation-host",
+    "protocolVersion": 1,
+    "sessionId": "abc123",
+    "sessionFile": "/path/to/session.jsonl",
+    "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"]
+  }
+}
+```
+
+The response advertises the host version, the current `sessionId`, and the run commands available on this host (the host's capabilities). `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+
+Unsupported version:
+```json
+{
+  "id": "init-1",
+  "type": "response",
+  "command": "initialize",
+  "success": false,
+  "error": {
+    "code": "unsupported_protocol_version",
+    "message": "Unsupported protocol version: 2. This host supports protocolVersion 1 only.",
+    "retryable": false
+  }
+}
+```
+
+### Run lifecycle commands
+
+| Command | Purpose |
+|---------|---------|
+| `run.start` | Start a new run in the current session |
+| `run.get` | Query the current record of a run in the current session |
+| `run.cancel` | Request cancellation of a run |
+| `run.resume` | Restore a persisted session and start the next attempt of a source run |
+
+#### run.start
+
+Start a new run in the current session using the currently configured model, tools, permissions, and session context.
+
+Request:
+```json
+{"id": "run-1", "type": "run.start", "message": "Refactor the auth module"}
+```
+
+With images:
+```json
+{"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}]}
+```
+
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `run.start` does not accept a model, a working directory, a shell command, or permission overrides; those always come from the configured session.
+
+Accepted response (emitted before any run event):
+```json
+{
+  "id": "run-1",
+  "type": "response",
+  "command": "run.start",
+  "success": true,
+  "data": {
+    "runId": "run_abc123",
+    "sessionId": "abc123",
+    "attempt": 1,
+    "status": "accepted"
+  }
+}
+```
+
+Failures:
+- `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
+- `start_rejected` when the host preflight rejects the input. In v1, inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
+- `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
+
+```json
+{
+  "id": "run-1",
+  "type": "response",
+  "command": "run.start",
+  "success": false,
+  "error": {
+    "code": "session_busy",
+    "message": "A run is already active in this session. Wait for its terminal event before starting another.",
+    "retryable": true
+  }
+}
+```
+
+If preflight rejects the run, no Run ID is created, no `run.started` is emitted, and nothing is written to the ledger. A run that returns `status: "accepted"` is guaranteed to eventually emit exactly one `run.started` and exactly one terminal event.
+
+#### run.get
+
+Query the current record of a run in the current session. The host serves the record from its in-memory index or from the ledger rebuilt from the session's custom entries, so a terminal run remains queryable after a process restart.
+
+Request:
+```json
+{"type": "run.get", "runId": "run_abc123"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "run.get",
+  "success": true,
+  "data": {
+    "run": {
+      "id": "run_abc123",
+      "sessionId": "abc123",
+      "attempt": 1,
+      "status": "completed",
+      "model": {"provider": "anthropic", "id": "claude-sonnet-4-20250514", "thinkingLevel": "medium"},
+      "startedAt": "2026-08-10T12:00:00.000Z",
+      "endedAt": "2026-08-10T12:01:30.000Z"
+    },
+    "receipt": {
+      "runId": "run_abc123",
+      "sessionId": "abc123",
+      "status": "completed",
+      "finalText": "Refactored the auth module...",
+      "usage": {"input": 1200, "output": 350, "total": 1550},
+      "sessionFile": "/path/to/session.jsonl"
+    }
+  }
+}
+```
+
+- `run`: the current `RunRecord` (see [Run record](#run-record)).
+- `receipt`: present once the run is terminal.
+- `recovery`: present only when the run was left open by a hard process exit; the value is `"interrupted"` (see [Persistence and recovery](#persistence-and-recovery)).
+
+If `runId` does not exist in the current session's ledger, the response fails with `run_not_found`.
+
+#### run.cancel
+
+Request cancellation of a run. `run.cancel` sets cancellation intent and routes through the existing abort path (`session.abort()`); it does not itself terminate the run. The run becomes `cancelled` only after the agent has fully settled and the session has finished persisting; the `run.cancelled` terminal event is the authoritative signal that the caller may release resources.
+
+Request:
+```json
+{"type": "run.cancel", "runId": "run_abc123"}
+```
+
+Response (returns the current status at the time of the request):
+```json
+{
+  "type": "response",
+  "command": "run.cancel",
+  "success": true,
+  "data": {
+    "runId": "run_abc123",
+    "status": "running"
+  }
+}
+```
+
+- If the run is already terminal, `run.cancel` is idempotent and returns the current (terminal) status; it never produces a second terminal event.
+- Failures: `run_not_found`, and `run_not_cancellable` when the run is not in a cancellable state.
+
+#### run.resume
+
+Restore a persisted session, validate a source run, and start the next attempt of that run with new input. `run.resume` uses the existing session-switch path. It restores the *session*, not the *run*: model network requests, streams, and tool processes cannot be reliably resumed across processes.
+
+Request:
+```json
+{
+  "type": "run.resume",
+  "sessionPath": "/path/to/session.jsonl",
+  "sourceRunId": "run_abc123",
+  "message": "Continue, this time fixing the failing tests"
+}
+```
+
+Success response mirrors `run.start` — a new accepted run whose `attempt` is the source run's `attempt + 1`:
+```json
+{
+  "type": "response",
+  "command": "run.resume",
+  "success": true,
+  "data": {
+    "runId": "run_def456",
+    "sessionId": "abc123",
+    "attempt": 2,
+    "status": "accepted"
+  }
+}
+```
+
+Failures:
+- `session_busy` when the current session already has an active run
+- `session_not_persistent` when the session has no `sessionFile` (in-memory only); the host does not fabricate a resumability promise
+- `source_run_not_found` when `sourceRunId` is not in the restored session's ledger
+- `source_run_not_resumable` when the source run cannot be the basis for a new attempt
+- `session_switch_cancelled` when a session-switch extension cancelled the switch
+- `start_rejected` when the new run input is rejected (including the v1 slash-command rule)
+- `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
+
+### Structured errors
+
+Automation Host commands replace the legacy string `error` field with a structured error object. Every new-command failure carries:
+
+```json
+{
+  "code": "...",
+  "message": "...",
+  "retryable": false
+}
+```
+
+Error codes:
+
+| Code | Meaning | Retryable |
+|------|---------|-----------|
+| `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
+| `host_not_initialized` | A `run.*` command was sent before a successful `initialize` | no |
+| `session_busy` | A run is already active in the session; only one run per session at a time | yes |
+| `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
+| `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
+| `run_not_cancellable` | The run is not in a cancellable state | no |
+| `session_not_persistent` | The session has no `sessionFile`; it cannot be resumed | no |
+| `source_run_not_found` | The `sourceRunId` is not in the restored session's ledger | no |
+| `source_run_not_resumable` | The source run cannot be the basis for a new attempt | no |
+| `session_switch_cancelled` | A session-switch extension cancelled the switch during `run.resume` | no |
+| `ledger_persistence_failed` | The run ledger could not be appended to the session | no |
+| `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
+
+`retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
+
+### Run events and ordering
+
+While a run is active, the host wraps session events into run events. Run events carry `runId`, `sessionId`, a per-run monotonic `sequence` that starts at 1, and an ISO `timestamp`.
+
+| Type | Description |
+|------|-------------|
+| `run.started` | The accepted run has begun executing |
+| `run.event` | A wrapped session event, preserving the original event type and value |
+| `run.completed` | Terminal: the run completed successfully |
+| `run.failed` | Terminal: the run failed |
+| `run.cancelled` | Terminal: the run was cancelled |
+
+```json
+{
+  "type": "run.event",
+  "runId": "run_abc123",
+  "sessionId": "abc123",
+  "sequence": 3,
+  "timestamp": "2026-08-10T12:00:05.000Z",
+  "event": {
+    "type": "message_update",
+    "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "Refactored"}
+  }
+}
+```
+
+Ordering contract. For every accepted `run.start` or `run.resume`, records are emitted in this exact order:
+
+1. The `run.start` / `run.resume` success response (`status: "accepted"`)
+2. `run.started`
+3. `run.event`* — zero or more wrapped session events
+4. Exactly one terminal event: `run.completed`, `run.failed`, or `run.cancelled`
+
+Session events that occur between acceptance and the `run.started` emission (for example during asynchronous preflight) are buffered and replayed after `run.started`, so no run event can precede the `run.start` success response or `run.started`. A preflight rejection emits none of the above: only the `run.start` failure response.
+
+Complete successful exchange:
+
+```json
+{"id": "init-1", "type": "initialize", "protocolVersion": 1}
+{"id": "init-1", "type": "response", "command": "initialize", "success": true, "data": {"host": "automation-host", "protocolVersion": 1, "sessionId": "abc123", "sessionFile": "/path/to/session.jsonl", "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"]}}
+{"id": "run-1", "type": "run.start", "message": "Hello!"}
+{"id": "run-1", "type": "response", "command": "run.start", "success": true, "data": {"runId": "run_abc123", "sessionId": "abc123", "attempt": 1, "status": "accepted"}}
+{"type": "run.started", "runId": "run_abc123", "sessionId": "abc123", "sequence": 1, "timestamp": "2026-08-10T12:00:00.000Z"}
+{"type": "run.event", "runId": "run_abc123", "sessionId": "abc123", "sequence": 2, "timestamp": "2026-08-10T12:00:01.000Z", "event": {"type": "message_start", "message": {"role": "assistant", "content": []}}}
+{"type": "run.event", "runId": "run_abc123", "sessionId": "abc123", "sequence": 3, "timestamp": "2026-08-10T12:00:02.000Z", "event": {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "Hello"}}}
+{"type": "run.event", "runId": "run_abc123", "sessionId": "abc123", "sequence": 4, "timestamp": "2026-08-10T12:00:03.000Z", "event": {"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello! How can I help?"}]}}}
+{"type": "run.completed", "runId": "run_abc123", "sessionId": "abc123", "sequence": 5, "timestamp": "2026-08-10T12:00:04.000Z", "receipt": {"runId": "run_abc123", "sessionId": "abc123", "status": "completed", "finalText": "Hello! How can I help?", "usage": {"input": 100, "output": 50, "total": 150}, "sessionFile": "/path/to/session.jsonl"}}
+```
+
+### Unique terminal events and receipts
+
+Each run produces exactly one terminal event and exactly one receipt. The terminal event is the live delivery of the receipt: the host persists the receipt in the run's ledger record and emits the terminal event carrying it. There is no separate `run.receipt` record. A repeated `run.cancel`, a late tool update, or a second settled signal cannot produce a second terminal event or a second receipt.
+
+Terminal status is determined in a fixed order:
+
+1. If cancellation was requested, the run is `cancelled`;
+2. otherwise, if the final agent result was an error or produced no usable completion, the run is `failed`;
+3. otherwise, the run is `completed`.
+
+The receipt's `finalText` is the final assistant text observed during *this run*; it is never reused from the whole session's last message, which could belong to a previous run.
+
+Receipt shape (`RunReceipt`):
+- `runId`, `sessionId`: run identity
+- `status`: `"completed"`, `"failed"`, or `"cancelled"`
+- `finalText`: final assistant text of the run (optional)
+- `usage`: the run's token usage, computed as the non-negative difference in session token statistics between run start and terminal; it includes retries and compaction consumed by the run
+- `sessionFile`: the persisted session path (optional, present when the session is persistent)
+- `terminalError`: present when the run failed; a stable `code` plus human-readable `message`
+
+`run.failed` terminal:
+```json
+{
+  "type": "run.failed",
+  "runId": "run_abc123",
+  "sessionId": "abc123",
+  "sequence": 4,
+  "timestamp": "2026-08-10T12:00:04.000Z",
+  "receipt": {
+    "runId": "run_abc123",
+    "sessionId": "abc123",
+    "status": "failed",
+    "usage": {"input": 800, "output": 200, "total": 1000},
+    "terminalError": {"code": "model_error", "message": "529 overloaded_error: Overloaded", "retryable": false}
+  }
+}
+```
+
+### Cancellation semantics
+
+- `run.cancel` is a cancellation *request*. It sets cancellation intent and invokes the existing abort path; it does not end the run itself.
+- The run becomes `cancelled` only after the agent settles and the session finishes persisting. The `run.cancelled` terminal event is the signal that resources can be released.
+- Repeated `run.cancel` calls are idempotent: they return the current state and never produce a second terminal event.
+
+```json
+{"type": "run.cancel", "runId": "run_abc123"}
+```
+
+```json
+{
+  "type": "run.cancelled",
+  "runId": "run_abc123",
+  "sessionId": "abc123",
+  "sequence": 6,
+  "timestamp": "2026-08-10T12:00:06.000Z",
+  "receipt": {
+    "runId": "run_abc123",
+    "sessionId": "abc123",
+    "status": "cancelled",
+    "usage": {"input": 500, "output": 120, "total": 620},
+    "sessionFile": "/path/to/session.jsonl"
+  }
+}
+```
+
+### One active run per session
+
+A session runs at most one active run at a time. A second `run.start` or `run.resume` while a run is active fails with `session_busy`, which is marked `retryable`: the caller should wait for the active run's terminal event and then retry. v1 does not queue or preempt; there is no implicit scheduling.
+
+### Persistence and recovery
+
+Run records are persisted as custom entries in the session's append-only JSONL with `customType: "automation.run"`, using the existing custom-entry API. Custom entries participate in the session tree but never enter the model context.
+
+Ledger entry kinds (`schemaVersion: 1`):
+
+| Kind | Payload |
+|------|---------|
+| `accepted` | The accepted `RunRecord` |
+| `started` | The run began executing (`runId` and `startedAt`) |
+| `terminal` | The terminal `RunReceipt` and `endedAt` |
+
+On session load (including after a process restart), the host scans `getEntries()` for `automation.run` custom entries and folds them, in file order, into a per-session run index. A malformed or unknown-version ledger entry does not prevent host startup: the entry is skipped and a diagnostic is written to stderr. `run.get` serves from this index, so a terminal run remains queryable in a fresh host process.
+
+If a process is killed before a terminal receipt is written, the ledger may hold only `accepted`/`running` records. The host never fabricates a `cancelled` or `completed` state. On the next open, `run.get` returns the original record with `recovery: "interrupted"`. `interrupted` is a read-time recovery marker, not a new persisted terminal state.
+
+`run.resume` may use either a terminal run or a run marked `interrupted` as its source, and creates a new attempt (`attempt + 1`) referencing the source run id. A session without a `sessionFile` (in-memory only) can still run, but `run.resume` fails with `session_not_persistent`.
+
+On a handled termination signal, the host stops accepting new runs, attempts the existing abort path, and waits for the session to settle. If the process is force-killed or exceeds the graceful exit window, the last successfully written ledger state is authoritative; clients must not expect live terminal events during process termination.
+
+### Legacy RPC compatibility
+
+- Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
+- After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_entries`, `get_tree`, and `get_messages` remain available.
+- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel` and `run.resume`.
+- While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
+- Clients that never `initialize` always see the bare session events, as before.
+- Extension UI requests/responses continue to use the existing sub-protocol and are not disguised as run events.
+
+### stdout and stderr
+
+The protocol writes only JSONL records to stdout. Diagnostics — errors, corrupted-ledger warnings, and debug output — go to stderr only, so a client can parse stdout line by line without interference.
+
+### Run record
+
+```json
+{
+  "id": "run_abc123",
+  "sessionId": "abc123",
+  "sourceRunId": "run_xyz789",
+  "attempt": 2,
+  "status": "running",
+  "model": {"provider": "anthropic", "id": "claude-sonnet-4-20250514", "thinkingLevel": "medium"},
+  "startedAt": "2026-08-10T12:00:00.000Z"
+}
+```
+
+- `id`: durable Run ID, unique within the session ledger
+- `sessionId`: the session the run executes in
+- `sourceRunId`: present for runs created by `run.resume`; references the source run
+- `attempt`: 1 for a fresh run, incremented by `run.resume`
+- `status`: `"accepted"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"`. Only `completed`, `failed`, and `cancelled` are terminal; terminal statuses cannot transition
+- `model`: snapshot of the model used, as `{ provider, id, thinkingLevel }`
+- `startedAt` / `endedAt`: ISO timestamps, set as the run starts and terminates
+- `terminalError`: structured error retained when the terminal receipt records a failure
+
 ## Types
 
 Source files:
@@ -1365,6 +1795,7 @@ Source files:
 - [`src/core/messages.ts`](../src/core/messages.ts) - `BashExecutionMessage`
 - [`src/modes/json-event.ts`](../src/modes/json-event.ts) - `JsonAgentSessionEvent`
 - [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
+- [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
 
 ### Model
 

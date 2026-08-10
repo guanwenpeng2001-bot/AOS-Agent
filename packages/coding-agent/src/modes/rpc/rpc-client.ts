@@ -13,7 +13,20 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type {
+	AutomationError,
+	AutomationErrorCode,
+	InitializeData,
+	RpcAutomationResponse,
+	RpcCommand,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+	RunAcceptedData,
+	RunCancelData,
+	RunGetData,
+	RunReceipt,
+} from "./rpc-types.ts";
 
 // ============================================================================
 // Types
@@ -49,6 +62,72 @@ export interface ModelInfo {
 
 export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
 
+/**
+ * A run stream record emitted by the Automation Host as received by the client.
+ * The `run.event` variant wraps a JSON-safe session event (`event.event`).
+ */
+export type RpcRunStreamEvent =
+	| { type: "run.started"; runId: string; sessionId: string; sequence: number; timestamp: string }
+	| {
+			type: "run.event";
+			runId: string;
+			sessionId: string;
+			sequence: number;
+			timestamp: string;
+			event: JsonAgentSessionEvent;
+	  }
+	| {
+			type: "run.completed";
+			runId: string;
+			sessionId: string;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  }
+	| {
+			type: "run.failed";
+			runId: string;
+			sessionId: string;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  }
+	| {
+			type: "run.cancelled";
+			runId: string;
+			sessionId: string;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  };
+
+export type RpcRunEventListener = (event: RpcRunStreamEvent) => void;
+
+function isRpcRunStreamEvent(value: unknown): value is RpcRunStreamEvent {
+	if (typeof value !== "object" || value === null) return false;
+	const type = (value as { type?: unknown }).type;
+	return (
+		type === "run.started" ||
+		type === "run.event" ||
+		type === "run.completed" ||
+		type === "run.failed" ||
+		type === "run.cancelled"
+	);
+}
+
+/** Structured error thrown when an Automation Host v1 command fails. */
+export class AutomationRpcError extends Error {
+	readonly code: AutomationErrorCode;
+	readonly retryable: boolean;
+
+	constructor(error: AutomationError) {
+		super(error.message);
+		this.name = "AutomationRpcError";
+		this.code = error.code;
+		this.retryable = error.retryable;
+	}
+}
+
 // ============================================================================
 // RPC Client
 // ============================================================================
@@ -57,6 +136,7 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private runEventListeners: RpcRunEventListener[] = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -175,6 +255,20 @@ export class RpcClient {
 			const index = this.eventListeners.indexOf(listener);
 			if (index !== -1) {
 				this.eventListeners.splice(index, 1);
+			}
+		};
+	}
+
+	/**
+	 * Subscribe to Automation Host run stream events.
+	 * Receives only run.started / run.event / run.completed / run.failed / run.cancelled records.
+	 */
+	onRunEvent(listener: RpcRunEventListener): () => void {
+		this.runEventListeners.push(listener);
+		return () => {
+			const index = this.runEventListeners.indexOf(listener);
+			if (index !== -1) {
+				this.runEventListeners.splice(index, 1);
 			}
 		};
 	}
@@ -446,6 +540,60 @@ export class RpcClient {
 	}
 
 	// =========================================================================
+	// Automation Host (protocolVersion 1)
+	// =========================================================================
+
+	/**
+	 * Initialize the Automation Host protocol (protocolVersion 1). Must be called
+	 * before startRun()/getRun()/cancelRun()/resumeRun(). Resolves with the
+	 * advertised host contract.
+	 */
+	async initializeAutomationHost(): Promise<InitializeData> {
+		const response = await this.sendAutomation({ type: "initialize", protocolVersion: 1 });
+		return this.getAutomationData<InitializeData>(response);
+	}
+
+	/**
+	 * Start a new automation run. Emits run.started/run.event/terminal records on
+	 * the run event stream (see onRunEvent()).
+	 */
+	async startRun(message: string, images?: ImageContent[]): Promise<RunAcceptedData> {
+		const response = await this.sendAutomation({ type: "run.start", message, images });
+		return this.getAutomationData<RunAcceptedData>(response);
+	}
+
+	/**
+	 * Get the current ledger state of a run.
+	 */
+	async getRun(runId: string): Promise<RunGetData> {
+		const response = await this.sendAutomation({ type: "run.get", runId });
+		return this.getAutomationData<RunGetData>(response);
+	}
+
+	/**
+	 * Cancel an active run. Resolves with the run id and the immediate status
+	 * (normally "running"); the terminal run.cancelled record arrives later on the
+	 * run event stream.
+	 */
+	async cancelRun(runId: string): Promise<RunCancelData> {
+		const response = await this.sendAutomation({ type: "run.cancel", runId });
+		return this.getAutomationData<RunCancelData>(response);
+	}
+
+	/**
+	 * Resume a source run in the restored session as a new attempt.
+	 */
+	async resumeRun(
+		sessionPath: string,
+		sourceRunId: string,
+		message: string,
+		images?: ImageContent[],
+	): Promise<RunAcceptedData> {
+		const response = await this.sendAutomation({ type: "run.resume", sessionPath, sourceRunId, message, images });
+		return this.getAutomationData<RunAcceptedData>(response);
+	}
+
+	// =========================================================================
 	// Helpers
 	// =========================================================================
 
@@ -517,7 +665,17 @@ export class RpcClient {
 				return;
 			}
 
-			// Otherwise it's an event
+			// Route Automation Host run stream records to run listeners and legacy
+			// Session JSON events to event listeners, so onEvent never sees run.*
+			// records and onRunEvent never sees session events.
+			if (isRpcRunStreamEvent(data)) {
+				for (const listener of this.runEventListeners) {
+					listener(data as RpcRunStreamEvent);
+				}
+				return;
+			}
+
+			// Otherwise it's a legacy session event
 			for (const listener of this.eventListeners) {
 				listener(data as JsonAgentSessionEvent);
 			}
@@ -596,6 +754,20 @@ export class RpcClient {
 		// Type assertion: we trust response.data matches T based on the command sent.
 		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
+		return successResponse.data as T;
+	}
+
+	private async sendAutomation(command: RpcCommandBody): Promise<RpcAutomationResponse> {
+		const response = await this.send(command);
+		return response as unknown as RpcAutomationResponse;
+	}
+
+	private getAutomationData<T>(response: RpcAutomationResponse): T {
+		if (!response.success) {
+			const error = response.error;
+			throw typeof error === "string" ? new Error(error) : new AutomationRpcError(error);
+		}
+		const successResponse = response as Extract<RpcAutomationResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}
 }

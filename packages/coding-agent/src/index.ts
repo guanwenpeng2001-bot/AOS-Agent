@@ -333,6 +333,7 @@ export {
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
 export {
+	AutomationRpcError,
 	InteractiveMode,
 	type InteractiveModeOptions,
 	type JsonAgentSessionEvent,
@@ -345,9 +346,28 @@ export {
 	type RpcExtensionUIRequest,
 	type RpcExtensionUIResponse,
 	type RpcResponse,
+	type RpcRunEventListener,
+	type RpcRunStreamEvent,
 	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
+} from "./modes/index.ts";
+export type {
+	AutomationError,
+	AutomationErrorCode,
+	InitializeData,
+	RpcAutomationCommandType,
+	RpcAutomationResponse,
+	RpcRunCommandType,
+	RunAcceptedData,
+	RunCancelData,
+	RunGetData,
+	RunReceipt,
+	RunRecord,
+	RunRecoveryState,
+	RunStatus,
+	RunStreamEvent,
+	RunTerminalStatus,
 } from "./modes/index.ts";
 // UI components for extensions
 export {

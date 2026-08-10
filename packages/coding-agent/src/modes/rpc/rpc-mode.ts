@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import type { ImageContent } from "@aos-agent/ai";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -25,26 +26,57 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import type {
+	AutomationError,
+	RunHandle,
+	RunId,
+	RunLifecycleCoordinator,
+	RunModelReference,
+	RunReservation,
+	RunStreamEvent,
+	RunUsageSnapshot,
+} from "../../core/run-lifecycle.ts";
+import { createAutomationError, createRunLifecycleCoordinator, isTerminalStatus } from "../../core/run-lifecycle.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	InitializeData,
+	RpcAutomationCommandType,
+	RpcAutomationResponse,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
 	RpcSlashCommand,
+	RunAcceptedData,
+	RunGetData,
 } from "./rpc-types.ts";
 
 // Re-export types for consumers
 export type {
+	AutomationError,
+	AutomationErrorCode,
+	InitializeData,
+	RpcAutomationCommandType,
+	RpcAutomationResponse,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
+	RpcRunCommandType,
 	RpcSessionState,
+	RunAcceptedData,
+	RunCancelData,
+	RunGetData,
+	RunReceipt,
+	RunRecord,
+	RunRecoveryState,
+	RunStatus,
+	RunStreamEvent,
+	RunTerminalStatus,
 } from "./rpc-types.ts";
 
 /**
@@ -56,6 +88,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let unsubscribeBackpressure: (() => void) | undefined;
+
+	// Automation Host v1 state
+	let hostInitialized = false;
+	let coordinator: RunLifecycleCoordinator | undefined;
+	let activeHandle: RunHandle | undefined;
+	/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
+	let activeReservation: RunReservation | undefined;
+	const runPromptPromises = new Map<RunId, Promise<void>>();
+	const settledRunIds = new Set<RunId>();
+	/** Terminal error detected from agent_end (stopReason "error"); used to settle failed/model_error. */
+	const terminalErrorByRun = new Map<RunId, AutomationError>();
 
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeRawStdout(serializeJsonLine(obj));
@@ -86,6 +129,268 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	let shutdownRequested = false;
 	let shuttingDown = false;
 	const signalCleanupHandlers: Array<() => void> = [];
+
+	// ---------------------------------------------------------------------
+	// Automation Host v1 helpers
+	// ---------------------------------------------------------------------
+
+	/** Legacy commands that mutate session/model/run state; rejected once the host is initialized. */
+	const HOST_MUTATING_COMMANDS = new Set<string>([
+		"prompt",
+		"steer",
+		"follow_up",
+		"abort",
+		"new_session",
+		"switch_session",
+		"set_model",
+		"cycle_model",
+		"set_thinking_level",
+		"cycle_thinking_level",
+		"set_steering_mode",
+		"set_follow_up_mode",
+		"compact",
+		"set_auto_compaction",
+		"set_auto_retry",
+		"abort_retry",
+		"bash",
+		"abort_bash",
+		"export_html",
+		"fork",
+		"clone",
+		"set_session_name",
+	]);
+
+	const automationError = (
+		id: string | undefined,
+		command: RpcAutomationCommandType,
+		err: AutomationError,
+	): RpcAutomationResponse => ({ id, type: "response", command, success: false, error: err });
+
+	const hostNotInitializedError = (): AutomationError =>
+		createAutomationError(
+			"host_not_initialized",
+			"Automation Host is not initialized. Send initialize with protocolVersion 1 first.",
+			false,
+		);
+
+	const slashRunInputError = (
+		id: string | undefined,
+		command: "run.start" | "run.resume",
+		message: string,
+	): RpcAutomationResponse | undefined => {
+		if (!message.startsWith("/")) return undefined;
+		return automationError(
+			id,
+			command,
+			createAutomationError(
+				"start_rejected",
+				"Automation Host v1 does not accept slash-command input for a run.",
+				false,
+			),
+		);
+	};
+
+	const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+	const asAutomationError = (err: unknown): AutomationError => {
+		if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
+			const candidate = err as AutomationError;
+			return createAutomationError(candidate.code, candidate.message, candidate.retryable);
+		}
+		return createAutomationError("start_rejected", errorMessage(err), false);
+	};
+
+	const currentRunModel = (): RunModelReference => {
+		const model = session.model;
+		return {
+			provider: model?.provider ?? "unknown",
+			id: model?.id ?? "unknown",
+			thinkingLevel: session.thinkingLevel,
+		};
+	};
+
+	const usageSnapshot = (): RunUsageSnapshot => {
+		const stats = session.getSessionStats();
+		return {
+			input: stats.tokens.input,
+			output: stats.tokens.output,
+			total: stats.tokens.total,
+		};
+	};
+
+	/** Serialize a run stream event, applying JSON-safe event conversion to wrapped session events. */
+	const outputRunEvent = (event: RunStreamEvent): void => {
+		if (event.type === "run.event") {
+			output({ ...event, event: toJsonEvent(event.event) });
+		} else {
+			output(event);
+		}
+	};
+
+	const finalizeRun = async (
+		handle: RunHandle,
+		outcome: "completed" | "failed",
+		terminalError?: AutomationError,
+	): Promise<void> => {
+		if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
+		settledRunIds.add(handle.runId);
+		const terminal = handle.settle({ outcome, terminalError, currentUsage: usageSnapshot() });
+		if (terminal !== undefined) outputRunEvent(terminal);
+		activeHandle = undefined;
+		runPromptPromises.delete(handle.runId);
+		terminalErrorByRun.delete(handle.runId);
+		await waitForRawStdoutBackpressure();
+	};
+
+	const settleActiveRun = async (handle: RunHandle): Promise<void> => {
+		if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
+		// Await the tracked prompt so a post-preflight failure settles the run as
+		// failed first; the settledRunIds guard makes this later settle a no-op.
+		await runPromptPromises.get(handle.runId);
+		await finalizeRun(handle, "completed");
+	};
+
+	/**
+	 * Track a started prompt so settleActiveRun can await it and post-preflight
+	 * failures surface as a run.failed terminal carrying a model_error.
+	 */
+	const trackRunPrompt = (handle: RunHandle, prompt: Promise<unknown>): void => {
+		const tracked = (async () => {
+			try {
+				await prompt;
+				// Settle directly on completion so a run started by a preflight that
+				// never emits agent_settled (e.g. an extension-handled prompt) cannot
+				// leak an active run. A terminal error detected from agent_end marks
+				// the run failed/model_error; otherwise it completed.
+				const terminalError = terminalErrorByRun.get(handle.runId);
+				await finalizeRun(handle, terminalError !== undefined ? "failed" : "completed", terminalError);
+			} catch (err) {
+				await finalizeRun(handle, "failed", createAutomationError("model_error", errorMessage(err), false));
+			}
+		})();
+		runPromptPromises.set(handle.runId, tracked);
+	};
+
+	const startRun = (
+		id: string | undefined,
+		commandType: "run.start" | "run.resume",
+		message: string,
+		images: ImageContent[] | undefined,
+		attempt: number,
+		sourceRunId: string | undefined,
+	): RpcAutomationResponse | undefined => {
+		const inputError = slashRunInputError(id, commandType, message);
+		if (inputError !== undefined) return inputError;
+		if (shuttingDown) {
+			return automationError(
+				id,
+				commandType,
+				createAutomationError(
+					"start_rejected",
+					"Automation Host is shutting down; no new runs are accepted.",
+					false,
+				),
+			);
+		}
+		if (!hostInitialized || coordinator === undefined) {
+			return automationError(id, commandType, hostNotInitializedError());
+		}
+		if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
+			return automationError(
+				id,
+				commandType,
+				createAutomationError(
+					"session_busy",
+					"A run is already active in this session. Wait for its terminal event before starting another.",
+					true,
+				),
+			);
+		}
+		let reservation: RunReservation;
+		try {
+			reservation = coordinator.reserve();
+		} catch (err) {
+			return automationError(id, commandType, asAutomationError(err));
+		}
+		activeReservation = reservation;
+		// Reserve before the prompt's preflight so the session is busy while the run
+		// is pending. Only a preflight that succeeds persists the accepted fact and
+		// starts the run; otherwise the reservation is released and the caller gets
+		// start_rejected with no run id and no ledger entry.
+		let promptPromise: Promise<unknown>;
+		const rejectStart = (err: unknown): void => {
+			if (activeReservation !== reservation) return;
+			activeReservation = undefined;
+			try {
+				reservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			output(automationError(id, commandType, createAutomationError("start_rejected", errorMessage(err), false)));
+		};
+		promptPromise = session.prompt(message, {
+			images,
+			source: "rpc",
+			preflightResult: (didSucceed) => {
+				if (!didSucceed) {
+					rejectStart(new Error("Preflight rejected the run input"));
+					return;
+				}
+				if (activeReservation !== reservation) return;
+				let handle: RunHandle | undefined;
+				let startEvents: RunStreamEvent[];
+				try {
+					handle = reservation.accept({ attempt, sourceRunId, model: currentRunModel() });
+					handle.setUsageBaseline(usageSnapshot());
+					// Persist the started fact before publishing accepted. The returned events
+					// remain buffered locally so the external contract is still accepted ->
+					// run.started -> run.event* -> terminal.
+					startEvents = handle.start();
+				} catch (err) {
+					activeReservation = undefined;
+					if (handle === undefined) {
+						try {
+							reservation.release();
+						} catch {
+							// reservation may already be consumed
+						}
+					} else {
+						// The accepted fact was durable but the started fact was not. Discard
+						// the live coordinator so this failed start cannot retain Session
+						// ownership; its ledger record is replayed as interrupted if recovered.
+						coordinator = createRunLifecycleCoordinator(session.sessionManager);
+					}
+					output(automationError(id, commandType, asAutomationError(err)));
+					// preflightResult has no rejection return value. Throwing prevents
+					// AgentSession.prompt() from proceeding into the Agent loop after an
+					// accepted/start ledger failure; promptPromise.catch() sees the same
+					// failure but does not output a duplicate because the reservation cleared.
+					throw err;
+				}
+				activeReservation = undefined;
+				activeHandle = handle;
+				// Emit the accepted response before run.started and the buffered events so
+				// records appear in the contract order: response -> run.started -> run.event* -> terminal.
+				const acceptedData: RunAcceptedData = {
+					runId: handle.runId,
+					sessionId: session.sessionId,
+					attempt,
+					status: "accepted",
+				};
+				output({ id, type: "response", command: commandType, success: true, data: acceptedData });
+				for (const event of startEvents) {
+					outputRunEvent(event);
+				}
+				trackRunPrompt(handle, promptPromise);
+			},
+		});
+		promptPromise.catch((err) => {
+			// When preflight rejects the promise no run was started, so release and
+			// report start_rejected. Otherwise the tracked prompt settled the run.
+			rejectStart(err);
+		});
+		return undefined;
+	};
 
 	/** Helper for dialog methods with signal/timeout support */
 	function createDialogPromise<T>(
@@ -316,6 +621,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
+		// Rebuild the run coordinator for the current session's ledger. When the
+		// host is initialized, a fresh coordinator folds the new session's
+		// automation.run custom entries so run.get and run.resume work after a switch.
+		if (hostInitialized) {
+			coordinator = createRunLifecycleCoordinator(session.sessionManager);
+			activeHandle = undefined;
+			settledRunIds.clear();
+			runPromptPromises.clear();
+		}
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
@@ -353,8 +667,34 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
 		unsubscribe = session.subscribe((event) => {
-			output(toJsonEvent(event));
+			if (activeHandle !== undefined) {
+				const emitted = activeHandle.captureSessionEvent(event);
+				if (emitted !== undefined) outputRunEvent(emitted);
+				// Provider errors surface as a final assistant message with stopReason
+				// "error" on agent_end; record it so the run settles failed/model_error.
+				if (event.type === "agent_end" && event.willRetry !== true) {
+					let errorText: string | undefined;
+					for (const message of event.messages) {
+						if (message.role === "assistant" && message.stopReason === "error") {
+							errorText = message.errorMessage ?? "Agent run failed";
+						}
+					}
+					if (errorText !== undefined) {
+						terminalErrorByRun.set(activeHandle.runId, createAutomationError("model_error", errorText, false));
+					} else {
+						terminalErrorByRun.delete(activeHandle.runId);
+					}
+				}
+			} else if (activeReservation !== undefined) {
+				// Buffer session events observed during preflight; start() flushes them.
+				activeReservation.captureSessionEvent(event);
+			} else {
+				output(toJsonEvent(event));
+			}
 			if (event.type === "agent_settled") {
+				if (activeHandle !== undefined) {
+					void settleActiveRun(activeHandle);
+				}
 				void checkShutdownRequested();
 			}
 		});
@@ -383,10 +723,229 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	registerSignalHandlers();
 
 	// Handle a single command
-	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
+	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | undefined> => {
 		const id = command.id;
 
+		// Once the Automation Host is initialized, legacy commands that would mutate
+		// session/model/run state are rejected so a run and a legacy command cannot
+		// compete for session ownership. Read-only queries and run.cancel/run.resume
+		// remain available.
+		if (hostInitialized && HOST_MUTATING_COMMANDS.has(command.type)) {
+			return error(
+				id,
+				command.type,
+				`Command "${command.type}" is not available while the Automation Host is initialized. Only read-only commands and run.cancel/run.resume are allowed.`,
+			);
+		}
+
 		switch (command.type) {
+			// =================================================================
+			// Automation Host (protocolVersion 1)
+			// =================================================================
+
+			case "initialize": {
+				if (command.protocolVersion !== 1) {
+					return automationError(
+						id,
+						"initialize",
+						createAutomationError(
+							"unsupported_protocol_version",
+							`Unsupported protocol version: ${command.protocolVersion}. This host supports protocolVersion 1 only.`,
+							false,
+						),
+					);
+				}
+				// Idempotent: a repeat initialize re-advertises the contract without
+				// recreating the coordinator or resetting run state, so an in-flight
+				// reservation/run is never lost.
+				if (!hostInitialized) {
+					hostInitialized = true;
+					coordinator = createRunLifecycleCoordinator(session.sessionManager);
+				}
+				const initializeData: InitializeData = {
+					host: "automation-host",
+					protocolVersion: 1,
+					sessionId: session.sessionId,
+					runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+				};
+				const sessionFile = session.sessionFile;
+				if (sessionFile !== undefined) initializeData.sessionFile = sessionFile;
+				const initializeResponse: RpcAutomationResponse = {
+					id,
+					type: "response",
+					command: "initialize",
+					success: true,
+					data: initializeData,
+				};
+				return initializeResponse;
+			}
+
+			case "run.start": {
+				return startRun(id, "run.start", command.message, command.images, 1, undefined);
+			}
+
+			case "run.get": {
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "run.get", hostNotInitializedError());
+				}
+				const result = coordinator.getRun(command.runId);
+				if (result === undefined) {
+					return automationError(
+						id,
+						"run.get",
+						createAutomationError("run_not_found", `Run not found: ${command.runId}`, false),
+					);
+				}
+				const getData: RunGetData = { run: result.record };
+				if (result.receipt !== undefined) getData.receipt = result.receipt;
+				if (result.recovery !== undefined) getData.recovery = result.recovery;
+				const getResponse: RpcAutomationResponse = {
+					id,
+					type: "response",
+					command: "run.get",
+					success: true,
+					data: getData,
+				};
+				return getResponse;
+			}
+
+			case "run.cancel": {
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "run.cancel", hostNotInitializedError());
+				}
+				const result = coordinator.getRun(command.runId);
+				if (result === undefined) {
+					return automationError(
+						id,
+						"run.cancel",
+						createAutomationError("run_not_found", `Run not found: ${command.runId}`, false),
+					);
+				}
+				if (isTerminalStatus(result.record.status)) {
+					const cancelResponse: RpcAutomationResponse = {
+						id,
+						type: "response",
+						command: "run.cancel",
+						success: true,
+						data: { runId: command.runId, status: result.record.status },
+					};
+					return cancelResponse;
+				}
+				if (activeHandle === undefined || activeHandle.runId !== command.runId) {
+					return automationError(
+						id,
+						"run.cancel",
+						createAutomationError(
+							"run_not_cancellable",
+							`Run ${command.runId} is not in a cancellable state`,
+							false,
+						),
+					);
+				}
+				activeHandle.requestCancel();
+				// Cancellation is a request, not the terminal transition. Trigger the
+				// existing abort path without waiting for its idle promise so the command
+				// response describes the current running state; the subscriber emits the
+				// unique run.cancelled event only after Session settlement.
+				void session.abort().catch(() => {
+					// The run remains governed by its normal settle/recovery path.
+				});
+				const cancelResponse: RpcAutomationResponse = {
+					id,
+					type: "response",
+					command: "run.cancel",
+					success: true,
+					data: { runId: command.runId, status: result.record.status },
+				};
+				return cancelResponse;
+			}
+
+			case "run.resume": {
+				const inputError = slashRunInputError(id, "run.resume", command.message);
+				if (inputError !== undefined) return inputError;
+				if (shuttingDown) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"start_rejected",
+							"Automation Host is shutting down; no new runs are accepted.",
+							false,
+						),
+					);
+				}
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "run.resume", hostNotInitializedError());
+				}
+				if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"session_busy",
+							"A run is already active in this session. Wait for its terminal event before starting another.",
+							true,
+						),
+					);
+				}
+				if (session.sessionFile === undefined) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"session_not_persistent",
+							"The current session has no sessionFile and cannot be resumed.",
+							false,
+						),
+					);
+				}
+				const switchResult = await runtimeHost.switchSession(command.sessionPath);
+				if (switchResult.cancelled) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"session_switch_cancelled",
+							"A session-switch extension cancelled the switch.",
+							false,
+						),
+					);
+				}
+				// switchSession() re-runs rebindSession(), which rebuilt `coordinator`
+				// for the restored session's ledger.
+				const sourceRun = coordinator!.getRun(command.sourceRunId);
+				if (sourceRun === undefined) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"source_run_not_found",
+							`Source run not found in restored session: ${command.sourceRunId}`,
+							false,
+						),
+					);
+				}
+				if (!isTerminalStatus(sourceRun.record.status) && sourceRun.recovery !== "interrupted") {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"source_run_not_resumable",
+							`Source run ${command.sourceRunId} cannot be the basis for a new attempt`,
+							false,
+						),
+					);
+				}
+				return startRun(
+					id,
+					"run.resume",
+					command.message,
+					command.images,
+					sourceRun.record.attempt + 1,
+					command.sourceRunId,
+				);
+			}
+
 			// =================================================================
 			// Prompting
 			// =================================================================
@@ -728,6 +1287,26 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		shuttingDown = true;
 		for (const cleanup of signalCleanupHandlers) {
 			cleanup();
+		}
+		// Stop accepting new runs and abort the active run. session.abort() waits for
+		// the session to settle, letting the subscriber emit the run's terminal event
+		// before we tear down. If the process is force-killed or exceeds the graceful
+		// window, the last persisted ledger state is authoritative.
+		if (activeReservation !== undefined) {
+			try {
+				activeReservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			activeReservation = undefined;
+		}
+		if (activeHandle !== undefined) {
+			activeHandle.requestCancel();
+			try {
+				await session.abort();
+			} catch {
+				// settle proceeds regardless of abort errors
+			}
 		}
 		unsubscribe?.();
 		unsubscribeBackpressure?.();
