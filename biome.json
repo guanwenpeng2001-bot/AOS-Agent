@@ -9,6 +9,9 @@
 				"useConst": "error",
 				"useNodejsImportProtocol": "off"
 			},
+			"correctness": {
+				"noUnusedFunctionParameters": "off"
+			},
 			"suspicious": {
 				"noExplicitAny": "off",
 				"noControlCharactersInRegex": "off",

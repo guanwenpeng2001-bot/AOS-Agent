@@ -15,7 +15,7 @@ const { default: customCompactionExtension } = await import("../examples/extensi
 describe("Documentation example", () => {
 	it("custom compaction example should type-check correctly", () => {
 		// This is the example from extensions.md - verify it compiles
-		const exampleExtension = (pi: ExtensionAPI) => {
+		const exampleExtension = (agent: ExtensionAPI) => {
 			agent.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
 				// All these should be accessible on the event
 				const { preparation, branchEntries } = event;
@@ -134,7 +134,7 @@ describe("Documentation example", () => {
 	});
 
 	it("compact event should have correct fields", () => {
-		const checkCompactEvent = (pi: ExtensionAPI) => {
+		const checkCompactEvent = (agent: ExtensionAPI) => {
 			agent.on("session_compact", async (event: SessionCompactEvent) => {
 				// These should all be accessible
 				const entry = event.compactionEntry;

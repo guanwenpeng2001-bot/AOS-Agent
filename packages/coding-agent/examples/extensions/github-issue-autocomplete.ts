@@ -129,7 +129,7 @@ function createIssueAutocompleteProvider(
 
 export default function (agent: ExtensionAPI): void {
 	agent.on("session_start", async (_event, ctx) => {
-		const resolvedRepo = await resolveGitHubRepo(pi, ctx.cwd);
+		const resolvedRepo = await resolveGitHubRepo(agent, ctx.cwd);
 		if (!resolvedRepo.ok) {
 			ctx.ui.notify(resolvedRepo.error, "error");
 			return;

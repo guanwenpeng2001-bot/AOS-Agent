@@ -23,7 +23,7 @@ describe("Branch summary extensions", () => {
 		};
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_tree", () => ({
 						summary: {
 							summary: "Summary provided by extension",

@@ -278,7 +278,7 @@ describe("test harness", () => {
 			extensionFactories: [
 				{
 					path: "<alpha>",
-					factory: (pi) => {
+					factory: (agent) => {
 						agent.registerCommand("shared-cmd", {
 							description: "Alpha command",
 							handler: async (args) => {
@@ -289,7 +289,7 @@ describe("test harness", () => {
 				},
 				{
 					path: "<beta>",
-					factory: (pi) => {
+					factory: (agent) => {
 						agent.registerCommand("shared-cmd", {
 							description: "Beta command",
 							handler: async (args) => {

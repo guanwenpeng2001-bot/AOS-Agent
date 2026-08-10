@@ -14,7 +14,7 @@ interface RecordedCompactionEvent {
 }
 
 function recordingExtension(recorded: RecordedCompactionEvent[]): ExtensionFactory {
-	return (pi) => {
+	return (agent) => {
 		agent.on("session_before_compact", async (event) => {
 			recorded.push({ type: event.type, reason: event.reason, willRetry: event.willRetry });
 			return {

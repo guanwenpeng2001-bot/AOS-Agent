@@ -25,8 +25,8 @@ describe("regression #3686: session name changes emit an event", () => {
 		let api: ExtensionAPI | undefined;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					api = pi;
+				(agent) => {
+					api = agent;
 				},
 			],
 		});
@@ -43,8 +43,8 @@ describe("regression #3686: session name changes emit an event", () => {
 		const events: Array<{ name: string | undefined }> = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					api = pi;
+				(agent) => {
+					api = agent;
 					agent.on("session_info_changed", (event) => {
 						events.push({ name: event.name });
 					});

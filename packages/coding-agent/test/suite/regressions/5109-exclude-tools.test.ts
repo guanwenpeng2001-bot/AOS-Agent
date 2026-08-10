@@ -9,7 +9,7 @@ function toolNames(tools: Array<{ name: string }>): string[] {
 
 describe("regression #5109: exclude tools", () => {
 	const extensionFactories: ExtensionFactory[] = [
-		(pi) => {
+		(agent) => {
 			agent.on("session_start", () => {
 				agent.registerTool({
 					name: "ask_question",

@@ -26,7 +26,7 @@ describe("#5998 blocked tool termination", () => {
 		const harness = await createHarness({
 			tools: [echoTool],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("tool_call", async () => ({
 						block: true,
 						reason: "Blocked by terminating policy",

@@ -36,7 +36,7 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerTool(
 						createBashTool(tempDir, {
 							spawnHook: (ctx) => {
@@ -74,7 +74,7 @@ describe("AgentSession dynamic tool registration", () => {
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		expect(session.systemPrompt).toContain(
-			"You can inspect PI_* environment variables for current model and session details.",
+			"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 		);
 		await bashTool.execute("bash-env", { command: "printf ok" });
 		expect(sessionEnv).toMatchObject({
@@ -105,7 +105,7 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.registerTool({
 							name: "dynamic_tool",
@@ -217,7 +217,7 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.registerTool({
 							name: "hidden_tool",

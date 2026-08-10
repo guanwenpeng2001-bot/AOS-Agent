@@ -28,7 +28,7 @@ function messageEntry(message: Record<string, unknown>): SessionEntry {
 describe("lax message content handling", () => {
 	it("normalizes tool results from untyped tools that omit content", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
+			(agent) => {
 				agent.registerTool({
 					name: "web_search",
 					label: "Web Search",
@@ -61,7 +61,7 @@ describe("lax message content handling", () => {
 
 	it("normalizes null content in message_end extension replacements", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
+			(agent) => {
 				agent.on("message_end", async (event) => {
 					if (event.message.role !== "assistant") return undefined;
 					// Simulate an untyped JS extension replacing a message without content.

@@ -228,7 +228,7 @@ describe("AgentSession prompt characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
@@ -264,7 +264,7 @@ describe("AgentSession prompt characterization", () => {
 		const inputEvents: InputEvent[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("input", (event) => {
 						inputEvents.push(event);
 					});
@@ -302,7 +302,7 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({
 			tools: [waitTool],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("input", (event) => {
 						inputEvents.push(event);
 					});
@@ -391,7 +391,7 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => {
 						markCompactionStarted();
 						await compactionReleased;

@@ -22,7 +22,7 @@ describe("AgentSession model and extension characterization", () => {
 				{ id: "faux-2", name: "Two", reasoning: true },
 			],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("model_select", async (event) => {
 						modelEvents.push(`${event.previousModel?.id ?? "none"}->${event.model.id}:${event.source}`);
 					});
@@ -126,7 +126,7 @@ describe("AgentSession model and extension characterization", () => {
 		const harness = await createHarness({
 			tools: [echoTool],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("tool_call", async () => ({ block: true, reason: "Blocked by test" }));
 				},
 			],
@@ -186,7 +186,7 @@ describe("AgentSession model and extension characterization", () => {
 		const harness = await createHarness({
 			tools: [echoTool],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("tool_result", async (event) => {
 						observedToolUsage = event.usage;
 						return {
@@ -228,7 +228,7 @@ describe("AgentSession model and extension characterization", () => {
 	it("allows extension context handlers to modify messages before the LLM call", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("context", async (event) => ({
 						messages: event.messages.map((message) =>
 							message.role === "user"
@@ -269,8 +269,8 @@ describe("AgentSession model and extension characterization", () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const transformedHarness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
+				(agent) => {
+					extensionApi = agent;
 					agent.on("input", async (event) => {
 						if (event.text === "ping") {
 							return { action: "handled" };
@@ -308,7 +308,7 @@ describe("AgentSession model and extension characterization", () => {
 		const seenOptions: BuildSystemPromptOptions[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("inspect-options", {
 						description: "Inspect system prompt options",
 						handler: async (_args, ctx) => {
@@ -335,7 +335,7 @@ describe("AgentSession model and extension characterization", () => {
 	it("allows before_agent_start handlers to inject custom messages and modify the system prompt", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("before_agent_start", async (event) => ({
 						message: {
 							customType: "before-start",
@@ -377,7 +377,7 @@ describe("AgentSession model and extension characterization", () => {
 		const lifecycleEvents: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", async (event) => {
 						lifecycleEvents.push(`start:${event.reason}`);
 					});

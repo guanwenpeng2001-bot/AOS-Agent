@@ -7,7 +7,7 @@ import { createHarness } from "../harness.ts";
 describe("extension active tools next-turn refresh", () => {
 	it("applies agent.setActiveTools before the next provider request in the same run", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
+			(agent) => {
 				agent.registerTool({
 					name: "switch_tools",
 					label: "Switch Tools",
@@ -68,7 +68,7 @@ describe("extension active tools next-turn refresh", () => {
 
 	it("records additive active tool changes on the current tool result", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
+			(agent) => {
 				agent.registerTool({
 					name: "load_more_tools",
 					label: "Load More Tools",
@@ -124,7 +124,7 @@ describe("extension active tools next-turn refresh", () => {
 
 	it("preserves before_agent_start system prompt overrides when tools change mid-run", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
+			(agent) => {
 				agent.on("before_agent_start", async (event) => ({
 					systemPrompt: `${event.systemPrompt}\n\nkeep this run override`,
 				}));

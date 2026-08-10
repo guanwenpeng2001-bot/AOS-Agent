@@ -108,7 +108,7 @@ describe("AgentSession compaction characterization", () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "summary from extension",
@@ -152,7 +152,7 @@ describe("AgentSession compaction characterization", () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "manual compacted",
@@ -283,7 +283,7 @@ describe("AgentSession compaction characterization", () => {
 			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "overflow compacted",
@@ -330,7 +330,7 @@ describe("AgentSession compaction characterization", () => {
 			models: [{ id: "faux-1", contextWindow: 1_000_000, maxTokens: 100 }],
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "overflow compacted",
@@ -361,7 +361,7 @@ describe("AgentSession compaction characterization", () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => {
 						return await new Promise<{ cancel: true }>((resolve) => {
 							event.signal.addEventListener("abort", () => resolve({ cancel: true }), { once: true });
@@ -387,7 +387,7 @@ describe("AgentSession compaction characterization", () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "auto compacted",
@@ -448,7 +448,7 @@ describe("AgentSession compaction characterization", () => {
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			models: [{ id: "faux-1", contextWindow: 1, maxTokens: 100 }],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: "successful overflow compacted",

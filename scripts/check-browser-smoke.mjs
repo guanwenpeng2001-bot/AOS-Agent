@@ -24,6 +24,26 @@ const generatedCatalogDataPlugin = {
 	},
 };
 
+// Cursor is a Node-only CLI adapter. Keep the browser smoke bundle focused on
+// browser-capable exports without changing the runtime provider implementation.
+const browserNodeOnlyProviderPlugin = {
+	name: "browser-node-only-provider-stubs",
+	setup(build) {
+		build.onResolve({ filter: /^\.\/cursor\.ts$/ }, (args) => {
+			const importer = args.importer.replaceAll("\\", "/");
+			if (!importer.endsWith("/packages/ai/src/providers/all.ts")) return;
+			return { path: "aos-agent-browser-cursor-stub", namespace: "browser-node-only-provider" };
+		});
+		build.onLoad({ filter: /^aos-agent-browser-cursor-stub$/, namespace: "browser-node-only-provider" }, () => ({
+			contents: `export function cursorProvider() {
+	return { id: "cursor", name: "Cursor", models: [] };
+}
+`,
+			loader: "js",
+		}));
+	},
+};
+
 function normalizePath(path) {
 	return path.replaceAll("\\", "/");
 }
@@ -41,15 +61,20 @@ function includesNodePackage(inputs, packageName) {
 }
 
 try {
-	await build({
+	const browserBuild = await build({
 		entryPoints: ["scripts/browser-smoke-entry.ts"],
 		bundle: true,
 		platform: "browser",
 		format: "esm",
 		logLevel: "silent",
 		outfile: outputPath,
-		plugins: [generatedCatalogDataPlugin],
+		metafile: true,
+		plugins: [generatedCatalogDataPlugin, browserNodeOnlyProviderPlugin],
 	});
+	const bundledCursorProvider = findInput(browserBuild.metafile.inputs, "packages/ai/src/providers/cursor.ts");
+	if (bundledCursorProvider) {
+		throw new Error(`Browser smoke bundle unexpectedly includes ${bundledCursorProvider}`);
+	}
 
 	const agentTreeshakeBuild = await build({
 		entryPoints: ["scripts/agent-treeshake-smoke-entry.ts"],
@@ -59,7 +84,7 @@ try {
 		logLevel: "silent",
 		metafile: true,
 		outfile: agentTreeshakeOutputPath,
-		plugins: [generatedCatalogDataPlugin],
+		plugins: [generatedCatalogDataPlugin, browserNodeOnlyProviderPlugin],
 		write: false,
 	});
 	const inputs = agentTreeshakeBuild.metafile.inputs;

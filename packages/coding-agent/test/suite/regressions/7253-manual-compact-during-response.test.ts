@@ -38,7 +38,7 @@ describe("issue #7253: manual compaction during an active response", () => {
 			settings: { compaction: { enabled: true, reserveTokens: 999, keepRecentTokens: 2 } },
 			tools: [createNoopTool()],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: `${event.reason} summary`,

@@ -18,7 +18,7 @@ export default function (agent: ExtensionAPI) {
 	});
 
 	// Listen for events from other extensions
-	pi.events.on("my:notification", (data) => {
+	agent.events.on("my:notification", (data) => {
 		const { message, from } = data as { message: string; from: string };
 		currentCtx?.ui.notify(`Event from ${from}: ${message}`, "info");
 	});
@@ -28,14 +28,14 @@ export default function (agent: ExtensionAPI) {
 		description: "Emit my:notification event (usage: /emit message)",
 		handler: async (args, _ctx) => {
 			const message = args.trim() || "hello";
-			pi.events.emit("my:notification", { message, from: "/emit command" });
+			agent.events.emit("my:notification", { message, from: "/emit command" });
 			// Listener above will show the notification
 		},
 	});
 
 	// Example: emit on session start
 	agent.on("session_start", async () => {
-		pi.events.emit("my:notification", {
+		agent.events.emit("my:notification", {
 			message: "Session started",
 			from: "event-bus-example",
 		});

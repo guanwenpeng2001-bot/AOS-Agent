@@ -100,7 +100,7 @@ describe("AgentSession retry and event characterization", () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("message_end", async (event) => {
 						if (event.message.role === "assistant") {
 							await new Promise((resolve) => setTimeout(resolve, 40));
@@ -204,7 +204,7 @@ describe("AgentSession retry and event characterization", () => {
 		const order: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("message_start", async (event) => {
 						order.push(`extension:${event.type}:${event.message.role}`);
 					});

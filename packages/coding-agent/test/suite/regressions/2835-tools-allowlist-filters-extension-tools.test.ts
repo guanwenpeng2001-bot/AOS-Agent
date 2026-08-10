@@ -33,7 +33,7 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.registerTool({
 							name: "dynamic_tool",

@@ -46,7 +46,7 @@ describe("issue #2753 reload stale resource settings", () => {
 				modelRuntime,
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi) => {
+						(agent) => {
 							agent.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",

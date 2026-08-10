@@ -37,7 +37,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.registerTool({
 							name: "dynamic_tool",

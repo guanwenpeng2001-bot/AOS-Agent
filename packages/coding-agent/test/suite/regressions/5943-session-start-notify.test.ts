@@ -277,7 +277,7 @@ describe("regression #5943: session_start transient UI", () => {
 		const events: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", (_event, ctx) => {
 						ctx.ui.notify("Hello Error", "error");
 					});
@@ -314,7 +314,7 @@ describe("regression #5943: session_start transient UI", () => {
 		const events: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.sendMessage({
 							customType: "session-start",
@@ -369,7 +369,7 @@ describe("regression #5943: session_start transient UI", () => {
 		const events: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", () => {
 						agent.sendUserMessage("user from start");
 					});
@@ -422,7 +422,7 @@ describe("regression #5943: session_start transient UI", () => {
 		});
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("session_start", (event, ctx) => {
 						events.push(`start:${event.reason}`);
 						ctx.ui.notify(`notify:${event.reason}`, "error");

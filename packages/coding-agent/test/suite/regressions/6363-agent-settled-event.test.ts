@@ -32,7 +32,7 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		const harness = await createHarness({
 			settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("agent_end", () => {
 						extensionEvents.push("agent_end");
 					});
@@ -66,7 +66,7 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		const settledIdleStates: boolean[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("agent_end", () => {
 						if (queuedFollowUp) return;
 						queuedFollowUp = true;
@@ -102,7 +102,7 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		const harness = await createHarness({
 			tools: [createWaitTool(released)],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("after-idle", {
 						description: "Wait for idle",
 						handler: async (_args, ctx) => {

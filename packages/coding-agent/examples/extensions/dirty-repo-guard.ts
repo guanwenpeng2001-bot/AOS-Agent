@@ -8,7 +8,7 @@
 import type { ExtensionAPI, ExtensionContext } from "aos-agent";
 
 async function checkDirtyRepo(
-	pi: ExtensionAPI,
+	agent: ExtensionAPI,
 	ctx: ExtensionContext,
 	action: string,
 ): Promise<{ cancel: boolean } | undefined> {
@@ -47,10 +47,10 @@ async function checkDirtyRepo(
 export default function (agent: ExtensionAPI) {
 	agent.on("session_before_switch", async (event, ctx) => {
 		const action = event.reason === "new" ? "new session" : "switch session";
-		return checkDirtyRepo(pi, ctx, action);
+		return checkDirtyRepo(agent, ctx, action);
 	});
 
 	agent.on("session_before_fork", async (_event, ctx) => {
-		return checkDirtyRepo(pi, ctx, "fork");
+		return checkDirtyRepo(agent, ctx, "fork");
 	});
 }

@@ -63,7 +63,7 @@ describe("AgentSessionRuntime characterization", () => {
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
+					(agent: ExtensionAPI) => {
 						agent.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
@@ -79,7 +79,7 @@ describe("AgentSessionRuntime characterization", () => {
 								maxTokens: registeredModel.maxTokens,
 							})),
 						});
-						extensionFactory(pi);
+						extensionFactory(agent);
 					},
 				],
 				noSkills: true,
@@ -123,7 +123,7 @@ describe("AgentSessionRuntime characterization", () => {
 	}
 
 	it("persists message_end assistant replacements to the session manager", async () => {
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+		const { runtime } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.on("message_end", (event) => {
 				if (event.message.role !== "assistant") return;
 
@@ -168,7 +168,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const toolStartedPromise = new Promise<void>((resolve) => {
 			toolStarted = resolve;
 		});
-		const { runtime, faux } = await createRuntimeForTest((pi: ExtensionAPI) => {
+		const { runtime, faux } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.registerTool({
 				name: "block",
 				label: "Block",
@@ -214,7 +214,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+		const { runtime } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.on("session_before_switch", (event) => {
 				events.push(event);
 			});
@@ -260,7 +260,7 @@ describe("AgentSessionRuntime characterization", () => {
 	it("honors session_before_switch cancellation for new and resume", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelReason: "new" | "resume" | undefined;
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+		const { runtime } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.on("session_before_switch", (event) => {
 				events.push(event);
 				if (event.reason === cancelReason) {
@@ -295,7 +295,7 @@ describe("AgentSessionRuntime characterization", () => {
 	it("emits session_before_fork and session_start and honors cancellation", async () => {
 		const events: RecordedSessionEvent[] = [];
 		let cancelNextFork = false;
-		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+		const { runtime } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.on("session_before_fork", (event) => {
 				events.push(event);
 				if (cancelNextFork) {
@@ -415,7 +415,7 @@ describe("AgentSessionRuntime characterization", () => {
 			model: faux.getModel(),
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
+					(agent: ExtensionAPI) => {
 						agent.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
@@ -524,7 +524,7 @@ describe("AgentSessionRuntime characterization", () => {
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
+					(agent: ExtensionAPI) => {
 						agent.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",
@@ -597,7 +597,7 @@ describe("AgentSessionRuntime characterization", () => {
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
+					(agent: ExtensionAPI) => {
 						agent.registerProvider(faux.getModel().provider, {
 							baseUrl: faux.getModel().baseUrl,
 							apiKey: "faux-key",

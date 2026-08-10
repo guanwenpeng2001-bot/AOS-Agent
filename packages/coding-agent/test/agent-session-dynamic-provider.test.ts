@@ -94,7 +94,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies top-level registerProvider overrides to the active model", async () => {
 		const session = await createSession([
-			(pi) => {
+			(agent) => {
 				agent.registerProvider("anthropic", { baseUrl: "http://localhost:8080/top-level" });
 			},
 		]);
@@ -107,7 +107,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies session_start registerProvider overrides to the active model", async () => {
 		const session = await createSession([
-			(pi) => {
+			(agent) => {
 				agent.on("session_start", () => {
 					agent.registerProvider("anthropic", { baseUrl: "http://localhost:8080/session-start" });
 				});
@@ -124,7 +124,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("registers native @aos-agent/ai providers during extension loading", async () => {
 		const session = await createSession([
-			(pi) => {
+			(agent) => {
 				agent.registerProvider(nativeAnthropicProvider("http://localhost:8080/native-top-level"));
 			},
 		]);
@@ -137,7 +137,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("applies command-time registerProvider overrides without reload", async () => {
 		const session = await createSession([
-			(pi) => {
+			(agent) => {
 				agent.registerCommand("use-proxy", {
 					description: "Use proxy",
 					handler: async () => {
@@ -158,7 +158,7 @@ describe("AgentSession dynamic provider registration", () => {
 
 	it("registers native @aos-agent/ai providers at command time", async () => {
 		const session = await createSession([
-			(pi) => {
+			(agent) => {
 				agent.registerCommand("use-native", {
 					description: "Use native provider",
 					handler: async () => {

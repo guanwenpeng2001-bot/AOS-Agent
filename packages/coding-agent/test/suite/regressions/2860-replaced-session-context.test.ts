@@ -59,7 +59,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				modelRuntime,
 				resourceLoaderOptions: {
 					extensionFactories: [
-						(pi: ExtensionAPI) => {
+						(agent: ExtensionAPI) => {
 							agent.registerProvider(faux.getModel().provider, {
 								baseUrl: faux.getModel().baseUrl,
 								apiKey: "faux-key",
@@ -75,7 +75,7 @@ describe("regression #2860: replaced session callbacks", () => {
 									maxTokens: registeredModel.maxTokens,
 								})),
 							});
-							extensionFactory(pi);
+							extensionFactory(agent);
 						},
 					],
 					noSkills: true,
@@ -154,7 +154,7 @@ describe("regression #2860: replaced session callbacks", () => {
 		let replacementSessionFile: string | undefined;
 		let instanceId = 0;
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
+			(agent) => {
 				const currentInstance = ++instanceId;
 				agent.on("session_start", () => {
 					events.push(`start:${currentInstance}`);
@@ -166,7 +166,7 @@ describe("regression #2860: replaced session callbacks", () => {
 					description: "repro",
 					handler: async (_args, ctx) => {
 						oldCtx = ctx;
-						oldPi = pi;
+						oldPi = agent;
 						oldSessionFile = ctx.sessionManager.getSessionFile();
 						await ctx.newSession({
 							parentSession: oldSessionFile,
@@ -209,7 +209,7 @@ describe("regression #2860: replaced session callbacks", () => {
 
 	it("supports withSession for fork", async () => {
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
+			(agent) => {
 				agent.registerCommand("fork-it", {
 					description: "fork-it",
 					handler: async (_args, ctx) => {
@@ -243,7 +243,7 @@ describe("regression #2860: replaced session callbacks", () => {
 	it("supports withSession for switchSession", async () => {
 		let targetSessionPath = "";
 		const { runtime } = await createRuntimeForTest(
-			(pi) => {
+			(agent) => {
 				agent.registerCommand("switch-it", {
 					description: "switch-it",
 					handler: async (_args, ctx) => {

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
+import { APP_NAME, ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResolvedPaths } from "../src/core/package-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
@@ -20,6 +20,7 @@ describe("package commands", () => {
 	let originalCwd: string;
 	let originalAgentDir: string | undefined;
 	let originalPiPackageDir: string | undefined;
+	let originalLatestVersionUrl: string | undefined;
 	let originalPath: string | undefined;
 	let originalExitCode: typeof process.exitCode;
 	let originalExecPath: string;
@@ -64,6 +65,8 @@ describe("package commands", () => {
 		originalCwd = process.cwd();
 		originalAgentDir = process.env[ENV_AGENT_DIR];
 		originalPiPackageDir = process.env.AOS_AGENT_PACKAGE_DIR;
+		originalLatestVersionUrl = process.env.AOS_AGENT_LATEST_VERSION_URL;
+		process.env.AOS_AGENT_LATEST_VERSION_URL = "https://example.test/aos/latest";
 		originalPath = process.env.PATH;
 		originalExitCode = process.exitCode;
 		originalExecPath = process.execPath;
@@ -94,6 +97,11 @@ describe("package commands", () => {
 			delete process.env.AOS_AGENT_PACKAGE_DIR;
 		} else {
 			process.env.AOS_AGENT_PACKAGE_DIR = originalPiPackageDir;
+		}
+		if (originalLatestVersionUrl === undefined) {
+			delete process.env.AOS_AGENT_LATEST_VERSION_URL;
+		} else {
+			process.env.AOS_AGENT_LATEST_VERSION_URL = originalLatestVersionUrl;
 		}
 		if (originalPath === undefined) {
 			delete process.env.PATH;
@@ -230,7 +238,7 @@ describe("package commands", () => {
 			await expect(
 				main(["list"], {
 					extensionFactories: [
-						(pi) => {
+						(agent) => {
 							agent.on("project_trust", () => ({ trusted: "yes" }));
 						},
 					],
@@ -267,7 +275,7 @@ describe("package commands", () => {
 			await expect(
 				main(["update", "--extensions"], {
 					extensionFactories: [
-						(pi) => {
+						(agent) => {
 							agent.on("project_trust", () => {
 								projectTrustCalled = true;
 								return { trusted: "yes" };
@@ -346,7 +354,7 @@ describe("package commands", () => {
 	});
 
 	it("allows local package install to initialize fresh project settings", async () => {
-		await main(["install", "-l", packageDir]);
+		await main(["install", "-l", packageDir, "--approve"]);
 
 		const settingsPath = join(projectDir, ".aos-agent", "settings.json");
 		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] };
@@ -430,12 +438,12 @@ describe("package commands", () => {
 
 		selector.getResourceList().handleInput(" ");
 		expect(settingsManager.getProjectSettings().packages).toEqual([
-			{ source: "npm:pi-tools", autoload: false, extensions: ["-extensions/bar.ts"] },
+			{ source: "npm:pi-tools", autoload: false, extensions: [join("-extensions", "bar.ts")] },
 		]);
 
 		selector.getResourceList().handleInput(" ");
 		expect(settingsManager.getProjectSettings().packages).toEqual([
-			{ source: "npm:pi-tools", autoload: false, extensions: ["+extensions/bar.ts"] },
+			{ source: "npm:pi-tools", autoload: false, extensions: [join("+extensions", "bar.ts")] },
 		]);
 
 		selector.getResourceList().handleInput(" ");
@@ -486,7 +494,7 @@ describe("package commands", () => {
 
 			expect(fetchMock).toHaveBeenCalledOnce();
 			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
-				`pi is already up to date (v${VERSION})`,
+				`${APP_NAME} is already up to date (v${VERSION})`,
 			);
 			expect(errorSpy).not.toHaveBeenCalled();
 			expect(process.exitCode).toBeUndefined();
@@ -569,7 +577,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			expect(recordedArgs).toContain(`${PACKAGE_NAME}@${VERSION}`);
 			expect(recordedArgs).not.toContain(PACKAGE_NAME);
 			expect(recordedArgs).not.toContain(projectPrefix);
-			expect(stdout).toContain(`Updated pi from ${VERSION} to ${VERSION}`);
+			expect(stdout).toContain(`Updated ${APP_NAME} from ${VERSION} to ${VERSION}`);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -615,7 +623,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			const recordedArgs = JSON.parse(readFileSync(recordPath, "utf-8")) as string[];
 			expect(recordedArgs).toContain(`${PACKAGE_NAME}@${targetVersion}`);
 			expect(recordedArgs).not.toContain(PACKAGE_NAME);
-			expect(stdout).toContain(`Updated pi from ${VERSION} to ${targetVersion}`);
+			expect(stdout).toContain(`Updated ${APP_NAME} from ${VERSION} to ${targetVersion}`);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -707,7 +715,7 @@ else {
 			expect(process.exitCode).toBe(1);
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stdout).not.toContain("Updated pi");
+			expect(stdout).not.toContain(`Updated ${APP_NAME}`);
 			expect(stderr).toContain("exited with code 23");
 			expect(stderr).toContain("If pnpm reports missing package versions");
 			expect(stderr).toContain("Run `pnpm store prune` and retry `aos update --self`.");
@@ -760,7 +768,7 @@ if(args.includes("install")) process.exit(23);
 			expect(process.exitCode).toBe(1);
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stdout).not.toContain(`Updated pi`);
+			expect(stdout).not.toContain(`Updated ${APP_NAME}`);
 			expect(stderr).toContain("exited with code 23");
 			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
 			expect(recordedCalls).toEqual([

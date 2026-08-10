@@ -29,7 +29,7 @@ export default function (agent: ExtensionAPI) {
 			timer = null;
 		}
 		frameIndex = 0;
-		ctx.ui.setTitle(getBaseTitle(pi));
+		ctx.ui.setTitle(getBaseTitle(agent));
 	}
 
 	function startAnimation(ctx: ExtensionContext) {

@@ -30,7 +30,7 @@ describe("regressions #1717/#2113: agent session event settlement", () => {
 		const harness = await createHarness({
 			tools: [createEchoTool()],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("message_end", async (event) => {
 						if (event.message.role === "assistant") {
 							await new Promise((resolve) => setTimeout(resolve, 20));
@@ -70,7 +70,7 @@ describe("regressions #1717/#2113: agent session event settlement", () => {
 		harness = await createHarness({
 			tools: [createEchoTool()],
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.on("tool_call", () => {
 						branchRolesAtToolCall.push(
 							harness.sessionManager

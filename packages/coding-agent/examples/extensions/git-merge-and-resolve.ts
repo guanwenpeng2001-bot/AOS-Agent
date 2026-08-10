@@ -107,7 +107,7 @@ export default function (agent: ExtensionAPI) {
 		}
 
 		// Either we just merged with conflicts, or we were already in an unfinished merge
-		const conflicts = await findConflicts(pi, ctx.cwd);
+		const conflicts = await findConflicts(agent, ctx.cwd);
 		if (conflicts.length === 0) return;
 
 		agent.sendUserMessage(formatConflicts(ref, conflicts), { deliverAs: "followUp" });

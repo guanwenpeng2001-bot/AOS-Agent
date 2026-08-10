@@ -19,13 +19,21 @@ function commandForPlatform(command) {
 	return process.platform === "win32" ? `${command}.cmd` : command;
 }
 
-function run(command, args, options = {}) {
-	console.log(`$ ${[command, ...args].join(" ")}`);
-	const result = spawnSync(commandForPlatform(command), args, {
+function spawnCommand(command, args, options = {}) {
+	const executable = commandForPlatform(command);
+	const file = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : executable;
+	const spawnArgs = process.platform === "win32" ? ["/d", "/s", "/c", executable, ...args] : args;
+
+	return spawnSync(file, spawnArgs, {
 		cwd: options.cwd,
 		encoding: "utf8",
 		stdio: options.capture ? ["inherit", "pipe", "pipe"] : "inherit",
 	});
+}
+
+function run(command, args, options = {}) {
+	console.log(`$ ${[command, ...args].join(" ")}`);
+	const result = spawnCommand(command, args, options);
 
 	if (result.status !== 0) {
 		const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
@@ -43,15 +51,22 @@ function assertBuildOutputExists(directory) {
 
 function validatePack(directory) {
 	const result = run("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], { capture: true, cwd: directory });
-	const packed = JSON.parse(result.stdout)[0];
+	const packResult = JSON.parse(result.stdout);
+	const packed = Array.isArray(packResult)
+		? packResult[0]
+		: packResult && typeof packResult === "object" && "filename" in packResult
+			? packResult
+			: packResult && typeof packResult === "object"
+				? Object.values(packResult)[0]
+				: undefined;
+	if (!packed || typeof packed !== "object" || !Array.isArray(packed.files)) {
+		throw new Error(`Unexpected npm pack output for ${directory}`);
+	}
 	console.log(`  ${packed.filename}: ${packed.files.length} files, ${packed.size} bytes packed, ${packed.unpackedSize} bytes unpacked`);
 }
 
 function isPublished(name, version) {
-	const result = spawnSync(commandForPlatform("npm"), ["view", `${name}@${version}`, "version", "--json"], {
-		encoding: "utf8",
-		stdio: ["inherit", "pipe", "pipe"],
-	});
+	const result = spawnCommand("npm", ["view", `${name}@${version}`, "version", "--json"], { capture: true });
 
 	if (result.status === 0 && result.stdout.trim()) {
 		return true;

@@ -10,7 +10,7 @@ async function createWaitingHarness(
 		tools?: AgentTool[];
 		extensionFactories?: Harness["session"]["extensionRunner"] extends never
 			? never
-			: Array<(pi: ExtensionAPI) => void>;
+			: Array<(agent: ExtensionAPI) => void>;
 	} = {},
 ): Promise<{
 	harness: Harness;
@@ -70,7 +70,7 @@ describe("AgentSession queue characterization", () => {
 		const commandRuns: string[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async (args) => {
@@ -93,8 +93,8 @@ describe("AgentSession queue characterization", () => {
 		let extensionApi: ExtensionAPI | undefined;
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
-				(pi) => {
-					extensionApi = pi;
+				(agent) => {
+					extensionApi = agent;
 				},
 			],
 		});
@@ -387,7 +387,7 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with steer", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
@@ -405,7 +405,7 @@ describe("AgentSession queue characterization", () => {
 	it("throws when queueing an extension command with followUp", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
+				(agent) => {
 					agent.registerCommand("testcmd", {
 						description: "Test command",
 						handler: async () => {},
@@ -424,7 +424,7 @@ describe("AgentSession queue characterization", () => {
 		let sent = false;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi: ExtensionAPI) => {
+				(agent: ExtensionAPI) => {
 					agent.on("agent_end", async () => {
 						if (sent) return;
 						sent = true;
