@@ -4,14 +4,14 @@ This page gets you from a local repository checkout to a useful first AOS Agent 
 
 ## Install the published CLI
 
-The current public release is `aos-agent@0.84.2`:
+The current public release is `aos-agent@0.84.3`:
 
 ```bash
-npm install --global aos-agent@0.84.2
+npm install --global aos-agent@0.84.3
 aos --help
 ```
 
-The immutable Git tag `v0.84.2` identifies that release snapshot. Later maintenance commits on `main` are not part of the tagged release or its package artifact.
+The immutable Git tag `v0.84.3` identifies that release snapshot. Later maintenance commits on `main` are not part of the tagged release or its package artifact. The earlier `v0.84.2` tag remains immutable.
 
 ## Install from source for development
 
