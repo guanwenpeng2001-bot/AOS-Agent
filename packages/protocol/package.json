@@ -1,6 +1,6 @@
 {
 	"name": "@aos-agent/protocol",
-	"version": "0.84.2",
+	"version": "0.84.3",
 	"description": "Transport-neutral CBOR protocol for remote AOS Agent sessions",
 	"type": "module",
 	"main": "./dist/index.js",

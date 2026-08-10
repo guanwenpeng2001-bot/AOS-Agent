@@ -1,6 +1,6 @@
 {
 	"name": "aos-agent",
-	"version": "0.84.2",
+	"version": "0.84.3",
 	"description": "AOS Agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"aosAgentConfig": {
@@ -43,11 +43,11 @@
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
 	"dependencies": {
-		"@aos-agent/agent-core": "^0.84.2",
-		"@aos-agent/ai": "^0.84.2",
-		"@aos-agent/client": "^0.84.2",
-		"@aos-agent/protocol": "^0.84.2",
-		"@aos-agent/tui": "^0.84.2",
+		"@aos-agent/agent-core": "^0.84.3",
+		"@aos-agent/ai": "^0.84.3",
+		"@aos-agent/client": "^0.84.3",
+		"@aos-agent/protocol": "^0.84.3",
+		"@aos-agent/tui": "^0.84.3",
 		"@silvia-odwyer/photon-node": "0.3.4",
 		"chalk": "5.6.2",
 		"cross-spawn": "7.0.6",

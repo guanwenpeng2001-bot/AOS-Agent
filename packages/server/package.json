@@ -1,6 +1,6 @@
 {
 	"name": "@aos-agent/server",
-	"version": "0.84.2",
+	"version": "0.84.3",
 	"description": "Experimental server package for AOS Agent",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -47,8 +47,8 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@aos-agent/ai": "^0.84.2",
-		"@aos-agent/protocol": "^0.84.2"
+		"@aos-agent/ai": "^0.84.3",
+		"@aos-agent/protocol": "^0.84.3"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",

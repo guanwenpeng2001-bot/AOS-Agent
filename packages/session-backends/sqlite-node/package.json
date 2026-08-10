@@ -1,6 +1,6 @@
 {
 	"name": "@aos-agent/session-backend-sqlite-node",
-	"version": "0.84.2",
+	"version": "0.84.3",
 	"description": "Node sqlite session backend for @aos-agent/agent-core sessions",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -34,8 +34,8 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@aos-agent/ai": "^0.84.2",
-		"@aos-agent/agent-core": "^0.84.2"
+		"@aos-agent/ai": "^0.84.3",
+		"@aos-agent/agent-core": "^0.84.3"
 	},
 	"devDependencies": {
 		"@vitest/coverage-v8": "4.1.9",
