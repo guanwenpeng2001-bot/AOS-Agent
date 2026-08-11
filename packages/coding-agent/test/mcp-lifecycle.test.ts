@@ -5,10 +5,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory";
 import { Server } from "@modelcontextprotocol/sdk/server";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
+import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport";
 import {
 	CallToolRequestSchema,
 	type CallToolResult,
+	type JSONRPCMessage,
 	ListToolsRequestSchema,
 	type Tool,
 } from "@modelcontextprotocol/sdk/types";
@@ -140,6 +141,113 @@ function managerWith(
 		await manager.closeAll().catch(() => undefined);
 	});
 	return manager;
+}
+
+/**
+ * Creates one in-memory mock server per server id and routes the factory by
+ * config, so closing one server's transport cannot tear down another server's
+ * shared in-memory connection.
+ */
+function multiServerFactory(
+	ids: ReadonlyArray<string>,
+	opts: MockServerHandlers = {},
+): (config: MCPServerConfig) => Promise<Transport> {
+	const setups = new Map(ids.map((id) => [id, createMockServerFactory(opts)]));
+	return async (config) => setups.get(config.id)!.transportFactory(config);
+}
+
+/**
+ * Transport wrapper that holds a close until released, so tests can observe
+ * that a deselection promise does not settle before the transport is actually
+ * released and that a removed server's transport is torn down exactly once.
+ * Handler assignments are forwarded to the wrapped transport so the SDK client
+ * and lifecycle install their message handlers on it as usual.
+ */
+class GatedCloseTransport implements Transport {
+	private readonly inner: Transport;
+	closeInvocations = 0;
+	private closeGate: Promise<void> | undefined;
+	private releaseClose: (() => void) | undefined;
+
+	constructor(inner: Transport) {
+		this.inner = inner;
+		this.holdClose();
+	}
+
+	get onclose(): Transport["onclose"] | undefined {
+		return this.inner.onclose;
+	}
+	set onclose(value: Transport["onclose"] | undefined) {
+		this.inner.onclose = value;
+	}
+	get onerror(): Transport["onerror"] | undefined {
+		return this.inner.onerror;
+	}
+	set onerror(value: Transport["onerror"] | undefined) {
+		this.inner.onerror = value;
+	}
+	get onmessage(): Transport["onmessage"] | undefined {
+		return this.inner.onmessage;
+	}
+	set onmessage(value: Transport["onmessage"] | undefined) {
+		this.inner.onmessage = value;
+	}
+
+	async start(): Promise<void> {
+		return this.inner.start();
+	}
+
+	async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
+		return this.inner.send(message, options);
+	}
+
+	holdClose(): void {
+		if (this.closeGate === undefined) {
+			this.closeGate = new Promise<void>((resolve) => {
+				this.releaseClose = resolve;
+			});
+		}
+	}
+
+	releaseCloseGate(): void {
+		this.releaseClose?.();
+	}
+
+	async close(): Promise<void> {
+		this.closeInvocations += 1;
+		if (this.closeGate !== undefined) {
+			await this.closeGate;
+		}
+		await this.inner.close();
+	}
+}
+
+/** Wraps a transport factory so every transport it creates gates close until released. */
+function gateCloseFactory(
+	factory: (config: MCPServerConfig) => Promise<Transport>,
+): {
+	transportFactory: (config: MCPServerConfig) => Promise<Transport>;
+	transportCount: () => number;
+	closeCount: () => number;
+	releaseAll: () => void;
+} {
+	const held: GatedCloseTransport[] = [];
+	const transportFactory = async (config: MCPServerConfig): Promise<Transport> => {
+		const inner = await factory(config);
+		const gated = new GatedCloseTransport(inner);
+		held.push(gated);
+		return gated;
+	};
+	return {
+		transportFactory,
+		transportCount: () => held.length,
+		closeCount: () => held.reduce((count, gated) => count + gated.closeInvocations, 0),
+		releaseAll: () => {
+			for (const gated of held) {
+				gated.releaseCloseGate();
+			}
+		},
+	};
 }
 
 describe("mcp-types error mapping and redaction", () => {
@@ -815,5 +923,195 @@ describe("selected binding gates", () => {
 		});
 		expect(manager.getStatus("docs")).toMatchObject({ state: "configured" });
 		await manager.closeAll();
+	});
+});
+
+describe("deselection and selection updates", () => {
+	it("closes a deselected ready server and reports closed while the kept server stays ready", async () => {
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{
+				selected: ["keep", "drop"],
+				transportFactory: multiServerFactory(["keep", "drop"], {
+					tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+					callHandler: () => ({ content: [{ type: "text", text: "ok" }] }),
+				}),
+			},
+		);
+		await manager.connect("keep");
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready", availability: "available" });
+
+		await manager.setSelectedServerIds(["keep"]);
+
+		expect(manager.isSelected("drop")).toBe(false);
+		expect(manager.getSelectedServerIds().has("keep")).toBe(true);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed", availability: "unavailable" });
+		expect(manager.getStatus("keep")).toMatchObject({ state: "ready", availability: "available" });
+		// the deselected server is gated out of every operation
+		await expect(manager.connect("drop")).rejects.toMatchObject({
+			kind: "not_selected",
+			code: "capability_denied",
+		});
+		await expect(manager.listTools("drop")).rejects.toMatchObject({ kind: "not_selected" });
+		await expect(manager.callTool("drop", "list", {})).rejects.toMatchObject({ kind: "not_selected" });
+		// the kept server remains usable
+		const result = await manager.callTool("keep", "list", {});
+		expect(result.content).toContainEqual({ type: "text", text: "ok" });
+		expect(manager.getStatus("keep")?.state).toBe("ready");
+	});
+
+	it("deselection while a connection is in flight closes the server and its late transport", async () => {
+		const setup = createMockServerFactory();
+		const gated = gateCloseFactory(setup.transportFactory);
+		let releaseFactory: (() => void) | undefined;
+		const factoryGate = new Promise<void>((resolve) => {
+			releaseFactory = resolve;
+		});
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{
+				selected: ["keep", "drop"],
+				transportFactory: async (config) => {
+					await factoryGate;
+					return gated.transportFactory(config);
+				},
+			},
+		);
+
+		const connectPromise = manager.connect("drop");
+		await waitUntil(() => manager.getStatus("drop")?.state === "connecting");
+
+		const deselect = manager.setSelectedServerIds(["keep"]);
+		releaseFactory?.();
+		// the deselected server's connect resumes and creates a transport, which
+		// the lifecycle must release instead of leaving the child/connection alive
+		await waitUntil(() => gated.transportCount() >= 1);
+
+		gated.releaseAll();
+		await deselect;
+		await expect(connectPromise).rejects.toMatchObject({ code: "capability_mcp_unavailable" });
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
+		expect(manager.getStatus("keep")).toMatchObject({ state: "configured" });
+		expect(gated.closeCount()).toBe(1);
+	});
+
+	it("does not settle a deselection update until the removed server's transport is released", async () => {
+		const setup = createMockServerFactory();
+		const gated = gateCloseFactory(setup.transportFactory);
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{ selected: ["keep", "drop"], transportFactory: gated.transportFactory },
+		);
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready" });
+
+		let settled = false;
+		const deselect = manager.setSelectedServerIds(["keep"]).then(() => {
+			settled = true;
+		});
+		await waitUntil(() => gated.closeCount() >= 1);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closing" });
+		expect(settled).toBe(false);
+
+		gated.releaseAll();
+		await deselect;
+		expect(settled).toBe(true);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
+		expect(gated.closeCount()).toBe(1);
+	});
+
+	it("supersedes a deselection close when a newer update re-selects the server before the close runs", async () => {
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{
+				selected: ["keep", "drop"],
+				transportFactory: multiServerFactory(["keep", "drop"], {
+					tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+				}),
+			},
+		);
+		await manager.connect("keep");
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready" });
+
+		const first = manager.setSelectedServerIds(["keep"]);
+		const second = manager.setSelectedServerIds(["keep", "drop"]);
+		await first;
+		await second;
+
+		expect(manager.isSelected("drop")).toBe(true);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready" });
+		// the re-selected server's connection is preserved and still usable
+		const tools = await manager.listTools("drop");
+		expect(tools.map((tool) => tool.name)).toEqual(["list"]);
+	});
+
+	it("coalesces concurrent deselections of the same server into one close", async () => {
+		const setup = createMockServerFactory();
+		const gated = gateCloseFactory(setup.transportFactory);
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{ selected: ["keep", "drop"], transportFactory: gated.transportFactory },
+		);
+		await manager.connect("drop");
+
+		// First deselection starts the close and holds it; re-selecting and then
+		// re-deselecting while that close is still pending must coalesce onto the
+		// same teardown rather than closing the transport twice.
+		const first = manager.setSelectedServerIds(["keep"]);
+		await waitUntil(() => gated.closeCount() >= 1);
+		const reselect = manager.setSelectedServerIds(["keep", "drop"]);
+		const second = manager.setSelectedServerIds(["keep"]);
+		gated.releaseAll();
+
+		await first;
+		await reselect;
+		await second;
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
+		expect(gated.closeCount()).toBe(1);
+	});
+
+	it("completes an already-invoked close when the server is re-selected mid-close and never reopens it", async () => {
+		const setup = createMockServerFactory();
+		const gated = gateCloseFactory(setup.transportFactory);
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{ selected: ["keep", "drop"], transportFactory: gated.transportFactory },
+		);
+		await manager.connect("drop");
+
+		const first = manager.setSelectedServerIds(["keep"]);
+		await waitUntil(() => gated.closeCount() >= 1);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closing" });
+
+		// Re-select mid-close: the close is already invoked, so it completes and
+		// the lifecycle stays closed; the manager never silently reopens it.
+		const reselect = manager.setSelectedServerIds(["keep", "drop"]);
+		gated.releaseAll();
+		await first;
+		await reselect;
+
+		expect(manager.isSelected("drop")).toBe(true);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
+		expect(gated.closeCount()).toBe(1);
 	});
 });
