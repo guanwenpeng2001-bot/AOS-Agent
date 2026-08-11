@@ -25,6 +25,7 @@ Then run `aos` in the project you want to work on. See [Quickstart](quickstart.m
 - [Security](security.md) — project trust, sandbox boundaries, and vulnerability reporting.
 - [Settings](settings.md) — global and project settings.
 - [Sessions](sessions.md) — session management, branching, and tree navigation.
+- [Context Engine](context.md) — governed context planning, snapshots, trust, budgets, and explicit memory.
 - [Compaction](compaction.md) — context compaction and branch summarization.
 
 ## Customization

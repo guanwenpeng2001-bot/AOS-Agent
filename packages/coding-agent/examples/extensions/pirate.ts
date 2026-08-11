@@ -24,13 +24,15 @@ export default function pirateExtension(agent: ExtensionAPI) {
 		},
 	});
 
-	// Append to system prompt when pirate mode is enabled
-	agent.on("before_agent_start", async (event) => {
+	// Contribute labeled instructions when pirate mode is enabled.
+	agent.on("before_agent_start", () => {
 		if (pirateMode) {
 			return {
-				systemPrompt:
-					event.systemPrompt +
-					`
+				contribution: {
+					sourceId: "example:pirate-mode",
+					label: "Pirate mode",
+					visibility: "model_and_snapshot",
+					systemPromptAppend: `
 
 IMPORTANT: You are now in PIRATE MODE. You must:
 - Speak like a stereotypical pirate in all responses
@@ -40,6 +42,7 @@ IMPORTANT: You are now in PIRATE MODE. You must:
 - End sentences with nautical expressions
 - Still complete the actual task correctly, just in pirate speak
 `,
+				},
 			};
 		}
 		return undefined;

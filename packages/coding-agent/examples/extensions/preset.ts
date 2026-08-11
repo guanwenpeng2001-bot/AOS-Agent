@@ -382,11 +382,16 @@ export default function presetExtension(agent: ExtensionAPI) {
 		},
 	});
 
-	// Inject preset instructions into system prompt
-	agent.on("before_agent_start", async (event) => {
+	// Contribute active preset instructions to the context plan.
+	agent.on("before_agent_start", () => {
 		if (activePreset?.instructions) {
 			return {
-				systemPrompt: `${event.systemPrompt}\n\n${activePreset.instructions}`,
+				contribution: {
+					sourceId: "example:active-preset",
+					label: `Preset: ${activePresetName ?? "active"}`,
+					visibility: "model_and_snapshot",
+					systemPromptAppend: activePreset.instructions,
+				},
 			};
 		}
 	});

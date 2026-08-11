@@ -320,7 +320,15 @@ describe("coding-agent Harness construction", () => {
 			tools: defaultPromptTools,
 			activeToolNames: ["write", "read"],
 			systemPromptOptions: {
-				contextFiles: [{ path: "/workspace/AGENTS.md", content: "Follow project policy." }],
+				instructionBlocks: [
+					{
+						sourceId: "instruction:/workspace/AGENTS.md",
+						path: "/workspace/AGENTS.md",
+						content: "Follow project policy.",
+						scope: "project",
+						trust: "trusted_project",
+					},
+				],
 				skills: [
 					{
 						name: "review",

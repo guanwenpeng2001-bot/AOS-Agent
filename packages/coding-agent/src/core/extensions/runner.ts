@@ -6,6 +6,7 @@ import type { AgentMessage } from "@aos-agent/agent-core";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@aos-agent/ai";
 import type { KeyId } from "@aos-agent/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
+import { validateContextExtensionContribution } from "../context-engine.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -14,12 +15,14 @@ import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
+	BeforeAgentStartCombinedResult,
 	BeforeAgentStartEventResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
 	ContextEvent,
 	ContextEventResult,
+	ContextExtensionContributionAttribution,
 	ContextUsage,
 	EntryRenderer,
 	Extension,
@@ -111,12 +114,6 @@ const buildBuiltinKeybindings = (resolvedKeybindings: KeybindingsConfig): BuiltI
 	}
 	return builtinKeybindings;
 };
-
-/** Combined result from all before_agent_start handlers */
-interface BeforeAgentStartCombinedResult {
-	messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
-	systemPrompt?: string;
-}
 
 /**
  * Events handled by the generic emit() method.
@@ -1094,7 +1091,11 @@ export class ExtensionRunner {
 			return currentSystemPrompt;
 		};
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
+		const contributions: ContextExtensionContributionAttribution[] = [];
+		const contributionSourceIds = new Set<string>();
 		let systemPromptModified = false;
+		let unattributedMutation = false;
+		let contributionError: BeforeAgentStartCombinedResult["contributionError"];
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_agent_start");
@@ -1113,12 +1114,45 @@ export class ExtensionRunner {
 
 					if (handlerResult) {
 						const result = handlerResult as BeforeAgentStartEventResult;
+						if (result.contribution !== undefined) {
+							const validated = validateContextExtensionContribution(result.contribution);
+							if (!validated.ok) {
+								this.emitError({
+									extensionPath: ext.path,
+									event: "before_agent_start",
+									error: validated.error.message,
+								});
+								contributionError ??= {
+									code: "context_extension_source_missing",
+									message: validated.error.message,
+								};
+							} else if (contributionSourceIds.has(validated.contribution.sourceId)) {
+								const message = `Duplicate Context extension contribution sourceId: ${validated.contribution.sourceId}`;
+								this.emitError({
+									extensionPath: ext.path,
+									event: "before_agent_start",
+									error: message,
+								});
+								contributionError ??= {
+									code: "context_extension_source_missing",
+									message,
+								};
+							} else {
+								contributionSourceIds.add(validated.contribution.sourceId);
+								contributions.push({
+									extensionPath: ext.path,
+									contribution: validated.contribution,
+								});
+							}
+						}
 						if (result.message) {
 							messages.push(result.message);
+							unattributedMutation = true;
 						}
 						if (result.systemPrompt !== undefined) {
 							currentSystemPrompt = result.systemPrompt;
 							systemPromptModified = true;
+							unattributedMutation = true;
 						}
 					}
 				} catch (err) {
@@ -1134,10 +1168,13 @@ export class ExtensionRunner {
 			}
 		}
 
-		if (messages.length > 0 || systemPromptModified) {
+		if (messages.length > 0 || systemPromptModified || contributions.length > 0 || contributionError !== undefined) {
 			return {
 				messages: messages.length > 0 ? messages : undefined,
 				systemPrompt: systemPromptModified ? currentSystemPrompt : undefined,
+				contributions,
+				unattributedMutation,
+				...(contributionError !== undefined ? { contributionError } : {}),
 			};
 		}
 

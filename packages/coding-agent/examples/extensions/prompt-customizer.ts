@@ -19,7 +19,7 @@ import type { BuildSystemPromptOptions, ExtensionAPI } from "aos-agent";
  * Instead of appending one-size-fits-all instructions, this reads what's
  * actually loaded and tailors the guidance accordingly.
  */
-function addToolGuidance(options: BuildSystemPromptOptions, basePrompt: string): string {
+function buildToolGuidance(options: BuildSystemPromptOptions): string | undefined {
 	const hasTool = (name: string) => options.selectedTools?.includes(name) ?? false;
 
 	const parts: string[] = [];
@@ -51,47 +51,33 @@ function addToolGuidance(options: BuildSystemPromptOptions, basePrompt: string):
 	}
 
 	if (parts.length === 0) {
-		return basePrompt;
+		return undefined;
 	}
 
-	return `${basePrompt}
-
-## Tool Guidance
+	return `## Tool Guidance
 
 ${parts.join("\n")}
 `;
 }
 
-/**
- * Merges extension instructions with user-provided append prompts.
- * This respects whatever the user configured via --append-system-prompt
- * flags or files, rather than duplicating that work.
- */
-function mergeWithUserAppend(options: BuildSystemPromptOptions): string {
-	const userAppend = options.appendSystemPrompt;
-	const extensionSpecific = `
+const extensionSpecific = `
 ## Extension-Added Context
 
 This prompt includes tool guidance and skill information loaded dynamically.
-If you have additional requirements, configure them via --append-system-prompt or project context files.
+User-configured prompt additions remain part of the base system prompt.
 `;
 
-	if (userAppend) {
-		return `${userAppend}\n\n${extensionSpecific}`;
-	}
-
-	return extensionSpecific;
-}
-
 export default function promptCustomizer(agent: ExtensionAPI) {
-	agent.on("before_agent_start", async (event) => {
-		const { systemPrompt, systemPromptOptions } = event;
-
-		const customPrompt = addToolGuidance(systemPromptOptions, systemPrompt);
-		const appendSection = mergeWithUserAppend(systemPromptOptions);
+	agent.on("before_agent_start", (event) => {
+		const toolGuidance = buildToolGuidance(event.systemPromptOptions);
 
 		return {
-			systemPrompt: `${customPrompt}${appendSection}`,
+			contribution: {
+				sourceId: "example:prompt-customizer",
+				label: "Dynamic tool guidance",
+				visibility: "model_and_snapshot",
+				systemPromptAppend: `${toolGuidance ? `${toolGuidance}\n` : ""}${extensionSpecific}`,
+			},
 		};
 	});
 }

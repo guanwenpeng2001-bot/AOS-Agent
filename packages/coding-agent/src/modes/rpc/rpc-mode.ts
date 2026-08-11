@@ -234,7 +234,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	): Promise<void> => {
 		if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
 		settledRunIds.add(handle.runId);
-		const terminal = handle.settle({ outcome, terminalError, currentUsage: usageSnapshot() });
+		const terminal = handle.settle({
+			outcome,
+			terminalError,
+			currentUsage: usageSnapshot(),
+			contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
+		});
 		if (terminal !== undefined) outputRunEvent(terminal);
 		activeHandle = undefined;
 		runPromptPromises.delete(handle.runId);
@@ -313,6 +318,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return automationError(id, commandType, asAutomationError(err));
 		}
 		activeReservation = reservation;
+		const proposedRunId = crypto.randomUUID();
 		// Reserve before the prompt's preflight so the session is busy while the run
 		// is pending. Only a preflight that succeeds persists the accepted fact and
 		// starts the run; otherwise the reservation is released and the caller gets
@@ -331,6 +337,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		promptPromise = session.prompt(message, {
 			images,
 			source: "rpc",
+			runId: proposedRunId,
 			preflightResult: (didSucceed) => {
 				if (!didSucceed) {
 					rejectStart(new Error("Preflight rejected the run input"));
@@ -340,7 +347,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				let handle: RunHandle | undefined;
 				let startEvents: RunStreamEvent[];
 				try {
-					handle = reservation.accept({ attempt, sourceRunId, model: currentRunModel() });
+					handle = reservation.accept({ runId: proposedRunId, attempt, sourceRunId, model: currentRunModel() });
 					handle.setUsageBaseline(usageSnapshot());
 					// Persist the started fact before publishing accepted. The returned events
 					// remain buffered locally so the external contract is still accepted ->
@@ -1150,6 +1157,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "get_session_stats": {
 				const stats = session.getSessionStats();
 				return success(id, "get_session_stats", stats);
+			}
+
+			case "get_context": {
+				const inspection = await session.inspectContext({
+					snapshotId: command.snapshotId,
+				});
+				// Historical entries pass through SessionManager's structural parser,
+				// which reconstructs only receipt fields and discards unknown payloads.
+				return success(id, "get_context", inspection);
 			}
 
 			case "export_html": {

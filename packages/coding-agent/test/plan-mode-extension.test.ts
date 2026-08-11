@@ -2,13 +2,22 @@ import type { AgentMessage } from "@aos-agent/agent-core";
 import type { AssistantMessage } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
 import planModeExtension from "../examples/extensions/plan-mode/index.ts";
-import type { ExtensionAPI, ExtensionContext } from "../src/core/extensions/index.ts";
+import type {
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
+	ExtensionAPI,
+	ExtensionContext,
+} from "../src/core/extensions/index.ts";
 
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void> | void;
 type AgentEndHandler = (
 	event: { type: "agent_end"; messages: AgentMessage[] },
 	ctx: ExtensionContext,
 ) => Promise<void> | void;
+type BeforeAgentStartHandler = (
+	event: BeforeAgentStartEvent,
+	ctx: ExtensionContext,
+) => Promise<BeforeAgentStartEventResult | undefined> | BeforeAgentStartEventResult | undefined;
 
 function createAssistantMessage(text: string): AssistantMessage {
 	return {
@@ -34,6 +43,7 @@ function setup(options: { activeTools?: string[]; selectChoice?: string; editorT
 	let activeTools = options.activeTools ?? ["read", "bash", "edit", "write"];
 	const commands = new Map<string, CommandHandler>();
 	let agentEndHandler: AgentEndHandler | undefined;
+	let beforeAgentStartHandler: BeforeAgentStartHandler | undefined;
 
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>();
 	const sendUserMessage = vi.fn<ExtensionAPI["sendUserMessage"]>();
@@ -50,6 +60,7 @@ function setup(options: { activeTools?: string[]; selectChoice?: string; editorT
 		registerShortcut: vi.fn(),
 		on(event: string, handler: unknown) {
 			if (event === "agent_end") agentEndHandler = handler as AgentEndHandler;
+			if (event === "before_agent_start") beforeAgentStartHandler = handler as BeforeAgentStartHandler;
 		},
 		getFlag: vi.fn(() => false),
 		getActiveTools: vi.fn(() => [...activeTools]),
@@ -90,6 +101,19 @@ function setup(options: { activeTools?: string[]; selectChoice?: string; editorT
 		await agentEndHandler({ type: "agent_end", messages: [createAssistantMessage(text)] }, ctx);
 	}
 
+	async function triggerBeforeAgentStart(): Promise<BeforeAgentStartEventResult | undefined> {
+		if (!beforeAgentStartHandler) throw new Error("Missing before_agent_start handler");
+		return await beforeAgentStartHandler(
+			{
+				type: "before_agent_start",
+				prompt: "Plan the change",
+				systemPrompt: "base prompt",
+				systemPromptOptions: {} as BeforeAgentStartEvent["systemPromptOptions"],
+			},
+			ctx,
+		);
+	}
+
 	return {
 		activeTools: () => activeTools,
 		appendEntry,
@@ -98,6 +122,7 @@ function setup(options: { activeTools?: string[]; selectChoice?: string; editorT
 		sendMessage,
 		sendUserMessage,
 		setActiveTools,
+		triggerBeforeAgentStart,
 		triggerAgentEnd,
 	};
 }
@@ -125,6 +150,25 @@ describe("plan-mode example extension", () => {
 
 		expect(activeTools()).toEqual(["read", "bash", "edit", "write", "echo_tool"]);
 		expect(setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "edit", "write", "echo_tool"]);
+	});
+
+	it("returns a labeled Context Engine contribution in plan mode", async () => {
+		const { runCommand, triggerBeforeAgentStart } = setup();
+
+		await runCommand("plan");
+		const result = await triggerBeforeAgentStart();
+
+		expect(result?.contribution).toMatchObject({
+			sourceId: "example:plan-mode",
+			label: "Plan mode instructions",
+			visibility: "model_and_snapshot",
+			messages: [
+				{
+					role: "user",
+					content: expect.stringContaining("[PLAN MODE ACTIVE]"),
+				},
+			],
+		});
 	});
 
 	it("does not prompt when the assistant response contains no plan", async () => {

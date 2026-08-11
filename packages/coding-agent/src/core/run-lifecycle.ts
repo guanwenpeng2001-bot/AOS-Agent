@@ -79,6 +79,11 @@ export interface RunReceipt {
 	usage: RunUsage;
 	sessionFile?: string;
 	terminalError?: AutomationError;
+	/**
+	 * Context Engine snapshot id bound to this run's model call(s).
+	 * Additive; older ledgers omit it. Metadata-only — never carries raw context bodies.
+	 */
+	contextSnapshotId?: string;
 }
 
 export type RunStreamEvent =
@@ -182,6 +187,8 @@ export interface SettleInput {
 	terminalError?: AutomationError;
 	finalText?: string;
 	currentUsage?: RunUsageSnapshot;
+	/** Snapshot id explicitly bound to this run's model call(s). */
+	contextSnapshotId?: string;
 }
 
 export interface RunHandle {
@@ -323,6 +330,7 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (obj.finalText !== undefined && typeof obj.finalText !== "string") return false;
 	if (obj.sessionFile !== undefined && typeof obj.sessionFile !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
+	if (obj.contextSnapshotId !== undefined && typeof obj.contextSnapshotId !== "string") return false;
 	return true;
 }
 
@@ -425,6 +433,7 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
 	if (receipt.sessionFile !== undefined) copy.sessionFile = receipt.sessionFile;
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
+	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
 	return copy;
 }
 
@@ -552,6 +561,8 @@ class RunHandleImpl implements RunHandle {
 		const sessionFile = this.coordinator.session.getSessionFile();
 		if (sessionFile !== undefined) receipt.sessionFile = sessionFile;
 		if (input.terminalError !== undefined) receipt.terminalError = input.terminalError;
+		const contextSnapshotId = input.contextSnapshotId;
+		if (contextSnapshotId !== undefined) receipt.contextSnapshotId = contextSnapshotId;
 		this.coordinator.persist({ schemaVersion: 1, kind: "terminal", receipt, endedAt });
 		this._receipt = receipt;
 		this._record.status = status;

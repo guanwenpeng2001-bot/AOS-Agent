@@ -27,6 +27,7 @@ describe("pre-prompt compaction regression", () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
+			tools: [],
 			extensionFactories: [
 				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
@@ -41,6 +42,10 @@ describe("pre-prompt compaction regression", () => {
 			],
 		});
 		harnesses.push(harness);
+		// Keep the synthetic 100-token window focused on dynamic session
+		// context rather than the unrelated built-in prompt and tool schemas.
+		harness.session.resourceLoader.getSystemPrompt = () => "test";
+		harness.session.setActiveToolsByName(harness.session.getActiveToolNames());
 
 		const now = Date.now();
 		const model = harness.getModel();
@@ -64,7 +69,7 @@ describe("pre-prompt compaction regression", () => {
 		await expect(harness.session.prompt("next prompt")).resolves.toBeUndefined();
 
 		expect(continueSpy).not.toHaveBeenCalled();
-		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
+		expect(harness.eventsOfType("compaction_end").at(0)).toMatchObject({
 			reason: "overflow",
 			aborted: false,
 			willRetry: true,

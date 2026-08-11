@@ -753,6 +753,8 @@ describe("ExtensionRunner", () => {
 			expect(chained).toEqual({
 				messages: undefined,
 				systemPrompt: "base\nfirst\nsecond",
+				contributions: [],
+				unattributedMutation: true,
 			});
 		});
 	});

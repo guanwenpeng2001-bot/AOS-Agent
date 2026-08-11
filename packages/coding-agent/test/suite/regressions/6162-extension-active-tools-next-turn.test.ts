@@ -122,11 +122,16 @@ describe("extension active tools next-turn refresh", () => {
 		}
 	});
 
-	it("preserves before_agent_start system prompt overrides when tools change mid-run", async () => {
+	it("preserves a Context contribution across provider calls when tools change mid-run", async () => {
 		const extensionFactories: ExtensionFactory[] = [
 			(agent) => {
-				agent.on("before_agent_start", async (event) => ({
-					systemPrompt: `${event.systemPrompt}\n\nkeep this run override`,
+				agent.on("before_agent_start", async () => ({
+					contribution: {
+						sourceId: "extension:active-tools-next-turn",
+						label: "Active tools next-turn test contribution",
+						visibility: "model_and_snapshot",
+						systemPromptAppend: "keep this run override",
+					},
 				}));
 
 				agent.registerTool({

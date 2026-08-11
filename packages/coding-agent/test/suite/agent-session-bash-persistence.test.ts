@@ -3,6 +3,7 @@ import type { AgentTool } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -226,10 +227,33 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(entries.map((entry) => entry.type)).toEqual([
 			"custom_message",
 			"message",
+			"custom",
+			"message",
+			"message",
+			"custom",
+			"message",
+		]);
+		const semanticEntries = entries.filter((entry) => entry.type !== "custom");
+		expect(semanticEntries.map((entry) => entry.type)).toEqual([
+			"custom_message",
+			"message",
 			"message",
 			"message",
 			"message",
 		]);
+		expect(
+			semanticEntries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
+		).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		const contextSnapshots = entries.filter((entry) => entry.type === "custom");
+		expect(contextSnapshots).toHaveLength(2);
+		for (const entry of contextSnapshots) {
+			expect(entry.customType).toBe(CONTEXT_SNAPSHOT_CUSTOM_TYPE);
+			expect(entry.data).toMatchObject({
+				schemaVersion: 1,
+				purpose: "agent_turn",
+				sessionId: harness.session.sessionId,
+			});
+		}
 		expect(harness.session.messages.map((message) => message.role)).toEqual([
 			"custom",
 			"user",

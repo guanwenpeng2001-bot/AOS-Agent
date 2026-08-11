@@ -278,10 +278,13 @@ describe("AgentSession compaction characterization", () => {
 		expect(getStreamCallCount()).toBe(1);
 	});
 
-	it("compacts and resumes after a length stop below the desired output limit", async () => {
+	it("compacts and resumes after a length stop below the desired output limit when Context Engine is disabled", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
-			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
+			settings: {
+				context: { enabled: false },
+				compaction: { keepRecentTokens: 1, reserveTokens: 0 },
+			},
 			extensionFactories: [
 				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
@@ -443,9 +446,12 @@ describe("AgentSession compaction characterization", () => {
 		);
 	});
 
-	it("compacts successful overflow responses without retrying", async () => {
+	it("compacts successful overflow responses without retrying when Context Engine is disabled", async () => {
 		const harness = await createHarness({
-			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
+			settings: {
+				context: { enabled: false },
+				compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 },
+			},
 			models: [{ id: "faux-1", contextWindow: 1, maxTokens: 100 }],
 			extensionFactories: [
 				(agent) => {

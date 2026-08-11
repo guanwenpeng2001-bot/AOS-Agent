@@ -22,6 +22,8 @@ AOS Agent has two summarization mechanisms:
 
 Both use the same structured summary format and track file operations cumulatively. Compaction and branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
 
+Each compaction and branch-summary model call also freezes a Context Engine snapshot (`purpose: "compaction"` or `"branch_summary"`). Entry `details` may include `contextSnapshotId` and budget metadata for provenance. See [Context Engine](context.md).
+
 ## Compaction
 
 ### When It Triggers

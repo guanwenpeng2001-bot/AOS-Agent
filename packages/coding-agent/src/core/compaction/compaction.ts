@@ -30,10 +30,19 @@ import {
 // File Operation Tracking
 // ============================================================================
 
-/** Details stored in CompactionEntry.details for file tracking */
+/** Details stored in CompactionEntry.details for file tracking and Context Engine provenance */
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	/** Context Snapshot frozen for the compaction model call (metadata only). */
+	contextSnapshotId?: string;
+	/** Budget metadata from the compaction-purpose snapshot, when available. */
+	contextBudget?: {
+		contextWindow: number;
+		reserveTokens: number;
+		inputLimit: number;
+		estimatedInputTokens: number;
+	};
 }
 
 /**

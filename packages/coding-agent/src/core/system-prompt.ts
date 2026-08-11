@@ -1,8 +1,12 @@
 /**
- * System prompt construction and project context loading
+ * System prompt construction.
+ *
+ * Instruction body injection is limited to Context Engine approved
+ * `instructionBlocks`. Callers must not pass untrusted project rules here.
  */
 
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
+import type { ContextInstructionBlock } from "./context-engine.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {
@@ -18,13 +22,31 @@ export interface BuildSystemPromptOptions {
 	appendSystemPrompt?: string;
 	/** Working directory. */
 	cwd: string;
-	/** Pre-loaded context files. */
-	contextFiles?: Array<{ path: string; content: string }>;
+	/**
+	 * Context Engine approved instruction blocks (preferred).
+	 * Only these project instructions are rendered into the model system prompt.
+	 */
+	instructionBlocks?: ContextInstructionBlock[];
 	/** Pre-loaded skills. */
 	skills?: Skill[];
 }
 
-/** Build the system prompt with tools, guidelines, and context */
+function appendInstructionSection(prompt: string, blocks: ContextInstructionBlock[]): string {
+	if (blocks.length === 0) {
+		return prompt;
+	}
+	let next = prompt;
+	next += "\n\n<project_context>\n\n";
+	next += "Project-specific instructions and guidelines:\n\n";
+	for (const block of blocks) {
+		const filePath = block.path ?? block.sourceId;
+		next += `<project_instructions path="${filePath}">\n${block.content}\n</project_instructions>\n\n`;
+	}
+	next += "</project_context>\n";
+	return next;
+}
+
+/** Build the system prompt with tools, guidelines, and approved instruction blocks. */
 export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const {
 		customPrompt,
@@ -33,14 +55,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		promptGuidelines,
 		appendSystemPrompt,
 		cwd,
-		contextFiles: providedContextFiles,
 		skills: providedSkills,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
+	const instructionBlocks = options.instructionBlocks ?? [];
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
-
-	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
 	if (customPrompt) {
@@ -50,15 +70,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += appendSection;
 		}
 
-		// Append project context files
-		if (contextFiles.length > 0) {
-			prompt += "\n\n<project_context>\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
-			for (const { path: filePath, content } of contextFiles) {
-				prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
-			}
-			prompt += "</project_context>\n";
-		}
+		prompt = appendInstructionSection(prompt, instructionBlocks);
 
 		// Append skills section (only if read tool is available)
 		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
@@ -141,15 +153,7 @@ AOS Agent documentation (read only when the user asks about AOS Agent itself, it
 		prompt += appendSection;
 	}
 
-	// Append project context files
-	if (contextFiles.length > 0) {
-		prompt += "\n\n<project_context>\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
-		for (const { path: filePath, content } of contextFiles) {
-			prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
-		}
-		prompt += "</project_context>\n";
-	}
+	prompt = appendInstructionSection(prompt, instructionBlocks);
 
 	// Append skills section (only if read tool is available)
 	if (hasRead && skills.length > 0) {
