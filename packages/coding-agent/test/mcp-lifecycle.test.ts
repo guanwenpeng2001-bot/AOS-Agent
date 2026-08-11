@@ -157,6 +157,24 @@ function multiServerFactory(
 }
 
 /**
+ * Creates a fresh in-memory server + transport pair on every factory call, so a
+ * reconnected server gets a brand-new transport (and server) instead of reusing
+ * a transport that was already closed by a previous deselection.
+ */
+function freshPairFactory(opts: MockServerHandlers = {}): {
+	transportFactory: (config: MCPServerConfig) => Promise<Transport>;
+	serverCount: () => number;
+} {
+	let count = 0;
+	const transportFactory = async (config: MCPServerConfig): Promise<Transport> => {
+		count += 1;
+		const setup = createMockServerFactory(opts);
+		return setup.transportFactory(config);
+	};
+	return { transportFactory, serverCount: () => count };
+}
+
+/**
  * Transport wrapper that holds a close until released, so tests can observe
  * that a deselection promise does not settle before the transport is actually
  * released and that a removed server's transport is torn down exactly once.
@@ -219,6 +237,61 @@ class GatedCloseTransport implements Transport {
 			await this.closeGate;
 		}
 		await this.inner.close();
+	}
+}
+
+/**
+ * Transport wrapper that intercepts the lifecycle's onclose handler and lets the
+ * test fire it manually, simulating a transport whose close notification arrives
+ * asynchronously long after close() returned (like a delayed child-process
+ * exit), so a stale transport can be proven not to revive a reconnected
+ * lifecycle. Message and error handlers are forwarded to the inner transport so
+ * the SDK client and lifecycle install their handlers on it as usual.
+ */
+class ManualOnCloseTransport implements Transport {
+	private readonly inner: Transport;
+	private closeHandler: Transport["onclose"] | undefined;
+	closeInvocations = 0;
+
+	constructor(inner: Transport) {
+		this.inner = inner;
+	}
+
+	get onclose(): Transport["onclose"] | undefined {
+		return this.closeHandler;
+	}
+	set onclose(value: Transport["onclose"] | undefined) {
+		this.closeHandler = value;
+	}
+	get onerror(): Transport["onerror"] | undefined {
+		return this.inner.onerror;
+	}
+	set onerror(value: Transport["onerror"] | undefined) {
+		this.inner.onerror = value;
+	}
+	get onmessage(): Transport["onmessage"] | undefined {
+		return this.inner.onmessage;
+	}
+	set onmessage(value: Transport["onmessage"] | undefined) {
+		this.inner.onmessage = value;
+	}
+
+	async start(): Promise<void> {
+		return this.inner.start();
+	}
+
+	async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
+		return this.inner.send(message, options);
+	}
+
+	async close(): Promise<void> {
+		this.closeInvocations += 1;
+		await this.inner.close();
+	}
+
+	/** Fires the lifecycle's onclose handler as if the transport finally noticed it closed. */
+	fireClose(): void {
+		this.closeHandler?.();
 	}
 }
 
@@ -479,6 +552,33 @@ describe("MCP lifecycle state machine with in-memory transport", () => {
 		await closePromise;
 		await expect(connectPromise).rejects.toMatchObject({ code: "capability_mcp_unavailable" });
 		expect(lifecycle.state).toBe("closed");
+	});
+
+	it("allows a terminal closed lifecycle to connect again with a fresh transport", async () => {
+		const factory = freshPairFactory({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+		});
+		const lifecycle = new MCPServerLifecycle(
+			{ ...STDIO_CONFIG, id: "docs" },
+			{ transportFactory: factory.transportFactory },
+		);
+		serverCleanups.push(async () => lifecycle.forceClose().catch(() => undefined));
+
+		await lifecycle.connect();
+		expect(lifecycle.state).toBe("ready");
+		expect(factory.serverCount()).toBe(1);
+
+		await lifecycle.close();
+		expect(lifecycle.state).toBe("closed");
+
+		// A server that reached terminal closed reconnects on an explicit connect
+		// with a fresh transport instead of staying stuck closed.
+		await lifecycle.connect();
+		expect(lifecycle.state).toBe("ready");
+		expect(factory.serverCount()).toBe(2);
+		const tools = await lifecycle.listTools();
+		expect(tools.map((tool) => tool.name)).toEqual(["list"]);
+		await lifecycle.close();
 	});
 
 	it("becomes unavailable when the transport start fails and never retains the raw error", async () => {
@@ -1113,5 +1213,118 @@ describe("deselection and selection updates", () => {
 		expect(manager.isSelected("drop")).toBe(true);
 		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
 		expect(gated.closeCount()).toBe(1);
+	});
+
+	it("reconnects a deselected closed server with a fresh transport when it is selected again and explicitly connected", async () => {
+		const setup = freshPairFactory({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+		});
+		const gated = gateCloseFactory(setup.transportFactory);
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{ selected: ["keep", "drop"], transportFactory: gated.transportFactory },
+		);
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready" });
+
+		// Deselect: the close fully completes and the server reaches terminal closed.
+		const deselect = manager.setSelectedServerIds(["keep"]);
+		await waitUntil(() => gated.closeCount() >= 1);
+		gated.releaseAll();
+		await deselect;
+		expect(manager.isSelected("drop")).toBe(false);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed", availability: "unavailable" });
+		expect(gated.closeCount()).toBe(1);
+
+		// Re-select and explicitly connect: a fresh transport backs the new
+		// connection and the old transport is neither reused nor closed again.
+		await manager.setSelectedServerIds(["keep", "drop"]);
+		expect(manager.isSelected("drop")).toBe(true);
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready", availability: "available" });
+		expect(gated.transportCount()).toBe(2);
+		expect(gated.closeCount()).toBe(1);
+		const tools = await manager.listTools("drop");
+		expect(tools.map((tool) => tool.name)).toEqual(["list"]);
+
+		gated.releaseAll();
+	});
+
+	it("reconnects with a fresh transport after a close/reselect race completes the invoked close", async () => {
+		const setup = freshPairFactory({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+		});
+		const gated = gateCloseFactory(setup.transportFactory);
+		const manager = managerWith(
+			[
+				{ id: "keep", transport: "stdio", command: "node" },
+				{ id: "drop", transport: "stdio", command: "node" },
+			],
+			{ selected: ["keep", "drop"], transportFactory: gated.transportFactory },
+		);
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready" });
+
+		// Deselect begins the close; re-selecting mid-close completes it and leaves
+		// the server closed (the manager never silently reopens it).
+		const first = manager.setSelectedServerIds(["keep"]);
+		await waitUntil(() => gated.closeCount() >= 1);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closing" });
+		const reselect = manager.setSelectedServerIds(["keep", "drop"]);
+		gated.releaseAll();
+		await first;
+		await reselect;
+		expect(manager.isSelected("drop")).toBe(true);
+		expect(manager.getStatus("drop")).toMatchObject({ state: "closed" });
+		expect(gated.closeCount()).toBe(1);
+
+		// An explicit connect after the closed server is selected again must build
+		// a fresh transport instead of being stuck on the terminal closed state.
+		await manager.connect("drop");
+		expect(manager.getStatus("drop")).toMatchObject({ state: "ready", availability: "available" });
+		expect(gated.transportCount()).toBe(2);
+		expect(gated.closeCount()).toBe(1);
+		const tools = await manager.listTools("drop");
+		expect(tools.map((tool) => tool.name)).toEqual(["list"]);
+
+		gated.releaseAll();
+	});
+
+	it("ignores a stale transport's late close notification so it cannot revive into the fresh connection", async () => {
+		const inner = freshPairFactory({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+		});
+		const transports: ManualOnCloseTransport[] = [];
+		const manager = managerWith([{ id: "docs", transport: "stdio", command: "node" }], {
+			selected: ["docs"],
+			transportFactory: async (config) => {
+				const transport = new ManualOnCloseTransport(await inner.transportFactory(config));
+				transports.push(transport);
+				return transport;
+			},
+		});
+
+		await manager.connect("docs");
+		expect(manager.getStatus("docs")).toMatchObject({ state: "ready" });
+
+		// Deselect: the close fully completes, but the transport's close
+		// notification is delivered asynchronously (as with a delayed child-process
+		// exit) so it has not fired by the time the lifecycle reaches terminal closed.
+		await manager.setSelectedServerIds([]);
+		expect(manager.getStatus("docs")).toMatchObject({ state: "closed" });
+
+		// Re-select and reconnect: a fresh transport backs the new connection.
+		await manager.setSelectedServerIds(["docs"]);
+		await manager.connect("docs");
+		expect(manager.getStatus("docs")).toMatchObject({ state: "ready", availability: "available" });
+		expect(transports).toHaveLength(2);
+
+		// The old transport's late close must not degrade the fresh connection.
+		transports[0].fireClose();
+		await flush();
+		expect(manager.getStatus("docs")).toMatchObject({ state: "ready", availability: "available" });
 	});
 });

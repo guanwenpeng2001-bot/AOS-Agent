@@ -135,6 +135,8 @@ export class MCPServerLifecycle {
 	private client: Client | undefined;
 	/** Client created for a connect that has not settled; close must not orphan it. */
 	private pendingClient: Client | undefined;
+	/** The transport backing the current connection; a stale closed transport is ignored. */
+	private transport: Transport | undefined;
 	private connectionState: MCPConnectionState;
 	private connectPromise: Promise<void> | undefined;
 	private readonly inflightCalls = new Set<AbortController>();
@@ -174,15 +176,18 @@ export class MCPServerLifecycle {
 	}
 
 	/**
-	 * Connects and initializes the server. Idempotent once `ready`. Throws a
-	 * redacted {@link MCPError} on failure and transitions to `unavailable` (or
-	 * records the auth-required classification).
+	 * Connects and initializes the server. Idempotent once `ready`. A server that
+	 * previously reached terminal `closed` — for example after a profile
+	 * deselection closed it — reconnects here with a fresh transport, so it can be
+	 * selected and used again later. Throws a redacted {@link MCPError} on failure
+	 * and transitions to `unavailable` (or records the auth-required
+	 * classification).
 	 */
 	async connect(): Promise<void> {
 		if (this.state === "ready") {
 			return;
 		}
-		if (this.state === "closing" || this.state === "closed") {
+		if (this.state === "closing") {
 			throw this.failure("unavailable");
 		}
 		if (this.connectPromise !== undefined) {
@@ -339,6 +344,9 @@ export class MCPServerLifecycle {
 				// best-effort close; the state is still finalized below
 			}
 		}
+		// Drop the transport reference so a late close notification from the just-
+		// closed transport cannot revive into a subsequent reconnected connection.
+		this.transport = undefined;
 		this.setState("closed");
 	}
 
@@ -362,13 +370,23 @@ export class MCPServerLifecycle {
 	}
 
 	private chainTransportHandlers(transport: Transport): void {
+		this.transport = transport;
 		const originalOnError = transport.onerror;
 		const originalOnClose = transport.onclose;
+		// Only the transport backing the current connection may move the state
+		// machine; a closed transport's late events must not revive into a fresh
+		// reconnected lifecycle.
 		transport.onerror = (error: Error): void => {
+			if (this.transport !== transport) {
+				return;
+			}
 			originalOnError?.(error);
 			this.markDegraded();
 		};
 		transport.onclose = (): void => {
+			if (this.transport !== transport) {
+				return;
+			}
 			originalOnClose?.();
 			this.handleTransportClose();
 		};
