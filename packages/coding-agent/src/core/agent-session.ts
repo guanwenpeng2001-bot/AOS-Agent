@@ -1584,7 +1584,10 @@ export class AgentSession {
 		if (!this.settingsManager.getContextSettings().enabled || !this.model) {
 			return;
 		}
-		const sessionMessages = this.sessionManager.buildSessionContext().messages;
+		// Pre-prompt compaction may intentionally remove a retriable overflow
+		// response from agent state after rebuilding the persisted session context.
+		// Validate the exact state that the next Agent run will use.
+		const sessionMessages = this.agent.state.messages;
 		const sources = await this._collectAgentTurnContextSources(
 			[...sessionMessages, ...turnMessages],
 			this._pendingExtensionContextSources,

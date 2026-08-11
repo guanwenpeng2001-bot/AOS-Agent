@@ -35,7 +35,12 @@ describe("issue #7253: manual compaction during an active response", () => {
 
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
-			settings: { compaction: { enabled: true, reserveTokens: 999, keepRecentTokens: 2 } },
+			settings: {
+				// Keep the legacy compaction threshold at 999 while giving Context
+				// Engine the model's actual 100-token output reserve.
+				compaction: { enabled: true, reserveTokens: 999, keepRecentTokens: 2 },
+				context: { reserveTokens: 100 },
+			},
 			tools: [createNoopTool()],
 			extensionFactories: [
 				(agent) => {
@@ -51,6 +56,9 @@ describe("issue #7253: manual compaction during an active response", () => {
 			],
 		});
 		harnesses.push(harness);
+		// Static prompt text is unrelated to this control-flow regression.
+		harness.session.resourceLoader.getSystemPrompt = () => "test";
+		harness.session.setActiveToolsByName(harness.session.getActiveToolNames());
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
 			async () => {
