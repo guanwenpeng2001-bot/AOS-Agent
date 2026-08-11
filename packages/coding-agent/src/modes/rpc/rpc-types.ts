@@ -7,6 +7,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
+import type { CapabilityBindingView } from "../../core/capability-registry.ts";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -77,9 +78,12 @@ export type RpcCommand =
 	// Context Engine (read-only inspection; never returns raw source bodies)
 	| { id?: string; type: "get_context"; snapshotId?: string }
 
+	// Capability inspection (ordinary, read-only; redacted output only)
+	| { id?: string; type: "get_capabilities"; bindingId?: string }
+
 	// Automation Host (protocolVersion 1)
 	| { id?: string; type: "initialize"; protocolVersion: number }
-	| { id?: string; type: "run.start"; message: string; images?: ImageContent[] }
+	| { id?: string; type: "run.start"; message: string; images?: ImageContent[]; capabilityProfile?: string }
 	| { id?: string; type: "run.get"; runId: string }
 	| { id?: string; type: "run.cancel"; runId: string }
 	| {
@@ -89,6 +93,7 @@ export type RpcCommand =
 			sourceRunId: string;
 			message: string;
 			images?: ImageContent[];
+			capabilityProfile?: string;
 	  };
 
 // ============================================================================
@@ -255,6 +260,15 @@ export type RpcResponse =
 			data: GetContextData;
 	  }
 
+	// Capability inspection
+	| {
+			id?: string;
+			type: "response";
+			command: "get_capabilities";
+			success: true;
+			data: GetCapabilitiesData;
+	  }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
@@ -264,6 +278,18 @@ export interface GetContextData {
 	drift: ContextSourceDrift[];
 	/** True when snapshotId was omitted and the payload is a non-persisted preview. */
 	preview: boolean;
+}
+
+/**
+ * Redacted capability inspection payload (metadata only). Never carries
+ * environment values, header values, tokens, unredacted URLs, MCP server
+ * instructions, or tool call payloads.
+ */
+export interface GetCapabilitiesData {
+	/** Redacted view of the current frozen binding, or null when none is resolved. */
+	binding: CapabilityBindingView | null;
+	/** Redacted binding history folded from the Session's capability.binding ledger. */
+	bindings: CapabilityBindingView[];
 }
 
 // ============================================================================
@@ -396,3 +422,6 @@ export type {
 	RunStreamEvent,
 	RunTerminalStatus,
 } from "../../core/run-lifecycle.ts";
+
+// Re-export the redacted capability binding view consumed by get_capabilities.
+export type { CapabilityBindingView } from "../../core/capability-registry.ts";

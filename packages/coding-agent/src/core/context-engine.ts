@@ -116,6 +116,12 @@ export interface ContextSourceInput {
 	};
 	/** Memory / extension reference IDs recorded on receipts without body text. */
 	refId?: string;
+	/** Stable capability descriptor id for a binding-derived source (e.g. provider tool schema, skill index). */
+	capabilityId?: string;
+	/** Capability descriptor revision for a binding-derived source. */
+	capabilityRevision?: string;
+	/** Capability binding id that selected this source. */
+	capabilityBindingId?: string;
 	/**
 	 * Where the already-resolved source is injected. System is the default.
 	 * Message sources must supply the exact message that is appended to the
@@ -172,6 +178,12 @@ export interface ContextSourceReceipt {
 	reason?: ContextDispositionReason;
 	/** Memory or extension reference without body text. */
 	refId?: string;
+	/** Stable capability descriptor id for a binding-derived source. */
+	capabilityId?: string;
+	/** Capability descriptor revision for a binding-derived source. */
+	capabilityRevision?: string;
+	/** Capability binding id that selected this source. */
+	capabilityBindingId?: string;
 }
 
 export interface ContextBudget {
@@ -517,6 +529,15 @@ function buildReceipt(
 	}
 	if (source.refId !== undefined) {
 		receipt.refId = source.refId;
+	}
+	if (source.capabilityId !== undefined) {
+		receipt.capabilityId = source.capabilityId;
+	}
+	if (source.capabilityRevision !== undefined) {
+		receipt.capabilityRevision = source.capabilityRevision;
+	}
+	if (source.capabilityBindingId !== undefined) {
+		receipt.capabilityBindingId = source.capabilityBindingId;
 	}
 	return receipt;
 }

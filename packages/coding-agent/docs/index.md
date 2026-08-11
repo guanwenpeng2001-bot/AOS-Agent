@@ -26,6 +26,7 @@ Then run `aos` in the project you want to work on. See [Quickstart](quickstart.m
 - [Settings](settings.md) — global and project settings.
 - [Sessions](sessions.md) — session management, branching, and tree navigation.
 - [Context Engine](context.md) — governed context planning, snapshots, trust, budgets, and explicit memory.
+- [Capabilities and MCP](capabilities.md) — capability profiles, MCP trust, lifecycle, inspection, and audit.
 - [Compaction](compaction.md) — context compaction and branch summarization.
 
 ## Customization

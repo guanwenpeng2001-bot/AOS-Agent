@@ -23,7 +23,7 @@ import { loadPromptTemplates } from "./prompt-templates.ts";
 import type { ContextScope, ContextSourceInput, ContextTrust } from "./context-engine.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
-import { formatSkillsForPrompt, loadSkills } from "./skills.ts";
+import { loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
 import { resetTimings } from "./timings.ts";
 
@@ -453,19 +453,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			inputs.push(projectContextSourceToInput(source));
 		}
 
-		if (this.skills.length > 0) {
-			// This is the exact section injected by Context Engine, not a parallel
-			// metadata-only index. Its digest and budget therefore describe model input.
-			const skillIndex = formatSkillsForPrompt(this.skills);
-			inputs.push({
-				sourceId: "capability_index:skills",
-				kind: "capability_index",
-				scope: "session",
-				trust: "builtin",
-				content: skillIndex,
-				required: false,
-			});
-		}
+		// The capability_index skill source is intentionally NOT built here: the
+		// Capability Registry binding decides which skills are exposed, and
+		// AgentSession injects the binding-filtered skill index into the Context
+		// Engine. This loader keeps discovery + source/trust metadata only.
 
 		return inputs;
 	}

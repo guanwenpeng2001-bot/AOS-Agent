@@ -16,6 +16,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	AutomationError,
 	AutomationErrorCode,
+	GetCapabilitiesData,
 	GetContextData,
 	InitializeData,
 	RpcAutomationResponse,
@@ -567,9 +568,17 @@ export class RpcClient {
 	/**
 	 * Start a new automation run. Emits run.started/run.event/terminal records on
 	 * the run event stream (see onRunEvent()).
+	 * @param capabilityProfile - Optional named capability profile; defaults to the
+	 * session's configured default profile. The Automation Host fails the run when
+	 * the profile is unknown or would require an ask approval.
 	 */
-	async startRun(message: string, images?: ImageContent[]): Promise<RunAcceptedData> {
-		const response = await this.sendAutomation({ type: "run.start", message, images });
+	async startRun(message: string, images?: ImageContent[], capabilityProfile?: string): Promise<RunAcceptedData> {
+		const response = await this.sendAutomation({
+			type: "run.start",
+			message,
+			images,
+			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
 
@@ -593,15 +602,42 @@ export class RpcClient {
 
 	/**
 	 * Resume a source run in the restored session as a new attempt.
+	 * @param capabilityProfile - Optional named capability profile for the new
+	 * attempt's successor binding; defaults to the session's default profile.
 	 */
 	async resumeRun(
 		sessionPath: string,
 		sourceRunId: string,
 		message: string,
 		images?: ImageContent[],
+		capabilityProfile?: string,
 	): Promise<RunAcceptedData> {
-		const response = await this.sendAutomation({ type: "run.resume", sessionPath, sourceRunId, message, images });
+		const response = await this.sendAutomation({
+			type: "run.resume",
+			sessionPath,
+			sourceRunId,
+			message,
+			images,
+			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+		});
 		return this.getAutomationData<RunAcceptedData>(response);
+	}
+
+	/**
+	 * Read-only capability inspection. Returns redacted binding metadata only: the
+	 * current frozen binding (when one is resolved) and the binding history folded
+	 * from the Session ledger. No credentials, header values, tokens, MCP config,
+	 * server instructions, or tool call payloads are ever returned. Available
+	 * without Automation Host initialize.
+	 * @param bindingId - Optional binding id; when given, only that binding's view
+	 * is returned and an unknown id rejects with a plain Error.
+	 */
+	async getCapabilities(bindingId?: string): Promise<GetCapabilitiesData> {
+		const response = await this.send({
+			type: "get_capabilities",
+			...(bindingId !== undefined ? { bindingId } : {}),
+		});
+		return this.getData(response);
 	}
 
 	// =========================================================================

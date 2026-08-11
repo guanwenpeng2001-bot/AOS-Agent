@@ -37,6 +37,15 @@ export function isTerminalStatus(status: RunStatus): status is RunTerminalStatus
 export const RUN_LEDGER_SCHEMA_VERSION = 1;
 export const RUN_LEDGER_CUSTOM_TYPE = "automation.run";
 
+/**
+ * Session custom entry type for the frozen capability binding of a run. Written
+ * once per accepted run that carries a binding; folded back into a redacted
+ * binding history so a restarted host can audit which capability binding each
+ * attempt used and can verify a resume's successor binding.
+ */
+export const CAPABILITY_BINDING_SCHEMA_VERSION = 1;
+export const CAPABILITY_BINDING_CUSTOM_TYPE = "capability.binding";
+
 export interface RunModelReference {
 	provider: string;
 	id: string;
@@ -47,6 +56,11 @@ export interface RunRecord {
 	id: RunId;
 	sessionId: SessionId;
 	sourceRunId?: RunId;
+	/**
+	 * Binding id of the source run this attempt resumes from. Set on run.resume
+	 * when the source run's receipt carried a capabilityBindingId.
+	 */
+	previousBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
@@ -84,6 +98,11 @@ export interface RunReceipt {
 	 * Additive; older ledgers omit it. Metadata-only — never carries raw context bodies.
 	 */
 	contextSnapshotId?: string;
+	/**
+	 * Id of the frozen CapabilityBinding this run used. Additive; older ledgers
+	 * omit it. Metadata-only — never carries credentials, headers, or MCP config.
+	 */
+	capabilityBindingId?: string;
 }
 
 export type RunStreamEvent =
@@ -97,6 +116,26 @@ export type PersistedRunLedgerEntry =
 	| { schemaVersion: 1; kind: "accepted"; record: RunRecord }
 	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
 	| { schemaVersion: 1; kind: "terminal"; receipt: RunReceipt; endedAt: string };
+
+/**
+ * Metadata-only capability binding snapshot persisted as a Session custom entry.
+ * Mirrors the shape of the Registry's redacted binding view; it deliberately
+ * carries no environment values, header values, tokens, MCP config, server
+ * instructions, or tool call payloads.
+ */
+export interface CapabilityBindingLedgerRecord {
+	id: string;
+	profile: string;
+	createdAt: string;
+	descriptors: ReadonlyArray<{ id: string; revision: string; exposedToolName?: string }>;
+	decisionSummary: { allowed: number; awaitingApproval: number; denied: number };
+	toolAllowlist: ReadonlyArray<string>;
+}
+
+export interface PersistedCapabilityBindingEntry {
+	schemaVersion: 1;
+	binding: CapabilityBindingLedgerRecord;
+}
 
 // ---- Errors ----------------------------------------------------------------
 
@@ -112,6 +151,17 @@ export type AutomationErrorCode =
 	| "source_run_not_resumable"
 	| "session_switch_cancelled"
 	| "ledger_persistence_failed"
+	// Capability preflight / resume failures. These keep profile, connection,
+	// authorization and binding problems in the structured Automation Host error
+	// contract instead of degrading them into generic model failures.
+	| "capability_profile_not_found"
+	| "capability_denied"
+	| "capability_approval_required"
+	| "capability_name_conflict"
+	| "capability_mcp_connect_failed"
+	| "capability_mcp_auth_required"
+	| "capability_mcp_unavailable"
+	| "capability_binding_unavailable"
 	// Terminal run.failed receipt code; not a command-level error.
 	| "model_error";
 
@@ -125,6 +175,59 @@ export function createAutomationError(code: AutomationErrorCode, message: string
 	return { code, message, retryable };
 }
 
+export function isAutomationErrorCode(value: unknown): value is AutomationErrorCode {
+	return (
+		value === "unsupported_protocol_version" ||
+		value === "host_not_initialized" ||
+		value === "session_busy" ||
+		value === "start_rejected" ||
+		value === "run_not_found" ||
+		value === "run_not_cancellable" ||
+		value === "session_not_persistent" ||
+		value === "source_run_not_found" ||
+		value === "source_run_not_resumable" ||
+		value === "session_switch_cancelled" ||
+		value === "ledger_persistence_failed" ||
+		value === "capability_profile_not_found" ||
+		value === "capability_denied" ||
+		value === "capability_approval_required" ||
+		value === "capability_name_conflict" ||
+		value === "capability_mcp_connect_failed" ||
+		value === "capability_mcp_auth_required" ||
+		value === "capability_mcp_unavailable" ||
+		value === "capability_binding_unavailable" ||
+		value === "model_error"
+	);
+}
+
+// ---- Secret redaction ---------------------------------------------------------
+
+/** Scheme with optional URL userinfo (user:pass@) — group 1 is kept, group 2 is the host/path. */
+const URL_USERINFO_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*)/gi;
+/** Well-known secret assignments such as `token=...` / `authorization: Bearer <jwt>` / `api_key=...`. */
+const SECRET_ASSIGNMENT_PATTERN = /\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi;
+/** A bare `Bearer <token>` not preceded by a secret key assignment. */
+const BEARER_TOKEN_PATTERN = /\bbearer\s+[^\s"'`,;]+/gi;
+
+/**
+ * Scrub obvious secrets from free text so error messages serialized to stdout
+ * never echo credentials, header values, URL userinfo, or Bearer tokens. The
+ * entire secret value is removed or replaced — it is never left partially
+ * visible. Conservative: only well-known secret shapes are masked; ordinary
+ * messages pass through unchanged.
+ */
+export function redactErrorText(text: string): string {
+	const urlRedacted = text.replace(URL_USERINFO_PATTERN, "$1$2");
+	const assignmentsRedacted = urlRedacted.replace(SECRET_ASSIGNMENT_PATTERN, (_match, key: string) => `${key}=[redacted]`);
+	return assignmentsRedacted.replace(BEARER_TOKEN_PATTERN, "[redacted]");
+}
+
+/** Clone an AutomationError with a secret-free message. */
+export function redactAutomationError(error: AutomationError): AutomationError {
+	const message = redactErrorText(error.message);
+	return message === error.message ? error : createAutomationError(error.code, message, error.retryable);
+}
+
 // ---- Diagnostics ------------------------------------------------------------
 
 export type LedgerDiagnostic =
@@ -132,7 +235,8 @@ export type LedgerDiagnostic =
 	| { kind: "unknown-schema-version"; entryId: string; version: number }
 	| { kind: "unknown-ledger-kind"; entryId: string; ledgerKind: string }
 	| { kind: "orphan-fact"; entryId: string; runId: RunId; fact: "started" | "terminal" }
-	| { kind: "duplicate-terminal"; runId: RunId };
+	| { kind: "duplicate-terminal"; runId: RunId }
+	| { kind: "malformed-binding"; entryId: string; detail: string };
 
 export function formatDiagnostic(diag: LedgerDiagnostic): string {
 	switch (diag.kind) {
@@ -146,6 +250,8 @@ export function formatDiagnostic(diag: LedgerDiagnostic): string {
 			return `automation.run ledger: ${diag.fact} fact for unknown run ${diag.runId} (entry ${diag.entryId}); skipped`;
 		case "duplicate-terminal":
 			return `automation.run: run ${diag.runId} is already terminal; second terminal ignored`;
+		case "malformed-binding":
+			return `capability.binding ledger: custom entry ${diag.entryId} is malformed (${diag.detail}); skipped`;
 	}
 }
 
@@ -168,8 +274,15 @@ export interface RunResult {
 export interface AcceptOptions {
 	runId?: RunId;
 	sourceRunId?: RunId;
+	/** Binding id of the source run this attempt resumes from. */
+	previousBindingId?: string;
 	attempt: number;
 	model: RunModelReference;
+	/**
+	 * Metadata-only binding snapshot to persist as a capability.binding custom
+	 * entry. Its id becomes the run receipt's capabilityBindingId.
+	 */
+	capabilityBinding?: CapabilityBindingLedgerRecord;
 }
 
 export interface RunReservation {
@@ -235,6 +348,10 @@ export interface RunLifecycleCoordinator {
 	getRun(runId: RunId): RunResult | undefined;
 	getActiveRun(): RunResult | undefined;
 	rebuildIndex(): ReadonlyMap<RunId, RunResult>;
+	/** Fold the Session's capability.binding custom entries into a redacted history. */
+	getCapabilityBindings(): ReadonlyMap<string, CapabilityBindingLedgerRecord>;
+	/** Append a schemaVersion 1 capability.binding custom entry. */
+	persistCapabilityBinding(binding: CapabilityBindingLedgerRecord): void;
 	diagnostics(): readonly LedgerDiagnostic[];
 }
 
@@ -272,23 +389,6 @@ function isRunTerminalStatus(value: unknown): value is RunTerminalStatus {
 	return value === "completed" || value === "failed" || value === "cancelled";
 }
 
-function isAutomationErrorCode(value: unknown): value is AutomationErrorCode {
-	return (
-		value === "unsupported_protocol_version" ||
-		value === "host_not_initialized" ||
-		value === "session_busy" ||
-		value === "start_rejected" ||
-		value === "run_not_found" ||
-		value === "run_not_cancellable" ||
-		value === "session_not_persistent" ||
-		value === "source_run_not_found" ||
-		value === "source_run_not_resumable" ||
-		value === "session_switch_cancelled" ||
-		value === "ledger_persistence_failed" ||
-		value === "model_error"
-	);
-}
-
 function isAutomationError(value: unknown): value is AutomationError {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
@@ -315,6 +415,7 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (!isRunStatus(obj.status)) return false;
 	if (!isRunModelReference(obj.model)) return false;
 	if (obj.sourceRunId !== undefined && typeof obj.sourceRunId !== "string") return false;
+	if (obj.previousBindingId !== undefined && typeof obj.previousBindingId !== "string") return false;
 	if (obj.startedAt !== undefined && typeof obj.startedAt !== "string") return false;
 	if (obj.endedAt !== undefined && typeof obj.endedAt !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
@@ -331,6 +432,7 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (obj.sessionFile !== undefined && typeof obj.sessionFile !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
 	if (obj.contextSnapshotId !== undefined && typeof obj.contextSnapshotId !== "string") return false;
+	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
 	return true;
 }
 
@@ -381,6 +483,79 @@ function toDiagnostic(parsed: Extract<ParsedLedgerEntry, { ok: false }>, entryId
 	return { kind: "unknown-ledger-kind", entryId, ledgerKind: parsed.kind };
 }
 
+// ---- Capability binding ledger parsing -----------------------------------------
+
+function isCapabilityBindingLedgerRecord(value: unknown): value is CapabilityBindingLedgerRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const obj = value as Record<string, unknown>;
+	if (typeof obj.id !== "string" || typeof obj.profile !== "string" || typeof obj.createdAt !== "string") return false;
+	if (!Array.isArray(obj.descriptors)) return false;
+	for (const descriptor of obj.descriptors) {
+		if (typeof descriptor !== "object" || descriptor === null) return false;
+		const ref = descriptor as Record<string, unknown>;
+		if (typeof ref.id !== "string" || typeof ref.revision !== "string") return false;
+		if (ref.exposedToolName !== undefined && typeof ref.exposedToolName !== "string") return false;
+	}
+	const summary = obj.decisionSummary;
+	if (typeof summary !== "object" || summary === null) return false;
+	const decisionSummary = summary as Record<string, unknown>;
+	if (
+		typeof decisionSummary.allowed !== "number" ||
+		typeof decisionSummary.awaitingApproval !== "number" ||
+		typeof decisionSummary.denied !== "number"
+	) {
+		return false;
+	}
+	if (!Array.isArray(obj.toolAllowlist) || obj.toolAllowlist.some((name) => typeof name !== "string")) return false;
+	return true;
+}
+
+function parseCapabilityBindingEntry(
+	value: unknown,
+	entryId: string,
+): { ok: true; entry: PersistedCapabilityBindingEntry } | { ok: false; diag: { kind: "malformed-binding"; entryId: string; detail: string } } {
+	if (typeof value !== "object" || value === null) {
+		return { ok: false, diag: { kind: "malformed-binding", entryId, detail: "data is not an object" } };
+	}
+	const obj = value as Record<string, unknown>;
+	if (obj.schemaVersion !== CAPABILITY_BINDING_SCHEMA_VERSION) {
+		return {
+			ok: false,
+			diag: {
+				kind: "malformed-binding",
+				entryId,
+				detail: `schemaVersion is not ${CAPABILITY_BINDING_SCHEMA_VERSION}`,
+			},
+		};
+	}
+	if (!isCapabilityBindingLedgerRecord(obj.binding)) {
+		return { ok: false, diag: { kind: "malformed-binding", entryId, detail: "binding is invalid" } };
+	}
+	return { ok: true, entry: { schemaVersion: 1, binding: obj.binding } };
+}
+
+/**
+ * Fold the Session's `capability.binding` custom entries into a redacted binding
+ * history keyed by binding id (later records for the same id win). Malformed
+ * entries are skipped and reported through the optional diagnostics sink.
+ */
+export function foldCapabilityBindingEntries(
+	entries: ReadonlyArray<SessionEntry>,
+	diagnostics?: (diag: LedgerDiagnostic) => void,
+): ReadonlyMap<string, CapabilityBindingLedgerRecord> {
+	const bindings = new Map<string, CapabilityBindingLedgerRecord>();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== CAPABILITY_BINDING_CUSTOM_TYPE) continue;
+		const parsed = parseCapabilityBindingEntry(entry.data, entry.id);
+		if (!parsed.ok) {
+			diagnostics?.(parsed.diag);
+			continue;
+		}
+		bindings.set(parsed.entry.binding.id, parsed.entry.binding);
+	}
+	return bindings;
+}
+
 // ---- Text and usage helpers --------------------------------------------------
 
 function extractTextContent(content: unknown): string {
@@ -405,7 +580,9 @@ function nonNegative(value: number): number {
 }
 
 function cloneAutomationError(error: AutomationError): AutomationError {
-	return { code: error.code, message: error.message, retryable: error.retryable };
+	// Always produce a fresh, secret-free object so replay never re-exposes a raw
+	// terminalError that may have been persisted by an older version.
+	return redactAutomationError({ code: error.code, message: error.message, retryable: error.retryable });
 }
 
 function cloneRunRecord(record: RunRecord): RunRecord {
@@ -417,6 +594,7 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		model: { ...record.model },
 	};
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
+	if (record.previousBindingId !== undefined) copy.previousBindingId = record.previousBindingId;
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = cloneAutomationError(record.terminalError);
@@ -434,6 +612,7 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 	if (receipt.sessionFile !== undefined) copy.sessionFile = receipt.sessionFile;
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
 	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
+	if (receipt.capabilityBindingId !== undefined) copy.capabilityBindingId = receipt.capabilityBindingId;
 	return copy;
 }
 
@@ -445,6 +624,7 @@ class RunHandleImpl implements RunHandle {
 
 	private readonly coordinator: RunLifecycleCoordinatorImpl;
 	private readonly _record: RunRecord;
+	private readonly _capabilityBindingId: string | undefined;
 	private _sequence = 0;
 	private _cancelled = false;
 	private _finalText = "";
@@ -457,6 +637,7 @@ class RunHandleImpl implements RunHandle {
 		this.coordinator = coordinator;
 		this.sessionId = sessionId;
 		this.runId = options.runId ?? coordinator.nextRunId();
+		this._capabilityBindingId = options.capabilityBinding?.id;
 		this._record = {
 			id: this.runId,
 			sessionId,
@@ -466,6 +647,9 @@ class RunHandleImpl implements RunHandle {
 		};
 		if (options.sourceRunId !== undefined) {
 			this._record.sourceRunId = options.sourceRunId;
+		}
+		if (options.previousBindingId !== undefined) {
+			this._record.previousBindingId = options.previousBindingId;
 		}
 	}
 
@@ -548,6 +732,9 @@ class RunHandleImpl implements RunHandle {
 			this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
 			return undefined;
 		}
+		// Redact the terminal error once so the persisted receipt, the retained
+		// record, and the emitted terminal event all carry a secret-free message.
+		const terminalError = input.terminalError !== undefined ? redactAutomationError(input.terminalError) : undefined;
 		const status: RunTerminalStatus = this._cancelled ? "cancelled" : input.outcome;
 		const endedAt = this.coordinator.now();
 		const receipt: RunReceipt = {
@@ -560,14 +747,16 @@ class RunHandleImpl implements RunHandle {
 		if (finalText !== "") receipt.finalText = finalText;
 		const sessionFile = this.coordinator.session.getSessionFile();
 		if (sessionFile !== undefined) receipt.sessionFile = sessionFile;
-		if (input.terminalError !== undefined) receipt.terminalError = input.terminalError;
+		if (terminalError !== undefined) receipt.terminalError = terminalError;
 		const contextSnapshotId = input.contextSnapshotId;
 		if (contextSnapshotId !== undefined) receipt.contextSnapshotId = contextSnapshotId;
+		const capabilityBindingId = this._capabilityBindingId;
+		if (capabilityBindingId !== undefined) receipt.capabilityBindingId = capabilityBindingId;
 		this.coordinator.persist({ schemaVersion: 1, kind: "terminal", receipt, endedAt });
 		this._receipt = receipt;
 		this._record.status = status;
 		this._record.endedAt = endedAt;
-		if (input.terminalError !== undefined) this._record.terminalError = input.terminalError;
+		if (terminalError !== undefined) this._record.terminalError = terminalError;
 		const event = this.emitTerminal(status, receipt);
 		this.coordinator.onTerminal(this);
 		return event;
@@ -666,6 +855,9 @@ class RunReservationImpl implements RunReservation {
 		const run = new RunHandleImpl(this.coordinator, this.sessionId, options);
 		try {
 			this.coordinator.persist({ schemaVersion: 1, kind: "accepted", record: run.record });
+			if (options.capabilityBinding !== undefined) {
+				this.coordinator.persistCapabilityBinding(options.capabilityBinding);
+			}
 		} catch (error) {
 			// Consume and release the held reservation so the session is free for the next reserve.
 			this.consumed = true;
@@ -699,6 +891,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly runs = new Map<RunId, RunHandleImpl>();
 	private readonly diagnosedEntries = new Set<string>();
 	private readonly _diagnostics: LedgerDiagnostic[] = [];
+	private _capabilityBindings = new Map<string, CapabilityBindingLedgerRecord>();
 	private _active: RunHandleImpl | undefined;
 	private _reserved: RunReservationImpl | undefined;
 
@@ -750,8 +943,19 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	rebuildIndex(): ReadonlyMap<RunId, RunResult> {
 		const results = new Map<RunId, RunResult>();
+		const bindings = new Map<string, CapabilityBindingLedgerRecord>();
 		for (const entry of this.session.getEntries()) {
-			if (entry.type !== "custom" || entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
+			if (entry.type !== "custom") continue;
+			if (entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE) {
+				const parsed = parseCapabilityBindingEntry(entry.data, entry.id);
+				if (!parsed.ok) {
+					this.emitIfNew(entry.id, parsed.diag);
+					continue;
+				}
+				bindings.set(parsed.entry.binding.id, parsed.entry.binding);
+				continue;
+			}
+			if (entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
 			const parsed = parseLedgerEntry(entry.data);
 			if (!parsed.ok) {
 				this.emitIfNew(entry.id, toDiagnostic(parsed, entry.id));
@@ -802,6 +1006,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		for (const result of results.values()) {
 			if (result.receipt === undefined) result.recovery = "interrupted";
 		}
+		this._capabilityBindings = bindings;
 		return results;
 	}
 
@@ -815,6 +1020,25 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			throw createAutomationError("ledger_persistence_failed", `failed to persist run ledger entry: ${detail}`, false);
+		}
+	}
+
+	getCapabilityBindings(): ReadonlyMap<string, CapabilityBindingLedgerRecord> {
+		// Re-fold from the session ledger so persisted bindings written by an
+		// earlier coordinator (or a previous process) are visible.
+		this.rebuildIndex();
+		return this._capabilityBindings;
+	}
+
+	persistCapabilityBinding(binding: CapabilityBindingLedgerRecord): void {
+		try {
+			this.session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, {
+				schemaVersion: CAPABILITY_BINDING_SCHEMA_VERSION,
+				binding,
+			});
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			throw createAutomationError("ledger_persistence_failed", `failed to persist capability binding entry: ${detail}`, false);
 		}
 	}
 

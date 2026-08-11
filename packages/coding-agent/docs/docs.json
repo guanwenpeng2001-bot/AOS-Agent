@@ -44,6 +44,10 @@
           "path": "context.md"
         },
         {
+          "title": "Capabilities and MCP",
+          "path": "capabilities.md"
+        },
+        {
           "title": "Compaction",
           "path": "compaction.md"
         }
