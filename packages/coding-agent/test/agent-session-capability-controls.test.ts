@@ -310,6 +310,60 @@ describe("AgentSession H2 session capability control", () => {
 		}
 	});
 
+	it("closes a deselected MCP server when a profile change drops it", async () => {
+		const { dir, agentDir } = tmpDir("profile-close");
+		const receivedCalls: Array<{ name: string; args: unknown }> = [];
+		const settingsManager = SettingsManager.inMemory({
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [{ selector: { kind: "builtin_tool" }, action: "allow" }] },
+					mcp: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "mcp_server" }, action: "allow" },
+							{ selector: { kind: "mcp_tool" }, action: "allow" },
+						],
+					},
+				},
+			},
+			mcp: {
+				servers: {
+					docs: { transport: "stdio", command: "node" },
+				},
+			},
+		});
+		const mock = createMockMcpServer({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+			receivedCalls,
+		});
+		const sessionManager = SessionManager.inMemory(dir);
+		try {
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager,
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "configured" });
+
+			await session.setCapabilityProfile("mcp");
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+
+			// Deselecting the server via the profile awaits the lifecycle teardown
+			// before setCapabilityProfile resolves: no stale live connection or
+			// stale selection survives the transition.
+			await session.setCapabilityProfile("default");
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
+			expect(session.getActiveCapabilityBinding()?.toolAllowlist).not.toContain("mcp__docs__list");
+			expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("exposes a redacted catalog view without server config details", async () => {
 		const { dir, agentDir } = tmpDir("profile-inspect");
 		const settingsManager = SettingsManager.inMemory({
