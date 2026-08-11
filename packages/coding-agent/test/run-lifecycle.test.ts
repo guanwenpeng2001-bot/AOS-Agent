@@ -2,6 +2,11 @@ import type { AssistantMessage } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import {
+	buildCapabilityCatalog,
+	resolveCapabilityBinding,
+	type CapabilityBinding,
+} from "../src/core/capability-registry.ts";
+import {
 	CAPABILITY_BINDING_CUSTOM_TYPE,
 	createAutomationError,
 	createRunLifecycleCoordinator,
@@ -856,6 +861,117 @@ describe("capability binding ledger folding", () => {
 		coordinator.rebuildIndex();
 		expect(coordinator.getCapabilityBindings().get(BINDING.id)).toEqual(BINDING);
 		expect(coordinator.diagnostics().filter((diag) => diag.kind === "malformed-binding")).toHaveLength(3);
+	});
+});
+
+const SELECTION_CATALOG = buildCapabilityCatalog({
+	candidates: [
+		{
+			kind: "builtin_tool",
+			name: "Read",
+			sourceIdentity: "builtin",
+			source: { path: "/test", source: "test-src", scope: "temporary", origin: "top-level" },
+		},
+		{
+			kind: "builtin_tool",
+			name: "Write",
+			sourceIdentity: "builtin",
+			source: { path: "/test", source: "test-src", scope: "temporary", origin: "top-level" },
+		},
+	],
+});
+
+/**
+ * Resolve a binding with only the tool selection differing; the ledger record
+ * carries no raw selection, so two bindings that differ only by selection
+ * semantics are identical except for the id that encodes them.
+ */
+function selectionBinding(selection: {
+	tools?: ReadonlyArray<string>;
+	excludeTools?: ReadonlyArray<string>;
+	noTools?: boolean;
+}): CapabilityBinding {
+	return resolveCapabilityBinding({
+		catalog: SELECTION_CATALOG,
+		profile: "default",
+		profiles: { default: { rules: [] } },
+		toolAllowlist: selection.tools,
+		excludeToolNames: selection.excludeTools,
+		noTools: selection.noTools,
+		now: "2026-08-11T00:00:00.000Z",
+	});
+}
+
+describe("capability binding selection-semantics ledger regression", () => {
+	it("keeps tools vs excludeTools same-view bindings distinct through fold, rebuild, replay", () => {
+		const viaTools = selectionBinding({ tools: ["Read"] });
+		const viaExclude = selectionBinding({ excludeTools: ["Write"] });
+		// tools and excludeTools converge on the same model-visible allowlist, so
+		// the records differ only by the id that encodes the selection semantics.
+		expect(viaTools.toolAllowlist).toEqual(["Read"]);
+		expect(viaExclude.toolAllowlist).toEqual(["Read"]);
+		expect({ ...viaExclude, id: viaTools.id }).toEqual(viaTools);
+		expect(viaTools.id).not.toBe(viaExclude.id);
+
+		const session = makeSession();
+		const c1 = makeCoordinator(session);
+		const viaToolsRun = c1.reserve().accept({
+			runId: "r-tools",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: viaTools,
+		});
+		viaToolsRun.start();
+		viaToolsRun.settle({ outcome: "completed" });
+		const viaExcludeRun = c1.reserve().accept({
+			runId: "r-exclude",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: viaExclude,
+		});
+		viaExcludeRun.start();
+		viaExcludeRun.settle({ outcome: "completed" });
+
+		// Ledger fold: neither record overwrites the other.
+		const folded = foldCapabilityBindingEntries(session.getEntries());
+		expect(folded.size).toBe(2);
+		expect(folded.get(viaTools.id)).toEqual(viaTools);
+		expect(folded.get(viaExclude.id)).toEqual(viaExclude);
+
+		// Rebuild: both binding ids/views are recoverable and distinguishable.
+		const c2 = makeCoordinator(session);
+		const recovered = c2.getCapabilityBindings();
+		expect(recovered.size).toBe(2);
+		expect(recovered.get(viaTools.id)?.id).toBe(viaTools.id);
+		expect(recovered.get(viaExclude.id)?.id).toBe(viaExclude.id);
+		expect(recovered.get(viaTools.id)?.id).not.toBe(recovered.get(viaExclude.id)?.id);
+
+		// Replay: each run keeps its intended binding id and resolves to its own record.
+		const viaToolsResult = c2.getRun("r-tools");
+		const viaExcludeResult = c2.getRun("r-exclude");
+		expect(viaToolsResult?.receipt?.capabilityBindingId).toBe(viaTools.id);
+		expect(viaExcludeResult?.receipt?.capabilityBindingId).toBe(viaExclude.id);
+		expect(recovered.get(viaToolsResult?.receipt?.capabilityBindingId ?? "")).toEqual(viaTools);
+		expect(recovered.get(viaExcludeResult?.receipt?.capabilityBindingId ?? "")).toEqual(viaExclude);
+	});
+
+	it("does not collapse a noTools binding with an empty tools binding after rebuild", () => {
+		const viaNoTools = selectionBinding({ noTools: true });
+		const viaEmptyTools = selectionBinding({ tools: [] });
+		expect(viaNoTools.toolAllowlist).toEqual([]);
+		expect(viaEmptyTools.toolAllowlist).toEqual([]);
+		expect(viaNoTools.id).not.toBe(viaEmptyTools.id);
+
+		const session = makeSession();
+		const c1 = makeCoordinator(session);
+		c1.persistCapabilityBinding(viaNoTools);
+		c1.persistCapabilityBinding(viaEmptyTools);
+
+		const recovered = makeCoordinator(session).getCapabilityBindings();
+		expect(recovered.size).toBe(2);
+		expect(recovered.get(viaNoTools.id)).toEqual(viaNoTools);
+		expect(recovered.get(viaEmptyTools.id)).toEqual(viaEmptyTools);
+		expect(recovered.get(viaNoTools.id)?.id).not.toBe(recovered.get(viaEmptyTools.id)?.id);
 	});
 });
 
