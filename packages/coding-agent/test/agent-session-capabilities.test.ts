@@ -516,7 +516,9 @@ describe("AgentSession capability binding integration", () => {
 
 				expect(session.getActiveToolNames()).not.toContain("read");
 				expect(session.getActiveToolNames()).toContain("sdk_helper");
-				expect(session.getAllTools().map((tool) => tool.name)).not.toContain("bash");
+				// Built-ins remain registered for extension/tool inspection, but are not
+				// active when noTools is set to "builtin".
+				expect(session.getAllTools().map((tool) => tool.name)).toContain("bash");
 			} finally {
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
@@ -565,23 +567,24 @@ describe("AgentSession capability binding integration", () => {
 				const runPromise = session.prompt("First message");
 				await waitUntil(() => session.isStreaming);
 
-				const before = session.getActiveToolNames();
-				expect(before).toContain("read");
+				expect(session.getActiveToolNames()).toContain("read");
 
 				const bindingBefore = session.getActiveCapabilityBinding()?.id;
 
-				// setActiveToolsByName during the run must be deferred.
+				// Active tool selection may change during the run, but it must not
+				// rebuild the frozen capability binding.
 				session.setActiveToolsByName(["read"]);
-				expect(session.getActiveToolNames()).toEqual(before);
+				expect(session.getActiveToolNames()).toEqual(["read"]);
+				expect(session.getActiveCapabilityBinding()?.id).toBe(bindingBefore);
 				// A dynamic tool-registry refresh during the run must also be deferred.
 				session.resourceLoader.getExtensions().runtime.refreshTools();
-				expect(session.getActiveToolNames()).toEqual(before);
+				expect(session.getActiveToolNames()).toEqual(["read"]);
 				expect(session.getActiveCapabilityBinding()?.id).toBe(bindingBefore);
 
 				releaseStream?.(createAssistantMessage("Done"));
 				await runPromise;
 
-				// The deferred narrowing applies only after the run settles.
+				// The frozen binding remains unchanged, and the active subset is retained.
 				expect(session.getActiveToolNames()).toEqual(["read"]);
 			} finally {
 				session.dispose();

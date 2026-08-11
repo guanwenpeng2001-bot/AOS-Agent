@@ -477,9 +477,6 @@ export class AgentSession {
 	private _capabilityDiscoveryError: Error | undefined;
 	/** Tool registration that arrived mid-run; applied after the run settles. */
 	private _pendingToolRegistryRefresh = false;
-	/** setActiveToolsByName requests that arrived mid-run; applied after settle. */
-	private _pendingActiveToolNames: string[] | undefined;
-
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._agentStreamFunction = config.agent.streamFunction;
@@ -883,16 +880,9 @@ export class AgentSession {
 		} finally {
 			this._resolveIdleWaitIfIdle();
 		}
-		// Tool changes deferred while the run was active now apply against the
-		// frozen binding, producing a fresh binding for the next run if needed.
-		const pendingActive = this._pendingActiveToolNames;
-		this._pendingActiveToolNames = undefined;
 		if (this._pendingToolRegistryRefresh) {
 			this._pendingToolRegistryRefresh = false;
 			this._refreshToolRegistry();
-		}
-		if (pendingActive !== undefined) {
-			this.setActiveToolsByName(pendingActive);
 		}
 	}
 
@@ -1218,16 +1208,11 @@ export class AgentSession {
 	 * Only tools in the registry (already bounded by the frozen capability
 	 * binding) can be enabled. Unknown tool names are ignored.
 	 * Also rebuilds the system prompt to reflect the new tool set.
-	 * Changes take effect on the next agent turn. While an agent run is active the
-	 * change is deferred until the run settles so the running binding is never
-	 * mutated mid-run.
+	 * Changes take effect on the next provider request. The capability binding and
+	 * tool registry remain frozen during a run; changing the active subset does
+	 * not rebuild either one.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
-		this._pendingActiveToolNames = undefined;
-		if (this._isAgentRunActive) {
-			this._pendingActiveToolNames = [...toolNames];
-			return;
-		}
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
@@ -3602,11 +3587,6 @@ export class AgentSession {
 	private _resolveBindingInput(): Omit<ResolveBindingInput, "catalog"> {
 		const capabilitySettings = this.settingsManager.getCapabilitySettings();
 		const excludeToolNames = new Set(this._excludedToolNames ?? []);
-		if (this._noTools === "builtin") {
-			for (const name of this._baseToolDefinitions.keys()) {
-				excludeToolNames.add(name);
-			}
-		}
 		return {
 			profile: this._activeCapabilityProfile ?? capabilitySettings.defaultProfile,
 			profiles: capabilitySettings.profiles,

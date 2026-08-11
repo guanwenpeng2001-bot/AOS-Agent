@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client";
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
 	getDefaultEnvironment,
 	StdioClientTransport,

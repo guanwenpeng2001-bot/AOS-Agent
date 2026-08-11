@@ -2,6 +2,8 @@
 
 The capability registry is the single policy path for built-in tools, extension tools, SDK tools, skills, extensions, and MCP servers. Each descriptor has a stable id, revision, source metadata, availability, trust result, and profile decision. A binding is resolved and frozen before a prompt or Automation Host run uses it.
 
+The binding freezes the policy-selected capability set and its tool registry, not the active subset chosen by an extension. An extension may switch among tools already in the frozen registry for the next provider request; profile, trust, and MCP discovery changes wait until the run settles.
+
 The registry controls whether a capability enters the agent runtime. It is not an operating-system sandbox and does not constrain arguments, filesystem access, or network access after a selected tool executes.
 
 ## Capability profiles
@@ -27,6 +29,8 @@ Profiles are declared under `capabilities.profiles`. Rules are evaluated in orde
 `allow` exposes an available capability. `ask` requires an explicit approval in the current session. `deny` prevents exposure. Built-in tools, extension tools, SDK tools, and skills retain their normal default availability; MCP servers and MCP tools default to `deny`. A tool cannot be more permissive than its parent MCP server.
 
 `tools`, `excludeTools`, `noTools`, and SDK tool allowlists are final narrowing operations. They cannot turn a registry `deny` into `allow`. In headless and RPC modes, an unresolved `ask` is an explicit `capability_approval_required` failure.
+
+`noTools: "builtin"` leaves built-in tools available for registry inspection but starts with them inactive; `noTools: "all"` removes all model-visible tools.
 
 Interactive mode provides:
 
