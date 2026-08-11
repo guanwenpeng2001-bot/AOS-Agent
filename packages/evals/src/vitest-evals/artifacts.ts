@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, sep } from "node:path";
 import {
 	type RunnerTestCase,
 	recordArtifact,
@@ -106,7 +106,7 @@ export async function persistEvalArtifactReferences(
 			await mkdir(directory, { recursive: true, mode: 0o700 });
 			const path = join(directory, name);
 			await writeFile(path, attachment.body, { encoding: "utf8", mode: 0o600 });
-			references.push({ name, path: relative(artifactDirectory, path) });
+			references.push({ name, path: relative(artifactDirectory, path).split(sep).join("/") });
 		}
 	}
 	return references;

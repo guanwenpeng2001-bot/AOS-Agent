@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Made managed `fd` and `rg` downloads safe across concurrent processes by isolating temporary archives and extraction directories.
+- Defaulted package changelog links to the AOS Agent repository when no override is configured.
+
 ## [0.84.3] - 2026-08-10
 
 ### Added
