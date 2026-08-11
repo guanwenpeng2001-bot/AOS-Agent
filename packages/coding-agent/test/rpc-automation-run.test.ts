@@ -1366,13 +1366,12 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("rejects run.start with capability_binding_unavailable for an existing non-default profile", async () => {
+	it("materializes an existing non-default profile via setCapabilityProfile preflight", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
 		try {
-			// Add an existing-but-non-default profile. The session's frozen binding is
-			// resolved for "default" and cannot be re-materialized for "strict" with the
-			// current Session API, so the requested profile is rejected.
+			// Add an existing-but-non-default profile. Requesting it materializes the
+			// profile into the frozen binding before the run instead of rejecting it.
 			vi.spyOn(runtimeHost.session.settingsManager, "getCapabilitySettings").mockReturnValue({
 				defaultProfile: "default",
 				profiles: {
@@ -1387,12 +1386,110 @@ describe("RPC Automation Host run lifecycle", () => {
 			lineHandler(
 				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }),
 			);
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "u1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+			});
+			// the requested profile was materialized into the frozen binding
+			expect(runtimeHost.session.getActiveCapabilityProfile()).toBe("strict");
+			expect(runtimeHost.session.getActiveCapabilityBinding()?.profile).toBe("strict");
+
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const terminal = terminalEvents(currentLines())[0];
+			expect(terminal.type).toBe("run.completed");
+			// the terminal receipt records the materialized strict binding
+			expect((terminal.receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(
+				runtimeHost.session.getActiveCapabilityBinding()?.id,
+			);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("converts a setCapabilityProfile preflight failure into a structured capability error before any ledger write", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// A profile materialization failure surfaces as a structured capability
+			// error before reserve/prompt, so no run id, no run.* stream events, and
+			// no ledger write occur, and the session is not left busy.
+			const setProfileSpy = vi
+				.spyOn(runtimeHost.session, "setCapabilityProfile")
+				.mockRejectedValue(new CapabilityError("capability_mcp_connect_failed", "MCP connect failed for profile"));
+
+			lineHandler(
+				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }),
+			);
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "u1")).toHaveLength(1));
 			const res = responsesFor(rpcIo.outputLines, "u1")[0];
 			expect(res.success).toBe(false);
-			expect((res.error as { code: string }).code).toBe("capability_binding_unavailable");
+			expect((res.error as { code: string }).code).toBe("capability_mcp_connect_failed");
 			expect("data" in res).toBe(false);
-			expect(terminalEvents(currentLines())).toHaveLength(0);
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
+
+			// the failed preflight reserved nothing, so a valid run starts immediately
+			setProfileSpy.mockRestore();
+			lineHandler(JSON.stringify({ id: "u2", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "u2");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("omits capabilityProfile to fall back to the configured default after another profile was active", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session.settingsManager, "getCapabilitySettings").mockReturnValue({
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [] },
+					strict: { rules: [] },
+				},
+				mcpServers: [],
+			});
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// an explicit non-default profile is materialized first
+			lineHandler(JSON.stringify({ id: "s1", type: "run.start", message: "Strict", capabilityProfile: "strict" }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "s1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+			});
+			expect(runtimeHost.session.getActiveCapabilityProfile()).toBe("strict");
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			// an omitted profile is forwarded as undefined so the Session API
+			// materializes the configured default; the binding reverts to default
+			const setProfileSpy = vi.spyOn(runtimeHost.session, "setCapabilityProfile");
+			lineHandler(JSON.stringify({ id: "d1", type: "run.start", message: "Default" }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "d1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+			});
+			expect(setProfileSpy).toHaveBeenCalledWith(undefined);
+			expect(runtimeHost.session.getActiveCapabilityProfile()).toBe("default");
+			expect(runtimeHost.session.getActiveCapabilityBinding()?.profile).toBe("default");
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));
 		} finally {
 			await cleanup();
 		}

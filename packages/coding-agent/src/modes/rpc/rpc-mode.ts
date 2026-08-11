@@ -340,23 +340,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
-		// Capability profile preflight: the profile must exist, capability
-		// discovery must have settled, and headless/RPC must never auto-approve an
-		// ask. A denied/unresolved profile or an unapprovable ask fails the run
-		// with a structured capability error before any ledger write.
-		const capabilitySettings = session.settingsManager.getCapabilitySettings();
-		const effectiveProfile = capabilityProfile ?? capabilitySettings.defaultProfile;
-		if (capabilitySettings.profiles[effectiveProfile] === undefined) {
-			return automationError(
-				id,
-				commandType,
-				createAutomationError(
-					"capability_profile_not_found",
-					`Capability profile not found: ${effectiveProfile}`,
-					false,
-				),
-			);
+		// Capability profile preflight: materialize the requested capability profile
+		// into the frozen binding before any reservation or prompt. The public API
+		// owns the undefined => configured default semantics and waits for capability
+		// discovery to settle. Any profile or discovery failure is converted into a
+		// structured capability error before any ledger write; an unapprovable ask
+		// still fails the run below.
+		try {
+			await session.setCapabilityProfile(capabilityProfile);
+		} catch (err) {
+			return automationError(id, commandType, capabilityError(err));
 		}
+		// The materialized profile (requested, or the configured default when omitted)
+		// names the effective profile for the approval-required message below.
+		const effectiveProfile = session.getActiveCapabilityProfile();
 		let reservation: RunReservation;
 		try {
 			reservation = coordinator.reserve();
@@ -419,27 +416,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				);
 			}
 		}
-		if (preflightBinding !== undefined && preflightBinding.profile !== effectiveProfile) {
-			// The session's frozen binding is resolved for its own profile. A caller
-			// requesting a different (existing) profile cannot be honored because the
-			// requested profile cannot be materialized as a binding with the current
-			// Session API, so the run is rejected before any ledger write.
-			activeReservation = undefined;
-			try {
-				reservation.release();
-			} catch {
-				// reservation may already be consumed
-			}
-			return automationError(
-				id,
-				commandType,
-				createAutomationError(
-					"capability_binding_unavailable",
-					`The requested capability profile "${effectiveProfile}" cannot be materialized as a binding for this session, which is active with profile "${preflightBinding.profile}".`,
-					false,
-				),
-			);
-		}
+		// The requested profile is already materialized into the frozen binding by
+		// setCapabilityProfile above, so no profile-mismatch rejection applies.
 		if (preflightBinding !== undefined && preflightBinding.decisionSummary.awaitingApproval > 0) {
 			activeReservation = undefined;
 			try {
