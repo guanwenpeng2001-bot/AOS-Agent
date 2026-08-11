@@ -122,6 +122,44 @@ describe("RpcClient Automation Host request shapes", () => {
 		});
 		expect(result).toEqual({ runId: "r2", sessionId: "s2", attempt: 2, status: "accepted" });
 	});
+
+	it("startRun forwards an optional capabilityProfile and omits it when absent", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+
+		await client.startRun("with profile", undefined, "strict");
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "with profile",
+			images: undefined,
+			capabilityProfile: "strict",
+		});
+
+		await client.startRun("plain");
+		expect(send).toHaveBeenLastCalledWith({ type: "run.start", message: "plain", images: undefined });
+	});
+
+	it("resumeRun forwards an optional capabilityProfile", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => ({
+			type: "response",
+			command: "run.resume",
+			success: true,
+			data: { runId: "r2", sessionId: "s2", attempt: 2, status: "accepted" },
+		}));
+		privateClient.send = send;
+
+		await client.resumeRun("/tmp/s.jsonl", "r1", "continue", [IMAGE], "strict");
+		expect(send).toHaveBeenCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "continue",
+			images: [IMAGE],
+			capabilityProfile: "strict",
+		});
+	});
 });
 
 describe("RpcClient Automation Host structured failures", () => {
@@ -176,6 +214,64 @@ describe("RpcClient Automation Host structured failures", () => {
 		const promise = client.initializeAutomationHost();
 
 		await expect(promise).rejects.toThrow("legacy string failure");
+		await expect(promise).rejects.not.toBeInstanceOf(AutomationRpcError);
+	});
+});
+
+describe("RpcClient capability inspection", () => {
+	it("getCapabilities sends get_capabilities without a binding id", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => ({
+			type: "response",
+			command: "get_capabilities",
+			success: true,
+			data: { binding: null, bindings: [] },
+		}));
+		privateClient.send = send;
+
+		const data = await client.getCapabilities();
+
+		expect(send).toHaveBeenCalledWith({ type: "get_capabilities" });
+		expect(data).toEqual({ binding: null, bindings: [] });
+	});
+
+	it("getCapabilities sends get_capabilities with a binding id and parses the view", async () => {
+		const { client, privateClient } = createClient();
+		const view = {
+			id: "binding:default:abc123",
+			profile: "default",
+			createdAt: "t",
+			descriptors: [{ id: "builtin_tool:core:read", revision: "rev:1", exposedToolName: "Read" }],
+			decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+			toolAllowlist: ["Read"],
+		};
+		const send = vi.fn(async () => ({
+			type: "response",
+			command: "get_capabilities",
+			success: true,
+			data: { binding: view, bindings: [] },
+		}));
+		privateClient.send = send;
+
+		const data = await client.getCapabilities("binding:default:abc123");
+
+		expect(send).toHaveBeenCalledWith({ type: "get_capabilities", bindingId: "binding:default:abc123" });
+		expect(data.binding?.id).toBe("binding:default:abc123");
+		expect(data.binding?.toolAllowlist).toEqual(["Read"]);
+	});
+
+	it("getCapabilities rejects with a plain Error for a string failure", async () => {
+		const { client, privateClient } = createClient();
+		privateClient.send = vi.fn(async () => ({
+			type: "response",
+			command: "get_capabilities",
+			success: false,
+			error: "Capability binding not found: binding:ghost",
+		}));
+
+		const promise = client.getCapabilities("binding:ghost");
+
+		await expect(promise).rejects.toThrow("Capability binding not found: binding:ghost");
 		await expect(promise).rejects.not.toBeInstanceOf(AutomationRpcError);
 	});
 });
