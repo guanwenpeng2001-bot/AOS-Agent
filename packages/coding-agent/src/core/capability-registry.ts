@@ -220,8 +220,8 @@ function fnv1a64(input: string): string {
 const SECRET_KEY_PATTERN = /secret|token|passwd|password|authorization|api[_-]?key|access[_-]?key|cookie|credential/i;
 const SECRET_CONTAINER_KEYS = new Set(["env", "environment", "headers"]);
 
-function redactUrlCredential(text: string): string {
-	return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1");
+function redactUrlSecrets(text: string): string {
+	return text.replace(/([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*(?:\/[^\s?#]*)?)(?:[?#][^\s]*)?/gi, "$1$2");
 }
 
 function sanitizeSecrets(value: unknown): unknown {
@@ -247,7 +247,7 @@ function sanitizeSecrets(value: unknown): unknown {
 		}
 		return out;
 	}
-	return typeof value === "string" ? redactUrlCredential(value) : value;
+	return typeof value === "string" ? redactUrlSecrets(value) : value;
 }
 
 function stableStringify(value: unknown): string {
@@ -417,6 +417,23 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 	const decisions = resolveDecisions(input.catalog.descriptors, profileDef);
 	const approved = new Set(input.approvedDescriptorIds ?? []);
 
+	// A descriptor is selectable only when allowed (or ask-approved) and available.
+	const selectable = new Set<string>();
+	for (const descriptor of input.catalog.descriptors) {
+		const decision = decisions.get(descriptor.id) ?? "deny";
+		if (decision === "deny") {
+			continue;
+		}
+		if (decision === "ask" && !approved.has(descriptor.id)) {
+			continue;
+		}
+		if (descriptor.availability !== "available") {
+			continue;
+		}
+		selectable.add(descriptor.id);
+	}
+
+	const byId = new Map(input.catalog.descriptors.map((descriptor) => [descriptor.id, descriptor]));
 	const refs: CapabilityBindingDescriptorRef[] = [];
 	let awaitingApproval = 0;
 	let denied = 0;
@@ -435,11 +452,39 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		if (descriptor.availability !== "available") {
 			continue;
 		}
+		if (descriptor.kind === "mcp_tool") {
+			const parent = descriptor.parentId !== undefined ? byId.get(descriptor.parentId) : undefined;
+			if (parent === undefined || !selectable.has(parent.id)) {
+				// A tool never enters the binding without its parent server selected
+				if (parent !== undefined && decisions.get(parent.id) === "ask" && !approved.has(parent.id)) {
+					awaitingApproval++;
+				} else {
+					denied++;
+				}
+				continue;
+			}
+		}
 		refs.push({
 			id: descriptor.id,
 			revision: descriptor.revision,
 			...(descriptor.exposedToolName !== undefined ? { exposedToolName: descriptor.exposedToolName } : {}),
 		});
+	}
+
+	const nameCounts = new Map<string, number>();
+	for (const ref of refs) {
+		if (ref.exposedToolName !== undefined) {
+			nameCounts.set(ref.exposedToolName, (nameCounts.get(ref.exposedToolName) ?? 0) + 1);
+		}
+	}
+	const conflicts: string[] = [];
+	for (const [name, count] of nameCounts) {
+		if (count > 1) {
+			conflicts.push(name);
+		}
+	}
+	if (conflicts.length > 0) {
+		throw new CapabilityNameConflictError(conflicts);
 	}
 
 	let toolAllowlist = refs.map((ref) => ref.exposedToolName).filter((name): name is string => name !== undefined);
@@ -454,17 +499,6 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 			const excluded = new Set(input.excludeToolNames);
 			toolAllowlist = toolAllowlist.filter((name) => !excluded.has(name));
 		}
-	}
-
-	const nameCounts = new Map<string, number>();
-	for (const ref of refs) {
-		if (ref.exposedToolName !== undefined) {
-			nameCounts.set(ref.exposedToolName, (nameCounts.get(ref.exposedToolName) ?? 0) + 1);
-		}
-	}
-	const conflicts = toolAllowlist.filter((name) => (nameCounts.get(name) ?? 0) > 1);
-	if (conflicts.length > 0) {
-		throw new CapabilityNameConflictError(conflicts);
 	}
 
 	return {
@@ -483,11 +517,11 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 
 function redactSource(source: SourceInfo): CapabilitySourceView {
 	return {
-		source: redactUrlCredential(source.source),
+		source: redactUrlSecrets(source.source),
 		scope: source.scope,
 		origin: source.origin,
-		...(source.path !== undefined ? { path: redactUrlCredential(source.path) } : {}),
-		...(source.baseDir !== undefined ? { baseDir: redactUrlCredential(source.baseDir) } : {}),
+		...(source.path !== undefined ? { path: redactUrlSecrets(source.path) } : {}),
+		...(source.baseDir !== undefined ? { baseDir: redactUrlSecrets(source.baseDir) } : {}),
 	};
 }
 

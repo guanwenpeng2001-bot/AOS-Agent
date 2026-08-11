@@ -116,6 +116,16 @@ describe("createCapabilityId / createCapabilityRevision", () => {
 		);
 	});
 
+	it("drops URL query values from the revision so rotation never bumps it", () => {
+		expect(createCapabilityRevision({ url: "https://host/mcp?token=abc" })).toBe(
+			createCapabilityRevision({ url: "https://host/mcp?token=xyz" }),
+		);
+		expect(createCapabilityRevision({ url: "https://host/mcp?token=abc" })).toBe(
+			createCapabilityRevision({ url: "https://host/mcp" }),
+		);
+		expect(createCapabilityRevision({ url: "https://host/mcp?token=sk-leak" })).not.toContain("sk-leak");
+	});
+
 	it("never embeds a secret in the revision string", () => {
 		expect(createCapabilityRevision({ token: "sk-super-secret" })).not.toContain("sk-super-secret");
 	});
@@ -337,6 +347,29 @@ describe("MCP parent-server inheritance", () => {
 		expect(binding.decisionSummary).toEqual({ allowed: 2, awaitingApproval: 0, denied: 0 });
 		expect(binding.toolAllowlist).toEqual(["mcp__docs__list"]);
 	});
+
+	it("does not select an approved child tool whose parent server is ask-unapproved", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), tool()] });
+		const p = profile(rule({ kind: "mcp_server" }, "ask"), rule({ kind: "mcp_tool" }, "allow"));
+		const binding = bind(catalog, {
+			profiles: { default: p },
+			approved: ["mcp_tool:mcp:list"],
+		});
+		expect(binding.descriptors).toHaveLength(0);
+		expect(binding.toolAllowlist).toEqual([]);
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 2, denied: 0 });
+	});
+
+	it("does not select a child tool whose parent server is unavailable", () => {
+		const catalog = buildCapabilityCatalog({
+			candidates: [{ ...server(), availability: "unavailable" }, tool()],
+		});
+		const p = profile(rule({ kind: "mcp_server" }, "allow"), rule({ kind: "mcp_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.descriptors).toHaveLength(0);
+		expect(binding.toolAllowlist).toEqual([]);
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 1 });
+	});
 });
 
 describe("trust gating", () => {
@@ -464,15 +497,14 @@ describe("name-conflict failure", () => {
 		expect(binding.toolAllowlist).toEqual(["read"]);
 	});
 
-	it("does not conflict when the colliding name is narrowed away", () => {
+	it("still fails when the colliding name would be narrowed away", () => {
 		const catalog = buildCapabilityCatalog({
 			candidates: [
 				cand({ kind: "builtin_tool", name: "read", exposedToolName: "read" }),
 				cand({ kind: "sdk_tool", name: "read", sourceIdentity: "sdk", exposedToolName: "read" }),
 			],
 		});
-		const binding = bind(catalog, { tools: [] });
-		expect(binding.toolAllowlist).toEqual([]);
+		expect(() => bind(catalog, { tools: [] })).toThrow(CapabilityNameConflictError);
 	});
 });
 
@@ -499,8 +531,8 @@ describe("binding lifecycle and views", () => {
 		expect(second.createdAt).not.toBe(first.createdAt);
 	});
 
-	it("redacts secrets and credentials from the catalog view", () => {
-		const project = createSyntheticSourceInfo("https://user:secret@host/proj/.aos-agent", {
+	it("redacts secrets, credentials and URL query values from the catalog view", () => {
+		const project = createSyntheticSourceInfo("https://user:secret@host/proj/.aos-agent?token=sk-query", {
 			source: "proj-ext",
 			scope: "project",
 			origin: "top-level",
@@ -513,6 +545,7 @@ describe("binding lifecycle and views", () => {
 		const view = createCapabilityCatalogView(catalog);
 		const serialized = JSON.stringify(view);
 		expect(serialized).not.toContain("sk-hush");
+		expect(serialized).not.toContain("sk-query");
 		expect(serialized).not.toContain("user:secret");
 		expect(view.descriptors[0].source.path).toBe("https://host/proj/.aos-agent");
 		expect(view.descriptors[0]).toMatchObject({
