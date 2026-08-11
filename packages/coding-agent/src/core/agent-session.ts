@@ -3660,8 +3660,16 @@ export class AgentSession {
 	 * Materialize a profile into the actual frozen binding, active tool set, and
 	 * MCP selection. Only invoked while the session is idle (or after a run
 	 * settles) so a running binding is never mutated.
+	 *
+	 * The previous profile's MCP selection is torn down before the new profile is
+	 * resolved so materialization fails closed: if the new profile cannot resolve
+	 * (for example a selected static name conflict), the previous profile can
+	 * never leave selected/ready MCP connections alive. The new binding's server
+	 * selection is applied by _refreshCapabilitySetup and connected during
+	 * discovery.
 	 */
 	private async _materializeCapabilityProfile(profileName: string): Promise<void> {
+		await this._mcpLifecycleManager.setSelectedServerIds([]);
 		this._activeCapabilityProfile = profileName;
 		await this._refreshCapabilitySetup();
 	}
@@ -3731,17 +3739,22 @@ export class AgentSession {
 	 * Same-named builtin / extension / SDK tools are NOT shadowed here: they are
 	 * distinct capabilities and the registry fails closed with
 	 * capability_name_conflict when a selected collision occurs, instead of this
-	 * method silently choosing a winner. Extension_tool candidates link to their
-	 * extension descriptor via parentId so extension rules govern child tools
-	 * exactly like an mcp_server governs its mcp_tools.
+	 * method silently choosing a winner.
+	 *
+	 * Extension tools are collected from the complete per-extension collection
+	 * (each ResourceLoader extension's own `tools` map), not the runner's
+	 * first-registration dedup, so two extensions registering the same exposed
+	 * name both reach the registry and a selected collision fails closed before
+	 * any provider or tool execution. First-registration runtime behavior is
+	 * preserved for non-colliding names by _refreshToolRegistry, which still
+	 * reads the runner's deduped set. Each extension_tool candidate links to its
+	 * own extension descriptor via parentId so extension rules govern child
+	 * tools exactly like an mcp_server governs its mcp_tools.
 	 */
 	private _collectCapabilityCandidates(capabilitySettings: CapabilitySettings): CapabilityCandidate[] {
 		const candidates: CapabilityCandidate[] = [];
 
-		const { candidates: extensionCandidates, toolParentIds } = this._collectExtensionCandidates();
-		candidates.push(...extensionCandidates);
-
-		const registeredTools = this._extensionRunner.getAllRegisteredTools();
+		candidates.push(...this._collectExtensionCandidates());
 
 		for (const name of this._baseToolDefinitions.keys()) {
 			const definition = this._baseToolDefinitions.get(name)!;
@@ -3755,17 +3768,25 @@ export class AgentSession {
 				revisionInput: this._toolDefinitionRevisionInput(definition),
 			});
 		}
-		for (const tool of registeredTools) {
-			candidates.push({
-				kind: "extension_tool",
-				name: tool.definition.name,
-				localName: tool.definition.name,
-				sourceIdentity: tool.sourceInfo.source,
-				source: tool.sourceInfo,
-				exposedToolName: tool.definition.name,
-				parentId: toolParentIds.get(tool.definition.name),
-				revisionInput: this._toolDefinitionRevisionInput(tool.definition),
-			});
+		for (const extension of this._resourceLoader.getExtensions().extensions) {
+			const extensionLocalName = stableExtensionLocalName(extension);
+			const extensionDescriptorId = createCapabilityId(
+				"extension",
+				extension.sourceInfo.source,
+				extensionLocalName,
+			);
+			for (const tool of extension.tools.values()) {
+				candidates.push({
+					kind: "extension_tool",
+					name: tool.definition.name,
+					localName: `${extensionLocalName}:${tool.definition.name}`,
+					sourceIdentity: extension.sourceInfo.source,
+					source: tool.sourceInfo,
+					exposedToolName: tool.definition.name,
+					parentId: extensionDescriptorId,
+					revisionInput: this._toolDefinitionRevisionInput(tool.definition),
+				});
+			}
 		}
 		for (const definition of this._customTools) {
 			candidates.push({
@@ -3800,21 +3821,15 @@ export class AgentSession {
 	}
 
 	/**
-	 * Metadata-only extension descriptors from ResourceLoader extensions, plus
-	 * the stable parent descriptor id for each registered extension tool. The
+	 * Metadata-only extension descriptors from ResourceLoader extensions. The
 	 * descriptor carries public identity and the sorted set of tool names it
 	 * registers; it claims no runtime controls beyond the registry's parent
 	 * inheritance, so an extension profile rule governs its child tools.
 	 */
-	private _collectExtensionCandidates(): {
-		candidates: CapabilityCandidate[];
-		toolParentIds: Map<string, string>;
-	} {
+	private _collectExtensionCandidates(): CapabilityCandidate[] {
 		const candidates: CapabilityCandidate[] = [];
-		const toolParentIds = new Map<string, string>();
 		for (const extension of this._resourceLoader.getExtensions().extensions) {
 			const localName = stableExtensionLocalName(extension);
-			const descriptorId = createCapabilityId("extension", extension.sourceInfo.source, localName);
 			candidates.push({
 				kind: "extension",
 				name: localName,
@@ -3827,13 +3842,8 @@ export class AgentSession {
 					toolNames: [...extension.tools.keys()].sort(),
 				},
 			});
-			for (const toolName of extension.tools.keys()) {
-				if (!toolParentIds.has(toolName)) {
-					toolParentIds.set(toolName, descriptorId);
-				}
-			}
 		}
-		return { candidates, toolParentIds };
+		return candidates;
 	}
 
 	/**

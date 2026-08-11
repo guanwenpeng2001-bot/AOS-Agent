@@ -944,6 +944,57 @@ describe("AgentSession capability binding integration", () => {
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
+
+		it("fails closed on a collision between two extensions registering the same exposed name", async () => {
+			let ext1ExecuteCalls = 0;
+			let ext2ExecuteCalls = 0;
+			let streamCalls = 0;
+			// Two distinct extension sources register the SAME exposed tool name.
+			// The capability catalog must include BOTH per-extension tools (the
+			// runner's first-registration dedup is only a runtime concern), so the
+			// registry sees the collision and fails closed before any provider or
+			// tool execution.
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("shared", () => ext1ExecuteCalls++) },
+				{ name: "ext2", factory: extensionWithTool("shared", () => ext2ExecuteCalls++) },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager: SettingsManager.inMemory(),
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				await expect(session.prompt("run")).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				expect(streamCalls).toBe(0);
+				expect(ext1ExecuteCalls).toBe(0);
+				expect(ext2ExecuteCalls).toBe(0);
+				// Fail closed: no ambiguous tool set is materialized.
+				expect(session.getActiveToolNames()).toEqual([]);
+				expect(session.getActiveCapabilityBinding()).toBeUndefined();
+				// Both per-extension tools reached the catalog, each linked to its
+				// own extension descriptor via parentId.
+				const view = session.inspectCapabilityCatalog();
+				const extTools = view.descriptors.filter((descriptor) => descriptor.kind === "extension_tool");
+				expect(extTools).toHaveLength(2);
+				expect(extTools.map((tool) => tool.exposedToolName)).toEqual(["shared", "shared"]);
+				expect(new Set(extTools.map((tool) => tool.id)).size).toBe(2);
+				const extensionDescriptors = view.descriptors.filter(
+					(descriptor) => descriptor.kind === "extension",
+				);
+				expect(extTools.map((tool) => tool.parentId).sort()).toEqual(
+					extensionDescriptors.map((descriptor) => descriptor.id).sort(),
+				);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
 	});
 
 	describe("metadata-only extension descriptors govern child tools", () => {

@@ -76,6 +76,39 @@ function createMockMcpServer(opts: { tools: Tool[]; receivedCalls: Array<{ name:
 	return { transportFactory: async () => clientTransport };
 }
 
+/**
+ * Like {@link createMockMcpServer}, but creates a fresh in-memory server and
+ * transport pair on every factory call, so a server reconnected after a
+ * profile deselection gets a brand-new transport instead of reusing one that
+ * was already closed. Tracks how many transports were created so the test can
+ * assert an explicit reconnect really built a fresh connection.
+ */
+function createReconnectableMcpServer(opts: { tools: Tool[]; receivedCalls: Array<{ name: string; args: unknown }> }): {
+	transportFactory: (config: { id: string }) => Promise<unknown>;
+	factoryCallCount: () => number;
+} {
+	let factoryCalls = 0;
+	return {
+		transportFactory: (async () => {
+			factoryCalls += 1;
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+			server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...opts.tools] }));
+			server.setRequestHandler(CallToolRequestSchema, async (request) => {
+				opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
+				return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
+			});
+			server.connect(serverTransport).catch(() => undefined);
+			serverCleanups.push(async () => {
+				await server.close().catch(() => undefined);
+				await clientTransport.close().catch(() => undefined);
+			});
+			return clientTransport;
+		}) as never,
+		factoryCallCount: () => factoryCalls,
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Controllable assistant stream for the frozen-binding mid-run test.
 // ---------------------------------------------------------------------------
@@ -359,6 +392,167 @@ describe("AgentSession H2 session capability control", () => {
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
 			expect(session.getActiveCapabilityBinding()?.toolAllowlist).not.toContain("mcp__docs__list");
 			expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reconnects a re-selected MCP server with a fresh transport after a profile drop", async () => {
+		const { dir, agentDir } = tmpDir("profile-reconnect");
+		const receivedCalls: Array<{ name: string; args: unknown }> = [];
+		const settingsManager = SettingsManager.inMemory({
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [{ selector: { kind: "builtin_tool" }, action: "allow" }] },
+					mcp: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "mcp_server" }, action: "allow" },
+							{ selector: { kind: "mcp_tool" }, action: "allow" },
+						],
+					},
+				},
+			},
+			mcp: {
+				servers: {
+					docs: { transport: "stdio", command: "node" },
+				},
+			},
+		});
+		const mock = createReconnectableMcpServer({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+			receivedCalls,
+		});
+		const sessionManager = SessionManager.inMemory(dir);
+		try {
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager,
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+
+			// First materialization: the mcp profile connects the server once.
+			expect(mock.factoryCallCount()).toBe(0);
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "configured" });
+
+			await session.setCapabilityProfile("mcp");
+			expect(mock.factoryCallCount()).toBe(1);
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+			expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
+			expect(session.getActiveToolNames()).toContain("mcp__docs__list");
+
+			// Dropping the profile closes the old transport exactly once before
+			// the transition resolves; no stale live connection survives.
+			await session.setCapabilityProfile("default");
+			expect(mock.factoryCallCount()).toBe(1);
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
+			expect(session.getActiveCapabilityBinding()?.toolAllowlist).not.toContain("mcp__docs__list");
+			expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
+
+			// Re-selecting the profile triggers a fresh explicit discovery/connect
+			// with a brand-new transport (the closed one is never reused), and the
+			// server returns to ready without a close/reselect race.
+			await session.setCapabilityProfile("mcp");
+			expect(mock.factoryCallCount()).toBe(2);
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+			expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
+			expect(session.getActiveToolNames()).toContain("mcp__docs__list");
+			await expect(session.whenCapabilitiesReady()).resolves.toBeUndefined();
+
+			// The reconnected tool still routes calls through the fresh server.
+			const definition = session.getToolDefinition("mcp__docs__list")!;
+			const execute = definition.execute as unknown as (
+				toolCallId: string,
+				params: Record<string, unknown>,
+				signal?: AbortSignal,
+			) => Promise<{ content: Array<{ type: string; text: string }> }>;
+			const result = await execute("call-1", { q: 1 }, undefined);
+			expect(result.content).toContainEqual({ type: "text", text: "ok:list" });
+			expect(receivedCalls).toContainEqual({ name: "list", args: { q: 1 } });
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("closes a previously selected MCP server when a profile transition fails closed", async () => {
+		const { dir, agentDir } = tmpDir("profile-fail-closed");
+		const receivedCalls: Array<{ name: string; args: unknown }> = [];
+		const settingsManager = SettingsManager.inMemory({
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					// sdk_tool is explicitly denied outside the conflict profile so
+					// the SDK "read" collision only surfaces when it is materialized.
+					default: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "sdk_tool" }, action: "deny" },
+						],
+					},
+					mcp: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "sdk_tool" }, action: "deny" },
+							{ selector: { kind: "mcp_server" }, action: "allow" },
+							{ selector: { kind: "mcp_tool" }, action: "allow" },
+						],
+					},
+					// Selects the MCP server AND collides on the exposed "read"
+					// name (builtin read + SDK read), so materialization cannot
+					// resolve the binding.
+					conflict: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "sdk_tool" }, action: "allow" },
+							{ selector: { kind: "mcp_server" }, action: "allow" },
+							{ selector: { kind: "mcp_tool" }, action: "allow" },
+						],
+					},
+				},
+			},
+			mcp: {
+				servers: {
+					docs: { transport: "stdio", command: "node" },
+				},
+			},
+		});
+		const mock = createMockMcpServer({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+			receivedCalls,
+		});
+		const sessionManager = SessionManager.inMemory(dir);
+		try {
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager,
+				customTools: [sdkTool("read")],
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+
+			await session.setCapabilityProfile("mcp");
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+
+			// The conflict profile cannot resolve: the transition must fail
+			// closed and close/deselect the previously selected server before the
+			// conflict surfaces. It must NOT roll back by re-selecting the old MCP.
+			await expect(session.setCapabilityProfile("conflict")).rejects.toMatchObject({
+				code: "capability_name_conflict",
+			});
+
+			// No stale selected/ready server remains after the failed transition.
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
+			expect(session.getMcpConnectionStatus("docs")?.state).not.toBe("ready");
+			expect(session.getActiveCapabilityBinding()).toBeUndefined();
+			await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+				code: "capability_name_conflict",
+			});
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 		}
