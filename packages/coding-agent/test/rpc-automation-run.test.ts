@@ -6,10 +6,11 @@ import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Mo
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 
@@ -108,6 +109,23 @@ const DEFAULT_MODEL: Model<"anthropic-messages"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200000,
 	maxTokens: 64000,
+};
+
+/** Metadata-only redacted binding injected via getActiveCapabilityBinding spies. */
+const BINDING: CapabilityBinding = {
+	id: "binding:default:abc123",
+	profile: "default",
+	createdAt: "2026-08-11T00:00:00.000Z",
+	descriptors: [{ id: "builtin_tool:core:read", revision: "rev:1", exposedToolName: "Read" }],
+	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+	toolAllowlist: ["Read"],
+};
+
+/** A binding whose profile leaves an ask capability unapproved (headless must fail). */
+const APPROVAL_BINDING: CapabilityBinding = {
+	...BINDING,
+	id: "binding:default:approval",
+	decisionSummary: { allowed: 1, awaitingApproval: 1, denied: 0 },
 };
 
 /** Minimal ResourceLoader with no compat/generated-catalog imports. */
@@ -948,6 +966,506 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(lines.some((record) => typeof record.type === "string" && record.type.startsWith("run."))).toBe(false);
 			expect(runEventsOfType(lines, "message_start").length).toBeGreaterThanOrEqual(1);
 			expect("runId" in runEventsOfType(lines, "agent_settled")[0]).toBe(false);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects run.start with capability_profile_not_found for an unknown profile", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(
+				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "does-not-exist" }),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "u1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "u1")[0];
+			expect(res.success).toBe(false);
+			expect((res.error as { code: string }).code).toBe("capability_profile_not_found");
+			expect("data" in res).toBe(false);
+			// no run id, no run.* stream events, and nothing persisted to the ledger
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
+			const ledgerEntries = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+			expect(ledgerEntries).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("fails run.start with capability_approval_required when the profile needs ask approval", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session, "getActiveCapabilityBinding").mockReturnValue(APPROVAL_BINDING);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "a1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "a1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "a1")[0];
+			expect(res.success).toBe(false);
+			expect((res.error as { code: string }).code).toBe("capability_approval_required");
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("maps a capability discovery failure into a structured capability error", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session, "whenCapabilitiesReady").mockRejectedValue(
+				new CapabilityError("capability_name_conflict", "Multiple capabilities expose the same tool name"),
+			);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "c1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "c1")[0];
+			expect(res.success).toBe(false);
+			expect((res.error as { code: string }).code).toBe("capability_name_conflict");
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("redacts secrets from structured Automation error messages on the wire", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session, "whenCapabilitiesReady").mockRejectedValue(
+				new CapabilityError(
+					"capability_mcp_connect_failed",
+					"MCP connect failed: https://user:secret@mcp.example.invalid token=abc123",
+				),
+			);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "r1")[0];
+			expect(res.success).toBe(false);
+			const message = (res.error as { message: string }).message;
+			expect(message).not.toContain("secret");
+			expect(message).not.toContain("abc123");
+			expect(message).toContain("[redacted]");
+			expect(JSON.stringify(res)).not.toMatch(/secret|abc123|user:pass/);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("records capabilityBindingId on the terminal receipt when a binding is frozen", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session, "getActiveCapabilityBinding").mockReturnValue(BINDING);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const terminal = terminalEvents(currentLines())[0];
+			expect(terminal.type).toBe("run.completed");
+			expect((terminal.receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(BINDING.id);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("exposes get_capabilities as an ordinary redacted command before initialize", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "gc1", type: "get_capabilities" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "gc1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
+			expect(res.success).toBe(true);
+			const data = res.data as { binding: { id: string } | null; bindings: unknown[] };
+			// the session's frozen binding is inspectable without any run, and no
+			// ledger binding history exists yet
+			expect(data.binding?.id).toBe(runtimeHost.session.getCapabilityBindingId());
+			expect(Array.isArray(data.bindings)).toBe(true);
+			expect(data.bindings).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("returns the redacted current binding and ledger history from get_capabilities", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			vi.spyOn(runtimeHost.session, "getActiveCapabilityBinding").mockReturnValue(BINDING);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "gc1", type: "get_capabilities" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "gc1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
+			expect(res.success).toBe(true);
+			const data = res.data as {
+				binding: { id: string; profile: string; descriptors: unknown[]; decisionSummary: unknown; toolAllowlist: string[] };
+				bindings: { id: string }[];
+			};
+			expect(data.binding?.id).toBe(BINDING.id);
+			expect(data.binding?.profile).toBe("default");
+			expect(data.binding?.toolAllowlist).toEqual(["Read"]);
+			expect(data.bindings.map((binding) => binding.id)).toContain(BINDING.id);
+			// redacted: the serialized record must never carry secret-shaped keys or values
+			const json = JSON.stringify(res);
+			expect(json).not.toMatch(/secret|token|authorization|api[_-]?key|password/i);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects get_capabilities with a plain string error for an unknown binding id", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "gc1", type: "get_capabilities", bindingId: "binding:ghost:nope" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "gc1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
+			expect(res.success).toBe(false);
+			expect(typeof res.error).toBe("string");
+			expect(res.error as string).toContain("Capability binding not found");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("resumes with a successor attempt linking previousBindingId and capabilityBindingId", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "First" }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r1");
+				expect(res).toHaveLength(1);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			// the frozen (real) binding is recorded on the source run's receipt
+			const sourceBindingId = (terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string })
+				.capabilityBindingId;
+			expect(sourceBindingId).toBeTruthy();
+			expect(sourceBindingId).toBe(runtimeHost.session.getCapabilityBindingId());
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: runId!,
+					message: "Continue",
+				}),
+			);
+			let resumedRunId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "rs1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				resumedRunId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));
+
+			lineHandler(JSON.stringify({ id: "g1", type: "run.get", runId: resumedRunId! }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "g1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				const data = res[0].data as {
+					run: { attempt: number; sourceRunId?: string; previousBindingId?: string };
+				};
+				expect(data.run.attempt).toBe(2);
+				expect(data.run.sourceRunId).toBe(runId);
+				expect(data.run.previousBindingId).toBe(sourceBindingId);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects resume with capability_binding_unavailable when the settled binding drifted from the recorded one", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			// Record a fake old binding on the first run. After switch the restored
+			// session resolves its real (different) binding, i.e. version drift.
+			vi.spyOn(runtimeHost.session, "getActiveCapabilityBinding").mockReturnValue(BINDING);
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "First" }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r1");
+				expect(res).toHaveLength(1);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect((terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(
+				BINDING.id,
+			);
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: runId!,
+					message: "Continue",
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "rs1")).toHaveLength(1));
+			const rejection = responsesFor(rpcIo.outputLines, "rs1")[0];
+			expect(rejection.success).toBe(false);
+			expect((rejection.error as { code: string }).code).toBe("capability_binding_unavailable");
+			// rejected before any accepted/terminal ledger write for a successor run
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(3); // accepted + started + terminal of the first run only
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("awaits capability readiness before the resume drift comparison", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// seed a persisted run whose receipt records the real binding
+			lineHandler(JSON.stringify({ id: "r0", type: "run.start", message: "Seed" }));
+			let seedRunId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r0");
+				expect(res).toHaveLength(1);
+				seedRunId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+
+			// From here on, capability discovery fails for every session (including the
+			// restored one). The discovery error must surface instead of a premature
+			// drift rejection, proving readiness is awaited before the drift check.
+			const readinessSpy = vi
+				.spyOn(AgentSession.prototype, "whenCapabilitiesReady")
+				.mockRejectedValue(new CapabilityError("capability_mcp_connect_failed", "MCP discovery failed"));
+
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: seedRunId!,
+					message: "Continue",
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "rs1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "rs1")[0];
+			expect(res.success).toBe(false);
+			expect((res.error as { code: string }).code).toBe("capability_mcp_connect_failed");
+			expect((res.error as { message: string }).message).toContain("MCP discovery failed");
+			readinessSpy.mockRestore();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("fails resume with capability_binding_unavailable when the source binding is not in the ledger", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// seed so the session is persisted
+			lineHandler(JSON.stringify({ id: "r0", type: "run.start", message: "Seed" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r0")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+			// a source run whose receipt demands a binding that was never recorded
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "accepted",
+				record: {
+					id: "ghost-cap",
+					sessionId: runtimeHost.session.sessionId,
+					attempt: 1,
+					status: "accepted",
+					model: { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" },
+				},
+			});
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "terminal",
+				endedAt: "2026-08-11T00:00:00.000Z",
+				receipt: {
+					runId: "ghost-cap",
+					sessionId: runtimeHost.session.sessionId,
+					status: "completed",
+					usage: { input: 0, output: 0, total: 0 },
+					capabilityBindingId: "binding:ghost:nope",
+				},
+			});
+
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: "ghost-cap",
+					message: "Continue",
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "rs1")).toHaveLength(1));
+			const rejection = responsesFor(rpcIo.outputLines, "rs1")[0];
+			expect(rejection.success).toBe(false);
+			expect((rejection.error as { code: string }).code).toBe("capability_binding_unavailable");
+			// no successor run was accepted
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects run.start with capability_binding_unavailable for an existing non-default profile", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			// Add an existing-but-non-default profile. The session's frozen binding is
+			// resolved for "default" and cannot be re-materialized for "strict" with the
+			// current Session API, so the requested profile is rejected.
+			vi.spyOn(runtimeHost.session.settingsManager, "getCapabilitySettings").mockReturnValue({
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [] },
+					strict: { rules: [] },
+				},
+				mcpServers: [],
+			});
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(
+				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "u1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "u1")[0];
+			expect(res.success).toBe(false);
+			expect((res.error as { code: string }).code).toBe("capability_binding_unavailable");
+			expect("data" in res).toBe(false);
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("redacts a model-error terminal on the wire and in the ledger", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			streamErrorMessage: "connect to https://user:secret@mcp.example.invalid token=abc123",
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const terminal = terminalEvents(currentLines())[0];
+			expect(terminal.type).toBe("run.failed");
+			const wireMessage =
+				(terminal.receipt as { terminalError?: { message: string } }).terminalError?.message ?? "";
+			expect(wireMessage).not.toContain("secret");
+			expect(wireMessage).not.toContain("abc123");
+			expect(wireMessage).toContain("[redacted]");
+			expect(JSON.stringify(terminal)).not.toMatch(/secret|abc123/);
+
+			// the persisted terminal ledger entry is redacted too
+			const ledger = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+			const terminalEntry = ledger.find(
+				(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
+					entry.type === "custom" &&
+					entry.customType === "automation.run" &&
+					(entry.data as { kind?: string }).kind === "terminal",
+			);
+			const persistedError = (terminalEntry?.data as { receipt?: { terminalError?: { message: string } } }).receipt
+				?.terminalError;
+			expect(persistedError?.message).toBeDefined();
+			expect(persistedError?.message).not.toContain("secret");
+			expect(persistedError?.message).not.toContain("abc123");
+			expect(JSON.stringify(terminalEntry?.data)).not.toMatch(/secret|abc123/);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("keeps a single terminal when cancel races a fast completion", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r1");
+				expect(res).toHaveLength(1);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			// cancel after completion is idempotent and never adds a second terminal
+			lineHandler(JSON.stringify({ id: "c1", type: "run.cancel", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c1")).toHaveLength(1));
+			const c1 = responsesFor(rpcIo.outputLines, "c1")[0];
+			expect(c1.success).toBe(true);
+			expect((c1.data as { status: string }).status).toBe("completed");
+			expect(terminalEvents(currentLines())).toHaveLength(1);
 		} finally {
 			await cleanup();
 		}
