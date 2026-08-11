@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Made managed `fd` and `rg` downloads safe across concurrent processes by isolating temporary archives and extraction directories.
+- Defaulted package changelog links to the AOS Agent repository when no override is configured.
 - Context snapshots are persisted immediately before every model call, including retries, tool loops, compaction, and branch summaries; persistence failures prevent provider dispatch.
 
 ### Removed

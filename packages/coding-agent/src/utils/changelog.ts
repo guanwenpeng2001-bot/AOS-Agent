@@ -8,7 +8,7 @@ export interface ChangelogEntry {
 	content: string;
 }
 
-const GITHUB_REPO = process.env.AOS_AGENT_CHANGELOG_REPO ?? "";
+const GITHUB_REPO = process.env.AOS_AGENT_CHANGELOG_REPO ?? "guanwenpeng2001-bot/AOS-Agent";
 const CHANGELOG_LINK_BASE_PATH = "packages/coding-agent";
 const LEGACY_REPO_RE = /(?!)/; // no legacy repo rewrite
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
