@@ -227,31 +227,44 @@ function fnv1a64(input: string): string {
 /** Secret values are omitted so secret rotation never changes a capability revision. */
 const SECRET_KEY_PATTERN = /secret|token|passwd|password|authorization|api[_-]?key|access[_-]?key|cookie|credential/i;
 const SECRET_CONTAINER_KEYS = new Set(["env", "environment", "headers"]);
+/**
+ * JSON Schema / TypeBox keywords whose object keys are structural property names
+ * (e.g. `properties.token`), not secret-bearing keys. Their entry names must
+ * survive even when they match {@link SECRET_KEY_PATTERN}; the descriptor values
+ * are still sanitized as ordinary objects.
+ */
+const SCHEMA_NAME_CONTAINER_KEYS = new Set(["properties", "patternProperties", "$defs", "definitions"]);
 
 function redactUrlSecrets(text: string): string {
 	return text.replace(/([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*(?:\/[^\s?#]*)?)(?:[?#][^\s]*)?/gi, "$1$2");
 }
 
-function sanitizeSecrets(value: unknown): unknown {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sanitizeSecrets(value: unknown, structuralNames = false): unknown {
 	if (Array.isArray(value)) {
-		return value.map((item) => sanitizeSecrets(item));
+		return value.map((item) => sanitizeSecrets(item, structuralNames));
 	}
 	if (value !== null && typeof value === "object") {
 		const out: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-			if (SECRET_KEY_PATTERN.test(key)) {
-				continue;
-			}
-			if (SECRET_CONTAINER_KEYS.has(key) && item !== null && typeof item === "object" && !Array.isArray(item)) {
-				// env/headers records hold name -> value; keep the names, redact the values
-				const record: Record<string, unknown> = {};
-				for (const name of Object.keys(item as Record<string, unknown>)) {
-					record[name] = "[redacted]";
+			if (!structuralNames) {
+				if (SECRET_KEY_PATTERN.test(key)) {
+					continue;
 				}
-				out[key] = record;
-				continue;
+				if (SECRET_CONTAINER_KEYS.has(key) && isPlainRecord(item)) {
+					// env/headers records hold name -> value; keep the names, redact the values
+					const record: Record<string, unknown> = {};
+					for (const name of Object.keys(item)) {
+						record[name] = "[redacted]";
+					}
+					out[key] = record;
+					continue;
+				}
 			}
-			out[key] = sanitizeSecrets(item);
+			out[key] = sanitizeSecrets(item, SCHEMA_NAME_CONTAINER_KEYS.has(key) && isPlainRecord(item));
 		}
 		return out;
 	}

@@ -131,6 +131,101 @@ describe("createCapabilityId / createCapabilityRevision", () => {
 	});
 });
 
+describe("secret-safe schema revision normalization", () => {
+	const authSchema = (minLength: number) => ({
+		type: "object",
+		properties: {
+			token: { type: "string", minLength },
+			apiKey: { type: "string" },
+			password: { type: "string" },
+		},
+		required: ["token", "apiKey", "password"],
+	});
+
+	it("preserves token/apiKey/password schema structure in the revision", () => {
+		expect(createCapabilityRevision({ schema: authSchema(8) })).not.toBe(
+			createCapabilityRevision({ schema: authSchema(16) }),
+		);
+		expect(createCapabilityRevision({ schema: authSchema(8) })).toBe(
+			createCapabilityRevision({ schema: authSchema(8) }),
+		);
+	});
+
+	it("changes the revision when a secret-named property type changes", () => {
+		const stringKey = { type: "object", properties: { apiKey: { type: "string" } } };
+		const arrayKey = { type: "object", properties: { apiKey: { type: "array", items: { type: "string" } } } };
+		expect(createCapabilityRevision({ schema: stringKey })).not.toBe(createCapabilityRevision({ schema: arrayKey }));
+	});
+
+	it("redacts credential values while keeping schema structure", () => {
+		const rev = createCapabilityRevision({
+			schema: authSchema(8),
+			token: "sk-top-secret",
+			env: { API_KEY: "sk-env-secret", DB_PASSWORD: "hunter2" },
+		});
+		expect(rev).not.toContain("sk-top-secret");
+		expect(rev).not.toContain("sk-env-secret");
+		expect(rev).not.toContain("hunter2");
+	});
+
+	it("keeps the revision stable when credential values rotate around a schema", () => {
+		const input = (token: string, envValue: string) => ({ schema: authSchema(8), token, env: { API_KEY: envValue } });
+		expect(createCapabilityRevision(input("sk-one", "env-one"))).toBe(
+			createCapabilityRevision(input("sk-two", "env-two")),
+		);
+	});
+
+	it("changes the binding id when token/apiKey/password schema structure changes", () => {
+		const bindingA = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		const bindingB = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(16) } })],
+			}),
+		);
+		expect(bindingB.descriptors[0].revision).not.toBe(bindingA.descriptors[0].revision);
+		expect(bindingB.id).not.toBe(bindingA.id);
+	});
+
+	it("keeps the binding id stable for identical schema structure", () => {
+		const bindingA = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		const bindingB = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		expect(bindingB.id).toBe(bindingA.id);
+	});
+
+	it("never leaks credential values into the revision or ledger-facing views", () => {
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				cand({
+					kind: "builtin_tool",
+					name: "Auth",
+					revisionInput: { schema: authSchema(8), token: "sk-view-secret", env: { API_KEY: "sk-view-env" } },
+				}),
+			],
+		});
+		const binding = bind(catalog);
+		const catalogViewJson = JSON.stringify(createCapabilityCatalogView(catalog));
+		const bindingViewJson = JSON.stringify(createCapabilityBindingView(binding));
+		expect(catalog.descriptors[0].revision).not.toContain("sk-view-secret");
+		expect(catalog.descriptors[0].revision).not.toContain("sk-view-env");
+		expect(catalogViewJson).not.toContain("sk-view-secret");
+		expect(catalogViewJson).not.toContain("sk-view-env");
+		expect(bindingViewJson).not.toContain("sk-view-secret");
+		expect(bindingViewJson).not.toContain("sk-view-env");
+	});
+});
+
 describe("buildCapabilityCatalog", () => {
 	it("normalizes candidates into descriptors with default metadata", () => {
 		const catalog = buildCapabilityCatalog({
