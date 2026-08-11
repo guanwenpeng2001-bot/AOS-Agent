@@ -274,6 +274,61 @@ Object form filters which resources to load:
 
 See [packages.md](packages.md) for package management details.
 
+### Capabilities
+
+AOS Agent models what it can load and call as capabilities with profile decisions (`allow`, `ask`, or `deny`). Configure named profiles and MCP servers here; inspect the catalog and approve ask capabilities per session with `/capabilities` (see [usage.md](usage.md#capabilities)).
+
+```json
+{
+  "capabilities": {
+    "defaultProfile": "default",
+    "profiles": {
+      "default": {
+        "rules": []
+      },
+      "strict": {
+        "rules": [
+          { "selector": { "kind": "mcp_server" }, "action": "ask" },
+          { "selector": { "kind": "extension_tool" }, "action": "ask" }
+        ]
+      }
+    }
+  }
+}
+```
+
+`capabilities.profiles` maps profile names to ordered rule lists; the last matching rule wins. Selectors match on `id`, `kind`, `sourceId`, `scope`, `mcpServerId`, or `parentId`. MCP servers and tools default to `deny` unless a profile rule allows or asks them.
+
+#### mcp.servers
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "docs": {
+        "transport": "stdio",
+        "command": "node",
+        "args": ["server.js"],
+        "env": ["DOCS_TOKEN"]
+      },
+      "issue-tracker": {
+        "transport": "streamable-http",
+        "url": "https://mcp.example.invalid/mcp",
+        "headersFromEnv": [{ "name": "Authorization", "valueFromEnv": "ISSUE_TRACKER_TOKEN" }]
+      }
+    }
+  }
+}
+```
+
+`mcp.servers` maps server ids to configs. `stdio` servers spawn a local command with `env` (an array of environment variable **names** passed through to the child). `streamable-http` servers connect to a `url` and send `headersFromEnv`, each `{ name, valueFromEnv }` referencing an environment variable **name**.
+
+Safety:
+
+- MCP config references environment variable values only by name: set the value in the environment and reference the name via `env` (stdio child process) or `headersFromEnv.valueFromEnv` (HTTP header). This keeps the parsed config secret-free and safe to show in redacted views.
+- `streamable-http` URLs must be absolute `http(s)` and must not contain userinfo (`user:pass@`) or credential-bearing query parameters.
+- Global `mcp.servers` are trusted. Project `mcp.servers` are trusted only when the project is trusted; an untrusted project server is surfaced but denied and never connected. Project `capabilities` (profiles and `defaultProfile`) merge only when the project is trusted.
+
 ## Example
 
 ```json

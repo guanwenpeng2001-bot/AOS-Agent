@@ -55,6 +55,16 @@ Global settings live under `~/.aos-agent/agent/`; project settings and resources
 
 Extension API and package manifest details are documented in the accompanying `docs/` directory.
 
+### Capabilities
+
+AOS Agent models what it can load and call — built-in tools, extension tools, SDK tools, skills, extensions, and MCP servers — as capabilities, each with a stable id, a kind, a redacted source, availability, a trust flag, and a profile decision (`allow`, `ask`, or `deny`).
+
+In interactive mode, `/capabilities` lists the redacted capability catalog, `/capabilities inspect <id>` shows one descriptor (kind, profile rule, availability, trust, binding/selected status, redacted source, and revision), and `/capabilities approve <id>` approves an ask capability for the current session only. These commands are backed by the public Session surface (`inspectCapabilityCatalog()`, `getActiveCapabilityBinding()`, `getActiveCapabilityProfile()`, and `approveCapability()`), so they never surface command arguments, environment/header values, tokens, unredacted URLs, or raw local paths.
+
+Approvals are session-local: they are never written to settings and never override a deny from the active profile. Project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable rather than exposing connection internals.
+
+Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, ModelBroker, external Agent orchestration, or legacy SSE transports.
+
 ## Package contents
 
 - `dist/` — generated build output; it is created by `npm run build` and is not source-controlled in this baseline.

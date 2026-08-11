@@ -148,6 +148,13 @@ import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import {
+	formatCapabilitiesError,
+	formatCapabilitiesUsage,
+	formatCapabilityApproval,
+	formatCapabilityCatalog,
+	formatCapabilityDescriptor,
+} from "./capabilities.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
 import {
@@ -677,6 +684,46 @@ export class InteractiveMode {
 				}));
 			};
 		}
+
+		const capabilitiesCommand: SlashCommand = {
+			name: "capabilities",
+			description: "Show capabilities, inspect a descriptor, or approve an ask capability for this session",
+			argumentHint: "inspect|approve",
+		};
+		capabilitiesCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+			const catalog = this.session.inspectCapabilityCatalog();
+			const items: Array<{ value: string; label: string; search: string; description?: string }> = [
+				{ value: "inspect ", label: "inspect", search: "inspect", description: "Inspect a capability descriptor" },
+				{
+					value: "approve ",
+					label: "approve",
+					search: "approve",
+					description: "Approve an ask capability for this session",
+				},
+			];
+			for (const descriptor of catalog.descriptors) {
+				items.push({
+					value: `inspect ${descriptor.id}`,
+					label: descriptor.id,
+					search: `inspect ${descriptor.id} ${descriptor.kind} ${descriptor.name}`,
+					description: `${descriptor.kind} ${descriptor.name} (${descriptor.decision})`,
+				});
+				if (descriptor.decision === "ask") {
+					items.push({
+						value: `approve ${descriptor.id}`,
+						label: descriptor.id,
+						search: `approve ${descriptor.id} ${descriptor.kind} ${descriptor.name}`,
+						description: `${descriptor.kind} ${descriptor.name} (ask)`,
+					});
+				}
+			}
+			return createFuzzyAutocompleteItems(items, prefix, (item) => item.search, (item) => ({
+				value: item.value,
+				label: item.label,
+				...(item.description !== undefined ? { description: item.description } : {}),
+			}));
+		};
+		slashCommands.push(capabilitiesCommand);
 
 		// Convert prompt templates to SlashCommand format for autocomplete
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
@@ -2917,6 +2964,12 @@ export class InteractiveMode {
 				const args = text === "/memory" ? "" : text.slice(8).trim();
 				this.editor.setText("");
 				await this.handleMemoryCommand(args);
+				return;
+			}
+			if (text === "/capabilities" || text.startsWith("/capabilities ")) {
+				const args = text === "/capabilities" ? "" : text.slice("/capabilities".length).trim();
+				this.editor.setText("");
+				await this.handleCapabilitiesCommand(args);
 				return;
 			}
 			if (text === "/changelog") {
@@ -6111,6 +6164,72 @@ export class InteractiveMode {
 			);
 		} catch (error) {
 			show(`${theme.fg("error", "Memory error:")} ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async handleCapabilitiesCommand(args: string): Promise<void> {
+		const show = (info: string): void => {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		};
+		const parts = args.split(/\s+/).filter((part) => part.length > 0);
+		try {
+			// Wait for discovery to settle so MCP tool descriptors are listed.
+			let discoveryNote: string | undefined;
+			try {
+				await this.session.whenCapabilitiesReady();
+			} catch (error) {
+				discoveryNote = formatCapabilitiesError(error);
+			}
+			const binding = this.session.getActiveCapabilityBinding();
+			const selectedDescriptorIds = new Set(binding?.descriptors.map((ref) => ref.id) ?? []);
+			if (parts.length === 0) {
+				show(
+					formatCapabilityCatalog(
+						this.session.inspectCapabilityCatalog(),
+						selectedDescriptorIds,
+						discoveryNote,
+					),
+				);
+				return;
+			}
+			const sub = parts[0];
+			if (sub === "inspect") {
+				const id = parts[1];
+				if (!id || parts.length !== 2) {
+					show(`${theme.fg("error", "Usage:")} /capabilities inspect <id>\n${formatCapabilitiesUsage()}`);
+					return;
+				}
+				const descriptor = this.session
+					.inspectCapabilityCatalog()
+					.descriptors.find((candidate) => candidate.id === id);
+				if (!descriptor) {
+					show(`${theme.fg("error", `Capability not found: ${id}`)}\n${formatCapabilitiesUsage()}`);
+					return;
+				}
+				show(
+					formatCapabilityDescriptor(descriptor, {
+						profile: this.session.getActiveCapabilityProfile(),
+						bindingId: binding?.id,
+						selected: selectedDescriptorIds.has(descriptor.id),
+					}),
+				);
+				return;
+			}
+			if (sub === "approve") {
+				const id = parts[1];
+				if (!id || parts.length !== 2) {
+					show(`${theme.fg("error", "Usage:")} /capabilities approve <id>\n${formatCapabilitiesUsage()}`);
+					return;
+				}
+				await this.session.approveCapability(id);
+				show(formatCapabilityApproval(id));
+				return;
+			}
+			show(`${theme.fg("error", `Unknown /capabilities subcommand: ${sub}`)}\n${formatCapabilitiesUsage()}`);
+		} catch (error) {
+			show(formatCapabilitiesError(error));
 		}
 	}
 
