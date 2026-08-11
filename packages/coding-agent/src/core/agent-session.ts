@@ -130,11 +130,16 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
+	CapabilityError,
+	CapabilityProfileNotFoundError,
 	CapabilityRegistry,
 	createCapabilityId,
+	resolveCapabilityBinding,
 	type CapabilityBinding,
 	type CapabilityCandidate,
 	type CapabilityCatalog,
+	type CapabilityCatalogView,
+	type ResolveBindingInput,
 } from "./capability-registry.ts";
 import {
 	createMcpServerCapabilityCandidate,
@@ -455,6 +460,8 @@ export class AgentSession {
 	// build; an active agent run cannot mutate it.
 	private _capabilityRegistry: CapabilityRegistry;
 	private _capabilityApprovedDescriptorIds: ReadonlyArray<string>;
+	/** Capability profile materialized into the active frozen binding; undefined uses settings.defaultProfile. */
+	private _activeCapabilityProfile: string | undefined;
 	private _noTools?: "all" | "builtin";
 	private _mcpTransportFactory?: MCPTransportFactory;
 	private _mcpLifecycleManager!: MCPLifecycleManager;
@@ -491,6 +498,7 @@ export class AgentSession {
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._capabilityRegistry = config.capabilityRegistry ?? new CapabilityRegistry();
 		this._capabilityApprovedDescriptorIds = config.capabilityApprovedDescriptorIds ?? [];
+		this._activeCapabilityProfile = undefined;
 		this._noTools = config.noTools;
 		this._mcpTransportFactory = config.mcpTransportFactory;
 
@@ -2383,6 +2391,91 @@ export class AgentSession {
 		}
 	}
 
+	/** The capability profile currently materialized into the frozen binding. */
+	getActiveCapabilityProfile(): string {
+		return this._activeCapabilityProfile ?? this.settingsManager.getCapabilitySettings().defaultProfile;
+	}
+
+	/**
+	 * Materialize the named capability profile into the actual frozen binding,
+	 * active tool set, and MCP setup. Omitting the profile resets to
+	 * settings.defaultProfile; an unknown profile throws
+	 * capability_profile_not_found (no silent fallback).
+	 *
+	 * While an agent run is active this waits for the run to settle so the
+	 * running binding is never mutated; materialization and discovery readiness
+	 * complete before the returned promise resolves.
+	 */
+	async setCapabilityProfile(profileName?: string): Promise<void> {
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		const effectiveProfile = profileName ?? capabilitySettings.defaultProfile;
+		if (capabilitySettings.profiles[effectiveProfile] === undefined) {
+			throw new CapabilityProfileNotFoundError(effectiveProfile);
+		}
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
+		await this._materializeCapabilityProfile(effectiveProfile);
+	}
+
+	/**
+	 * Redacted view of the currently discovered capability catalog. Never
+	 * includes command arguments, environment/header values, tokens, or
+	 * unredacted URLs.
+	 */
+	inspectCapabilityCatalog(): CapabilityCatalogView {
+		return this._capabilityRegistry.inspectCatalog() ?? { version: 1, descriptors: [] };
+	}
+
+	/**
+	 * Approve an ask capability for this session only. The approval is session
+	 * local (never written to settings). The current profile is the authority:
+	 * an approval is retained only when it flips an ask descriptor into the
+	 * binding; a denied, untrusted, or unavailable descriptor can never be
+	 * approved (capability_denied). While an agent run is active this waits for
+	 * the run to settle so the running binding is never mutated; the approval
+	 * materializes before the returned promise resolves.
+	 */
+	async approveCapability(descriptorId: string): Promise<void> {
+		// Wait for an active run to settle before reading the catalog or
+		// resolving, so validation runs against the settled catalog/profile state.
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
+		const catalog = this._activeCapabilityCatalog;
+		const descriptor = catalog?.descriptors.find((candidate) => candidate.id === descriptorId);
+		if (catalog === undefined || descriptor === undefined) {
+			throw new CapabilityError("capability_denied", `Cannot approve unknown capability: ${descriptorId}`);
+		}
+		if (!descriptor.trusted || descriptor.availability !== "available") {
+			throw new CapabilityError(
+				"capability_denied",
+				`Cannot approve capability "${descriptorId}": it is untrusted or unavailable`,
+			);
+		}
+		if (this._capabilityApprovedDescriptorIds.includes(descriptorId)) {
+			return;
+		}
+		// A capability already enabled by the profile (e.g. allow) has nothing to
+		// approve; retain the approval only when it changes an ask into the binding.
+		if (this._activeCapabilityBinding?.descriptors.some((ref) => ref.id === descriptorId)) {
+			return;
+		}
+		const entered = resolveCapabilityBinding({
+			...this._resolveBindingInput(),
+			catalog,
+			approvedDescriptorIds: [...this._capabilityApprovedDescriptorIds, descriptorId],
+		}).descriptors.some((ref) => ref.id === descriptorId);
+		if (!entered) {
+			throw new CapabilityError(
+				"capability_denied",
+				`Cannot approve capability "${descriptorId}": it is denied by the profile or cannot be selected`,
+			);
+		}
+		this._capabilityApprovedDescriptorIds = [...this._capabilityApprovedDescriptorIds, descriptorId];
+		await this._refreshCapabilitySetup();
+	}
+
 	/**
 	 * Abort current operation and wait for agent to become idle.
 	 */
@@ -3490,26 +3583,63 @@ export class AgentSession {
 		const candidates = this._collectCapabilityCandidates(capabilitySettings);
 		const catalog = this._capabilityRegistry.buildCatalog({ candidates });
 
-		const excludeToolNames = new Set(this._excludedToolNames ?? []);
-		if (this._noTools === "builtin") {
-			for (const name of this._baseToolDefinitions.keys()) {
-				excludeToolNames.add(name);
-			}
-		}
 		const binding = this._capabilityRegistry.resolveBinding({
+			...this._resolveBindingInput(),
 			catalog,
-			profile: capabilitySettings.defaultProfile,
-			profiles: capabilitySettings.profiles,
-			approvedDescriptorIds: this._capabilityApprovedDescriptorIds,
-			toolAllowlist: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
-			excludeToolNames: [...excludeToolNames],
-			noTools: this._noTools === "all",
 		});
 
 		this._activeCapabilityCatalog = catalog;
 		this._activeCapabilityBinding = binding;
 		this._syncSelectedMcpServers(binding, catalog);
 		return binding;
+	}
+
+	/**
+	 * Shared binding inputs for the current runtime: the active (or default)
+	 * profile, session-local approvals, and the tools / excludeTools / noTools
+	 * final narrowing. The catalog is supplied separately by the caller.
+	 */
+	private _resolveBindingInput(): Omit<ResolveBindingInput, "catalog"> {
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		const excludeToolNames = new Set(this._excludedToolNames ?? []);
+		if (this._noTools === "builtin") {
+			for (const name of this._baseToolDefinitions.keys()) {
+				excludeToolNames.add(name);
+			}
+		}
+		return {
+			profile: this._activeCapabilityProfile ?? capabilitySettings.defaultProfile,
+			profiles: capabilitySettings.profiles,
+			approvedDescriptorIds: this._capabilityApprovedDescriptorIds,
+			toolAllowlist: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
+			excludeToolNames: [...excludeToolNames],
+			noTools: this._noTools === "all",
+		};
+	}
+
+	/**
+	 * Materialize a profile into the actual frozen binding, active tool set, and
+	 * MCP selection. Only invoked while the session is idle (or after a run
+	 * settles) so a running binding is never mutated.
+	 */
+	private async _materializeCapabilityProfile(profileName: string): Promise<void> {
+		this._activeCapabilityProfile = profileName;
+		await this._refreshCapabilitySetup();
+	}
+
+	/**
+	 * Rebuild the tool registry from the current frozen binding, clear any stale
+	 * discovery error, re-run MCP discovery readiness for the current selection,
+	 * and await readiness so the caller's promise only resolves once setup is
+	 * complete.
+	 */
+	private async _refreshCapabilitySetup(): Promise<void> {
+		this._refreshToolRegistry({ includeAllExtensionTools: true });
+		this._capabilityDiscoveryError = undefined;
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
+			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
+		});
+		await this.whenCapabilitiesReady();
 	}
 
 	private _registerConfiguredMcpServers(capabilitySettings: CapabilitySettings): void {
@@ -3799,6 +3929,7 @@ export class AgentSession {
 		this._activeCapabilityCatalog = undefined;
 		this._mcpDiscoveryErrors = new Map();
 		this._capabilityDiscoveryError = undefined;
+		// A materialized profile is preserved across a rebuild (reload).
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
