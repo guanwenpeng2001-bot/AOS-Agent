@@ -94,6 +94,7 @@ import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
 	type ContextExtensionContributionAttribution,
+	type Extension,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -131,6 +132,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
 	CapabilityError,
+	CapabilityNameConflictError,
 	CapabilityProfileNotFoundError,
 	CapabilityRegistry,
 	createCapabilityId,
@@ -148,7 +150,7 @@ import {
 import { MCPLifecycleManager } from "./mcp-lifecycle.ts";
 import { mapMCPToolsToDefinitions, type MCPToolDefinitionResult } from "./mcp-tool-adapter.ts";
 import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
-import { formatSkillsForPrompt } from "./skills.ts";
+import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -238,6 +240,14 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 	return headers
 		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
 		: undefined;
+}
+
+/** Stable identity component for an extension descriptor id. */
+function stableExtensionLocalName(extension: Extension): string {
+	if (extension.path.startsWith("<") && extension.path.endsWith(">")) {
+		return extension.path.slice(1, -1);
+	}
+	return basename(extension.path).replace(/\.(ts|js)$/, "");
 }
 
 export interface AgentSessionConfig {
@@ -472,9 +482,17 @@ export class AgentSession {
 	private _activeMcpToolCandidates: CapabilityCandidate[] = [];
 	/** Redacted capability error codes per MCP server that failed discovery. */
 	private _mcpDiscoveryErrors = new Map<string, string>();
-	/** Resolves when the initial MCP capability discovery for the current runtime settles. */
+	/** Resolves when MCP capability discovery for the current runtime settles. */
 	private _capabilityDiscoveryPromise: Promise<void> = Promise.resolve();
 	private _capabilityDiscoveryError: Error | undefined;
+	/**
+	 * Whether discovery has been started for the current runtime. Discovery is
+	 * lazy: it begins only when capability readiness is explicitly requested or
+	 * at prompt/run preflight, never during runtime construction.
+	 */
+	private _capabilityDiscoveryStarted = false;
+	/** Awaitable for the current server-selection teardown (deselection closes). */
+	private _serverSelectionSyncPromise: Promise<void> = Promise.resolve();
 	/** Tool registration that arrived mid-run; applied after the run settles. */
 	private _pendingToolRegistryRefresh = false;
 	constructor(config: AgentSessionConfig) {
@@ -1813,6 +1831,10 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._refreshContextEngineStreamBoundary();
 		this._assertContextPayloadHooksSupported();
+		// Gate every run start on capability readiness so discovery (and any
+		// fail-closed conflict) settles before any provider/tool execution, even
+		// for run starts that bypass prompt() preflight (sendCustomMessage).
+		await this.whenCapabilitiesReady();
 		this._isAgentRunActive = true;
 		this._pendingContextError = undefined;
 		try {
@@ -1936,6 +1958,13 @@ export class AgentSession {
 				preflightResult?.(true);
 				return;
 			}
+
+			// MCP capability discovery is lazy; gate the first run preflight on
+			// readiness so connect + listTools + binding re-resolution (and any
+			// fail-closed capability_name_conflict) settle before any provider
+			// request or tool execution. A name conflict surfaces here through the
+			// normal preflight failure path instead of mid-run.
+			await this.whenCapabilitiesReady();
 
 			// Flush any pending bash messages before the new prompt
 			this._flushPendingBashMessages();
@@ -2365,15 +2394,34 @@ export class AgentSession {
 	}
 
 	/**
-	 * Resolves once initial MCP capability discovery for the current runtime has
-	 * settled (connect + listTools + binding re-resolution). Throws the recorded
-	 * discovery failure when one occurred (e.g. a name conflict).
+	 * Resolves once MCP capability discovery for the current runtime has settled
+	 * (connect + listTools + binding re-resolution). Discovery is lazy: this
+	 * call is what starts it for a freshly built runtime, so a session never
+	 * connects to MCP servers during construction. Throws the recorded discovery
+	 * failure when one occurred (e.g. a name conflict).
 	 */
 	async whenCapabilitiesReady(): Promise<void> {
+		this._ensureCapabilityDiscoveryStarted();
 		await this._capabilityDiscoveryPromise;
 		if (this._capabilityDiscoveryError) {
 			throw this._capabilityDiscoveryError;
 		}
+	}
+
+	/**
+	 * Starts MCP capability discovery for the current runtime exactly once.
+	 * The selected trusted servers are connected, their tools are listed, and
+	 * the frozen binding is re-resolved with the namespaced mcp_tool
+	 * descriptors. Failures are recorded and fail discovery closed.
+	 */
+	private _ensureCapabilityDiscoveryStarted(): void {
+		if (this._capabilityDiscoveryStarted) {
+			return;
+		}
+		this._capabilityDiscoveryStarted = true;
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
+			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
+		});
 	}
 
 	/** The capability profile currently materialized into the frozen binding. */
@@ -3430,7 +3478,26 @@ export class AgentSession {
 		// Re-resolve the frozen binding from the current candidates. `tools` /
 		// `excludeTools` / `noTools` are applied as the final narrowing inside the
 		// registry, so the binding's toolAllowlist is authoritative.
-		const binding = this._resolveCapabilityBinding();
+		let binding: CapabilityBinding;
+		try {
+			binding = this._resolveCapabilityBinding();
+		} catch (error) {
+			if (error instanceof CapabilityNameConflictError) {
+				// Fail closed: two selected capabilities expose the same tool name.
+				// Record the conflict and expose no ambiguous tool set so it
+				// surfaces through whenCapabilitiesReady()/prompt preflight rather
+				// than crashing construction or silently choosing a winner.
+				this._capabilityDiscoveryError = error;
+				this._activeCapabilityBinding = undefined;
+				this._toolDefinitions = new Map();
+				this._toolRegistry = new Map();
+				this._toolPromptSnippets = new Map();
+				this._toolPromptGuidelines = new Map();
+				this.setActiveToolsByName([]);
+				return;
+			}
+			throw error;
+		}
 		const allowedToolNames = new Set(binding.toolAllowlist);
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
@@ -3567,13 +3634,12 @@ export class AgentSession {
 		this._registerConfiguredMcpServers(capabilitySettings);
 		const candidates = this._collectCapabilityCandidates(capabilitySettings);
 		const catalog = this._capabilityRegistry.buildCatalog({ candidates });
-
+		this._activeCapabilityCatalog = catalog;
 		const binding = this._capabilityRegistry.resolveBinding({
 			...this._resolveBindingInput(),
 			catalog,
 		});
 
-		this._activeCapabilityCatalog = catalog;
 		this._activeCapabilityBinding = binding;
 		this._syncSelectedMcpServers(binding, catalog);
 		return binding;
@@ -3609,9 +3675,10 @@ export class AgentSession {
 
 	/**
 	 * Rebuild the tool registry from the current frozen binding, clear any stale
-	 * discovery error, re-run MCP discovery readiness for the current selection,
-	 * and await readiness so the caller's promise only resolves once setup is
-	 * complete.
+	 * discovery error, apply the new server selection (awaiting deselection
+	 * teardown so a profile -> default/deny transition closes removed servers),
+	 * re-run MCP discovery readiness for the current selection, and await
+	 * readiness so the caller's promise only resolves once setup is complete.
 	 */
 	private async _refreshCapabilitySetup(): Promise<void> {
 		// A profile change starts a fresh MCP discovery attempt. Do not let tools
@@ -3619,11 +3686,15 @@ export class AgentSession {
 		// binding is still being preflighted.
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
-		this._refreshToolRegistry({ includeAllExtensionTools: true });
 		this._capabilityDiscoveryError = undefined;
-		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
-			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
-		});
+		this._capabilityDiscoveryStarted = false;
+		this._capabilityDiscoveryPromise = Promise.resolve();
+		this._refreshToolRegistry({ includeAllExtensionTools: true });
+		// The new binding's server selection is applied synchronously by the
+		// lifecycle gate (the newest selection wins immediately) while removed
+		// servers close in the background; wait for that teardown so no stale
+		// live connection survives a profile change that drops a server.
+		await this._serverSelectionSyncPromise;
 		await this.whenCapabilitiesReady();
 	}
 
@@ -3650,23 +3721,37 @@ export class AgentSession {
 				selected.add(descriptor.mcpServerId);
 			}
 		}
-		this._mcpLifecycleManager.setSelectedServerIds(selected);
+		// The gate updates synchronously (the newest selection wins immediately)
+		// while the lifecycle closes removed servers in the background. The
+		// returned promise is retained so async refresh boundaries can await the
+		// deselection teardown before reporting the setup complete.
+		this._serverSelectionSyncPromise = this._mcpLifecycleManager.setSelectedServerIds(selected);
 	}
 
+	/**
+	 * Build the complete static capability catalog for the current runtime:
+	 * builtin tools, extension tools, SDK custom tools, skills, configured MCP
+	 * servers, and metadata-only extension descriptors. Every static candidate
+	 * carries a stable, secret-free revisionInput so behavior changes are never
+	 * erased from the revision.
+	 *
+	 * Same-named builtin / extension / SDK tools are NOT shadowed here: they are
+	 * distinct capabilities and the registry fails closed with
+	 * capability_name_conflict when a selected collision occurs, instead of this
+	 * method silently choosing a winner. Extension_tool candidates link to their
+	 * extension descriptor via parentId so extension rules govern child tools
+	 * exactly like an mcp_server governs its mcp_tools.
+	 */
 	private _collectCapabilityCandidates(capabilitySettings: CapabilitySettings): CapabilityCandidate[] {
 		const candidates: CapabilityCandidate[] = [];
 
-		const extensionToolNames = new Set<string>();
-		for (const tool of this._extensionRunner.getAllRegisteredTools()) {
-			extensionToolNames.add(tool.definition.name);
-		}
-		const sdkToolNames = new Set(this._customTools.map((definition) => definition.name));
+		const { candidates: extensionCandidates, toolParentIds } = this._collectExtensionCandidates();
+		candidates.push(...extensionCandidates);
+
+		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 
 		for (const name of this._baseToolDefinitions.keys()) {
-			// A same-named extension or SDK tool shadows the builtin (existing override semantics).
-			if (extensionToolNames.has(name) || sdkToolNames.has(name)) {
-				continue;
-			}
+			const definition = this._baseToolDefinitions.get(name)!;
 			candidates.push({
 				kind: "builtin_tool",
 				name,
@@ -3674,12 +3759,10 @@ export class AgentSession {
 				sourceIdentity: "builtin",
 				source: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
 				exposedToolName: name,
+				revisionInput: this._toolDefinitionRevisionInput(definition),
 			});
 		}
-		for (const tool of this._extensionRunner.getAllRegisteredTools()) {
-			if (sdkToolNames.has(tool.definition.name)) {
-				continue;
-			}
+		for (const tool of registeredTools) {
 			candidates.push({
 				kind: "extension_tool",
 				name: tool.definition.name,
@@ -3687,6 +3770,8 @@ export class AgentSession {
 				sourceIdentity: tool.sourceInfo.source,
 				source: tool.sourceInfo,
 				exposedToolName: tool.definition.name,
+				parentId: toolParentIds.get(tool.definition.name),
+				revisionInput: this._toolDefinitionRevisionInput(tool.definition),
 			});
 		}
 		for (const definition of this._customTools) {
@@ -3697,6 +3782,7 @@ export class AgentSession {
 				sourceIdentity: "sdk",
 				source: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 				exposedToolName: definition.name,
+				revisionInput: this._toolDefinitionRevisionInput(definition),
 			});
 		}
 		for (const skill of this._resourceLoader.getSkills().skills) {
@@ -3708,6 +3794,7 @@ export class AgentSession {
 				localName: skill.name,
 				sourceIdentity: source.source,
 				source,
+				revisionInput: this._skillRevisionInput(skill),
 			});
 		}
 		for (const diagnostic of capabilitySettings.mcpServers) {
@@ -3717,6 +3804,85 @@ export class AgentSession {
 			candidates.push(candidate);
 		}
 		return candidates;
+	}
+
+	/**
+	 * Metadata-only extension descriptors from ResourceLoader extensions, plus
+	 * the stable parent descriptor id for each registered extension tool. The
+	 * descriptor carries public identity and the sorted set of tool names it
+	 * registers; it claims no runtime controls beyond the registry's parent
+	 * inheritance, so an extension profile rule governs its child tools.
+	 */
+	private _collectExtensionCandidates(): {
+		candidates: CapabilityCandidate[];
+		toolParentIds: Map<string, string>;
+	} {
+		const candidates: CapabilityCandidate[] = [];
+		const toolParentIds = new Map<string, string>();
+		for (const extension of this._resourceLoader.getExtensions().extensions) {
+			const localName = stableExtensionLocalName(extension);
+			const descriptorId = createCapabilityId("extension", extension.sourceInfo.source, localName);
+			candidates.push({
+				kind: "extension",
+				name: localName,
+				localName,
+				sourceIdentity: extension.sourceInfo.source,
+				source: extension.sourceInfo,
+				revisionInput: {
+					name: localName,
+					source: extension.sourceInfo,
+					toolNames: [...extension.tools.keys()].sort(),
+				},
+			});
+			for (const toolName of extension.tools.keys()) {
+				if (!toolParentIds.has(toolName)) {
+					toolParentIds.set(toolName, descriptorId);
+				}
+			}
+		}
+		return { candidates, toolParentIds };
+	}
+
+	/**
+	 * Stable, secret-free revision identity for a tool definition: the public
+	 * behavior surface (name, label, description, schema, prompt snippet and
+	 * guidelines, sampling/execution/rendering options). Execute callbacks,
+	 * argument preparation, renderers, and any private state are excluded.
+	 */
+	private _toolDefinitionRevisionInput(definition: ToolDefinition): unknown {
+		return {
+			name: definition.name,
+			label: definition.label,
+			description: definition.description,
+			parameters: definition.parameters,
+			promptSnippet: definition.promptSnippet,
+			promptGuidelines: definition.promptGuidelines,
+			constrainedSampling: definition.constrainedSampling,
+			executionMode: definition.executionMode,
+			renderShell: definition.renderShell,
+		};
+	}
+
+	/**
+	 * Stable, secret-free revision identity for a skill: its stable identity plus
+	 * the SKILL.md content and public metadata. Unreadable content resolves to a
+	 * deterministic marker so the revision stays stable and never embeds an
+	 * error string.
+	 */
+	private _skillRevisionInput(skill: Skill): unknown {
+		let content: string | undefined;
+		try {
+			content = readFileSync(skill.filePath, "utf-8");
+		} catch {
+			content = undefined;
+		}
+		return {
+			name: skill.name,
+			description: skill.description,
+			disableModelInvocation: skill.disableModelInvocation,
+			source: skill.sourceInfo,
+			content,
+		};
 	}
 
 	/**
@@ -3931,6 +4097,9 @@ export class AgentSession {
 		this._activeCapabilityCatalog = undefined;
 		this._mcpDiscoveryErrors = new Map();
 		this._capabilityDiscoveryError = undefined;
+		this._capabilityDiscoveryStarted = false;
+		this._capabilityDiscoveryPromise = Promise.resolve();
+		this._serverSelectionSyncPromise = Promise.resolve();
 		// A materialized profile is preserved across a rebuild (reload).
 
 		const defaultActiveToolNames = this._baseToolsOverride
@@ -3941,11 +4110,11 @@ export class AgentSession {
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
-		// Discover MCP tools for the selected trusted servers asynchronously and
-		// re-resolve the binding once discovery settles.
-		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
-			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
-		});
+		// MCP capability discovery is deliberately NOT started here: a freshly
+		// built runtime never connects to servers during construction. Discovery
+		// begins only when capability readiness is explicitly requested
+		// (whenCapabilitiesReady) or at prompt/run preflight, so no
+		// constructor-time connection is silently retained.
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
