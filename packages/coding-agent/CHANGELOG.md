@@ -15,6 +15,8 @@
 
 ### Changed
 
+- Hardened capability revisions and binding identity, fail-closed static tool-name conflicts, extension parent governance, and MCP deselection cleanup; MCP discovery now starts only at explicit readiness or prompt/run preflight.
+
 ### Fixed
 
 - Made managed `fd` and `rg` downloads safe across concurrent processes by isolating temporary archives and extraction directories.

@@ -99,7 +99,7 @@ async function createControlledSession(opts: {
 	mcpTransportFactory?: unknown;
 	onStreamCall?: () => void;
 }): Promise<{ session: AgentSession; dir: string }> {
-	const { dir, agentDir } = tmpDir("controlled");
+	const { dir } = tmpDir("controlled");
 	const sessionManager = SessionManager.inMemory(dir);
 	const model = getModel("anthropic", "claude-sonnet-4-5")!;
 	const authStorage = AuthStorage.create(join(dir, "auth.json"));
