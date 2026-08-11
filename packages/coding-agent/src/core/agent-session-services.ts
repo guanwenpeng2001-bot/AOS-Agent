@@ -3,7 +3,9 @@ import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
+import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { MCPTransportFactory } from "./mcp-types.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
@@ -43,6 +45,10 @@ export interface CreateAgentSessionServicesOptions {
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
+	/** Capability Registry facade shared by the session and inspection surfaces. */
+	capabilityRegistry?: CapabilityRegistry;
+	/** MCP transport factory override (tests inject in-memory transports). */
+	mcpTransportFactory?: MCPTransportFactory;
 }
 
 /**
@@ -76,6 +82,8 @@ export interface AgentSessionServices {
 	modelRuntime: ModelRuntime;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
+	capabilityRegistry: CapabilityRegistry;
+	mcpTransportFactory?: MCPTransportFactory;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -188,6 +196,8 @@ export async function createAgentSessionServices(
 		modelRuntime,
 		settingsManager,
 		resourceLoader,
+		capabilityRegistry: options.capabilityRegistry ?? new CapabilityRegistry(),
+		mcpTransportFactory: options.mcpTransportFactory,
 		diagnostics,
 	};
 }
@@ -208,6 +218,8 @@ export async function createAgentSessionFromServices(
 		modelRuntime: options.services.modelRuntime,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
+		capabilityRegistry: options.services.capabilityRegistry,
+		mcpTransportFactory: options.services.mcpTransportFactory,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
