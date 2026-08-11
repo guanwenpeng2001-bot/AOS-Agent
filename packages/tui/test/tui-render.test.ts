@@ -127,7 +127,7 @@ describe("TUI debug logging", () => {
 				tui.start();
 				await terminal.waitForRender();
 
-				assert.match(readFileSync(join(logDir, "pi-debug.log"), "utf-8"), /fullRender: first render/);
+				assert.match(readFileSync(join(logDir, "aos-agent-debug.log"), "utf-8"), /fullRender: first render/);
 				tui.stop();
 			});
 		} finally {

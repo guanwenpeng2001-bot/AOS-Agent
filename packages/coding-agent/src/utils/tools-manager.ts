@@ -263,22 +263,19 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	mkdirSync(TOOLS_DIR, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
-	const archivePath = join(TOOLS_DIR, assetName);
+	const attemptId = `${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+	const archivePath = join(TOOLS_DIR, `${config.binaryName}_${attemptId}_${assetName}`);
 	const binaryExt = plat === "win32" ? ".exe" : "";
 	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
 
-	// Download
-	await downloadFile(downloadUrl, archivePath);
-
-	// Extract into a unique temp directory. fd and rg downloads can run concurrently
-	// during startup, so sharing a fixed directory causes races.
-	const extractDir = join(
-		TOOLS_DIR,
-		`extract_tmp_${config.binaryName}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-	);
+	// Each attempt needs its own archive and extraction paths. Test workers and
+	// concurrent sessions can otherwise overwrite or delete another download.
+	const extractDir = join(TOOLS_DIR, `extract_tmp_${config.binaryName}_${attemptId}`);
 	mkdirSync(extractDir, { recursive: true });
 
 	try {
+		await downloadFile(downloadUrl, archivePath);
+
 		if (assetName.endsWith(".tar.gz")) {
 			extractTarGzArchive(archivePath, extractDir, assetName);
 		} else if (assetName.endsWith(".zip")) {
@@ -298,10 +295,20 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 			extractedBinary = findBinaryRecursively(extractDir, binaryFileName) ?? undefined;
 		}
 
-		if (extractedBinary) {
-			renameSync(extractedBinary, binaryPath);
-		} else {
+		if (!extractedBinary) {
 			throw new Error(`Binary not found in archive: expected ${binaryFileName} under ${extractDir}`);
+		}
+
+		// Another process may finish the same install first. A rename is atomic;
+		// if the destination now exists, either installed binary is sufficient.
+		if (!existsSync(binaryPath)) {
+			try {
+				renameSync(extractedBinary, binaryPath);
+			} catch (error) {
+				if (!existsSync(binaryPath)) {
+					throw error;
+				}
+			}
 		}
 
 		// Make executable (Unix only)

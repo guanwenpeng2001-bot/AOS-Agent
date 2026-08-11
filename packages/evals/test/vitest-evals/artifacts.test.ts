@@ -11,7 +11,7 @@ import {
 it("records session and source artifacts against the explicit test task", async ({ task }) => {
 	const runId = "run-1";
 	await recordEvalSessionArtifact(task, {
-		artifacts: { runId, aosSessionJsonl: '{"type":"session"}\n' },
+		artifacts: { runId, aosAgentSessionJsonl: '{"type":"session"}\n' },
 	});
 	await recordEvalSourceArtifact(task, runId, {
 		name: "hello.ts",

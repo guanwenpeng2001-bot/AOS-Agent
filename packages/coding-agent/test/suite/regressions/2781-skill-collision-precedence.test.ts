@@ -27,7 +27,11 @@ describe("issue #2781 skill collision precedence: user skills should override pa
 		mkdirSync(skillDir, { recursive: true });
 		writeFileSync(
 			join(pkgDir, "package.json"),
-			JSON.stringify({ name: `fake-pkg-${name}`, version: "1.0.0", pi: { skills: [`skills/${name}`] } }, null, 2),
+			JSON.stringify(
+				{ name: `fake-pkg-${name}`, version: "1.0.0", aosAgent: { skills: [`skills/${name}`] } },
+				null,
+				2,
+			),
 		);
 		writeFileSync(
 			join(skillDir, "SKILL.md"),

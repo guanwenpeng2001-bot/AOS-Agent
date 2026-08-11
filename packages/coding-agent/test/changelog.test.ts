@@ -19,10 +19,10 @@ describe("normalizeChangelogLinks", () => {
 
 		expect(normalizeChangelogLinks(markdown, entry)).toBe(
 			[
-				"[Project Trust](https://example.com/aos-agent)",
-				"[Extensions](https://example.com/aos-agent)",
-				"[Examples](https://example.com/aos-agent)",
-				"[Root README](https://example.com/aos-agent)",
+				"[Project Trust](https://github.com/guanwenpeng2001-bot/AOS-Agent/blob/v0.79.0/packages/coding-agent/README.md#project-trust)",
+				"[Extensions](https://github.com/guanwenpeng2001-bot/AOS-Agent/blob/v0.79.0/packages/coding-agent/docs/extensions.md#project_trust)",
+				"[Examples](https://github.com/guanwenpeng2001-bot/AOS-Agent/tree/v0.79.0/packages/coding-agent/examples/extensions/)",
+				"[Root README](https://github.com/guanwenpeng2001-bot/AOS-Agent/blob/v0.79.0/README.md#supply-chain-hardening)",
 			].join("\n"),
 		);
 	});
