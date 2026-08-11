@@ -392,6 +392,66 @@ describe("AgentSession H2 session capability control", () => {
 		}
 	});
 
+	it("does not inherit a session-local ask approval into a fresh session with the same settings", async () => {
+		const { dir, agentDir } = tmpDir("approve-not-inherited");
+		const settingsManager = SettingsManager.inMemory({
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					default: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { id: "sdk_tool:sdk:sdk_helper" }, action: "ask" },
+						],
+					},
+				},
+			},
+		});
+		try {
+			const first = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(dir),
+				customTools: [sdkTool("sdk_helper")],
+			});
+			await first.session.whenCapabilitiesReady();
+			expect(first.session.getActiveCapabilityBinding()!.decisionSummary.awaitingApproval).toBeGreaterThan(0);
+			await first.session.approveCapability("sdk_tool:sdk:sdk_helper");
+			expect(first.session.getActiveCapabilityBinding()!.decisionSummary.awaitingApproval).toBe(0);
+			expect(first.session.getActiveCapabilityBinding()?.toolAllowlist).toContain("sdk_helper");
+			expect(first.session.getActiveToolNames()).toContain("sdk_helper");
+
+			// A fresh session built from the same settings (same in-memory manager
+			// and catalog) must not inherit the approval: the ask capability starts
+			// awaiting approval again and stays out of the binding until approved
+			// independently in the new session.
+			const second = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(dir),
+				customTools: [sdkTool("sdk_helper")],
+			});
+			await second.session.whenCapabilitiesReady();
+
+			const binding = second.session.getActiveCapabilityBinding()!;
+			expect(binding.profile).toBe("default");
+			expect(binding.decisionSummary.awaitingApproval).toBeGreaterThan(0);
+			expect(binding.descriptors.some((ref) => ref.id === "sdk_tool:sdk:sdk_helper")).toBe(false);
+			expect(binding.toolAllowlist).not.toContain("sdk_helper");
+			expect(second.session.getActiveToolNames()).not.toContain("sdk_helper");
+			expect(second.session.getAllTools().map((tool) => tool.name)).not.toContain("sdk_helper");
+
+			// The fresh session can approve the same capability independently.
+			await second.session.approveCapability("sdk_tool:sdk:sdk_helper");
+			expect(second.session.getActiveCapabilityBinding()!.decisionSummary.awaitingApproval).toBe(0);
+			expect(second.session.getActiveToolNames()).toContain("sdk_helper");
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects approval of a denied descriptor", async () => {
 		const { dir, agentDir } = tmpDir("approve-deny");
 		const settingsManager = SettingsManager.inMemory({
