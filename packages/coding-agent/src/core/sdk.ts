@@ -5,9 +5,11 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
+import type { CapabilityRegistry } from "./capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
+import type { MCPTransportFactory } from "./mcp-types.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
@@ -82,6 +84,10 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Capability Registry facade used to freeze the session's capability binding. */
+	capabilityRegistry?: CapabilityRegistry;
+	/** MCP transport factory override; tests inject in-memory transports. */
+	mcpTransportFactory?: MCPTransportFactory;
 }
 
 /** Result from createAgentSession */
@@ -387,6 +393,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		capabilityRegistry: options.capabilityRegistry,
+		mcpTransportFactory: options.mcpTransportFactory,
+		noTools: options.noTools,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

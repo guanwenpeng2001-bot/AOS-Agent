@@ -1,12 +1,17 @@
 import type { AssistantMessage } from "@aos-agent/ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import {
+	CAPABILITY_BINDING_CUSTOM_TYPE,
 	createAutomationError,
 	createRunLifecycleCoordinator,
+	foldCapabilityBindingEntries,
 	isTerminalStatus,
+	redactAutomationError,
+	redactErrorText,
 	RUN_LEDGER_CUSTOM_TYPE,
 	type AutomationError,
+	type CapabilityBindingLedgerRecord,
 	type RunHandle,
 	type RunLedgerSession,
 	type RunLifecycleCoordinator,
@@ -20,7 +25,39 @@ import {
 	type SessionTreeNode,
 } from "../src/core/session-manager.ts";
 
+// agent-session.ts / session-manager.ts transitively load @aos-agent/ai/compat,
+// whose entrypoint pulls in gitignored generated model catalogs absent under
+// `npm ci --ignore-scripts`. Mock only the symbols the exercised paths touch;
+// compaction-only helpers are stubs.
+vi.mock("@aos-agent/ai/compat", () => ({
+	clampThinkingLevel: (level: unknown) => level,
+	cleanupSessionResources: () => {},
+	getSupportedThinkingLevels: () => ["off"],
+	isContextOverflow: () => false,
+	isRecoverableLength: () => false,
+	isRetryableAssistantError: () => false,
+	modelsAreEqual: () => false,
+	resetApiProviders: () => {},
+	streamSimple: async () => {
+		throw new Error("streamSimple is not exercised by this harness");
+	},
+}));
+
+// loader.ts holds @aos-agent/ai/providers/all only as a virtual-module namespace
+// for bundling; an empty mock avoids loading its generated catalog.
+vi.mock("@aos-agent/ai/providers/all", () => ({}));
+
 const MODEL: RunModelReference = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" };
+
+/** Metadata-only redacted binding used by capability-related coordinator tests. */
+const BINDING: CapabilityBindingLedgerRecord = {
+	id: "binding:default:abc123",
+	profile: "default",
+	createdAt: "2026-08-11T00:00:00.000Z",
+	descriptors: [{ id: "builtin_tool:core:read", revision: "rev:1", exposedToolName: "Read" }],
+	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+	toolAllowlist: ["Read"],
+};
 
 function makeSession(): SessionManager {
 	return SessionManager.inMemory("/workspace/automation");
@@ -732,5 +769,183 @@ describe("structural contract", () => {
 		expect(reservation.sessionId).toBe(session.getSessionId());
 		accept(reservation, "r1");
 		expect(ledgerSession.getEntries().some(isAutomationRunEntry)).toBe(true);
+	});
+});
+
+function isCapabilityBindingEntry(entry: SessionEntry): entry is Extract<SessionEntry, { type: "custom" }> {
+	return entry.type === "custom" && entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE;
+}
+
+describe("capability binding receipt and ledger", () => {
+	it("records capabilityBindingId on the terminal receipt and persists a schemaVersion 1 entry", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = coordinator.reserve().accept({
+			runId: "r1",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: BINDING,
+		});
+		run.start();
+		const terminal = run.settle({ outcome: "completed" });
+		expect(terminal?.type).toBe("run.completed");
+		expect(run.receipt()?.capabilityBindingId).toBe(BINDING.id);
+
+		const bindingEntries = session.getEntries().filter(isCapabilityBindingEntry);
+		expect(bindingEntries).toHaveLength(1);
+		const persisted = bindingEntries[0].data as { schemaVersion: number; binding: CapabilityBindingLedgerRecord };
+		expect(persisted.schemaVersion).toBe(1);
+		expect(persisted.binding).toEqual(BINDING);
+	});
+
+	it("replays capabilityBindingId and previousBindingId from the ledger after recovery", () => {
+		const session = makeSession();
+		const c1 = makeCoordinator(session);
+		const run = c1.reserve().accept({
+			runId: "r2",
+			sourceRunId: "r1",
+			previousBindingId: "binding:source:old",
+			attempt: 2,
+			model: MODEL,
+			capabilityBinding: BINDING,
+		});
+		run.start();
+		run.settle({ outcome: "completed" });
+
+		const c2 = makeCoordinator(session);
+		const result = c2.getRun("r2");
+		expect(result?.record.sourceRunId).toBe("r1");
+		expect(result?.record.previousBindingId).toBe("binding:source:old");
+		expect(result?.receipt?.capabilityBindingId).toBe(BINDING.id);
+		expect(c2.getCapabilityBindings().get(BINDING.id)).toEqual(BINDING);
+	});
+
+	it("records previousBindingId on the accepted record without a binding snapshot", () => {
+		const coordinator = makeCoordinator();
+		const run = coordinator.reserve().accept({
+			runId: "r2",
+			sourceRunId: "r1",
+			previousBindingId: "binding:source:old",
+			attempt: 2,
+			model: MODEL,
+		});
+		expect(run.record.previousBindingId).toBe("binding:source:old");
+	});
+});
+
+describe("capability binding ledger folding", () => {
+	it("folds capability.binding custom entries into a redacted history", () => {
+		const session = makeSession();
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: BINDING });
+
+		const folded = foldCapabilityBindingEntries(session.getEntries());
+		expect(folded.get(BINDING.id)).toEqual(BINDING);
+
+		const coordinator = makeCoordinator(session);
+		expect(coordinator.getCapabilityBindings().get(BINDING.id)).toEqual(BINDING);
+	});
+
+	it("skips malformed capability.binding entries and reports malformed-binding diagnostics", () => {
+		const session = makeSession();
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: { id: "broken" } });
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 99, binding: BINDING });
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, "not an object");
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: BINDING });
+
+		const coordinator = makeCoordinator(session);
+		coordinator.rebuildIndex();
+		expect(coordinator.getCapabilityBindings().get(BINDING.id)).toEqual(BINDING);
+		expect(coordinator.diagnostics().filter((diag) => diag.kind === "malformed-binding")).toHaveLength(3);
+	});
+});
+
+describe("redacted error serialization", () => {
+	it("redacts URL userinfo and well-known secret assignments from error text", () => {
+		expect(redactErrorText("connect to https://user:secret@mcp.example.invalid/host failed")).toBe(
+			"connect to https://mcp.example.invalid/host failed",
+		);
+		expect(redactErrorText("authorization: Bearer abc.def.ghi rejected")).toBe("authorization=[redacted] rejected");
+		expect(redactErrorText("Bearer abc.def.ghi rejected")).toBe("[redacted] rejected");
+		expect(redactErrorText("api_key=hunter2 is invalid")).toBe("api_key=[redacted] is invalid");
+		expect(redactErrorText("token=xyz failed")).toBe("token=[redacted] failed");
+		expect(redactErrorText("ordinary failure message")).toBe("ordinary failure message");
+	});
+
+	it("never leaves a secret payload visible after redaction", () => {
+		const redacted = redactErrorText(
+			"auth https://user:pass@mcp.example.invalid authorization: Bearer abc.def.ghi api_key=hunter2 token=xyz password=sesame",
+		);
+		expect(redacted).not.toMatch(/abc\.def\.ghi|hunter2|xyz|sesame|user:pass/);
+	});
+
+	it("redacts an AutomationError message while preserving code and retryable", () => {
+		const error = createAutomationError("capability_mcp_connect_failed", "token=xyz failed", true);
+		const redacted = redactAutomationError(error);
+		expect(redacted.code).toBe("capability_mcp_connect_failed");
+		expect(redacted.retryable).toBe(true);
+		expect(redacted.message).toBe("token=[redacted] failed");
+	});
+});
+
+describe("terminal error redaction", () => {
+	it("redacts a terminalError before persistence, emission and the retained record", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = accept(coordinator.reserve(), "r1");
+		run.start();
+		const terminal = run.settle({
+			outcome: "failed",
+			terminalError: createAutomationError(
+				"model_error",
+				"connect to https://user:secret@mcp.example.invalid token=abc123",
+				false,
+			),
+		});
+		expect(terminal?.type).toBe("run.failed");
+		if (terminal === undefined || terminal.type !== "run.failed") throw new Error("expected run.failed");
+		const wireMessage = terminal.receipt.terminalError?.message ?? "";
+		expect(wireMessage).not.toContain("secret");
+		expect(wireMessage).not.toContain("abc123");
+		expect(wireMessage).toContain("[redacted]");
+
+		// retained record is redacted
+		expect(run.record.terminalError?.message).not.toContain("secret");
+		expect(run.record.terminalError?.message).not.toContain("abc123");
+
+		// persisted ledger entry is redacted
+		const terminalEntry = session
+			.getEntries()
+			.filter(isAutomationRunEntry)
+			.find((entry) => (entry.data as { kind?: string }).kind === "terminal");
+		const persisted = (terminalEntry?.data as { receipt?: { terminalError?: AutomationError } }).receipt?.terminalError;
+		expect(persisted?.message).toBeDefined();
+		expect(persisted?.message).not.toContain("secret");
+		expect(persisted?.message).not.toContain("abc123");
+	});
+
+	it("redacts a hand-written terminal error when replayed from the ledger", () => {
+		const session = makeSession();
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: { id: "r-raw", sessionId: session.getSessionId(), attempt: 1, status: "failed", model: MODEL },
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-10T12:00:04.000Z",
+			receipt: {
+				runId: "r-raw",
+				sessionId: session.getSessionId(),
+				status: "failed",
+				usage: { input: 0, output: 0, total: 0 },
+				terminalError: createAutomationError("model_error", "Bearer abc.def.ghi token=xyz", false),
+			},
+		});
+
+		const coordinator = makeCoordinator(session);
+		const result = coordinator.getRun("r-raw");
+		expect(result?.receipt?.terminalError?.message).toBe("[redacted] token=[redacted]");
+		expect(result?.record.terminalError?.message).toBe("[redacted] token=[redacted]");
 	});
 });

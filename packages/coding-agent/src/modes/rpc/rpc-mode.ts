@@ -36,12 +36,22 @@ import type {
 	RunStreamEvent,
 	RunUsageSnapshot,
 } from "../../core/run-lifecycle.ts";
-import { createAutomationError, createRunLifecycleCoordinator, isTerminalStatus } from "../../core/run-lifecycle.ts";
+import {
+	createAutomationError,
+	createRunLifecycleCoordinator,
+	foldCapabilityBindingEntries,
+	isAutomationErrorCode,
+	isTerminalStatus,
+	redactAutomationError,
+	redactErrorText,
+} from "../../core/run-lifecycle.ts";
+import { createCapabilityBindingView } from "../../core/capability-registry.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
+	GetCapabilitiesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
@@ -59,6 +69,8 @@ import type {
 export type {
 	AutomationError,
 	AutomationErrorCode,
+	CapabilityBindingView,
+	GetCapabilitiesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
@@ -116,7 +128,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 
 	const error = (id: string | undefined, command: string, message: string): RpcResponse => {
-		return { id, type: "response", command, success: false, error: message };
+		return { id, type: "response", command, success: false, error: redactErrorText(message) };
 	};
 
 	// Pending extension UI requests waiting for response
@@ -164,7 +176,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		id: string | undefined,
 		command: RpcAutomationCommandType,
 		err: AutomationError,
-	): RpcAutomationResponse => ({ id, type: "response", command, success: false, error: err });
+	): RpcAutomationResponse => ({ id, type: "response", command, success: false, error: redactAutomationError(err) });
 
 	const hostNotInitializedError = (): AutomationError =>
 		createAutomationError(
@@ -196,6 +208,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
 			const candidate = err as AutomationError;
 			return createAutomationError(candidate.code, candidate.message, candidate.retryable);
+		}
+		return createAutomationError("start_rejected", errorMessage(err), false);
+	};
+
+	/**
+	 * Map a capability discovery/preflight failure into the structured Automation
+	 * Host error contract so profile, connection, authorization and binding
+	 * problems are never degraded into generic model failures.
+	 */
+	const capabilityError = (err: unknown): AutomationError => {
+		if (typeof err === "object" && err !== null && "code" in err) {
+			const code = (err as { code?: unknown }).code;
+			if (isAutomationErrorCode(code)) {
+				return createAutomationError(code, errorMessage(err), false);
+			}
 		}
 		return createAutomationError("start_rejected", errorMessage(err), false);
 	};
@@ -276,14 +303,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		runPromptPromises.set(handle.runId, tracked);
 	};
 
-	const startRun = (
+	const startRun = async (
 		id: string | undefined,
 		commandType: "run.start" | "run.resume",
 		message: string,
 		images: ImageContent[] | undefined,
 		attempt: number,
 		sourceRunId: string | undefined,
-	): RpcAutomationResponse | undefined => {
+		capabilityProfile: string | undefined,
+		previousBindingId: string | undefined,
+	): Promise<RpcAutomationResponse | undefined> => {
 		const inputError = slashRunInputError(id, commandType, message);
 		if (inputError !== undefined) return inputError;
 		if (shuttingDown) {
@@ -311,6 +340,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
+		// Capability profile preflight: materialize the requested capability profile
+		// into the frozen binding before any reservation or prompt. The public API
+		// owns the undefined => configured default semantics and waits for capability
+		// discovery to settle. Any profile or discovery failure is converted into a
+		// structured capability error before any ledger write; an unapprovable ask
+		// still fails the run below.
+		try {
+			await session.setCapabilityProfile(capabilityProfile);
+		} catch (err) {
+			return automationError(id, commandType, capabilityError(err));
+		}
+		// The materialized profile (requested, or the configured default when omitted)
+		// names the effective profile for the approval-required message below.
+		const effectiveProfile = session.getActiveCapabilityProfile();
 		let reservation: RunReservation;
 		try {
 			reservation = coordinator.reserve();
@@ -318,6 +361,80 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			return automationError(id, commandType, asAutomationError(err));
 		}
 		activeReservation = reservation;
+		try {
+			await session.whenCapabilitiesReady();
+		} catch (err) {
+			activeReservation = undefined;
+			try {
+				reservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			return automationError(id, commandType, capabilityError(err));
+		}
+		const preflightBinding = session.getActiveCapabilityBinding();
+		if (previousBindingId !== undefined) {
+			// Resume binding-drift guard. This runs only after capability discovery has
+			// settled (whenCapabilitiesReady above) so a restored MCP binding that
+			// initially differs until discovery completes cannot false-fail. The binding
+			// id is derived from descriptor id + revision + profile, so id equality is
+			// the drift check. Rejection happens before session.prompt/accept, so no
+			// accepted/terminal ledger write occurs.
+			const knownBindings = foldCapabilityBindingEntries(session.sessionManager.getEntries());
+			if (knownBindings.get(previousBindingId) === undefined) {
+				activeReservation = undefined;
+				try {
+					reservation.release();
+				} catch {
+					// reservation may already be consumed
+				}
+				return automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"capability_binding_unavailable",
+						`Source run ${sourceRunId} requires capability binding ${previousBindingId} which is not recorded in this session`,
+						false,
+					),
+				);
+			}
+			if (preflightBinding === undefined || preflightBinding.id !== previousBindingId) {
+				activeReservation = undefined;
+				try {
+					reservation.release();
+				} catch {
+					// reservation may already be consumed
+				}
+				return automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"capability_binding_unavailable",
+						`Source run ${sourceRunId} used capability binding ${previousBindingId} but the settled binding for this session no longer matches it; the original capability set cannot be safely restored`,
+						false,
+					),
+				);
+			}
+		}
+		// The requested profile is already materialized into the frozen binding by
+		// setCapabilityProfile above, so no profile-mismatch rejection applies.
+		if (preflightBinding !== undefined && preflightBinding.decisionSummary.awaitingApproval > 0) {
+			activeReservation = undefined;
+			try {
+				reservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			return automationError(
+				id,
+				commandType,
+				createAutomationError(
+					"capability_approval_required",
+					`Capability profile "${effectiveProfile}" has ${preflightBinding.decisionSummary.awaitingApproval} capability(-ies) awaiting approval; the Automation Host cannot auto-approve ask.`,
+					false,
+				),
+			);
+		}
 		const proposedRunId = crypto.randomUUID();
 		// Reserve before the prompt's preflight so the session is busy while the run
 		// is pending. Only a preflight that succeeds persists the accepted fact and
@@ -347,7 +464,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				let handle: RunHandle | undefined;
 				let startEvents: RunStreamEvent[];
 				try {
-					handle = reservation.accept({ runId: proposedRunId, attempt, sourceRunId, model: currentRunModel() });
+					handle = reservation.accept({
+						runId: proposedRunId,
+						attempt,
+						sourceRunId,
+						previousBindingId,
+						model: currentRunModel(),
+						// Persist the frozen binding as the run's capability binding;
+						// its id is recorded on the terminal receipt.
+						capabilityBinding: session.getActiveCapabilityBinding(),
+					});
 					handle.setUsageBaseline(usageSnapshot());
 					// Persist the started fact before publishing accepted. The returned events
 					// remain buffered locally so the external contract is still accepted ->
@@ -788,7 +914,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "run.start": {
-				return startRun(id, "run.start", command.message, command.images, 1, undefined);
+				return startRun(
+					id,
+					"run.start",
+					command.message,
+					command.images,
+					1,
+					undefined,
+					command.capabilityProfile,
+					undefined,
+				);
 			}
 
 			case "run.get": {
@@ -943,6 +1078,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						),
 					);
 				}
+				const previousBindingId = sourceRun.receipt?.capabilityBindingId;
 				return startRun(
 					id,
 					"run.resume",
@@ -950,6 +1086,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					command.images,
 					sourceRun.record.attempt + 1,
 					command.sourceRunId,
+					command.capabilityProfile,
+					previousBindingId,
 				);
 			}
 
@@ -1166,6 +1304,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Historical entries pass through SessionManager's structural parser,
 				// which reconstructs only receipt fields and discards unknown payloads.
 				return success(id, "get_context", inspection);
+			}
+
+			case "get_capabilities": {
+				// Ordinary read-only inspection: no Automation Host initialize is
+				// required, and only redacted metadata is ever returned.
+				const history = foldCapabilityBindingEntries(session.sessionManager.getEntries());
+				const current = session.getActiveCapabilityBinding();
+				if (command.bindingId !== undefined) {
+					const found = history.get(command.bindingId);
+					if (found === undefined) {
+						return error(id, "get_capabilities", `Capability binding not found: ${command.bindingId}`);
+					}
+					return success(id, "get_capabilities", { binding: found, bindings: [] } satisfies GetCapabilitiesData);
+				}
+				return success(id, "get_capabilities", {
+					binding: current !== undefined ? createCapabilityBindingView(current) : null,
+					bindings: [...history.values()],
+				} satisfies GetCapabilitiesData);
 			}
 
 			case "export_html": {

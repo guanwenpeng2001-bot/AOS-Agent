@@ -353,6 +353,11 @@ export {
 	runRpcMode,
 } from "./modes/index.ts";
 export type {
+	CapabilityBindingView,
+	CapabilityCatalogView,
+	CapabilityDescriptorView,
+} from "./modes/index.ts";
+export type {
 	AutomationError,
 	AutomationErrorCode,
 	InitializeData,

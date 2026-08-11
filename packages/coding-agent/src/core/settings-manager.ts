@@ -7,6 +7,13 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import {
+	buildCapabilitySettings,
+	type CapabilitiesSettingsConfig,
+	type CapabilitySettings,
+	type CapabilitySettingsInput,
+	type McpSettingsConfig,
+} from "./capability-settings.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 
 export interface CompactionSettings {
@@ -152,6 +159,8 @@ export interface Settings {
 	tuiMode?: TuiMode; // default: "regular"
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
+	capabilities?: CapabilitiesSettingsConfig; // Capability Registry profiles and default profile
+	mcp?: McpSettingsConfig; // MCP server configs (env/header names only, never values)
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -300,6 +309,7 @@ export class SettingsManager {
 	private projectSettings: Settings;
 	private settings: Settings;
 	private projectTrusted: boolean;
+	private untrustedProjectCapabilitySettings: CapabilitySettingsInput;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -317,11 +327,13 @@ export class SettingsManager {
 		projectLoadError: Error | null = null,
 		initialErrors: SettingsError[] = [],
 		projectTrusted = true,
+		untrustedProjectCapabilitySettings: CapabilitySettingsInput = {},
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
 		this.projectSettings = initialProject;
 		this.projectTrusted = projectTrusted;
+		this.untrustedProjectCapabilitySettings = untrustedProjectCapabilitySettings;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
@@ -351,6 +363,12 @@ export class SettingsManager {
 			initialErrors.push({ scope: "project", error: projectLoad.error });
 		}
 
+		// Keep the raw project capability config when the project is untrusted so
+		// its MCP servers stay visible as diagnostics (the Registry denies them).
+		const untrustedProjectCapabilitySettings = projectTrusted
+			? {}
+			: SettingsManager.loadRawProjectCapabilitySettings(storage);
+
 		return new SettingsManager(
 			storage,
 			globalLoad.settings,
@@ -359,6 +377,7 @@ export class SettingsManager {
 			projectLoad.error,
 			initialErrors,
 			projectTrusted,
+			untrustedProjectCapabilitySettings,
 		);
 	}
 
@@ -398,6 +417,23 @@ export class SettingsManager {
 		} catch (error) {
 			return { settings: {}, error: error as Error };
 		}
+	}
+
+	/**
+	 * Read the raw project `capabilities` / `mcp` config bypassing the trust
+	 * filter. Used only to keep untrusted project MCP servers visible as
+	 * diagnostics; the parsed config references env names (never values) and the
+	 * Registry force-denies untrusted servers.
+	 */
+	private static loadRawProjectCapabilitySettings(storage: SettingsStorage): CapabilitySettingsInput {
+		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
+		if (load.error) {
+			return {};
+		}
+		return {
+			...(load.settings.capabilities !== undefined ? { capabilities: load.settings.capabilities } : {}),
+			...(load.settings.mcp !== undefined ? { mcp: load.settings.mcp } : {}),
+		};
 	}
 
 	/** Migrate old settings format to new format */
@@ -486,6 +522,7 @@ export class SettingsManager {
 		if (!trusted) {
 			this.projectSettings = {};
 			this.projectSettingsLoadError = null;
+			this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 			return;
 		}
@@ -497,6 +534,29 @@ export class SettingsManager {
 			this.recordError("project", projectLoad.error);
 		}
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+	}
+
+	/**
+	 * Parsed, trust-aware view of `capabilities` and `mcp` settings. Trusted
+	 * project profiles and `defaultProfile` merge over global; untrusted project
+	 * profiles are ignored but project MCP servers remain as untrusted
+	 * diagnostics so the Registry denies them.
+	 */
+	getCapabilitySettings(): CapabilitySettings {
+		const projectInput: CapabilitySettingsInput = this.projectTrusted
+			? {
+					capabilities: this.projectSettings.capabilities,
+					mcp: this.projectSettings.mcp,
+				}
+			: this.untrustedProjectCapabilitySettings;
+		return buildCapabilitySettings({
+			global: {
+				capabilities: this.globalSettings.capabilities,
+				mcp: this.globalSettings.mcp,
+			},
+			project: projectInput,
+			projectTrusted: this.projectTrusted,
+		});
 	}
 
 	async reload(): Promise<void> {
@@ -514,6 +574,7 @@ export class SettingsManager {
 		this.modifiedNestedFields.clear();
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
+		this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 
 		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {

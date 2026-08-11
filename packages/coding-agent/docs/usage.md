@@ -59,7 +59,28 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, and context files |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
+| `/capabilities` | List the redacted capability catalog, inspect a descriptor, or approve an ask capability for this session |
 | `/quit` | Quit AOS Agent |
+
+## Capabilities
+
+AOS Agent models what it can load and call — built-in tools, extension tools, SDK tools, skills, extensions, and MCP servers — as capabilities. Each capability has a stable id, a kind, a redacted source, an availability, a trust flag, and a profile decision (`allow`, `ask`, or `deny`).
+
+In interactive mode, inspect and approve capabilities from the current session:
+
+| Command | Effect |
+|---------|--------|
+| `/capabilities` | List the redacted capability catalog: decision, kind, availability, name, source, revision, and selected status |
+| `/capabilities inspect <id>` | Show one descriptor: kind, profile rule, availability, trust, binding/selected status, redacted source, and revision |
+| `/capabilities approve <id>` | Approve an ask capability for this session only |
+
+These commands are backed by the public Session surface (`inspectCapabilityCatalog()`, `getActiveCapabilityBinding()`, `getActiveCapabilityProfile()`, and `approveCapability()`). The catalog view is redacted: command arguments, environment/header values, tokens, and unredacted URLs never appear, and raw local paths are not printed. Only `CapabilityError` codes and their redacted messages are shown for failures.
+
+Approvals are session-local and never written to settings; a denied, untrusted, or unavailable capability can never be approved. The active profile remains the authority over what enters the binding.
+
+Capability trust: project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable/degraded rather than exposing connection internals.
+
+Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, ModelBroker, external Agent orchestration, or legacy SSE transports.
 
 ## Message Queue
 

@@ -129,6 +129,26 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import {
+	CapabilityError,
+	CapabilityProfileNotFoundError,
+	CapabilityRegistry,
+	createCapabilityId,
+	resolveCapabilityBinding,
+	type CapabilityBinding,
+	type CapabilityCandidate,
+	type CapabilityCatalog,
+	type CapabilityCatalogView,
+	type ResolveBindingInput,
+} from "./capability-registry.ts";
+import {
+	createMcpServerCapabilityCandidate,
+	type CapabilitySettings,
+} from "./capability-settings.ts";
+import { MCPLifecycleManager } from "./mcp-lifecycle.ts";
+import { mapMCPToolsToDefinitions, type MCPToolDefinitionResult } from "./mcp-tool-adapter.ts";
+import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
+import { formatSkillsForPrompt } from "./skills.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -250,6 +270,14 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Capability Registry facade used to freeze the session's capability binding. */
+	capabilityRegistry?: CapabilityRegistry;
+	/** MCP transport factory override; tests inject in-memory transports. */
+	mcpTransportFactory?: MCPTransportFactory;
+	/** Session-local approvals for ask capabilities. Never overrides a deny. */
+	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
+	/** `noTools` suppression mode from createAgentSession: only narrows the binding. */
+	noTools?: "all" | "builtin";
 }
 
 export interface ExtensionBindings {
@@ -428,6 +456,27 @@ export class AgentSession {
 	/** Context errors raised inside Agent-core boundaries and rethrown to the caller. */
 	private _pendingContextError: ContextError | undefined;
 
+	// Capability Registry + MCP lifecycle state. The binding is frozen per runtime
+	// build; an active agent run cannot mutate it.
+	private _capabilityRegistry: CapabilityRegistry;
+	private _capabilityApprovedDescriptorIds: ReadonlyArray<string>;
+	/** Capability profile materialized into the active frozen binding; undefined uses settings.defaultProfile. */
+	private _activeCapabilityProfile: string | undefined;
+	private _noTools?: "all" | "builtin";
+	private _mcpTransportFactory?: MCPTransportFactory;
+	private _mcpLifecycleManager!: MCPLifecycleManager;
+	private _mcpRegisteredServerIds = new Set<string>();
+	private _activeCapabilityBinding: CapabilityBinding | undefined;
+	private _activeCapabilityCatalog: CapabilityCatalog | undefined;
+	private _activeMcpTools: MCPToolDefinitionResult[] = [];
+	private _activeMcpToolCandidates: CapabilityCandidate[] = [];
+	/** Redacted capability error codes per MCP server that failed discovery. */
+	private _mcpDiscoveryErrors = new Map<string, string>();
+	/** Resolves when the initial MCP capability discovery for the current runtime settles. */
+	private _capabilityDiscoveryPromise: Promise<void> = Promise.resolve();
+	private _capabilityDiscoveryError: Error | undefined;
+	/** Tool registration that arrived mid-run; applied after the run settles. */
+	private _pendingToolRegistryRefresh = false;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._agentStreamFunction = config.agent.streamFunction;
@@ -444,6 +493,11 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._capabilityRegistry = config.capabilityRegistry ?? new CapabilityRegistry();
+		this._capabilityApprovedDescriptorIds = config.capabilityApprovedDescriptorIds ?? [];
+		this._activeCapabilityProfile = undefined;
+		this._noTools = config.noTools;
+		this._mcpTransportFactory = config.mcpTransportFactory;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -826,6 +880,10 @@ export class AgentSession {
 		} finally {
 			this._resolveIdleWaitIfIdle();
 		}
+		if (this._pendingToolRegistryRefresh) {
+			this._pendingToolRegistryRefresh = false;
+			this._refreshToolRegistry();
+		}
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -1071,6 +1129,7 @@ export class AgentSession {
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
 		}
+		void this._mcpLifecycleManager?.closeAll().catch(() => undefined);
 
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured agent or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
@@ -1146,9 +1205,12 @@ export class AgentSession {
 
 	/**
 	 * Set active tools by name.
-	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
+	 * Only tools in the registry (already bounded by the frozen capability
+	 * binding) can be enabled. Unknown tool names are ignored.
 	 * Also rebuilds the system prompt to reflect the new tool set.
-	 * Changes take effect on the next agent turn.
+	 * Changes take effect on the next provider request. The capability binding and
+	 * tool registry remain frozen during a run; changing the active subset does
+	 * not rebuild either one.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
 		const tools: AgentTool[] = [];
@@ -1526,7 +1588,8 @@ export class AgentSession {
 				);
 			}
 
-			return {
+			const capability = this._bindingDescriptorForToolName(tool.name);
+			const source: ContextSourceInput = {
 				sourceId,
 				kind: "capability_index",
 				scope: "turn",
@@ -1534,6 +1597,12 @@ export class AgentSession {
 				content,
 				required: true,
 			};
+			if (capability) {
+				source.capabilityId = capability.id;
+				source.capabilityRevision = capability.revision;
+				source.capabilityBindingId = this._activeCapabilityBinding?.id;
+			}
+			return source;
 		});
 	}
 
@@ -1560,6 +1629,14 @@ export class AgentSession {
 				continue;
 			}
 			sources.push(source.kind === "instruction" ? this._formatInstructionSource(source) : source);
+		}
+
+		// The Capability Registry binding decides which skills are exposed. The
+		// loader no longer builds a full skill index; this source is derived from
+		// the frozen binding and carries its id for audit.
+		const skillIndex = this._skillCapabilityIndexSource();
+		if (skillIndex) {
+			sources.push(skillIndex);
 		}
 
 		for (const source of await this._collectMemorySources()) {
@@ -2266,6 +2343,122 @@ export class AgentSession {
 
 	get resourceLoader(): ResourceLoader {
 		return this._resourceLoader;
+	}
+
+	/**
+	 * The frozen CapabilityBinding for the current runtime. Immutable for the
+	 * duration of any active agent run; reload / setActiveTools / dynamic
+	 * registration resolve a fresh binding only when the session is idle.
+	 */
+	getActiveCapabilityBinding(): CapabilityBinding | undefined {
+		return this._activeCapabilityBinding;
+	}
+
+	/** Binding id of the current frozen capability binding, when one is resolved. */
+	getCapabilityBindingId(): string | undefined {
+		return this._activeCapabilityBinding?.id;
+	}
+
+	/** Redacted MCP connection status for a configured server id. */
+	getMcpConnectionStatus(serverId: string) {
+		return this._mcpLifecycleManager?.getStatus(serverId);
+	}
+
+	/**
+	 * Resolves once initial MCP capability discovery for the current runtime has
+	 * settled (connect + listTools + binding re-resolution). Throws the recorded
+	 * discovery failure when one occurred (e.g. a name conflict).
+	 */
+	async whenCapabilitiesReady(): Promise<void> {
+		await this._capabilityDiscoveryPromise;
+		if (this._capabilityDiscoveryError) {
+			throw this._capabilityDiscoveryError;
+		}
+	}
+
+	/** The capability profile currently materialized into the frozen binding. */
+	getActiveCapabilityProfile(): string {
+		return this._activeCapabilityProfile ?? this.settingsManager.getCapabilitySettings().defaultProfile;
+	}
+
+	/**
+	 * Materialize the named capability profile into the actual frozen binding,
+	 * active tool set, and MCP setup. Omitting the profile resets to
+	 * settings.defaultProfile; an unknown profile throws
+	 * capability_profile_not_found (no silent fallback).
+	 *
+	 * While an agent run is active this waits for the run to settle so the
+	 * running binding is never mutated; materialization and discovery readiness
+	 * complete before the returned promise resolves.
+	 */
+	async setCapabilityProfile(profileName?: string): Promise<void> {
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		const effectiveProfile = profileName ?? capabilitySettings.defaultProfile;
+		if (capabilitySettings.profiles[effectiveProfile] === undefined) {
+			throw new CapabilityProfileNotFoundError(effectiveProfile);
+		}
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
+		await this._materializeCapabilityProfile(effectiveProfile);
+	}
+
+	/**
+	 * Redacted view of the currently discovered capability catalog. Never
+	 * includes command arguments, environment/header values, tokens, or
+	 * unredacted URLs.
+	 */
+	inspectCapabilityCatalog(): CapabilityCatalogView {
+		return this._capabilityRegistry.inspectCatalog() ?? { version: 1, descriptors: [] };
+	}
+
+	/**
+	 * Approve an ask capability for this session only. The approval is session
+	 * local (never written to settings). The current profile is the authority:
+	 * an approval is retained only when it flips an ask descriptor into the
+	 * binding; a denied, untrusted, or unavailable descriptor can never be
+	 * approved (capability_denied). While an agent run is active this waits for
+	 * the run to settle so the running binding is never mutated; the approval
+	 * materializes before the returned promise resolves.
+	 */
+	async approveCapability(descriptorId: string): Promise<void> {
+		// Wait for an active run to settle before reading the catalog or
+		// resolving, so validation runs against the settled catalog/profile state.
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
+		const catalog = this._activeCapabilityCatalog;
+		const descriptor = catalog?.descriptors.find((candidate) => candidate.id === descriptorId);
+		if (catalog === undefined || descriptor === undefined) {
+			throw new CapabilityError("capability_denied", `Cannot approve unknown capability: ${descriptorId}`);
+		}
+		if (!descriptor.trusted || descriptor.availability !== "available") {
+			throw new CapabilityError(
+				"capability_denied",
+				`Cannot approve capability "${descriptorId}": it is untrusted or unavailable`,
+			);
+		}
+		if (this._capabilityApprovedDescriptorIds.includes(descriptorId)) {
+			return;
+		}
+		// A capability already enabled by the profile (e.g. allow) has nothing to
+		// approve; retain the approval only when it changes an ask into the binding.
+		if (this._activeCapabilityBinding?.descriptors.some((ref) => ref.id === descriptorId)) {
+			return;
+		}
+		const entered = resolveCapabilityBinding({
+			...this._resolveBindingInput(),
+			catalog,
+			approvedDescriptorIds: [...this._capabilityApprovedDescriptorIds, descriptorId],
+		}).descriptors.some((ref) => ref.id === descriptorId);
+		if (!entered) {
+			throw new CapabilityError(
+				"capability_denied",
+				`Cannot approve capability "${descriptorId}": it is denied by the profile or cannot be selected`,
+			);
+		}
+		this._capabilityApprovedDescriptorIds = [...this._capabilityApprovedDescriptorIds, descriptorId];
+		await this._refreshCapabilitySetup();
 	}
 
 	/**
@@ -3226,12 +3419,21 @@ export class AgentSession {
 	}
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
+		// An active agent run is bound to the frozen capability binding. Tool
+		// registration / allowlist changes cannot mutate it mid-run; defer until
+		// the run settles so the next binding can be re-resolved.
+		if (this._isAgentRunActive) {
+			this._pendingToolRegistryRefresh = true;
+			return;
+		}
+
+		// Re-resolve the frozen binding from the current candidates. `tools` /
+		// `excludeTools` / `noTools` are applied as the final narrowing inside the
+		// registry, so the binding's toolAllowlist is authoritative.
+		const binding = this._resolveCapabilityBinding();
+		const allowedToolNames = new Set(binding.toolAllowlist);
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
-		const allowedToolNames = this._allowedToolNames;
-		const excludedToolNames = this._excludedToolNames;
-		const isAllowedTool = (name: string): boolean =>
-			(!allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [
@@ -3240,10 +3442,10 @@ export class AgentSession {
 				definition,
 				sourceInfo: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
 			})),
-		].filter((tool) => isAllowedTool(tool.definition.name));
+		].filter((tool) => allowedToolNames.has(tool.definition.name));
 		const definitionRegistry = new Map<string, ToolDefinitionEntry>(
 			Array.from(this._baseToolDefinitions.entries())
-				.filter(([name]) => isAllowedTool(name))
+				.filter(([name]) => allowedToolNames.has(name))
 				.map(([name, definition]) => [
 					name,
 					{
@@ -3256,6 +3458,21 @@ export class AgentSession {
 			definitionRegistry.set(tool.definition.name, {
 				definition: tool.definition,
 				sourceInfo: tool.sourceInfo,
+			});
+		}
+		// MCP tools discovered from binding-selected servers enter the registry
+		// under their namespaced names, bounded by the same capability binding.
+		for (const result of this._activeMcpTools) {
+			if (!allowedToolNames.has(result.definition.name)) {
+				continue;
+			}
+			definitionRegistry.set(result.definition.name, {
+				// The MCP adapter specializes ToolDefinition with MCPCallResult
+				// details; the shared registry treats tool definitions opaquely.
+				definition: result.definition as unknown as ToolDefinition,
+				sourceInfo: createSyntheticSourceInfo(`<mcp:${result.mapping.exposedToolName}>`, {
+					source: result.mapping.sourceIdentity,
+				}),
 			});
 		}
 		this._toolDefinitions = definitionRegistry;
@@ -3279,10 +3496,21 @@ export class AgentSession {
 		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
 		const wrappedBuiltInTools = wrapRegisteredTools(
 			Array.from(this._baseToolDefinitions.values())
-				.filter((definition) => isAllowedTool(definition.name))
+				.filter((definition) => allowedToolNames.has(definition.name))
 				.map((definition) => ({
 					definition,
 					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
+				})),
+			runner,
+		);
+		const wrappedMcpTools = wrapRegisteredTools(
+			Array.from(definitionRegistry.entries())
+				.filter(
+					([name, entry]) => allowedToolNames.has(name) && entry.sourceInfo.source.startsWith("mcp"),
+				)
+				.map(([name, entry]) => ({
+					definition: entry.definition,
+					sourceInfo: entry.sourceInfo,
 				})),
 			runner,
 		);
@@ -3291,20 +3519,26 @@ export class AgentSession {
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
+		for (const tool of wrappedMcpTools as AgentTool[]) {
+			toolRegistry.set(tool.name, tool);
+		}
 		this._toolRegistry = toolRegistry;
 
 		const nextActiveToolNames = (
 			options?.activeToolNames ? [...options.activeToolNames] : [...previousActiveToolNames]
-		).filter((name) => isAllowedTool(name));
+		).filter((name) => allowedToolNames.has(name));
 
-		if (allowedToolNames) {
+		if (this._allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (allowedToolNames.has(toolName)) {
+				if (this._allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
 			}
 		} else if (options?.includeAllExtensionTools) {
 			for (const tool of wrappedExtensionTools) {
+				nextActiveToolNames.push(tool.name);
+			}
+			for (const tool of wrappedMcpTools) {
 				nextActiveToolNames.push(tool.name);
 			}
 		} else if (!options?.activeToolNames) {
@@ -3316,6 +3550,325 @@ export class AgentSession {
 		}
 
 		this.setActiveToolsByName([...new Set(nextActiveToolNames)]);
+	}
+
+	/**
+	 * Resolve the frozen capability binding for the current runtime. Builds
+	 * candidate descriptors for builtin / extension / SDK tools and skills, plus
+	 * configured MCP servers and any discovered MCP tools, then applies the
+	 * profile rules and the tools / excludeTools / noTools narrowing.
+	 *
+	 * Static candidates shadow by precedence (SDK > extension > builtin) so a
+	 * same-named extension tool continues to override a builtin instead of
+	 * producing a catalog collision.
+	 */
+	private _resolveCapabilityBinding(): CapabilityBinding {
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		this._registerConfiguredMcpServers(capabilitySettings);
+		const candidates = this._collectCapabilityCandidates(capabilitySettings);
+		const catalog = this._capabilityRegistry.buildCatalog({ candidates });
+
+		const binding = this._capabilityRegistry.resolveBinding({
+			...this._resolveBindingInput(),
+			catalog,
+		});
+
+		this._activeCapabilityCatalog = catalog;
+		this._activeCapabilityBinding = binding;
+		this._syncSelectedMcpServers(binding, catalog);
+		return binding;
+	}
+
+	/**
+	 * Shared binding inputs for the current runtime: the active (or default)
+	 * profile, session-local approvals, and the tools / excludeTools / noTools
+	 * final narrowing. The catalog is supplied separately by the caller.
+	 */
+	private _resolveBindingInput(): Omit<ResolveBindingInput, "catalog"> {
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		const excludeToolNames = new Set(this._excludedToolNames ?? []);
+		return {
+			profile: this._activeCapabilityProfile ?? capabilitySettings.defaultProfile,
+			profiles: capabilitySettings.profiles,
+			approvedDescriptorIds: this._capabilityApprovedDescriptorIds,
+			toolAllowlist: this._allowedToolNames ? [...this._allowedToolNames] : undefined,
+			excludeToolNames: [...excludeToolNames],
+			noTools: this._noTools === "all",
+		};
+	}
+
+	/**
+	 * Materialize a profile into the actual frozen binding, active tool set, and
+	 * MCP selection. Only invoked while the session is idle (or after a run
+	 * settles) so a running binding is never mutated.
+	 */
+	private async _materializeCapabilityProfile(profileName: string): Promise<void> {
+		this._activeCapabilityProfile = profileName;
+		await this._refreshCapabilitySetup();
+	}
+
+	/**
+	 * Rebuild the tool registry from the current frozen binding, clear any stale
+	 * discovery error, re-run MCP discovery readiness for the current selection,
+	 * and await readiness so the caller's promise only resolves once setup is
+	 * complete.
+	 */
+	private async _refreshCapabilitySetup(): Promise<void> {
+		// A profile change starts a fresh MCP discovery attempt. Do not let tools
+		// discovered under the previous binding remain visible while the new
+		// binding is still being preflighted.
+		this._activeMcpTools = [];
+		this._activeMcpToolCandidates = [];
+		this._refreshToolRegistry({ includeAllExtensionTools: true });
+		this._capabilityDiscoveryError = undefined;
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
+			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
+		});
+		await this.whenCapabilitiesReady();
+	}
+
+	private _registerConfiguredMcpServers(capabilitySettings: CapabilitySettings): void {
+		for (const diagnostic of capabilitySettings.mcpServers) {
+			if (this._mcpRegisteredServerIds.has(diagnostic.id)) {
+				continue;
+			}
+			const config = { id: diagnostic.id, ...diagnostic.server } as MCPServerConfig;
+			this._mcpLifecycleManager.registerServers([config]);
+			this._mcpRegisteredServerIds.add(diagnostic.id);
+		}
+	}
+
+	/** Only binding-selected MCP servers are connectable; the lifecycle enforces this gate. */
+	private _syncSelectedMcpServers(binding: CapabilityBinding, catalog: CapabilityCatalog): void {
+		const selected = new Set<string>();
+		for (const ref of binding.descriptors) {
+			if (!ref.id.startsWith("mcp_server:")) {
+				continue;
+			}
+			const descriptor = catalog.descriptors.find((candidate) => candidate.id === ref.id);
+			if (descriptor?.mcpServerId !== undefined) {
+				selected.add(descriptor.mcpServerId);
+			}
+		}
+		this._mcpLifecycleManager.setSelectedServerIds(selected);
+	}
+
+	private _collectCapabilityCandidates(capabilitySettings: CapabilitySettings): CapabilityCandidate[] {
+		const candidates: CapabilityCandidate[] = [];
+
+		const extensionToolNames = new Set<string>();
+		for (const tool of this._extensionRunner.getAllRegisteredTools()) {
+			extensionToolNames.add(tool.definition.name);
+		}
+		const sdkToolNames = new Set(this._customTools.map((definition) => definition.name));
+
+		for (const name of this._baseToolDefinitions.keys()) {
+			// A same-named extension or SDK tool shadows the builtin (existing override semantics).
+			if (extensionToolNames.has(name) || sdkToolNames.has(name)) {
+				continue;
+			}
+			candidates.push({
+				kind: "builtin_tool",
+				name,
+				localName: name,
+				sourceIdentity: "builtin",
+				source: createSyntheticSourceInfo(`<builtin:${name}>`, { source: "builtin" }),
+				exposedToolName: name,
+			});
+		}
+		for (const tool of this._extensionRunner.getAllRegisteredTools()) {
+			if (sdkToolNames.has(tool.definition.name)) {
+				continue;
+			}
+			candidates.push({
+				kind: "extension_tool",
+				name: tool.definition.name,
+				localName: tool.definition.name,
+				sourceIdentity: tool.sourceInfo.source,
+				source: tool.sourceInfo,
+				exposedToolName: tool.definition.name,
+			});
+		}
+		for (const definition of this._customTools) {
+			candidates.push({
+				kind: "sdk_tool",
+				name: definition.name,
+				localName: definition.name,
+				sourceIdentity: "sdk",
+				source: createSyntheticSourceInfo(`<sdk:${definition.name}>`, { source: "sdk" }),
+				exposedToolName: definition.name,
+			});
+		}
+		for (const skill of this._resourceLoader.getSkills().skills) {
+			const source =
+				skill.sourceInfo ?? createSyntheticSourceInfo(`<skill:${skill.name}>`, { source: "skill" });
+			candidates.push({
+				kind: "skill",
+				name: skill.name,
+				localName: skill.name,
+				sourceIdentity: source.source,
+				source,
+			});
+		}
+		for (const diagnostic of capabilitySettings.mcpServers) {
+			candidates.push(createMcpServerCapabilityCandidate(diagnostic));
+		}
+		for (const candidate of this._activeMcpToolCandidates) {
+			candidates.push(candidate);
+		}
+		return candidates;
+	}
+
+	/**
+	 * Connect only binding-selected trusted MCP servers, discover their tools, and
+	 * re-resolve the binding with the namespaced mcp_tool descriptors. Failures
+	 * are recorded redacted and fail discovery closed; the server and its tools
+	 * stay out of the binding.
+	 */
+	private async _discoverMcpToolsForBinding(): Promise<void> {
+		const binding = this._activeCapabilityBinding;
+		const catalog = this._activeCapabilityCatalog;
+		if (!binding || !catalog) {
+			return;
+		}
+		const selectedServerIds = this._mcpLifecycleManager.getSelectedServerIds();
+		if (selectedServerIds.size === 0) {
+			return;
+		}
+
+		const capabilitySettings = this.settingsManager.getCapabilitySettings();
+		const diagnosticByServerId = new Map(
+			capabilitySettings.mcpServers.map((diagnostic) => [diagnostic.id, diagnostic]),
+		);
+
+		const mcpResults: MCPToolDefinitionResult[] = [];
+		const mcpCandidates: CapabilityCandidate[] = [];
+		for (const serverId of [...selectedServerIds]) {
+			const diagnostic = diagnosticByServerId.get(serverId);
+			// Untrusted servers are force-denied by the registry and never selected;
+			// this check is belt-and-suspenders so a trusted override cannot leak.
+			if (!diagnostic || !diagnostic.trusted) {
+				throw new CapabilityError(
+					"capability_denied",
+					`MCP server "${serverId}" is not trusted for this capability binding`,
+				);
+			}
+			const serverDescriptor = catalog.descriptors.find(
+				(candidate) => candidate.kind === "mcp_server" && candidate.mcpServerId === serverId,
+			);
+			if (!serverDescriptor) {
+				throw new CapabilityError(
+					"capability_binding_unavailable",
+					`MCP server "${serverId}" is missing from the capability catalog`,
+				);
+			}
+			try {
+				await this._mcpLifecycleManager.connect(serverId);
+				const tools = await this._mcpLifecycleManager.listTools(serverId);
+				// The tool source identity embeds the server id so two same-scope
+				// servers exposing the same local tool never share a descriptor id.
+				const serverToolSourceIdentity = `${diagnostic.source.source}:${diagnostic.id}`;
+				const results = mapMCPToolsToDefinitions(tools, {
+					serverId,
+					sourceIdentity: serverToolSourceIdentity,
+					parentDescriptorId: serverDescriptor.id,
+					callTool: (toolName, args, signal) =>
+						this._mcpLifecycleManager.callTool(serverId, toolName, args, signal),
+				});
+				for (const result of results) {
+					mcpResults.push(result);
+					mcpCandidates.push({
+						kind: "mcp_tool",
+						name: result.mapping.toolName,
+						localName: result.mapping.toolName,
+						sourceIdentity: result.mapping.sourceIdentity,
+						source: diagnostic.source,
+						parentId: result.mapping.parentDescriptorId,
+						mcpServerId: serverId,
+						exposedToolName: result.mapping.exposedToolName,
+						trusted: diagnostic.trusted,
+						revisionInput: result.mapping.revisionInput,
+					});
+				}
+			} catch (error) {
+				// The lifecycle records a redacted MCPError; the server and its tools
+				// remain excluded from the binding. A selected server that cannot be
+				// discovered must fail preflight instead of degrading to a partial
+				// binding that silently omits the requested capability.
+				const discoveryError =
+					error instanceof MCPError || error instanceof CapabilityError
+						? error
+						: new CapabilityError(
+								"capability_mcp_connect_failed",
+								`MCP capability discovery failed for server "${serverId}"`,
+							);
+				this._recordMcpDiscoveryError(serverId, discoveryError);
+				throw discoveryError;
+			}
+		}
+
+		this._activeMcpTools = mcpResults;
+		this._activeMcpToolCandidates = mcpCandidates;
+		if (mcpResults.length > 0) {
+			if (this.isIdle) {
+				this._refreshToolRegistry({ includeAllExtensionTools: true });
+			} else {
+				// Discovery completed mid-run: the active run stays bound to the
+				// frozen binding; re-resolve the registry only after the run settles.
+				this._pendingToolRegistryRefresh = true;
+			}
+		}
+	}
+
+	private _recordMcpDiscoveryError(serverId: string, error: unknown): void {
+		// Only the redacted capability code is retained; remote text never surfaces.
+		const code =
+			error instanceof Error && "code" in error && typeof error.code === "string"
+				? error.code
+				: "capability_mcp_connect_failed";
+		this._mcpDiscoveryErrors.set(serverId, code);
+	}
+
+	/** The skill capability_index source, built only from binding-selected skills. */
+	private _skillCapabilityIndexSource(): ContextSourceInput | undefined {
+		const binding = this._activeCapabilityBinding;
+		if (!binding) {
+			return undefined;
+		}
+		const skills = this._resourceLoader.getSkills().skills;
+		if (skills.length === 0) {
+			return undefined;
+		}
+		const selectedSkillIds = new Set(
+			binding.descriptors.filter((ref) => ref.id.startsWith("skill:")).map((ref) => ref.id),
+		);
+		const selectedSkills = skills.filter((skill) => {
+			const source =
+				skill.sourceInfo ?? createSyntheticSourceInfo(`<skill:${skill.name}>`, { source: "skill" });
+			return selectedSkillIds.has(createCapabilityId("skill", source.source, skill.name));
+		});
+		if (selectedSkills.length === 0) {
+			return undefined;
+		}
+		return {
+			sourceId: "capability_index:skills",
+			kind: "capability_index",
+			scope: "session",
+			trust: "builtin",
+			content: formatSkillsForPrompt(selectedSkills),
+			required: false,
+			capabilityBindingId: binding.id,
+		};
+	}
+
+	/** Binding descriptor (id + revision) for a model-visible tool name, if selected. */
+	private _bindingDescriptorForToolName(exposedName: string): { id: string; revision: string } | undefined {
+		const binding = this._activeCapabilityBinding;
+		if (!binding) {
+			return undefined;
+		}
+		const ref = binding.descriptors.find((descriptor) => descriptor.exposedToolName === exposedName);
+		return ref ? { id: ref.id, revision: ref.revision } : undefined;
 	}
 
 	private _buildRuntime(options: {
@@ -3362,6 +3915,24 @@ export class AgentSession {
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
+		// A fresh MCP lifecycle manager per runtime build. Registration never
+		// connects; only binding-selected servers are connected during discovery.
+		const previousMcpManager = this._mcpLifecycleManager;
+		if (previousMcpManager) {
+			void previousMcpManager.closeAll().catch(() => undefined);
+		}
+		this._mcpLifecycleManager = new MCPLifecycleManager({
+			...(this._mcpTransportFactory !== undefined ? { transportFactory: this._mcpTransportFactory } : {}),
+		});
+		this._mcpRegisteredServerIds = new Set();
+		this._activeMcpTools = [];
+		this._activeMcpToolCandidates = [];
+		this._activeCapabilityBinding = undefined;
+		this._activeCapabilityCatalog = undefined;
+		this._mcpDiscoveryErrors = new Map();
+		this._capabilityDiscoveryError = undefined;
+		// A materialized profile is preserved across a rebuild (reload).
+
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
 			: ["read", "bash", "edit", "write"];
@@ -3370,9 +3941,20 @@ export class AgentSession {
 			activeToolNames: baseActiveToolNames,
 			includeAllExtensionTools: options.includeAllExtensionTools,
 		});
+		// Discover MCP tools for the selected trusted servers asynchronously and
+		// re-resolve the binding once discovery settles.
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
+			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
+		});
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		// Never rebuild the runtime (and thus the frozen capability binding) while
+		// an agent run is active: the binding stays immutable for the run's
+		// duration. Wait for the run to settle before any shutdown/rebuild.
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
