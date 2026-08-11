@@ -10,7 +10,8 @@ import {
 } from "@aos-agent/ai/compat";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory";
 import { Server } from "@modelcontextprotocol/sdk/server";
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
+import { CallToolRequestSchema, ListToolsRequestSchema, type JSONRPCMessage, type Tool } from "@modelcontextprotocol/sdk/types";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -106,6 +107,128 @@ function createReconnectableMcpServer(opts: { tools: Tool[]; receivedCalls: Arra
 			return clientTransport;
 		}) as never,
 		factoryCallCount: () => factoryCalls,
+	};
+}
+
+/**
+ * Transport wrapper that gates the underlying transport's `close()` behind a
+ * manually released per-transport gate. `close()` records its invocation (so a
+ * test can deterministically wait for a teardown to start) and then parks on
+ * the gate before delegating to the underlying close, making an in-flight
+ * teardown observable and controllable without any sleeps. All other members
+ * delegate to the underlying transport, so it behaves transparently until a
+ * close is requested.
+ */
+class GatedCloseTransport {
+	private readonly underlying: InMemoryTransport;
+	private _closeInvoked = false;
+	private _closeCalls = 0;
+	private readonly gate: Promise<void>;
+	private releaseGate: () => void = () => undefined;
+
+	constructor(underlying: InMemoryTransport) {
+		this.underlying = underlying;
+		this.gate = new Promise<void>((resolve) => {
+			this.releaseGate = resolve;
+		});
+	}
+
+	start(): Promise<void> {
+		return this.underlying.start();
+	}
+
+	send(message: JSONRPCMessage, options?: Parameters<InMemoryTransport["send"]>[1]): Promise<void> {
+		return this.underlying.send(message, options);
+	}
+
+	close(): Promise<void> {
+		this._closeCalls += 1;
+		this._closeInvoked = true;
+		return this.gate.then(() => this.underlying.close());
+	}
+
+	get onclose(): (() => void) | undefined {
+		return this.underlying.onclose;
+	}
+	set onclose(handler: (() => void) | undefined) {
+		this.underlying.onclose = handler;
+	}
+	get onerror(): ((error: Error) => void) | undefined {
+		return this.underlying.onerror;
+	}
+	set onerror(handler: ((error: Error) => void) | undefined) {
+		this.underlying.onerror = handler;
+	}
+	get onmessage(): NonNullable<InMemoryTransport["onmessage"]> | undefined {
+		return this.underlying.onmessage;
+	}
+	set onmessage(handler: NonNullable<InMemoryTransport["onmessage"]> | undefined) {
+		this.underlying.onmessage = handler;
+	}
+	get sessionId(): string | undefined {
+		return this.underlying.sessionId;
+	}
+	set sessionId(value: string | undefined) {
+		this.underlying.sessionId = value;
+	}
+	setProtocolVersion(version: string): void {
+		(this.underlying as Transport).setProtocolVersion?.(version);
+	}
+
+	closeInvoked(): boolean {
+		return this._closeInvoked;
+	}
+
+	closeCalls(): number {
+		return this._closeCalls;
+	}
+
+	release(): void {
+		this.releaseGate();
+	}
+
+	/** Fires the chained onclose handler as if the transport closed out-of-band. */
+	fireLateOnclose(): void {
+		this.underlying.onclose?.();
+	}
+}
+
+/**
+ * Like {@link createReconnectableMcpServer}, but wraps every created client
+ * transport in a {@link GatedCloseTransport}, so a test can hold a teardown's
+ * transport close open and race a re-selection against it deterministically.
+ */
+function createGatedCloseMcpServer(opts: {
+	tools: Tool[];
+	receivedCalls: Array<{ name: string; args: unknown }>;
+}): {
+	transportFactory: (config: { id: string }) => Promise<unknown>;
+	factoryCallCount: () => number;
+	transports: () => GatedCloseTransport[];
+} {
+	let factoryCalls = 0;
+	const transports: GatedCloseTransport[] = [];
+	return {
+		transportFactory: (async () => {
+			factoryCalls += 1;
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+			server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...opts.tools] }));
+			server.setRequestHandler(CallToolRequestSchema, async (request) => {
+				opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
+				return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
+			});
+			server.connect(serverTransport).catch(() => undefined);
+			serverCleanups.push(async () => {
+				await server.close().catch(() => undefined);
+				await clientTransport.close().catch(() => undefined);
+			});
+			const gated = new GatedCloseTransport(clientTransport);
+			transports.push(gated);
+			return gated;
+		}) as never,
+		factoryCallCount: () => factoryCalls,
+		transports: () => [...transports],
 	};
 }
 
@@ -473,6 +596,101 @@ describe("AgentSession H2 session capability control", () => {
 			const result = await execute("call-1", { q: 1 }, undefined);
 			expect(result.content).toContainEqual({ type: "text", text: "ok:list" });
 			expect(receivedCalls).toContainEqual({ name: "list", args: { q: 1 } });
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("makes a concurrent profile re-selection latest-invoked-wins while the old transport close is pending", async () => {
+		const { dir, agentDir } = tmpDir("profile-race");
+		const receivedCalls: Array<{ name: string; args: unknown }> = [];
+		const settingsManager = SettingsManager.inMemory({
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [{ selector: { kind: "builtin_tool" }, action: "allow" }] },
+					mcp: {
+						rules: [
+							{ selector: { kind: "builtin_tool" }, action: "allow" },
+							{ selector: { kind: "mcp_server" }, action: "allow" },
+							{ selector: { kind: "mcp_tool" }, action: "allow" },
+						],
+					},
+				},
+			},
+			mcp: {
+				servers: {
+					docs: { transport: "stdio", command: "node" },
+				},
+			},
+		});
+		const mock = createGatedCloseMcpServer({
+			tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+			receivedCalls,
+		});
+		const sessionManager = SessionManager.inMemory(dir);
+		try {
+			const { session } = await createAgentSession({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				sessionManager,
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+
+			// First materialization connects the selected server with the initial transport.
+			await session.setCapabilityProfile("mcp");
+			expect(mock.factoryCallCount()).toBe(1);
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+			const firstTransport = mock.transports()[0]!;
+
+			// Deselect the server, but hold its transport close open: the transition
+			// parks mid-teardown and cannot complete until the gate is released.
+			const p1 = session.setCapabilityProfile("default");
+			await waitUntil(() => firstTransport.closeInvoked());
+
+			// A re-selection invoked while the old close is pending must win. On the
+			// unfixed HEAD it raced the pending close and rejected as unavailable.
+			const p2 = session.setCapabilityProfile("mcp");
+			firstTransport.release();
+			const [settled1, settled2] = await Promise.allSettled([p1, p2]);
+			expect(settled1.status).toBe("fulfilled");
+			expect(settled2.status).toBe("fulfilled");
+
+			// Latest-invoked profile wins deterministically (default completes the
+			// deselection; mcp completes the re-selection).
+			expect(session.getActiveCapabilityProfile()).toBe("mcp");
+			expect(session.getActiveCapabilityBinding()?.profile).toBe("mcp");
+			// The old transport is torn down exactly once, and a fresh transport
+			// is created for the re-selected connect.
+			expect(firstTransport.closeCalls()).toBe(1);
+			expect(mock.factoryCallCount()).toBe(2);
+			// A fresh connection is ready with the re-selected server's tools.
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({
+				state: "ready",
+				availability: "available",
+			});
+			expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
+			expect(session.getActiveToolNames()).toContain("mcp__docs__list");
+			await expect(session.whenCapabilitiesReady()).resolves.toBeUndefined();
+
+			// The fresh transport serves calls.
+			const definition = session.getToolDefinition("mcp__docs__list")!;
+			const execute = definition.execute as unknown as (
+				toolCallId: string,
+				params: Record<string, unknown>,
+				signal?: AbortSignal,
+			) => Promise<{ content: Array<{ type: string; text: string }> }>;
+			const result = await execute("call-race-1", { q: 1 }, undefined);
+			expect(result.content).toContainEqual({ type: "text", text: "ok:list" });
+			expect(receivedCalls).toContainEqual({ name: "list", args: { q: 1 } });
+
+			// A late onclose from the old transport cannot degrade the fresh connection.
+			firstTransport.fireLateOnclose();
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+			const resultAfterLateClose = await execute("call-race-2", { q: 2 }, undefined);
+			expect(resultAfterLateClose.content).toContainEqual({ type: "text", text: "ok:list" });
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 		}

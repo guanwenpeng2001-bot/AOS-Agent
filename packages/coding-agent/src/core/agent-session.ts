@@ -493,6 +493,13 @@ export class AgentSession {
 	private _capabilityDiscoveryStarted = false;
 	/** Awaitable for the current server-selection teardown (deselection closes). */
 	private _serverSelectionSyncPromise: Promise<void> = Promise.resolve();
+	/**
+	 * Tail of the serialized profile-materialization queue. Transitions run
+	 * strictly in invocation order so a slow teardown (a delayed transport
+	 * close) can never overlap a newer transition's connect or overwrite a
+	 * later request: the last-invoked profile is always the last to materialize.
+	 */
+	private _profileMaterializationTail: Promise<void> = Promise.resolve();
 	/** Tool registration that arrived mid-run; applied after the run settles. */
 	private _pendingToolRegistryRefresh = false;
 	constructor(config: AgentSessionConfig) {
@@ -3667,11 +3674,23 @@ export class AgentSession {
 	 * never leave selected/ready MCP connections alive. The new binding's server
 	 * selection is applied by _refreshCapabilitySetup and connected during
 	 * discovery.
+	 *
+	 * Transitions are serialized onto a queue so the session's profile transitions
+	 * are deterministic: a transition blocked on a slow teardown (a delayed
+	 * transport close) never overlaps a later transition's connect, and the
+	 * last-invoked profile is the last to materialize. A rejected predecessor is
+	 * swallowed so one failed transition cannot wedge the queue for later callers.
 	 */
 	private async _materializeCapabilityProfile(profileName: string): Promise<void> {
-		await this._mcpLifecycleManager.setSelectedServerIds([]);
-		this._activeCapabilityProfile = profileName;
-		await this._refreshCapabilitySetup();
+		const run = async (): Promise<void> => {
+			await this._mcpLifecycleManager.setSelectedServerIds([]);
+			this._activeCapabilityProfile = profileName;
+			await this._refreshCapabilitySetup();
+		};
+		const previous = this._profileMaterializationTail;
+		const next = previous.catch(() => undefined).then(run);
+		this._profileMaterializationTail = next;
+		return next;
 	}
 
 	/**
@@ -4103,6 +4122,7 @@ export class AgentSession {
 		this._capabilityDiscoveryStarted = false;
 		this._capabilityDiscoveryPromise = Promise.resolve();
 		this._serverSelectionSyncPromise = Promise.resolve();
+		this._profileMaterializationTail = Promise.resolve();
 		// A materialized profile is preserved across a rebuild (reload).
 
 		const defaultActiveToolNames = this._baseToolsOverride
