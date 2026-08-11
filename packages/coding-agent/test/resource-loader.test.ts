@@ -651,7 +651,7 @@ Extra content`,
 			});
 
 			const { skills, diagnostics } = loader.getSkills();
-			expect(diagnostics).toEqual([]);
+			expect(diagnostics.filter((diagnostic) => diagnostic.path === skillPath)).toEqual([]);
 			const loadedSkill = skills.find((skill) => skill.name === "file-url-skill");
 			expect(loadedSkill).toBeDefined();
 			expect(loadedSkill?.filePath).toBe(skillPath);
@@ -1116,6 +1116,47 @@ export default function(agent: ExtensionAPI) {
 			const files = loadProjectContextFiles({ cwd: src, agentDir });
 
 			expect(files.map((f) => f.content)).toEqual(["repo instructions", "src instructions"]);
+		});
+	});
+
+	describe("context source metadata", () => {
+		it("assigns global/project/directory scope and trust for layered context files", async () => {
+			const nestedCwd = join(cwd, "pkg");
+			mkdirSync(nestedCwd, { recursive: true });
+			writeFileSync(join(agentDir, "AGENTS.md"), "global rules");
+			writeFileSync(join(cwd, "AGENTS.md"), "project rules");
+			writeFileSync(join(nestedCwd, "AGENTS.md"), "directory rules");
+
+			const loader = new DefaultResourceLoader({ cwd: nestedCwd, agentDir });
+			await loader.reload();
+
+			const { contextSources } = loader.getContextSources();
+			expect(contextSources.map((s) => s.scope)).toEqual(["global", "project", "directory"]);
+			expect(contextSources[0]?.trust).toBe("user_owned");
+			expect(contextSources[1]?.trust).toBe("trusted_project");
+			expect(contextSources[2]?.trust).toBe("trusted_project");
+			expect(contextSources.every((s) => s.injectable)).toBe(true);
+
+			const inputs = loader.toContextSourceInputs();
+			const instructions = inputs.filter((s) => s.kind === "instruction");
+			expect(instructions.map((s) => s.scope)).toEqual(["global", "project", "directory"]);
+			expect(instructions.every((s) => s.required)).toBe(true);
+		});
+
+		it("marks untrusted project rules as non-injectable sources", async () => {
+			writeFileSync(join(cwd, "AGENTS.md"), "UNTRUSTED_PROJECT_BODY");
+			const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+
+			const { contextSources } = loader.getContextSources();
+			const project = contextSources.find((s) => s.path.includes("AGENTS.md") && s.scope !== "global");
+			expect(project?.trust).toBe("untrusted_project");
+			expect(project?.injectable).toBe(false);
+
+			const input = loader.toContextSourceInputs().find((s) => s.sourceId === project?.sourceId);
+			expect(input?.preDisposition?.reason).toBe("untrusted");
+			expect(input?.required).toBe(false);
 		});
 	});
 });

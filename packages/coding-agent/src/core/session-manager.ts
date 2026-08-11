@@ -20,6 +20,11 @@ import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {
+	CONTEXT_SNAPSHOT_CUSTOM_TYPE,
+	CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+	type ContextSnapshot,
+} from "./context-engine.ts";
+import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	createBranchSummaryMessage,
@@ -28,6 +33,159 @@ import {
 } from "./messages.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isContextSourceKind(value: unknown): value is ContextSnapshot["sources"][number]["kind"] {
+	return (
+		value === "system" ||
+		value === "instruction" ||
+		value === "capability_index" ||
+		value === "session_summary" ||
+		value === "session_message" ||
+		value === "memory" ||
+		value === "extension"
+	);
+}
+
+function isContextScope(value: unknown): value is ContextSnapshot["sources"][number]["scope"] {
+	return value === "global" || value === "project" || value === "directory" || value === "session" || value === "turn";
+}
+
+function isContextTrust(value: unknown): value is ContextSnapshot["sources"][number]["trust"] {
+	return value === "builtin" || value === "user_owned" || value === "trusted_project" || value === "untrusted_project";
+}
+
+function isContextDisposition(value: unknown): value is ContextSnapshot["sources"][number]["disposition"] {
+	return value === "included" || value === "trimmed" || value === "excluded";
+}
+
+function isContextDispositionReason(
+	value: unknown,
+): value is NonNullable<ContextSnapshot["sources"][number]["reason"]> {
+	return (
+		value === "within_budget" ||
+		value === "budget_exhausted" ||
+		value === "untrusted" ||
+		value === "disabled" ||
+		value === "revoked" ||
+		value === "snapshot_only"
+	);
+}
+
+function isContextExtensionVisibility(
+	value: unknown,
+): value is NonNullable<ContextSnapshot["sources"][number]["visibility"]> {
+	return value === "snapshot_only" || value === "model_and_snapshot";
+}
+
+function parseContextSourceReceipt(value: unknown): ContextSnapshot["sources"][number] | undefined {
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	if (
+		typeof value.sourceId !== "string" ||
+		value.sourceId.length === 0 ||
+		!isContextSourceKind(value.kind) ||
+		!isContextScope(value.scope) ||
+		!isContextTrust(value.trust) ||
+		typeof value.contentDigest !== "string" ||
+		!/^[a-f0-9]{64}$/.test(value.contentDigest) ||
+		typeof value.estimatedTokens !== "number" ||
+		!Number.isFinite(value.estimatedTokens) ||
+		value.estimatedTokens < 0 ||
+		!isContextDisposition(value.disposition) ||
+		(value.reason !== undefined && !isContextDispositionReason(value.reason)) ||
+		(value.path !== undefined && typeof value.path !== "string") ||
+		(value.refId !== undefined && typeof value.refId !== "string") ||
+		(value.label !== undefined && typeof value.label !== "string") ||
+		(value.visibility !== undefined && !isContextExtensionVisibility(value.visibility)) ||
+		(value.kind === "extension" && (typeof value.label !== "string" || !isContextExtensionVisibility(value.visibility))) ||
+		(value.kind !== "extension" && (value.label !== undefined || value.visibility !== undefined))
+	) {
+		return undefined;
+	}
+	const receipt: ContextSnapshot["sources"][number] = {
+		sourceId: value.sourceId,
+		kind: value.kind,
+		scope: value.scope,
+		trust: value.trust,
+		contentDigest: value.contentDigest,
+		estimatedTokens: value.estimatedTokens,
+		disposition: value.disposition,
+	};
+	if (typeof value.path === "string") receipt.path = value.path;
+	if (isContextDispositionReason(value.reason)) receipt.reason = value.reason;
+	if (typeof value.refId === "string") receipt.refId = value.refId;
+	if (typeof value.label === "string") receipt.label = value.label;
+	if (isContextExtensionVisibility(value.visibility)) receipt.visibility = value.visibility;
+	return receipt;
+}
+
+/** Parse a ContextSnapshot custom-entry payload; returns undefined when invalid. */
+export function parseContextSnapshot(data: unknown): ContextSnapshot | undefined {
+	if (!isRecord(data)) {
+		return undefined;
+	}
+	if (data.schemaVersion !== CONTEXT_SNAPSHOT_SCHEMA_VERSION) {
+		return undefined;
+	}
+	if (typeof data.id !== "string" || typeof data.sessionId !== "string") {
+		return undefined;
+	}
+	if (data.purpose !== "agent_turn" && data.purpose !== "compaction" && data.purpose !== "branch_summary") {
+		return undefined;
+	}
+	if (typeof data.createdAt !== "string") {
+		return undefined;
+	}
+	if (!Array.isArray(data.sources) || !isRecord(data.budget)) {
+		return undefined;
+	}
+	const parsedSources = data.sources.map(parseContextSourceReceipt);
+	if (parsedSources.some((source) => source === undefined)) {
+		return undefined;
+	}
+	const sources = parsedSources.filter(
+		(source): source is ContextSnapshot["sources"][number] => source !== undefined,
+	);
+	const budget = data.budget;
+	if (
+		typeof budget.contextWindow !== "number" ||
+		typeof budget.reserveTokens !== "number" ||
+		typeof budget.inputLimit !== "number" ||
+		typeof budget.estimatedInputTokens !== "number" ||
+		!Number.isFinite(budget.contextWindow) ||
+		!Number.isFinite(budget.reserveTokens) ||
+		!Number.isFinite(budget.inputLimit) ||
+		!Number.isFinite(budget.estimatedInputTokens)
+	) {
+		return undefined;
+	}
+	const snapshot: ContextSnapshot = {
+		schemaVersion: CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+		id: data.id,
+		purpose: data.purpose,
+		sessionId: data.sessionId,
+		createdAt: data.createdAt,
+		sources,
+		budget: {
+			contextWindow: budget.contextWindow,
+			reserveTokens: budget.reserveTokens,
+			inputLimit: budget.inputLimit,
+			estimatedInputTokens: budget.estimatedInputTokens,
+		},
+	};
+	if (typeof data.runId === "string") {
+		snapshot.runId = data.runId;
+	}
+	if (typeof data.parentSnapshotId === "string") {
+		snapshot.parentSnapshotId = data.parentSnapshotId;
+	}
+	return snapshot;
+}
 
 export interface SessionHeader {
 	type: "session";
@@ -1130,6 +1288,40 @@ export class SessionManager {
 		};
 		this._appendEntry(entry);
 		return entry.id;
+	}
+
+	/**
+	 * Fold all valid Context Engine snapshots from custom entries (append order).
+	 * Custom entries never participate in buildSessionContext / LLM messages.
+	 */
+	getContextSnapshots(): ContextSnapshot[] {
+		const snapshots: ContextSnapshot[] = [];
+		for (const entry of this.getEntries()) {
+			if (entry.type !== "custom" || entry.customType !== CONTEXT_SNAPSHOT_CUSTOM_TYPE) {
+				continue;
+			}
+			const snapshot = parseContextSnapshot(entry.data);
+			if (snapshot) {
+				snapshots.push(snapshot);
+			}
+		}
+		return snapshots;
+	}
+
+	/** Lookup a persisted Context Snapshot by id. */
+	getContextSnapshot(id: string): ContextSnapshot | undefined {
+		for (const snapshot of this.getContextSnapshots()) {
+			if (snapshot.id === id) {
+				return snapshot;
+			}
+		}
+		return undefined;
+	}
+
+	/** Latest frozen snapshot id (for Run receipts). */
+	getLatestContextSnapshotId(): string | undefined {
+		const snapshots = this.getContextSnapshots();
+		return snapshots.length > 0 ? snapshots[snapshots.length - 1]!.id : undefined;
 	}
 
 	/** Append a session info entry (e.g., display name). Returns entry id. */

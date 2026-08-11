@@ -48,6 +48,7 @@ import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
+import type { ContextExtensionContribution } from "../context-engine.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -87,6 +88,11 @@ export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions } from "../system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
+export type {
+	ContextExtensionContribution,
+	ContextExtensionContributionReceipt,
+	ContextExtensionVisibility,
+} from "../context-engine.ts";
 
 // ============================================================================
 // UI Context
@@ -1100,9 +1106,30 @@ export interface MessageEndEventResult {
 }
 
 export interface BeforeAgentStartEventResult {
+	/** Formal model-context contribution consumed by Context Engine. */
+	contribution?: ContextExtensionContribution;
+	/** Legacy unattributed message path. Context Engine rejects it when enabled. */
 	message?: Pick<CustomMessage, "customType" | "content" | "display" | "details">;
-	/** Replace the system prompt for this turn. If multiple extensions return this, they are chained. */
+	/** Legacy unattributed system-prompt replacement. Context Engine rejects it when enabled. */
 	systemPrompt?: string;
+}
+
+/** Formal contribution plus the extension that supplied it. */
+export interface ContextExtensionContributionAttribution {
+	extensionPath: string;
+	contribution: ContextExtensionContribution;
+}
+
+/** Aggregated before_agent_start output. */
+export interface BeforeAgentStartCombinedResult {
+	messages?: NonNullable<BeforeAgentStartEventResult["message"]>[];
+	systemPrompt?: string;
+	contributions: ContextExtensionContributionAttribution[];
+	unattributedMutation: boolean;
+	contributionError?: {
+		code: "context_extension_source_missing";
+		message: string;
+	};
 }
 
 export interface SessionBeforeSwitchResult {

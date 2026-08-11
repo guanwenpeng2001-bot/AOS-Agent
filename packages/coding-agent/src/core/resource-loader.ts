@@ -20,9 +20,10 @@ import { findGitPaths } from "./footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
+import type { ContextScope, ContextSourceInput, ContextTrust } from "./context-engine.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
-import { loadSkills } from "./skills.ts";
+import { formatSkillsForPrompt, loadSkills } from "./skills.ts";
 import { createSourceInfo, type SourceInfo } from "./source-info.ts";
 import { resetTimings } from "./timings.ts";
 
@@ -36,12 +37,30 @@ export interface ResourceLoaderReloadOptions {
 	resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
 }
 
+/**
+ * Instruction context file with Context Engine metadata.
+ * `getAgentsFiles()` continues to expose path+content only for legacy callers.
+ */
+export interface ProjectContextSource {
+	sourceId: string;
+	path: string;
+	content: string;
+	scope: ContextScope;
+	trust: ContextTrust;
+	/** True when trust allows injection as model instructions. */
+	injectable: boolean;
+}
+
 export interface ResourceLoader {
 	getExtensions(): LoadExtensionsResult;
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
+	/** Instruction sources with scope/trust for Context Engine planning. */
+	getContextSources(): { contextSources: ProjectContextSource[] };
+	/** Convert loaded instruction / system / skill index material into ContextSourceInput rows. */
+	toContextSourceInputs(): ContextSourceInput[];
 	getSystemPrompt(): string | undefined;
 	getSystemPromptSource(): { path: string } | undefined;
 	getAppendSystemPrompt(): string[];
@@ -115,24 +134,64 @@ function findShadowedContextFile(cwd: string): string | undefined {
 	return worktreeContextFile ? join(mainRepoRoot, basename(worktreeContextFile.path)) : undefined;
 }
 
-export function loadProjectContextFiles(options: {
+function stableSourceId(kind: string, canonicalPath: string): string {
+	const normalized = canonicalizePath(canonicalPath).replace(/\\/g, "/");
+	const comparablePath = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+	return `${kind}:${comparablePath}`;
+}
+
+/**
+ * Classify non-global context files: outermost ancestor is project scope;
+ * any deeper path toward cwd is directory scope.
+ */
+function classifyProjectContextScopes(
+	files: Array<{ path: string; content: string }>,
+	projectTrusted: boolean,
+): ProjectContextSource[] {
+	const trust: ContextTrust = projectTrusted ? "trusted_project" : "untrusted_project";
+	return files.map((file, index) => {
+		const scope: ContextScope = index === 0 ? "project" : "directory";
+		return {
+			sourceId: stableSourceId("instruction", file.path),
+			path: file.path,
+			content: file.content,
+			scope,
+			trust,
+			injectable: projectTrusted,
+		};
+	});
+}
+
+/**
+ * Load project/global instruction files with Context Engine scope and trust metadata.
+ * Discovery order and worktree shadowing match legacy loadProjectContextFiles.
+ */
+export function loadProjectContextSources(options: {
 	cwd: string;
 	agentDir: string;
-}): Array<{ path: string; content: string }> {
+	projectTrusted?: boolean;
+}): ProjectContextSource[] {
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(options.agentDir);
+	const projectTrusted = options.projectTrusted ?? true;
 
-	const contextFiles: Array<{ path: string; content: string }> = [];
+	const sources: ProjectContextSource[] = [];
 	const seenPaths = new Set<string>();
 
 	const globalContext = loadContextFileFromDir(resolvedAgentDir);
 	if (globalContext) {
-		contextFiles.push(globalContext);
+		sources.push({
+			sourceId: stableSourceId("instruction", globalContext.path),
+			path: globalContext.path,
+			content: globalContext.content,
+			scope: "global",
+			trust: "user_owned",
+			injectable: true,
+		});
 		seenPaths.add(globalContext.path);
 	}
 
 	const ancestorContextFiles: Array<{ path: string; content: string }> = [];
-
 	const shadowedContextFile = findShadowedContextFile(resolvedCwd);
 	let currentDir = resolvedCwd;
 
@@ -150,9 +209,38 @@ export function loadProjectContextFiles(options: {
 		currentDir = parentDir;
 	}
 
-	contextFiles.push(...ancestorContextFiles);
+	sources.push(...classifyProjectContextScopes(ancestorContextFiles, projectTrusted));
+	return sources;
+}
 
-	return contextFiles;
+export function loadProjectContextFiles(options: {
+	cwd: string;
+	agentDir: string;
+	projectTrusted?: boolean;
+}): Array<{ path: string; content: string }> {
+	return loadProjectContextSources(options).map((source) => ({
+		path: source.path,
+		content: source.content,
+	}));
+}
+
+/** Convert a project context source into a Context Engine source input. */
+export function projectContextSourceToInput(source: ProjectContextSource): ContextSourceInput {
+	const input: ContextSourceInput = {
+		sourceId: source.sourceId,
+		kind: "instruction",
+		scope: source.scope,
+		trust: source.trust,
+		path: source.path,
+		content: source.content,
+		// Global and trusted project instructions are required; untrusted are preview-only.
+		required: source.injectable,
+	};
+	if (!source.injectable) {
+		input.preDisposition = { disposition: "excluded", reason: "untrusted" };
+		input.required = false;
+	}
+	return input;
 }
 
 export interface DefaultResourceLoaderOptions {
@@ -237,6 +325,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private themes: Theme[];
 	private themeDiagnostics: ResourceDiagnostic[];
 	private agentsFiles: Array<{ path: string; content: string }>;
+	private contextSources: ProjectContextSource[];
 	private systemPrompt?: string;
 	private systemPromptSourcePath?: string;
 	private appendSystemPrompt: string[];
@@ -288,6 +377,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.themes = [];
 		this.themeDiagnostics = [];
 		this.agentsFiles = [];
+		this.contextSources = [];
 		this.appendSystemPrompt = [];
 		this.appendSystemPromptSourcePaths = [];
 		this.lastSkillPaths = [];
@@ -318,6 +408,66 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> } {
 		return { agentsFiles: this.agentsFiles };
+	}
+
+	getContextSources(): { contextSources: ProjectContextSource[] } {
+		return { contextSources: this.contextSources };
+	}
+
+	toContextSourceInputs(): ContextSourceInput[] {
+		const inputs: ContextSourceInput[] = [];
+
+		const systemPrompt = this.systemPrompt;
+		if (systemPrompt !== undefined && systemPrompt.length > 0) {
+			const systemInput: ContextSourceInput = {
+				sourceId: this.systemPromptSourcePath
+					? stableSourceId("system", this.systemPromptSourcePath)
+					: "system:explicit",
+				kind: "system",
+				scope: "global",
+				trust: "builtin",
+				content: systemPrompt,
+				required: true,
+			};
+			if (this.systemPromptSourcePath) {
+				systemInput.path = this.systemPromptSourcePath;
+			}
+			inputs.push(systemInput);
+		}
+
+		for (const append of this.appendSystemPrompt) {
+			if (append.length === 0) {
+				continue;
+			}
+			inputs.push({
+				sourceId: `system:append:${inputs.length}`,
+				kind: "system",
+				scope: "global",
+				trust: "user_owned",
+				content: append,
+				required: true,
+			});
+		}
+
+		for (const source of this.contextSources) {
+			inputs.push(projectContextSourceToInput(source));
+		}
+
+		if (this.skills.length > 0) {
+			// This is the exact section injected by Context Engine, not a parallel
+			// metadata-only index. Its digest and budget therefore describe model input.
+			const skillIndex = formatSkillsForPrompt(this.skills);
+			inputs.push({
+				sourceId: "capability_index:skills",
+				kind: "capability_index",
+				scope: "session",
+				trust: "builtin",
+				content: skillIndex,
+				required: false,
+			});
+		}
+
+		return inputs;
 	}
 
 	getSystemPrompt(): string | undefined {
@@ -511,16 +661,51 @@ export class DefaultResourceLoader implements ResourceLoader {
 			}
 		}
 
+		const loadedSources = this.noContextFiles
+			? []
+			: loadProjectContextSources({
+					cwd: this.cwd,
+					agentDir: this.agentDir,
+					projectTrusted: this.settingsManager.isProjectTrusted(),
+				});
 		const agentsFiles = {
-			agentsFiles: this.noContextFiles
-				? []
-				: loadProjectContextFiles({
-						cwd: this.cwd,
-						agentDir: this.agentDir,
-					}),
+			agentsFiles: loadedSources.map((source) => ({ path: source.path, content: source.content })),
 		};
 		const resolvedAgentsFiles = this.agentsFilesOverride ? this.agentsFilesOverride(agentsFiles) : agentsFiles;
 		this.agentsFiles = resolvedAgentsFiles.agentsFiles;
+		// Rebuild sources from possibly overridden agents files while preserving trust/scope
+		// for known paths; unknown override paths inherit project trust for the leaf.
+		const sourceByPath = new Map(loadedSources.map((source) => [source.path, source]));
+		const projectTrusted = this.settingsManager.isProjectTrusted();
+		this.contextSources = resolvedAgentsFiles.agentsFiles.map((file, index) => {
+			const existing = sourceByPath.get(file.path);
+			if (existing) {
+				return {
+					...existing,
+					content: file.content,
+				};
+			}
+			const isGlobal = canonicalizePath(dirname(file.path)) === canonicalizePath(this.agentDir);
+			if (isGlobal) {
+				return {
+					sourceId: stableSourceId("instruction", file.path),
+					path: file.path,
+					content: file.content,
+					scope: "global" as const,
+					trust: "user_owned" as const,
+					injectable: true,
+				};
+			}
+			const scope: ContextScope = index === 0 || loadedSources.every((s) => s.scope === "global") ? "project" : "directory";
+			return {
+				sourceId: stableSourceId("instruction", file.path),
+				path: file.path,
+				content: file.content,
+				scope,
+				trust: projectTrusted ? ("trusted_project" as const) : ("untrusted_project" as const),
+				injectable: projectTrusted,
+			};
+		});
 
 		const systemPromptSource = this.systemPromptSource ?? this.discoverSystemPromptFile();
 		const baseSystemPrompt = resolvePromptInput(systemPromptSource, "system prompt");

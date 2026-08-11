@@ -40,6 +40,10 @@
           "path": "sessions.md"
         },
         {
+          "title": "Context Engine",
+          "path": "context.md"
+        },
+        {
           "title": "Compaction",
           "path": "compaction.md"
         }

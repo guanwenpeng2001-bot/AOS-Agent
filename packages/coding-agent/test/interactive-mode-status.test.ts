@@ -521,6 +521,8 @@ describe("InteractiveMode.showLoadedResources", () => {
 				resourceLoader: {
 					getPathMetadata: () => new Map(),
 					getAgentsFiles: () => ({ agentsFiles: options.contextFiles ?? [] }),
+					getContextSources: () => ({ contextSources: [] }),
+					toContextSourceInputs: () => [],
 					getSystemPromptSource: () => options.systemPromptSource,
 					getAppendSystemPromptSources: () => options.appendSystemPromptSources ?? [],
 					getSkills: () => ({

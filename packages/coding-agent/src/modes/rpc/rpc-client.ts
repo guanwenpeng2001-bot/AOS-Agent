@@ -16,6 +16,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	AutomationError,
 	AutomationErrorCode,
+	GetContextData,
 	InitializeData,
 	RpcAutomationResponse,
 	RpcCommand,
@@ -537,6 +538,16 @@ export class RpcClient {
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
+	}
+
+	/**
+	 * Read-only Context Engine inspection. Returns metadata-only snapshot data
+	 * (no project rules, session text, memory bodies, tool output, or credentials).
+	 * Available without Automation Host initialize.
+	 */
+	async getContext(snapshotId?: string): Promise<GetContextData> {
+		const response = await this.send({ type: "get_context", snapshotId });
+		return this.getData(response);
 	}
 
 	// =========================================================================

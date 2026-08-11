@@ -530,6 +530,32 @@ Response:
 
 ### Session
 
+#### get_context
+
+Read-only Context Engine inspection. Does **not** require Automation Host `initialize`. Returns a metadata-only snapshot receipt and optional drift; never includes project rule bodies, session text, memory text, tool output, or credentials.
+
+```json
+{"id": "c1", "type": "get_context"}
+{"id": "c2", "type": "get_context", "snapshotId": "…"}
+```
+
+Response:
+```json
+{
+  "id": "c1",
+  "type": "response",
+  "command": "get_context",
+  "success": true,
+  "data": {
+    "snapshot": { "schemaVersion": 1, "id": "preview", "sources": [], "budget": {} },
+    "drift": [],
+    "preview": true
+  }
+}
+```
+
+`RpcClient.getContext(snapshotId?)` wraps this command. See [Context Engine](context.md).
+
 #### get_session_stats
 
 Get token usage, cost statistics, and current context window usage.
@@ -1754,7 +1780,8 @@ On a handled termination signal, the host stops accepting new runs, attempts the
 ### Legacy RPC compatibility
 
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
-- After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_entries`, `get_tree`, and `get_messages` remain available.
+- After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_context`, `get_entries`, `get_tree`, and `get_messages` remain available.
+- Terminal run receipts may include additive `contextSnapshotId` linking the run to a Context Engine snapshot (see [Context Engine](context.md)).
 - After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel` and `run.resume`.
 - While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
 - Clients that never `initialize` always see the bare session events, as before.

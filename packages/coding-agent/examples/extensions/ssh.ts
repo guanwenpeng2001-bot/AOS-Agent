@@ -206,15 +206,20 @@ export default function (agent: ExtensionAPI) {
 		return { operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd) };
 	});
 
-	// Replace local cwd with remote cwd in system prompt
-	agent.on("before_agent_start", async (event) => {
+	// Contribute the remote workspace identity to the context plan.
+	agent.on("before_agent_start", () => {
 		const ssh = getSsh();
 		if (ssh) {
-			const modified = event.systemPrompt.replace(
-				`Current working directory: ${localCwd}`,
-				`Current working directory: ${ssh.remoteCwd} (via SSH: ${ssh.remote})`,
-			);
-			return { systemPrompt: modified };
+			return {
+				contribution: {
+					sourceId: "example:ssh-remote-workspace",
+					label: "SSH remote workspace",
+					visibility: "model_and_snapshot",
+					systemPromptAppend:
+						`For this run, tool operations target the remote working directory: ${ssh.remoteCwd} ` +
+						`(via SSH: ${ssh.remote}). Treat it as the working directory for tool use.`,
+				},
+			};
 		}
 	});
 }

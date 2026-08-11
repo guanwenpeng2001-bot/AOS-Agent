@@ -130,7 +130,7 @@ describe("AgentSession retry", () => {
 			};
 		}
 
-		return { session, getCallCount: () => callCount };
+		return { session, sessionManager, getCallCount: () => callCount };
 	}
 
 	it("retries after a transient error and succeeds", async () => {
@@ -146,6 +146,18 @@ describe("AgentSession retry", () => {
 		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
 		expect(created.session.isRetrying).toBe(false);
+	});
+
+	it("creates a derived Context snapshot for a retry", async () => {
+		const created = await createSession({ failCount: 1 });
+
+		await created.session.prompt("Test");
+
+		const snapshots = created.sessionManager.getContextSnapshots();
+		expect(created.getCallCount()).toBe(2);
+		expect(snapshots).toHaveLength(2);
+		expect(snapshots[1]?.id).not.toBe(snapshots[0]?.id);
+		expect(snapshots[1]?.parentSnapshotId).toBe(snapshots[0]?.id);
 	});
 
 	it("exhausts max retries and emits failure", async () => {
@@ -311,6 +323,9 @@ describe("AgentSession retry", () => {
 
 		// All three LLM calls must have completed
 		expect(callCount).toBe(3);
+		const snapshots = sessionManager.getContextSnapshots();
+		expect(snapshots).toHaveLength(3);
+		expect(new Set(snapshots.map((snapshot) => snapshot.id)).size).toBe(3);
 		// Tool must have been executed
 		expect(toolExecuted.value).toBe(true);
 		// Agent must not be streaming after prompt returns

@@ -10,6 +10,7 @@ import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextSnapshot, ContextSourceDrift } from "../../core/context-engine.ts";
 import type { AutomationError, RunReceipt, RunRecord, RunRecoveryState, RunStatus } from "../../core/run-lifecycle.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
@@ -72,6 +73,9 @@ export type RpcCommand =
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
+
+	// Context Engine (read-only inspection; never returns raw source bodies)
+	| { id?: string; type: "get_context"; snapshotId?: string }
 
 	// Automation Host (protocolVersion 1)
 	| { id?: string; type: "initialize"; protocolVersion: number }
@@ -242,8 +246,25 @@ export type RpcResponse =
 			data: { commands: RpcSlashCommand[] };
 	  }
 
+	// Context Engine
+	| {
+			id?: string;
+			type: "response";
+			command: "get_context";
+			success: true;
+			data: GetContextData;
+	  }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
+
+/** Redacted Context Engine inspection payload (metadata only). */
+export interface GetContextData {
+	snapshot: ContextSnapshot;
+	drift: ContextSourceDrift[];
+	/** True when snapshotId was omitted and the payload is a non-persisted preview. */
+	preview: boolean;
+}
 
 // ============================================================================
 // Extension UI Events (stdout)

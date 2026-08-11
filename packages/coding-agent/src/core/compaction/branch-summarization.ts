@@ -40,10 +40,19 @@ export interface BranchSummaryResult {
 	error?: string;
 }
 
-/** Details stored in BranchSummaryEntry.details for file tracking */
+/** Details stored in BranchSummaryEntry.details for file tracking and Context Engine provenance */
 export interface BranchSummaryDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	/** Context Snapshot frozen for the branch-summary model call (metadata only). */
+	contextSnapshotId?: string;
+	/** Budget metadata from the branch_summary-purpose snapshot, when available. */
+	contextBudget?: {
+		contextWindow: number;
+		reserveTokens: number;
+		inputLimit: number;
+		estimatedInputTokens: number;
+	};
 }
 
 export type { FileOperations } from "./utils.ts";

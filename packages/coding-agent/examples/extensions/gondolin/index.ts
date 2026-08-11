@@ -519,13 +519,17 @@ export default function (agent: ExtensionAPI) {
 		return { operations: createGondolinBashOps(activeVm, localCwd, shellPath) };
 	});
 
-	agent.on("before_agent_start", async (event, ctx) => {
+	agent.on("before_agent_start", async (_event, ctx) => {
 		await ensureVm(ctx);
-		const localLine = `Current working directory: ${localCwd}`;
-		const guestLine = `Current working directory: ${GUEST_WORKSPACE} (Gondolin VM; host workspace mounted from ${localCwd})`;
-		const systemPrompt = event.systemPrompt.includes(localLine)
-			? event.systemPrompt.replace(localLine, guestLine)
-			: `${event.systemPrompt}\n\n${guestLine}`;
-		return { systemPrompt };
+		return {
+			contribution: {
+				sourceId: "example:gondolin-workspace",
+				label: "Gondolin guest workspace",
+				visibility: "model_and_snapshot",
+				systemPromptAppend:
+					`For this run, tool operations execute in the Gondolin VM. The working directory is ${GUEST_WORKSPACE}; ` +
+					`${localCwd} is mounted there as the host workspace.`,
+			},
+		};
 	});
 }

@@ -6,7 +6,6 @@ describe("buildSystemPrompt", () => {
 		test("shows (none) for empty tools list", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: [],
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -17,7 +16,6 @@ describe("buildSystemPrompt", () => {
 		test("shows file paths guideline even with no tools", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: [],
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -35,7 +33,6 @@ describe("buildSystemPrompt", () => {
 					edit: "Make surgical edits",
 					write: "Create or overwrite files",
 				},
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -48,13 +45,12 @@ describe("buildSystemPrompt", () => {
 
 		test("instructs models to resolve pi docs and examples under absolute base paths", () => {
 			const prompt = buildSystemPrompt({
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
 
 			expect(prompt).toContain(
-				"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+				"- When reading AOS Agent docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
 			);
 			expect(prompt).toContain("environment variables (docs/environment-variables.md)");
 		});
@@ -67,7 +63,6 @@ describe("buildSystemPrompt", () => {
 				toolSnippets: {
 					dynamic_tool: "Run dynamic test behavior",
 				},
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -78,7 +73,6 @@ describe("buildSystemPrompt", () => {
 		test("omits custom tools from available tools section when promptSnippet is not provided", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -92,7 +86,6 @@ describe("buildSystemPrompt", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
 				promptGuidelines: ["Use dynamic_tool for project summaries."],
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
@@ -104,12 +97,41 @@ describe("buildSystemPrompt", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "dynamic_tool"],
 				promptGuidelines: ["Use dynamic_tool for summaries.", "  Use dynamic_tool for summaries.  ", "   "],
-				contextFiles: [],
 				skills: [],
 				cwd: process.cwd(),
 			});
 
 			expect(prompt.match(/- Use dynamic_tool for summaries\./g)).toHaveLength(1);
+		});
+	});
+
+	describe("instruction blocks", () => {
+		test("renders Context Engine approved instructionBlocks", () => {
+			const prompt = buildSystemPrompt({
+				instructionBlocks: [
+					{
+						sourceId: "instruction:/proj/AGENTS.md",
+						path: "/proj/AGENTS.md",
+						content: "APPROVED_RULES",
+						scope: "project",
+						trust: "trusted_project",
+					},
+				],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("APPROVED_RULES");
+		});
+
+		test("does not inject content when instructionBlocks is empty", () => {
+			const prompt = buildSystemPrompt({
+				instructionBlocks: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).not.toContain("<project_context>");
 		});
 	});
 });

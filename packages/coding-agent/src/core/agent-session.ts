@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -22,9 +23,10 @@ import type {
 	AgentState,
 	AgentTool,
 	PrepareNextTurnContext,
+	StreamFn,
 	ThinkingLevel,
 } from "@aos-agent/agent-core";
-import { contentText } from "@aos-agent/ai";
+import { contentText, type Tool } from "@aos-agent/ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -64,11 +66,34 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
+import type { BranchSummaryDetails } from "./compaction/branch-summarization.ts";
+import type { CompactionDetails } from "./compaction/compaction.ts";
+import {
+	CONTEXT_SNAPSHOT_CUSTOM_TYPE,
+	type ContextError,
+	type ContextPlan,
+	type ContextPurpose,
+	type ContextSnapshot,
+	type ContextSourceDrift,
+	type ContextSourceInput,
+	compareContextSources,
+	createContextExtensionSourceInput,
+	createContextError,
+	freezeContext,
+	resolveContext,
+} from "./context-engine.ts";
+import {
+	ContextMemoryStore,
+	type ContextMemory,
+	type ContextMemoryScope,
+	memoryToContextSourceInputs,
+} from "./context-memory-store.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type ContextUsage,
+	type ContextExtensionContributionAttribution,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
 	type ExtensionMode,
@@ -94,7 +119,7 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { convertToLlm, type BashExecutionMessage, type CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -248,6 +273,8 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
 	preflightResult?: (success: boolean) => void;
+	/** Automation Host run identifier propagated to each model-call snapshot. */
+	runId?: string;
 }
 
 /** Result from cycleModel() */
@@ -297,6 +324,16 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+
+class ContextRuntimeError extends Error {
+	readonly contextError: ContextError;
+
+	constructor(contextError: ContextError) {
+		super(contextError.message);
+		this.name = "ContextRuntimeError";
+		this.contextError = contextError;
+	}
+}
 
 // ============================================================================
 // AgentSession Class
@@ -374,8 +411,26 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
 
+	/** Most recent Context Engine snapshot id (agent_turn / compaction / branch_summary). */
+	private _lastContextSnapshotId: string | undefined;
+	/** Parent snapshot for derived retries / overflow re-plans. */
+	private _parentContextSnapshotId: string | undefined;
+	private readonly _contextMemoryStore = new ContextMemoryStore();
+	/** Underlying stream function; Context Engine wraps every actual model-call boundary. */
+	private _agentStreamFunction: StreamFn;
+	private _contextEngineStreamBoundary!: StreamFn;
+	/** Run id supplied by Automation Host while an agent prompt is active. */
+	private _activeContextRunId: string | undefined;
+	/** Dynamic extension sources apply to every model call in the active agent run. */
+	private _pendingExtensionContextSources: ContextSourceInput[] = [];
+	/** Last frozen snapshot per Automation Host run. */
+	private readonly _contextSnapshotIdsByRun = new Map<string, string>();
+	/** Context errors raised inside Agent-core boundaries and rethrown to the caller. */
+	private _pendingContextError: ContextError | undefined;
+
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this._agentStreamFunction = config.agent.streamFunction;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
@@ -394,7 +449,10 @@ export class AgentSession {
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
 		this._installAgentToolHooks();
+		this._installContextEngineTransformBoundary();
+		this._installContextEnginePayloadBoundary();
 		this._installAgentNextTurnRefresh();
+		this._installContextEngineStreamBoundary();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -449,7 +507,7 @@ export class AgentSession {
 		headers?: Record<string, string>;
 		env?: Record<string, string>;
 	}> {
-		if (this.agent.streamFunction === streamSimple) {
+		if (this._getActiveAgentStreamFunction() === streamSimple) {
 			return this._getRequiredRequestAuth(model);
 		}
 
@@ -546,12 +604,179 @@ export class AgentSession {
 				...previousSnapshot,
 				context: {
 					...previousContext,
-					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+					// The stream boundary resolves a fresh plan from the exact next
+					// request context. Never carry an already-packed prompt forward.
+					systemPrompt: this._baseSystemPrompt,
 					tools: this.agent.state.tools.slice(),
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
 			};
+		};
+	}
+
+	private _installContextEngineTransformBoundary(): void {
+		const previousTransform = this.agent.transformContext;
+		if (!previousTransform) {
+			return;
+		}
+		this.agent.transformContext = async (messages, signal) => {
+			try {
+				const before = JSON.stringify(messages);
+				const transformed = await previousTransform(messages, signal);
+				if (
+					this.settingsManager.getContextSettings().enabled &&
+					before !== JSON.stringify(transformed)
+				) {
+					throw new ContextRuntimeError(
+						createContextError(
+							"context_extension_source_missing",
+							"context handlers cannot change model input while Context Engine is enabled; use before_agent_start contribution instead",
+							false,
+						),
+					);
+				}
+				return transformed;
+			} catch (error) {
+				this._captureContextError(error);
+				throw error;
+			}
+		};
+	}
+
+	/**
+	 * Provider adapters build their payload after the Context plan has frozen.
+	 * A payload hook may observe it, but an Engine-enabled session cannot permit
+	 * it to replace or mutate the payload because that would evade the snapshot.
+	 */
+	private _installContextEnginePayloadBoundary(): void {
+		const previousOnPayload = this.agent.onPayload;
+		if (!previousOnPayload) {
+			return;
+		}
+		this.agent.onPayload = async (payload, model) => {
+			try {
+				const before = JSON.stringify(payload);
+				const nextPayload = await previousOnPayload(payload, model);
+				const providerPayload = nextPayload ?? payload;
+				if (
+					this.settingsManager.getContextSettings().enabled &&
+					before !== JSON.stringify(providerPayload)
+				) {
+					throw new ContextRuntimeError(
+						createContextError(
+							"context_extension_source_missing",
+							"provider payload hooks cannot change model input while Context Engine is enabled; use before_agent_start contribution instead",
+							false,
+						),
+					);
+				}
+				return nextPayload;
+			} catch (error) {
+				this._captureContextError(error);
+				throw error;
+			}
+		};
+	}
+
+	private _captureContextError(error: unknown): void {
+		if (error instanceof ContextRuntimeError) {
+			this._pendingContextError = error.contextError;
+		}
+	}
+
+	private _throwPendingContextError(): void {
+		if (!this._pendingContextError) {
+			return;
+		}
+		const contextError = this._pendingContextError;
+		this._pendingContextError = undefined;
+		throw new ContextRuntimeError(contextError);
+	}
+
+	/**
+	 * The Agent stream function is the last in-process boundary before a provider
+	 * request. Resolve and persist the plan there so first turns, tool-loop turns,
+	 * steering, and follow-ups all receive a snapshot for the exact context that
+	 * reaches the model.
+	 */
+	private _installContextEngineStreamBoundary(): void {
+		this._contextEngineStreamBoundary = async (model, context, options) => {
+			try {
+				if (this.settingsManager.getContextSettings().enabled) {
+					this._assertContextPayloadHooksSupported();
+					const extensionSources = this._pendingExtensionContextSources;
+					const sources = await this._collectAgentTurnContextSources(context.messages, extensionSources, context.tools);
+					const { plan } = this._resolveAndPersistContextSnapshot({
+						purpose: "agent_turn",
+						model,
+						messages: context.messages,
+						sources,
+						runId: this._activeContextRunId,
+					});
+					context.systemPrompt = plan.systemPrompt;
+					context.messages = convertToLlm(plan.messages);
+				}
+				return this._agentStreamFunction(model, context, options);
+			} catch (error) {
+				this._captureContextError(error);
+				throw error;
+			}
+		};
+		this.agent.streamFunction = this._contextEngineStreamBoundary;
+	}
+
+	/**
+	 * Extensions and SDK callers may replace `agent.streamFunction` after the
+	 * session starts. Preserve that supported customization while restoring the
+	 * Context Engine boundary before normal Agent runs.
+	 */
+	private _refreshContextEngineStreamBoundary(): void {
+		if (this.agent.streamFunction === this._contextEngineStreamBoundary) {
+			return;
+		}
+		this._agentStreamFunction = this.agent.streamFunction;
+		this.agent.streamFunction = this._contextEngineStreamBoundary;
+	}
+
+	private _getActiveAgentStreamFunction(): StreamFn {
+		return this.agent.streamFunction === this._contextEngineStreamBoundary
+			? this._agentStreamFunction
+			: this.agent.streamFunction;
+	}
+
+	/** Build a stream wrapper for direct compaction/branch-summary model calls. */
+	private _createSummarizationStreamBoundary(purpose: Extract<ContextPurpose, "compaction" | "branch_summary">): StreamFn {
+		return async (model, context, options) => {
+			try {
+				if (this.settingsManager.getContextSettings().enabled) {
+					this._assertContextPayloadHooksSupported();
+					const sources: ContextSourceInput[] = [
+						{
+							sourceId: `system:${purpose}:runtime`,
+							kind: "system",
+							scope: "turn",
+							trust: "builtin",
+							content: context.systemPrompt ?? "",
+							required: true,
+						},
+						...this._providerToolContextSources(context.tools),
+						...this._contextMessageSources(context.messages),
+					];
+					const { plan } = this._resolveAndPersistContextSnapshot({
+						purpose,
+						model,
+						messages: context.messages,
+						sources,
+					});
+					context.systemPrompt = plan.systemPrompt;
+					context.messages = convertToLlm(plan.messages);
+				}
+				return this._getActiveAgentStreamFunction()(model, context, options);
+			} catch (error) {
+				this._captureContextError(error);
+				throw error;
+			}
 		};
 	}
 
@@ -1040,13 +1265,27 @@ export class AgentSession {
 		const loaderAppendSystemPrompt = this._resourceLoader.getAppendSystemPrompt();
 		const appendSystemPrompt =
 			loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
-		const loadedSkills = this._resourceLoader.getSkills().skills;
-		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
-
+		const contextEnabled = this.settingsManager.getContextSettings().enabled;
+		const legacyInstructionBlocks = contextEnabled
+			? []
+			: this._resourceLoader
+					.getContextSources()
+					.contextSources.filter((source) => source.injectable)
+					.map((source) => ({
+						sourceId: source.sourceId,
+						path: source.path,
+						content: source.content,
+						scope: source.scope,
+						trust: source.trust,
+					}));
 		this._baseSystemPromptOptions = {
 			cwd: this._cwd,
-			skills: loadedSkills,
-			contextFiles: loadedContextFiles,
+			// Context Engine appends only sources that its plan admitted. Keeping
+			// instructions and the skill index out of its base prevents a second,
+			// unaccounted injection path. An explicit opt-out retains legacy prompt
+			// assembly for callers that disable the engine.
+			skills: contextEnabled ? [] : this._resourceLoader.getSkills().skills,
+			instructionBlocks: legacyInstructionBlocks,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
@@ -1056,19 +1295,458 @@ export class AgentSession {
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
 
+	/** Latest Context Snapshot id for Run receipts and inspection surfaces. */
+	getLastContextSnapshotId(): string | undefined {
+		return this._lastContextSnapshotId ?? this.sessionManager.getLatestContextSnapshotId();
+	}
+
+	/** Snapshot produced by the most recent actual model call for a given Automation Host run. */
+	getContextSnapshotIdForRun(runId: string): string | undefined {
+		return this._contextSnapshotIdsByRun.get(runId);
+	}
+
+	/**
+	 * Read-only Context Engine inspection for `/context` and RPC `get_context`.
+	 * Never returns raw instruction bodies, memory text, tool output, or credentials.
+	 * Preview mode (no snapshotId) does not write Session.
+	 */
+	async inspectContext(options?: {
+		snapshotId?: string;
+	}): Promise<{
+		snapshot: ContextSnapshot;
+		drift: ContextSourceDrift[];
+		preview: boolean;
+	}> {
+		const currentSources = await this._collectCurrentContextSources();
+		if (options?.snapshotId) {
+			const snapshot = this.sessionManager.getContextSnapshot(options.snapshotId);
+			if (!snapshot) {
+				const error = createContextError(
+					"context_snapshot_not_found",
+					`Context snapshot not found: ${options.snapshotId}`,
+					false,
+				);
+				const err = new Error(error.message) as Error & { contextError: ContextError };
+				err.contextError = error;
+				err.name = "ContextEngineError";
+				throw err;
+			}
+			return {
+				snapshot,
+				drift: compareContextSources(snapshot, currentSources),
+				preview: false,
+			};
+		}
+
+		const contextSettings = this.settingsManager.getContextSettings();
+		const resolveResult = resolveContext({
+			purpose: "agent_turn",
+			sessionId: this.sessionManager.getSessionId(),
+			contextWindow: this.model?.contextWindow ?? 0,
+			reserveTokens: contextSettings.reserveTokens,
+			sources: currentSources,
+			sessionMessages: this.sessionManager.buildSessionContext().messages,
+			turnMessages: [],
+		});
+		if (!resolveResult.ok) {
+			const err = new Error(resolveResult.error.message) as Error & { contextError: ContextError };
+			err.contextError = resolveResult.error;
+			err.name = "ContextEngineError";
+			throw err;
+		}
+		const snapshot = freezeContext(resolveResult.plan, {
+			id: "preview",
+			createdAt: new Date().toISOString(),
+		});
+		return { snapshot, drift: [], preview: true };
+	}
+
+	/** Explicit session/project memory write. Requires settings enablement for the scope. */
+	async addContextMemory(input: {
+		scope: ContextMemoryScope;
+		text: string;
+		sourceEntryIds?: string[];
+	}): Promise<ContextMemory> {
+		const memorySettings = this.settingsManager.getMemorySettings();
+		if (input.scope === "session" && !memorySettings.sessionEnabled) {
+			const error = createContextError(
+				"context_memory_disabled",
+				"Session memory is disabled (settings.memory.sessionEnabled)",
+				false,
+			);
+			const err = new Error(error.message) as Error & { contextError: ContextError };
+			err.contextError = error;
+			err.name = "ContextEngineError";
+			throw err;
+		}
+		if (input.scope === "project" && !memorySettings.projectEnabled) {
+			const error = createContextError(
+				"context_memory_disabled",
+				"Project memory is disabled (settings.memory.projectEnabled)",
+				false,
+			);
+			const err = new Error(error.message) as Error & { contextError: ContextError };
+			err.contextError = error;
+			err.name = "ContextEngineError";
+			throw err;
+		}
+		return this._contextMemoryStore.add({
+			scope: input.scope,
+			text: input.text,
+			sourceEntryIds: input.sourceEntryIds,
+			sessionId: this.sessionManager.getSessionId(),
+			projectRoot: this._cwd,
+			appendSessionEntry: (customType, data) => this.sessionManager.appendCustomEntry(customType, data),
+		});
+	}
+
+	async listContextMemory(scope?: ContextMemoryScope): Promise<ContextMemory[]> {
+		const scopes: ContextMemoryScope[] = scope ? [scope] : ["session", "project"];
+		const sessionEntries = this.sessionManager
+			.getEntries()
+			.filter((entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom")
+			.map((entry) => ({ customType: entry.customType, data: entry.data }));
+		const out: ContextMemory[] = [];
+		for (const s of scopes) {
+			const list = await this._contextMemoryStore.list({
+				scope: s,
+				sessionId: this.sessionManager.getSessionId(),
+				projectRoot: this._cwd,
+				sessionCustomEntries: sessionEntries,
+			});
+			out.push(...list);
+		}
+		return out;
+	}
+
+	async revokeContextMemory(input: { id: string; scope?: ContextMemoryScope }): Promise<void> {
+		let scope = input.scope;
+		if (!scope) {
+			const matches = (await this.listContextMemory()).filter((memory) => memory.id === input.id);
+			const memory = matches[0];
+			if (!memory || matches.length !== 1) {
+				const error = createContextError(
+					"context_memory_not_found",
+					matches.length === 0
+						? `Active context memory not found: ${input.id}`
+						: `Context memory id is ambiguous: ${input.id}`,
+					false,
+				);
+				const err = new Error(error.message) as Error & { contextError: ContextError };
+				err.contextError = error;
+				err.name = "ContextEngineError";
+				throw err;
+			}
+			scope = memory.scope;
+		}
+		await this._contextMemoryStore.revoke({
+			id: input.id,
+			scope,
+			sessionId: this.sessionManager.getSessionId(),
+			projectRoot: this._cwd,
+			appendSessionEntry: (customType, data) => this.sessionManager.appendCustomEntry(customType, data),
+		});
+	}
+
+	private _contextMessageSources(messages: readonly AgentMessage[]): ContextSourceInput[] {
+		return messages.map((message, index) => {
+			const kind =
+				message.role === "branchSummary" || message.role === "compactionSummary"
+					? ("session_summary" as const)
+					: ("session_message" as const);
+			const serialized = JSON.stringify(message);
+			return {
+				sourceId: `session:${kind}:${index}`,
+				kind,
+				scope: "session",
+				trust: "builtin",
+				content: typeof serialized === "string" ? serialized : "",
+				required: true,
+				placement: "message",
+				message,
+				alreadyIncludedInMessages: true,
+			};
+		});
+	}
+
+	private _formatInstructionSource(source: ContextSourceInput): ContextSourceInput {
+		const path = source.path ?? source.sourceId;
+		return {
+			...source,
+			content: `<project_instructions path="${path}">\n${source.content}\n</project_instructions>`,
+		};
+	}
+
+	private _formatMemorySource(source: ContextSourceInput): ContextSourceInput {
+		const refId = source.refId ?? source.sourceId;
+		return {
+			...source,
+			content: `<explicit_memory id="${refId}" scope="${source.scope}">\n${source.content}\n</explicit_memory>`,
+		};
+	}
+
+	private _providerToolContextSources(tools: readonly Tool[] | undefined): ContextSourceInput[] {
+		if (!tools || tools.length === 0) {
+			return [];
+		}
+
+		const sourceIds = new Set<string>();
+		return tools.map((tool) => {
+			const sourceId = `capability:tool:${tool.name}`;
+			if (sourceIds.has(sourceId)) {
+				throw new ContextRuntimeError(
+					createContextError(
+						"context_source_unavailable",
+						`Provider tool schema is ambiguous for tool: ${tool.name}`,
+						false,
+					),
+				);
+			}
+			sourceIds.add(sourceId);
+
+			let content: string;
+			try {
+				const serialized = JSON.stringify({
+					name: tool.name,
+					description: tool.description,
+					parameters: tool.parameters,
+					constrainedSampling: tool.constrainedSampling,
+				});
+				if (serialized === undefined) {
+					throw new Error("Provider tool schema did not serialize");
+				}
+				content = serialized;
+			} catch {
+				throw new ContextRuntimeError(
+					createContextError(
+						"context_source_unavailable",
+						`Provider tool schema cannot be serialized for tool: ${tool.name}`,
+						false,
+					),
+				);
+			}
+
+			return {
+				sourceId,
+				kind: "capability_index",
+				scope: "turn",
+				trust: "builtin",
+				content,
+				required: true,
+			};
+		});
+	}
+
+	private async _collectAgentTurnContextSources(
+		messages: readonly AgentMessage[],
+		extraSources: readonly ContextSourceInput[] = [],
+		tools: readonly Tool[] | undefined = this.agent.state.tools,
+	): Promise<ContextSourceInput[]> {
+		const sources: ContextSourceInput[] = [
+			{
+				sourceId: "system:runtime",
+				kind: "system",
+				scope: "global",
+				trust: "builtin",
+				content: this._baseSystemPrompt,
+				required: true,
+			},
+		];
+
+		for (const source of this._resourceLoader.toContextSourceInputs()) {
+			// Custom/append system prompts are already rendered in system:runtime.
+			// Keeping them here would make a second, unplanned injection path.
+			if (source.kind === "system") {
+				continue;
+			}
+			sources.push(source.kind === "instruction" ? this._formatInstructionSource(source) : source);
+		}
+
+		for (const source of await this._collectMemorySources()) {
+			sources.push(this._formatMemorySource(source));
+		}
+
+		sources.push(...this._providerToolContextSources(tools), ...extraSources, ...this._contextMessageSources(messages));
+		return sources;
+	}
+
+	private async _collectCurrentContextSources(): Promise<ContextSourceInput[]> {
+		const messages = this.sessionManager.buildSessionContext().messages;
+		return this._collectAgentTurnContextSources(messages, [], this.agent.state.tools);
+	}
+
+	/**
+	 * Reject an initial prompt before Agent startup when required context cannot
+	 * fit. The stream boundary still creates the authoritative snapshot from the
+	 * provider-ready request immediately before every actual model call.
+	 */
+	private async _validateInitialContextBudget(turnMessages: readonly AgentMessage[]): Promise<void> {
+		if (!this.settingsManager.getContextSettings().enabled || !this.model) {
+			return;
+		}
+		const sessionMessages = this.sessionManager.buildSessionContext().messages;
+		const sources = await this._collectAgentTurnContextSources(
+			[...sessionMessages, ...turnMessages],
+			this._pendingExtensionContextSources,
+			this.agent.state.tools,
+		);
+		const contextSettings = this.settingsManager.getContextSettings();
+		const result = resolveContext({
+			purpose: "agent_turn",
+			sessionId: this.sessionManager.getSessionId(),
+			runId: this._activeContextRunId,
+			contextWindow: this.model.contextWindow,
+			reserveTokens: contextSettings.reserveTokens,
+			sources,
+			sessionMessages,
+			turnMessages,
+		});
+		if (result.ok) {
+			return;
+		}
+		throw new ContextRuntimeError(result.error);
+	}
+
+	/**
+	 * Resolve, freeze, and persist a metadata-only Context Snapshot immediately
+	 * before an actual model call. The plan is also the exact system prompt and
+	 * message set passed through the in-process stream boundary.
+	 */
+	private _resolveAndPersistContextSnapshot(input: {
+		purpose: ContextPurpose;
+		model: Model<any>;
+		messages: readonly AgentMessage[];
+		sources: readonly ContextSourceInput[];
+		runId?: string;
+		parentSnapshotId?: string;
+	}): { plan: ContextPlan; snapshot: ContextSnapshot } {
+		const contextSettings = this.settingsManager.getContextSettings();
+		const resolveResult = resolveContext({
+			purpose: input.purpose,
+			sessionId: this.sessionManager.getSessionId(),
+			runId: input.runId,
+			contextWindow: input.model.contextWindow,
+			reserveTokens: contextSettings.reserveTokens,
+			sources: input.sources,
+			sessionMessages: input.messages,
+			turnMessages: [],
+		});
+
+		if (!resolveResult.ok) {
+			throw new ContextRuntimeError(resolveResult.error);
+		}
+
+		const parentSnapshotId = input.parentSnapshotId ?? this._parentContextSnapshotId;
+		const snapshot = freezeContext(resolveResult.plan, {
+			id: randomUUID(),
+			createdAt: new Date().toISOString(),
+			parentSnapshotId,
+		});
+
+		try {
+			this.sessionManager.appendCustomEntry(CONTEXT_SNAPSHOT_CUSTOM_TYPE, snapshot);
+		} catch (cause) {
+			const error = createContextError(
+				"context_snapshot_persistence_failed",
+				cause instanceof Error ? cause.message : "Failed to persist context snapshot",
+				true,
+			);
+			throw new ContextRuntimeError(error);
+		}
+
+		this._lastContextSnapshotId = snapshot.id;
+		this._parentContextSnapshotId = snapshot.id;
+		if (input.runId) {
+			this._contextSnapshotIdsByRun.set(input.runId, snapshot.id);
+		}
+		return { plan: resolveResult.plan, snapshot };
+	}
+
+	private async _collectMemorySources(): Promise<ContextSourceInput[]> {
+		const memorySettings = this.settingsManager.getMemorySettings();
+		const sources: ContextSourceInput[] = [];
+		const sessionEntries = this.sessionManager
+			.getEntries()
+			.filter((entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom")
+			.map((entry) => ({ customType: entry.customType, data: entry.data }));
+
+		if (memorySettings.sessionEnabled) {
+			const sessionMemories = await this._contextMemoryStore.list({
+				scope: "session",
+				sessionId: this.sessionManager.getSessionId(),
+				sessionCustomEntries: sessionEntries,
+			});
+			sources.push(...memoryToContextSourceInputs(sessionMemories, { enabled: true }));
+		}
+
+		if (memorySettings.projectEnabled) {
+			const projectMemories = await this._contextMemoryStore.list({
+				scope: "project",
+				projectRoot: this._cwd,
+			});
+			sources.push(...memoryToContextSourceInputs(projectMemories, { enabled: true }));
+		}
+
+		return sources;
+	}
+
+
+	private _extensionSourcesFromBeforeAgentStart(
+		contributions: readonly ContextExtensionContributionAttribution[],
+	): ContextSourceInput[] {
+		const sources: ContextSourceInput[] = [];
+		for (const { contribution } of contributions) {
+			try {
+				sources.push(createContextExtensionSourceInput(contribution));
+			} catch {
+				throw new ContextRuntimeError(
+					createContextError(
+						"context_extension_source_missing",
+						`Invalid Context extension contribution: ${contribution.sourceId}`,
+						false,
+					),
+				);
+			}
+		}
+		return sources;
+	}
+
 	// =========================================================================
 	// Prompting
 	// =========================================================================
 
+	private _assertContextPayloadHooksSupported(): void {
+		if (
+			this.settingsManager.getContextSettings().enabled &&
+			this._extensionRunner.hasHandlers("before_provider_request")
+		) {
+			throw new ContextRuntimeError(
+				createContextError(
+					"context_extension_source_missing",
+					"before_provider_request is unavailable while Context Engine is enabled because provider payload rewrites cannot be verified against the Context snapshot",
+					false,
+			),
+		);
+		}
+	}
+
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._refreshContextEngineStreamBoundary();
+		this._assertContextPayloadHooksSupported();
 		this._isAgentRunActive = true;
+		this._pendingContextError = undefined;
 		try {
 			await this.agent.prompt(messages);
+			this._throwPendingContextError();
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
+				this._throwPendingContextError();
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
+			this._activeContextRunId = undefined;
+			this._pendingExtensionContextSources = [];
+			this._pendingContextError = undefined;
 			this._flushPendingBashMessages();
 			await this._emitAgentSettled();
 		}
@@ -1202,6 +1880,10 @@ export class AgentSession {
 				throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 			}
 
+			// A provider payload rewrite is not structurally comparable with the
+			// Context plan, so reject it before any compaction or Agent-loop call.
+			this._assertContextPayloadHooksSupported();
+
 			// Check if we need to compact before sending (catches aborted responses).
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
@@ -1236,30 +1918,60 @@ export class AgentSession {
 				this._baseSystemPrompt,
 				this._baseSystemPromptOptions,
 			);
-			// Add all custom messages from extensions
-			if (result?.messages) {
-				for (const msg of result.messages) {
-					messages.push({
-						role: "custom",
-						customType: msg.customType,
-						// Untyped extensions can pass null/missing content; normalize at ingestion.
-						content: msg.content ?? [],
-						display: msg.display,
-						details: msg.details,
-						timestamp: Date.now(),
-					});
+			const contextEnabled = this.settingsManager.getContextSettings().enabled;
+			if (contextEnabled) {
+				if (result?.contributionError) {
+					throw new ContextRuntimeError(
+						createContextError(
+							result.contributionError.code,
+							result.contributionError.message,
+							false,
+						),
+					);
 				}
-			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt !== undefined) {
-				this._systemPromptOverride = result.systemPrompt;
-				this.agent.state.systemPrompt = result.systemPrompt;
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
+				if (result?.unattributedMutation) {
+					throw new ContextRuntimeError(
+						createContextError(
+							"context_extension_source_missing",
+							"before_agent_start changed model input without a typed Context contribution",
+							false,
+						),
+					);
+				}
+				this._pendingExtensionContextSources = this._extensionSourcesFromBeforeAgentStart(
+					result?.contributions ?? [],
+				);
 				this._systemPromptOverride = undefined;
 				this.agent.state.systemPrompt = this._baseSystemPrompt;
+			} else {
+				// Legacy extension mutation remains available only when callers explicitly
+				// disable Context Engine.
+				if (result?.messages) {
+					for (const msg of result.messages) {
+						messages.push({
+							role: "custom",
+							customType: msg.customType,
+							content: msg.content ?? [],
+							display: msg.display,
+							details: msg.details,
+							timestamp: Date.now(),
+						});
+					}
+				}
+				if (result?.systemPrompt !== undefined) {
+					this._systemPromptOverride = result.systemPrompt;
+					this.agent.state.systemPrompt = result.systemPrompt;
+				} else {
+					this._systemPromptOverride = undefined;
+					this.agent.state.systemPrompt = this._baseSystemPrompt;
+				}
 			}
+			this._activeContextRunId = options?.runId;
+			await this._validateInitialContextBudget(messages);
 		} catch (error) {
+			this._systemPromptOverride = undefined;
+			this._activeContextRunId = undefined;
+			this._pendingExtensionContextSources = [];
 			preflightResult?.(false);
 			throw error;
 		}
@@ -1268,7 +1980,16 @@ export class AgentSession {
 			return;
 		}
 
-		preflightResult?.(true);
+		try {
+			preflightResult?.(true);
+		} catch (error) {
+			// Automation Host acceptance can fail after prompt preparation but before
+			// the Agent loop begins. Do not carry its run/source state into a later turn.
+			this._systemPromptOverride = undefined;
+			this._activeContextRunId = undefined;
+			this._pendingExtensionContextSources = [];
+			throw error;
+		}
 		await this._runAgentPrompt(messages);
 	}
 
@@ -1842,6 +2563,8 @@ export class AgentSession {
 			let usage: Usage | undefined;
 			let details: unknown;
 
+			let compactionSnapshot: ContextSnapshot | undefined;
+
 			if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
@@ -1859,7 +2582,7 @@ export class AgentSession {
 					customInstructions,
 					this._compactionAbortController.signal,
 					this.thinkingLevel,
-					this.agent.streamFunction,
+					this._createSummarizationStreamBoundary("compaction"),
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason: "manual" }),
@@ -1869,6 +2592,25 @@ export class AgentSession {
 				tokensBefore = result.tokensBefore;
 				usage = result.usage;
 				details = result.details;
+				if (this.settingsManager.getContextSettings().enabled) {
+					const snapshotId = this.getLastContextSnapshotId();
+					compactionSnapshot = snapshotId ? this.sessionManager.getContextSnapshot(snapshotId) : undefined;
+				}
+			}
+
+			if (compactionSnapshot) {
+				const baseDetails =
+					details && typeof details === "object" && !Array.isArray(details)
+						? (details as CompactionDetails)
+						: ({ readFiles: [], modifiedFiles: [] } as CompactionDetails);
+				const merged: CompactionDetails = {
+					...baseDetails,
+					readFiles: Array.isArray(baseDetails.readFiles) ? baseDetails.readFiles : [],
+					modifiedFiles: Array.isArray(baseDetails.modifiedFiles) ? baseDetails.modifiedFiles : [],
+					contextSnapshotId: compactionSnapshot.id,
+					contextBudget: { ...compactionSnapshot.budget },
+				};
+				details = merged;
 			}
 
 			if (this._compactionAbortController.signal.aborted) {
@@ -2114,6 +2856,8 @@ export class AgentSession {
 			let usage: Usage | undefined;
 			let details: unknown;
 
+			let autoCompactionSnapshot: ContextSnapshot | undefined;
+
 			if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
@@ -2131,7 +2875,7 @@ export class AgentSession {
 					undefined,
 					this._autoCompactionAbortController.signal,
 					this.thinkingLevel,
-					this.agent.streamFunction,
+					this._createSummarizationStreamBoundary("compaction"),
 					env,
 					this.settingsManager.getRetrySettings(),
 					this._summarizationRetryCallbacks({ source: "compaction", reason }),
@@ -2141,6 +2885,24 @@ export class AgentSession {
 				tokensBefore = compactResult.tokensBefore;
 				usage = compactResult.usage;
 				details = compactResult.details;
+				if (this.settingsManager.getContextSettings().enabled) {
+					const snapshotId = this.getLastContextSnapshotId();
+					autoCompactionSnapshot = snapshotId ? this.sessionManager.getContextSnapshot(snapshotId) : undefined;
+				}
+			}
+
+			if (autoCompactionSnapshot) {
+				const baseDetails =
+					details && typeof details === "object" && !Array.isArray(details)
+						? (details as CompactionDetails)
+						: ({ readFiles: [], modifiedFiles: [] } as CompactionDetails);
+				details = {
+					...baseDetails,
+					readFiles: Array.isArray(baseDetails.readFiles) ? baseDetails.readFiles : [],
+					modifiedFiles: Array.isArray(baseDetails.modifiedFiles) ? baseDetails.modifiedFiles : [],
+					contextSnapshotId: autoCompactionSnapshot.id,
+					contextBudget: { ...autoCompactionSnapshot.budget },
+				} satisfies CompactionDetails;
 			}
 
 			if (this._autoCompactionAbortController.signal.aborted) {
@@ -2994,6 +3756,7 @@ export class AgentSession {
 				const model = this.model!;
 				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
 				const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
+
 				const result = await generateBranchSummary(entriesToSummarize, {
 					model: requestModel,
 					apiKey,
@@ -3003,7 +3766,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: this._createSummarizationStreamBoundary("branch_summary"),
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -3015,10 +3778,19 @@ export class AgentSession {
 				}
 				summaryText = result.summary;
 				summaryUsage = result.usage;
-				summaryDetails = {
+				const branchDetails: BranchSummaryDetails = {
 					readFiles: result.readFiles || [],
 					modifiedFiles: result.modifiedFiles || [],
 				};
+				const snapshotId = this.settingsManager.getContextSettings().enabled
+					? this.getLastContextSnapshotId()
+					: undefined;
+				const branchSnapshot = snapshotId ? this.sessionManager.getContextSnapshot(snapshotId) : undefined;
+				if (branchSnapshot) {
+					branchDetails.contextSnapshotId = branchSnapshot.id;
+					branchDetails.contextBudget = { ...branchSnapshot.budget };
+				}
+				summaryDetails = branchDetails;
 			} else if (extensionSummary) {
 				summaryText = extensionSummary.summary;
 				summaryDetails = extensionSummary.details;

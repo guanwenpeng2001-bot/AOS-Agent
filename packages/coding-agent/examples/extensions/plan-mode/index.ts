@@ -173,37 +173,18 @@ export default function planModeExtension(agent: ExtensionAPI): void {
 		}
 	});
 
-	// Filter out stale plan mode context when not in plan mode
-	agent.on("context", async (event) => {
-		if (planModeEnabled) return;
-
-		return {
-			messages: event.messages.filter((m) => {
-				const msg = m as AgentMessage & { customType?: string };
-				if (msg.customType === "plan-mode-context") return false;
-				if (msg.role !== "user") return true;
-
-				const content = msg.content;
-				if (typeof content === "string") {
-					return !content.includes("[PLAN MODE ACTIVE]");
-				}
-				if (Array.isArray(content)) {
-					return !content.some(
-						(c) => c.type === "text" && (c as TextContent).text?.includes("[PLAN MODE ACTIVE]"),
-					);
-				}
-				return true;
-			}),
-		};
-	});
-
-	// Inject plan/execution context before agent starts
+	// Contribute plan/execution context without mutating the session message list.
 	agent.on("before_agent_start", async () => {
 		if (planModeEnabled) {
 			return {
-				message: {
-					customType: "plan-mode-context",
-					content: `[PLAN MODE ACTIVE]
+				contribution: {
+					sourceId: "example:plan-mode",
+					label: "Plan mode instructions",
+					visibility: "model_and_snapshot",
+					messages: [
+						{
+							role: "user",
+							content: `[PLAN MODE ACTIVE]
 You are in plan mode - a read-only exploration mode for safe code analysis.
 
 Restrictions:
@@ -222,27 +203,36 @@ Plan:
 ...
 
 Do NOT attempt to make changes - just describe what you would do.`,
-					display: false,
+							timestamp: Date.now(),
+						},
+					],
 				},
 			};
 		}
 
 		if (executionMode && todoItems.length > 0) {
 			const remaining = todoItems.filter((t) => !t.completed);
-			const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
-			return {
-				message: {
-					customType: "plan-execution-context",
-					content: `[EXECUTING PLAN - Full tool access enabled]
+		const todoList = remaining.map((t) => `${t.step}. ${t.text}`).join("\n");
+		return {
+			contribution: {
+				sourceId: "example:plan-execution",
+				label: "Plan execution instructions",
+				visibility: "model_and_snapshot",
+				messages: [
+					{
+						role: "user",
+						content: `[EXECUTING PLAN - Full tool access enabled]
 
 Remaining steps:
 ${todoList}
 
 Execute each step in order.
 After completing a step, include a [DONE:n] tag in your response.`,
-					display: false,
-				},
-			};
+						timestamp: Date.now(),
+					},
+				],
+			},
+		};
 		}
 	});
 

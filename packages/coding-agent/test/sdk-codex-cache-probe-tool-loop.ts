@@ -177,6 +177,8 @@ function createMinimalResourceLoader(systemPrompt: string): ResourceLoader {
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getContextSources: () => ({ contextSources: [] }),
+		toContextSourceInputs: () => [],
 		getSystemPrompt: () => systemPrompt,
 		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],

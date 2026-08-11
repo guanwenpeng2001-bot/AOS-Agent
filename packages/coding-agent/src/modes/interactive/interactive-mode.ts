@@ -2907,6 +2907,18 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/context" || text.startsWith("/context ")) {
+				const snapshotId = text.startsWith("/context ") ? text.slice(9).trim() : undefined;
+				this.editor.setText("");
+				await this.handleContextCommand(snapshotId || undefined);
+				return;
+			}
+			if (text === "/memory" || text.startsWith("/memory ")) {
+				const args = text === "/memory" ? "" : text.slice(8).trim();
+				this.editor.setText("");
+				await this.handleMemoryCommand(args);
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -5976,6 +5988,130 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	private async handleContextCommand(snapshotId?: string): Promise<void> {
+		try {
+			const inspection = await this.session.inspectContext({ snapshotId });
+			const { snapshot, drift, preview } = inspection;
+			let info = `${theme.bold("Context Engine")}\n\n`;
+			info += `${theme.fg("dim", "Mode:")} ${preview ? "preview (not persisted)" : "snapshot"}\n`;
+			info += `${theme.fg("dim", "Snapshot:")} ${snapshot.id}\n`;
+			info += `${theme.fg("dim", "Purpose:")} ${snapshot.purpose}\n`;
+			info += `${theme.fg("dim", "Session:")} ${snapshot.sessionId}\n`;
+			if (snapshot.runId) {
+				info += `${theme.fg("dim", "Run:")} ${snapshot.runId}\n`;
+			}
+			if (snapshot.parentSnapshotId) {
+				info += `${theme.fg("dim", "Parent:")} ${snapshot.parentSnapshotId}\n`;
+			}
+			info += `\n${theme.bold("Budget")}\n`;
+			info += `${theme.fg("dim", "Window:")} ${snapshot.budget.contextWindow}\n`;
+			info += `${theme.fg("dim", "Reserve:")} ${snapshot.budget.reserveTokens}\n`;
+			info += `${theme.fg("dim", "Input limit:")} ${snapshot.budget.inputLimit}\n`;
+			info += `${theme.fg("dim", "Estimated input:")} ${snapshot.budget.estimatedInputTokens}\n`;
+			info += `\n${theme.bold("Sources")} (${snapshot.sources.length})\n`;
+			for (const source of snapshot.sources) {
+				const pathPart = source.path ? ` ${theme.fg("dim", source.path)}` : "";
+				const reason = source.reason ? ` (${source.reason})` : "";
+				info += `${source.disposition.padEnd(9)} ${source.kind.padEnd(18)} ${source.trust.padEnd(18)} ~${source.estimatedTokens} tok${pathPart}${reason}\n`;
+				info += `  ${theme.fg("dim", source.sourceId)} digest=${source.contentDigest.slice(0, 12)}…\n`;
+			}
+			if (drift.length > 0) {
+				info += `\n${theme.bold("Drift vs current sources")}\n`;
+				for (const item of drift) {
+					if (item.status === "unchanged") {
+						continue;
+					}
+					info += `${item.status.padEnd(20)} ${item.sourceId}\n`;
+				}
+			}
+			info += `\n${theme.fg("dim", "Note: metadata only — no rule/session/memory bodies or credentials.")}\n`;
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		} catch (error) {
+			const msg = `${theme.fg("error", "Context error:")} ${error instanceof Error ? error.message : String(error)}`;
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(msg, 1, 0));
+			this.ui.requestRender();
+		}
+	}
+
+	private async handleMemoryCommand(args: string): Promise<void> {
+		const parts = args.split(/\s+/).filter((part) => part.length > 0);
+		const sub = parts[0] ?? "list";
+		const show = (info: string): void => {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		};
+		try {
+			if (sub === "list") {
+				const scopeArg = parts[1];
+				const scope =
+					scopeArg === "session" || scopeArg === "project" ? scopeArg : undefined;
+				const memories = await this.session.listContextMemory(scope);
+				const settings = this.session.settingsManager.getMemorySettings();
+				let info = `${theme.bold("Context Memory")}\n\n`;
+				info += `${theme.fg("dim", "sessionEnabled:")} ${settings.sessionEnabled}\n`;
+				info += `${theme.fg("dim", "projectEnabled:")} ${settings.projectEnabled}\n\n`;
+				if (memories.length === 0) {
+					info += theme.fg("dim", "No active memory entries.\n");
+					info += theme.fg("dim", "Enable settings.memory.* and use /memory add <scope> <text>.\n");
+				} else {
+					for (const memory of memories) {
+						info += `${memory.id}  ${memory.scope}  ${memory.status}  ${memory.createdAt}\n`;
+						info += `  ${theme.fg("dim", `chars=${memory.text.length} sources=${memory.sourceEntryIds.join(",") || "-"}`)}\n`;
+					}
+					info += `\n${theme.fg("dim", "Bodies omitted by default; open local store/session entries for full text.")}\n`;
+				}
+				show(info);
+				return;
+			}
+			if (sub === "add") {
+				const scope = parts[1];
+				if (scope !== "session" && scope !== "project") {
+					show(
+						`${theme.fg("error", "Usage:")} /memory add <session|project> <text>\nScope is required and must be session or project.`,
+					);
+					return;
+				}
+				const text = parts.slice(2).join(" ").trim();
+				if (!text) {
+					show(`${theme.fg("error", "Usage:")} /memory add <session|project> <text>`);
+					return;
+				}
+				const memory = await this.session.addContextMemory({ scope, text });
+				show(
+					`${theme.bold("Memory added")}\n` +
+						`${theme.fg("dim", "id:")} ${memory.id}\n` +
+						`${theme.fg("dim", "scope:")} ${memory.scope}\n` +
+						`${theme.fg("dim", "chars:")} ${memory.text.length}\n` +
+						`${theme.fg("dim", "source entries:")} ${memory.sourceEntryIds.join(",") || "-"}\n` +
+						`${theme.fg("dim", "cross-session:")} ${memory.scope === "project" ? "yes (user-private store)" : "no (this session only)"}\n`,
+				);
+				return;
+			}
+			if (sub === "revoke") {
+				const id = parts[1];
+				if (!id || parts.length !== 2) {
+					show(`${theme.fg("error", "Usage:")} /memory revoke <id>`);
+					return;
+				}
+				await this.session.revokeContextMemory({ id });
+				show(`${theme.bold("Memory revoked")} ${id}`);
+				return;
+			}
+			show(
+				`${theme.fg("error", "Usage:")}\n` +
+					`/memory list [session|project]\n` +
+					`/memory add <session|project> <text>\n` +
+					`/memory revoke <id>`,
+			);
+		} catch (error) {
+			show(`${theme.fg("error", "Memory error:")} ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private handleSessionCommand(): void {

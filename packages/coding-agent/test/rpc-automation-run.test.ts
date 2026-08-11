@@ -118,6 +118,8 @@ function testResourceLoader(): ResourceLoader {
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
+		getContextSources: () => ({ contextSources: [] }),
+		toContextSourceInputs: () => [],
 		getSystemPrompt: () => undefined,
 		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],

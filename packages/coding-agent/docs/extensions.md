@@ -287,16 +287,16 @@ user sends prompt ────────────────────�
   ├─► (extension commands checked first, bypass if found)  │
   ├─► input (can intercept, transform, or handle)          │
   ├─► (skill/template expansion if not handled)            │
-  ├─► before_agent_start (can inject message, modify system prompt)
+  ├─► before_agent_start (declares labeled Context contributions)
   ├─► agent_start                                          │
   ├─► message_start / message_update / message_end         │
   │                                                        │
   │   ┌─── turn (repeats while LLM calls tools) ───┐       │
   │   │                                            │       │
   │   ├─► turn_start                               │       │
-  │   ├─► context (can modify messages)            │       │
+  │   ├─► context (observe; Engine mode rejects mutations) │
   │   ├─► before_provider_headers (can mutate headers)     |
-  │   ├─► before_provider_request (can inspect or replace payload)
+  │   ├─► before_provider_request (legacy payload hook; Engine mode rejects it)
   │   ├─► after_provider_response (status + headers, before stream consume)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
@@ -520,14 +520,13 @@ agent.on("session_shutdown", async (event, ctx) => {
 
 #### before_agent_start
 
-Fired after user submits prompt, before agent loop. Can inject a message and/or modify the system prompt.
+Fired after user submits a prompt, before the agent loop. With Context Engine enabled (the default), model-facing content must be returned as a labeled `contribution` so it can be budgeted and recorded in the Context Snapshot.
 
 ```typescript
 agent.on("before_agent_start", async (event, ctx) => {
   // event.prompt - user's prompt text
   // event.images - attached images (if any)
-  // event.systemPrompt - current chained system prompt for this handler
-  //   (includes changes from earlier before_agent_start handlers)
+  // event.systemPrompt - base system prompt before Context Engine planning
   // event.systemPromptOptions - structured options used to build the system prompt
   //   .customPrompt - any custom system prompt (from --system-prompt, SYSTEM.md, or custom templates)
   //   .selectedTools - tools currently active in the prompt
@@ -535,25 +534,33 @@ agent.on("before_agent_start", async (event, ctx) => {
   //   .promptGuidelines - custom guideline bullets
   //   .appendSystemPrompt - text from --append-system-prompt flags
   //   .cwd - working directory
-  //   .contextFiles - AGENTS.md files and other loaded context files
-  //   .skills - loaded skills
+  //   .instructionBlocks - legacy injected instruction blocks (Engine disabled)
+  //   .skills - legacy injected skills (Engine disabled)
 
   return {
-    // Inject a persistent message (stored in session, sent to LLM)
-    message: {
-      customType: "my-extension",
-      content: "Additional context for the LLM",
-      display: true,
+    contribution: {
+      sourceId: "my-extension:turn-guidance",
+      label: "My extension turn guidance",
+      visibility: "model_and_snapshot",
+      // These messages reach only this agent run; they are not persisted as
+      // session messages. Their metadata-only digest and token estimate are
+      // included in each Context Snapshot for the run.
+      messages: [{
+        role: "user",
+        content: "Additional context for the LLM",
+        timestamp: Date.now(),
+      }],
+      systemPromptAppend: "Extra instructions for this turn...",
     },
-    // Replace the system prompt for this turn (chained across extensions)
-    systemPrompt: event.systemPrompt + "\n\nExtra instructions for this turn...",
   };
 });
 ```
 
-The `systemPromptOptions` field gives extensions access to the same structured data AOS Agent uses to build the system prompt. This lets you inspect what AOS Agent has loaded — custom prompts, guidelines, tool snippets, context files, skills — without re-discovering resources or re-parsing flags. Use it when your extension needs to make deep, informed changes to the system prompt while respecting user-provided configuration.
+`visibility: "model_and_snapshot"` injects the declared body and records only its source id, label, digest, token estimate, and disposition. `"snapshot_only"` records the same metadata but never sends its body to the model. `sourceId` must be stable and unique across the contributing extensions.
 
-Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
+The `systemPromptOptions` field provides base prompt inputs such as custom prompts, active tools, tool snippets, guidelines, approved instruction blocks, and skills. It does not provide a bypass around Context Engine selection.
+
+The legacy `message` and `systemPrompt` return fields are available only when Context Engine is explicitly disabled. In Engine mode they fail before the model call with `context_extension_source_missing`.
 
 #### agent_start / agent_end / agent_settled
 
@@ -647,15 +654,16 @@ agent.on("tool_execution_end", async (event, ctx) => {
 
 #### context
 
-Fired before each LLM call. Modify messages non-destructively. See [Session Format](session-format.md) for message types.
+Fired before each LLM call. In Context Engine mode handlers may inspect the message copy but must return it unchanged. A mutation fails before the provider call because it would not be represented by the Context Snapshot. Use `before_agent_start` with a labeled contribution for new model-facing content.
 
 ```typescript
 agent.on("context", async (event, ctx) => {
-  // event.messages - deep copy, safe to modify
-  const filtered = event.messages.filter(m => !shouldPrune(m));
-  return { messages: filtered };
+  // event.messages - inspect-only while Context Engine is enabled
+  console.log(`Messages: ${event.messages.length}`);
 });
 ```
+
+To retain the legacy mutation behavior, disable Context Engine explicitly. Do not use it for new extensions.
 
 #### before_provider_headers
 
@@ -677,9 +685,9 @@ Runs once per provider request; retries reuse the same headers rather than re-fi
 
 #### before_provider_request
 
-Fired after the provider-specific payload is built, right before the request is sent. Handlers run in extension load order. Returning `undefined` keeps the payload unchanged. Returning any other value replaces the payload for later handlers and for the actual request.
+Fired after the provider-specific payload is built, right before the request is sent. This is a legacy payload hook: Context Engine rejects it before a model call because a serialized-provider payload rewrite cannot be verified against the Context Snapshot.
 
-This hook can rewrite provider-level system instructions or remove them entirely. Those payload-level changes are not reflected by `ctx.getSystemPrompt()`, which reports AOS Agent's system prompt string rather than the final serialized provider payload.
+Use `before_provider_headers` for request headers and `before_agent_start` contributions for model-facing context. To use this hook for legacy inspection or replacement, explicitly disable Context Engine.
 
 ```typescript
 agent.on("before_provider_request", (event, ctx) => {
@@ -1067,10 +1075,9 @@ ctx.compact({
 
 Returns AOS Agent's current system prompt string.
 
-- During `before_agent_start`, this reflects chained system-prompt changes made so far for the current turn.
-- It does not include later `context` message mutations.
-- It does not include `before_provider_request` payload rewrites.
-- If later-loaded extensions run after yours, they can still change what is ultimately sent.
+- During `before_agent_start`, this is the base system prompt before Context Engine applies labeled contributions.
+- It does not include `contribution.systemPromptAppend` from this or other handlers.
+- In Engine mode, later extensions cannot add unlabelled model input.
 
 ```typescript
 agent.on("before_agent_start", (event, ctx) => {
@@ -1089,12 +1096,12 @@ Returns the base inputs AOS Agent currently uses to build the system prompt.
 
 ```typescript
 const options = ctx.getSystemPromptOptions();
-const contextPaths = options.contextFiles?.map((file) => file.path) ?? [];
+const instructionPaths = options.instructionBlocks?.map((block) => block.path) ?? [];
 ```
 
-This has the same shape and mutability as `before_agent_start` `event.systemPromptOptions`: custom prompt, active tools, tool snippets, prompt guidelines, appended system prompt text, cwd, loaded context files, and loaded skills. It may include full context file contents, so treat it as sensitive extension-local data and avoid exposing it through command lists, logs, or autocomplete metadata.
+This has the same shape and mutability as `before_agent_start` `event.systemPromptOptions`: custom prompt, active tools, tool snippets, prompt guidelines, appended system prompt text, cwd, Context Engine-approved instruction blocks, and loaded skills. Approved instruction blocks can contain user-owned text, so do not expose them through command lists, logs, or autocomplete metadata.
 
-This reports the current base prompt inputs. It does not include per-turn `before_agent_start` chained system-prompt changes, later `context` event message mutations, or `before_provider_request` payload rewrites.
+This reports current base prompt inputs. It does not include per-turn Context contributions, rejected Engine-mode context mutations, or provider-payload rewrites.
 
 ### ctx.waitForIdle()
 
@@ -2933,7 +2940,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `input-transform.ts` | Transform user input | `on("input")` |
 | `input-transform-streaming.ts` | Streaming-aware input transform | `on("input")`, `streamingBehavior` |
 | `model-status.ts` | React to model changes | `on("model_select")`, `setStatus` |
-| `provider-payload.ts` | Inspect payloads and provider response headers | `on("before_provider_request")`, `on("after_provider_response")` |
+| `provider-payload.ts` | Legacy provider payload inspection (Context Engine must be disabled) | `on("before_provider_request")`, `on("after_provider_response")` |
 | `system-prompt-header.ts` | Display system prompt info | `on("agent_start")`, `getSystemPrompt` |
 | `claude-rules.ts` | Load rules from files | `on("session_start")`, `on("before_agent_start")` |
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |

@@ -19,6 +19,8 @@ Use `/session` in interactive mode to see the current session file, session ID, 
 
 For the JSONL file format and SessionManager API, see [Session Format](session-format.md).
 
+Context Engine freezes **metadata-only** `context.snapshot` custom entries before real model calls. Those entries never enter LLM context via `buildSessionContext`. See [Context Engine](context.md).
+
 ## Session Commands
 
 | Command | Description |
@@ -27,6 +29,8 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 | `/new` | Start a new session |
 | `/name <name>` | Set the current session display name |
 | `/session` | Show session info |
+| `/context [snapshot-id]` | Show Context Engine sources, budget, and drift (metadata only) |
+| `/memory ...` | Explicit session/project memory list/add/revoke |
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |

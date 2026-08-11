@@ -47,7 +47,9 @@ The SDK is included in the main package. No separate installation needed.
 
 The main factory function for a single `AgentSession`.
 
-`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and context files. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
+`createAgentSession()` uses a `ResourceLoader` to supply extensions, skills, prompt templates, themes, and Context Engine sources. If you do not provide one, it uses `DefaultResourceLoader` with standard discovery.
+
+Context Engine is enabled by default. Before a provider dispatch, it resolves typed loader sources, session messages, explicit memory, actual tool schemas, and labeled extension contributions into a budgeted plan. It then persists a metadata-only snapshot for the actual model request.
 
 ```typescript
 import { createAgentSession, SessionManager } from "aos-agent";
@@ -95,6 +97,9 @@ interface AgentSession {
   thinkingLevel: ThinkingLevel;
   messages: AgentMessage[];
   isStreaming: boolean;
+
+  // Read-only Context Engine preview or snapshot inspection
+  inspectContext(options?: { snapshotId?: string }): Promise<unknown>;
 
   // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean }>;
@@ -347,7 +352,7 @@ const { session } = await createAgentSession({
   - `.aos-agent/skills/`
   - `.agents/skills/` in `cwd` and ancestor directories (up to git repo root, or filesystem root when not in a repo)
 - Project prompts (`.aos-agent/prompts/`)
-- Context files (`AGENTS.md` walking up from cwd)
+- Context instruction sources (`AGENTS.md` walking up from cwd)
 - Session directory naming
 
 `agentDir` is used by `DefaultResourceLoader` for:
@@ -356,7 +361,7 @@ const { session } = await createAgentSession({
   - `skills/` under `agentDir` (for example `~/.aos-agent/agent/skills/`)
   - `~/.agents/skills/`
 - Global prompts (`prompts/`)
-- Global context file (`AGENTS.md`)
+- Global Context instruction source (`AGENTS.md`)
 - Settings (`settings.json`)
 - Custom models (`models.json`)
 - Credentials (`auth.json`)
@@ -491,18 +496,23 @@ A failed or timed-out network refresh does not undo a successful credential oper
 
 ### System Prompt
 
-Use a `ResourceLoader` to override the system prompt:
+Use `DefaultResourceLoader` to replace or append the base system prompt:
 
 ```typescript
-import { createAgentSession, DefaultResourceLoader } from "aos-agent";
+import { createAgentSession, DefaultResourceLoader, getAgentDir } from "aos-agent";
 
 const loader = new DefaultResourceLoader({
-  systemPromptOverride: () => "You are a helpful assistant.",
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
+  systemPrompt: "You are a helpful assistant.",
+  appendSystemPrompt: ["Be concise."],
 });
 await loader.reload();
 
 const { session } = await createAgentSession({ resourceLoader: loader });
 ```
+
+The resulting prompt is included in the required system source of the Context plan; it is not a separate bypass around planning or snapshots.
 
 > See [examples/sdk/03-custom-prompt.ts](../examples/sdk/03-custom-prompt.ts)
 
@@ -601,15 +611,22 @@ If you pass `tools`, include each custom or extension tool name you want enabled
 Extensions are loaded by the `ResourceLoader`. `DefaultResourceLoader` discovers extensions from `~/.aos-agent/agent/extensions/`, `.aos-agent/extensions/`, and settings.json extension sources.
 
 ```typescript
-import { createAgentSession, DefaultResourceLoader } from "aos-agent";
+import { createAgentSession, DefaultResourceLoader, getAgentDir } from "aos-agent";
 
 const loader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
   additionalExtensionPaths: ["/path/to/my-extension.ts"],
   extensionFactories: [
     (agent) => {
-      agent.on("agent_start", () => {
-        console.log("[Inline Extension] Agent starting");
-      });
+      agent.on("before_agent_start", () => ({
+        contribution: {
+          sourceId: "extension:deployment-guidance",
+          label: "Deployment guidance",
+          visibility: "model_and_snapshot",
+          systemPromptAppend: "Use the configured service for deployment checks.",
+        },
+      }));
     },
   ],
 });
@@ -619,6 +636,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 ```
 
 Extensions can register tools, subscribe to events, add commands, and more. See [extensions.md](extensions.md) for the full API.
+
+With Context Engine enabled, provider-facing extension input must use a labeled `before_agent_start` contribution. Raw `systemPrompt` or `message` returns, `context` message mutation, and `before_provider_request` payload hooks are rejected before dispatch because they cannot be verified against the Context plan. Set `context.enabled: false` only for a legacy extension that requires those hooks.
 
 **Named inline extensions:** By default, inline factories display as `<inline:1>`, `<inline:2>`, etc. in the startup Extensions list. To show a descriptive name instead, wrap the factory:
 
@@ -687,12 +706,16 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 > See [examples/sdk/04-skills.ts](../examples/sdk/04-skills.ts)
 
-### Context Files
+### Context Sources and Inspection
+
+`DefaultResourceLoader` discovers `AGENTS.md` files as typed instruction sources. `getContextSources()` returns live source bodies for the runtime; use `inspectContext()` when an SDK consumer needs redacted snapshot metadata.
 
 ```typescript
-import { createAgentSession, DefaultResourceLoader } from "aos-agent";
+import { createAgentSession, DefaultResourceLoader, getAgentDir } from "aos-agent";
 
 const loader = new DefaultResourceLoader({
+  cwd: process.cwd(),
+  agentDir: getAgentDir(),
   agentsFilesOverride: (current) => ({
     agentsFiles: [
       ...current.agentsFiles,
@@ -703,6 +726,15 @@ const loader = new DefaultResourceLoader({
 await loader.reload();
 
 const { session } = await createAgentSession({ resourceLoader: loader });
+
+const preview = await session.inspectContext();
+console.log(preview.snapshot.sources, preview.snapshot.budget);
+
+const snapshotId = session.getLastContextSnapshotId();
+if (snapshotId) {
+  const historical = await session.inspectContext({ snapshotId });
+  console.log(historical.snapshot, historical.drift);
+}
 ```
 
 > See [examples/sdk/07-context-files.ts](../examples/sdk/07-context-files.ts)
@@ -893,7 +925,7 @@ Project overrides global. Nested objects merge keys. Setters modify global setti
 
 ## ResourceLoader
 
-Use `DefaultResourceLoader` to discover extensions, skills, prompts, themes, and context files.
+Use `DefaultResourceLoader` to discover extensions, skills, prompts, themes, and typed Context Engine sources.
 
 ```typescript
 import {
@@ -911,8 +943,10 @@ const extensions = loader.getExtensions();
 const skills = loader.getSkills();
 const prompts = loader.getPrompts();
 const themes = loader.getThemes();
-const contextFiles = loader.getAgentsFiles().agentsFiles;
+const contextSources = loader.getContextSources().contextSources;
 ```
+
+`getContextSources()` contains runtime source bodies. `toContextSourceInputs()` returns the typed loader-owned candidates used by Context Engine; the session combines loader system prompts into its required runtime system source to avoid duplicate injection. Use `session.inspectContext()` for the redacted receipt contract; it never returns source bodies, session messages, tool schemas, provider payloads, or credentials.
 
 ## Return Value
 

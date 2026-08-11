@@ -60,8 +60,8 @@ export default function claudeRulesExtension(agent: ExtensionAPI) {
 		}
 	});
 
-	// Append available rules to system prompt
-	agent.on("before_agent_start", async (event) => {
+	// Contribute the discovered rule index to the context plan.
+	agent.on("before_agent_start", () => {
 		if (ruleFiles.length === 0) {
 			return;
 		}
@@ -69,9 +69,11 @@ export default function claudeRulesExtension(agent: ExtensionAPI) {
 		const rulesList = ruleFiles.map((f) => `- .claude/rules/${f}`).join("\n");
 
 		return {
-			systemPrompt:
-				event.systemPrompt +
-				`
+			contribution: {
+				sourceId: "example:claude-rules",
+				label: "Claude rule index",
+				visibility: "model_and_snapshot",
+				systemPromptAppend: `
 
 ## Project Rules
 
@@ -81,6 +83,7 @@ ${rulesList}
 
 When working on tasks related to these rules, use the read tool to load the relevant rule files for guidance.
 `,
+			},
 		};
 	});
 }

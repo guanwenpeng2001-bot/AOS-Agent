@@ -15,6 +15,20 @@ export interface CompactionSettings {
 	keepRecentTokens?: number; // default: 20000
 }
 
+/** Context Engine budget and enablement settings. */
+export interface ContextSettings {
+	enabled?: boolean; // default: true
+	reserveTokens?: number; // default: 16384
+}
+
+/**
+ * Explicit memory settings. Both scopes default off; there is no automatic write path.
+ */
+export interface MemorySettings {
+	sessionEnabled?: boolean; // default: false
+	projectEnabled?: boolean; // default: false
+}
+
 export interface BranchSummarySettings {
 	reserveTokens?: number; // default: 16384 (tokens reserved for prompt + LLM response)
 	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
@@ -97,6 +111,8 @@ export interface Settings {
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
 	compaction?: CompactionSettings;
+	context?: ContextSettings;
+	memory?: MemorySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
 	hideThinkingBlock?: boolean;
@@ -791,6 +807,40 @@ export class SettingsManager {
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),
 		};
+	}
+
+	getContextSettings(): { enabled: boolean; reserveTokens: number } {
+		return {
+			enabled: this.settings.context?.enabled ?? true,
+			reserveTokens: this.settings.context?.reserveTokens ?? this.getCompactionReserveTokens(),
+		};
+	}
+
+	getMemorySettings(): { sessionEnabled: boolean; projectEnabled: boolean } {
+		return {
+			sessionEnabled: this.settings.memory?.sessionEnabled ?? false,
+			projectEnabled: this.settings.memory?.projectEnabled ?? false,
+		};
+	}
+
+	setContextSettings(settings: ContextSettings): void {
+		this.globalSettings.context = {
+			...this.globalSettings.context,
+			...settings,
+		};
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.markModified("context");
+		this.save();
+	}
+
+	setMemorySettings(settings: MemorySettings): void {
+		this.globalSettings.memory = {
+			...this.globalSettings.memory,
+			...settings,
+		};
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		this.markModified("memory");
+		this.save();
 	}
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {

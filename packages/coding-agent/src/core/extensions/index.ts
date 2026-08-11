@@ -35,6 +35,7 @@ export type {
 	BashToolCallEvent,
 	BashToolResultEvent,
 	BeforeAgentStartEvent,
+	BeforeAgentStartCombinedResult,
 	BeforeAgentStartEventResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
@@ -46,6 +47,10 @@ export type {
 	ContextEvent,
 	// Event Results
 	ContextEventResult,
+	ContextExtensionContribution,
+	ContextExtensionContributionAttribution,
+	ContextExtensionContributionReceipt,
+	ContextExtensionVisibility,
 	ContextUsage,
 	CustomToolCallEvent,
 	CustomToolResultEvent,

@@ -704,7 +704,7 @@ export default function (agent: ExtensionAPI) {
 	// -----------------------------------------------------------------------
 	// before_agent_start - inject game instructions each turn
 	// -----------------------------------------------------------------------
-	agent.on("before_agent_start", async (event) => {
+	agent.on("before_agent_start", () => {
 		if (!gameActive) return undefined;
 
 		const instructions = `
@@ -768,7 +768,12 @@ Decide the target cell first, then dump every action for the turn in one go.
 `;
 
 		return {
-			systemPrompt: event.systemPrompt + instructions,
+			contribution: {
+				sourceId: "example:tic-tac-toe-rules",
+				label: "Tic-tac-toe rules",
+				visibility: "model_and_snapshot",
+				systemPromptAppend: instructions,
+			},
 		};
 	});
 

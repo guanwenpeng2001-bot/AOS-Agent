@@ -225,8 +225,9 @@ describe("AgentSession model and extension characterization", () => {
 		expect(toolResult?.role === "toolResult" ? toolResult.usage : undefined).toEqual(patchedToolUsage);
 	});
 
-	it("allows extension context handlers to modify messages before the LLM call", async () => {
+	it("allows extension context handlers to modify messages only when Context Engine is disabled", async () => {
 		const harness = await createHarness({
+			settings: { context: { enabled: false } },
 			extensionFactories: [
 				(agent) => {
 					agent.on("context", async (event) => ({
@@ -332,18 +333,24 @@ describe("AgentSession model and extension characterization", () => {
 		expect(seenOptions[1]?.selectedTools).toContain("mutated_tool");
 	});
 
-	it("allows before_agent_start handlers to inject custom messages and modify the system prompt", async () => {
+	it("plans labeled before_agent_start contributions without persisting their bodies", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(agent) => {
-					agent.on("before_agent_start", async (event) => ({
-						message: {
-							customType: "before-start",
-							content: "injected",
-							display: true,
-							details: { injected: true },
+					agent.on("before_agent_start", async () => ({
+						contribution: {
+							sourceId: "extension:before-start",
+							label: "Before start test contribution",
+							visibility: "model_and_snapshot",
+							messages: [
+								{
+									role: "user",
+									content: [{ type: "text", text: "injected" }],
+									timestamp: 0,
+								},
+							],
+							systemPromptAppend: "extra instructions",
 						},
-						systemPrompt: `${event.systemPrompt}\n\nextra instructions`,
 					}));
 				},
 			],
@@ -368,9 +375,19 @@ describe("AgentSession model and extension characterization", () => {
 
 		expect(providerSystemPrompt).toContain("extra instructions");
 		expect(sawInjectedUserMessage).toBe(true);
-		expect(
-			harness.session.messages.some((message) => message.role === "custom" && message.customType === "before-start"),
-		).toBe(true);
+		const snapshot = harness.sessionManager.getContextSnapshots().at(-1);
+		expect(snapshot?.sources).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					sourceId: "extension:before-start",
+					label: "Before start test contribution",
+					visibility: "model_and_snapshot",
+					disposition: "included",
+				}),
+			]),
+		);
+		expect(JSON.stringify(snapshot)).not.toContain("injected");
+		expect(JSON.stringify(snapshot)).not.toContain("extra instructions");
 	});
 
 	it("bindExtensions emits session_start and reload emits session_shutdown then session_start", async () => {
