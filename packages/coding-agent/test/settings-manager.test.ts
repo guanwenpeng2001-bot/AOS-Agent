@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CapabilitySettingsError } from "../src/core/capability-settings.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from "../src/core/http-dispatcher.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -579,6 +580,174 @@ describe("SettingsManager", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ shellPath: "~" }));
 			const manager = SettingsManager.create(projectDir, agentDir);
 			expect(manager.getShellPath()).toBe(homedir());
+		});
+	});
+
+	describe("capabilities and mcp settings", () => {
+		const globalConfig = {
+			capabilities: {
+				defaultProfile: "default",
+				profiles: {
+					default: { rules: [{ selector: { kind: "builtin_tool" }, action: "allow" }] },
+				},
+			},
+			mcp: {
+				servers: {
+					docs: {
+						transport: "stdio",
+						command: "node",
+						args: ["server.js"],
+						env: ["DOCS_TOKEN"],
+					},
+				},
+			},
+		};
+
+		it("parses global capabilities and mcp settings", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalConfig));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const settings = manager.getCapabilitySettings();
+
+			expect(settings.defaultProfile).toBe("default");
+			expect(settings.profiles.default.rules).toHaveLength(1);
+			expect(settings.mcpServers).toHaveLength(1);
+			expect(settings.mcpServers[0]).toMatchObject({ id: "docs", scope: "global", trusted: true });
+		});
+
+		it("merges trusted project profiles and defaultProfile over global", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalConfig));
+			writeFileSync(
+				join(projectDir, ".aos-agent", "settings.json"),
+				JSON.stringify({
+					capabilities: {
+						defaultProfile: "strict",
+						profiles: {
+							strict: { rules: [{ selector: { kind: "mcp_server" }, action: "deny" }] },
+						},
+					},
+					mcp: {
+						servers: {
+							"proj-docs": {
+								transport: "streamable-http",
+								url: "https://mcp.example.invalid/proj",
+							},
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			const settings = manager.getCapabilitySettings();
+
+			expect(settings.defaultProfile).toBe("strict");
+			expect(Object.keys(settings.profiles).sort()).toEqual(["default", "strict"]);
+			expect(settings.mcpServers).toHaveLength(2);
+			expect(settings.mcpServers[0]).toMatchObject({ id: "docs", scope: "global", trusted: true });
+			expect(settings.mcpServers[1]).toMatchObject({
+				id: "proj-docs",
+				scope: "project",
+				trusted: true,
+				server: { url: "https://mcp.example.invalid/proj" },
+			});
+		});
+
+		it("ignores untrusted project profiles but keeps its MCP servers as untrusted diagnostics", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalConfig));
+			writeFileSync(
+				join(projectDir, ".aos-agent", "settings.json"),
+				JSON.stringify({
+					capabilities: {
+						defaultProfile: "evil",
+						profiles: {
+							evil: { rules: [{ selector: { kind: "mcp_server" }, action: "allow" }] },
+						},
+					},
+					mcp: {
+						servers: {
+							"proj-docs": {
+								transport: "streamable-http",
+								url: "https://mcp.example.invalid/proj",
+							},
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir, { projectTrusted: false });
+			const settings = manager.getCapabilitySettings();
+
+			expect(manager.isProjectTrusted()).toBe(false);
+			expect(manager.getProjectSettings()).toEqual({});
+			expect(settings.defaultProfile).toBe("default");
+			expect(settings.profiles.evil).toBeUndefined();
+			expect(settings.mcpServers).toHaveLength(2);
+			expect(settings.mcpServers[1]).toMatchObject({
+				id: "proj-docs",
+				scope: "project",
+				trusted: false,
+			});
+		});
+
+		it("rejects a cross-scope duplicate server id regardless of trust", () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalConfig));
+			writeFileSync(
+				join(projectDir, ".aos-agent", "settings.json"),
+				JSON.stringify({
+					mcp: {
+						servers: {
+							docs: { transport: "streamable-http", url: "https://mcp.example.invalid/dup" },
+						},
+					},
+				}),
+			);
+
+			const trusted = SettingsManager.create(projectDir, agentDir);
+			expect(() => trusted.getCapabilitySettings()).toThrow(CapabilitySettingsError);
+
+			const untrusted = SettingsManager.create(projectDir, agentDir, { projectTrusted: false });
+			let code: string | undefined;
+			try {
+				untrusted.getCapabilitySettings();
+			} catch (error) {
+				if (error instanceof CapabilitySettingsError) {
+					code = error.code;
+				}
+			}
+			expect(code).toBe("capability_settings_duplicate_server_id");
+		});
+
+		it("reloads capabilities and mcp after a project trust change", async () => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify(globalConfig));
+			const projectPath = join(projectDir, ".aos-agent", "settings.json");
+			writeFileSync(
+				projectPath,
+				JSON.stringify({
+					mcp: {
+						servers: {
+							"proj-docs": {
+								transport: "streamable-http",
+								url: "https://mcp.example.invalid/proj",
+							},
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir, { projectTrusted: false });
+			let settings = manager.getCapabilitySettings();
+			expect(settings.mcpServers[1]).toMatchObject({ id: "proj-docs", trusted: false });
+
+			manager.setProjectTrusted(true);
+			settings = manager.getCapabilitySettings();
+			expect(settings.mcpServers[1]).toMatchObject({ id: "proj-docs", trusted: true });
+		});
+
+		it("supports in-memory capabilities and mcp settings", () => {
+			const manager = SettingsManager.inMemory(globalConfig);
+			const settings = manager.getCapabilitySettings();
+			expect(settings.defaultProfile).toBe("default");
+			expect(settings.mcpServers[0]).toMatchObject({ id: "docs", trusted: true });
 		});
 	});
 });
