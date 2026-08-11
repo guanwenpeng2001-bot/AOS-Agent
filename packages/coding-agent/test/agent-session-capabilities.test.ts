@@ -726,10 +726,10 @@ describe("AgentSession capability binding integration", () => {
 				expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
 
 				const runPromise = session.prompt("First message");
-				// Prompt preflight gates on readiness: discovery starts but the run
-				// does not begin (no provider/tool execution) until it settles.
+				// Prompt preflight reserves the run while readiness is pending, but no
+				// provider or tool execution begins until discovery settles.
 				await waitUntil(() => factoryCalls === 1);
-				expect(session.isStreaming).toBe(false);
+				expect(session.isStreaming).toBe(true);
 				expect(streamCalls).toBe(0);
 
 				releaseDiscovery?.();

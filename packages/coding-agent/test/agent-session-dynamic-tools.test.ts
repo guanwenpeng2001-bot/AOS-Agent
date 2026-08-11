@@ -36,15 +36,17 @@ describe("AgentSession dynamic tool registration", () => {
 			agentDir,
 			settingsManager,
 			extensionFactories: [
-				(agent) => {
-					agent.registerTool(
-						createBashTool(tempDir, {
+					(agent) => {
+					agent.registerTool({
+						...createBashTool(tempDir, {
 							spawnHook: (ctx) => {
 								sessionEnv = ctx.env;
 								return ctx;
 							},
 						}),
-					);
+						name: "bash_with_session_env",
+						label: "bash with session env",
+					});
 					agent.registerTool({
 						...createBashTool(tempDir, {
 							exposeSessionEnvironment: false,
@@ -72,7 +74,7 @@ describe("AgentSession dynamic tool registration", () => {
 			resourceLoader,
 		});
 
-		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash")!;
+		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash_with_session_env")!;
 		expect(session.systemPrompt).toContain(
 			"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 		);

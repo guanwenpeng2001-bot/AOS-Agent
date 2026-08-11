@@ -1831,13 +1831,13 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._refreshContextEngineStreamBoundary();
 		this._assertContextPayloadHooksSupported();
+		this._isAgentRunActive = true;
+		this._pendingContextError = undefined;
 		// Gate every run start on capability readiness so discovery (and any
 		// fail-closed conflict) settles before any provider/tool execution, even
 		// for run starts that bypass prompt() preflight (sendCustomMessage).
-		await this.whenCapabilitiesReady();
-		this._isAgentRunActive = true;
-		this._pendingContextError = undefined;
 		try {
+			await this.whenCapabilitiesReady();
 			await this.agent.prompt(messages);
 			this._throwPendingContextError();
 			while (await this._handlePostAgentRun()) {
@@ -1958,13 +1958,6 @@ export class AgentSession {
 				preflightResult?.(true);
 				return;
 			}
-
-			// MCP capability discovery is lazy; gate the first run preflight on
-			// readiness so connect + listTools + binding re-resolution (and any
-			// fail-closed capability_name_conflict) settle before any provider
-			// request or tool execution. A name conflict surfaces here through the
-			// normal preflight failure path instead of mid-run.
-			await this.whenCapabilitiesReady();
 
 			// Flush any pending bash messages before the new prompt
 			this._flushPendingBashMessages();
@@ -3625,9 +3618,9 @@ export class AgentSession {
 	 * configured MCP servers and any discovered MCP tools, then applies the
 	 * profile rules and the tools / excludeTools / noTools narrowing.
 	 *
-	 * Static candidates shadow by precedence (SDK > extension > builtin) so a
-	 * same-named extension tool continues to override a builtin instead of
-	 * producing a catalog collision.
+	 * Same-named static tools remain in the complete catalog; the registry fails
+	 * closed with capability_name_conflict when selected instead of applying an
+	 * implicit source-precedence override.
 	 */
 	private _resolveCapabilityBinding(): CapabilityBinding {
 		const capabilitySettings = this.settingsManager.getCapabilitySettings();
