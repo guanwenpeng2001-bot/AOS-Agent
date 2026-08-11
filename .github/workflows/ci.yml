@@ -39,5 +39,10 @@ jobs:
       - name: Run static checks
         run: npm run check
 
+      - name: Install test tool dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep fd-find
+
       - name: Run non-e2e tests
         run: bash ./test.sh
