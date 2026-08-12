@@ -78,8 +78,6 @@ The public `AgentSession` surface provides `inspectCapabilityCatalog()`, `getAct
 
 RPC exposes the ordinary `get_capabilities` method and `RpcClient.getCapabilities()`. The result contains redacted ids, kinds, names, source identity, revisions, availability, decisions, and binding metadata. It never returns command arguments, cwd values, environment/header values, tokens, unredacted URLs, tool-call arguments, or raw local paths.
 
-All public capability identifiers and provenance references are installation-scoped opaque values. They can correlate records within one AOS Agent installation, but cannot be used to reconstruct a raw capability id, source path, URL, or session file path. The same boundary applies to RPC output, SDK inspection, Context Engine snapshots and receipts, run receipts, and streamed session events.
-
 `run.start` and `run.resume` preflight the selected binding before accepting a run. Run receipts and Context Engine source receipts carry the capability binding id. Resume performs a new discovery and binding attempt; it does not reuse an old MCP connection or silently accept capability drift.
 
 ## Non-goals

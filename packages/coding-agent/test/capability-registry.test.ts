@@ -1,14 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import { describe, expect, it } from "vitest";
 import {
-	buildCapabilityCatalog as buildCapabilityCatalogWithIdentity,
+	buildCapabilityCatalog,
 	type CapabilityBinding,
 	type CapabilityCandidate,
 	type CapabilityCatalog,
-	type CapabilityCatalogInput,
 	type CapabilityDecision,
 	type CapabilityError,
 	CapabilityNameConflictError,
@@ -19,50 +14,18 @@ import {
 	type CapabilitySelector,
 	createCapabilityBindingView,
 	createCapabilityCatalogView,
-	createCapabilityId as createCapabilityIdWithIdentity,
-	createCapabilityRevision as createCapabilityRevisionWithIdentity,
+	createCapabilityId,
+	createCapabilityRevision,
 	type ResolveBindingInput,
 	resolveCapabilityBinding,
 } from "../src/core/capability-registry.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "../src/core/source-info.ts";
-
-const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "capability-registry-test-"));
-const TEST_IDENTITY = CapabilityPublicIdentity.loadSync(TEST_AGENT_DIR);
-
-afterAll(() => {
-	rmSync(TEST_AGENT_DIR, { recursive: true, force: true });
-});
-
-function buildCapabilityCatalog(input: CapabilityCatalogInput): CapabilityCatalog {
-	return buildCapabilityCatalogWithIdentity(input, TEST_IDENTITY);
-}
-
-function createCapabilityId(kind: CapabilityCandidate["kind"], sourceIdentity: string, localName: string): string {
-	return createCapabilityIdWithIdentity(kind, sourceIdentity, localName, TEST_IDENTITY);
-}
-
-function createCapabilityRevision(input: unknown): string {
-	return createCapabilityRevisionWithIdentity(input, TEST_IDENTITY);
-}
 
 const TMP_SOURCE: SourceInfo = createSyntheticSourceInfo("/test", {
 	source: "test-src",
 	scope: "temporary",
 	origin: "top-level",
 });
-const PATH_MARKER_WIN = "C:\\audit-private\\capability-source";
-const PATH_MARKER_POSIX = "/audit-private/capability-source";
-const URL_MARKER = "https://audit-user:audit-secret@host.invalid/pkg?token=audit-query-secret#audit-fragment";
-const PRIVATE_SOURCE_MARKERS = [
-	PATH_MARKER_WIN,
-	PATH_MARKER_POSIX,
-	"audit-private",
-	"capability-source",
-	"audit-user",
-	"audit-secret",
-	"audit-query-secret",
-	"audit-fragment",
-];
 
 function cand(
 	overrides: Partial<CapabilityCandidate> & { kind: CapabilityCandidate["kind"]; name: string },
@@ -88,13 +51,6 @@ function rule(selector: CapabilitySelector, action: CapabilityDecision): Capabil
 
 function profile(...rules: CapabilityProfileRule[]): CapabilityProfile {
 	return { rules };
-}
-
-function expectNoPrivateSource(value: unknown): void {
-	const serialized = JSON.stringify(value);
-	for (const marker of PRIVATE_SOURCE_MARKERS) {
-		expect(serialized).not.toContain(marker);
-	}
 }
 
 function bind(
@@ -123,14 +79,9 @@ function bind(
 }
 
 describe("createCapabilityId / createCapabilityRevision", () => {
-	it("builds opaque ids from kind, source identity and local name", () => {
-		const pathMarker = "C:\\audit-private\\capability-source";
-		const id = createCapabilityId("builtin_tool", pathMarker, "Read");
-		expect(id).toMatch(/^builtin_tool:source:[A-Za-z0-9_-]{43}:Read$/);
-		expect(id).not.toContain(pathMarker);
-		expect(createCapabilityId("mcp_tool", "mcp:docs", "list")).toMatch(
-			/^mcp_tool:source:[A-Za-z0-9_-]{43}:list$/,
-		);
+	it("builds ids from kind, source identity and local name", () => {
+		expect(createCapabilityId("builtin_tool", "builtin", "Read")).toBe("builtin_tool:builtin:Read");
+		expect(createCapabilityId("mcp_tool", "mcp:docs", "list")).toBe("mcp_tool:mcp:docs:list");
 	});
 
 	it("produces a deterministic revision from the same input", () => {
@@ -286,7 +237,7 @@ describe("buildCapabilityCatalog", () => {
 					name: "list",
 					localName: "list",
 					mcpServerId: "docs",
-					parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+					parentId: "mcp_server:mcp:docs",
 					sourceIdentity: "mcp",
 				}),
 			],
@@ -294,7 +245,7 @@ describe("buildCapabilityCatalog", () => {
 
 		const read = catalog.descriptors.find((d) => d.name === "Read");
 		expect(read).toMatchObject({
-			id: createCapabilityId("builtin_tool", "test-src", "Read"),
+			id: "builtin_tool:test-src:Read",
 			kind: "builtin_tool",
 			name: "Read",
 			availability: "available",
@@ -306,7 +257,7 @@ describe("buildCapabilityCatalog", () => {
 
 		const server = catalog.descriptors.find((d) => d.kind === "mcp_server");
 		expect(server).toMatchObject({
-			id: createCapabilityId("mcp_server", "mcp", "docs"),
+			id: "mcp_server:mcp:docs",
 			decision: "deny",
 			mcpServerId: "docs",
 		});
@@ -314,8 +265,8 @@ describe("buildCapabilityCatalog", () => {
 
 		const tool = catalog.descriptors.find((d) => d.kind === "mcp_tool");
 		expect(tool).toMatchObject({
-			id: createCapabilityId("mcp_tool", "mcp", "list"),
-			parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+			id: "mcp_tool:mcp:list",
+			parentId: "mcp_server:mcp:docs",
 			mcpServerId: "docs",
 			decision: "deny",
 			exposedToolName: "mcp__docs__list",
@@ -343,7 +294,7 @@ describe("buildCapabilityCatalog", () => {
 		const catalog = buildCapabilityCatalog({
 			candidates: [cand({ kind: "builtin_tool", name: "Read Files", localName: "Read" })],
 		});
-		expect(catalog.descriptors[0].id).toBe(createCapabilityId("builtin_tool", "test-src", "Read"));
+		expect(catalog.descriptors[0].id).toBe("builtin_tool:test-src:Read");
 		expect(catalog.descriptors[0].name).toBe("Read Files");
 	});
 
@@ -375,12 +326,8 @@ describe("buildCapabilityCatalog", () => {
 				mcpServerId: "docs",
 				parentId,
 			});
-		const first = buildCapabilityCatalog({
-			candidates: [mcpTool(createCapabilityId("mcp_server", "mcp", "docs-a"))],
-		});
-		const second = buildCapabilityCatalog({
-			candidates: [mcpTool(createCapabilityId("mcp_server", "mcp", "docs-b"))],
-		});
+		const first = buildCapabilityCatalog({ candidates: [mcpTool("mcp_server:mcp:docs-a")] });
+		const second = buildCapabilityCatalog({ candidates: [mcpTool("mcp_server:mcp:docs-b")] });
 		expect(first.descriptors[0].id).toBe(second.descriptors[0].id);
 		expect(first.descriptors[0].revision).not.toBe(second.descriptors[0].revision);
 	});
@@ -415,10 +362,7 @@ describe("profile resolution", () => {
 		const catalog = buildCapabilityCatalog({
 			candidates: [cand({ kind: "builtin_tool", name: "Read" }), cand({ kind: "builtin_tool", name: "Write" })],
 		});
-		const p = profile(
-			rule({ kind: "builtin_tool" }, "deny"),
-			rule({ id: createCapabilityId("builtin_tool", "test-src", "Read") }, "allow"),
-		);
+		const p = profile(rule({ kind: "builtin_tool" }, "deny"), rule({ id: "builtin_tool:test-src:Read" }, "allow"));
 		const binding = bind(catalog, { profiles: { default: p } });
 		// Read matches both rules and the later allow wins; Write is denied
 		expect(binding.toolAllowlist).toEqual(["Read"]);
@@ -437,8 +381,8 @@ describe("profile resolution", () => {
 		// static capabilities are allowed by default; MCP is denied by default
 		expect(binding.decisionSummary).toEqual({ allowed: 2, awaitingApproval: 0, denied: 1 });
 		expect(binding.descriptors.map((d) => d.id).sort()).toEqual([
-			createCapabilityId("extension_tool", "test-src", "ext-tool"),
-			createCapabilityId("skill", "test-src", "docs-skill"),
+			"builtin_tool:test-src:ext-tool".replace("builtin_tool", "extension_tool"),
+			"skill:test-src:docs-skill",
 		]);
 	});
 
@@ -453,7 +397,7 @@ describe("profile resolution", () => {
 
 		const approved = bind(catalog, {
 			profiles: { default: p },
-			approved: [createCapabilityId("builtin_tool", "test-src", "NetworkCall")],
+			approved: ["builtin_tool:test-src:NetworkCall"],
 		});
 		expect(approved.descriptors).toHaveLength(1);
 		expect(approved.decisionSummary).toEqual({ allowed: 1, awaitingApproval: 0, denied: 0 });
@@ -465,10 +409,7 @@ describe("profile resolution", () => {
 			candidates: [cand({ kind: "builtin_tool", name: "NetworkCall" })],
 		});
 		const p = profile(rule({ kind: "builtin_tool" }, "deny"));
-		const binding = bind(catalog, {
-			profiles: { default: p },
-			approved: [createCapabilityId("builtin_tool", "test-src", "NetworkCall")],
-		});
+		const binding = bind(catalog, { profiles: { default: p }, approved: ["builtin_tool:test-src:NetworkCall"] });
 		expect(binding.decisionSummary.denied).toBe(1);
 		expect(binding.toolAllowlist).toEqual([]);
 	});
@@ -481,7 +422,7 @@ describe("profile resolution", () => {
 					kind: "mcp_tool",
 					name: "list",
 					mcpServerId: "docs",
-					parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+					parentId: "mcp_server:mcp:docs",
 					sourceIdentity: "mcp",
 				}),
 			],
@@ -505,7 +446,7 @@ describe("MCP parent-server inheritance", () => {
 			kind: "mcp_tool",
 			name: "list",
 			mcpServerId: "docs",
-			parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+			parentId: "mcp_server:mcp:docs",
 			sourceIdentity: "mcp",
 		});
 
@@ -520,16 +461,10 @@ describe("MCP parent-server inheritance", () => {
 		const catalog = buildCapabilityCatalog({ candidates: [server(), tool()] });
 		const p = profile(
 			rule({ kind: "mcp_server" }, "allow"),
-			rule(
-				{
-					parentId: createCapabilityId("mcp_server", "mcp", "docs"),
-					id: createCapabilityId("mcp_tool", "mcp", "list"),
-				},
-				"deny",
-			),
+			rule({ parentId: "mcp_server:mcp:docs", id: "mcp_tool:mcp:list" }, "deny"),
 		);
 		const binding = bind(catalog, { profiles: { default: p } });
-		expect(binding.descriptors.map((d) => d.id)).toEqual([createCapabilityId("mcp_server", "mcp", "docs")]);
+		expect(binding.descriptors.map((d) => d.id)).toEqual(["mcp_server:mcp:docs"]);
 		expect(binding.decisionSummary).toEqual({ allowed: 1, awaitingApproval: 0, denied: 1 });
 	});
 
@@ -562,7 +497,7 @@ describe("MCP parent-server inheritance", () => {
 		const p = profile(rule({ kind: "mcp_server" }, "ask"), rule({ kind: "mcp_tool" }, "allow"));
 		const binding = bind(catalog, {
 			profiles: { default: p },
-			approved: [createCapabilityId("mcp_tool", "mcp", "list")],
+			approved: ["mcp_tool:mcp:list"],
 		});
 		expect(binding.descriptors).toHaveLength(0);
 		expect(binding.toolAllowlist).toEqual([]);
@@ -589,7 +524,7 @@ describe("generic parent inheritance for extension tools", () => {
 			name: "my-tool",
 			localName: "my-tool",
 			sourceIdentity: "ext",
-			parentId: createCapabilityId("extension", "ext", "my-ext"),
+			parentId: "extension:ext:my-ext",
 		});
 
 	it("allows an extension and its extension_tool child together", () => {
@@ -624,12 +559,7 @@ describe("generic parent inheritance for extension tools", () => {
 	it("denies an extension_tool with no known extension parent", () => {
 		const catalog = buildCapabilityCatalog({
 			candidates: [
-				cand({
-					kind: "extension_tool",
-					name: "ghost",
-					sourceIdentity: "ext",
-					parentId: createCapabilityId("extension", "ext", "missing"),
-				}),
+				cand({ kind: "extension_tool", name: "ghost", sourceIdentity: "ext", parentId: "extension:ext:missing" }),
 			],
 		});
 		const p = profile(rule({ kind: "extension_tool" }, "allow"));
@@ -685,7 +615,7 @@ describe("trust gating", () => {
 					kind: "mcp_tool",
 					name: "list",
 					mcpServerId: "docs",
-					parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+					parentId: "mcp_server:mcp:docs",
 					sourceIdentity: "mcp",
 				}),
 			],
@@ -811,155 +741,6 @@ describe("name-conflict failure", () => {
 	});
 });
 
-describe("public identity boundary", () => {
-	it("keeps raw configured sources internal while serializing opaque IDs and source views", () => {
-		const winSource = createSyntheticSourceInfo(PATH_MARKER_WIN, {
-			source: PATH_MARKER_WIN,
-			scope: "user",
-			origin: "package",
-		});
-		const posixSource = createSyntheticSourceInfo(PATH_MARKER_POSIX, {
-			source: PATH_MARKER_POSIX,
-			scope: "user",
-			origin: "package",
-		});
-		const urlSource = createSyntheticSourceInfo(URL_MARKER, {
-			source: URL_MARKER,
-			scope: "user",
-			origin: "package",
-		});
-		const extensionId = createCapabilityId("extension", PATH_MARKER_WIN, "win-extension");
-		const catalog = buildCapabilityCatalog({
-			candidates: [
-				cand({
-					kind: "extension",
-					name: "win-extension",
-					localName: "win-extension",
-					sourceIdentity: PATH_MARKER_WIN,
-					source: winSource,
-				}),
-				cand({
-					kind: "extension_tool",
-					name: "win-tool",
-					localName: "win-tool",
-					sourceIdentity: PATH_MARKER_WIN,
-					source: winSource,
-					parentId: extensionId,
-					exposedToolName: "win-tool",
-				}),
-				cand({
-					kind: "skill",
-					name: "posix-skill",
-					sourceIdentity: PATH_MARKER_POSIX,
-					source: posixSource,
-				}),
-				cand({
-					kind: "sdk_tool",
-					name: "url-tool",
-					sourceIdentity: URL_MARKER,
-					source: urlSource,
-					exposedToolName: "url-tool",
-				}),
-			],
-		});
-		const binding = bind(catalog);
-		const catalogView = createCapabilityCatalogView(catalog);
-		const bindingView = createCapabilityBindingView(binding);
-
-		expect(catalog.descriptors.find((descriptor) => descriptor.id === extensionId)?.source.source).toBe(PATH_MARKER_WIN);
-		for (const descriptor of catalogView.descriptors) {
-			expect(descriptor.id).toMatch(new RegExp(`^${descriptor.kind}:source:[A-Za-z0-9_-]{43}:`));
-			expect(descriptor.revision).toMatch(/^rev:[A-Za-z0-9_-]{43}$/);
-			expect(descriptor.source.source).toMatch(/^source:[A-Za-z0-9_-]{43}$/);
-		}
-		expect(binding.id).toMatch(/^binding:[A-Za-z0-9_-]{43}$/);
-		expectNoPrivateSource(catalogView);
-		expectNoPrivateSource(binding);
-		expectNoPrivateSource(bindingView);
-
-		const sourceDenied = bind(catalog, {
-			profiles: { default: profile(rule({ sourceId: PATH_MARKER_WIN }, "deny")) },
-		});
-		expect(sourceDenied.descriptors.some((descriptor) => descriptor.id === extensionId)).toBe(false);
-		expectNoPrivateSource(sourceDenied);
-	});
-
-	it("keeps hidden origins distinct and still fails closed on a public tool-name conflict", () => {
-		const firstSource = createSyntheticSourceInfo(PATH_MARKER_WIN, {
-			source: PATH_MARKER_WIN,
-			scope: "user",
-			origin: "package",
-		});
-		const secondSource = createSyntheticSourceInfo(PATH_MARKER_POSIX, {
-			source: PATH_MARKER_POSIX,
-			scope: "user",
-			origin: "package",
-		});
-		const catalog = buildCapabilityCatalog({
-			candidates: [
-				cand({
-					kind: "extension_tool",
-					name: "shared",
-					localName: "shared",
-					sourceIdentity: PATH_MARKER_WIN,
-					source: firstSource,
-					exposedToolName: "shared",
-				}),
-				cand({
-					kind: "extension_tool",
-					name: "shared",
-					localName: "shared",
-					sourceIdentity: PATH_MARKER_POSIX,
-					source: secondSource,
-					exposedToolName: "shared",
-				}),
-			],
-		});
-
-		expect(catalog.descriptors).toHaveLength(2);
-		expect(catalog.descriptors[0].id).not.toBe(catalog.descriptors[1].id);
-		expect(() => bind(catalog)).toThrow(CapabilityNameConflictError);
-	});
-
-	it("keeps public identities stable for one agentDir and isolated across installations", () => {
-		const firstAgentDir = mkdtempSync(join(tmpdir(), "capability-registry-identity-a-"));
-		const secondAgentDir = mkdtempSync(join(tmpdir(), "capability-registry-identity-b-"));
-		try {
-			const firstIdentity = CapabilityPublicIdentity.loadSync(firstAgentDir);
-			const reloadedIdentity = CapabilityPublicIdentity.loadSync(firstAgentDir);
-			const secondIdentity = CapabilityPublicIdentity.loadSync(secondAgentDir);
-			const input: CapabilityCatalogInput = {
-				candidates: [
-					cand({
-						kind: "extension_tool",
-						name: "private-tool",
-						sourceIdentity: PATH_MARKER_WIN,
-						source: createSyntheticSourceInfo(PATH_MARKER_WIN, {
-							source: PATH_MARKER_WIN,
-							scope: "user",
-							origin: "package",
-						}),
-						revisionInput: { source: PATH_MARKER_WIN },
-					}),
-				],
-			};
-			const firstCatalog = buildCapabilityCatalogWithIdentity(input, firstIdentity);
-			const reloadedCatalog = buildCapabilityCatalogWithIdentity(input, reloadedIdentity);
-			const secondCatalog = buildCapabilityCatalogWithIdentity(input, secondIdentity);
-
-			expect(firstCatalog.descriptors[0].id).toBe(reloadedCatalog.descriptors[0].id);
-			expect(firstCatalog.descriptors[0].revision).toBe(reloadedCatalog.descriptors[0].revision);
-			expect(bind(firstCatalog).id).toBe(bind(reloadedCatalog).id);
-			expect(firstCatalog.descriptors[0].id).not.toBe(secondCatalog.descriptors[0].id);
-			expect(firstCatalog.descriptors[0].revision).not.toBe(secondCatalog.descriptors[0].revision);
-			expect(bind(firstCatalog).id).not.toBe(bind(secondCatalog).id);
-		} finally {
-			rmSync(firstAgentDir, { recursive: true, force: true });
-			rmSync(secondAgentDir, { recursive: true, force: true });
-		}
-	});
-});
-
 describe("binding lifecycle and views", () => {
 	it("excludes unavailable catalog items from the binding but keeps them for diagnosis", () => {
 		const catalog = buildCapabilityCatalog({
@@ -1002,7 +783,7 @@ describe("binding lifecycle and views", () => {
 		expect("path" in view.descriptors[0].source).toBe(false);
 		expect("baseDir" in view.descriptors[0].source).toBe(false);
 		expect(view.descriptors[0]).toMatchObject({
-			id: createCapabilityId("extension", "test-src", "proj-ext"),
+			id: "extension:test-src:proj-ext",
 			kind: "extension",
 			name: "proj-ext",
 			availability: "available",
@@ -1034,11 +815,7 @@ describe("binding lifecycle and views", () => {
 			profile: "default",
 			createdAt: "2026-08-11T00:00:00.000Z",
 			descriptors: [
-				{
-					id: createCapabilityId("builtin_tool", "test-src", "Read"),
-					revision: binding.descriptors[0].revision,
-					exposedToolName: "Read",
-				},
+				{ id: "builtin_tool:test-src:Read", revision: binding.descriptors[0].revision, exposedToolName: "Read" },
 			],
 			decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
 			toolAllowlist: ["Read"],
@@ -1046,7 +823,7 @@ describe("binding lifecycle and views", () => {
 	});
 
 	it("supports the stateful registry facade for inspection", () => {
-		const registry = new CapabilityRegistry(TEST_IDENTITY);
+		const registry = new CapabilityRegistry();
 		const catalog = registry.buildCatalog({ candidates: [cand({ kind: "builtin_tool", name: "Read" })] });
 		const binding = registry.resolveBinding({
 			catalog,

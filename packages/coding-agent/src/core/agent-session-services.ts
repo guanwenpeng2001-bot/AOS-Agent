@@ -3,7 +3,6 @@ import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
@@ -197,8 +196,7 @@ export async function createAgentSessionServices(
 		modelRuntime,
 		settingsManager,
 		resourceLoader,
-		capabilityRegistry:
-			options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir)),
+		capabilityRegistry: options.capabilityRegistry ?? new CapabilityRegistry(),
 		mcpTransportFactory: options.mcpTransportFactory,
 		diagnostics,
 	};

@@ -3,7 +3,6 @@ import { Container, isViewportTUI, Text } from "@aos-agent/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { CapabilityError, type CapabilityBinding, type CapabilityCatalogView } from "../src/core/capability-registry.ts";
-import type { ContextSnapshot, ContextSourceDrift } from "../src/core/context-engine.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {
 	formatCapabilitiesError,
@@ -515,113 +514,5 @@ describe("InteractiveMode /capabilities command", () => {
 		const context = createCapabilitiesContext();
 		await capabilitiesCommandPrototype.handleCapabilitiesCommand.call(context, "frobnicate");
 		expect(rendered(context)).toContain("Unknown /capabilities subcommand: frobnicate");
-	});
-});
-
-const CONTEXT_PATH_MARKER_WIN = "C:\\audit-private\\capability-source";
-const CONTEXT_PATH_MARKER_POSIX = "/audit-private/capability-source";
-const CONTEXT_URL_MARKER = "https://audit-user:audit-secret@host.invalid/pkg?token=audit-query-secret#fragment";
-const CONTEXT_OPAQUE_SOURCE = `source:${"s".repeat(43)}`;
-const CONTEXT_OPAQUE_REVISION = `rev:${"r".repeat(43)}`;
-const CONTEXT_OPAQUE_BINDING = `binding:${"b".repeat(43)}`;
-
-type ContextCommandSession = {
-	inspectContext: () => Promise<{ snapshot: ContextSnapshot; drift: ContextSourceDrift[]; preview: boolean }>;
-};
-
-type ContextCommandContext = {
-	session: ContextCommandSession;
-	chatContainer: Container;
-	ui: { requestRender: () => void };
-};
-
-type ContextCommandPrototype = {
-	handleContextCommand(this: ContextCommandContext, snapshotId?: string): Promise<void>;
-};
-
-const contextCommandPrototype = InteractiveMode.prototype as unknown as ContextCommandPrototype;
-
-function renderContextCommand(context: ContextCommandContext): string {
-	return context.chatContainer.render(120).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-describe("InteractiveMode /context public boundary", () => {
-	beforeEach(() => {
-		initTheme("dark");
-	});
-
-	it("does not render source paths, source ids, labels, or reference ids", async () => {
-		const context: ContextCommandContext = {
-			session: {
-				inspectContext: async () => ({
-					snapshot: {
-						schemaVersion: 1,
-						id: "snapshot-1",
-						purpose: "agent_turn",
-						sessionId: "session-1",
-						createdAt: "2026-08-12T00:00:00.000Z",
-						sources: [
-							{
-								sourceId: CONTEXT_PATH_MARKER_POSIX,
-								kind: "extension",
-								scope: "turn",
-								trust: "user_owned",
-								label: CONTEXT_PATH_MARKER_WIN,
-								visibility: "model_and_snapshot",
-								path: CONTEXT_PATH_MARKER_WIN,
-								contentDigest: "digest",
-								estimatedTokens: 1,
-								disposition: "included",
-								refId: CONTEXT_URL_MARKER,
-								capabilityId: `skill:${CONTEXT_OPAQUE_SOURCE}:audit`,
-								capabilityRevision: CONTEXT_OPAQUE_REVISION,
-								capabilityBindingId: CONTEXT_OPAQUE_BINDING,
-							},
-						],
-						budget: { contextWindow: 100, reserveTokens: 10, inputLimit: 90, estimatedInputTokens: 1 },
-					},
-					drift: [
-						{
-							sourceId: CONTEXT_PATH_MARKER_POSIX,
-							status: "source_changed",
-							path: CONTEXT_PATH_MARKER_WIN,
-						},
-					],
-					preview: false,
-				}),
-			},
-			chatContainer: new Container(),
-			ui: { requestRender: vi.fn() },
-		};
-
-		await contextCommandPrototype.handleContextCommand.call(context);
-
-		const output = renderContextCommand(context);
-		expect(output).not.toContain(CONTEXT_PATH_MARKER_WIN);
-		expect(output).not.toContain(CONTEXT_PATH_MARKER_POSIX);
-		expect(output).not.toContain("audit-user");
-		expect(output).not.toContain("audit-secret");
-		expect(output).not.toContain("audit-query-secret");
-		expect(output).toContain(`capability=skill:${CONTEXT_OPAQUE_SOURCE}:audit`);
-		expect(output).toContain("source_changed");
-	});
-
-	it("does not echo a failed inspection's internal error text", async () => {
-		const context: ContextCommandContext = {
-			session: {
-				inspectContext: async () => {
-					throw new Error(`${CONTEXT_PATH_MARKER_POSIX} ${CONTEXT_URL_MARKER}`);
-				},
-			},
-			chatContainer: new Container(),
-			ui: { requestRender: vi.fn() },
-		};
-
-		await contextCommandPrototype.handleContextCommand.call(context);
-
-		const output = renderContextCommand(context);
-		expect(output).toContain("Context inspection failed.");
-		expect(output).not.toContain(CONTEXT_PATH_MARKER_POSIX);
-		expect(output).not.toContain("audit-secret");
 	});
 });

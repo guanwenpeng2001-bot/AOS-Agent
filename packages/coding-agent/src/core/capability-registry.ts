@@ -1,5 +1,3 @@
-import { getAgentDir } from "../config.ts";
-import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import type { SourceInfo, SourceOrigin, SourceScope } from "./source-info.ts";
 
 export type CapabilityKind =
@@ -67,9 +65,6 @@ export interface CapabilityDescriptor {
 	revision: string;
 	kind: CapabilityKind;
 	name: string;
-	/** Opaque source reference used by every public capability serializer. */
-	publicSourceId: string;
-	/** Internal-only source metadata for profile matching and resource loading. */
 	source: SourceInfo;
 	availability: CapabilityAvailability;
 	/** Baseline decision before profile resolution (defaults + trust + parent). */
@@ -140,7 +135,6 @@ export type CapabilityErrorCode =
 	| "capability_binding_unavailable";
 
 export interface CapabilitySourceView {
-	/** Opaque stable source reference; never a configured path or URL. */
 	source: string;
 	scope: SourceScope;
 	origin: SourceOrigin;
@@ -217,18 +211,17 @@ function deepFreeze<T>(value: T): T {
 	return value;
 }
 
-let defaultPublicIdentity: CapabilityPublicIdentity | undefined;
-const catalogIdentities = new WeakMap<CapabilityCatalog, CapabilityPublicIdentity>();
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const FNV_MASK = 0xffffffffffffffffn;
 
-function getDefaultPublicIdentity(): CapabilityPublicIdentity {
-	if (defaultPublicIdentity === undefined) {
-		defaultPublicIdentity = CapabilityPublicIdentity.loadSync(getAgentDir());
+function fnv1a64(input: string): string {
+	let hash = FNV_OFFSET_BASIS;
+	for (let i = 0; i < input.length; i++) {
+		hash ^= BigInt(input.charCodeAt(i));
+		hash = (hash * FNV_PRIME) & FNV_MASK;
 	}
-	return defaultPublicIdentity;
-}
-
-function createPublicSourceId(sourceIdentity: string, identity: CapabilityPublicIdentity): string {
-	return `source:${identity.derive("capability-public-source", sourceIdentity)}`;
+	return hash.toString(16).padStart(16, "0");
 }
 
 /** Secret values are omitted so secret rotation never changes a capability revision. */
@@ -291,20 +284,12 @@ function stableStringify(value: unknown): string {
 	return "undefined";
 }
 
-export function createCapabilityRevision(
-	input: unknown,
-	identity: CapabilityPublicIdentity = getDefaultPublicIdentity(),
-): string {
-	return `rev:${identity.derive("capability-revision", stableStringify(sanitizeSecrets(input)))}`;
+export function createCapabilityRevision(input: unknown): string {
+	return `rev:${fnv1a64(stableStringify(sanitizeSecrets(input)))}`;
 }
 
-export function createCapabilityId(
-	kind: CapabilityKind,
-	sourceIdentity: string,
-	localName: string,
-	identity: CapabilityPublicIdentity = getDefaultPublicIdentity(),
-): string {
-	return `${kind}:${createPublicSourceId(sourceIdentity, identity)}:${localName}`;
+export function createCapabilityId(kind: CapabilityKind, sourceIdentity: string, localName: string): string {
+	return `${kind}:${sourceIdentity}:${localName}`;
 }
 
 function defaultDecisionFor(kind: CapabilityKind): CapabilityDecision {
@@ -429,21 +414,16 @@ function fallbackRevisionInput(candidate: CapabilityCandidate, localName: string
 	};
 }
 
-export function buildCapabilityCatalog(
-	input: CapabilityCatalogInput,
-	identity: CapabilityPublicIdentity = getDefaultPublicIdentity(),
-): CapabilityCatalog {
+export function buildCapabilityCatalog(input: CapabilityCatalogInput): CapabilityCatalog {
 	const byId = new Map<string, CapabilityDescriptor>();
 	for (const candidate of input.candidates) {
 		const localName = candidate.localName ?? candidate.name;
-		const publicSourceId = createPublicSourceId(candidate.sourceIdentity, identity);
-		const id = createCapabilityId(candidate.kind, candidate.sourceIdentity, localName, identity);
+		const id = createCapabilityId(candidate.kind, candidate.sourceIdentity, localName);
 		const descriptor: CapabilityDescriptor = {
 			id,
-			revision: createCapabilityRevision(candidate.revisionInput ?? fallbackRevisionInput(candidate, localName), identity),
+			revision: createCapabilityRevision(candidate.revisionInput ?? fallbackRevisionInput(candidate, localName)),
 			kind: candidate.kind,
 			name: candidate.name,
-			publicSourceId,
 			source: { ...candidate.source },
 			availability: candidate.availability ?? "available",
 			decision: "allow",
@@ -461,15 +441,13 @@ export function buildCapabilityCatalog(
 	}
 	const descriptors = [...byId.values()];
 	const decisions = resolveDecisions(descriptors, undefined);
-	const catalog = deepFreeze({
-		version: 1 as const,
+	return deepFreeze({
+		version: 1,
 		descriptors: descriptors.map((descriptor) => ({
 			...descriptor,
 			decision: decisions.get(descriptor.id) ?? "deny",
 		})),
 	});
-	catalogIdentities.set(catalog, identity);
-	return catalog;
 }
 
 /** Sorted, deduped canonical form of a name list; `-` marks an absent selection. */
@@ -483,7 +461,6 @@ function createBindingId(
 	refs: ReadonlyArray<CapabilityBindingDescriptorRef>,
 	selection: Pick<ResolveBindingInput, "toolAllowlist" | "excludeToolNames" | "noTools">,
 	finalAllowlist: ReadonlyArray<string>,
-	identity: CapabilityPublicIdentity,
 ): string {
 	const parts = refs.map((ref) => `${ref.id}@${ref.revision}`).sort();
 	// The raw selection semantics and the resulting model-visible allowlist both
@@ -496,7 +473,7 @@ function createBindingId(
 		}`,
 	);
 	parts.push(`final=${canonicalNameSet(finalAllowlist)}`);
-	return `binding:${identity.derive("capability-binding", `${profile}|${parts.join("|")}`)}`;
+	return `binding:${profile}:${fnv1a64(parts.join("|"))}`;
 }
 
 export function resolveCapabilityBinding(input: ResolveBindingInput): CapabilityBinding {
@@ -595,7 +572,6 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 	// The stored allowlist is normalized so the model-visible set is deterministic
 	// regardless of discovery order or duplicate selection entries.
 	toolAllowlist = [...new Set(toolAllowlist)].sort();
-	const identity = catalogIdentities.get(input.catalog) ?? getDefaultPublicIdentity();
 
 	return deepFreeze({
 		id: createBindingId(
@@ -607,7 +583,6 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 				noTools: input.noTools,
 			},
 			toolAllowlist,
-			identity,
 		),
 		profile: input.profile,
 		createdAt: input.now ?? new Date().toISOString(),
@@ -621,11 +596,11 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 	});
 }
 
-function createSourceView(descriptor: CapabilityDescriptor): CapabilitySourceView {
+function redactSource(source: SourceInfo): CapabilitySourceView {
 	return {
-		source: descriptor.publicSourceId,
-		scope: descriptor.source.scope,
-		origin: descriptor.source.origin,
+		source: redactUrlSecrets(source.source),
+		scope: source.scope,
+		origin: source.origin,
 	};
 }
 
@@ -637,7 +612,7 @@ export function createCapabilityCatalogView(catalog: CapabilityCatalog): Capabil
 			revision: descriptor.revision,
 			kind: descriptor.kind,
 			name: descriptor.name,
-			source: createSourceView(descriptor),
+			source: redactSource(descriptor.source),
 			availability: descriptor.availability,
 			decision: descriptor.decision,
 			trusted: descriptor.trusted,
@@ -662,18 +637,9 @@ export function createCapabilityBindingView(binding: CapabilityBinding): Capabil
 export class CapabilityRegistry {
 	private catalog: CapabilityCatalog | undefined;
 	private readonly bindings = new Map<string, CapabilityBinding>();
-	private readonly identity: CapabilityPublicIdentity;
-
-	constructor(identity: CapabilityPublicIdentity = getDefaultPublicIdentity()) {
-		this.identity = identity;
-	}
-
-	createCapabilityId(kind: CapabilityKind, sourceIdentity: string, localName: string): string {
-		return createCapabilityId(kind, sourceIdentity, localName, this.identity);
-	}
 
 	buildCatalog(input: CapabilityCatalogInput): CapabilityCatalog {
-		this.catalog = buildCapabilityCatalog(input, this.identity);
+		this.catalog = buildCapabilityCatalog(input);
 		return this.catalog;
 	}
 

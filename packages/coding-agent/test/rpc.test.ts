@@ -253,7 +253,7 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 		await client.promptAndWait("Hello");
 
 		const stats = await client.getSessionStats();
-		expect("sessionFile" in stats).toBe(false);
+		expect(stats.sessionFile).toBeDefined();
 		expect(stats.sessionId).toBeDefined();
 		expect(stats.userMessages).toBeGreaterThanOrEqual(1);
 		expect(stats.assistantMessages).toBeGreaterThanOrEqual(1);
