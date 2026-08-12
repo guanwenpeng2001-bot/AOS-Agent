@@ -14,7 +14,6 @@
 - Capability Registry/MCP v1: stable capability descriptors and frozen bindings for built-in, extension, SDK, skill, and MCP capabilities; trust-aware `allow`/`ask`/`deny` profiles; stdio and Streamable HTTP MCP lifecycle with explicit environment/header references; namespaced MCP tools; redacted inspection and run/Context Engine binding audit metadata; interactive approval and RPC `get_capabilities` support.
 - Interactive `/capabilities` command: list the redacted capability catalog, inspect a descriptor, and approve an ask capability for the current session (`/capabilities`, `/capabilities inspect <id>`, `/capabilities approve <id>`). Backed by the public Session capability surface (`inspectCapabilityCatalog()`, `getActiveCapabilityBinding()`, `getActiveCapabilityProfile()`, and `approveCapability()`); approvals are session-local, output is redacted (no command arguments, env/header values, tokens, unredacted URLs, or raw local paths), and only `CapabilityError` codes and redacted messages are surfaced. Adds type-only exports `CapabilityCatalogView`, `CapabilityDescriptorView`, and `CapabilityBindingView`.
 - RPC `get_capabilities` now also returns the redacted capability catalog (descriptor id/kind/name, redacted source, revision, availability, decision, trust, and public tool/parent/server identity) alongside the current binding and binding history; `RpcClient.getCapabilities()` surfaces the catalog and the optional per-binding query.
-- ModelBroker v1: trusted route/role settings, immutable bindings, guarded transient-failure fallback, call/token/cost budgets, safe attempt/run metadata, RPC `get_model_routes` plus optional `modelRoute`/`modelRole`, SDK selection options, and interactive `/model-routes`/`/model-route` controls.
 
 ### Changed
 
@@ -31,8 +30,6 @@
 - Context Engine initial budget validation now uses post-compaction Agent state, allowing eligible compaction before rejecting over-budget prompts.
 - Kept native Node ESM startup compatible with MCP SDK 1.30.0, preserved built-in tool registration for `noTools: "builtin"`, and retained extension active-tool switching within a frozen capability binding.
 - `run.resume` now recovers the original capability binding for interrupted (accepted, never-terminal) source runs by persisting `capabilityBindingId` on the accepted run record through validation, clone, and ledger replay; drift between the recorded and settled binding rejects with `capability_binding_unavailable` before any successor run/ledger write, and historical ledgers without a binding remain resumable and backward compatible.
-- ModelBroker RPC failures now retain stable route, budget, and fallback error codes, while Run receipts expose only safe model binding, attempt, and budget metadata.
-- ModelBroker CLI route and role selectors now report missing values explicitly instead of treating the following option as an unrelated flag.
 
 ### Removed
 
