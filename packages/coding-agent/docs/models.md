@@ -2,6 +2,41 @@
 
 Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.aos-agent/agent/models.json`.
 
+## ModelBroker routes
+
+ModelBroker routes select models already declared by the runtime. Keep route
+configuration separate from provider credentials and endpoint configuration in
+`settings.json`:
+
+```json
+{
+  "modelBroker": {
+    "defaultRoute": "balanced",
+    "routes": {
+      "balanced": {
+        "candidates": [
+          { "provider": "anthropic", "modelId": "claude-sonnet-4-5", "thinkingLevel": "high" },
+          { "provider": "openai", "modelId": "gpt-4o" }
+        ],
+        "fallback": { "maxAttempts": 2, "on": ["provider_unavailable", "transient_provider_error"] },
+        "budget": { "maxModelCalls": 12, "maxTotalTokens": 300000, "maxCostUsd": 2 }
+      }
+    },
+    "roleRoutes": { "worker": "balanced" }
+  }
+}
+```
+
+Global settings are available to all sessions. Project settings can select a
+declared global route only when the project is trusted; untrusted project route
+configuration is ignored. Routes never contain `apiKey`, headers, URLs, or
+other authentication material. Budget limits apply to the top-level prompt
+operation (or the Automation Run); a response that overruns a limit is kept,
+but later model calls are blocked. Use `/model-routes` to inspect the redacted
+catalog and `/model-route balanced` or `/model-route role:worker` to select a
+route interactively. A direct `/model` selection is explicit and disables
+automatic fallback for that model call.
+
 ## Table of Contents
 
 - [Minimal Example](#minimal-example)

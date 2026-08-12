@@ -2,12 +2,12 @@
  * Run modes for the coding agent.
  */
 
-export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.ts";
 export type {
 	CapabilityBindingView,
 	CapabilityCatalogView,
 	CapabilityDescriptorView,
 } from "./interactive/capabilities.ts";
+export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.ts";
 export type { JsonAgentSessionEvent } from "./json-event.ts";
 export { type PrintModeOptions, runPrintMode } from "./print-mode.ts";
 export {
@@ -23,6 +23,7 @@ export { runRpcMode } from "./rpc/rpc-mode.ts";
 export type {
 	AutomationError,
 	AutomationErrorCode,
+	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,

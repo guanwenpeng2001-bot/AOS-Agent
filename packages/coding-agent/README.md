@@ -63,7 +63,21 @@ In interactive mode, `/capabilities` lists the redacted capability catalog, `/ca
 
 Approvals are session-local: they are never written to settings and never override a deny from the active profile. Project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable rather than exposing connection internals.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, ModelBroker, external Agent orchestration, or legacy SSE transports.
+Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports.
+
+### ModelBroker
+
+ModelBroker routes select among models already known to the runtime without
+moving credentials or provider endpoints into route configuration. Declare
+global routes in `~/.aos-agent/agent/settings.json`; trusted projects may select
+one of those routes in `.aos-agent/settings.json`. Use `/model-routes` to view
+the redacted catalog and `/model-route <route>` or `/model-route role:<name>` to
+select a route. `/model` remains the explicit manual selector and disables
+automatic fallback for that selection. RPC clients can query the same safe
+catalog with `get_model_routes` and pass `modelRoute` or `modelRole` to
+`run.start`/`run.resume`. Routes may also declare call, token, and cost limits;
+an over-limit response is retained, while later calls in that operation or Run
+are rejected.
 
 ## Package contents
 

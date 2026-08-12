@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@aos-agent/agent-core";
+import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
 import type {
@@ -107,6 +107,13 @@ import { getCwdRelativePath } from "../../utils/paths.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { checkForNewAosVersion, type LatestAosRelease } from "../../utils/version-check.ts";
+import {
+	formatCapabilitiesError,
+	formatCapabilitiesUsage,
+	formatCapabilityApproval,
+	formatCapabilityCatalog,
+	formatCapabilityDescriptor,
+} from "./capabilities.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -149,13 +156,6 @@ import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
-import {
-	formatCapabilitiesError,
-	formatCapabilitiesUsage,
-	formatCapabilityApproval,
-	formatCapabilityCatalog,
-	formatCapabilityDescriptor,
-} from "./capabilities.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
 import {
@@ -233,6 +233,18 @@ function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 
 function isUnknownModel(model: Model<any> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
+}
+
+function isThinkingLevel(value: string): value is ThinkingLevel {
+	return (
+		value === "off" ||
+		value === "minimal" ||
+		value === "low" ||
+		value === "medium" ||
+		value === "high" ||
+		value === "xhigh" ||
+		value === "max"
+	);
 }
 
 function quoteIfNeeded(value: string): string {
@@ -718,11 +730,16 @@ export class InteractiveMode {
 					});
 				}
 			}
-			return createFuzzyAutocompleteItems(items, prefix, (item) => item.search, (item) => ({
-				value: item.value,
-				label: item.label,
-				...(item.description !== undefined ? { description: item.description } : {}),
-			}));
+			return createFuzzyAutocompleteItems(
+				items,
+				prefix,
+				(item) => item.search,
+				(item) => ({
+					value: item.value,
+					label: item.label,
+					...(item.description !== undefined ? { description: item.description } : {}),
+				}),
+			);
 		};
 		slashCommands.push(capabilitiesCommand);
 
@@ -2925,6 +2942,17 @@ export class InteractiveMode {
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
+			if (text === "/model-routes") {
+				this.editor.setText("");
+				this.handleModelRoutesCommand();
+				return;
+			}
+			if (text === "/model-route" || text.startsWith("/model-route ")) {
+				const selection = text.startsWith("/model-route ") ? text.slice("/model-route".length).trim() : undefined;
+				this.editor.setText("");
+				await this.handleModelRouteCommand(selection);
+				return;
+			}
 			if (text === "/export" || text.startsWith("/export ")) {
 				await this.handleExportCommand(text);
 				this.editor.setText("");
@@ -4647,6 +4675,7 @@ export class InteractiveMode {
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
 				this.showStatus(`Model: ${model.id}`);
+				this.showStatus("Automatic model fallback is disabled for manual model selection.");
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
@@ -4656,6 +4685,85 @@ export class InteractiveMode {
 		}
 
 		this.showModelSelector(searchTerm);
+	}
+
+	private handleModelRoutesCommand(): void {
+		const summary = this.session.modelBroker.publicSummary(this.session.modelBrokerBindingId);
+		const bindings = this.session.modelBroker.getBindings();
+		const currentBinding = summary.currentBindingId
+			? bindings.find((binding) => binding.id === summary.currentBindingId)
+			: undefined;
+		const routeLines = summary.routes.map((route) => {
+			const candidates = route.candidates
+				.map(
+					(candidate) =>
+						`${candidate.reference.provider}/${candidate.reference.id}${candidate.available ? "" : " (unavailable)"}`,
+				)
+				.join(", ");
+			return `${route.id}: ${candidates || "no candidates"}`;
+		});
+		const roleLines = summary.roles.map((role) => `role:${role}`);
+		const bindingLine =
+			currentBinding === undefined
+				? "Current binding: none"
+				: `Current binding: ${currentBinding.id} (${currentBinding.source}, ${currentBinding.reference.provider}/${currentBinding.reference.id})`;
+		this.showStatus(
+			[
+				...(routeLines.length === 0 ? ["No model routes configured."] : ["Routes:", ...routeLines]),
+				...(roleLines.length === 0 ? [] : ["Roles:", ...roleLines]),
+				bindingLine,
+				"/model is manual and disables fallback; route and role selections use guarded fallback.",
+			].join("\n"),
+		);
+	}
+
+	private async handleModelRouteCommand(selection?: string): Promise<void> {
+		if (!selection) {
+			this.handleModelRoutesCommand();
+			return;
+		}
+		const role = selection.startsWith("role:") ? selection.slice("role:".length).trim() : undefined;
+		if (role === "") {
+			this.showError("Model role selection is invalid.");
+			return;
+		}
+		const result = this.session.modelBroker.resolveResult(
+			role === undefined ? { modelRoute: selection } : { modelRole: role },
+		);
+		if (!result.ok) {
+			this.showError(
+				result.error.code === "model_role_not_found"
+					? "Model role was not found."
+					: result.error.code === "model_route_not_found"
+						? "Model route was not found."
+						: "Model route selection is unavailable.",
+			);
+			return;
+		}
+		const model = this.session.modelRuntime.getModel(
+			result.resolution.reference.provider,
+			result.resolution.reference.id,
+		);
+		if (model === undefined) {
+			this.showError("The selected model route is unavailable.");
+			return;
+		}
+		try {
+			await this.session.setModel(model);
+			this.session.setModelBrokerResolution(result.resolution);
+			const thinkingLevel = result.resolution.reference.thinkingLevel;
+			if (thinkingLevel !== undefined && isThinkingLevel(thinkingLevel)) {
+				this.session.setThinkingLevel(thinkingLevel);
+			}
+			this.footer.invalidate();
+			this.updateEditorBorderColor();
+			this.showStatus(
+				`Selected ${role === undefined ? `route ${selection}` : `role ${role}`}: ${model.provider}/${model.id} (${result.resolution.bindingId})`,
+			);
+			this.showStatus("Route selection enables guarded fallback for transient provider failures.");
+		} catch {
+			this.showError("The selected model route is unavailable.");
+		}
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
@@ -6105,8 +6213,7 @@ export class InteractiveMode {
 		try {
 			if (sub === "list") {
 				const scopeArg = parts[1];
-				const scope =
-					scopeArg === "session" || scopeArg === "project" ? scopeArg : undefined;
+				const scope = scopeArg === "session" || scopeArg === "project" ? scopeArg : undefined;
 				const memories = await this.session.listContextMemory(scope);
 				const settings = this.session.settingsManager.getMemorySettings();
 				let info = `${theme.bold("Context Memory")}\n\n`;
@@ -6189,11 +6296,7 @@ export class InteractiveMode {
 			const selectedDescriptorIds = new Set(binding?.descriptors.map((ref) => ref.id) ?? []);
 			if (parts.length === 0) {
 				show(
-					formatCapabilityCatalog(
-						this.session.inspectCapabilityCatalog(),
-						selectedDescriptorIds,
-						discoveryNote,
-					),
+					formatCapabilityCatalog(this.session.inspectCapabilityCatalog(), selectedDescriptorIds, discoveryNote),
 				);
 				return;
 			}

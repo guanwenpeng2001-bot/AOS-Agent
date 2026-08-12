@@ -40,6 +40,8 @@ import * as builtinProviderCatalog from "@aos-agent/ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+import { ModelBroker, type ModelBudget, type ModelRouteCandidate } from "./model-broker.ts";
+import type { ModelBrokerSettings } from "./model-broker-settings.ts";
 import { ModelConfig } from "./model-config.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import {
@@ -89,6 +91,54 @@ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
 }
 
 export type CredentialSynchronizationOperation = "login" | "logout" | "setRuntimeApiKey" | "removeRuntimeApiKey";
+
+/**
+ * Construct the broker from the settings plane without copying provider
+ * credentials or endpoint overrides into its route catalog.
+ */
+export function createModelBroker(
+	runtime: Pick<ModelRuntime, "getModels"> & Partial<Pick<ModelRuntime, "getAvailableSnapshot">>,
+	settings: ModelBrokerSettings,
+): ModelBroker {
+	const available = new Set(
+		(runtime.getAvailableSnapshot?.() ?? runtime.getModels()).map((model) => `${model.provider}\u0000${model.id}`),
+	);
+	const routes: Record<
+		string,
+		{
+			id: string;
+			candidates: readonly ModelRouteCandidate[];
+			fallback: { maxAttempts: number; on: readonly ("provider_unavailable" | "transient_provider_error")[] };
+			budget: ModelBudget;
+		}
+	> = {};
+	for (const [routeId, route] of Object.entries(settings.routes)) {
+		routes[routeId] = {
+			id: routeId,
+			fallback: route.fallback,
+			budget: {
+				...(route.budget.maxModelCalls === undefined ? {} : { maxModelCalls: route.budget.maxModelCalls }),
+				...(route.budget.maxInputTokens === undefined ? {} : { maxInputTokens: route.budget.maxInputTokens }),
+				...(route.budget.maxOutputTokens === undefined ? {} : { maxOutputTokens: route.budget.maxOutputTokens }),
+				...(route.budget.maxTotalTokens === undefined ? {} : { maxTotalTokens: route.budget.maxTotalTokens }),
+				...(route.budget.maxCostUsd === undefined ? {} : { maxCostUsd: route.budget.maxCostUsd }),
+			},
+			candidates: route.candidates.map((candidate) => ({
+				provider: candidate.provider,
+				id: candidate.modelId,
+				available: available.has(`${candidate.provider}\u0000${candidate.modelId}`),
+				...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }),
+			})),
+		};
+	}
+	return new ModelBroker({
+		models: runtime.getModels().map((model) => ({ provider: model.provider, id: model.id })),
+		routes,
+		roles: settings.roleRoutes,
+		configRevision: settings.configRevision,
+		...(settings.defaultRoute === undefined ? {} : { defaultRoute: settings.defaultRoute }),
+	});
+}
 
 /** Credentials changed successfully, but the local model/auth snapshot could not be synchronized. */
 export class CredentialSynchronizationError extends Error {

@@ -84,4 +84,4 @@ All public capability identifiers and provenance references are installation-sco
 
 ## Non-goals
 
-This feature does not implement MCP OAuth browser flows or credential storage, legacy SSE, MCP resource/prompt ingestion, argument-level policy, the Sandbox, ModelBroker, or external agent orchestration. Use a container or another separately governed environment when stronger execution isolation is required.
+This feature does not implement MCP OAuth browser flows or credential storage, legacy SSE, MCP resource/prompt ingestion, argument-level policy, the Sandbox, ModelBroker route selection, or external agent orchestration. Use a container or another separately governed environment when stronger execution isolation is required.

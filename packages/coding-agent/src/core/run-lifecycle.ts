@@ -18,6 +18,13 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
+import {
+	MODEL_ATTEMPT_CUSTOM_TYPE,
+	MODEL_BINDING_CUSTOM_TYPE,
+	serializePublicModelBrokerLedgerEntry,
+	type PublicModelAttemptLedgerRecord,
+	type PublicModelBindingLedgerRecord,
+} from "./model-broker-ledger.ts";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
@@ -53,6 +60,62 @@ export interface RunModelReference {
 	thinkingLevel: ThinkingLevel;
 }
 
+/** Safe model identity used for the final selected candidate in a Run receipt. */
+export interface RunFinalModelReference {
+	provider: string;
+	id?: string;
+	modelId?: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
+export type RunModelAttemptStatus = "started" | "completed" | "failed" | "cancelled";
+
+export interface RunModelUsageSummary {
+	input?: number;
+	output?: number;
+	total?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	costUsd?: number;
+	cost?: number;
+}
+
+/** Metadata-only summary of one ModelBroker candidate dispatch. */
+export interface RunModelAttemptSummary {
+	attemptId: string;
+	bindingId: string;
+	candidate: RunFinalModelReference;
+	order: number;
+	status: RunModelAttemptStatus;
+	startedAt: string;
+	endedAt?: string;
+	failureCategory?: string;
+	usage?: RunModelUsageSummary;
+	visibleOutput?: boolean;
+	contextSnapshotId?: string;
+	summary?: string;
+}
+
+/** Cumulative, safe budget usage/limit summary for a Run. */
+export interface RunModelBudgetSummary {
+	modelCalls?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	costUsd?: number;
+	maxModelCalls?: number;
+	maxInputTokens?: number;
+	maxOutputTokens?: number;
+	maxTotalTokens?: number;
+	maxCostUsd?: number;
+	exceeded?: boolean;
+}
+
+/** Short aliases for callers that use the Broker vocabulary. */
+export type ModelAttemptSummary = RunModelAttemptSummary;
+export type ModelBudgetSummary = RunModelBudgetSummary;
+
 export interface RunRecord {
 	id: RunId;
 	sessionId: SessionId;
@@ -68,9 +131,17 @@ export interface RunRecord {
 	 * omit it. Metadata-only — never carries credentials, headers, or MCP config.
 	 */
 	capabilityBindingId?: string;
+	/** Id of the immutable ModelBroker binding used by this Run. */
+	modelBindingId?: string;
+	/** Id of the source Run's ModelBroker binding when this is a resume. */
+	previousModelBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	/** Final candidate and safe attempt/budget summaries are additive metadata. */
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -110,6 +181,14 @@ export interface RunReceipt {
 	 * omit it. Metadata-only — never carries credentials, headers, or MCP config.
 	 */
 	capabilityBindingId?: string;
+	/** Id of the immutable ModelBroker binding used by this Run. */
+	modelBindingId?: string;
+	/** Id of the source Run's ModelBroker binding when this is a resume. */
+	previousModelBindingId?: string;
+	/** Final candidate and safe attempt/budget summaries are additive metadata. */
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 }
 
 export type RunStreamEvent =
@@ -169,6 +248,14 @@ export type AutomationErrorCode =
 	| "capability_mcp_auth_required"
 	| "capability_mcp_unavailable"
 	| "capability_binding_unavailable"
+	// ModelBroker preflight, budget and fallback failures.
+	| "model_route_not_found"
+	| "model_role_not_found"
+	| "model_route_invalid"
+	| "model_route_unavailable"
+	| "model_binding_unavailable"
+	| "model_budget_exceeded"
+	| "model_fallback_exhausted"
 	// Terminal run.failed receipt code; not a command-level error.
 	| "model_error";
 
@@ -203,6 +290,13 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "capability_mcp_auth_required" ||
 		value === "capability_mcp_unavailable" ||
 		value === "capability_binding_unavailable" ||
+		value === "model_route_not_found" ||
+		value === "model_role_not_found" ||
+		value === "model_route_invalid" ||
+		value === "model_route_unavailable" ||
+		value === "model_binding_unavailable" ||
+		value === "model_budget_exceeded" ||
+		value === "model_fallback_exhausted" ||
 		value === "model_error"
 	);
 }
@@ -283,8 +377,14 @@ export interface AcceptOptions {
 	sourceRunId?: RunId;
 	/** Binding id of the source run this attempt resumes from. */
 	previousBindingId?: string;
+	/** ModelBroker binding metadata; additive and optional for legacy callers. */
+	modelBindingId?: string;
+	previousModelBindingId?: string;
 	attempt: number;
 	model: RunModelReference;
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 	/**
 	 * Metadata-only binding snapshot to persist as a capability.binding custom
 	 * entry. Its id becomes the run receipt's capabilityBindingId.
@@ -309,6 +409,12 @@ export interface SettleInput {
 	currentUsage?: RunUsageSnapshot;
 	/** Snapshot id explicitly bound to this run's model call(s). */
 	contextSnapshotId?: string;
+	/** Additive ModelBroker receipt metadata. */
+	modelBindingId?: string;
+	previousModelBindingId?: string;
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 }
 
 export interface RunHandle {
@@ -411,7 +517,161 @@ function isRunModelReference(value: unknown): value is RunModelReference {
 function isRunUsage(value: unknown): value is RunUsage {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
-	return typeof obj.input === "number" && typeof obj.output === "number" && typeof obj.total === "number";
+	return (
+		typeof obj.input === "number" &&
+		typeof obj.output === "number" &&
+		typeof obj.total === "number" &&
+		Number.isFinite(obj.input) &&
+		Number.isFinite(obj.output) &&
+		Number.isFinite(obj.total) &&
+		obj.input >= 0 &&
+		obj.output >= 0 &&
+		obj.total >= 0
+	);
+}
+
+const RUN_METADATA_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const RUN_METADATA_TEXT_PATTERN = /^[^\u0000-\u001f\u007f\r\n]{1,512}$/;
+
+function isRunMetadataId(value: unknown): value is string {
+	return typeof value === "string" && RUN_METADATA_ID_PATTERN.test(value);
+}
+
+function isRunMetadataText(value: unknown): value is string {
+	return typeof value === "string" && RUN_METADATA_TEXT_PATTERN.test(value) && !value.includes("://") && !value.includes("@");
+}
+
+function isRunFinalModelReference(value: unknown): value is RunFinalModelReference {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	if (!isRunMetadataText(obj.provider)) return false;
+	if (obj.id === undefined && obj.modelId === undefined) return false;
+	if (obj.id !== undefined && !isRunMetadataText(obj.id)) return false;
+	if (obj.modelId !== undefined && !isRunMetadataText(obj.modelId)) return false;
+	return obj.thinkingLevel === undefined || isThinkingLevel(obj.thinkingLevel);
+}
+
+function isRunModelUsageSummary(value: unknown): value is RunModelUsageSummary {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	const fields: (keyof RunModelUsageSummary)[] = [
+		"input",
+		"output",
+		"total",
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"cost",
+	];
+	return fields.every((field) => {
+		const candidate = obj[field];
+		return candidate === undefined || (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0);
+	});
+}
+
+function isRunModelAttemptSummary(value: unknown): value is RunModelAttemptSummary {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	if (
+		!isRunMetadataId(obj.attemptId) ||
+		!isRunMetadataId(obj.bindingId) ||
+		!isRunFinalModelReference(obj.candidate) ||
+		!Number.isInteger(obj.order) ||
+		(obj.order as number) < 0 ||
+		(obj.status !== "started" &&
+			obj.status !== "completed" &&
+			obj.status !== "failed" &&
+			obj.status !== "cancelled") ||
+		!isRunMetadataText(obj.startedAt)
+	) {
+		return false;
+	}
+	if (obj.endedAt !== undefined && !isRunMetadataText(obj.endedAt)) return false;
+	if (obj.failureCategory !== undefined && !isRunMetadataId(obj.failureCategory)) return false;
+	if (obj.usage !== undefined && !isRunModelUsageSummary(obj.usage)) return false;
+	if (obj.visibleOutput !== undefined && typeof obj.visibleOutput !== "boolean") return false;
+	if (obj.contextSnapshotId !== undefined && !isRunMetadataId(obj.contextSnapshotId)) return false;
+	if (obj.summary !== undefined && !isRunMetadataText(obj.summary)) return false;
+	return true;
+}
+
+function isRunModelBudgetSummary(value: unknown): value is RunModelBudgetSummary {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	const fields: (keyof RunModelBudgetSummary)[] = [
+		"modelCalls",
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"maxModelCalls",
+		"maxInputTokens",
+		"maxOutputTokens",
+		"maxTotalTokens",
+		"maxCostUsd",
+		"exceeded",
+	];
+	return fields.every((field) => {
+		const candidate = obj[field];
+		return field === "exceeded"
+			? candidate === undefined || typeof candidate === "boolean"
+			: candidate === undefined || (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0);
+	});
+}
+
+function cloneRunFinalModel(value: RunFinalModelReference): RunFinalModelReference | undefined {
+	if (!isRunFinalModelReference(value)) return undefined;
+	const copy: RunFinalModelReference = { provider: value.provider };
+	if (value.id !== undefined) copy.id = value.id;
+	if (value.modelId !== undefined) copy.modelId = value.modelId;
+	if (value.thinkingLevel !== undefined) copy.thinkingLevel = value.thinkingLevel;
+	return copy;
+}
+
+function cloneRunModelAttempt(value: RunModelAttemptSummary): RunModelAttemptSummary | undefined {
+	if (!isRunModelAttemptSummary(value)) return undefined;
+	const candidate = cloneRunFinalModel(value.candidate);
+	if (candidate === undefined) return undefined;
+	const copy: RunModelAttemptSummary = {
+		attemptId: value.attemptId,
+		bindingId: value.bindingId,
+		candidate,
+		order: value.order,
+		status: value.status,
+		startedAt: value.startedAt,
+	};
+	if (value.endedAt !== undefined) copy.endedAt = value.endedAt;
+	if (value.failureCategory !== undefined) copy.failureCategory = value.failureCategory;
+	if (value.usage !== undefined) copy.usage = { ...value.usage };
+	if (value.visibleOutput !== undefined) copy.visibleOutput = value.visibleOutput;
+	if (value.contextSnapshotId !== undefined) copy.contextSnapshotId = value.contextSnapshotId;
+	if (value.summary !== undefined) {
+		const summary = redactErrorText(value.summary);
+		if (!summary.includes("://") && !summary.includes("/") && !summary.includes("\\")) copy.summary = summary;
+	}
+	return copy;
+}
+
+function cloneRunModelAttempts(value: ReadonlyArray<RunModelAttemptSummary>): RunModelAttemptSummary[] {
+	return value.map((attempt) => cloneRunModelAttempt(attempt)).filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
+}
+
+function cloneRunModelBudget(value: RunModelBudgetSummary): RunModelBudgetSummary | undefined {
+	if (!isRunModelBudgetSummary(value)) return undefined;
+	return {
+		...(value.modelCalls === undefined ? {} : { modelCalls: value.modelCalls }),
+		...(value.inputTokens === undefined ? {} : { inputTokens: value.inputTokens }),
+		...(value.outputTokens === undefined ? {} : { outputTokens: value.outputTokens }),
+		...(value.totalTokens === undefined ? {} : { totalTokens: value.totalTokens }),
+		...(value.costUsd === undefined ? {} : { costUsd: value.costUsd }),
+		...(value.maxModelCalls === undefined ? {} : { maxModelCalls: value.maxModelCalls }),
+		...(value.maxInputTokens === undefined ? {} : { maxInputTokens: value.maxInputTokens }),
+		...(value.maxOutputTokens === undefined ? {} : { maxOutputTokens: value.maxOutputTokens }),
+		...(value.maxTotalTokens === undefined ? {} : { maxTotalTokens: value.maxTotalTokens }),
+		...(value.maxCostUsd === undefined ? {} : { maxCostUsd: value.maxCostUsd }),
+		...(value.exceeded === undefined ? {} : { exceeded: value.exceeded }),
+	};
 }
 
 function isRunRecord(value: unknown): value is RunRecord {
@@ -424,6 +684,13 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (obj.sourceRunId !== undefined && typeof obj.sourceRunId !== "string") return false;
 	if (obj.previousBindingId !== undefined && typeof obj.previousBindingId !== "string") return false;
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
+	if (obj.modelBindingId !== undefined && !isRunMetadataId(obj.modelBindingId)) return false;
+	if (obj.previousModelBindingId !== undefined && !isRunMetadataId(obj.previousModelBindingId)) return false;
+	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
+	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+		return false;
+	}
+	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
 	if (obj.startedAt !== undefined && typeof obj.startedAt !== "string") return false;
 	if (obj.endedAt !== undefined && typeof obj.endedAt !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
@@ -441,6 +708,13 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
 	if (obj.contextSnapshotId !== undefined && typeof obj.contextSnapshotId !== "string") return false;
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
+	if (obj.modelBindingId !== undefined && !isRunMetadataId(obj.modelBindingId)) return false;
+	if (obj.previousModelBindingId !== undefined && !isRunMetadataId(obj.previousModelBindingId)) return false;
+	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
+	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+		return false;
+	}
+	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
 	return true;
 }
 
@@ -629,9 +903,14 @@ export interface PublicRunRecord {
 	previousBindingId?: string;
 	/** Only present when the accepted binding id is a current-format opaque value. */
 	capabilityBindingId?: string;
+	modelBindingId?: string;
+	previousModelBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -647,6 +926,11 @@ export interface PublicRunReceipt {
 	contextSnapshotId?: string;
 	/** Only present when the binding id is a current-format opaque value. */
 	capabilityBindingId?: string;
+	modelBindingId?: string;
+	previousModelBindingId?: string;
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 }
 
 /**
@@ -674,6 +958,8 @@ export type PublicContextSourceDrift = Omit<ContextSourceDrift, "path" | "source
 /** The only custom ledger payloads that can cross the public Session boundary. */
 export type PublicSessionCustomData =
 	| { schemaVersion: 1; binding: PublicCapabilityBindingLedgerRecord }
+	| { schemaVersion: 1; binding: PublicModelBindingLedgerRecord }
+	| { schemaVersion: 1; attempt: PublicModelAttemptLedgerRecord }
 	| { schemaVersion: 1; kind: "accepted"; record: PublicRunRecord }
 	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
 	| { schemaVersion: 1; kind: "terminal"; receipt: PublicRunReceipt; endedAt: string };
@@ -683,12 +969,17 @@ export type PublicSessionCustomEntry = Omit<Extract<SessionEntry, { type: "custo
 	data?: PublicSessionCustomData;
 };
 
+type PublicSessionMessageEntry = Omit<Extract<SessionEntry, { type: "message" }>, "message"> & {
+	message: AgentMessage;
+};
+
 /**
  * Public, capability-safe Session entry. Custom entry data is limited to the
  * serializer's known safe ledger schema; extension details are omitted.
  */
 export type PublicSessionEntry =
-	| Extract<SessionEntry, { type: "message" | "thinking_level_change" | "model_change" | "label" | "session_info" }>
+	| PublicSessionMessageEntry
+	| Extract<SessionEntry, { type: "thinking_level_change" | "model_change" | "label" | "session_info" }>
 	| Omit<Extract<SessionEntry, { type: "compaction" }>, "details">
 	| Omit<Extract<SessionEntry, { type: "branch_summary" }>, "details">
 	| Omit<Extract<SessionEntry, { type: "custom_message" }>, "details">
@@ -720,6 +1011,75 @@ function isPublicDescriptorRef(
 	ref: CapabilityBindingLedgerRecord["descriptors"][number],
 ): ref is PublicCapabilityBindingDescriptorRef {
 	return isOpaqueCapabilityDescriptorId(ref.id) && isOpaqueCapabilityRevision(ref.revision);
+}
+
+function serializePublicRunFinalModel(value: RunFinalModelReference): RunFinalModelReference | undefined {
+	if (!isRunFinalModelReference(value)) return undefined;
+	const copy: RunFinalModelReference = { provider: value.provider };
+	if (value.id !== undefined) copy.id = value.id;
+	if (value.modelId !== undefined) copy.modelId = value.modelId;
+	if (value.thinkingLevel !== undefined) copy.thinkingLevel = value.thinkingLevel;
+	return copy;
+}
+
+function serializePublicRunModelUsage(value: RunModelUsageSummary): RunModelUsageSummary {
+	const copy: RunModelUsageSummary = {};
+	const fields: (keyof RunModelUsageSummary)[] = [
+		"input",
+		"output",
+		"total",
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"cost",
+	];
+	for (const field of fields) {
+		if (value[field] !== undefined) copy[field] = value[field];
+	}
+	return copy;
+}
+
+function serializePublicRunModelAttempt(value: RunModelAttemptSummary): RunModelAttemptSummary | undefined {
+	if (!isRunModelAttemptSummary(value)) return undefined;
+	const candidate = serializePublicRunFinalModel(value.candidate);
+	if (candidate === undefined) return undefined;
+	const copy: RunModelAttemptSummary = {
+		attemptId: value.attemptId,
+		bindingId: value.bindingId,
+		candidate,
+		order: value.order,
+		status: value.status,
+		startedAt: value.startedAt,
+	};
+	if (value.endedAt !== undefined) copy.endedAt = value.endedAt;
+	if (value.failureCategory !== undefined) copy.failureCategory = value.failureCategory;
+	if (value.usage !== undefined) copy.usage = serializePublicRunModelUsage(value.usage);
+	if (value.visibleOutput !== undefined) copy.visibleOutput = value.visibleOutput;
+	if (value.contextSnapshotId !== undefined) copy.contextSnapshotId = value.contextSnapshotId;
+	if (value.summary !== undefined) {
+		const redacted = redactErrorText(value.summary);
+		// A summary is optional. Omit one that still looks like a path or URL so
+		// a provider diagnostic cannot become a public source identity.
+		if (!redacted.includes("/") && !redacted.includes("\\") && !redacted.includes("://")) copy.summary = redacted;
+	}
+	return copy;
+}
+
+function serializePublicRunModelBudget(value: RunModelBudgetSummary): RunModelBudgetSummary {
+	return {
+		...(value.modelCalls === undefined ? {} : { modelCalls: value.modelCalls }),
+		...(value.inputTokens === undefined ? {} : { inputTokens: value.inputTokens }),
+		...(value.outputTokens === undefined ? {} : { outputTokens: value.outputTokens }),
+		...(value.totalTokens === undefined ? {} : { totalTokens: value.totalTokens }),
+		...(value.costUsd === undefined ? {} : { costUsd: value.costUsd }),
+		...(value.maxModelCalls === undefined ? {} : { maxModelCalls: value.maxModelCalls }),
+		...(value.maxInputTokens === undefined ? {} : { maxInputTokens: value.maxInputTokens }),
+		...(value.maxOutputTokens === undefined ? {} : { maxOutputTokens: value.maxOutputTokens }),
+		...(value.maxTotalTokens === undefined ? {} : { maxTotalTokens: value.maxTotalTokens }),
+		...(value.maxCostUsd === undefined ? {} : { maxCostUsd: value.maxCostUsd }),
+		...(value.exceeded === undefined ? {} : { exceeded: value.exceeded }),
+	};
 }
 
 /**
@@ -766,6 +1126,22 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 	if (record.capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(record.capabilityBindingId)) {
 		copy.capabilityBindingId = record.capabilityBindingId;
 	}
+	if (record.modelBindingId !== undefined && isRunMetadataId(record.modelBindingId)) {
+		copy.modelBindingId = record.modelBindingId;
+	}
+	if (record.previousModelBindingId !== undefined && isRunMetadataId(record.previousModelBindingId)) {
+		copy.previousModelBindingId = record.previousModelBindingId;
+	}
+	if (record.finalModel !== undefined) {
+		const finalModel = serializePublicRunFinalModel(record.finalModel);
+		if (finalModel !== undefined) copy.finalModel = finalModel;
+	}
+	if (record.modelAttempts !== undefined) {
+		copy.modelAttempts = record.modelAttempts
+			.map((attempt) => serializePublicRunModelAttempt(attempt))
+			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
+	}
+	if (record.modelBudget !== undefined) copy.modelBudget = serializePublicRunModelBudget(record.modelBudget);
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(record.terminalError);
@@ -790,6 +1166,22 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 	if (receipt.capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(receipt.capabilityBindingId)) {
 		copy.capabilityBindingId = receipt.capabilityBindingId;
 	}
+	if (receipt.modelBindingId !== undefined && isRunMetadataId(receipt.modelBindingId)) {
+		copy.modelBindingId = receipt.modelBindingId;
+	}
+	if (receipt.previousModelBindingId !== undefined && isRunMetadataId(receipt.previousModelBindingId)) {
+		copy.previousModelBindingId = receipt.previousModelBindingId;
+	}
+	if (receipt.finalModel !== undefined) {
+		const finalModel = serializePublicRunFinalModel(receipt.finalModel);
+		if (finalModel !== undefined) copy.finalModel = finalModel;
+	}
+	if (receipt.modelAttempts !== undefined) {
+		copy.modelAttempts = receipt.modelAttempts
+			.map((attempt) => serializePublicRunModelAttempt(attempt))
+			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
+	}
+	if (receipt.modelBudget !== undefined) copy.modelBudget = serializePublicRunModelBudget(receipt.modelBudget);
 	return copy;
 }
 
@@ -854,7 +1246,7 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 			return {
 				...event,
 				messages: event.messages.map((message) =>
-					message.role === "assistant" && message.stopReason === "error"
+					message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")
 						? { ...message, errorMessage: "Agent run failed." }
 						: message,
 				),
@@ -891,6 +1283,15 @@ export function serializePublicRunStreamEvent(event: RunStreamEvent): PublicRunS
  */
 export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionEntry {
 	switch (entry.type) {
+		case "message":
+			return {
+				...entry,
+				message:
+					entry.message.role === "assistant" &&
+					(entry.message.stopReason === "error" || entry.message.stopReason === "aborted")
+						? { ...entry.message, errorMessage: "Agent run failed." }
+						: entry.message,
+			};
 		case "custom":
 			return serializePublicCustomEntry(entry);
 		case "custom_message": {
@@ -922,6 +1323,11 @@ function serializePublicCustomEntry(
 	entry: Extract<SessionEntry, { type: "custom" }>,
 ): PublicSessionCustomEntry {
 	const { data: _data, ...publicEntry } = entry;
+	if (entry.customType === MODEL_BINDING_CUSTOM_TYPE || entry.customType === MODEL_ATTEMPT_CUSTOM_TYPE) {
+		const serialized = serializePublicModelBrokerLedgerEntry(entry);
+		if (serialized.data === undefined) return publicEntry;
+		return { ...publicEntry, data: serialized.data as PublicSessionCustomData };
+	}
 	if (entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE) {
 		const parsed = parseCapabilityBindingEntry(entry.data, entry.id);
 		if (!parsed.ok) return publicEntry;
@@ -995,6 +1401,17 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
 	if (record.previousBindingId !== undefined) copy.previousBindingId = record.previousBindingId;
 	if (record.capabilityBindingId !== undefined) copy.capabilityBindingId = record.capabilityBindingId;
+	if (record.modelBindingId !== undefined) copy.modelBindingId = record.modelBindingId;
+	if (record.previousModelBindingId !== undefined) copy.previousModelBindingId = record.previousModelBindingId;
+	if (record.finalModel !== undefined) copy.finalModel = { ...record.finalModel };
+	if (record.modelAttempts !== undefined) {
+		copy.modelAttempts = record.modelAttempts.map((attempt) => ({
+			...attempt,
+			candidate: { ...attempt.candidate },
+			...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+		}));
+	}
+	if (record.modelBudget !== undefined) copy.modelBudget = { ...record.modelBudget };
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = cloneAutomationError(record.terminalError);
@@ -1013,6 +1430,17 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
 	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
 	if (receipt.capabilityBindingId !== undefined) copy.capabilityBindingId = receipt.capabilityBindingId;
+	if (receipt.modelBindingId !== undefined) copy.modelBindingId = receipt.modelBindingId;
+	if (receipt.previousModelBindingId !== undefined) copy.previousModelBindingId = receipt.previousModelBindingId;
+	if (receipt.finalModel !== undefined) copy.finalModel = { ...receipt.finalModel };
+	if (receipt.modelAttempts !== undefined) {
+		copy.modelAttempts = receipt.modelAttempts.map((attempt) => ({
+			...attempt,
+			candidate: { ...attempt.candidate },
+			...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+		}));
+	}
+	if (receipt.modelBudget !== undefined) copy.modelBudget = { ...receipt.modelBudget };
 	return copy;
 }
 
@@ -1054,10 +1482,25 @@ class RunHandleImpl implements RunHandle {
 		if (options.capabilityBinding !== undefined) {
 			this._record.capabilityBindingId = options.capabilityBinding.id;
 		}
+		if (options.modelBindingId !== undefined && isRunMetadataId(options.modelBindingId)) {
+			this._record.modelBindingId = options.modelBindingId;
+		}
+		if (options.previousModelBindingId !== undefined && isRunMetadataId(options.previousModelBindingId)) {
+			this._record.previousModelBindingId = options.previousModelBindingId;
+		}
+		if (options.finalModel !== undefined) {
+			const finalModel = cloneRunFinalModel(options.finalModel);
+			if (finalModel !== undefined) this._record.finalModel = finalModel;
+		}
+		if (options.modelAttempts !== undefined) this._record.modelAttempts = cloneRunModelAttempts(options.modelAttempts);
+		if (options.modelBudget !== undefined) {
+			const modelBudget = cloneRunModelBudget(options.modelBudget);
+			if (modelBudget !== undefined) this._record.modelBudget = modelBudget;
+		}
 	}
 
 	get record(): RunRecord {
-		return { ...this._record };
+		return cloneRunRecord(this._record);
 	}
 
 	get sequence(): number {
@@ -1157,23 +1600,57 @@ class RunHandleImpl implements RunHandle {
 		if (contextSnapshotId !== undefined) receipt.contextSnapshotId = contextSnapshotId;
 		const capabilityBindingId = this._capabilityBindingId;
 		if (capabilityBindingId !== undefined) receipt.capabilityBindingId = capabilityBindingId;
+		const requestedModelBindingId = input.modelBindingId ?? this._record.modelBindingId;
+		const modelBindingId = requestedModelBindingId !== undefined && isRunMetadataId(requestedModelBindingId)
+			? requestedModelBindingId
+			: undefined;
+		const requestedPreviousModelBindingId = input.previousModelBindingId ?? this._record.previousModelBindingId;
+		const previousModelBindingId =
+			requestedPreviousModelBindingId !== undefined && isRunMetadataId(requestedPreviousModelBindingId)
+				? requestedPreviousModelBindingId
+				: undefined;
+		const finalModel = input.finalModel === undefined ? this._record.finalModel : cloneRunFinalModel(input.finalModel);
+		const modelAttempts = input.modelAttempts === undefined ? this._record.modelAttempts : cloneRunModelAttempts(input.modelAttempts);
+		const modelBudget = input.modelBudget === undefined ? this._record.modelBudget : cloneRunModelBudget(input.modelBudget);
+		if (modelBindingId !== undefined) receipt.modelBindingId = modelBindingId;
+		if (previousModelBindingId !== undefined) receipt.previousModelBindingId = previousModelBindingId;
+		if (finalModel !== undefined) receipt.finalModel = { ...finalModel };
+		if (modelAttempts !== undefined) {
+			receipt.modelAttempts = modelAttempts.map((attempt) => ({
+				...attempt,
+				candidate: { ...attempt.candidate },
+				...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+			}));
+		}
+		if (modelBudget !== undefined) receipt.modelBudget = { ...modelBudget };
 		this.coordinator.persist({ schemaVersion: 1, kind: "terminal", receipt, endedAt });
 		this._receipt = receipt;
 		this._record.status = status;
 		this._record.endedAt = endedAt;
 		if (terminalError !== undefined) this._record.terminalError = terminalError;
+		if (modelBindingId !== undefined) this._record.modelBindingId = modelBindingId;
+		if (previousModelBindingId !== undefined) this._record.previousModelBindingId = previousModelBindingId;
+		if (finalModel !== undefined) this._record.finalModel = { ...finalModel };
+		if (modelAttempts !== undefined) {
+			this._record.modelAttempts = modelAttempts.map((attempt) => ({
+				...attempt,
+				candidate: { ...attempt.candidate },
+				...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+			}));
+		}
+		if (modelBudget !== undefined) this._record.modelBudget = { ...modelBudget };
 		const event = this.emitTerminal(status, receipt);
 		this.coordinator.onTerminal(this);
 		return event;
 	}
 
 	receipt(): RunReceipt | undefined {
-		return this._receipt === undefined ? undefined : { ...this._receipt };
+		return this._receipt === undefined ? undefined : cloneRunReceipt(this._receipt);
 	}
 
 	result(): RunResult {
 		const result: RunResult = { record: this.record };
-		if (this._receipt !== undefined) result.receipt = { ...this._receipt };
+		if (this._receipt !== undefined) result.receipt = cloneRunReceipt(this._receipt);
 		if (!isTerminalStatus(this._record.status)) result.recovery = "interrupted";
 		return result;
 	}
@@ -1406,6 +1883,19 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (fact.receipt.terminalError !== undefined) {
 					result.record.terminalError = cloneAutomationError(fact.receipt.terminalError);
 				}
+				if (fact.receipt.modelBindingId !== undefined) result.record.modelBindingId = fact.receipt.modelBindingId;
+				if (fact.receipt.previousModelBindingId !== undefined) {
+					result.record.previousModelBindingId = fact.receipt.previousModelBindingId;
+				}
+				if (fact.receipt.finalModel !== undefined) result.record.finalModel = { ...fact.receipt.finalModel };
+				if (fact.receipt.modelAttempts !== undefined) {
+					result.record.modelAttempts = fact.receipt.modelAttempts.map((attempt) => ({
+						...attempt,
+						candidate: { ...attempt.candidate },
+						...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+					}));
+				}
+				if (fact.receipt.modelBudget !== undefined) result.record.modelBudget = { ...fact.receipt.modelBudget };
 			}
 		}
 		for (const result of results.values()) {

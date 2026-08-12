@@ -278,6 +278,32 @@ Response contains an array of full [Model](#model) objects:
 }
 ```
 
+#### get_model_routes
+
+Return the redacted ModelBroker catalog. The response contains model identity,
+route candidate order/availability, role names, and safe binding summaries; it
+never contains credentials, headers, base URLs, or provider error objects.
+
+```json
+{"id": "routes-1", "type": "get_model_routes"}
+```
+
+```json
+{
+  "type": "response",
+  "command": "get_model_routes",
+  "success": true,
+  "data": {
+    "schemaVersion": 1,
+    "models": [{"provider": "anthropic", "id": "claude-sonnet-4-5"}],
+    "routes": [{"id": "balanced", "candidates": [{"reference": {"provider": "anthropic", "id": "claude-sonnet-4-5"}, "priority": 0, "enabled": true, "available": true}]}],
+    "roles": ["worker"],
+    "roleRoutes": [{"id": "worker", "routeId": "balanced"}],
+    "bindings": []
+  }
+}
+```
+
 ### Thinking
 
 #### set_thinking_level
@@ -1458,12 +1484,12 @@ Request:
 {"id": "run-1", "type": "run.start", "message": "Refactor the auth module"}
 ```
 
-With images:
+With images and an optional declared route or role:
 ```json
-{"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}]}
+{"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}], "modelRoute": "balanced"}
 ```
 
-The `images` field is optional and uses the same `ImageContent` format as `prompt`. `run.start` does not accept a model, a working directory, a shell command, or permission overrides; those always come from the configured session.
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
 Accepted response (emitted before any run event):
 ```json
@@ -1476,10 +1502,17 @@ Accepted response (emitted before any run event):
     "runId": "run_abc123",
     "sessionId": "abc123",
     "attempt": 1,
-    "status": "accepted"
+    "status": "accepted",
+    "modelBindingId": "model-binding:...",
+    "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
   }
 }
 ```
+
+Accepted and terminal run records may also include `previousModelBindingId`,
+`modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
+same fields are available from `run.get` and terminal receipts; attempt
+records contain candidate identity, status, timestamps, and safe usage only.
 
 Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
@@ -1580,7 +1613,8 @@ Request:
   "type": "run.resume",
   "sessionPath": "/path/to/session.jsonl",
   "sourceRunId": "run_abc123",
-  "message": "Continue, this time fixing the failing tests"
+  "message": "Continue, this time fixing the failing tests",
+  "modelRole": "worker"
 }
 ```
 

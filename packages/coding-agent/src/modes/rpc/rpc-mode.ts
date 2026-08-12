@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -21,6 +22,16 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import type {
+	ModelResolution as BrokerModelResolution,
+	ModelRoleSelection,
+	ModelRouteSelection,
+} from "../../core/model-broker.ts";
+import {
+	foldModelBrokerLedger,
+	type ModelBindingLedgerRecord,
+	serializePublicModelAttempt,
+} from "../../core/model-broker-ledger.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -29,9 +40,12 @@ import {
 } from "../../core/output-guard.ts";
 import type {
 	AutomationError,
+	RunFinalModelReference,
 	RunHandle,
 	RunId,
 	RunLifecycleCoordinator,
+	RunModelAttemptSummary,
+	RunModelBudgetSummary,
 	RunModelReference,
 	RunReservation,
 	RunStreamEvent,
@@ -49,8 +63,8 @@ import {
 	serializePublicCapabilityBinding,
 	serializePublicContextDrift,
 	serializePublicContextSnapshot,
-	serializePublicRunRecord,
 	serializePublicRunReceipt,
+	serializePublicRunRecord,
 	serializePublicRunStreamEvent,
 	serializePublicSessionEntry,
 	serializePublicSessionEvent,
@@ -63,6 +77,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	GetCapabilitiesData,
+	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
@@ -70,8 +85,8 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
-	RpcSessionStats,
 	RpcSessionState,
+	RpcSessionStats,
 	RpcSlashCommand,
 	RpcSourceInfo,
 	RunAcceptedData,
@@ -84,6 +99,7 @@ export type {
 	AutomationErrorCode,
 	CapabilityBindingView,
 	GetCapabilitiesData,
+	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
@@ -264,12 +280,280 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		};
 	};
 
+	const isThinkingLevel = (value: string): value is ThinkingLevel =>
+		value === "off" ||
+		value === "minimal" ||
+		value === "low" ||
+		value === "medium" ||
+		value === "high" ||
+		value === "xhigh" ||
+		value === "max";
+
+	const finalModelForResolution = (resolution: BrokerModelResolution): RunFinalModelReference => ({
+		provider: resolution.reference.provider,
+		modelId: resolution.reference.id,
+		...(resolution.reference.thinkingLevel !== undefined && isThinkingLevel(resolution.reference.thinkingLevel)
+			? { thinkingLevel: resolution.reference.thinkingLevel }
+			: {}),
+	});
+
+	const modelSelectionError = (err: unknown, fallback: "route" | "role" = "route"): AutomationError => {
+		const candidate =
+			typeof err === "object" && err !== null
+				? (err as { code?: unknown; message?: unknown; retryable?: unknown })
+				: undefined;
+		const code = candidate?.code;
+		if (code === "model_route_not_found") {
+			return createAutomationError("model_route_not_found", "Model route was not found.", false);
+		}
+		if (code === "model_role_not_found") {
+			return createAutomationError("model_role_not_found", "Model role was not found.", false);
+		}
+		if (code === "model_route_unavailable" || code === "model_no_candidate" || code === "model_provider_failure") {
+			return createAutomationError("model_route_unavailable", "The selected model route is unavailable.", true);
+		}
+		if (code === "model_budget_exceeded") {
+			return createAutomationError("model_budget_exceeded", "The model budget is exceeded.", false);
+		}
+		if (code === "model_binding_unavailable") {
+			return createAutomationError("model_binding_unavailable", "The previous model binding is unavailable.", false);
+		}
+		if (code === "model_binding_invalid" || code === "model_binding_conflict" || code === "model_invalid_reference") {
+			return createAutomationError("model_route_invalid", "The model route selection is invalid.", false);
+		}
+		if (candidate?.message !== undefined && typeof candidate.message === "string") {
+			return createAutomationError(
+				fallback === "role" ? "model_role_not_found" : "model_route_invalid",
+				redactErrorText(candidate.message),
+				candidate.retryable === true,
+			);
+		}
+		return createAutomationError(
+			fallback === "role" ? "model_role_not_found" : "model_route_invalid",
+			fallback === "role" ? "Model role selection failed." : "Model route selection failed.",
+			false,
+		);
+	};
+
+	const unavailableModelError = (): AutomationError =>
+		createAutomationError("model_route_unavailable", "The selected model route is unavailable.", true);
+
+	const resolveRequestedModel = async (
+		modelRoute: ModelRouteSelection | undefined,
+		modelRole: ModelRoleSelection | undefined,
+		inheritedBinding?: ModelBindingLedgerRecord,
+	): Promise<{ resolution?: BrokerModelResolution; error?: AutomationError }> => {
+		if (modelRoute !== undefined && modelRole !== undefined) {
+			return {
+				error: createAutomationError(
+					"model_route_invalid",
+					"modelRoute and modelRole are mutually exclusive.",
+					false,
+				),
+			};
+		}
+		let requestedRoute = modelRoute;
+		let requestedRole = modelRole;
+		let inheritedDirect: { provider: string; id: string; thinkingLevel?: ThinkingLevel } | undefined;
+		if (requestedRoute === undefined && requestedRole === undefined && inheritedBinding !== undefined) {
+			if (inheritedBinding.role !== undefined) {
+				requestedRole = inheritedBinding.role;
+			} else if (inheritedBinding.mode === "route" && inheritedBinding.routeId !== undefined) {
+				requestedRoute = inheritedBinding.routeId;
+			} else if (inheritedBinding.mode === "route") {
+				return { error: modelSelectionError({ code: "model_binding_unavailable" }) };
+			} else {
+				const inheritedModel = inheritedBinding.candidates[0]?.model;
+				if (inheritedModel === undefined) {
+					return { error: modelSelectionError({ code: "model_binding_unavailable" }) };
+				}
+				inheritedDirect = {
+					provider: inheritedModel.provider,
+					id: inheritedModel.modelId,
+					...(inheritedModel.thinkingLevel === undefined ? {} : { thinkingLevel: inheritedModel.thinkingLevel }),
+				};
+			}
+		}
+		if (requestedRoute === undefined && requestedRole === undefined) {
+			const currentModel = session.model;
+			if (currentModel === undefined) return { error: unavailableModelError() };
+			const result =
+				inheritedDirect !== undefined
+					? session.modelBroker.resolveResult({ direct: inheritedDirect })
+					: session.modelBroker.hasDefaultSelection()
+						? session.modelBroker.resolveResult({})
+						: session.modelBroker.resolveResult({
+								direct: {
+									provider: currentModel.provider,
+									id: currentModel.id,
+									thinkingLevel: session.thinkingLevel,
+								},
+							});
+			if (!result.ok) return { error: modelSelectionError(result.error) };
+			let model = currentModel;
+			if (
+				result.resolution.reference.provider !== currentModel.provider ||
+				result.resolution.reference.id !== currentModel.id
+			) {
+				try {
+					model =
+						session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id) ??
+						model;
+				} catch {
+					return { error: unavailableModelError() };
+				}
+				if (
+					model.provider !== result.resolution.reference.provider ||
+					model.id !== result.resolution.reference.id
+				) {
+					return { error: unavailableModelError() };
+				}
+				try {
+					await session.setModel(model);
+				} catch {
+					return { error: unavailableModelError() };
+				}
+			}
+			try {
+				session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+			} catch {
+				return { error: unavailableModelError() };
+			}
+			return { resolution: result.resolution };
+		}
+
+		const result = session.modelBroker.resolveResult({
+			...(requestedRoute === undefined ? {} : { modelRoute: requestedRoute }),
+			...(requestedRole === undefined ? {} : { modelRole: requestedRole }),
+		});
+		if (!result.ok) {
+			return { error: modelSelectionError(result.error, requestedRole === undefined ? "route" : "role") };
+		}
+
+		let model: ReturnType<typeof session.modelRuntime.getModel>;
+		try {
+			model = session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id);
+		} catch {
+			return { error: unavailableModelError() };
+		}
+		if (model === undefined) return { error: unavailableModelError() };
+		try {
+			await session.setModel(model);
+			session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+			if (
+				result.resolution.reference.thinkingLevel !== undefined &&
+				isThinkingLevel(result.resolution.reference.thinkingLevel)
+			) {
+				session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+			}
+		} catch {
+			return { error: unavailableModelError() };
+		}
+		return { resolution: result.resolution };
+	};
+
 	const usageSnapshot = (): RunUsageSnapshot => {
 		const stats = session.getSessionStats();
 		return {
 			input: stats.tokens.input,
 			output: stats.tokens.output,
 			total: stats.tokens.total,
+		};
+	};
+
+	const serializeRunModelAttempt = (value: unknown): RunModelAttemptSummary | undefined => {
+		const attempt = serializePublicModelAttempt(value);
+		if (attempt === undefined) return undefined;
+		return {
+			attemptId: attempt.attemptId,
+			bindingId: attempt.bindingId,
+			candidate: {
+				provider: attempt.candidate.provider,
+				modelId: attempt.candidate.modelId,
+				...(attempt.candidate.thinkingLevel === undefined
+					? {}
+					: { thinkingLevel: attempt.candidate.thinkingLevel }),
+			},
+			order: attempt.order,
+			status: attempt.status,
+			startedAt: attempt.startedAt,
+			...(attempt.endedAt === undefined ? {} : { endedAt: attempt.endedAt }),
+			...(attempt.failureCategory === undefined ? {} : { failureCategory: attempt.failureCategory }),
+			...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
+			...(attempt.visibleOutput === undefined ? {} : { visibleOutput: attempt.visibleOutput }),
+			...(attempt.contextSnapshotId === undefined ? {} : { contextSnapshotId: attempt.contextSnapshotId }),
+			...(attempt.summary === undefined ? {} : { summary: attempt.summary }),
+		};
+	};
+
+	const modelAttemptsForBinding = (
+		bindingId: string | undefined,
+	): ReadonlyArray<RunModelAttemptSummary> | undefined => {
+		if (bindingId === undefined) return undefined;
+		const replay = foldModelBrokerLedger(session.sessionManager.getEntries());
+		const attempts = [...replay.attempts.values()]
+			.filter((attempt) => attempt.bindingId === bindingId)
+			.map((attempt) => serializeRunModelAttempt(attempt))
+			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined)
+			.sort((a, b) => a.order - b.order || a.startedAt.localeCompare(b.startedAt));
+		return attempts.length === 0 ? undefined : attempts;
+	};
+
+	const runModelMetadata = (
+		handle: RunHandle,
+	): {
+		modelBindingId?: string;
+		previousModelBindingId?: string;
+		finalModel?: RunFinalModelReference;
+		modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+		modelBudget?: RunModelBudgetSummary;
+	} => {
+		const record = handle.record;
+		const modelAttempts = modelAttemptsForBinding(record.modelBindingId);
+		const bindingBudget =
+			record.modelBindingId === undefined
+				? undefined
+				: session.modelBroker.getBindingBudgetSummary(record.modelBindingId);
+		const finalModel =
+			modelAttempts === undefined
+				? record.finalModel
+				: (modelAttempts[modelAttempts.length - 1]?.candidate ?? record.finalModel);
+		return {
+			...(record.modelBindingId === undefined ? {} : { modelBindingId: record.modelBindingId }),
+			...(record.previousModelBindingId === undefined
+				? {}
+				: { previousModelBindingId: record.previousModelBindingId }),
+			...(finalModel === undefined ? {} : { finalModel }),
+			...(modelAttempts === undefined ? {} : { modelAttempts }),
+			...(bindingBudget === undefined
+				? {}
+				: {
+						modelBudget: {
+							...(bindingBudget.committed.modelCalls === undefined
+								? {}
+								: { modelCalls: bindingBudget.committed.modelCalls }),
+							inputTokens: bindingBudget.committed.inputTokens,
+							outputTokens: bindingBudget.committed.outputTokens,
+							totalTokens: bindingBudget.committed.totalTokens,
+							costUsd: bindingBudget.committed.cost,
+							...(bindingBudget.budget.maxModelCalls === undefined
+								? {}
+								: { maxModelCalls: bindingBudget.budget.maxModelCalls }),
+							...(bindingBudget.budget.maxInputTokens === undefined
+								? {}
+								: { maxInputTokens: bindingBudget.budget.maxInputTokens }),
+							...(bindingBudget.budget.maxOutputTokens === undefined
+								? {}
+								: { maxOutputTokens: bindingBudget.budget.maxOutputTokens }),
+							...(bindingBudget.budget.maxTotalTokens === undefined
+								? {}
+								: { maxTotalTokens: bindingBudget.budget.maxTotalTokens }),
+							...(bindingBudget.budget.maxCostUsd === undefined
+								? {}
+								: { maxCostUsd: bindingBudget.budget.maxCostUsd }),
+							exceeded: bindingBudget.exceeded,
+						},
+					}),
 		};
 	};
 
@@ -295,6 +579,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			terminalError,
 			currentUsage: usageSnapshot(),
 			contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
+			...runModelMetadata(handle),
 		});
 		if (terminal !== undefined) outputRunEvent(terminal);
 		activeHandle = undefined;
@@ -325,8 +610,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// the run failed/model_error; otherwise it completed.
 				const terminalError = terminalErrorByRun.get(handle.runId);
 				await finalizeRun(handle, terminalError !== undefined ? "failed" : "completed", terminalError);
-			} catch (err) {
-				await finalizeRun(handle, "failed", createAutomationError("model_error", errorMessage(err), false));
+			} catch {
+				await finalizeRun(handle, "failed", createAutomationError("model_error", "Run failed.", false));
 			}
 		})();
 		runPromptPromises.set(handle.runId, tracked);
@@ -341,6 +626,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		sourceRunId: string | undefined,
 		capabilityProfile: string | undefined,
 		previousBindingId: string | undefined,
+		previousModelBindingId: string | undefined,
+		inheritedModelBinding: ModelBindingLedgerRecord | undefined,
+		modelRoute: ModelRouteSelection | undefined,
+		modelRole: ModelRoleSelection | undefined,
 	): Promise<RpcAutomationResponse | undefined> => {
 		const inputError = slashRunInputError(id, commandType, message);
 		if (inputError !== undefined) return inputError;
@@ -464,6 +753,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
+		const modelSelection = await resolveRequestedModel(modelRoute, modelRole, inheritedModelBinding);
+		if (modelSelection.error !== undefined) {
+			activeReservation = undefined;
+			try {
+				reservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			return automationError(id, commandType, modelSelection.error);
+		}
 		const proposedRunId = crypto.randomUUID();
 		// Reserve before the prompt's preflight so the session is busy while the run
 		// is pending. Only a preflight that succeeds persists the accepted fact and
@@ -478,7 +777,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} catch {
 				// reservation may already be consumed
 			}
-			output(automationError(id, commandType, createAutomationError("start_rejected", errorMessage(err), false)));
+			const startError =
+				modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
+					? createAutomationError("start_rejected", errorMessage(err), false)
+					: unavailableModelError();
+			output(automationError(id, commandType, startError));
 		};
 		promptPromise = session.prompt(message, {
 			images,
@@ -498,7 +801,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						attempt,
 						sourceRunId,
 						previousBindingId,
+						previousModelBindingId,
 						model: currentRunModel(),
+						...(modelSelection.resolution === undefined
+							? {}
+							: {
+									modelBindingId: modelSelection.resolution.bindingId,
+									finalModel: finalModelForResolution(modelSelection.resolution),
+								}),
 						// Persist the frozen binding as the run's capability binding;
 						// its id is recorded on the terminal receipt.
 						capabilityBinding: session.getActiveCapabilityBinding(),
@@ -539,6 +849,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					attempt,
 					status: "accepted",
 				};
+				const publicRecord = serializePublicRunRecord(handle.record);
+				if (publicRecord.modelBindingId !== undefined) acceptedData.modelBindingId = publicRecord.modelBindingId;
+				if (publicRecord.previousModelBindingId !== undefined) {
+					acceptedData.previousModelBindingId = publicRecord.previousModelBindingId;
+				}
+				if (publicRecord.finalModel !== undefined) acceptedData.finalModel = publicRecord.finalModel;
+				if (publicRecord.modelAttempts !== undefined) acceptedData.modelAttempts = publicRecord.modelAttempts;
+				if (publicRecord.modelBudget !== undefined) acceptedData.modelBudget = publicRecord.modelBudget;
 				output({ id, type: "response", command: commandType, success: true, data: acceptedData });
 				for (const event of startEvents) {
 					outputRunEvent(event);
@@ -842,7 +1160,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						}
 					}
 					if (errorText !== undefined) {
-						terminalErrorByRun.set(activeHandle.runId, createAutomationError("model_error", errorText, false));
+						const terminalCode =
+							errorText === "Model budget exceeded."
+								? "model_budget_exceeded"
+								: errorText === "Model fallback exhausted."
+									? "model_fallback_exhausted"
+									: "model_error";
+						terminalErrorByRun.set(activeHandle.runId, createAutomationError(terminalCode, errorText, false));
 					} else {
 						terminalErrorByRun.delete(activeHandle.runId);
 					}
@@ -950,6 +1274,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					undefined,
 					command.capabilityProfile,
 					undefined,
+					undefined,
+					undefined,
+					command.modelRoute,
+					command.modelRole,
 				);
 			}
 
@@ -1107,8 +1435,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 				// An interrupted run may have an accepted record but no terminal
 				// receipt. Preserve #6's binding-drift guard for that recovery path.
-				const previousBindingId =
-					sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
+				const previousBindingId = sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
+				const previousModelBindingId = sourceRun.receipt?.modelBindingId ?? sourceRun.record.modelBindingId;
+				const inheritedModelBinding =
+					previousModelBindingId === undefined
+						? undefined
+						: foldModelBrokerLedger(session.sessionManager.getEntries()).bindings.get(previousModelBindingId);
 				return startRun(
 					id,
 					"run.resume",
@@ -1118,6 +1450,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					command.sourceRunId,
 					command.capabilityProfile,
 					previousBindingId,
+					previousModelBindingId,
+					inheritedModelBinding,
+					command.modelRoute,
+					command.modelRole,
 				);
 			}
 
@@ -1361,6 +1697,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						.map((binding) => serializePublicCapabilityBinding(binding))
 						.filter((binding): binding is NonNullable<typeof binding> => binding !== undefined),
 				} satisfies GetCapabilitiesData);
+			}
+
+			case "get_model_routes": {
+				// Route and role catalogs contain only declared model identities and
+				// availability metadata. ModelRuntime credentials are intentionally not
+				// part of the Broker summary.
+				return success(
+					id,
+					"get_model_routes",
+					session.modelBroker.publicSummary(session.modelBrokerBindingId) satisfies GetModelRoutesData,
+				);
 			}
 
 			case "export_html": {

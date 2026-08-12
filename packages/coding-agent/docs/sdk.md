@@ -95,6 +95,10 @@ interface AgentSession {
   agent: Agent;
   model: Model | undefined;
   thinkingLevel: ThinkingLevel;
+
+  // Read-only route/binding control plane
+  modelBroker: ModelBroker;
+  modelBrokerConfigRevision: string;
   messages: AgentMessage[];
   isStreaming: boolean;
 
@@ -117,6 +121,36 @@ interface AgentSession {
 ```
 
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
+
+### ModelBroker
+
+`ModelBroker` selects from model identities already known by `ModelRuntime`. It
+does not own credentials or provider endpoints. `createAgentSession()` builds a
+broker from trusted `modelBroker` settings unless an application supplies an
+explicit `modelBroker` instance. Use `publicSummary()` for a redacted route
+catalog and `getBindings()` for metadata-only binding facts. Explicit
+`setModel()` calls are direct/manual selections and do not enable automatic
+fallback.
+
+```typescript
+import { ModelBroker, createAgentSession, ModelRuntime } from "aos-agent";
+
+const modelRuntime = await ModelRuntime.create();
+const broker = new ModelBroker({
+  models: modelRuntime.getModels().map(({ provider, id }) => ({ provider, id })),
+  routes: {
+    balanced: {
+      candidates: [{ provider: "anthropic", id: "claude-sonnet-4-5" }],
+    },
+  },
+});
+const { session } = await createAgentSession({
+  modelRuntime,
+  modelBroker: broker,
+  modelRoute: "balanced",
+});
+const routes = session.modelBroker.publicSummary();
+```
 
 ### createAgentSessionRuntime() and AgentSessionRuntime
 
@@ -399,6 +433,9 @@ const { session } = await createAgentSession({
   ],
   
   modelRuntime,
+
+  // Optional explicit Broker; otherwise trusted settings.json routes are used
+  // modelBroker,
 });
 ```
 
@@ -1195,6 +1232,8 @@ AgentSessionRuntime
 
 // Auth and Models
 ModelRuntime // implements @aos-agent/ai Models and owns credential storage
+ModelBroker // safe model route resolution and immutable binding metadata
+createModelBroker // construct a Broker from ModelRuntime and trusted settings
 ModelRegistry // synchronous extension compatibility facade
 CredentialSynchronizationError
 resolveCliModel

@@ -15,6 +15,15 @@ import {
 	type McpSettingsConfig,
 } from "./capability-settings.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import {
+	buildModelBrokerSettings,
+	parseModelBrokerSettings,
+	type ModelBrokerModelDescriptor,
+	type ModelBrokerSettings,
+	type ModelBrokerSettingsBuildOptions,
+	type ModelBrokerSettingsConfig,
+	type ModelBrokerSettingsInput,
+} from "./model-broker-settings.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -161,6 +170,7 @@ export interface Settings {
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 	capabilities?: CapabilitiesSettingsConfig; // Capability Registry profiles and default profile
 	mcp?: McpSettingsConfig; // MCP server configs (env/header names only, never values)
+	modelBroker?: ModelBrokerSettingsInput; // Route selection only; never provider credentials or endpoints
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -310,6 +320,7 @@ export class SettingsManager {
 	private settings: Settings;
 	private projectTrusted: boolean;
 	private untrustedProjectCapabilitySettings: CapabilitySettingsInput;
+	private untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -328,12 +339,14 @@ export class SettingsManager {
 		initialErrors: SettingsError[] = [],
 		projectTrusted = true,
 		untrustedProjectCapabilitySettings: CapabilitySettingsInput = {},
+		untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined = undefined,
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
 		this.projectSettings = initialProject;
 		this.projectTrusted = projectTrusted;
 		this.untrustedProjectCapabilitySettings = untrustedProjectCapabilitySettings;
+		this.untrustedProjectModelBrokerSettings = untrustedProjectModelBrokerSettings;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
@@ -368,6 +381,9 @@ export class SettingsManager {
 		const untrustedProjectCapabilitySettings = projectTrusted
 			? {}
 			: SettingsManager.loadRawProjectCapabilitySettings(storage);
+		const untrustedProjectModelBrokerSettings = projectTrusted
+			? undefined
+			: SettingsManager.loadRawProjectModelBrokerSettings(storage);
 
 		return new SettingsManager(
 			storage,
@@ -378,6 +394,7 @@ export class SettingsManager {
 			initialErrors,
 			projectTrusted,
 			untrustedProjectCapabilitySettings,
+			untrustedProjectModelBrokerSettings,
 		);
 	}
 
@@ -434,6 +451,13 @@ export class SettingsManager {
 			...(load.settings.capabilities !== undefined ? { capabilities: load.settings.capabilities } : {}),
 			...(load.settings.mcp !== undefined ? { mcp: load.settings.mcp } : {}),
 		};
+	}
+
+	/** Read only the raw project modelBroker field for untrusted diagnostics. */
+	private static loadRawProjectModelBrokerSettings(storage: SettingsStorage): ModelBrokerSettingsInput | undefined {
+		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
+		if (load.error) return undefined;
+		return load.settings.modelBroker;
 	}
 
 	/** Migrate old settings format to new format */
@@ -523,6 +547,7 @@ export class SettingsManager {
 			this.projectSettings = {};
 			this.projectSettingsLoadError = null;
 			this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
+			this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
 			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 			return;
 		}
@@ -559,6 +584,50 @@ export class SettingsManager {
 		});
 	}
 
+	/**
+	 * Return validated ModelBroker settings for the current trust state.
+	 * Availability and cost checks run when the runtime-visible model catalog is
+	 * supplied. The array shorthand keeps small internal callers concise.
+	 */
+	getModelBrokerSettings(
+		optionsOrModels: ModelBrokerSettingsBuildOptions | readonly ModelBrokerModelDescriptor[] = {},
+	): ModelBrokerSettings {
+		const options = Array.isArray(optionsOrModels) ? { availableModels: optionsOrModels } : optionsOrModels;
+		return buildModelBrokerSettings({
+			...options,
+			global: this.globalSettings.modelBroker,
+			project: this.projectTrusted ? this.projectSettings.modelBroker : this.untrustedProjectModelBrokerSettings,
+			projectTrusted: this.projectTrusted,
+		});
+	}
+
+	/** Validate and persist a global ModelBroker configuration. */
+	setModelBrokerSettings(settings: ModelBrokerSettingsInput | undefined): void {
+		const parsed = parseModelBrokerSettings(settings);
+		if (Object.keys(parsed).length === 0) {
+			delete this.globalSettings.modelBroker;
+		} else {
+			this.globalSettings.modelBroker = parsed as ModelBrokerSettingsConfig;
+		}
+		this.markModified("modelBroker");
+		this.save();
+	}
+
+	/** Select a globally declared route from trusted project settings. */
+	setProjectModelBrokerDefaultRoute(defaultRoute: string | undefined): void {
+		this.assertProjectTrustedForWrite();
+		if (defaultRoute === undefined) {
+			this.updateProjectSettings("modelBroker", (settings) => {
+				delete settings.modelBroker;
+			});
+			return;
+		}
+		const parsed = parseModelBrokerSettings({ defaultRoute });
+		this.updateProjectSettings("modelBroker", (settings) => {
+			settings.modelBroker = parsed;
+		});
+	}
+
 	async reload(): Promise<void> {
 		await this.writeQueue;
 		const globalLoad = SettingsManager.tryLoadFromStorage(this.storage, "global");
@@ -575,6 +644,7 @@ export class SettingsManager {
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
 		this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
+		this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
 
 		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {
