@@ -61,6 +61,12 @@ export interface RunRecord {
 	 * when the source run's receipt carried a capabilityBindingId.
 	 */
 	previousBindingId?: string;
+	/**
+	 * Id of the frozen capability binding this run used. Set at accept time so an
+	 * interrupted (never-terminal) run still carries it. Additive; older ledgers
+	 * omit it. Metadata-only — never carries credentials, headers, or MCP config.
+	 */
+	capabilityBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
@@ -416,6 +422,7 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (!isRunModelReference(obj.model)) return false;
 	if (obj.sourceRunId !== undefined && typeof obj.sourceRunId !== "string") return false;
 	if (obj.previousBindingId !== undefined && typeof obj.previousBindingId !== "string") return false;
+	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
 	if (obj.startedAt !== undefined && typeof obj.startedAt !== "string") return false;
 	if (obj.endedAt !== undefined && typeof obj.endedAt !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
@@ -595,6 +602,7 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 	};
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
 	if (record.previousBindingId !== undefined) copy.previousBindingId = record.previousBindingId;
+	if (record.capabilityBindingId !== undefined) copy.capabilityBindingId = record.capabilityBindingId;
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = cloneAutomationError(record.terminalError);
@@ -650,6 +658,9 @@ class RunHandleImpl implements RunHandle {
 		}
 		if (options.previousBindingId !== undefined) {
 			this._record.previousBindingId = options.previousBindingId;
+		}
+		if (options.capabilityBinding !== undefined) {
+			this._record.capabilityBindingId = options.capabilityBinding.id;
 		}
 	}
 
