@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Type } from "typebox";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
+import type { ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
@@ -183,6 +185,7 @@ async function createRuntimeHost(options: {
 	responseDelayMs: number;
 	model?: Model<"anthropic-messages">;
 	streamErrorMessage?: string;
+	customTools?: ToolDefinition[];
 }): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
 	const tempDir = join(tmpdir(), `pi-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
@@ -233,6 +236,7 @@ async function createRuntimeHost(options: {
 			cwd: tempDir,
 			modelRuntime,
 			resourceLoader,
+			customTools: options.customTools,
 		});
 	};
 
@@ -287,6 +291,7 @@ async function startRpcMode(options: {
 	responseDelayMs: number;
 	model?: Model<"anthropic-messages">;
 	streamErrorMessage?: string;
+	customTools?: ToolDefinition[];
 }): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
@@ -1256,6 +1261,67 @@ describe("RPC Automation Host run lifecycle", () => {
 					.getEntries()
 					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
 			).toHaveLength(3); // accepted + started + terminal of the first run only
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects resume after a reloaded static tool schema changes its capability binding", async () => {
+		const customTool: ToolDefinition = {
+			name: "reloadable_tool",
+			label: "reloadable_tool",
+			description: "version one",
+			parameters: Type.Object({ query: Type.String() }),
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+		};
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			customTools: [customTool],
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "First" }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r1");
+				expect(res).toHaveLength(1);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+			const originalBindingId = runtimeHost.session.getCapabilityBindingId();
+			expect(originalBindingId).toMatch(/^binding:/);
+
+			// The active session is reconstructed from the current public tool
+			// definition on reload. Change the schema and description before that
+			// reload; the resulting binding must not be accepted as the old one.
+			customTool.description = "version two";
+			customTool.parameters = Type.Object({ query: Type.String(), limit: Type.Number() });
+			await runtimeHost.session.reload();
+			expect(runtimeHost.session.getCapabilityBindingId()).not.toBe(originalBindingId);
+
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: runId!,
+					message: "Continue",
+				}),
+			);
+
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "rs1")).toHaveLength(1));
+			const rejection = responsesFor(rpcIo.outputLines, "rs1")[0];
+			expect(rejection.success).toBe(false);
+			expect((rejection.error as { code: string }).code).toBe("capability_binding_unavailable");
+			// No successor run is accepted after the binding drift is detected.
+			expect(terminalEvents(currentLines())).toHaveLength(1);
 		} finally {
 			await cleanup();
 		}

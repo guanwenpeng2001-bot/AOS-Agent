@@ -131,6 +131,101 @@ describe("createCapabilityId / createCapabilityRevision", () => {
 	});
 });
 
+describe("secret-safe schema revision normalization", () => {
+	const authSchema = (minLength: number) => ({
+		type: "object",
+		properties: {
+			token: { type: "string", minLength },
+			apiKey: { type: "string" },
+			password: { type: "string" },
+		},
+		required: ["token", "apiKey", "password"],
+	});
+
+	it("preserves token/apiKey/password schema structure in the revision", () => {
+		expect(createCapabilityRevision({ schema: authSchema(8) })).not.toBe(
+			createCapabilityRevision({ schema: authSchema(16) }),
+		);
+		expect(createCapabilityRevision({ schema: authSchema(8) })).toBe(
+			createCapabilityRevision({ schema: authSchema(8) }),
+		);
+	});
+
+	it("changes the revision when a secret-named property type changes", () => {
+		const stringKey = { type: "object", properties: { apiKey: { type: "string" } } };
+		const arrayKey = { type: "object", properties: { apiKey: { type: "array", items: { type: "string" } } } };
+		expect(createCapabilityRevision({ schema: stringKey })).not.toBe(createCapabilityRevision({ schema: arrayKey }));
+	});
+
+	it("redacts credential values while keeping schema structure", () => {
+		const rev = createCapabilityRevision({
+			schema: authSchema(8),
+			token: "sk-top-secret",
+			env: { API_KEY: "sk-env-secret", DB_PASSWORD: "hunter2" },
+		});
+		expect(rev).not.toContain("sk-top-secret");
+		expect(rev).not.toContain("sk-env-secret");
+		expect(rev).not.toContain("hunter2");
+	});
+
+	it("keeps the revision stable when credential values rotate around a schema", () => {
+		const input = (token: string, envValue: string) => ({ schema: authSchema(8), token, env: { API_KEY: envValue } });
+		expect(createCapabilityRevision(input("sk-one", "env-one"))).toBe(
+			createCapabilityRevision(input("sk-two", "env-two")),
+		);
+	});
+
+	it("changes the binding id when token/apiKey/password schema structure changes", () => {
+		const bindingA = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		const bindingB = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(16) } })],
+			}),
+		);
+		expect(bindingB.descriptors[0].revision).not.toBe(bindingA.descriptors[0].revision);
+		expect(bindingB.id).not.toBe(bindingA.id);
+	});
+
+	it("keeps the binding id stable for identical schema structure", () => {
+		const bindingA = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		const bindingB = bind(
+			buildCapabilityCatalog({
+				candidates: [cand({ kind: "builtin_tool", name: "Auth", revisionInput: { schema: authSchema(8) } })],
+			}),
+		);
+		expect(bindingB.id).toBe(bindingA.id);
+	});
+
+	it("never leaks credential values into the revision or ledger-facing views", () => {
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				cand({
+					kind: "builtin_tool",
+					name: "Auth",
+					revisionInput: { schema: authSchema(8), token: "sk-view-secret", env: { API_KEY: "sk-view-env" } },
+				}),
+			],
+		});
+		const binding = bind(catalog);
+		const catalogViewJson = JSON.stringify(createCapabilityCatalogView(catalog));
+		const bindingViewJson = JSON.stringify(createCapabilityBindingView(binding));
+		expect(catalog.descriptors[0].revision).not.toContain("sk-view-secret");
+		expect(catalog.descriptors[0].revision).not.toContain("sk-view-env");
+		expect(catalogViewJson).not.toContain("sk-view-secret");
+		expect(catalogViewJson).not.toContain("sk-view-env");
+		expect(bindingViewJson).not.toContain("sk-view-secret");
+		expect(bindingViewJson).not.toContain("sk-view-env");
+	});
+});
+
 describe("buildCapabilityCatalog", () => {
 	it("normalizes candidates into descriptors with default metadata", () => {
 		const catalog = buildCapabilityCatalog({
@@ -210,6 +305,55 @@ describe("buildCapabilityCatalog", () => {
 		});
 		expect(catalog.descriptors[0].trusted).toBe(false);
 		expect(catalog.descriptors[0].decision).toBe("deny");
+	});
+
+	it("fallback revision reflects behavior fields when revisionInput is absent", () => {
+		const tool = (exposedToolName: string) =>
+			cand({ kind: "extension_tool", name: "tool", localName: "tool", exposedToolName });
+		const first = buildCapabilityCatalog({ candidates: [tool("alpha")] });
+		const second = buildCapabilityCatalog({ candidates: [tool("beta")] });
+		expect(first.descriptors[0].id).toBe(second.descriptors[0].id);
+		expect(first.descriptors[0].revision).not.toBe(second.descriptors[0].revision);
+	});
+
+	it("fallback revision covers parent and server wiring", () => {
+		const mcpTool = (parentId: string) =>
+			cand({
+				kind: "mcp_tool",
+				name: "list",
+				localName: "list",
+				sourceIdentity: "mcp",
+				mcpServerId: "docs",
+				parentId,
+			});
+		const first = buildCapabilityCatalog({ candidates: [mcpTool("mcp_server:mcp:docs-a")] });
+		const second = buildCapabilityCatalog({ candidates: [mcpTool("mcp_server:mcp:docs-b")] });
+		expect(first.descriptors[0].id).toBe(second.descriptors[0].id);
+		expect(first.descriptors[0].revision).not.toBe(second.descriptors[0].revision);
+	});
+
+	it("keeps the fallback revision stable when only the display name changes", () => {
+		const first = buildCapabilityCatalog({
+			candidates: [cand({ kind: "builtin_tool", name: "Read Files", localName: "Read" })],
+		});
+		const second = buildCapabilityCatalog({
+			candidates: [cand({ kind: "builtin_tool", name: "Read Everything", localName: "Read" })],
+		});
+		expect(first.descriptors[0].id).toBe(second.descriptors[0].id);
+		expect(first.descriptors[0].revision).toBe(second.descriptors[0].revision);
+	});
+
+	it("redacts credentials from the fallback revision", () => {
+		const secretSource = createSyntheticSourceInfo("https://user:pass@host/proj", {
+			source: "proj-ext",
+			scope: "project",
+			origin: "top-level",
+		});
+		const catalog = buildCapabilityCatalog({
+			candidates: [cand({ kind: "extension", name: "ext", source: secretSource })],
+		});
+		expect(catalog.descriptors[0].revision).toMatch(/^rev:/);
+		expect(catalog.descriptors[0].revision).not.toContain("user:pass");
 	});
 });
 
@@ -372,6 +516,58 @@ describe("MCP parent-server inheritance", () => {
 	});
 });
 
+describe("generic parent inheritance for extension tools", () => {
+	const extension = () => cand({ kind: "extension", name: "my-ext", localName: "my-ext", sourceIdentity: "ext" });
+	const tool = () =>
+		cand({
+			kind: "extension_tool",
+			name: "my-tool",
+			localName: "my-tool",
+			sourceIdentity: "ext",
+			parentId: "extension:ext:my-ext",
+		});
+
+	it("allows an extension and its extension_tool child together", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [extension(), tool()] });
+		const p = profile(rule({ kind: "extension" }, "allow"), rule({ kind: "extension_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 2, awaitingApproval: 0, denied: 0 });
+		expect(binding.toolAllowlist).toEqual(["my-tool"]);
+	});
+
+	it("denies an extension_tool when its extension parent is denied", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [extension(), tool()] });
+		const p = profile(rule({ kind: "extension" }, "deny"), rule({ kind: "extension_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 2 });
+	});
+
+	it("caps an extension_tool at the extension parent's ask decision", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [extension(), tool()] });
+		const p = profile(rule({ kind: "extension" }, "ask"), rule({ kind: "extension_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 2, denied: 0 });
+	});
+
+	it("keeps an extension_tool out of the binding when its parent is unavailable", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [{ ...extension(), availability: "unavailable" }, tool()] });
+		const p = profile(rule({ kind: "extension" }, "allow"), rule({ kind: "extension_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 1 });
+	});
+
+	it("denies an extension_tool with no known extension parent", () => {
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				cand({ kind: "extension_tool", name: "ghost", sourceIdentity: "ext", parentId: "extension:ext:missing" }),
+			],
+		});
+		const p = profile(rule({ kind: "extension_tool" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 1 });
+	});
+});
+
 describe("trust gating", () => {
 	const untrustedProject = createSyntheticSourceInfo("/proj", {
 		source: "proj-ext",
@@ -463,6 +659,43 @@ describe("final tool allowlist intersection", () => {
 		const binding = bind(catalog, { profiles: { default: p }, tools: ["Read", "Write"] });
 		expect(binding.toolAllowlist).toEqual([]);
 		expect(binding.decisionSummary.denied).toBe(2);
+	});
+});
+
+describe("binding identity includes tool selection semantics", () => {
+	const catalog = buildCapabilityCatalog({
+		candidates: [cand({ kind: "builtin_tool", name: "Read" }), cand({ kind: "builtin_tool", name: "Write" })],
+	});
+
+	it("does not collide tools vs excludeTools that yield the same final allowlist", () => {
+		const viaTools = bind(catalog, { tools: ["Read"] });
+		const viaExclude = bind(catalog, { excludeTools: ["Write"] });
+		expect(viaTools.toolAllowlist).toEqual(["Read"]);
+		expect(viaExclude.toolAllowlist).toEqual(["Read"]);
+		expect(viaTools.id).not.toBe(viaExclude.id);
+	});
+
+	it("does not collide noTools, an empty tools allowlist, or excluding everything", () => {
+		const ids = [
+			bind(catalog, { noTools: true }).id,
+			bind(catalog, { tools: [] }).id,
+			bind(catalog, { excludeTools: ["Read", "Write"] }).id,
+		];
+		expect(new Set(ids).size).toBe(3);
+	});
+
+	it("normalizes order and duplicates so equivalent selections stay stable", () => {
+		const first = bind(catalog, { tools: ["Write", "Read", "Read"] });
+		const second = bind(catalog, { tools: ["Read", "Write"] });
+		expect(first.toolAllowlist).toEqual(["Read", "Write"]);
+		expect(second.toolAllowlist).toEqual(first.toolAllowlist);
+		expect(second.id).toBe(first.id);
+	});
+
+	it("changes the binding id when the final allowlist changes", () => {
+		const readOnly = bind(catalog, { tools: ["Read"] });
+		const both = bind(catalog, { tools: ["Read", "Write"] });
+		expect(readOnly.id).not.toBe(both.id);
 	});
 });
 

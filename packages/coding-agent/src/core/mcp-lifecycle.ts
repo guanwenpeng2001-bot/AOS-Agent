@@ -135,6 +135,8 @@ export class MCPServerLifecycle {
 	private client: Client | undefined;
 	/** Client created for a connect that has not settled; close must not orphan it. */
 	private pendingClient: Client | undefined;
+	/** The transport backing the current connection; a stale closed transport is ignored. */
+	private transport: Transport | undefined;
 	private connectionState: MCPConnectionState;
 	private connectPromise: Promise<void> | undefined;
 	private readonly inflightCalls = new Set<AbortController>();
@@ -174,15 +176,18 @@ export class MCPServerLifecycle {
 	}
 
 	/**
-	 * Connects and initializes the server. Idempotent once `ready`. Throws a
-	 * redacted {@link MCPError} on failure and transitions to `unavailable` (or
-	 * records the auth-required classification).
+	 * Connects and initializes the server. Idempotent once `ready`. A server that
+	 * previously reached terminal `closed` — for example after a profile
+	 * deselection closed it — reconnects here with a fresh transport, so it can be
+	 * selected and used again later. Throws a redacted {@link MCPError} on failure
+	 * and transitions to `unavailable` (or records the auth-required
+	 * classification).
 	 */
 	async connect(): Promise<void> {
 		if (this.state === "ready") {
 			return;
 		}
-		if (this.state === "closing" || this.state === "closed") {
+		if (this.state === "closing") {
 			throw this.failure("unavailable");
 		}
 		if (this.connectPromise !== undefined) {
@@ -339,6 +344,9 @@ export class MCPServerLifecycle {
 				// best-effort close; the state is still finalized below
 			}
 		}
+		// Drop the transport reference so a late close notification from the just-
+		// closed transport cannot revive into a subsequent reconnected connection.
+		this.transport = undefined;
 		this.setState("closed");
 	}
 
@@ -362,13 +370,23 @@ export class MCPServerLifecycle {
 	}
 
 	private chainTransportHandlers(transport: Transport): void {
+		this.transport = transport;
 		const originalOnError = transport.onerror;
 		const originalOnClose = transport.onclose;
+		// Only the transport backing the current connection may move the state
+		// machine; a closed transport's late events must not revive into a fresh
+		// reconnected lifecycle.
 		transport.onerror = (error: Error): void => {
+			if (this.transport !== transport) {
+				return;
+			}
 			originalOnError?.(error);
 			this.markDegraded();
 		};
 		transport.onclose = (): void => {
+			if (this.transport !== transport) {
+				return;
+			}
 			originalOnClose?.();
 			this.handleTransportClose();
 		};
@@ -422,6 +440,8 @@ export class MCPLifecycleManager {
 	private readonly options: MCPServerLifecycleOptions;
 	private readonly lifecycles = new Map<string, MCPServerLifecycle>();
 	private selectedServerIds: ReadonlySet<string>;
+	/** Per-server deselection closes, coalesced so overlapping updates await one teardown. */
+	private readonly deselectionCloses = new Map<string, Promise<void>>();
 
 	constructor(options: MCPLifecycleManagerOptions = {}) {
 		this.options = options;
@@ -453,9 +473,60 @@ export class MCPLifecycleManager {
 		return new Set(this.selectedServerIds);
 	}
 
-	/** Replaces the selected server ids with a copy; mutating the caller Set is inert. */
-	setSelectedServerIds(ids: ReadonlySet<string> | ReadonlyArray<string>): void {
-		this.selectedServerIds = new Set(ids);
+	/**
+	 * Replaces the selected server ids with a copy (mutating the caller Set is
+	 * inert) and closes every registered server the new selection removes.
+	 *
+	 * The gate updates synchronously, so the most recent call wins immediately
+	 * even while earlier closes are still in flight, and the returned promise
+	 * never blocks a newer selection from taking effect. Removed servers are
+	 * closed asynchronously and the promise settles only after each removed
+	 * server's transport is released.
+	 *
+	 * Race contract: overlapping calls coalesce per-server close work, so two
+	 * calls deselecting the same server await one teardown and the transport is
+	 * released exactly once. A server re-selected by a newer call before its
+	 * close is invoked is not closed — its live connection is preserved. Once a
+	 * close has been invoked it completes and the server stays `closed`; the
+	 * manager never silently reopens a deselected or closed lifecycle.
+	 */
+	async setSelectedServerIds(ids: ReadonlySet<string> | ReadonlyArray<string>): Promise<void> {
+		const newSelection = new Set(ids);
+		const removed = [...this.selectedServerIds].filter(
+			(serverId) => !newSelection.has(serverId) && this.lifecycles.has(serverId),
+		);
+		this.selectedServerIds = newSelection;
+		await Promise.all(removed.map((serverId) => this.closeDeselected(serverId)));
+	}
+
+	/**
+	 * Closes a deselected server, coalescing concurrent closes of the same
+	 * server onto one teardown and superseding a close that a newer selection
+	 * update cancelled by re-selecting the server.
+	 */
+	private closeDeselected(serverId: string): Promise<void> {
+		const pending = this.deselectionCloses.get(serverId);
+		if (pending !== undefined) {
+			return pending;
+		}
+		const close = Promise.resolve().then(async () => {
+			// Re-check the latest selection: a newer update may have re-selected
+			// this server before its close was invoked, superseding the close so
+			// the live connection is preserved instead of being torn down.
+			if (this.isSelected(serverId)) {
+				return;
+			}
+			const lifecycle = this.lifecycles.get(serverId);
+			if (lifecycle === undefined) {
+				return;
+			}
+			await lifecycle.close().catch(() => undefined);
+		});
+		const settled = close.finally(() => {
+			this.deselectionCloses.delete(serverId);
+		});
+		this.deselectionCloses.set(serverId, settled);
+		return settled;
 	}
 
 	isSelected(serverId: string): boolean {

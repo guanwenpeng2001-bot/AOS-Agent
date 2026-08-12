@@ -227,31 +227,44 @@ function fnv1a64(input: string): string {
 /** Secret values are omitted so secret rotation never changes a capability revision. */
 const SECRET_KEY_PATTERN = /secret|token|passwd|password|authorization|api[_-]?key|access[_-]?key|cookie|credential/i;
 const SECRET_CONTAINER_KEYS = new Set(["env", "environment", "headers"]);
+/**
+ * JSON Schema / TypeBox keywords whose object keys are structural property names
+ * (e.g. `properties.token`), not secret-bearing keys. Their entry names must
+ * survive even when they match {@link SECRET_KEY_PATTERN}; the descriptor values
+ * are still sanitized as ordinary objects.
+ */
+const SCHEMA_NAME_CONTAINER_KEYS = new Set(["properties", "patternProperties", "$defs", "definitions"]);
 
 function redactUrlSecrets(text: string): string {
 	return text.replace(/([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*(?:\/[^\s?#]*)?)(?:[?#][^\s]*)?/gi, "$1$2");
 }
 
-function sanitizeSecrets(value: unknown): unknown {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sanitizeSecrets(value: unknown, structuralNames = false): unknown {
 	if (Array.isArray(value)) {
-		return value.map((item) => sanitizeSecrets(item));
+		return value.map((item) => sanitizeSecrets(item, structuralNames));
 	}
 	if (value !== null && typeof value === "object") {
 		const out: Record<string, unknown> = {};
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-			if (SECRET_KEY_PATTERN.test(key)) {
-				continue;
-			}
-			if (SECRET_CONTAINER_KEYS.has(key) && item !== null && typeof item === "object" && !Array.isArray(item)) {
-				// env/headers records hold name -> value; keep the names, redact the values
-				const record: Record<string, unknown> = {};
-				for (const name of Object.keys(item as Record<string, unknown>)) {
-					record[name] = "[redacted]";
+			if (!structuralNames) {
+				if (SECRET_KEY_PATTERN.test(key)) {
+					continue;
 				}
-				out[key] = record;
-				continue;
+				if (SECRET_CONTAINER_KEYS.has(key) && isPlainRecord(item)) {
+					// env/headers records hold name -> value; keep the names, redact the values
+					const record: Record<string, unknown> = {};
+					for (const name of Object.keys(item)) {
+						record[name] = "[redacted]";
+					}
+					out[key] = record;
+					continue;
+				}
 			}
-			out[key] = sanitizeSecrets(item);
+			out[key] = sanitizeSecrets(item, SCHEMA_NAME_CONTAINER_KEYS.has(key) && isPlainRecord(item));
 		}
 		return out;
 	}
@@ -291,6 +304,16 @@ const DECISION_RANK: Record<CapabilityDecision, number> = { allow: 0, ask: 1, de
 
 function stricterDecision(a: CapabilityDecision, b: CapabilityDecision): CapabilityDecision {
 	return DECISION_RANK[a] >= DECISION_RANK[b] ? a : b;
+}
+
+/**
+ * Descriptors that must resolve a governing parent before they can be enabled:
+ * mcp_tool is definitionally a child of an mcp_server (a lone mcp_tool is
+ * denied even without a declared parentId), while extension_tool and any other
+ * kind inherit their parent's decision only when they declare a parentId.
+ */
+function requiresParent(descriptor: CapabilityDescriptor): boolean {
+	return descriptor.kind === "mcp_tool" || descriptor.parentId !== undefined;
 }
 
 function defaultExposedToolName(
@@ -341,8 +364,9 @@ function resolveDecision(
 	let decision = profile ? applyProfileRules(descriptor, profile) : undefined;
 	if (decision === undefined) decision = defaultDecisionFor(descriptor.kind);
 	if (!descriptor.trusted) decision = stricterDecision(decision, "deny");
-	if (descriptor.kind === "mcp_tool" && parentDecision !== undefined) {
-		// A tool cannot be enabled independently of its parent server
+	if (requiresParent(descriptor) && parentDecision !== undefined) {
+		// A child capability cannot be enabled independently of its parent
+		// (mcp_tool -> mcp_server, extension_tool -> extension).
 		decision = stricterDecision(decision, parentDecision);
 	}
 	return decision;
@@ -354,19 +378,40 @@ function resolveDecisions(
 ): Map<string, CapabilityDecision> {
 	const byId = new Map(descriptors.map((descriptor) => [descriptor.id, descriptor]));
 	const decisions = new Map<string, CapabilityDecision>();
+	// Standalone descriptors (no parent) resolve first so their children can inherit the cap.
 	for (const descriptor of descriptors) {
-		if (descriptor.kind !== "mcp_tool") {
+		if (!requiresParent(descriptor)) {
 			decisions.set(descriptor.id, resolveDecision(descriptor, profile));
 		}
 	}
 	for (const descriptor of descriptors) {
-		if (descriptor.kind === "mcp_tool") {
+		if (requiresParent(descriptor)) {
 			const parent = descriptor.parentId !== undefined ? byId.get(descriptor.parentId) : undefined;
 			const parentDecision = parent !== undefined ? (decisions.get(parent.id) ?? "deny") : "deny";
 			decisions.set(descriptor.id, resolveDecision(descriptor, profile, parentDecision));
 		}
 	}
 	return decisions;
+}
+
+/**
+ * Deterministic, secret-safe revision identity for candidates discovered without
+ * an explicit {@link CapabilityCandidate.revisionInput}. It covers every
+ * behavior-relevant descriptor field so a change in the effective tool name or
+ * parent/governance wiring is never silently erased from the revision; display
+ * `name` is intentionally excluded because it can change without behavior change.
+ */
+function fallbackRevisionInput(candidate: CapabilityCandidate, localName: string): unknown {
+	const exposedToolName =
+		candidate.exposedToolName ?? defaultExposedToolName(candidate.kind, localName, candidate.mcpServerId);
+	return {
+		kind: candidate.kind,
+		source: candidate.source,
+		name: localName,
+		...(exposedToolName !== undefined ? { exposedToolName } : {}),
+		...(candidate.parentId !== undefined ? { parentId: candidate.parentId } : {}),
+		...(candidate.mcpServerId !== undefined ? { mcpServerId: candidate.mcpServerId } : {}),
+	};
 }
 
 export function buildCapabilityCatalog(input: CapabilityCatalogInput): CapabilityCatalog {
@@ -376,13 +421,7 @@ export function buildCapabilityCatalog(input: CapabilityCatalogInput): Capabilit
 		const id = createCapabilityId(candidate.kind, candidate.sourceIdentity, localName);
 		const descriptor: CapabilityDescriptor = {
 			id,
-			revision: createCapabilityRevision(
-				candidate.revisionInput ?? {
-					kind: candidate.kind,
-					source: candidate.source,
-					name: localName,
-				},
-			),
+			revision: createCapabilityRevision(candidate.revisionInput ?? fallbackRevisionInput(candidate, localName)),
 			kind: candidate.kind,
 			name: candidate.name,
 			source: { ...candidate.source },
@@ -411,8 +450,29 @@ export function buildCapabilityCatalog(input: CapabilityCatalogInput): Capabilit
 	});
 }
 
-function createBindingId(profile: string, refs: ReadonlyArray<CapabilityBindingDescriptorRef>): string {
+/** Sorted, deduped canonical form of a name list; `-` marks an absent selection. */
+function canonicalNameSet(names: ReadonlyArray<string> | undefined): string {
+	if (names === undefined) return "-";
+	return JSON.stringify([...new Set(names)].sort());
+}
+
+function createBindingId(
+	profile: string,
+	refs: ReadonlyArray<CapabilityBindingDescriptorRef>,
+	selection: Pick<ResolveBindingInput, "toolAllowlist" | "excludeToolNames" | "noTools">,
+	finalAllowlist: ReadonlyArray<string>,
+): string {
 	const parts = refs.map((ref) => `${ref.id}@${ref.revision}`).sort();
+	// The raw selection semantics and the resulting model-visible allowlist both
+	// shape the id: `tools`, `excludeTools`, and `noTools` that happen to produce
+	// the same final list still resolve to distinct bindings, while equivalent
+	// selections (order/duplicates aside) stay stable.
+	parts.push(
+		`sel=${canonicalNameSet(selection.toolAllowlist)}|${canonicalNameSet(selection.excludeToolNames)}|${
+			selection.noTools === true ? "1" : "0"
+		}`,
+	);
+	parts.push(`final=${canonicalNameSet(finalAllowlist)}`);
 	return `binding:${profile}:${fnv1a64(parts.join("|"))}`;
 }
 
@@ -460,10 +520,10 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		if (descriptor.availability !== "available") {
 			continue;
 		}
-		if (descriptor.kind === "mcp_tool") {
+		if (requiresParent(descriptor)) {
 			const parent = descriptor.parentId !== undefined ? byId.get(descriptor.parentId) : undefined;
 			if (parent === undefined || !selectable.has(parent.id)) {
-				// A tool never enters the binding without its parent server selected
+				// A child capability never enters the binding without its parent selected
 				if (parent !== undefined && decisions.get(parent.id) === "ask" && !approved.has(parent.id)) {
 					awaitingApproval++;
 				} else {
@@ -509,8 +569,21 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		}
 	}
 
+	// The stored allowlist is normalized so the model-visible set is deterministic
+	// regardless of discovery order or duplicate selection entries.
+	toolAllowlist = [...new Set(toolAllowlist)].sort();
+
 	return deepFreeze({
-		id: createBindingId(input.profile, refs),
+		id: createBindingId(
+			input.profile,
+			refs,
+			{
+				toolAllowlist: input.toolAllowlist,
+				excludeToolNames: input.excludeToolNames,
+				noTools: input.noTools,
+			},
+			toolAllowlist,
+		),
 		profile: input.profile,
 		createdAt: input.now ?? new Date().toISOString(),
 		descriptors: refs,

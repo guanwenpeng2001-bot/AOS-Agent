@@ -22,8 +22,9 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import type { ExtensionFactory, ToolDefinition } from "../src/core/extensions/index.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createTestResourceLoader } from "./utilities.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 function tmpDir(name: string): { dir: string; agentDir: string } {
 	const dir = join(tmpdir(), `pi-capabilities-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -56,6 +57,78 @@ function skill(name: string): Skill {
 function loaderWithSkills(skills: Skill[]): ResourceLoader {
 	const base = createTestResourceLoader();
 	return { ...base, getSkills: () => ({ skills, diagnostics: [] }) };
+}
+
+function sdkToolWithExecuteSpy(name: string, onExecute?: () => void) {
+	return {
+		name,
+		label: name,
+		description: `SDK tool ${name}`,
+		parameters: Type.Object({}),
+		execute: async () => {
+			onExecute?.();
+			return { content: [{ type: "text" as const, text: "ok" }], details: {} };
+		},
+	};
+}
+
+function extensionWithTool(name: string, onExecute?: () => void): ExtensionFactory {
+	return (pi) => {
+		pi.registerTool({
+			name,
+			label: name,
+			description: `Extension tool ${name}`,
+			parameters: Type.Object({}),
+			execute: async () => {
+				onExecute?.();
+				return { content: [{ type: "text" as const, text: "ok" }], details: {} };
+			},
+		});
+	};
+}
+
+/**
+ * Build an AgentSession with a controllable agent stream and a real
+ * model/auth runtime so prompt() preflight reaches the capability-readiness
+ * gate before any provider or tool execution.
+ */
+async function createControlledSession(opts: {
+	resourceLoader: ResourceLoader;
+	settingsManager: SettingsManager;
+	customTools?: ToolDefinition[];
+	mcpTransportFactory?: unknown;
+	onStreamCall?: () => void;
+}): Promise<{ session: AgentSession; dir: string }> {
+	const { dir } = tmpDir("controlled");
+	const sessionManager = SessionManager.inMemory(dir);
+	const model = getModel("anthropic", "claude-sonnet-4-5")!;
+	const authStorage = AuthStorage.create(join(dir, "auth.json"));
+	const modelRegistry = await createModelRegistry(authStorage, dir);
+	await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+	const agent = new Agent({
+		getApiKey: () => "test-key",
+		initialState: { model, systemPrompt: "Test", tools: [] },
+		streamFn: () => {
+			opts.onStreamCall?.();
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: createAssistantMessage("") });
+				stream.push({ type: "done", reason: "stop", message: createAssistantMessage("ok") });
+			});
+			return stream;
+		},
+	});
+	const session = new AgentSession({
+		agent,
+		sessionManager,
+		settingsManager: opts.settingsManager,
+		cwd: dir,
+		modelRuntime: getModelRuntime(modelRegistry),
+		resourceLoader: opts.resourceLoader,
+		customTools: opts.customTools,
+		mcpTransportFactory: opts.mcpTransportFactory as never,
+	});
+	return { session, dir };
 }
 
 // ---------------------------------------------------------------------------
@@ -592,8 +665,8 @@ describe("AgentSession capability binding integration", () => {
 			}
 		});
 
-		it("applies MCP discovery that completes mid-run only after the run settles", async () => {
-			const { dir } = tmpDir("mcp-midrun");
+		it("starts MCP discovery lazily and gates the first prompt on readiness", async () => {
+			const { dir } = tmpDir("mcp-lazy");
 			const settingsManager = SettingsManager.inMemory({
 				capabilities: {
 					defaultProfile: "default",
@@ -632,71 +705,40 @@ describe("AgentSession capability binding integration", () => {
 			const discoveryGate = new Promise<void>((resolve) => {
 				releaseDiscovery = resolve;
 			});
+			let factoryCalls = 0;
 			const transportFactory = async () => {
+				factoryCalls++;
 				await discoveryGate;
 				return clientTransport;
 			};
 
-			const model = getModel("anthropic", "claude-sonnet-4-5")!;
-			let releaseStream: ((message: AssistantMessage) => void) | undefined;
-			const gate = new Promise<AssistantMessage>((resolve) => {
-				releaseStream = resolve;
-			});
-			const agent = new Agent({
-				getApiKey: () => "test-key",
-				initialState: { model, systemPrompt: "Test", tools: [] },
-				streamFn: () => {
-					const stream = new MockAssistantStream();
-					queueMicrotask(() => {
-						stream.push({ type: "start", partial: createAssistantMessage("") });
-						void gate.then((message) => {
-							stream.push({ type: "done", reason: "stop", message });
-						});
-					});
-					return stream;
-				},
-			});
-
-			const sessionManager = SessionManager.inMemory(dir);
-			const authStorage = AuthStorage.create(join(dir, "auth.json"));
-			const modelRegistry = await createModelRegistry(authStorage, dir);
-			await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-			const resourceLoader = createTestResourceLoader();
-
-			const session = new AgentSession({
-				agent,
-				sessionManager,
+			let streamCalls = 0;
+			const { session } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
 				settingsManager,
-				cwd: dir,
-				modelRuntime: getModelRuntime(modelRegistry),
-				resourceLoader,
-				mcpTransportFactory: transportFactory as never,
+				mcpTransportFactory: transportFactory,
+				onStreamCall: () => streamCalls++,
 			});
 			try {
-				const runPromise = session.prompt("First message");
-				await waitUntil(() => session.isStreaming);
-
-				const before = session.getActiveToolNames();
-				const bindingBefore = session.getActiveCapabilityBinding()?.id;
-				expect(before).not.toContain("mcp__docs__list");
-
-				// Complete MCP discovery while the agent run is active.
-				releaseDiscovery?.();
-				await waitUntil(() => session.getMcpConnectionStatus("docs")?.toolCount === 1);
-
-				// The active run stays bound to the frozen binding; discovery is not applied.
-				expect(session.isStreaming).toBe(true);
-				expect(session.getActiveToolNames()).toEqual(before);
-				expect(session.getActiveCapabilityBinding()?.id).toBe(bindingBefore);
+				// Lazy discovery: runtime construction never connects to servers.
+				expect(factoryCalls).toBe(0);
+				expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "configured" });
 				expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
 
-				releaseStream?.(createAssistantMessage("Done"));
-				await runPromise;
-				await session.whenCapabilitiesReady();
+				const runPromise = session.prompt("First message");
+				// Prompt preflight reserves the run while readiness is pending, but no
+				// provider or tool execution begins until discovery settles.
+				await waitUntil(() => factoryCalls === 1);
+				expect(session.isStreaming).toBe(true);
+				expect(streamCalls).toBe(0);
 
-				// The pending refresh re-resolves the binding only after the run settles.
-				expect(session.getActiveToolNames()).toContain("mcp__docs__list");
+				releaseDiscovery?.();
+				await runPromise;
+
+				expect(streamCalls).toBe(1);
+				expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
 				expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
+				expect(session.getActiveToolNames()).toContain("mcp__docs__list");
 			} finally {
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
@@ -809,6 +851,296 @@ describe("AgentSession capability binding integration", () => {
 				const serialized = JSON.stringify(snapshot);
 				expect(serialized).not.toContain('"content"');
 			} finally {
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("static catalog collisions fail closed", () => {
+		it("fails closed with capability_name_conflict on a selected builtin/SDK name collision", async () => {
+			let executeCalls = 0;
+			let streamCalls = 0;
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: SettingsManager.inMemory(),
+				customTools: [sdkToolWithExecuteSpy("read", () => executeCalls++)],
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				// The conflict surfaces through prompt preflight before any
+				// provider request or tool execution.
+				await expect(session.prompt("run")).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				expect(streamCalls).toBe(0);
+				expect(executeCalls).toBe(0);
+				// Fail closed: no ambiguous tool set is materialized.
+				expect(session.getActiveToolNames()).toEqual([]);
+				expect(session.getActiveCapabilityBinding()).toBeUndefined();
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails closed with capability_name_conflict on a selected builtin/extension name collision", async () => {
+			let executeCalls = 0;
+			let streamCalls = 0;
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("read", () => executeCalls++) },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager: SettingsManager.inMemory(),
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				await expect(session.prompt("run")).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				expect(streamCalls).toBe(0);
+				expect(executeCalls).toBe(0);
+				expect(session.getActiveToolNames()).toEqual([]);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails closed with capability_name_conflict on a selected extension/SDK name collision", async () => {
+			let extensionExecuteCalls = 0;
+			let sdkExecuteCalls = 0;
+			let streamCalls = 0;
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("shared", () => extensionExecuteCalls++) },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager: SettingsManager.inMemory(),
+				customTools: [sdkToolWithExecuteSpy("shared", () => sdkExecuteCalls++)],
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				await expect(session.prompt("run")).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				expect(streamCalls).toBe(0);
+				expect(extensionExecuteCalls).toBe(0);
+				expect(sdkExecuteCalls).toBe(0);
+				expect(session.getActiveToolNames()).toEqual([]);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails closed on a collision between two extensions registering the same exposed name", async () => {
+			let ext1ExecuteCalls = 0;
+			let ext2ExecuteCalls = 0;
+			let streamCalls = 0;
+			// Two distinct extension sources register the SAME exposed tool name.
+			// The capability catalog must include BOTH per-extension tools (the
+			// runner's first-registration dedup is only a runtime concern), so the
+			// registry sees the collision and fails closed before any provider or
+			// tool execution.
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("shared", () => ext1ExecuteCalls++) },
+				{ name: "ext2", factory: extensionWithTool("shared", () => ext2ExecuteCalls++) },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager: SettingsManager.inMemory(),
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				await expect(session.prompt("run")).rejects.toMatchObject({
+					code: "capability_name_conflict",
+				});
+				expect(streamCalls).toBe(0);
+				expect(ext1ExecuteCalls).toBe(0);
+				expect(ext2ExecuteCalls).toBe(0);
+				// Fail closed: no ambiguous tool set is materialized.
+				expect(session.getActiveToolNames()).toEqual([]);
+				expect(session.getActiveCapabilityBinding()).toBeUndefined();
+				// Both per-extension tools reached the catalog, each linked to its
+				// own extension descriptor via parentId.
+				const view = session.inspectCapabilityCatalog();
+				const extTools = view.descriptors.filter((descriptor) => descriptor.kind === "extension_tool");
+				expect(extTools).toHaveLength(2);
+				expect(extTools.map((tool) => tool.exposedToolName)).toEqual(["shared", "shared"]);
+				expect(new Set(extTools.map((tool) => tool.id)).size).toBe(2);
+				const extensionDescriptors = view.descriptors.filter(
+					(descriptor) => descriptor.kind === "extension",
+				);
+				expect(extTools.map((tool) => tool.parentId).sort()).toEqual(
+					extensionDescriptors.map((descriptor) => descriptor.id).sort(),
+				);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("metadata-only extension descriptors govern child tools", () => {
+		it("links extension_tool descriptors to their extension descriptor via parentId", async () => {
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper") },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager: SettingsManager.inMemory(),
+			});
+			try {
+				await session.whenCapabilitiesReady();
+
+				expect(session.getActiveToolNames()).toContain("ext_helper");
+				const view = session.inspectCapabilityCatalog();
+				const ext = view.descriptors.find((descriptor) => descriptor.kind === "extension");
+				const extTool = view.descriptors.find((descriptor) => descriptor.kind === "extension_tool");
+				expect(ext).toBeDefined();
+				expect(extTool).toBeDefined();
+				expect(extTool?.parentId).toBe(ext?.id);
+				// The extension descriptor is metadata-only: it exposes no tool name.
+				expect(ext?.exposedToolName).toBeUndefined();
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("denies extension tools when their extension descriptor is profile-denied", async () => {
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper") },
+			]);
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const settingsManager = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "builtin_tool" }, action: "allow" },
+								{ selector: { kind: "extension" }, action: "deny" },
+							],
+						},
+					},
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+
+				expect(session.getActiveToolNames()).not.toContain("ext_helper");
+				expect(
+					session
+						.getActiveCapabilityBinding()
+						?.descriptors.some((ref) => ref.id.includes("extension_tool")),
+				).toBe(false);
+				// The extension descriptor stays in the catalog (metadata-only), but
+				// its profile denial governs the child tools: none enter the binding.
+				const view = session.inspectCapabilityCatalog();
+				const ext = view.descriptors.find((descriptor) => descriptor.kind === "extension");
+				expect(ext).toBeDefined();
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("static catalog revision inputs", () => {
+		it("changes the skill revision and binding when SKILL.md content changes on reload", async () => {
+			const { dir, agentDir } = tmpDir("skill-rev");
+			const skillFilePath = join(dir, "SKILL.md");
+			writeFileSync(skillFilePath, "# v1\n\ncontent one");
+			const skillDef: Skill = {
+				name: "rev-skill",
+				description: "rev skill",
+				filePath: skillFilePath,
+				baseDir: dir,
+				sourceInfo: createSyntheticSourceInfo("<skill:rev-skill>", { source: "skill" }),
+				disableModelInvocation: false,
+			};
+			const resourceLoader = loaderWithSkills([skillDef]);
+			const settingsManager = SettingsManager.create(dir, agentDir);
+			const { session } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				const before = session.getActiveCapabilityBinding()!;
+				const beforeRef = before.descriptors.find((ref) => ref.id === "skill:skill:rev-skill");
+				expect(beforeRef).toBeDefined();
+
+				writeFileSync(skillFilePath, "# v2\n\ncontent two");
+				await session.reload();
+
+				const after = session.getActiveCapabilityBinding()!;
+				const afterRef = after.descriptors.find((ref) => ref.id === "skill:skill:rev-skill");
+				expect(afterRef).toBeDefined();
+				expect(afterRef!.revision).not.toBe(beforeRef!.revision);
+				expect(after.id).not.toBe(before.id);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("changes the tool revision and binding when a tool schema/description changes on reload", async () => {
+			const { dir, agentDir } = tmpDir("tool-rev");
+			const tool = {
+				name: "schema_tool",
+				label: "schema_tool",
+				description: "v1 description",
+				parameters: Type.Object({ query: Type.String() }),
+				execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+			};
+			const resourceLoader = createTestResourceLoader();
+			const settingsManager = SettingsManager.create(dir, agentDir);
+			const { session } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+				customTools: [tool],
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				const before = session.getActiveCapabilityBinding()!;
+				const beforeRef = before.descriptors.find((ref) => ref.id === "sdk_tool:sdk:schema_tool");
+				expect(beforeRef).toBeDefined();
+
+				// A public behavior change (schema + description) must re-fingerprint.
+				tool.description = "v2 description";
+				tool.parameters = Type.Object({ query: Type.String(), limit: Type.Number() });
+				await session.reload();
+
+				const after = session.getActiveCapabilityBinding()!;
+				const afterRef = after.descriptors.find((ref) => ref.id === "sdk_tool:sdk:schema_tool");
+				expect(afterRef).toBeDefined();
+				expect(afterRef!.revision).not.toBe(beforeRef!.revision);
+				expect(after.id).not.toBe(before.id);
+			} finally {
+				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
