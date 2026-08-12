@@ -7,14 +7,23 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { CapabilityBindingView, CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
+import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { ContextSnapshot, ContextSourceDrift } from "../../core/context-engine.ts";
-import type { AutomationError, RunReceipt, RunRecord, RunRecoveryState, RunStatus } from "../../core/run-lifecycle.ts";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
-import type { SourceInfo } from "../../core/source-info.ts";
+import type {
+	AutomationError,
+	PublicCapabilityBindingLedgerRecord,
+	PublicContextSnapshot,
+	PublicContextSourceDrift,
+	PublicRunReceipt,
+	PublicRunRecord,
+	PublicSessionEntry,
+	PublicSessionTreeNode,
+	RunRecoveryState,
+	RunStatus,
+} from "../../core/run-lifecycle.ts";
+import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -100,6 +109,12 @@ export type RpcCommand =
 // RPC Slash Command (for get_commands response)
 // ============================================================================
 
+/** Public source metadata for a command owner. Raw source paths and identities are omitted. */
+export interface RpcSourceInfo {
+	scope: SourceScope;
+	origin: SourceOrigin;
+}
+
 /** A command available for invocation via prompt */
 export interface RpcSlashCommand {
 	/** Command name (without leading slash) */
@@ -108,8 +123,8 @@ export interface RpcSlashCommand {
 	description?: string;
 	/** What kind of command this is */
 	source: "extension" | "prompt" | "skill";
-	/** Source metadata for the owning resource */
-	sourceInfo: SourceInfo;
+	/** Public metadata for the owning resource; never contains path/baseDir/source identity. */
+	sourceInfo: RpcSourceInfo;
 }
 
 // ============================================================================
@@ -123,13 +138,15 @@ export interface RpcSessionState {
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
-	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
 }
+
+/** Session statistics safe for public RPC output. Internal sessionFile is omitted. */
+export type RpcSessionStats = Omit<SessionStats, "sessionFile">;
 
 // ============================================================================
 // RPC Responses (stdout)
@@ -204,7 +221,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "abort_bash"; success: true }
 
 	// Session
-	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
+	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: RpcSessionStats }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
@@ -221,14 +238,14 @@ export type RpcResponse =
 			type: "response";
 			command: "get_entries";
 			success: true;
-			data: { entries: SessionEntry[]; leafId: string | null };
+			data: { entries: PublicSessionEntry[]; leafId: string | null };
 	  }
 	| {
 			id?: string;
 			type: "response";
 			command: "get_tree";
 			success: true;
-			data: { tree: SessionTreeNode[]; leafId: string | null };
+			data: { tree: PublicSessionTreeNode[]; leafId: string | null };
 	  }
 	| {
 			id?: string;
@@ -274,34 +291,24 @@ export type RpcResponse =
 
 /** Redacted Context Engine inspection payload (metadata only). */
 export interface GetContextData {
-	snapshot: ContextSnapshot;
-	drift: ContextSourceDrift[];
+	snapshot: PublicContextSnapshot;
+	drift: PublicContextSourceDrift[];
 	/** True when snapshotId was omitted and the payload is a non-persisted preview. */
 	preview: boolean;
 }
 
 /**
- * Redacted capability inspection payload (metadata only). Never carries file
- * paths, raw MCP server config, env or header values, URL credentials or query,
- * tokens, server instructions/resources/prompts, or tool call payloads.
- *
- * Request semantics:
- * - No args: the redacted catalog of discovered descriptors plus the current
- *   frozen binding (may be null when none is resolved) and the binding history
- *   folded from the Session's capability.binding ledger.
- * - `bindingId`: only that single binding's redacted view is returned.
- *
- * The `catalog` carries only each descriptor's id, kind, name, redacted source
- * (`{ source, scope, origin }`), revision, availability, decision, trusted, and
- * the public exposed tool name / parent id / mcp server id.
+ * Redacted capability inspection payload. All identities are opaque and no
+ * raw source path, URL, config, environment value, header, token, or server
+ * instruction is returned.
  */
 export interface GetCapabilitiesData {
-	/** Redacted catalog of discovered capability descriptors. */
+	/** Public catalog of the descriptors discovered for the current session. */
 	catalog: CapabilityCatalogView;
 	/** Redacted view of the current frozen binding, or null when none is resolved. */
-	binding: CapabilityBindingView | null;
+	binding: PublicCapabilityBindingLedgerRecord | null;
 	/** Redacted binding history folded from the Session's capability.binding ledger. */
-	bindings: CapabilityBindingView[];
+	bindings: PublicCapabilityBindingLedgerRecord[];
 }
 
 // ============================================================================
@@ -377,7 +384,6 @@ export interface InitializeData {
 	host: "automation-host";
 	protocolVersion: 1;
 	sessionId: string;
-	sessionFile?: string;
 	runCommands: RpcRunCommandType[];
 }
 
@@ -391,8 +397,8 @@ export interface RunAcceptedData {
 
 /** Data returned by a successful `run.get`. */
 export interface RunGetData {
-	run: RunRecord;
-	receipt?: RunReceipt;
+	run: PublicRunRecord;
+	receipt?: PublicRunReceipt;
 	recovery?: RunRecoveryState;
 }
 
@@ -427,15 +433,19 @@ export type RpcAutomationResponse =
 export type {
 	AutomationError,
 	AutomationErrorCode,
-	RunReceipt,
-	RunRecord,
+	PublicRunReceipt as RunReceipt,
+	PublicRunRecord as RunRecord,
 	RunRecoveryState,
 	RunStatus,
-	RunStreamEvent,
+	PublicRunStreamEvent as RunStreamEvent,
 	RunTerminalStatus,
+} from "../../core/run-lifecycle.ts";
+
+export type {
+	PublicContextSnapshot,
+	PublicContextSourceDrift,
+	PublicContextSourceReceipt,
 } from "../../core/run-lifecycle.ts";
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
-// Re-export the redacted capability catalog view consumed by get_capabilities.
-export type { CapabilityCatalogView } from "../../core/capability-registry.ts";

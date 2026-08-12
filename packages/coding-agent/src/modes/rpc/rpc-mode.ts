@@ -13,6 +13,7 @@
 
 import * as crypto from "node:crypto";
 import type { ImageContent } from "@aos-agent/ai";
+import type { SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -44,8 +45,18 @@ import {
 	isTerminalStatus,
 	redactAutomationError,
 	redactErrorText,
+	serializePublicAutomationError,
+	serializePublicCapabilityBinding,
+	serializePublicContextDrift,
+	serializePublicContextSnapshot,
+	serializePublicRunRecord,
+	serializePublicRunReceipt,
+	serializePublicRunStreamEvent,
+	serializePublicSessionEntry,
+	serializePublicSessionEvent,
+	serializePublicSessionTreeNode,
 } from "../../core/run-lifecycle.ts";
-import { createCapabilityBindingView } from "../../core/capability-registry.ts";
+import type { SourceInfo } from "../../core/source-info.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
@@ -59,8 +70,10 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
+	RpcSessionStats,
 	RpcSessionState,
 	RpcSlashCommand,
+	RpcSourceInfo,
 	RunAcceptedData,
 	RunGetData,
 } from "./rpc-types.ts";
@@ -90,6 +103,15 @@ export type {
 	RunStreamEvent,
 	RunTerminalStatus,
 } from "./rpc-types.ts";
+
+function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
+	const { sessionFile: _sessionFile, ...publicStats } = stats;
+	return publicStats;
+}
+
+function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
+	return { scope: sourceInfo.scope, origin: sourceInfo.origin };
+}
 
 /**
  * Run in RPC mode.
@@ -176,7 +198,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		id: string | undefined,
 		command: RpcAutomationCommandType,
 		err: AutomationError,
-	): RpcAutomationResponse => ({ id, type: "response", command, success: false, error: redactAutomationError(err) });
+	): RpcAutomationResponse => ({
+		id,
+		type: "response",
+		command,
+		success: false,
+		error: serializePublicAutomationError(redactAutomationError(err), "Automation request failed."),
+	});
 
 	const hostNotInitializedError = (): AutomationError =>
 		createAutomationError(
@@ -247,10 +275,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	/** Serialize a run stream event, applying JSON-safe event conversion to wrapped session events. */
 	const outputRunEvent = (event: RunStreamEvent): void => {
-		if (event.type === "run.event") {
-			output({ ...event, event: toJsonEvent(event.event) });
+		const publicEvent = serializePublicRunStreamEvent(event);
+		if (publicEvent.type === "run.event") {
+			output({ ...publicEvent, event: toJsonEvent(publicEvent.event) });
 		} else {
-			output(event);
+			output(publicEvent);
 		}
 	};
 
@@ -793,7 +822,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				shutdownRequested = true;
 			},
 			onError: (err) => {
-				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+				output({ type: "extension_error", event: err.event, error: "Extension failed." });
 			},
 		});
 
@@ -822,7 +851,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Buffer session events observed during preflight; start() flushes them.
 				activeReservation.captureSessionEvent(event);
 			} else {
-				output(toJsonEvent(event));
+				output(toJsonEvent(serializePublicSessionEvent(event)));
 			}
 			if (event.type === "agent_settled") {
 				if (activeHandle !== undefined) {
@@ -901,8 +930,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					sessionId: session.sessionId,
 					runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
 				};
-				const sessionFile = session.sessionFile;
-				if (sessionFile !== undefined) initializeData.sessionFile = sessionFile;
 				const initializeResponse: RpcAutomationResponse = {
 					id,
 					type: "response",
@@ -938,8 +965,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						createAutomationError("run_not_found", `Run not found: ${command.runId}`, false),
 					);
 				}
-				const getData: RunGetData = { run: result.record };
-				if (result.receipt !== undefined) getData.receipt = result.receipt;
+				const getData: RunGetData = { run: serializePublicRunRecord(result.record) };
+				if (result.receipt !== undefined) getData.receipt = serializePublicRunReceipt(result.receipt);
 				if (result.recovery !== undefined) getData.recovery = result.recovery;
 				const getResponse: RpcAutomationResponse = {
 					id,
@@ -1078,9 +1105,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						),
 					);
 				}
-				// Prefer the terminal receipt; fall back to the accepted record so an
-				// interrupted (accepted, never-terminal) source run still yields its
-				// original capability binding for the drift guard below.
+				// An interrupted run may have an accepted record but no terminal
+				// receipt. Preserve #6's binding-drift guard for that recovery path.
 				const previousBindingId =
 					sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
 				return startRun(
@@ -1159,7 +1185,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
-					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
@@ -1298,41 +1323,43 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_session_stats": {
 				const stats = session.getSessionStats();
-				return success(id, "get_session_stats", stats);
+				return success(id, "get_session_stats", serializePublicSessionStats(stats));
 			}
 
 			case "get_context": {
 				const inspection = await session.inspectContext({
 					snapshotId: command.snapshotId,
 				});
-				// Historical entries pass through SessionManager's structural parser,
-				// which reconstructs only receipt fields and discards unknown payloads.
-				return success(id, "get_context", inspection);
+				return success(id, "get_context", {
+					snapshot: serializePublicContextSnapshot(inspection.snapshot),
+					drift: inspection.drift.map((item) => serializePublicContextDrift(item)),
+					preview: inspection.preview,
+				});
 			}
 
 			case "get_capabilities": {
 				// Ordinary read-only inspection: no Automation Host initialize is
-				// required, and only redacted metadata is ever returned. The catalog
-				// and binding views carry only public descriptor identity and
-				// selection metadata — never file paths, raw MCP config, env/header
-				// values, URL credentials/query, tokens, or server instructions.
+				// required, and only public-safe metadata is ever returned.
 				const history = foldCapabilityBindingEntries(session.sessionManager.getEntries());
 				const current = session.getActiveCapabilityBinding();
 				if (command.bindingId !== undefined) {
 					const found = history.get(command.bindingId);
 					if (found === undefined) {
-						return error(id, "get_capabilities", `Capability binding not found: ${command.bindingId}`);
+						return error(id, "get_capabilities", "Capability binding not found.");
 					}
+					const binding = serializePublicCapabilityBinding(found);
 					return success(id, "get_capabilities", {
 						catalog: session.inspectCapabilityCatalog(),
-						binding: found,
+						binding: binding ?? null,
 						bindings: [],
 					} satisfies GetCapabilitiesData);
 				}
 				return success(id, "get_capabilities", {
 					catalog: session.inspectCapabilityCatalog(),
-					binding: current !== undefined ? createCapabilityBindingView(current) : null,
-					bindings: [...history.values()],
+					binding: current === undefined ? null : (serializePublicCapabilityBinding(current) ?? null),
+					bindings: [...history.values()]
+						.map((binding) => serializePublicCapabilityBinding(binding))
+						.filter((binding): binding is NonNullable<typeof binding> => binding !== undefined),
 				} satisfies GetCapabilitiesData);
 			}
 
@@ -1384,12 +1411,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					}
 					entries = entries.slice(sinceIndex + 1);
 				}
-				return success(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
+				return success(id, "get_entries", {
+					entries: entries.map((entry) => serializePublicSessionEntry(entry)),
+					leafId: sessionManager.getLeafId(),
+				});
 			}
 
 			case "get_tree": {
 				const sessionManager = session.sessionManager;
-				return success(id, "get_tree", { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() });
+				return success(id, "get_tree", {
+					tree: sessionManager.getTree().map((node) => serializePublicSessionTreeNode(node)),
+					leafId: sessionManager.getLeafId(),
+				});
 			}
 
 			case "get_last_assistant_text": {
@@ -1426,7 +1459,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						name: command.invocationName,
 						description: command.description,
 						source: "extension",
-						sourceInfo: command.sourceInfo,
+						sourceInfo: serializePublicSourceInfo(command.sourceInfo),
 					});
 				}
 
@@ -1435,7 +1468,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						name: template.name,
 						description: template.description,
 						source: "prompt",
-						sourceInfo: template.sourceInfo,
+						sourceInfo: serializePublicSourceInfo(template.sourceInfo),
 					});
 				}
 
@@ -1444,7 +1477,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						name: `skill:${skill.name}`,
 						description: skill.description,
 						source: "skill",
-						sourceInfo: skill.sourceInfo,
+						sourceInfo: serializePublicSourceInfo(skill.sourceInfo),
 					});
 				}
 

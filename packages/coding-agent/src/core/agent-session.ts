@@ -135,7 +135,7 @@ import {
 	CapabilityNameConflictError,
 	CapabilityProfileNotFoundError,
 	CapabilityRegistry,
-	createCapabilityId,
+	matchesCapabilityDescriptorId,
 	resolveCapabilityBinding,
 	type CapabilityBinding,
 	type CapabilityCandidate,
@@ -2476,36 +2476,37 @@ export class AgentSession {
 			await this.waitForIdle();
 		}
 		const catalog = this._activeCapabilityCatalog;
-		const descriptor = catalog?.descriptors.find((candidate) => candidate.id === descriptorId);
+		const descriptor = catalog?.descriptors.find((candidate) => matchesCapabilityDescriptorId(candidate, descriptorId));
 		if (catalog === undefined || descriptor === undefined) {
 			throw new CapabilityError("capability_denied", `Cannot approve unknown capability: ${descriptorId}`);
 		}
+		const approvedDescriptorId = descriptor.id;
 		if (!descriptor.trusted || descriptor.availability !== "available") {
 			throw new CapabilityError(
 				"capability_denied",
 				`Cannot approve capability "${descriptorId}": it is untrusted or unavailable`,
 			);
 		}
-		if (this._capabilityApprovedDescriptorIds.includes(descriptorId)) {
+		if (this._capabilityApprovedDescriptorIds.includes(approvedDescriptorId)) {
 			return;
 		}
 		// A capability already enabled by the profile (e.g. allow) has nothing to
 		// approve; retain the approval only when it changes an ask into the binding.
-		if (this._activeCapabilityBinding?.descriptors.some((ref) => ref.id === descriptorId)) {
+		if (this._activeCapabilityBinding?.descriptors.some((ref) => ref.id === approvedDescriptorId)) {
 			return;
 		}
 		const entered = resolveCapabilityBinding({
 			...this._resolveBindingInput(),
 			catalog,
-			approvedDescriptorIds: [...this._capabilityApprovedDescriptorIds, descriptorId],
-		}).descriptors.some((ref) => ref.id === descriptorId);
+			approvedDescriptorIds: [...this._capabilityApprovedDescriptorIds, approvedDescriptorId],
+		}).descriptors.some((ref) => ref.id === approvedDescriptorId);
 		if (!entered) {
 			throw new CapabilityError(
 				"capability_denied",
 				`Cannot approve capability "${descriptorId}": it is denied by the profile or cannot be selected`,
 			);
 		}
-		this._capabilityApprovedDescriptorIds = [...this._capabilityApprovedDescriptorIds, descriptorId];
+		this._capabilityApprovedDescriptorIds = [...this._capabilityApprovedDescriptorIds, approvedDescriptorId];
 		await this._refreshCapabilitySetup();
 	}
 
@@ -3789,7 +3790,7 @@ export class AgentSession {
 		}
 		for (const extension of this._resourceLoader.getExtensions().extensions) {
 			const extensionLocalName = stableExtensionLocalName(extension);
-			const extensionDescriptorId = createCapabilityId(
+			const extensionDescriptorId = this._capabilityRegistry.createCapabilityId(
 				"extension",
 				extension.sourceInfo.source,
 				extensionLocalName,
@@ -3974,6 +3975,7 @@ export class AgentSession {
 					serverId,
 					sourceIdentity: serverToolSourceIdentity,
 					parentDescriptorId: serverDescriptor.id,
+					registry: this._capabilityRegistry,
 					callTool: (toolName, args, signal) =>
 						this._mcpLifecycleManager.callTool(serverId, toolName, args, signal),
 				});
@@ -4047,7 +4049,7 @@ export class AgentSession {
 		const selectedSkills = skills.filter((skill) => {
 			const source =
 				skill.sourceInfo ?? createSyntheticSourceInfo(`<skill:${skill.name}>`, { source: "skill" });
-			return selectedSkillIds.has(createCapabilityId("skill", source.source, skill.name));
+			return selectedSkillIds.has(this._capabilityRegistry.createCapabilityId("skill", source.source, skill.name));
 		});
 		if (selectedSkills.length === 0) {
 			return undefined;

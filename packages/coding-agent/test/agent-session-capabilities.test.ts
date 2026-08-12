@@ -15,8 +15,14 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import {
+	CapabilityRegistry,
+	createCapabilityBindingView,
+	createCapabilityId,
+} from "../src/core/capability-registry.ts";
 import { assertSnapshotMetadataOnly } from "../src/core/context-engine.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -98,8 +104,17 @@ async function createControlledSession(opts: {
 	customTools?: ToolDefinition[];
 	mcpTransportFactory?: unknown;
 	onStreamCall?: () => void;
-}): Promise<{ session: AgentSession; dir: string }> {
-	const { dir } = tmpDir("controlled");
+	dir?: string;
+	agentDir?: string;
+}): Promise<{ session: AgentSession; dir: string; agentDir: string; identity: CapabilityPublicIdentity }> {
+	if ((opts.dir === undefined) !== (opts.agentDir === undefined)) {
+		throw new Error("createControlledSession requires both dir and agentDir when either is provided");
+	}
+	const temp = opts.dir === undefined ? tmpDir("controlled") : undefined;
+	const dir = opts.dir ?? temp!.dir;
+	const agentDir = opts.agentDir ?? temp!.agentDir;
+	mkdirSync(agentDir, { recursive: true });
+	const identity = await CapabilityPublicIdentity.load(agentDir);
 	const sessionManager = SessionManager.inMemory(dir);
 	const model = getModel("anthropic", "claude-sonnet-4-5")!;
 	const authStorage = AuthStorage.create(join(dir, "auth.json"));
@@ -127,8 +142,9 @@ async function createControlledSession(opts: {
 		resourceLoader: opts.resourceLoader,
 		customTools: opts.customTools,
 		mcpTransportFactory: opts.mcpTransportFactory as never,
+		capabilityRegistry: new CapabilityRegistry(identity),
 	});
-	return { session, dir };
+	return { session, dir, agentDir, identity };
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +240,7 @@ describe("AgentSession capability binding integration", () => {
 	describe("static binding from profile", () => {
 		it("resolves a frozen binding that selects builtin and SDK tools by default", async () => {
 			const { dir, agentDir } = tmpDir("static");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
 			const settingsManager = SettingsManager.inMemory();
 			const sessionManager = SessionManager.inMemory(dir);
 			try {
@@ -244,9 +261,9 @@ describe("AgentSession capability binding integration", () => {
 				);
 				expect(binding!.descriptors.map((ref) => ref.id)).toEqual(
 					expect.arrayContaining([
-						"builtin_tool:builtin:read",
-						"builtin_tool:builtin:bash",
-						"sdk_tool:sdk:sdk_helper",
+						createCapabilityId("builtin_tool", "builtin", "read", identity),
+						createCapabilityId("builtin_tool", "builtin", "bash", identity),
+						createCapabilityId("sdk_tool", "sdk", "sdk_helper", identity),
 					]),
 				);
 				expect(session.getCapabilityBindingId()).toBe(binding!.id);
@@ -260,6 +277,8 @@ describe("AgentSession capability binding integration", () => {
 
 		it("denies a builtin tool through the profile and keeps others exposed", async () => {
 			const { dir, agentDir } = tmpDir("deny");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
+			const readId = createCapabilityId("builtin_tool", "builtin", "read", identity);
 			const settingsManager = SettingsManager.inMemory({
 				capabilities: {
 					defaultProfile: "default",
@@ -267,7 +286,7 @@ describe("AgentSession capability binding integration", () => {
 						default: {
 							rules: [
 								{ selector: { kind: "builtin_tool" }, action: "allow" },
-								{ selector: { id: "builtin_tool:builtin:read" }, action: "deny" },
+								{ selector: { id: readId }, action: "deny" },
 							],
 						},
 					},
@@ -296,6 +315,7 @@ describe("AgentSession capability binding integration", () => {
 	describe("MCP selection, trust and namespacing", () => {
 		it("connects a trusted selected server, namespaces its tools, and exposes them", async () => {
 			const { dir, agentDir } = tmpDir("mcp");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
 			const receivedCalls: Array<{ name: string; args: unknown }> = [];
 			const settingsManager = SettingsManager.inMemory({
 				capabilities: {
@@ -331,7 +351,10 @@ describe("AgentSession capability binding integration", () => {
 				await session.whenCapabilitiesReady();
 
 				expect(session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id)).toEqual(
-					expect.arrayContaining(["mcp_server:mcp:global:docs", "mcp_tool:mcp:global:docs:list"]),
+					expect.arrayContaining([
+						createCapabilityId("mcp_server", "mcp:global", "docs", identity),
+						createCapabilityId("mcp_tool", "mcp:global:docs", "list", identity),
+					]),
 				);
 				expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
 				expect(session.getAllTools().map((tool) => tool.name)).toContain("mcp__docs__list");
@@ -455,6 +478,7 @@ describe("AgentSession capability binding integration", () => {
 
 		it("keeps mcp_tool descriptor ids distinct across same-scope servers with the same local tool", async () => {
 			const { dir, agentDir } = tmpDir("mcp-distinct");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
 			const settingsManager = SettingsManager.inMemory({
 				capabilities: {
 					defaultProfile: "default",
@@ -507,7 +531,12 @@ describe("AgentSession capability binding integration", () => {
 					.filter((ref) => ref.id.startsWith("mcp_tool:"))
 					.map((ref) => ref.id)
 					.sort();
-				expect(toolIds).toEqual(["mcp_tool:mcp:global:docs:list", "mcp_tool:mcp:global:git:list"]);
+				expect(toolIds).toEqual(
+					[
+						createCapabilityId("mcp_tool", "mcp:global:docs", "list", identity),
+						createCapabilityId("mcp_tool", "mcp:global:git", "list", identity),
+					].sort(),
+				);
 				expect(binding?.toolAllowlist).toEqual(
 					expect.arrayContaining(["mcp__docs__list", "mcp__git__list"]),
 				);
@@ -523,6 +552,7 @@ describe("AgentSession capability binding integration", () => {
 	describe("final tool narrowing", () => {
 		it("keeps tools/excludeTools/noTools as the final narrowing of the binding", async () => {
 			const { dir, agentDir } = tmpDir("narrow");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
 			const settingsManager = SettingsManager.inMemory();
 			const sessionManager = SessionManager.inMemory(dir);
 			try {
@@ -543,7 +573,7 @@ describe("AgentSession capability binding integration", () => {
 				// stays selected in the binding; only the model-visible allowlist and
 				// exposed tools omit it.
 				expect(session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id)).toContain(
-					"builtin_tool:builtin:bash",
+					createCapabilityId("builtin_tool", "builtin", "bash", identity),
 				);
 			} finally {
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
@@ -815,6 +845,7 @@ describe("AgentSession capability binding integration", () => {
 	describe("secret-free context metadata from the binding", () => {
 		it("carries descriptor/revision/binding identity on skill index and provider tool sources", async () => {
 			const { dir, agentDir } = tmpDir("ctx");
+			const identity = await CapabilityPublicIdentity.load(agentDir);
 			const settingsManager = SettingsManager.inMemory();
 			const sessionManager = SessionManager.inMemory(dir);
 			const resourceLoader = loaderWithSkills([skill("test-skill")]);
@@ -839,12 +870,16 @@ describe("AgentSession capability binding integration", () => {
 				expect(skillSource?.capabilityBindingId).toBe(bindingId);
 
 				const sdkSource = snapshot.sources.find((source) => source.sourceId === "capability:tool:sdk_helper");
-				expect(sdkSource?.capabilityId).toBe("sdk_tool:sdk:sdk_helper");
+				expect(sdkSource?.capabilityId).toBe(
+					createCapabilityId("sdk_tool", "sdk", "sdk_helper", identity),
+				);
 				expect(sdkSource?.capabilityRevision).toMatch(/^rev:/);
 				expect(sdkSource?.capabilityBindingId).toBe(bindingId);
 
 				const readSource = snapshot.sources.find((source) => source.sourceId === "capability:tool:read");
-				expect(readSource?.capabilityId).toBe("builtin_tool:builtin:read");
+				expect(readSource?.capabilityId).toBe(
+					createCapabilityId("builtin_tool", "builtin", "read", identity),
+				);
 
 				// The snapshot remains metadata-only: no content, no secrets.
 				expect(() => assertSnapshotMetadataOnly(snapshot)).not.toThrow();
@@ -1083,21 +1118,24 @@ describe("AgentSession capability binding integration", () => {
 			};
 			const resourceLoader = loaderWithSkills([skillDef]);
 			const settingsManager = SettingsManager.create(dir, agentDir);
-			const { session } = await createControlledSession({
+			const { session, identity } = await createControlledSession({
 				resourceLoader,
 				settingsManager,
+				dir,
+				agentDir,
 			});
 			try {
 				await session.whenCapabilitiesReady();
 				const before = session.getActiveCapabilityBinding()!;
-				const beforeRef = before.descriptors.find((ref) => ref.id === "skill:skill:rev-skill");
+				const skillId = createCapabilityId("skill", "skill", "rev-skill", identity);
+				const beforeRef = before.descriptors.find((ref) => ref.id === skillId);
 				expect(beforeRef).toBeDefined();
 
 				writeFileSync(skillFilePath, "# v2\n\ncontent two");
 				await session.reload();
 
 				const after = session.getActiveCapabilityBinding()!;
-				const afterRef = after.descriptors.find((ref) => ref.id === "skill:skill:rev-skill");
+				const afterRef = after.descriptors.find((ref) => ref.id === skillId);
 				expect(afterRef).toBeDefined();
 				expect(afterRef!.revision).not.toBe(beforeRef!.revision);
 				expect(after.id).not.toBe(before.id);
@@ -1118,15 +1156,18 @@ describe("AgentSession capability binding integration", () => {
 			};
 			const resourceLoader = createTestResourceLoader();
 			const settingsManager = SettingsManager.create(dir, agentDir);
-			const { session } = await createControlledSession({
+			const { session, identity } = await createControlledSession({
 				resourceLoader,
 				settingsManager,
 				customTools: [tool],
+				dir,
+				agentDir,
 			});
 			try {
 				await session.whenCapabilitiesReady();
 				const before = session.getActiveCapabilityBinding()!;
-				const beforeRef = before.descriptors.find((ref) => ref.id === "sdk_tool:sdk:schema_tool");
+				const toolId = createCapabilityId("sdk_tool", "sdk", "schema_tool", identity);
+				const beforeRef = before.descriptors.find((ref) => ref.id === toolId);
 				expect(beforeRef).toBeDefined();
 
 				// A public behavior change (schema + description) must re-fingerprint.
@@ -1135,7 +1176,7 @@ describe("AgentSession capability binding integration", () => {
 				await session.reload();
 
 				const after = session.getActiveCapabilityBinding()!;
-				const afterRef = after.descriptors.find((ref) => ref.id === "sdk_tool:sdk:schema_tool");
+				const afterRef = after.descriptors.find((ref) => ref.id === toolId);
 				expect(afterRef).toBeDefined();
 				expect(afterRef!.revision).not.toBe(beforeRef!.revision);
 				expect(after.id).not.toBe(before.id);
@@ -1182,10 +1223,7 @@ describe("AgentSession capability binding integration", () => {
 				...createTestResourceLoader({ extensionsResult }),
 				getSkills: () => ({ skills: [projectSkill("proj-skill", dir)], diagnostics: [] }),
 			};
-			const { session, dir: sessionDir } = await createControlledSession({
-				resourceLoader,
-				settingsManager,
-			});
+			const { session, dir: sessionDir } = await createControlledSession({ resourceLoader, settingsManager });
 			try {
 				await session.whenCapabilitiesReady();
 
@@ -1218,10 +1256,7 @@ describe("AgentSession capability binding integration", () => {
 				...createTestResourceLoader({ extensionsResult }),
 				getSkills: () => ({ skills: [projectSkill("proj-skill", dir)], diagnostics: [] }),
 			};
-			const { session, dir: sessionDir } = await createControlledSession({
-				resourceLoader,
-				settingsManager,
-			});
+			const { session, dir: sessionDir } = await createControlledSession({ resourceLoader, settingsManager });
 			try {
 				await session.whenCapabilitiesReady();
 
@@ -1252,18 +1287,13 @@ describe("AgentSession capability binding integration", () => {
 				]);
 				scopeExtensions(extensionsResult, "user");
 				const resourceLoader = createTestResourceLoader({ extensionsResult });
-				const { session, dir: sessionDir } = await createControlledSession({
-					resourceLoader,
-					settingsManager,
-				});
+				const { session, dir: sessionDir } = await createControlledSession({ resourceLoader, settingsManager });
 				try {
 					await session.whenCapabilitiesReady();
 
 					const view = session.inspectCapabilityCatalog();
 					expect(view.descriptors.find((descriptor) => descriptor.kind === "extension")?.trusted).toBe(true);
-					expect(
-						view.descriptors.find((descriptor) => descriptor.kind === "extension_tool")?.trusted,
-					).toBe(true);
+					expect(view.descriptors.find((descriptor) => descriptor.kind === "extension_tool")?.trusted).toBe(true);
 
 					const bindingIds = session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id) ?? [];
 					expect(bindingIds.some((id) => id.startsWith("extension:"))).toBe(true);
@@ -1302,15 +1332,10 @@ describe("AgentSession capability binding integration", () => {
 			]);
 			scopeExtensions(extensionsResult, "project");
 			const resourceLoader = createTestResourceLoader({ extensionsResult });
-			const { session, dir: sessionDir } = await createControlledSession({
-				resourceLoader,
-				settingsManager,
-			});
+			const { session, dir: sessionDir } = await createControlledSession({ resourceLoader, settingsManager });
 			try {
 				await session.whenCapabilitiesReady();
 
-				// The extension and its tool are trusted (trusted project), but the
-				// profile deny on the extension kind still governs the child tool.
 				const view = session.inspectCapabilityCatalog();
 				const extensionDescriptor = view.descriptors.find((descriptor) => descriptor.kind === "extension");
 				expect(extensionDescriptor?.trusted).toBe(true);
@@ -1326,6 +1351,72 @@ describe("AgentSession capability binding integration", () => {
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 				if (existsSync(sessionDir)) rmSync(sessionDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("configured package source identity", () => {
+		it("keeps an absolute configured package source internal while profile matching still uses it", async () => {
+			const { dir, agentDir } = tmpDir("configured-package");
+			const packageDir = join(dir, "audit-private", "capability-source");
+			const skillDir = join(packageDir, "skills", "audit-package-skill");
+			mkdirSync(skillDir, { recursive: true });
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				"---\nname: audit-package-skill\ndescription: package discovery regression skill\n---\n\nPrivate package skill.\n",
+			);
+			const settingsManager = SettingsManager.inMemory({
+				packages: [packageDir],
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+									{ selector: { kind: "skill" }, action: "deny" },
+									{ selector: { sourceId: packageDir }, action: "allow" },
+								],
+						},
+						blocked: { rules: [{ selector: { sourceId: packageDir }, action: "deny" }] },
+					},
+				},
+			});
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: dir,
+				agentDir,
+				settingsManager,
+				noContextFiles: true,
+			});
+			await resourceLoader.reload();
+			const discoveredSkill = resourceLoader.getSkills().skills.find((candidate) => candidate.name === "audit-package-skill");
+			expect(discoveredSkill?.sourceInfo?.source).toBe(packageDir);
+
+			const { session, identity } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+				dir,
+				agentDir,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				const descriptorId = createCapabilityId("skill", packageDir, "audit-package-skill", identity);
+				const catalog = session.inspectCapabilityCatalog();
+				const binding = session.getActiveCapabilityBinding();
+				expect(catalog.descriptors.some((descriptor) => descriptor.id === descriptorId)).toBe(true);
+				expect(binding?.descriptors.some((descriptor) => descriptor.id === descriptorId)).toBe(true);
+				expect(JSON.stringify({ catalog, binding: binding && createCapabilityBindingView(binding) })).not.toContain(
+					packageDir,
+				);
+				expect(JSON.stringify({ catalog, binding: binding && createCapabilityBindingView(binding) })).not.toContain(
+					"audit-private",
+				);
+
+				await session.setCapabilityProfile("blocked");
+				expect(
+					session.getActiveCapabilityBinding()?.descriptors.some((descriptor) => descriptor.id === descriptorId),
+				).toBe(false);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
 	});
