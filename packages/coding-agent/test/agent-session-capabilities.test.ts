@@ -22,7 +22,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
-import type { ExtensionFactory, ToolDefinition } from "../src/core/extensions/index.ts";
+import type { ExtensionFactory, LoadExtensionsResult, ToolDefinition } from "../src/core/extensions/index.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
@@ -1142,6 +1142,190 @@ describe("AgentSession capability binding integration", () => {
 			} finally {
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("trusted project resource candidates", () => {
+		function scopeExtensions(extensionsResult: LoadExtensionsResult, scope: "project" | "user"): void {
+			for (const extension of extensionsResult.extensions) {
+				extension.sourceInfo = createSyntheticSourceInfo(extension.path, {
+					source: extension.sourceInfo.source,
+					scope,
+					baseDir: extension.sourceInfo.baseDir,
+				});
+				for (const tool of extension.tools.values()) {
+					tool.sourceInfo = extension.sourceInfo;
+				}
+			}
+		}
+
+		function projectSkill(name: string, baseDir: string): Skill {
+			return {
+				name,
+				description: `project skill ${name}`,
+				filePath: join(baseDir, "SKILL.md"),
+				baseDir,
+				sourceInfo: createSyntheticSourceInfo(`<skill:${name}>`, { source: "skill", scope: "project" }),
+				disableModelInvocation: false,
+			};
+		}
+
+		it("trusts project extension, extension tool, and skill descriptors and includes them in the binding", async () => {
+			const { dir, agentDir } = tmpDir("trusted-project");
+			const settingsManager = SettingsManager.create(dir, agentDir, { projectTrusted: true });
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper") },
+			]);
+			scopeExtensions(extensionsResult, "project");
+			const resourceLoader = {
+				...createTestResourceLoader({ extensionsResult }),
+				getSkills: () => ({ skills: [projectSkill("proj-skill", dir)], diagnostics: [] }),
+			};
+			const { session, dir: sessionDir } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+
+				const view = session.inspectCapabilityCatalog();
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "extension")?.trusted).toBe(true);
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "extension_tool")?.trusted).toBe(true);
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "skill")?.trusted).toBe(true);
+
+				const bindingIds = session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id) ?? [];
+				expect(bindingIds.some((id) => id.startsWith("extension:"))).toBe(true);
+				expect(bindingIds.some((id) => id.startsWith("extension_tool:"))).toBe(true);
+				expect(bindingIds.some((id) => id.startsWith("skill:"))).toBe(true);
+				expect(session.getAllTools().map((tool) => tool.name)).toContain("ext_helper");
+				expect(session.getActiveToolNames()).toContain("ext_helper");
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+				if (existsSync(sessionDir)) rmSync(sessionDir, { recursive: true, force: true });
+			}
+		});
+
+		it("force-denies the same project resources when the project is untrusted", async () => {
+			const { dir, agentDir } = tmpDir("untrusted-project");
+			const settingsManager = SettingsManager.create(dir, agentDir, { projectTrusted: false });
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper") },
+			]);
+			scopeExtensions(extensionsResult, "project");
+			const resourceLoader = {
+				...createTestResourceLoader({ extensionsResult }),
+				getSkills: () => ({ skills: [projectSkill("proj-skill", dir)], diagnostics: [] }),
+			};
+			const { session, dir: sessionDir } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+
+				const view = session.inspectCapabilityCatalog();
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "extension")?.trusted).toBe(false);
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "extension_tool")?.trusted).toBe(false);
+				expect(view.descriptors.find((descriptor) => descriptor.kind === "skill")?.trusted).toBe(false);
+
+				const bindingIds = session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id) ?? [];
+				expect(bindingIds.some((id) => id.startsWith("extension:"))).toBe(false);
+				expect(bindingIds.some((id) => id.startsWith("extension_tool:"))).toBe(false);
+				expect(bindingIds.some((id) => id.startsWith("skill:"))).toBe(false);
+				expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ext_helper");
+				expect(session.getActiveToolNames()).not.toContain("ext_helper");
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+				if (existsSync(sessionDir)) rmSync(sessionDir, { recursive: true, force: true });
+			}
+		});
+
+		it("keeps user-scoped extensions trusted regardless of project trust", async () => {
+			for (const projectTrusted of [true, false]) {
+				const { dir, agentDir } = tmpDir(`user-extension-${projectTrusted}`);
+				const settingsManager = SettingsManager.create(dir, agentDir, { projectTrusted });
+				const extensionsResult = await createTestExtensionsResult([
+					{ name: "user-ext", factory: extensionWithTool("user_helper") },
+				]);
+				scopeExtensions(extensionsResult, "user");
+				const resourceLoader = createTestResourceLoader({ extensionsResult });
+				const { session, dir: sessionDir } = await createControlledSession({
+					resourceLoader,
+					settingsManager,
+				});
+				try {
+					await session.whenCapabilitiesReady();
+
+					const view = session.inspectCapabilityCatalog();
+					expect(view.descriptors.find((descriptor) => descriptor.kind === "extension")?.trusted).toBe(true);
+					expect(
+						view.descriptors.find((descriptor) => descriptor.kind === "extension_tool")?.trusted,
+					).toBe(true);
+
+					const bindingIds = session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id) ?? [];
+					expect(bindingIds.some((id) => id.startsWith("extension:"))).toBe(true);
+					expect(bindingIds.some((id) => id.startsWith("extension_tool:"))).toBe(true);
+					expect(session.getAllTools().map((tool) => tool.name)).toContain("user_helper");
+					expect(session.getActiveToolNames()).toContain("user_helper");
+				} finally {
+					session.dispose();
+					if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+					if (existsSync(sessionDir)) rmSync(sessionDir, { recursive: true, force: true });
+				}
+			}
+		});
+
+		it("does not weaken parent governance: denying the extension kind also denies its tool in a trusted project", async () => {
+			const { dir, agentDir } = tmpDir("trusted-project-deny");
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					capabilities: {
+						defaultProfile: "default",
+						profiles: {
+							default: {
+								rules: [
+									{ selector: { kind: "builtin_tool" }, action: "allow" },
+									{ selector: { kind: "extension" }, action: "deny" },
+								],
+							},
+						},
+					},
+				}),
+			);
+			const settingsManager = SettingsManager.create(dir, agentDir, { projectTrusted: true });
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper") },
+			]);
+			scopeExtensions(extensionsResult, "project");
+			const resourceLoader = createTestResourceLoader({ extensionsResult });
+			const { session, dir: sessionDir } = await createControlledSession({
+				resourceLoader,
+				settingsManager,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+
+				// The extension and its tool are trusted (trusted project), but the
+				// profile deny on the extension kind still governs the child tool.
+				const view = session.inspectCapabilityCatalog();
+				const extensionDescriptor = view.descriptors.find((descriptor) => descriptor.kind === "extension");
+				expect(extensionDescriptor?.trusted).toBe(true);
+				const extToolDescriptor = view.descriptors.find((descriptor) => descriptor.kind === "extension_tool");
+				expect(extToolDescriptor?.trusted).toBe(true);
+				expect(extToolDescriptor?.parentId).toBe(extensionDescriptor?.id);
+
+				const bindingIds = session.getActiveCapabilityBinding()?.descriptors.map((ref) => ref.id) ?? [];
+				expect(bindingIds.some((id) => id.startsWith("extension_tool:"))).toBe(false);
+				expect(session.getAllTools().map((tool) => tool.name)).not.toContain("ext_helper");
+				expect(session.getActiveToolNames()).not.toContain("ext_helper");
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+				if (existsSync(sessionDir)) rmSync(sessionDir, { recursive: true, force: true });
 			}
 		});
 	});
