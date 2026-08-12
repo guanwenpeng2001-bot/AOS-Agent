@@ -92,10 +92,18 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
-		} else if (arg === "--model-route" && i + 1 < args.length) {
-			result.modelRoute = args[++i];
-		} else if (arg === "--model-role" && i + 1 < args.length) {
-			result.modelRole = args[++i];
+		} else if (arg === "--model-route") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.modelRoute = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--model-route requires a value" });
+			}
+		} else if (arg === "--model-role") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.modelRole = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--model-role requires a value" });
+			}
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
