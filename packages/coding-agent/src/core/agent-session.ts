@@ -3803,6 +3803,7 @@ export class AgentSession {
 					source: tool.sourceInfo,
 					exposedToolName: tool.definition.name,
 					parentId: extensionDescriptorId,
+					trusted: this._staticCandidateTrust(tool.sourceInfo),
 					revisionInput: this._toolDefinitionRevisionInput(tool.definition),
 				});
 			}
@@ -3827,6 +3828,7 @@ export class AgentSession {
 				localName: skill.name,
 				sourceIdentity: source.source,
 				source,
+				trusted: this._staticCandidateTrust(source),
 				revisionInput: this._skillRevisionInput(skill),
 			});
 		}
@@ -3855,6 +3857,7 @@ export class AgentSession {
 				localName,
 				sourceIdentity: extension.sourceInfo.source,
 				source: extension.sourceInfo,
+				trusted: this._staticCandidateTrust(extension.sourceInfo),
 				revisionInput: {
 					name: localName,
 					source: extension.sourceInfo,
@@ -3863,6 +3866,17 @@ export class AgentSession {
 			});
 		}
 		return candidates;
+	}
+
+	/**
+	 * Explicit trust for static project resources. Project-scoped candidates
+	 * inherit the project trust decision so a trusted project's extensions, their
+	 * tools, and skills become trusted; untrusted projects stay force-denied. All
+	 * other scopes (user/temporary) leave trust undefined so the registry's
+	 * defaultTrustFor behavior is preserved exactly.
+	 */
+	private _staticCandidateTrust(source: SourceInfo): boolean | undefined {
+		return source.scope === "project" ? this.settingsManager.isProjectTrusted() : undefined;
 	}
 
 	/**
