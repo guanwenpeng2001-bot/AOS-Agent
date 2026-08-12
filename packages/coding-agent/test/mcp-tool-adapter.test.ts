@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspect } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
 import type { AgentToolResult } from "@aos-agent/agent-core";
 import {
@@ -11,6 +14,8 @@ import {
 	type MCPToolDefinitionResult,
 	type MCPToolMappingOptions,
 } from "../src/core/mcp-tool-adapter.ts";
+import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import { CapabilityRegistry } from "../src/core/capability-registry.ts";
 import { MCPError, type MCPCallResult } from "../src/core/mcp-types.ts";
 
 function tool(name: string, overrides: Partial<Tool> = {}): Tool {
@@ -22,10 +27,18 @@ function tool(name: string, overrides: Partial<Tool> = {}): Tool {
 	};
 }
 
+const testAgentDir = mkdtempSync(join(tmpdir(), "aos-mcp-tool-adapter-"));
+const registry = new CapabilityRegistry(CapabilityPublicIdentity.loadSync(testAgentDir));
+
+afterAll(() => {
+	rmSync(testAgentDir, { recursive: true, force: true });
+});
+
 const MAPPING: MCPToolMappingOptions = {
 	serverId: "docs",
 	sourceIdentity: "mcp:docs",
-	parentDescriptorId: "mcp_server:mcp:docs",
+	parentDescriptorId: registry.createCapabilityId("mcp_server", "mcp:docs", "docs"),
+	registry,
 };
 
 function caller(
@@ -51,8 +64,8 @@ describe("createMCPToolMapping", () => {
 		expect(mapping.toolName).toBe("list");
 		expect(mapping.serverId).toBe("docs");
 		expect(mapping.sourceIdentity).toBe("mcp:docs");
-		expect(mapping.parentDescriptorId).toBe("mcp_server:mcp:docs");
-		expect(mapping.descriptorId).toBe("mcp_tool:mcp:docs:list");
+		expect(mapping.parentDescriptorId).toBe(registry.createCapabilityId("mcp_server", "mcp:docs", "docs"));
+		expect(mapping.descriptorId).toBe(registry.createCapabilityId("mcp_tool", "mcp:docs", "list"));
 		expect(mapping.revisionInput).toEqual({
 			name: "list",
 			description: "description for list",
@@ -68,10 +81,13 @@ describe("createMCPToolMapping", () => {
 		const mapping = createMCPToolMapping(tool("list"), {
 			serverId: "docs",
 			sourceIdentity: "mcp:global:docs",
-			parentDescriptorId: "mcp_server:mcp:global:docs",
+			parentDescriptorId: registry.createCapabilityId("mcp_server", "mcp:global:docs", "docs"),
+			registry,
 		});
-		expect(mapping.parentDescriptorId).toBe("mcp_server:mcp:global:docs");
-		expect(mapping.descriptorId).toBe("mcp_tool:mcp:global:docs:list");
+		expect(mapping.parentDescriptorId).toBe(
+			registry.createCapabilityId("mcp_server", "mcp:global:docs", "docs"),
+		);
+		expect(mapping.descriptorId).toBe(registry.createCapabilityId("mcp_tool", "mcp:global:docs", "list"));
 	});
 
 	it("keeps the revision input free of credentials", () => {
@@ -86,7 +102,19 @@ describe("createMCPToolMapping", () => {
 			MAPPING,
 		);
 		expect(JSON.stringify(mapping.revisionInput)).not.toContain("secret");
-		expect(mapping.descriptorId).toBe("mcp_tool:mcp:docs:list");
+		expect(mapping.descriptorId).toBe(registry.createCapabilityId("mcp_tool", "mcp:docs", "list"));
+	});
+
+	it("derives an opaque descriptor id when the internal source is an absolute path", () => {
+		const sourceIdentity = "C:\\audit-private\\capability-source";
+		const mapping = createMCPToolMapping(tool("list"), {
+			...MAPPING,
+			sourceIdentity,
+			parentDescriptorId: registry.createCapabilityId("mcp_server", sourceIdentity, "docs"),
+		});
+		expect(mapping.descriptorId).toMatch(/^mcp_tool:source:/);
+		expect(mapping.descriptorId).not.toContain("audit-private");
+		expect(mapping.parentDescriptorId).not.toContain("audit-private");
 	});
 
 	it("rejects empty, double-underscore, whitespace, and colon segments", () => {

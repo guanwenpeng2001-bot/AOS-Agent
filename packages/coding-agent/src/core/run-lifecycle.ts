@@ -17,7 +17,8 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { AgentSessionEvent } from "./agent-session.ts";
-import type { SessionEntry } from "./session-manager.ts";
+import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
+import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
 export type RunId = string;
@@ -556,6 +557,392 @@ export function foldCapabilityBindingEntries(
 	return bindings;
 }
 
+// ---- Public-safe serialization --------------------------------------------------
+
+/**
+ * Current-format opaque capability values are fixed-width base64url HMAC tokens
+ * under a `source:`/`rev:`/`binding:` prefix, derived by the installation
+ * identity. Legacy or malformed ids — raw source text, paths, URL credentials,
+ * keyless digests — never match these patterns, so the public-safe serializers
+ * below omit them instead of ever echoing source-derived text. The internal
+ * replay path is untouched: raw legacy ids stay available so run.resume can
+ * still fail closed against a recorded binding.
+ */
+const OPAQUE_BINDING_ID_PATTERN = /^binding:[A-Za-z0-9_-]{43}$/;
+const OPAQUE_REVISION_PATTERN = /^rev:[A-Za-z0-9_-]{43}$/;
+const OPAQUE_DESCRIPTOR_ID_PATTERN = /^([a-z_]+):source:[A-Za-z0-9_-]{43}:(.+)$/;
+
+const OPAQUE_CAPABILITY_KINDS = new Set([
+	"builtin_tool",
+	"extension_tool",
+	"sdk_tool",
+	"skill",
+	"extension",
+	"mcp_server",
+	"mcp_tool",
+]);
+
+/** True when {@link value} is a current-format opaque capability binding id. */
+export function isOpaqueCapabilityBindingId(value: unknown): value is string {
+	return typeof value === "string" && OPAQUE_BINDING_ID_PATTERN.test(value);
+}
+
+/** True when {@link value} is a current-format opaque capability revision. */
+export function isOpaqueCapabilityRevision(value: unknown): value is string {
+	return typeof value === "string" && OPAQUE_REVISION_PATTERN.test(value);
+}
+
+/** True when {@link value} is a current-format opaque capability descriptor id. */
+export function isOpaqueCapabilityDescriptorId(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const match = OPAQUE_DESCRIPTOR_ID_PATTERN.exec(value);
+	return match !== null && OPAQUE_CAPABILITY_KINDS.has(match[1]);
+}
+
+export interface PublicCapabilityBindingDescriptorRef {
+	id: string;
+	revision: string;
+	exposedToolName?: string;
+}
+
+export interface PublicCapabilityBindingLedgerRecord {
+	id: string;
+	profile: string;
+	createdAt: string;
+	descriptors: ReadonlyArray<PublicCapabilityBindingDescriptorRef>;
+	decisionSummary: { allowed: number; awaitingApproval: number; denied: number };
+	toolAllowlist: ReadonlyArray<string>;
+}
+
+export interface PublicRunRecord {
+	id: RunId;
+	sessionId: SessionId;
+	sourceRunId?: RunId;
+	/** Only present when the source binding id is a current-format opaque value. */
+	previousBindingId?: string;
+	attempt: number;
+	status: RunStatus;
+	model: RunModelReference;
+	startedAt?: string;
+	endedAt?: string;
+	terminalError?: AutomationError;
+}
+
+export interface PublicRunReceipt {
+	runId: RunId;
+	sessionId: SessionId;
+	status: RunTerminalStatus;
+	finalText?: string;
+	usage: RunUsage;
+	terminalError?: AutomationError;
+	contextSnapshotId?: string;
+	/** Only present when the binding id is a current-format opaque value. */
+	capabilityBindingId?: string;
+}
+
+/**
+ * Public Context receipt. Source ids, paths, labels and reference ids stay
+ * internal because each can contain an extension or configured-package source
+ * identity. Capability provenance remains available through opaque ids.
+ */
+export type PublicContextSourceReceipt = Omit<
+	ContextSourceReceipt,
+	"path" | "sourceId" | "label" | "refId" | "capabilityId" | "capabilityRevision" | "capabilityBindingId"
+> & {
+	capabilityId?: string;
+	capabilityRevision?: string;
+	capabilityBindingId?: string;
+};
+
+/** Public Context snapshot. It never contains a raw resource source identity. */
+export type PublicContextSnapshot = Omit<ContextSnapshot, "sources"> & {
+	sources: PublicContextSourceReceipt[];
+};
+
+/** Public Context drift record. The internal source id and path are omitted. */
+export type PublicContextSourceDrift = Omit<ContextSourceDrift, "path" | "sourceId">;
+
+/** The only custom ledger payloads that can cross the public Session boundary. */
+export type PublicSessionCustomData =
+	| { schemaVersion: 1; binding: PublicCapabilityBindingLedgerRecord }
+	| { schemaVersion: 1; kind: "accepted"; record: PublicRunRecord }
+	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
+	| { schemaVersion: 1; kind: "terminal"; receipt: PublicRunReceipt; endedAt: string };
+
+/** Public custom entry. Arbitrary extension metadata is deliberately absent. */
+export type PublicSessionCustomEntry = Omit<Extract<SessionEntry, { type: "custom" }>, "data"> & {
+	data?: PublicSessionCustomData;
+};
+
+/**
+ * Public, capability-safe Session entry. Custom entry data is limited to the
+ * serializer's known safe ledger schema; extension details are omitted.
+ */
+export type PublicSessionEntry =
+	| Extract<SessionEntry, { type: "message" | "thinking_level_change" | "model_change" | "label" | "session_info" }>
+	| Omit<Extract<SessionEntry, { type: "compaction" }>, "details">
+	| Omit<Extract<SessionEntry, { type: "branch_summary" }>, "details">
+	| Omit<Extract<SessionEntry, { type: "custom_message" }>, "details">
+	| PublicSessionCustomEntry;
+
+/** Public, capability-safe recursive session tree view for RPC and client consumers. */
+export interface PublicSessionTreeNode {
+	entry: PublicSessionEntry;
+	children: PublicSessionTreeNode[];
+	label?: string;
+	labelTimestamp?: string;
+}
+
+type RunTerminalStreamEvent = Extract<RunStreamEvent, { receipt: RunReceipt }>;
+type RunEventStreamEvent = Extract<RunStreamEvent, { type: "run.event" }>;
+
+/** Public Session event with Session entries passed through the shared serializer. */
+export type PublicAgentSessionEvent =
+	| Exclude<AgentSessionEvent, { type: "entry_appended" }>
+	| (Omit<Extract<AgentSessionEvent, { type: "entry_appended" }>, "entry"> & { entry: PublicSessionEntry });
+
+/** Run stream event whose receipt and nested Session event are safe for public output. */
+export type PublicRunStreamEvent =
+	| (Omit<RunEventStreamEvent, "event"> & { event: PublicAgentSessionEvent })
+	| (Omit<RunTerminalStreamEvent, "receipt"> & { receipt: PublicRunReceipt })
+	| Exclude<RunStreamEvent, RunTerminalStreamEvent | RunEventStreamEvent>;
+
+function isPublicDescriptorRef(
+	ref: CapabilityBindingLedgerRecord["descriptors"][number],
+): ref is PublicCapabilityBindingDescriptorRef {
+	return isOpaqueCapabilityDescriptorId(ref.id) && isOpaqueCapabilityRevision(ref.revision);
+}
+
+/**
+ * Public-safe view of a capability binding ledger record. Returns undefined when
+ * the binding identity is a legacy or malformed raw id (the binding is
+ * unavailable); otherwise it omits descriptor refs whose id or revision is not a
+ * current-format opaque value. Never emits source/path/URL-derived text.
+ */
+export function serializePublicCapabilityBinding(
+	binding: CapabilityBindingLedgerRecord,
+): PublicCapabilityBindingLedgerRecord | undefined {
+	if (!isOpaqueCapabilityBindingId(binding.id)) return undefined;
+	return {
+		id: binding.id,
+		profile: binding.profile,
+		createdAt: binding.createdAt,
+		descriptors: binding.descriptors.filter(isPublicDescriptorRef),
+		decisionSummary: {
+			allowed: binding.decisionSummary.allowed,
+			awaitingApproval: binding.decisionSummary.awaitingApproval,
+			denied: binding.decisionSummary.denied,
+		},
+		toolAllowlist: [...binding.toolAllowlist],
+	};
+}
+
+/**
+ * Public-safe view of a run record. The previous binding id is only emitted when
+ * it is a current-format opaque value; legacy/malformed ids are omitted and the
+ * terminal error message is always redacted.
+ */
+export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
+	const copy: PublicRunRecord = {
+		id: record.id,
+		sessionId: record.sessionId,
+		attempt: record.attempt,
+		status: record.status,
+		model: { ...record.model },
+	};
+	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
+	if (record.previousBindingId !== undefined && isOpaqueCapabilityBindingId(record.previousBindingId)) {
+		copy.previousBindingId = record.previousBindingId;
+	}
+	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
+	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
+	if (record.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(record.terminalError);
+	return copy;
+}
+
+/**
+ * Public-safe view of a run receipt. The capability binding id is only emitted
+ * when it is a current-format opaque value; legacy/malformed ids are omitted and
+ * the terminal error message is always redacted.
+ */
+export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt {
+	const copy: PublicRunReceipt = {
+		runId: receipt.runId,
+		sessionId: receipt.sessionId,
+		status: receipt.status,
+		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
+	};
+	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
+	if (receipt.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(receipt.terminalError);
+	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
+	if (receipt.capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(receipt.capabilityBindingId)) {
+		copy.capabilityBindingId = receipt.capabilityBindingId;
+	}
+	return copy;
+}
+
+/** Serialize Context metadata without source paths or source identities. */
+export function serializePublicContextSource(source: ContextSourceReceipt): PublicContextSourceReceipt {
+	const {
+		path: _path,
+		sourceId: _sourceId,
+		label: _label,
+		refId: _refId,
+		capabilityId,
+		capabilityRevision,
+		capabilityBindingId,
+		...publicSource
+	} = source;
+	const copy: PublicContextSourceReceipt = { ...publicSource };
+	if (capabilityId !== undefined && isOpaqueCapabilityDescriptorId(capabilityId)) {
+		copy.capabilityId = capabilityId;
+	}
+	if (capabilityRevision !== undefined && isOpaqueCapabilityRevision(capabilityRevision)) {
+		copy.capabilityRevision = capabilityRevision;
+	}
+	if (capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(capabilityBindingId)) {
+		copy.capabilityBindingId = capabilityBindingId;
+	}
+	return copy;
+}
+
+/** Serialize a Context snapshot through the common public capability boundary. */
+export function serializePublicContextSnapshot(snapshot: ContextSnapshot): PublicContextSnapshot {
+	return {
+		...snapshot,
+		sources: snapshot.sources.map((source) => serializePublicContextSource(source)),
+	};
+}
+
+/** Serialize Context drift without a raw source id or path. */
+export function serializePublicContextDrift(drift: ContextSourceDrift): PublicContextSourceDrift {
+	const { path: _path, sourceId: _sourceId, ...publicDrift } = drift;
+	return publicDrift;
+}
+
+/**
+ * Public terminal errors retain their stable programmatic code and retryability,
+ * but never reuse internal free text. The existing internal redactor removes
+ * credential-shaped values but deliberately preserves ordinary text, including
+ * file paths, so it cannot serve as this public serialization boundary.
+ */
+export function serializePublicAutomationError(
+	error: AutomationError,
+	message = "Run failed.",
+): AutomationError {
+	return createAutomationError(error.code, message, error.retryable);
+}
+
+/** Return a public Session event through the common capability-safe boundary. */
+export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAgentSessionEvent {
+	switch (event.type) {
+		case "entry_appended":
+			return { ...event, entry: serializePublicSessionEntry(event.entry) };
+		case "agent_end":
+			return {
+				...event,
+				messages: event.messages.map((message) =>
+					message.role === "assistant" && message.stopReason === "error"
+						? { ...message, errorMessage: "Agent run failed." }
+						: message,
+				),
+			};
+		case "compaction_end":
+			return event.errorMessage === undefined ? event : { ...event, errorMessage: "Operation failed." };
+		case "auto_retry_start":
+			return { ...event, errorMessage: "Operation failed." };
+		case "auto_retry_end":
+			return event.finalError === undefined ? event : { ...event, finalError: "Operation failed." };
+		case "summarization_retry_scheduled":
+			return { ...event, errorMessage: "Operation failed." };
+		default:
+			return event;
+	}
+}
+
+/** Return a public run event with its receipt and nested Session event serialized. */
+export function serializePublicRunStreamEvent(event: RunStreamEvent): PublicRunStreamEvent {
+	if (event.type === "run.event") {
+		return { ...event, event: serializePublicSessionEvent(event.event) };
+	}
+	if ("receipt" in event) {
+		return { ...event, receipt: serializePublicRunReceipt(event.receipt) };
+	}
+	return { ...event };
+}
+
+/**
+ * Return a public-safe copy of a Session entry. Capability and run ledgers are
+ * decoded before output so historic raw identities remain internally replayable
+ * but cannot escape. Other extension-owned custom metadata is omitted because
+ * it has no stable public contract; ordinary session messages remain unchanged.
+ */
+export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionEntry {
+	switch (entry.type) {
+		case "custom":
+			return serializePublicCustomEntry(entry);
+		case "custom_message": {
+			const { details: _details, ...publicEntry } = entry;
+			return publicEntry;
+		}
+		case "compaction":
+		case "branch_summary": {
+			const { details: _details, ...publicEntry } = entry;
+			return publicEntry;
+		}
+		default:
+			return { ...entry };
+	}
+}
+
+/** Recursively serialize a Session tree without exposing custom ledger metadata. */
+export function serializePublicSessionTreeNode(node: SessionTreeNode): PublicSessionTreeNode {
+	const copy: PublicSessionTreeNode = {
+		entry: serializePublicSessionEntry(node.entry),
+		children: node.children.map((child) => serializePublicSessionTreeNode(child)),
+	};
+	if (node.label !== undefined) copy.label = node.label;
+	if (node.labelTimestamp !== undefined) copy.labelTimestamp = node.labelTimestamp;
+	return copy;
+}
+
+function serializePublicCustomEntry(
+	entry: Extract<SessionEntry, { type: "custom" }>,
+): PublicSessionCustomEntry {
+	const { data: _data, ...publicEntry } = entry;
+	if (entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE) {
+		const parsed = parseCapabilityBindingEntry(entry.data, entry.id);
+		if (!parsed.ok) return publicEntry;
+		const binding = serializePublicCapabilityBinding(parsed.entry.binding);
+		return binding === undefined
+			? publicEntry
+			: { ...publicEntry, data: { schemaVersion: CAPABILITY_BINDING_SCHEMA_VERSION, binding } };
+	}
+	if (entry.customType !== RUN_LEDGER_CUSTOM_TYPE) return publicEntry;
+
+	const parsed = parseLedgerEntry(entry.data);
+	if (!parsed.ok) return publicEntry;
+	switch (parsed.entry.kind) {
+		case "accepted":
+			return {
+				...publicEntry,
+				data: { schemaVersion: 1, kind: "accepted", record: serializePublicRunRecord(parsed.entry.record) },
+			};
+		case "started":
+			return { ...publicEntry, data: { ...parsed.entry } };
+		case "terminal":
+			return {
+				...publicEntry,
+				data: {
+					schemaVersion: 1,
+					kind: "terminal",
+					receipt: serializePublicRunReceipt(parsed.entry.receipt),
+					endedAt: parsed.entry.endedAt,
+				},
+			};
+	}
+}
+
 // ---- Text and usage helpers --------------------------------------------------
 
 function extractTextContent(content: unknown): string {
@@ -732,9 +1119,11 @@ class RunHandleImpl implements RunHandle {
 			this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
 			return undefined;
 		}
-		// Redact the terminal error once so the persisted receipt, the retained
-		// record, and the emitted terminal event all carry a secret-free message.
-		const terminalError = input.terminalError !== undefined ? redactAutomationError(input.terminalError) : undefined;
+		// Store only a fixed public-safe terminal error. Run ledgers can be read
+		// after process restart, so retaining free text here could preserve local
+		// paths or source identities even when every live RPC serializer is safe.
+		const terminalError =
+			input.terminalError !== undefined ? serializePublicAutomationError(input.terminalError) : undefined;
 		const status: RunTerminalStatus = this._cancelled ? "cancelled" : input.outcome;
 		const endedAt = this.coordinator.now();
 		const receipt: RunReceipt = {

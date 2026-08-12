@@ -11,16 +11,27 @@ import {
 	createAutomationError,
 	createRunLifecycleCoordinator,
 	foldCapabilityBindingEntries,
+	isOpaqueCapabilityBindingId,
+	isOpaqueCapabilityDescriptorId,
+	isOpaqueCapabilityRevision,
 	isTerminalStatus,
 	redactAutomationError,
 	redactErrorText,
 	RUN_LEDGER_CUSTOM_TYPE,
+	serializePublicCapabilityBinding,
+	serializePublicRunReceipt,
+	serializePublicRunRecord,
+	serializePublicRunStreamEvent,
+	serializePublicSessionEntry,
+	serializePublicSessionTreeNode,
 	type AutomationError,
 	type CapabilityBindingLedgerRecord,
 	type RunHandle,
 	type RunLedgerSession,
 	type RunLifecycleCoordinator,
 	type RunModelReference,
+	type RunReceipt,
+	type RunRecord,
 	type RunReservation,
 	type RunResult,
 } from "../src/core/run-lifecycle.ts";
@@ -193,7 +204,7 @@ describe("state machine", () => {
 		expect(run.receipt()?.status).toBe("cancelled");
 	});
 
-	it("settles a failed run with a structured terminal error", () => {
+		it("settles a failed run with a structured public-safe terminal error", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.start();
@@ -202,7 +213,11 @@ describe("state machine", () => {
 			terminalError: createAutomationError("host_not_initialized", "boom", false),
 		});
 		expect(terminal?.type).toBe("run.failed");
-		expect(run.receipt()?.terminalError).toEqual({ code: "host_not_initialized", message: "boom", retryable: false });
+		expect(run.receipt()?.terminalError).toEqual({
+			code: "host_not_initialized",
+			message: "Run failed.",
+			retryable: false,
+		});
 		expect(run.record.terminalError?.code).toBe("host_not_initialized");
 	});
 
@@ -216,7 +231,7 @@ describe("state machine", () => {
 });
 
 describe("model_error terminal code", () => {
-	it("appears on the run.failed receipt and terminal event", () => {
+		it("stores a fixed public-safe message on the run.failed receipt and terminal event", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.start();
@@ -226,11 +241,11 @@ describe("model_error terminal code", () => {
 		});
 		expect(terminal?.type).toBe("run.failed");
 		expect(terminal).toMatchObject({
-			receipt: { status: "failed", terminalError: { code: "model_error", message: "529 overloaded_error: Overloaded" } },
+			receipt: { status: "failed", terminalError: { code: "model_error", message: "Run failed." } },
 		});
 		expect(run.receipt()?.terminalError).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 		expect(run.record.status).toBe("failed");
@@ -253,7 +268,7 @@ describe("model_error terminal code", () => {
 		const persisted = (terminalEntry?.data as { receipt?: { terminalError?: AutomationError } }).receipt?.terminalError;
 		expect(persisted).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 	});
@@ -273,7 +288,7 @@ describe("model_error terminal code", () => {
 		expect(result?.record.status).toBe("failed");
 		expect(result?.receipt?.terminalError).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 		expect(result?.record.terminalError?.code).toBe("model_error");
@@ -1004,7 +1019,7 @@ describe("redacted error serialization", () => {
 });
 
 describe("terminal error redaction", () => {
-	it("redacts a terminalError before persistence, emission and the retained record", () => {
+		it("replaces a terminalError before persistence, emission and the retained record", () => {
 		const session = makeSession();
 		const coordinator = makeCoordinator(session);
 		const run = accept(coordinator.reserve(), "r1");
@@ -1022,7 +1037,7 @@ describe("terminal error redaction", () => {
 		const wireMessage = terminal.receipt.terminalError?.message ?? "";
 		expect(wireMessage).not.toContain("secret");
 		expect(wireMessage).not.toContain("abc123");
-		expect(wireMessage).toContain("[redacted]");
+		expect(wireMessage).toBe("Run failed.");
 
 		// retained record is redacted
 		expect(run.record.terminalError?.message).not.toContain("secret");
@@ -1037,6 +1052,7 @@ describe("terminal error redaction", () => {
 		expect(persisted?.message).toBeDefined();
 		expect(persisted?.message).not.toContain("secret");
 		expect(persisted?.message).not.toContain("abc123");
+		expect(persisted?.message).toBe("Run failed.");
 	});
 
 	it("redacts a hand-written terminal error when replayed from the ledger", () => {
@@ -1063,5 +1079,377 @@ describe("terminal error redaction", () => {
 		const result = coordinator.getRun("r-raw");
 		expect(result?.receipt?.terminalError?.message).toBe("[redacted] token=[redacted]");
 		expect(result?.record.terminalError?.message).toBe("[redacted] token=[redacted]");
+	});
+});
+
+// ---- Public-safe serialization --------------------------------------------------
+
+// P0 public-identity markers from the hardening PR: fixed, searchable values that
+// must never survive a public-safe serializer, whether as raw source, a path, or
+// a URL credential/query.
+const PATH_MARKER_WIN = "C:\\audit-private\\capability-source";
+const PATH_MARKER_POSIX = "/audit-private/capability-source";
+const URL_USERINFO_MARKER = "audit-user:audit-secret";
+const URL_QUERY_MARKER = "token=audit-query-secret";
+
+/** 43-char base64url token matching the installation identity's fixed-width HMAC output. */
+const OPAQUE_TOKEN = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+const OPAQUE_BINDING_ID = `binding:${OPAQUE_TOKEN}`;
+const OPAQUE_REVISION = `rev:${OPAQUE_TOKEN}`;
+const OPAQUE_DESCRIPTOR_ID = `builtin_tool:source:${OPAQUE_TOKEN}:Read`;
+
+/**
+ * Assert a value's JSON.stringify output is free of path and URL credential
+ * markers. Windows paths are backslash-escaped inside JSON, so the distinctive
+ * path fragments are matched rather than the literal single-backslash marker.
+ */
+function expectNoPublicMarkers(value: unknown): void {
+	const json = JSON.stringify(value) ?? "undefined";
+	expect(json).not.toContain(PATH_MARKER_POSIX);
+	expect(json).not.toContain(URL_USERINFO_MARKER);
+	expect(json).not.toContain(URL_QUERY_MARKER);
+	expect(json).not.toContain("audit-private");
+	expect(json).not.toContain("capability-source");
+}
+
+/** Sanity check that a legacy fixture really embeds all four markers. */
+function expectRawLedgerCarriesMarkers(value: unknown): void {
+	const json = JSON.stringify(value) ?? "";
+	expect(json).toContain("audit-private");
+	expect(json).toContain("capability-source");
+	expect(json).toContain(URL_USERINFO_MARKER);
+	expect(json).toContain(URL_QUERY_MARKER);
+}
+
+/** A legacy capability.binding ledger record whose ids embed raw source text. */
+const LEGACY_BINDING: CapabilityBindingLedgerRecord = {
+	id: `binding:default:${URL_QUERY_MARKER}`,
+	profile: "default",
+	createdAt: "2026-08-10T12:00:00.000Z",
+	descriptors: [
+		{ id: `extension:${PATH_MARKER_POSIX}:LegacyCap`, revision: "rev:1", exposedToolName: "LegacyTool" },
+		{
+			id: `skill:${URL_USERINFO_MARKER}:LegacySkill`,
+			revision: `rev:${PATH_MARKER_WIN}`,
+			exposedToolName: "LegacySkillTool",
+		},
+	],
+	decisionSummary: { allowed: 2, awaitingApproval: 0, denied: 0 },
+	toolAllowlist: ["LegacyTool", "LegacySkillTool"],
+};
+
+/** A current-format opaque binding whose descriptor refs are all public-safe. */
+const OPAQUE_BINDING: CapabilityBindingLedgerRecord = {
+	id: OPAQUE_BINDING_ID,
+	profile: "default",
+	createdAt: "2026-08-11T00:00:00.000Z",
+	descriptors: [{ id: OPAQUE_DESCRIPTOR_ID, revision: OPAQUE_REVISION, exposedToolName: "Read" }],
+	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+	toolAllowlist: ["Read"],
+};
+
+/** An opaque binding that also carries a legacy descriptor ref carrying a path. */
+const MIXED_BINDING: CapabilityBindingLedgerRecord = {
+	id: OPAQUE_BINDING_ID,
+	profile: "default",
+	createdAt: "2026-08-11T00:00:00.000Z",
+	descriptors: [
+		{ id: OPAQUE_DESCRIPTOR_ID, revision: OPAQUE_REVISION, exposedToolName: "Read" },
+		{ id: `extension:${PATH_MARKER_POSIX}:LegacyCap`, revision: "rev:1", exposedToolName: "LegacyTool" },
+	],
+	decisionSummary: { allowed: 2, awaitingApproval: 0, denied: 0 },
+	toolAllowlist: ["Read", "LegacyTool"],
+};
+
+function legacyRecord(sessionId: string): RunRecord {
+	return {
+		id: "r-legacy",
+		sessionId,
+		sourceRunId: "r-source",
+		previousBindingId: LEGACY_BINDING.id,
+		attempt: 2,
+		status: "completed",
+		model: MODEL,
+	};
+}
+
+function legacyReceipt(sessionId: string): RunReceipt {
+	return {
+		runId: "r-legacy",
+		sessionId,
+		status: "completed",
+		usage: { input: 1, output: 1, total: 2 },
+		sessionFile: PATH_MARKER_WIN,
+		terminalError: createAutomationError(
+			"model_error",
+			`${PATH_MARKER_POSIX} via https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+			false,
+		),
+		capabilityBindingId: LEGACY_BINDING.id,
+	};
+}
+
+describe("opaque capability identity predicates", () => {
+	it("validates current-format opaque binding ids", () => {
+		expect(OPAQUE_TOKEN).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(isOpaqueCapabilityBindingId(OPAQUE_BINDING_ID)).toBe(true);
+		expect(isOpaqueCapabilityBindingId(`binding:${OPAQUE_TOKEN.slice(0, 42)}`)).toBe(false);
+		expect(isOpaqueCapabilityBindingId("binding:default:abc123")).toBe(false);
+		expect(isOpaqueCapabilityBindingId(LEGACY_BINDING.id)).toBe(false);
+		expect(isOpaqueCapabilityBindingId(undefined)).toBe(false);
+		expect(isOpaqueCapabilityBindingId(42)).toBe(false);
+	});
+
+	it("validates current-format opaque revisions", () => {
+		expect(isOpaqueCapabilityRevision(OPAQUE_REVISION)).toBe(true);
+		expect(isOpaqueCapabilityRevision("rev:1")).toBe(false);
+		expect(isOpaqueCapabilityRevision("rev:1a2b3c4d5e6f7a8b")).toBe(false);
+		expect(isOpaqueCapabilityRevision(`rev:${URL_QUERY_MARKER}`)).toBe(false);
+	});
+
+	it("validates current-format opaque descriptor ids", () => {
+		expect(isOpaqueCapabilityDescriptorId(OPAQUE_DESCRIPTOR_ID)).toBe(true);
+		expect(isOpaqueCapabilityDescriptorId("builtin_tool:core:read")).toBe(false);
+		expect(isOpaqueCapabilityDescriptorId(`extension:${PATH_MARKER_POSIX}:LegacyCap`)).toBe(false);
+		expect(isOpaqueCapabilityDescriptorId(`skill:${URL_USERINFO_MARKER}:LegacySkill`)).toBe(false);
+		expect(isOpaqueCapabilityDescriptorId(`mcp_tool:source:${OPAQUE_TOKEN}:a:b`)).toBe(true);
+	});
+});
+
+describe("public-safe capability binding serialization", () => {
+	it("returns undefined for a legacy binding record and never echoes source text", () => {
+		expectRawLedgerCarriesMarkers(LEGACY_BINDING);
+
+		expect(serializePublicCapabilityBinding(LEGACY_BINDING)).toBeUndefined();
+		expectNoPublicMarkers(serializePublicCapabilityBinding(LEGACY_BINDING));
+	});
+
+	it("preserves a current-format opaque binding through the public serializer", () => {
+		const publicBinding = serializePublicCapabilityBinding(OPAQUE_BINDING);
+		expect(publicBinding).toEqual(OPAQUE_BINDING);
+		expectNoPublicMarkers(publicBinding);
+	});
+
+	it("omits legacy descriptor refs from an otherwise opaque binding", () => {
+		const publicBinding = serializePublicCapabilityBinding(MIXED_BINDING);
+		expect(publicBinding).toBeDefined();
+		expect(publicBinding?.id).toBe(OPAQUE_BINDING_ID);
+		expect(publicBinding?.descriptors).toEqual([
+			{ id: OPAQUE_DESCRIPTOR_ID, revision: OPAQUE_REVISION, exposedToolName: "Read" },
+		]);
+		expectNoPublicMarkers(publicBinding);
+	});
+});
+
+describe("public-safe run record serialization", () => {
+	it("omits a legacy previousBindingId but keeps the rest of the record", () => {
+		const record = legacyRecord("s-legacy");
+		const publicRecord = serializePublicRunRecord(record);
+		expect(publicRecord.previousBindingId).toBeUndefined();
+		expect(publicRecord.id).toBe("r-legacy");
+		expect(publicRecord.sessionId).toBe("s-legacy");
+		expect(publicRecord.sourceRunId).toBe("r-source");
+		expect(publicRecord.attempt).toBe(2);
+		expect(publicRecord.status).toBe("completed");
+		expect(publicRecord.model).toEqual(MODEL);
+		expectNoPublicMarkers(publicRecord);
+	});
+
+	it("preserves a current-format opaque previousBindingId", () => {
+		const publicRecord = serializePublicRunRecord({
+			id: "r-opaque",
+			sessionId: "s-opaque",
+			sourceRunId: "r-source",
+			previousBindingId: OPAQUE_BINDING_ID,
+			attempt: 1,
+			status: "running",
+			model: MODEL,
+		});
+		expect(publicRecord.previousBindingId).toBe(OPAQUE_BINDING_ID);
+		expectNoPublicMarkers(publicRecord);
+	});
+
+	it("replaces a terminal error with a fixed public-safe message", () => {
+		const publicRecord = serializePublicRunRecord({
+			id: "r-err",
+			sessionId: "s-err",
+			attempt: 1,
+			status: "failed",
+			model: MODEL,
+			terminalError: createAutomationError(
+				"model_error",
+				`${PATH_MARKER_WIN} / ${PATH_MARKER_POSIX} / https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+				false,
+			),
+		});
+		expect(publicRecord.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
+		expectNoPublicMarkers(publicRecord);
+	});
+});
+
+describe("public-safe run receipt serialization", () => {
+	it("omits a legacy capabilityBindingId but keeps the rest of the receipt", () => {
+		const receipt = legacyReceipt("s-legacy");
+		const publicReceipt = serializePublicRunReceipt(receipt);
+		expect(publicReceipt.capabilityBindingId).toBeUndefined();
+		expect("sessionFile" in publicReceipt).toBe(false);
+		expect(publicReceipt.runId).toBe("r-legacy");
+		expect(publicReceipt.sessionId).toBe("s-legacy");
+		expect(publicReceipt.status).toBe("completed");
+		expect(publicReceipt.usage).toEqual({ input: 1, output: 1, total: 2 });
+		expect(publicReceipt.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
+		expectNoPublicMarkers(publicReceipt);
+	});
+
+	it("preserves a current-format opaque capabilityBindingId", () => {
+		const publicReceipt = serializePublicRunReceipt({
+			runId: "r-opaque",
+			sessionId: "s-opaque",
+			status: "completed",
+			usage: { input: 3, output: 2, total: 5 },
+			capabilityBindingId: OPAQUE_BINDING_ID,
+		});
+		expect(publicReceipt.capabilityBindingId).toBe(OPAQUE_BINDING_ID);
+		expectNoPublicMarkers(publicReceipt);
+	});
+});
+
+describe("public-safe session ledger serialization", () => {
+	it("keeps legacy facts internal while omitting their custom data from public entries and trees", () => {
+		const session = makeSession();
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: LEGACY_BINDING });
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: legacyRecord(session.getSessionId()),
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-10T12:00:04.000Z",
+			receipt: legacyReceipt(session.getSessionId()),
+		});
+		session.appendCustomEntry("extension.private", {
+			path: PATH_MARKER_WIN,
+			url: `https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+		});
+
+		const entries = session.getEntries();
+		const publicEntries = entries.map((entry) => serializePublicSessionEntry(entry));
+		const publicTree = session.getTree().map((node) => serializePublicSessionTreeNode(node));
+
+		expectNoPublicMarkers(publicEntries);
+		expectNoPublicMarkers(publicTree);
+		const publicBinding = publicEntries.find(
+			(entry) => entry.type === "custom" && entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE,
+		);
+		expect(publicBinding).toMatchObject({ type: "custom", customType: CAPABILITY_BINDING_CUSTOM_TYPE });
+		if (publicBinding?.type !== "custom") throw new Error("expected public capability binding entry");
+		expect(publicBinding.data).toBeUndefined();
+
+		const publicTerminal = publicEntries.find(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
+				(entry.data as { kind?: string } | undefined)?.kind === "terminal",
+		);
+		if (publicTerminal?.type !== "custom") throw new Error("expected public terminal entry");
+		const receipt = (publicTerminal.data as { receipt?: Record<string, unknown> } | undefined)?.receipt;
+		expect(receipt?.capabilityBindingId).toBeUndefined();
+		expect(receipt?.sessionFile).toBeUndefined();
+		expect(receipt?.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
+
+		const privateEntry = publicEntries.find(
+			(entry) => entry.type === "custom" && entry.customType === "extension.private",
+		);
+		expect(privateEntry).toMatchObject({ type: "custom", customType: "extension.private" });
+		if (privateEntry?.type !== "custom") throw new Error("expected extension custom entry");
+		expect(privateEntry.data).toBeUndefined();
+
+		const internal = makeCoordinator(session).getRun("r-legacy");
+		expect(internal?.record.previousBindingId).toBe(LEGACY_BINDING.id);
+		expect(internal?.receipt?.sessionFile).toBe(PATH_MARKER_WIN);
+	});
+
+	it("preserves current opaque ledger references and serializes terminal stream receipts", () => {
+		const record: RunRecord = {
+			id: "r-opaque",
+			sessionId: "s-opaque",
+			previousBindingId: OPAQUE_BINDING_ID,
+			attempt: 1,
+			status: "completed",
+			model: MODEL,
+		};
+		const receipt: RunReceipt = {
+			runId: "r-opaque",
+			sessionId: "s-opaque",
+			status: "completed",
+			usage: { input: 1, output: 2, total: 3 },
+			capabilityBindingId: OPAQUE_BINDING_ID,
+		};
+		const publicAccepted = serializePublicSessionEntry({
+			type: "custom",
+			id: "accepted-entry",
+			parentId: null,
+			timestamp: "2026-08-10T12:00:00.000Z",
+			customType: RUN_LEDGER_CUSTOM_TYPE,
+			data: { schemaVersion: 1, kind: "accepted", record },
+		});
+		const publicTerminal = serializePublicRunStreamEvent({
+			type: "run.completed",
+			runId: "r-opaque",
+			sessionId: "s-opaque",
+			sequence: 1,
+			timestamp: "2026-08-10T12:00:01.000Z",
+			receipt,
+		});
+
+		expectNoPublicMarkers(publicAccepted);
+		expectNoPublicMarkers(publicTerminal);
+		const acceptedRecord =
+			publicAccepted.type === "custom"
+				? (publicAccepted.data as { record?: { previousBindingId?: string } } | undefined)?.record
+				: undefined;
+		expect(acceptedRecord?.previousBindingId).toBe(OPAQUE_BINDING_ID);
+		if (!("receipt" in publicTerminal)) throw new Error("expected terminal public run event");
+		expect(publicTerminal.receipt.capabilityBindingId).toBe(OPAQUE_BINDING_ID);
+		expect("sessionFile" in publicTerminal.receipt).toBe(false);
+	});
+});
+
+describe("public-safe serializers preserve internal replay semantics", () => {
+	it("keeps legacy raw binding ids internally for resume fail-closed while public output omits them", () => {
+		expectRawLedgerCarriesMarkers(LEGACY_BINDING);
+
+		const session = makeSession();
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: LEGACY_BINDING });
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: legacyRecord(session.getSessionId()),
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-10T12:00:04.000Z",
+			receipt: legacyReceipt(session.getSessionId()),
+		});
+
+		// Internal replay keeps the raw legacy ids so run.resume can fail closed.
+		const coordinator = makeCoordinator(session);
+		const bindings = coordinator.getCapabilityBindings();
+		expect(bindings.get(LEGACY_BINDING.id)).toEqual(LEGACY_BINDING);
+		const result = coordinator.getRun("r-legacy");
+		expect(result?.record.previousBindingId).toBe(LEGACY_BINDING.id);
+		expect(result?.receipt?.capabilityBindingId).toBe(LEGACY_BINDING.id);
+
+		// The same values must never cross a public serializer.
+		const publicRecord = serializePublicRunRecord(result?.record ?? legacyRecord(session.getSessionId()));
+		const publicReceipt = serializePublicRunReceipt(result?.receipt ?? legacyReceipt(session.getSessionId()));
+		expect(serializePublicCapabilityBinding(LEGACY_BINDING)).toBeUndefined();
+		expect(publicRecord.previousBindingId).toBeUndefined();
+		expect(publicReceipt.capabilityBindingId).toBeUndefined();
+		expectNoPublicMarkers(publicRecord);
+		expectNoPublicMarkers(publicReceipt);
 	});
 });
