@@ -15,6 +15,8 @@ import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
+import type { Skill } from "../src/core/skills.ts";
+import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -186,6 +188,7 @@ async function createRuntimeHost(options: {
 	model?: Model<"anthropic-messages">;
 	streamErrorMessage?: string;
 	customTools?: ToolDefinition[];
+	resourceLoader?: ResourceLoader;
 }): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
 	const tempDir = join(tmpdir(), `pi-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
@@ -226,7 +229,7 @@ async function createRuntimeHost(options: {
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
 	} as unknown as ModelRuntime;
-	const resourceLoader = testResourceLoader();
+	const resourceLoader = options.resourceLoader ?? testResourceLoader();
 
 	const openSession = (sessionManager: SessionManager): AgentSession => {
 		return new AgentSession({
@@ -292,6 +295,7 @@ async function startRpcMode(options: {
 	model?: Model<"anthropic-messages">;
 	streamErrorMessage?: string;
 	customTools?: ToolDefinition[];
+	resourceLoader?: ResourceLoader;
 }): Promise<{
 	lineHandler: (line: string) => void;
 	cleanup: () => Promise<void>;
@@ -1157,6 +1161,260 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("returns a redacted catalog that includes sdk tool descriptors from get_capabilities", async () => {
+		const customTool: ToolDefinition = {
+			name: "cat_tool",
+			label: "cat_tool",
+			description: "a custom catalog tool",
+			parameters: Type.Object({ query: Type.String() }),
+			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+		};
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			customTools: [customTool],
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "gc1", type: "get_capabilities" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "gc1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
+			expect(res.success).toBe(true);
+			const data = res.data as { catalog: { version: number; descriptors: Array<Record<string, unknown>> } };
+			expect(data.catalog.version).toBe(1);
+			expect(Array.isArray(data.catalog.descriptors)).toBe(true);
+			expect(data.catalog.descriptors.length).toBeGreaterThan(0);
+			const toolDescriptor = data.catalog.descriptors.find(
+				(descriptor) => descriptor.kind === "sdk_tool" && descriptor.name === "cat_tool",
+			);
+			expect(toolDescriptor).toBeDefined();
+			expect(toolDescriptor!.source).toEqual({ source: "sdk", scope: "temporary", origin: "top-level" });
+
+			// Redaction contract: every descriptor's source is exactly the public
+			// { source, scope, origin } triple and no descriptor carries path, config,
+			// env, url, token, or instructions payloads.
+			for (const descriptor of data.catalog.descriptors) {
+				expect(Object.keys(descriptor.source as Record<string, unknown>)).toEqual(["source", "scope", "origin"]);
+				for (const stripped of ["path", "config", "env", "url", "token", "instructions"]) {
+					expect(descriptor).not.toHaveProperty(stripped);
+				}
+			}
+			expect(JSON.stringify(res)).not.toMatch(/secret|token|authorization|api[_-]?key|password/i);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("never leaks project resource paths into the capability catalog", async () => {
+		const realTempPath = join(tmpdir(), `pi-rpc-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const skillName = "project_skill";
+		const skills: Skill[] = [
+			{
+				name: skillName,
+				description: "a project-scoped skill with a real file path",
+				filePath: realTempPath,
+				baseDir: realTempPath,
+				sourceInfo: createSyntheticSourceInfo(realTempPath, { source: "local", scope: "project" }),
+				disableModelInvocation: false,
+			},
+		];
+		const projectResourceLoader: ResourceLoader = {
+			...testResourceLoader(),
+			getSkills: () => ({ skills, diagnostics: [] }),
+		};
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: true,
+			responseDelayMs: 0,
+			resourceLoader: projectResourceLoader,
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r1")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			lineHandler(JSON.stringify({ id: "gc1", type: "get_capabilities" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "gc1")).toHaveLength(1));
+			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
+			expect(res.success).toBe(true);
+			const data = res.data as { catalog: { descriptors: Array<Record<string, unknown>> } };
+			const skillDescriptor = data.catalog.descriptors.find(
+				(descriptor) => descriptor.kind === "skill" && descriptor.name === skillName,
+			);
+			expect(skillDescriptor).toBeDefined();
+			expect(skillDescriptor!.source).toEqual({ source: "local", scope: "project", origin: "top-level" });
+			// the raw file path is stripped from every serialized capability record
+			expect(JSON.stringify(res)).not.toContain(realTempPath);
+			for (const descriptor of data.catalog.descriptors) {
+				expect(descriptor).not.toHaveProperty("path");
+			}
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("recovers the original binding for an interrupted source run on resume", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// Seed a real run so the capability binding is resolved and persisted,
+			// then read the real binding id from its terminal receipt.
+			lineHandler(JSON.stringify({ id: "r0", type: "run.start", message: "Seed" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r0")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const sourceBindingId = (terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string })
+				.capabilityBindingId;
+			expect(sourceBindingId).toBeTruthy();
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+
+			// An interrupted run: the accepted fact recorded the original binding
+			// (its capability.binding ledger entry exists from the seed run's accept)
+			// but the run never reached a terminal receipt.
+			const interruptedRunId = "interrupted-with-binding";
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "accepted",
+				record: {
+					id: interruptedRunId,
+					sessionId: runtimeHost.session.sessionId,
+					attempt: 1,
+					status: "accepted",
+					model: { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" },
+					capabilityBindingId: sourceBindingId,
+				},
+			});
+
+			// The record fallback (receipt ?? record.capabilityBindingId) recovers the
+			// original binding, so the drift guard passes and the resume succeeds.
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: interruptedRunId,
+					message: "Continue",
+				}),
+			);
+			let resumedRunId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "rs1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				resumedRunId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));
+
+			lineHandler(JSON.stringify({ id: "g1", type: "run.get", runId: resumedRunId! }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "g1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				const data = res[0].data as { run: { attempt: number; previousBindingId?: string } };
+				expect(data.run.attempt).toBe(2);
+				expect(data.run.previousBindingId).toBe(sourceBindingId);
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("keeps resume backward compatible when the historical ledger carries no binding", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			// seed a run so the session is persisted
+			lineHandler(JSON.stringify({ id: "r0", type: "run.start", message: "Seed" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r0")).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const sessionFile = runtimeHost.session.sessionFile;
+			expect(sessionFile).toBeTruthy();
+
+			// a legacy run carrying no capabilityBindingId anywhere (pre-capability
+			// ledger); valid RunRecord / RunReceipt shapes only
+			const legacyRunId = "legacy-no-binding";
+			const sessionId = runtimeHost.session.sessionId;
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "accepted",
+				record: {
+					id: legacyRunId,
+					sessionId,
+					attempt: 1,
+					status: "accepted",
+					model: { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" },
+				},
+			});
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "started",
+				runId: legacyRunId,
+				startedAt: "2026-08-11T00:00:00.000Z",
+			});
+			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+				schemaVersion: 1,
+				kind: "terminal",
+				endedAt: "2026-08-11T00:00:01.000Z",
+				receipt: {
+					runId: legacyRunId,
+					sessionId,
+					status: "completed",
+					usage: { input: 0, output: 0, total: 0 },
+				},
+			});
+
+			// previousBindingId is undefined, so no drift guard runs and the resume
+			// succeeds without requiring any binding in the ledger.
+			lineHandler(
+				JSON.stringify({
+					id: "rs1",
+					type: "run.resume",
+					sessionPath: sessionFile!,
+					sourceRunId: legacyRunId,
+					message: "Continue",
+				}),
+			);
+			let resumedRunId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "rs1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				resumedRunId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));
+
+			lineHandler(JSON.stringify({ id: "g1", type: "run.get", runId: resumedRunId! }));
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "g1");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				const data = res[0].data as { run: { attempt: number; previousBindingId?: string } };
+				expect(data.run.attempt).toBe(2);
+				expect(data.run.previousBindingId).toBeUndefined();
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("resumes with a successor attempt linking previousBindingId and capabilityBindingId", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
@@ -1320,8 +1578,14 @@ describe("RPC Automation Host run lifecycle", () => {
 			const rejection = responsesFor(rpcIo.outputLines, "rs1")[0];
 			expect(rejection.success).toBe(false);
 			expect((rejection.error as { code: string }).code).toBe("capability_binding_unavailable");
-			// No successor run is accepted after the binding drift is detected.
+			// No successor run is accepted after the binding drift is detected:
+			// neither a new terminal nor any new run ledger entry is written.
 			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(3); // accepted + started + terminal of the first run only
 		} finally {
 			await cleanup();
 		}
