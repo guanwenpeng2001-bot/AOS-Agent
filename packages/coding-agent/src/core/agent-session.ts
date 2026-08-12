@@ -1350,7 +1350,7 @@ export class AgentSession {
 									? createSyntheticModelError(currentModel, "error", "Model budget exceeded.")
 									: fallbackExhausted
 										? createSyntheticModelError(currentModel, "error", "Model fallback exhausted.")
-										: createSyntheticModelError(currentModel, "error", "The model request failed."),
+										: finalError,
 						});
 						return;
 					}
