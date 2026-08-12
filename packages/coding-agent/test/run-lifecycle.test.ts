@@ -838,6 +838,147 @@ describe("capability binding receipt and ledger", () => {
 	});
 });
 
+describe("capabilityBindingId on the accepted record", () => {
+	it("records capabilityBindingId on the accepted record and its persisted accepted fact", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = coordinator.reserve().accept({
+			runId: "r1",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: BINDING,
+		});
+		// The frozen binding id is available before any terminal fact, so an
+		// interrupted (never-terminal) run still carries it.
+		expect(run.record.capabilityBindingId).toBe(BINDING.id);
+
+		const acceptedFact = session
+			.getEntries()
+			.filter(isAutomationRunEntry)
+			.find((entry) => (entry.data as { kind?: string }).kind === "accepted");
+		expect((acceptedFact?.data as { record?: { capabilityBindingId?: string } }).record?.capabilityBindingId).toBe(
+			BINDING.id,
+		);
+	});
+
+	it("accepts a hand-written accepted record with a string capabilityBindingId during runtime parsing", () => {
+		const session = makeSession();
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: "r-binding",
+				sessionId: session.getSessionId(),
+				attempt: 1,
+				status: "accepted",
+				model: MODEL,
+				capabilityBindingId: "binding:default:abc123",
+			},
+		});
+
+		const coordinator = makeCoordinator(session);
+		const result = coordinator.rebuildIndex().get("r-binding");
+		expect(result?.record.capabilityBindingId).toBe("binding:default:abc123");
+		expect(result?.recovery).toBe("interrupted");
+		expect(coordinator.diagnostics().some((diag) => diag.kind === "malformed")).toBe(false);
+	});
+
+	it("rejects a hand-written accepted record whose capabilityBindingId is not a string", () => {
+		const session = makeSession();
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: "r-bad-binding",
+				sessionId: session.getSessionId(),
+				attempt: 1,
+				status: "accepted",
+				model: MODEL,
+				capabilityBindingId: 42,
+			},
+		});
+
+		const coordinator = makeCoordinator(session);
+		const index = coordinator.rebuildIndex();
+		expect(index.get("r-bad-binding")).toBeUndefined();
+		expect(coordinator.diagnostics().some((diag) => diag.kind === "malformed")).toBe(true);
+	});
+
+	it("preserves capabilityBindingId through cloneRunRecord when replaying a terminal run", () => {
+		const session = makeSession();
+		const c1 = makeCoordinator(session);
+		const run = c1.reserve().accept({
+			runId: "r1",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: BINDING,
+		});
+		run.start();
+		run.settle({ outcome: "completed" });
+
+		const c2 = makeCoordinator(session);
+		const result = c2.getRun("r1");
+		expect(result?.record.capabilityBindingId).toBe(BINDING.id);
+		expect(result?.receipt?.capabilityBindingId).toBe(BINDING.id);
+	});
+
+	it("recovers capabilityBindingId for an interrupted accepted-only run on replay", () => {
+		const session = makeSession();
+		const c1 = makeCoordinator(session);
+		// Accepted and never terminal: the process exits before start/settle, so
+		// the accepted record is the only source of the binding id.
+		c1.reserve().accept({
+			runId: "r1",
+			attempt: 1,
+			model: MODEL,
+			capabilityBinding: BINDING,
+		});
+
+		const c2 = makeCoordinator(session);
+		const result = c2.getRun("r1");
+		expect(result?.record.capabilityBindingId).toBe(BINDING.id);
+		expect(result?.record.status).toBe("accepted");
+		expect(result?.receipt).toBeUndefined();
+		expect(result?.recovery).toBe("interrupted");
+	});
+
+	it("keeps historical accepted records without capabilityBindingId valid on replay", () => {
+		const session = makeSession();
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: "r-legacy",
+				sessionId: session.getSessionId(),
+				sourceRunId: "r0",
+				previousBindingId: "binding:source:old",
+				attempt: 2,
+				status: "accepted",
+				model: MODEL,
+			},
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-10T12:00:04.000Z",
+			receipt: {
+				runId: "r-legacy",
+				sessionId: session.getSessionId(),
+				status: "completed",
+				usage: { input: 0, output: 0, total: 0 },
+			},
+		});
+
+		const coordinator = makeCoordinator(session);
+		const result = coordinator.getRun("r-legacy");
+		expect(result).toBeDefined();
+		expect(result?.record.capabilityBindingId).toBeUndefined();
+		expect(result?.record.sourceRunId).toBe("r0");
+		expect(result?.record.previousBindingId).toBe("binding:source:old");
+		expect(coordinator.diagnostics().some((diag) => diag.kind === "malformed")).toBe(false);
+	});
+});
+
 describe("capability binding ledger folding", () => {
 	it("folds capability.binding custom entries into a redacted history", () => {
 		const session = makeSession();

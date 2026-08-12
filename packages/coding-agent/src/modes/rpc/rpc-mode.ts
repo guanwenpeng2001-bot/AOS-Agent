@@ -1078,7 +1078,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						),
 					);
 				}
-				const previousBindingId = sourceRun.receipt?.capabilityBindingId;
+				// Prefer the terminal receipt; fall back to the accepted record so an
+				// interrupted (accepted, never-terminal) source run still yields its
+				// original capability binding for the drift guard below.
+				const previousBindingId =
+					sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
 				return startRun(
 					id,
 					"run.resume",
@@ -1308,7 +1312,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_capabilities": {
 				// Ordinary read-only inspection: no Automation Host initialize is
-				// required, and only redacted metadata is ever returned.
+				// required, and only redacted metadata is ever returned. The catalog
+				// and binding views carry only public descriptor identity and
+				// selection metadata — never file paths, raw MCP config, env/header
+				// values, URL credentials/query, tokens, or server instructions.
 				const history = foldCapabilityBindingEntries(session.sessionManager.getEntries());
 				const current = session.getActiveCapabilityBinding();
 				if (command.bindingId !== undefined) {
@@ -1316,9 +1323,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					if (found === undefined) {
 						return error(id, "get_capabilities", `Capability binding not found: ${command.bindingId}`);
 					}
-					return success(id, "get_capabilities", { binding: found, bindings: [] } satisfies GetCapabilitiesData);
+					return success(id, "get_capabilities", {
+						catalog: session.inspectCapabilityCatalog(),
+						binding: found,
+						bindings: [],
+					} satisfies GetCapabilitiesData);
 				}
 				return success(id, "get_capabilities", {
+					catalog: session.inspectCapabilityCatalog(),
 					binding: current !== undefined ? createCapabilityBindingView(current) : null,
 					bindings: [...history.values()],
 				} satisfies GetCapabilitiesData);
