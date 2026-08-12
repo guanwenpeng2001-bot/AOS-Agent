@@ -220,6 +220,31 @@ function deepFreeze<T>(value: T): T {
 let defaultPublicIdentity: CapabilityPublicIdentity | undefined;
 const catalogIdentities = new WeakMap<CapabilityCatalog, CapabilityPublicIdentity>();
 
+// Public descriptors deliberately carry only opaque ids. The configuration
+// layer still accepts the pre-existing stable ids, so retain those only in
+// module-private side tables for profile matching, approval, and parent
+// governance. Keeping them out of descriptor objects also keeps bindings and
+// ledger records safe to serialize without a second projection step.
+const descriptorInternalIds = new WeakMap<CapabilityDescriptor, string>();
+const descriptorInternalParentIds = new WeakMap<CapabilityDescriptor, string>();
+
+function createInternalCapabilityId(kind: CapabilityKind, sourceIdentity: string, localName: string): string {
+	return `${kind}:${sourceIdentity}:${localName}`;
+}
+
+function getInternalDescriptorId(descriptor: CapabilityDescriptor): string {
+	return descriptorInternalIds.get(descriptor) ?? descriptor.id;
+}
+
+function getInternalParentId(descriptor: CapabilityDescriptor): string | undefined {
+	return descriptorInternalParentIds.get(descriptor) ?? descriptor.parentId;
+}
+
+/** Match either an opaque public id or the legacy stable id used by settings. */
+export function matchesCapabilityDescriptorId(descriptor: CapabilityDescriptor, id: string): boolean {
+	return descriptor.id === id || getInternalDescriptorId(descriptor) === id;
+}
+
 function getDefaultPublicIdentity(): CapabilityPublicIdentity {
 	if (defaultPublicIdentity === undefined) {
 		defaultPublicIdentity = CapabilityPublicIdentity.loadSync(getAgentDir());
@@ -328,7 +353,7 @@ function stricterDecision(a: CapabilityDecision, b: CapabilityDecision): Capabil
  * kind inherit their parent's decision only when they declare a parentId.
  */
 function requiresParent(descriptor: CapabilityDescriptor): boolean {
-	return descriptor.kind === "mcp_tool" || descriptor.parentId !== undefined;
+	return descriptor.kind === "mcp_tool" || getInternalParentId(descriptor) !== undefined;
 }
 
 function defaultExposedToolName(
@@ -349,11 +374,17 @@ function defaultExposedToolName(
 }
 
 function selectorMatches(selector: CapabilitySelector, descriptor: CapabilityDescriptor): boolean {
-	if (selector.id !== undefined && selector.id !== descriptor.id) return false;
+	if (selector.id !== undefined && !matchesCapabilityDescriptorId(descriptor, selector.id)) return false;
 	if (selector.kind !== undefined && selector.kind !== descriptor.kind) return false;
 	if (selector.sourceId !== undefined && selector.sourceId !== descriptor.source.source) return false;
 	if (selector.scope !== undefined && selector.scope !== descriptor.source.scope) return false;
-	if (selector.parentId !== undefined && selector.parentId !== descriptor.parentId) return false;
+	if (
+		selector.parentId !== undefined &&
+		selector.parentId !== descriptor.parentId &&
+		selector.parentId !== getInternalParentId(descriptor)
+	) {
+		return false;
+	}
 	if (selector.mcpServerId !== undefined && selector.mcpServerId !== descriptor.mcpServerId) return false;
 	return true;
 }
@@ -391,7 +422,7 @@ function resolveDecisions(
 	descriptors: ReadonlyArray<CapabilityDescriptor>,
 	profile: CapabilityProfile | undefined,
 ): Map<string, CapabilityDecision> {
-	const byId = new Map(descriptors.map((descriptor) => [descriptor.id, descriptor]));
+	const byInternalId = new Map(descriptors.map((descriptor) => [getInternalDescriptorId(descriptor), descriptor]));
 	const decisions = new Map<string, CapabilityDecision>();
 	// Standalone descriptors (no parent) resolve first so their children can inherit the cap.
 	for (const descriptor of descriptors) {
@@ -401,7 +432,8 @@ function resolveDecisions(
 	}
 	for (const descriptor of descriptors) {
 		if (requiresParent(descriptor)) {
-			const parent = descriptor.parentId !== undefined ? byId.get(descriptor.parentId) : undefined;
+			const internalParentId = getInternalParentId(descriptor);
+			const parent = internalParentId !== undefined ? byInternalId.get(internalParentId) : undefined;
 			const parentDecision = parent !== undefined ? (decisions.get(parent.id) ?? "deny") : "deny";
 			decisions.set(descriptor.id, resolveDecision(descriptor, profile, parentDecision));
 		}
@@ -433,11 +465,15 @@ export function buildCapabilityCatalog(
 	input: CapabilityCatalogInput,
 	identity: CapabilityPublicIdentity = getDefaultPublicIdentity(),
 ): CapabilityCatalog {
-	const byId = new Map<string, CapabilityDescriptor>();
+	const discoveredByInternalId = new Map<
+		string,
+		{ descriptor: CapabilityDescriptor; internalId: string; candidateParentId: string | undefined }
+	>();
 	for (const candidate of input.candidates) {
 		const localName = candidate.localName ?? candidate.name;
 		const publicSourceId = createPublicSourceId(candidate.sourceIdentity, identity);
 		const id = createCapabilityId(candidate.kind, candidate.sourceIdentity, localName, identity);
+		const internalId = createInternalCapabilityId(candidate.kind, candidate.sourceIdentity, localName);
 		const descriptor: CapabilityDescriptor = {
 			id,
 			revision: createCapabilityRevision(candidate.revisionInput ?? fallbackRevisionInput(candidate, localName), identity),
@@ -449,7 +485,6 @@ export function buildCapabilityCatalog(
 			decision: "allow",
 			trusted: candidate.trusted ?? defaultTrustFor(candidate.source),
 			...(candidate.exposedToolName !== undefined ? { exposedToolName: candidate.exposedToolName } : {}),
-			...(candidate.parentId !== undefined ? { parentId: candidate.parentId } : {}),
 			...(candidate.mcpServerId !== undefined ? { mcpServerId: candidate.mcpServerId } : {}),
 		};
 		if (descriptor.exposedToolName === undefined) {
@@ -457,16 +492,46 @@ export function buildCapabilityCatalog(
 		}
 		// Same kind + source identity + local name is the same capability; a later
 		// discovery replaces the earlier revision.
-		byId.set(id, descriptor);
+		discoveredByInternalId.set(internalId, {
+			descriptor,
+			internalId,
+			candidateParentId: candidate.parentId,
+		});
 	}
-	const descriptors = [...byId.values()];
+	const discovered = [...discoveredByInternalId.values()];
+	const discoveredByPublicId = new Map(discovered.map((entry) => [entry.descriptor.id, entry]));
+	const descriptors = discovered.map((entry) => {
+		let internalParentId = entry.candidateParentId;
+		if (internalParentId !== undefined && !discoveredByInternalId.has(internalParentId)) {
+			internalParentId = discoveredByPublicId.get(internalParentId)?.internalId ?? internalParentId;
+		}
+		const parent = internalParentId === undefined ? undefined : discoveredByInternalId.get(internalParentId);
+		const descriptor: CapabilityDescriptor = {
+			...entry.descriptor,
+			...(parent !== undefined ? { parentId: parent.descriptor.id } : {}),
+		};
+		descriptorInternalIds.set(descriptor, entry.internalId);
+		if (internalParentId !== undefined) {
+			descriptorInternalParentIds.set(descriptor, internalParentId);
+		}
+		return descriptor;
+	});
 	const decisions = resolveDecisions(descriptors, undefined);
-	const catalog = deepFreeze({
-		version: 1 as const,
-		descriptors: descriptors.map((descriptor) => ({
+	const finalizedDescriptors = descriptors.map((descriptor) => {
+		const finalized: CapabilityDescriptor = {
 			...descriptor,
 			decision: decisions.get(descriptor.id) ?? "deny",
-		})),
+		};
+		descriptorInternalIds.set(finalized, getInternalDescriptorId(descriptor));
+		const internalParentId = descriptorInternalParentIds.get(descriptor);
+		if (internalParentId !== undefined) {
+			descriptorInternalParentIds.set(finalized, internalParentId);
+		}
+		return finalized;
+	});
+	const catalog = deepFreeze({
+		version: 1 as const,
+		descriptors: finalizedDescriptors,
 	});
 	catalogIdentities.set(catalog, identity);
 	return catalog;
@@ -507,6 +572,8 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 
 	const decisions = resolveDecisions(input.catalog.descriptors, profileDef);
 	const approved = new Set(input.approvedDescriptorIds ?? []);
+	const isApproved = (descriptor: CapabilityDescriptor): boolean =>
+		approved.has(descriptor.id) || approved.has(getInternalDescriptorId(descriptor));
 
 	// A descriptor is selectable only when allowed (or ask-approved) and available.
 	const selectable = new Set<string>();
@@ -515,7 +582,7 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		if (decision === "deny") {
 			continue;
 		}
-		if (decision === "ask" && !approved.has(descriptor.id)) {
+		if (decision === "ask" && !isApproved(descriptor)) {
 			continue;
 		}
 		if (descriptor.availability !== "available") {
@@ -524,7 +591,9 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		selectable.add(descriptor.id);
 	}
 
-	const byId = new Map(input.catalog.descriptors.map((descriptor) => [descriptor.id, descriptor]));
+	const byInternalId = new Map(
+		input.catalog.descriptors.map((descriptor) => [getInternalDescriptorId(descriptor), descriptor]),
+	);
 	const refs: CapabilityBindingDescriptorRef[] = [];
 	let awaitingApproval = 0;
 	let denied = 0;
@@ -535,7 +604,7 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 			continue;
 		}
 		if (decision === "ask") {
-			if (!approved.has(descriptor.id)) {
+			if (!isApproved(descriptor)) {
 				awaitingApproval++;
 				continue;
 			}
@@ -544,10 +613,11 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 			continue;
 		}
 		if (requiresParent(descriptor)) {
-			const parent = descriptor.parentId !== undefined ? byId.get(descriptor.parentId) : undefined;
+			const internalParentId = getInternalParentId(descriptor);
+			const parent = internalParentId !== undefined ? byInternalId.get(internalParentId) : undefined;
 			if (parent === undefined || !selectable.has(parent.id)) {
 				// A child capability never enters the binding without its parent selected
-				if (parent !== undefined && decisions.get(parent.id) === "ask" && !approved.has(parent.id)) {
+				if (parent !== undefined && decisions.get(parent.id) === "ask" && !isApproved(parent)) {
 					awaitingApproval++;
 				} else {
 					denied++;
@@ -653,7 +723,11 @@ export function createCapabilityBindingView(binding: CapabilityBinding): Capabil
 		id: binding.id,
 		profile: binding.profile,
 		createdAt: binding.createdAt,
-		descriptors: binding.descriptors,
+		descriptors: binding.descriptors.map((descriptor) => ({
+			id: descriptor.id,
+			revision: descriptor.revision,
+			...(descriptor.exposedToolName !== undefined ? { exposedToolName: descriptor.exposedToolName } : {}),
+		})),
 		decisionSummary: binding.decisionSummary,
 		toolAllowlist: binding.toolAllowlist,
 	});

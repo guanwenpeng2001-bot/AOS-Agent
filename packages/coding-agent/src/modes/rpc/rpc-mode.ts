@@ -44,6 +44,7 @@ import {
 	isAutomationErrorCode,
 	isTerminalStatus,
 	redactAutomationError,
+	redactErrorText,
 	serializePublicAutomationError,
 	serializePublicCapabilityBinding,
 	serializePublicContextDrift,
@@ -148,23 +149,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		return { id, type: "response", command, success: true, data } as RpcResponse;
 	};
 
-	const error = (id: string | undefined, command: string, _message: string): RpcResponse => {
-		if (HOST_MUTATING_COMMANDS.has(command)) {
-			return {
-				id,
-				type: "response",
-				command,
-				success: false,
-				error: `Command "${command}" is not available while the Automation Host is initialized. Only read-only commands and run.cancel/run.resume are allowed.`,
-			};
-		}
-		if (command === "get_capabilities") {
-			return { id, type: "response", command, success: false, error: "Capability binding not found." };
-		}
-		if (command === "get_entries") {
-			return { id, type: "response", command, success: false, error: "Entry not found." };
-		}
-		return { id, type: "response", command, success: false, error: "Request failed." };
+	const error = (id: string | undefined, command: string, message: string): RpcResponse => {
+		return { id, type: "response", command, success: false, error: redactErrorText(message) };
 	};
 
 	// Pending extension UI requests waiting for response

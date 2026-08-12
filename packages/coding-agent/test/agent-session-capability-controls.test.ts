@@ -292,7 +292,7 @@ class UnavailableMarkingRegistry extends CapabilityRegistry {
 		return {
 			version: 1,
 			descriptors: catalog.descriptors.map((descriptor) =>
-				descriptor.id === this.unavailableId
+				descriptor.exposedToolName === this.unavailableId
 					? { ...descriptor, availability: "unavailable" as const }
 					: descriptor,
 			),
@@ -796,7 +796,9 @@ describe("AgentSession H2 session capability control", () => {
 			await session.whenCapabilitiesReady();
 
 			const view = session.inspectCapabilityCatalog();
-			const docs = view.descriptors.find((descriptor) => descriptor.id === "mcp_server:mcp:global:docs");
+			const docs = view.descriptors.find(
+				(descriptor) => descriptor.kind === "mcp_server" && descriptor.mcpServerId === "docs",
+			);
 			expect(docs).toBeDefined();
 			expect(docs!.decision).toBe("deny");
 			expect(docs!.mcpServerId).toBe("docs");
@@ -845,7 +847,7 @@ describe("AgentSession H2 session capability control", () => {
 
 			const after = session.getActiveCapabilityBinding()!;
 			expect(after.decisionSummary.awaitingApproval).toBe(0);
-			expect(after.descriptors.some((ref) => ref.id === "sdk_tool:sdk:sdk_helper")).toBe(true);
+			expect(after.descriptors.some((ref) => ref.exposedToolName === "sdk_helper")).toBe(true);
 			expect(after.toolAllowlist).toContain("sdk_helper");
 			expect(session.getActiveToolNames()).toContain("sdk_helper");
 			expect(session.getAllTools().map((tool) => tool.name)).toContain("sdk_helper");
@@ -1038,7 +1040,7 @@ describe("AgentSession H2 session capability control", () => {
 		const { dir, agentDir } = tmpDir("approve-unavailable");
 		const settingsManager = SettingsManager.inMemory();
 		const sessionManager = SessionManager.inMemory(dir);
-		const registry = new UnavailableMarkingRegistry("sdk_tool:sdk:sdk_helper");
+		const registry = new UnavailableMarkingRegistry("sdk_helper");
 		try {
 			const { session } = await createAgentSession({
 				cwd: dir,
