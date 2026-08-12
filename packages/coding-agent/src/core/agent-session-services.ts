@@ -160,21 +160,6 @@ export async function createAgentSessionServices(
 			signal: options.modelRuntimeSignal,
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const availableModels = new Set(
-		modelRuntime
-			.getAvailableSnapshot()
-			.map((availableModel) => `${availableModel.provider}\u0000${availableModel.id}`),
-	);
-	const modelBrokerSettings = settingsManager.getModelBrokerSettings({
-		availableModels: modelRuntime.getModels().map((availableModel) => ({
-			provider: availableModel.provider,
-			modelId: availableModel.id,
-			available: availableModels.has(`${availableModel.provider}\u0000${availableModel.id}`),
-			cost: availableModel.cost,
-			thinkingLevelMap: availableModel.thinkingLevelMap,
-		})),
-	});
-	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
@@ -196,7 +181,6 @@ export async function createAgentSessionServices(
 			});
 		}
 	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
 	for (const { provider, extensionPath } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
 		try {
 			modelRuntime.registerNativeProvider(provider);
@@ -208,9 +192,27 @@ export async function createAgentSessionServices(
 			});
 		}
 	}
-	extensionsResult.runtime.pendingNativeProviderRegistrations = [];
 	await modelRuntime.refresh({ allowNetwork: false });
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
+
+	// Build the Broker only after extension provider registrations and the local
+	// runtime refresh have completed. Route availability must reflect the same
+	// catalog that can serve the first request, including extension models.
+	const availableModels = new Set(
+		modelRuntime
+			.getAvailableSnapshot()
+			.map((availableModel) => `${availableModel.provider}\u0000${availableModel.id}`),
+	);
+	const modelBrokerSettings = settingsManager.getModelBrokerSettings({
+		availableModels: modelRuntime.getModels().map((availableModel) => ({
+			provider: availableModel.provider,
+			modelId: availableModel.id,
+			available: availableModels.has(`${availableModel.provider}\u0000${availableModel.id}`),
+			cost: availableModel.cost,
+			thinkingLevelMap: availableModel.thinkingLevelMap,
+		})),
+	});
+	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 
 	return {
 		cwd,

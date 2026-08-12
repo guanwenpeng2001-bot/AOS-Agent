@@ -492,7 +492,20 @@ function buildSessionOptions(
 		}
 	}
 
-	if (!options.model && scopedModels.length > 0 && !hasExistingSession) {
+	// A declared route/role is an explicit selection below a manual --model,
+	// but above the optional --models cycling scope.
+	if (!options.model) {
+		if (parsed.modelRoute !== undefined) options.modelRoute = parsed.modelRoute;
+		if (parsed.modelRole !== undefined) options.modelRole = parsed.modelRole;
+	}
+
+	if (
+		!options.model &&
+		options.modelRoute === undefined &&
+		options.modelRole === undefined &&
+		scopedModels.length > 0 &&
+		!hasExistingSession
+	) {
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModelId = settingsManager.getDefaultModel();
@@ -821,6 +834,8 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionManager,
 			sessionStartEvent,
 			model: sessionOptions.model,
+			modelRoute: sessionOptions.modelRoute,
+			modelRole: sessionOptions.modelRole,
 			thinkingLevel: sessionOptions.thinkingLevel,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,

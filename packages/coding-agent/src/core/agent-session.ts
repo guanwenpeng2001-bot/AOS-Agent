@@ -270,8 +270,12 @@ function stableExtensionLocalName(extension: Extension): string {
 
 function hasVisibleModelEvent(event: AssistantMessageEvent): boolean {
 	switch (event.type) {
+		case "start":
+			return event.partial.content.length > 0;
+		case "text_start":
 		case "text_delta":
 		case "text_end":
+		case "thinking_start":
 		case "thinking_delta":
 		case "thinking_end":
 		case "toolcall_start":
@@ -537,6 +541,10 @@ export class AgentSession {
 	private _previousModelBindingId: string | undefined;
 	/** Direct/default binding reused by all provider calls in one agent operation. */
 	private _operationModelResolution: ModelResolution | undefined;
+	/** Most recently materialized binding, retained for read-only route inspection. */
+	private _lastModelBrokerBindingId: string | undefined;
+	/** Ledger binding ids already emitted by this Session instance. */
+	private readonly _persistedModelBrokerBindingIds = new Set<string>();
 	/** A model set or cycled by the caller takes precedence over broker defaults. */
 	private _manualModelSelection = false;
 
@@ -659,6 +667,15 @@ export class AgentSession {
 		return this._modelBrokerConfigRevision;
 	}
 
+	/** Safe binding identity selected for the current session operation. */
+	get modelBrokerBindingId(): string | undefined {
+		return (
+			this._selectedModelResolution?.bindingId ??
+			this._operationModelResolution?.bindingId ??
+			this._lastModelBrokerBindingId
+		);
+	}
+
 	/**
 	 * Attach an already-resolved ModelBroker binding to the next model call.
 	 * Runtime/RPC callers use this after validating the concrete ModelRuntime
@@ -671,6 +688,7 @@ export class AgentSession {
 		}
 		this._selectedModelResolution = resolution;
 		this._previousModelBindingId = previousModelBindingId;
+		this._lastModelBrokerBindingId = resolution.bindingId;
 		this._manualModelSelection = false;
 	}
 
@@ -681,6 +699,7 @@ export class AgentSession {
 		}
 		this._selectedModelResolution = undefined;
 		this._previousModelBindingId = undefined;
+		this._lastModelBrokerBindingId = undefined;
 		this._manualModelSelection = false;
 	}
 
@@ -723,6 +742,10 @@ export class AgentSession {
 			throw new ModelBrokerError("model_binding_unavailable", "The selected model binding is unavailable", true);
 		}
 		this._operationModelResolution = resolution;
+		this._lastModelBrokerBindingId = resolution.bindingId;
+		if (this._selectedModelResolution === undefined) {
+			this._modelBroker.beginBindingOperation(resolution.bindingId);
+		}
 		return { model: resolvedModel, resolution };
 	}
 
@@ -971,61 +994,45 @@ export class AgentSession {
 				const originalMessages = context.messages.slice();
 				const originalSystemPrompt = context.systemPrompt;
 				const originalTools = context.tools;
-				let initialSnapshotId: string | undefined;
+				let prepareContext: (model: Model<any>, parentSnapshotId?: string) => Promise<Context>;
 				if (this.settingsManager.getContextSettings().enabled) {
 					this._assertContextPayloadHooksSupported();
 					const extensionSources = this._pendingExtensionContextSources;
-					const sources = await this._collectAgentTurnContextSources(
-						context.messages,
-						extensionSources,
-						context.tools,
-					);
-					const { plan, snapshot } = this._resolveAndPersistContextSnapshot({
-						purpose: "agent_turn",
-						model,
-						messages: context.messages,
-						sources,
-						runId: this._activeContextRunId,
+					prepareContext = async (nextModel, parentSnapshotId) => {
+						const sources = await this._collectAgentTurnContextSources(
+							originalMessages,
+							extensionSources,
+							originalTools,
+						);
+						const { plan } = this._resolveAndPersistContextSnapshot({
+							purpose: "agent_turn",
+							model: nextModel,
+							messages: originalMessages,
+							sources,
+							runId: this._activeContextRunId,
+							...(parentSnapshotId === undefined ? {} : { parentSnapshotId }),
+						});
+						return {
+							...context,
+							systemPrompt: plan.systemPrompt,
+							messages: convertToLlm(plan.messages),
+							...(originalTools === undefined ? {} : { tools: originalTools }),
+						};
+					};
+				} else {
+					prepareContext = async () => ({
+						...context,
+						systemPrompt: originalSystemPrompt,
+						messages: [...originalMessages],
+						...(originalTools === undefined ? {} : { tools: originalTools }),
 					});
-					initialSnapshotId = snapshot.id;
-					context.systemPrompt = plan.systemPrompt;
-					context.messages = convertToLlm(plan.messages);
-					return this._streamWithModelBroker(
-						model,
-						context,
-						options,
-						(nextModel, nextContext, nextOptions) =>
-							this._agentStreamFunction(nextModel, nextContext, nextOptions),
-						async (nextModel, parentSnapshotId) => {
-							const { plan: nextPlan } = this._resolveAndPersistContextSnapshot({
-								purpose: "agent_turn",
-								model: nextModel,
-								messages: originalMessages,
-								sources,
-								runId: this._activeContextRunId,
-								parentSnapshotId: parentSnapshotId ?? initialSnapshotId,
-							});
-							return {
-								...context,
-								systemPrompt: nextPlan.systemPrompt,
-								messages: convertToLlm(nextPlan.messages),
-								...(originalTools === undefined ? {} : { tools: originalTools }),
-							};
-						},
-						operation.resolution,
-					);
 				}
 				return this._streamWithModelBroker(
 					model,
 					context,
 					options,
 					(nextModel, nextContext, nextOptions) => this._agentStreamFunction(nextModel, nextContext, nextOptions),
-					async () => ({
-						...context,
-						systemPrompt: originalSystemPrompt,
-						messages: [...originalMessages],
-						...(originalTools === undefined ? {} : { tools: originalTools }),
-					}),
+					prepareContext,
 					operation.resolution,
 				);
 			} catch (error) {
@@ -1122,18 +1129,21 @@ export class AgentSession {
 				? {}
 				: { previousModelBindingId: this._previousModelBindingId }),
 		};
-		try {
-			persistModelBinding(this.sessionManager, ledgerBinding);
-		} catch {
-			// The provider result must not be replaced by a ledger serialization error.
+		if (!this._persistedModelBrokerBindingIds.has(ledgerBinding.bindingId)) {
+			try {
+				persistModelBinding(this.sessionManager, ledgerBinding);
+			} catch {
+				// The provider result must not be replaced by a ledger serialization error.
+			}
+			this._persistedModelBrokerBindingIds.add(ledgerBinding.bindingId);
 		}
 
 		const outerStream = createAssistantMessageEventStream();
 		void (async () => {
 			let currentModel = model;
 			let currentContext: Context = {
-				// The context object is mutated by the Context Engine before this method.
-				// Copy it so fallback preparation cannot alter the active first attempt.
+				// Copy the caller's context so each attempt receives a separately planned
+				// context and fallback preparation cannot alter the active attempt.
 				...context,
 				messages: [...context.messages],
 			};
@@ -1160,6 +1170,7 @@ export class AgentSession {
 			});
 
 			while (true) {
+				let attemptContextSnapshotId: string | undefined;
 				const candidateReference: NormalizedModelReference = candidates[currentOrder] ?? resolution.reference;
 				const candidate = {
 					provider: candidateReference.provider,
@@ -1176,7 +1187,6 @@ export class AgentSession {
 					order: currentOrder,
 					status: "started",
 					startedAt,
-					...(this._lastContextSnapshotId === undefined ? {} : { contextSnapshotId: this._lastContextSnapshotId }),
 				};
 				let budgetReservationId: string | undefined;
 				if (bindingHasBudget) {
@@ -1204,6 +1214,15 @@ export class AgentSession {
 
 				let visibleOutput = false;
 				try {
+					// Budget preflight and the started attempt are durable before the
+					// Context Engine creates the exact snapshot dispatched below.
+					currentContext = await prepareFallbackContext(
+						currentModel,
+						currentOrder === initialCandidateIndex ? undefined : parentSnapshotId,
+					);
+					if (this.settingsManager.getContextSettings().enabled) {
+						attemptContextSnapshotId = this._lastContextSnapshotId;
+					}
 					const stream = await invoke(currentModel, currentContext, currentOptions);
 					let finalError: AssistantMessage | undefined;
 					for await (const event of stream) {
@@ -1212,26 +1231,44 @@ export class AgentSession {
 							finalError = event.error;
 							break;
 						}
-						outerStream.push(event);
 						if (event.type === "done") {
 							const usage = usageForMessage(event.message);
 							const budgetSettlement =
 								budgetReservationId === undefined
 									? undefined
 									: this._modelBroker.settleBudgetForBinding(binding.id, budgetReservationId, usage);
+							const budgetExceeded =
+								budgetSettlement?.ok === false && budgetSettlement.error.code === "model_budget_exceeded";
 							persistAttempt({
 								...startedAttempt,
 								status: "completed",
 								endedAt: new Date().toISOString(),
 								visibleOutput,
+								...(attemptContextSnapshotId === undefined
+									? {}
+									: { contextSnapshotId: attemptContextSnapshotId }),
 								usage,
-								...(budgetSettlement?.ok === false && budgetSettlement.error.code === "model_budget_exceeded"
+								...(budgetExceeded
 									? { summary: "Model budget exceeded; subsequent calls are blocked." }
 									: {}),
 							});
-							outerStream.end(event.message);
+							if (budgetExceeded) {
+								outerStream.push({
+									type: "error",
+									reason: "error",
+									error: {
+										...event.message,
+										stopReason: "error",
+										errorMessage: "Model budget exceeded.",
+									},
+								});
+							} else {
+								outerStream.push(event);
+								outerStream.end(event.message);
+							}
 							return;
 						}
+						outerStream.push(event);
 					}
 
 					if (finalError === undefined) {
@@ -1248,6 +1285,9 @@ export class AgentSession {
 							endedAt: new Date().toISOString(),
 							failureCategory: "unknown",
 							visibleOutput,
+							...(attemptContextSnapshotId === undefined
+								? {}
+								: { contextSnapshotId: attemptContextSnapshotId }),
 						});
 						outerStream.push({
 							type: "error",
@@ -1267,20 +1307,24 @@ export class AgentSession {
 									usageForMessage(finalError),
 								);
 					const budgetBlocked = budgetSettlement !== undefined && budgetSettlement.ok === false;
-					const fallbackAllowed =
+					const fallbackCandidateEligible =
 						!options?.signal?.aborted &&
 						!visibleOutput &&
 						!budgetBlocked &&
 						binding.fallbackAllowed &&
 						failure.fallbackReason !== undefined &&
 						binding.fallback?.on.includes(failure.fallbackReason) === true &&
-						this._modelBroker.classifyFallback({ category: failure.category }).eligible &&
-						attempts < (binding.fallback?.maxAttempts ?? 1);
+						this._modelBroker.classifyFallback({ category: failure.category }).eligible;
+					const fallbackAllowed =
+						fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
 					const nextOrder = candidates.findIndex(
 						(candidateValue, index) =>
 							index > currentOrder &&
 							(candidateValue.provider !== currentModel.provider || candidateValue.id !== currentModel.id),
 					);
+					const fallbackExhausted =
+						fallbackCandidateEligible &&
+						(nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
 					if (!fallbackAllowed || nextOrder < 0) {
 						persistAttempt({
 							...startedAttempt,
@@ -1292,82 +1336,10 @@ export class AgentSession {
 									? "model_budget_exceeded"
 									: (failure.fallbackReason ?? failure.category),
 							visibleOutput,
+							...(attemptContextSnapshotId === undefined
+								? {}
+								: { contextSnapshotId: attemptContextSnapshotId }),
 							...(budgetBlocked ? { summary: "Model budget exceeded; subsequent calls are blocked." } : {}),
-						});
-						outerStream.push({
-							type: "error",
-							reason: options?.signal?.aborted ? "aborted" : "error",
-							error: options?.signal?.aborted
-								? finalError
-								: budgetBlocked
-									? createSyntheticModelError(currentModel, "error", "Model budget exceeded.")
-									: !options?.signal?.aborted && binding.fallbackAllowed && nextOrder < 0
-										? { ...finalError, errorMessage: "Model fallback exhausted." }
-										: binding.fallbackAllowed
-											? createSyntheticModelError(currentModel, "error", "The model request failed.")
-											: finalError,
-						});
-						return;
-					}
-
-					persistAttempt({
-						...startedAttempt,
-						status: "failed",
-						endedAt: new Date().toISOString(),
-						failureCategory: failure.fallbackReason ?? failure.category,
-						visibleOutput,
-					});
-					currentOrder = nextOrder;
-					const nextReference = candidates[currentOrder];
-					if (nextReference === undefined) return;
-					const nextModel = this._modelRuntime.getModel(nextReference.provider, nextReference.id);
-					if (nextModel === undefined) {
-						outerStream.push({
-							type: "error",
-							reason: "error",
-							error: { ...finalError, errorMessage: "Model fallback exhausted." },
-						});
-						return;
-					}
-					parentSnapshotId = this._lastContextSnapshotId ?? parentSnapshotId;
-					currentContext = await prepareFallbackContext(nextModel, parentSnapshotId);
-					currentModel = nextModel;
-					currentOptions =
-						nextReference.thinkingLevel === undefined || nextReference.thinkingLevel === "off"
-							? options
-							: { ...options, reasoning: nextReference.thinkingLevel as AiThinkingLevel };
-				} catch (error) {
-					const failure = classifyModelStreamFailure(error instanceof Error ? error.message : String(error));
-					const budgetSettlement =
-						budgetReservationId === undefined
-							? undefined
-							: this._modelBroker.settleBudgetForBinding(binding.id, budgetReservationId, {});
-					const budgetBlocked = budgetSettlement !== undefined && budgetSettlement.ok === false;
-					const fallbackAllowed =
-						!options?.signal?.aborted &&
-						!visibleOutput &&
-						!budgetBlocked &&
-						binding.fallbackAllowed &&
-						failure.fallbackReason !== undefined &&
-						binding.fallback?.on.includes(failure.fallbackReason) === true &&
-						this._modelBroker.classifyFallback({ category: failure.category }).eligible &&
-						attempts < (binding.fallback?.maxAttempts ?? 1);
-					const nextOrder = candidates.findIndex(
-						(candidateValue, index) =>
-							index > currentOrder &&
-							(candidateValue.provider !== currentModel.provider || candidateValue.id !== currentModel.id),
-					);
-					if (!fallbackAllowed || nextOrder < 0) {
-						persistAttempt({
-							...startedAttempt,
-							status: options?.signal?.aborted ? "cancelled" : "failed",
-							endedAt: new Date().toISOString(),
-							failureCategory: options?.signal?.aborted
-								? "cancelled"
-								: budgetBlocked
-									? "model_budget_exceeded"
-									: (failure.fallbackReason ?? failure.category),
-							visibleOutput,
 						});
 						outerStream.push({
 							type: "error",
@@ -1376,7 +1348,7 @@ export class AgentSession {
 								? createSyntheticModelError(currentModel, "aborted", "Request aborted.")
 								: budgetBlocked
 									? createSyntheticModelError(currentModel, "error", "Model budget exceeded.")
-									: binding.fallbackAllowed && nextOrder < 0
+									: fallbackExhausted
 										? createSyntheticModelError(currentModel, "error", "Model fallback exhausted.")
 										: createSyntheticModelError(currentModel, "error", "The model request failed."),
 						});
@@ -1389,6 +1361,9 @@ export class AgentSession {
 						endedAt: new Date().toISOString(),
 						failureCategory: failure.fallbackReason ?? failure.category,
 						visibleOutput,
+						...(attemptContextSnapshotId === undefined
+							? {}
+							: { contextSnapshotId: attemptContextSnapshotId }),
 					});
 					currentOrder = nextOrder;
 					const nextReference = candidates[currentOrder];
@@ -1402,8 +1377,111 @@ export class AgentSession {
 						});
 						return;
 					}
-					parentSnapshotId = this._lastContextSnapshotId ?? parentSnapshotId;
-					currentContext = await prepareFallbackContext(nextModel, parentSnapshotId);
+					parentSnapshotId = attemptContextSnapshotId ?? parentSnapshotId;
+					currentModel = nextModel;
+					currentOptions =
+						nextReference.thinkingLevel === undefined || nextReference.thinkingLevel === "off"
+							? options
+							: { ...options, reasoning: nextReference.thinkingLevel as AiThinkingLevel };
+				} catch (error) {
+					if (error instanceof ContextRuntimeError) {
+						this._captureContextError(error);
+						if (budgetReservationId !== undefined) {
+							this._modelBroker.settleBudgetForBinding(binding.id, budgetReservationId, {});
+						}
+						persistAttempt({
+							...startedAttempt,
+							status: "failed",
+							endedAt: new Date().toISOString(),
+							failureCategory: "context_error",
+							visibleOutput,
+							...(attemptContextSnapshotId === undefined
+								? {}
+								: { contextSnapshotId: attemptContextSnapshotId }),
+						});
+						outerStream.push({
+							type: "error",
+							reason: "error",
+							error: createSyntheticModelError(currentModel, "error", "Context preparation failed."),
+						});
+						return;
+					}
+					const failure = classifyModelStreamFailure(error instanceof Error ? error.message : String(error));
+					const budgetSettlement =
+						budgetReservationId === undefined
+							? undefined
+							: this._modelBroker.settleBudgetForBinding(binding.id, budgetReservationId, {});
+					const budgetBlocked = budgetSettlement !== undefined && budgetSettlement.ok === false;
+					const fallbackCandidateEligible =
+						!options?.signal?.aborted &&
+						!visibleOutput &&
+						!budgetBlocked &&
+						binding.fallbackAllowed &&
+						failure.fallbackReason !== undefined &&
+						binding.fallback?.on.includes(failure.fallbackReason) === true &&
+						this._modelBroker.classifyFallback({ category: failure.category }).eligible;
+					const fallbackAllowed =
+						fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
+					const nextOrder = candidates.findIndex(
+						(candidateValue, index) =>
+							index > currentOrder &&
+							(candidateValue.provider !== currentModel.provider || candidateValue.id !== currentModel.id),
+					);
+					const fallbackExhausted =
+						fallbackCandidateEligible &&
+						(nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
+					if (!fallbackAllowed || nextOrder < 0) {
+						persistAttempt({
+							...startedAttempt,
+							status: options?.signal?.aborted ? "cancelled" : "failed",
+							endedAt: new Date().toISOString(),
+							failureCategory: options?.signal?.aborted
+								? "cancelled"
+									: budgetBlocked
+										? "model_budget_exceeded"
+										: (failure.fallbackReason ?? failure.category),
+							visibleOutput,
+							...(attemptContextSnapshotId === undefined
+								? {}
+								: { contextSnapshotId: attemptContextSnapshotId }),
+						});
+						outerStream.push({
+							type: "error",
+							reason: options?.signal?.aborted ? "aborted" : "error",
+							error: options?.signal?.aborted
+								? createSyntheticModelError(currentModel, "aborted", "Request aborted.")
+								: budgetBlocked
+									? createSyntheticModelError(currentModel, "error", "Model budget exceeded.")
+									: fallbackExhausted
+										? createSyntheticModelError(currentModel, "error", "Model fallback exhausted.")
+										: createSyntheticModelError(currentModel, "error", "The model request failed."),
+						});
+						return;
+					}
+
+					persistAttempt({
+						...startedAttempt,
+						status: "failed",
+						endedAt: new Date().toISOString(),
+						failureCategory: failure.fallbackReason ?? failure.category,
+						visibleOutput,
+					...(attemptContextSnapshotId === undefined
+						? {}
+						: { contextSnapshotId: attemptContextSnapshotId }),
+					});
+					currentOrder = nextOrder;
+					const nextReference = candidates[currentOrder];
+					if (nextReference === undefined) return;
+					const nextModel = this._modelRuntime.getModel(nextReference.provider, nextReference.id);
+					if (nextModel === undefined) {
+						outerStream.push({
+							type: "error",
+							reason: "error",
+							error: createSyntheticModelError(currentModel, "error", "Model fallback exhausted."),
+						});
+						return;
+					}
+					parentSnapshotId = attemptContextSnapshotId ?? parentSnapshotId;
 					currentModel = nextModel;
 					currentOptions =
 						nextReference.thinkingLevel === undefined || nextReference.thinkingLevel === "off"
@@ -1426,29 +1504,9 @@ export class AgentSession {
 				const originalMessages = context.messages.slice();
 				const originalSystemPrompt = context.systemPrompt;
 				const originalTools = context.tools;
-				let sources: ContextSourceInput[] | undefined;
-				if (this.settingsManager.getContextSettings().enabled) {
+				const contextEnabled = this.settingsManager.getContextSettings().enabled;
+				if (contextEnabled) {
 					this._assertContextPayloadHooksSupported();
-					sources = [
-						{
-							sourceId: `system:${purpose}:runtime`,
-							kind: "system",
-							scope: "turn",
-							trust: "builtin",
-							content: context.systemPrompt ?? "",
-							required: true,
-						},
-						...this._providerToolContextSources(context.tools),
-						...this._contextMessageSources(context.messages),
-					];
-					const { plan } = this._resolveAndPersistContextSnapshot({
-						purpose,
-						model,
-						messages: context.messages,
-						sources,
-					});
-					context.systemPrompt = plan.systemPrompt;
-					context.messages = convertToLlm(plan.messages);
 				}
 				return this._streamWithModelBroker(
 					model,
@@ -1457,7 +1515,7 @@ export class AgentSession {
 					(nextModel, nextContext, nextOptions) =>
 						this._getActiveAgentStreamFunction()(nextModel, nextContext, nextOptions),
 					async (nextModel, parentSnapshotId) => {
-						if (!this.settingsManager.getContextSettings().enabled || sources === undefined) {
+						if (!contextEnabled) {
 							return {
 								...context,
 								systemPrompt: originalSystemPrompt,
@@ -1465,12 +1523,24 @@ export class AgentSession {
 								...(originalTools === undefined ? {} : { tools: originalTools }),
 							};
 						}
+						const sources: ContextSourceInput[] = [
+							{
+								sourceId: `system:${purpose}:runtime`,
+								kind: "system",
+								scope: "turn",
+								trust: "builtin",
+								content: originalSystemPrompt ?? "",
+								required: true,
+							},
+							...this._providerToolContextSources(originalTools),
+							...this._contextMessageSources(originalMessages),
+						];
 						const { plan } = this._resolveAndPersistContextSnapshot({
 							purpose,
 							model: nextModel,
 							messages: originalMessages,
 							sources,
-							parentSnapshotId,
+							...(parentSnapshotId === undefined ? {} : { parentSnapshotId }),
 						});
 						return {
 							...context,
@@ -3188,6 +3258,7 @@ export class AgentSession {
 		// their immutable resolution immediately after this method returns.
 		this._selectedModelResolution = undefined;
 		this._previousModelBindingId = undefined;
+		this._lastModelBrokerBindingId = undefined;
 		this._manualModelSelection = true;
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
@@ -3233,6 +3304,9 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.thinkingLevel);
 
 		// Apply model
+		this._selectedModelResolution = undefined;
+		this._previousModelBindingId = undefined;
+		this._lastModelBrokerBindingId = undefined;
 		this._manualModelSelection = true;
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
@@ -3262,6 +3336,9 @@ export class AgentSession {
 		const nextModel = availableModels[nextIndex];
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
+		this._selectedModelResolution = undefined;
+		this._previousModelBindingId = undefined;
+		this._lastModelBrokerBindingId = undefined;
 		this._manualModelSelection = true;
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);

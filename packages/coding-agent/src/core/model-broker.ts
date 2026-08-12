@@ -457,7 +457,8 @@ function normalizeCandidates(input: readonly ModelRouteCandidate[]): NormalizedR
 	const normalized: NormalizedRouteCandidate[] = [];
 	for (const candidate of input) {
 		const result = parseCandidate(candidate);
-		if (result.ok) normalized.push(result.candidate);
+		if (!result.ok) throw new ModelBrokerError(result.error);
+		normalized.push(result.candidate);
 	}
 	return normalized;
 }
@@ -1411,6 +1412,8 @@ export interface PublicModelSummary {
 	readonly roles: readonly string[];
 	readonly roleRoutes: readonly PublicModelRole[];
 	readonly bindings: readonly PublicModelBinding[];
+	/** Binding selected for the current session operation, when one is attached. */
+	readonly currentBindingId?: string;
 	readonly budget?: {
 		readonly committed: NormalizedModelUsage;
 		readonly reserved: NormalizedModelUsage;
@@ -1466,6 +1469,7 @@ export function createPublicModelSummary(input: {
 	routePolicies?: ReadonlyMap<string, NormalizedRoutePolicy>;
 	roles?: ReadonlyMap<string, readonly NormalizedRouteCandidate[] | string>;
 	bindings?: readonly ModelBinding[];
+	currentBindingId?: string;
 	budget?: PublicModelSummary["budget"];
 }): PublicModelSummary {
 	const routes = [...(input.routes?.entries() ?? [])].map(([id, candidates]) => {
@@ -1490,6 +1494,7 @@ export function createPublicModelSummary(input: {
 		roles: deepFreeze([...(input.roles?.keys() ?? [])]),
 		roleRoutes: deepFreeze(roleRoutes),
 		bindings: deepFreeze((input.bindings ?? []).map(toPublicModelBinding)),
+		...(input.currentBindingId === undefined ? {} : { currentBindingId: input.currentBindingId }),
 		...(input.budget !== undefined ? { budget: input.budget } : {}),
 	});
 }
@@ -1550,21 +1555,35 @@ export class ModelBroker {
 
 	/** Return a discriminated result without throwing on selection failures. */
 	resolveResult(input: ModelBrokerResolveInput): ModelResolutionResult {
-		const result = resolveWithCatalog(
-			applyResolutionAliases(input, {
-				defaultRoute: this.defaultRoute,
-				defaultRole: this.defaultRole,
-			}),
-			this.routes,
-			this.roles,
-			{
-				now: this.now,
-				bindingIdFactory: this.bindingIdFactory,
-				routePolicies: this.routePolicies,
-				configRevision: this.configRevision,
-				budget: this.budget,
-			},
-		);
+		let result: ModelResolutionResult;
+		try {
+			result = resolveWithCatalog(
+				applyResolutionAliases(input, {
+					defaultRoute: this.defaultRoute,
+					defaultRole: this.defaultRole,
+				}),
+				this.routes,
+				this.roles,
+				{
+					now: this.now,
+					bindingIdFactory: this.bindingIdFactory,
+					routePolicies: this.routePolicies,
+					configRevision: this.configRevision,
+					budget: this.budget,
+				},
+			);
+		} catch (error) {
+			if (error instanceof ModelBrokerError) {
+				return {
+					ok: false,
+					error: createModelError(error.code, error.message, error.retryable, error.details),
+				};
+			}
+			return {
+				ok: false,
+				error: createModelError("model_invalid_reference", "Model selection is invalid", false),
+			};
+		}
 		if (result.ok) {
 			if (this.bindings.has(result.resolution.binding.id)) {
 				return {
@@ -1897,7 +1916,7 @@ export class ModelBroker {
 		return classifyFallbackEligibility(failure, sideEffects, fallbackAllowed);
 	}
 
-	publicSummary(): PublicModelSummary {
+	publicSummary(currentBindingId?: string): PublicModelSummary {
 		const budget = this.budget
 			? deepFreeze({
 					committed: this.committedUsage,
@@ -1911,6 +1930,7 @@ export class ModelBroker {
 			routePolicies: this.routePolicies,
 			roles: this.roles,
 			bindings: [...this.bindings.values()],
+			...(currentBindingId === undefined ? {} : { currentBindingId }),
 			budget,
 		});
 	}

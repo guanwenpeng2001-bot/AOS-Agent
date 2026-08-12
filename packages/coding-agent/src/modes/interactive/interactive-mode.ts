@@ -4688,9 +4688,11 @@ export class InteractiveMode {
 	}
 
 	private handleModelRoutesCommand(): void {
-		const summary = this.session.modelBroker.publicSummary();
+		const summary = this.session.modelBroker.publicSummary(this.session.modelBrokerBindingId);
 		const bindings = this.session.modelBroker.getBindings();
-		const currentBinding = bindings.at(-1);
+		const currentBinding = summary.currentBindingId
+			? bindings.find((binding) => binding.id === summary.currentBindingId)
+			: undefined;
 		const routeLines = summary.routes.map((route) => {
 			const candidates = route.candidates
 				.map(
@@ -4710,7 +4712,7 @@ export class InteractiveMode {
 				...(routeLines.length === 0 ? ["No model routes configured."] : ["Routes:", ...routeLines]),
 				...(roleLines.length === 0 ? [] : ["Roles:", ...roleLines]),
 				bindingLine,
-				"Manual model selection disables automatic fallback.",
+				"/model is manual and disables fallback; route and role selections use guarded fallback.",
 			].join("\n"),
 		);
 	}
@@ -4758,7 +4760,7 @@ export class InteractiveMode {
 			this.showStatus(
 				`Selected ${role === undefined ? `route ${selection}` : `role ${role}`}: ${model.provider}/${model.id} (${result.resolution.bindingId})`,
 			);
-			this.showStatus("Manual model selection disables automatic fallback.");
+			this.showStatus("Route selection enables guarded fallback for transient provider failures.");
 		} catch {
 			this.showError("The selected model route is unavailable.");
 		}

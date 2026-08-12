@@ -969,12 +969,17 @@ export type PublicSessionCustomEntry = Omit<Extract<SessionEntry, { type: "custo
 	data?: PublicSessionCustomData;
 };
 
+type PublicSessionMessageEntry = Omit<Extract<SessionEntry, { type: "message" }>, "message"> & {
+	message: AgentMessage;
+};
+
 /**
  * Public, capability-safe Session entry. Custom entry data is limited to the
  * serializer's known safe ledger schema; extension details are omitted.
  */
 export type PublicSessionEntry =
-	| Extract<SessionEntry, { type: "message" | "thinking_level_change" | "model_change" | "label" | "session_info" }>
+	| PublicSessionMessageEntry
+	| Extract<SessionEntry, { type: "thinking_level_change" | "model_change" | "label" | "session_info" }>
 	| Omit<Extract<SessionEntry, { type: "compaction" }>, "details">
 	| Omit<Extract<SessionEntry, { type: "branch_summary" }>, "details">
 	| Omit<Extract<SessionEntry, { type: "custom_message" }>, "details">
@@ -1241,7 +1246,7 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 			return {
 				...event,
 				messages: event.messages.map((message) =>
-					message.role === "assistant" && message.stopReason === "error"
+					message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")
 						? { ...message, errorMessage: "Agent run failed." }
 						: message,
 				),
@@ -1278,6 +1283,15 @@ export function serializePublicRunStreamEvent(event: RunStreamEvent): PublicRunS
  */
 export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionEntry {
 	switch (entry.type) {
+		case "message":
+			return {
+				...entry,
+				message:
+					entry.message.role === "assistant" &&
+					(entry.message.stopReason === "error" || entry.message.stopReason === "aborted")
+						? { ...entry.message, errorMessage: "Agent run failed." }
+						: entry.message,
+			};
 		case "custom":
 			return serializePublicCustomEntry(entry);
 		case "custom_message": {

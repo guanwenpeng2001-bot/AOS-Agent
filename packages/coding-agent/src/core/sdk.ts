@@ -196,6 +196,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+
+	if (!resourceLoader) {
+		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		time("resourceLoader.reload");
+	}
+
+	// Extension providers are staged by ResourceLoader. Register them before
+	// constructing the Broker so route validation sees the complete runtime
+	// catalog used by the first request.
+	const extensionsResult = resourceLoader.getExtensions();
+	for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
+		modelRuntime.registerProvider(name, config);
+	}
+	for (const { provider } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
+		modelRuntime.registerNativeProvider(provider);
+	}
+	await modelRuntime.refresh({ allowNetwork: false });
+
 	const availableModels = new Set(
 		modelRuntime
 			.getAvailableSnapshot()
@@ -211,13 +231,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		})),
 	});
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
-	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
-
-	if (!resourceLoader) {
-		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
-		await resourceLoader.reload();
-		time("resourceLoader.reload");
-	}
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -464,8 +477,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			session.setThinkingLevel(routeThinkingLevel);
 		}
 	}
-	const extensionsResult = resourceLoader.getExtensions();
-
 	return {
 		session,
 		extensionsResult,

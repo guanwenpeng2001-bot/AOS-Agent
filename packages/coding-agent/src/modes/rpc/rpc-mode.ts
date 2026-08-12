@@ -610,8 +610,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// the run failed/model_error; otherwise it completed.
 				const terminalError = terminalErrorByRun.get(handle.runId);
 				await finalizeRun(handle, terminalError !== undefined ? "failed" : "completed", terminalError);
-			} catch (err) {
-				await finalizeRun(handle, "failed", createAutomationError("model_error", errorMessage(err), false));
+			} catch {
+				await finalizeRun(handle, "failed", createAutomationError("model_error", "Run failed.", false));
 			}
 		})();
 		runPromptPromises.set(handle.runId, tracked);
@@ -1703,7 +1703,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Route and role catalogs contain only declared model identities and
 				// availability metadata. ModelRuntime credentials are intentionally not
 				// part of the Broker summary.
-				return success(id, "get_model_routes", session.modelBroker.publicSummary() satisfies GetModelRoutesData);
+				return success(
+					id,
+					"get_model_routes",
+					session.modelBroker.publicSummary(session.modelBrokerBindingId) satisfies GetModelRoutesData,
+				);
 			}
 
 			case "export_html": {
