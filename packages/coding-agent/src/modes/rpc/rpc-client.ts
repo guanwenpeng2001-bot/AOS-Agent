@@ -9,6 +9,7 @@ import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -17,12 +18,13 @@ import type {
 	AutomationErrorCode,
 	GetCapabilitiesData,
 	GetContextData,
+	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationResponse,
 	RpcCommand,
 	RpcResponse,
-	RpcSessionStats,
 	RpcSessionState,
+	RpcSessionStats,
 	RpcSlashCommand,
 	RunAcceptedData,
 	RunCancelData,
@@ -572,12 +574,20 @@ export class RpcClient {
 	 * session's configured default profile. The Automation Host fails the run when
 	 * the profile is unknown or would require an ask approval.
 	 */
-	async startRun(message: string, images?: ImageContent[], capabilityProfile?: string): Promise<RunAcceptedData> {
+	async startRun(
+		message: string,
+		images?: ImageContent[],
+		capabilityProfile?: string,
+		modelRoute?: ModelRouteSelection,
+		modelRole?: ModelRoleSelection,
+	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
 			message,
 			images,
 			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+			...(modelRoute !== undefined ? { modelRoute } : {}),
+			...(modelRole !== undefined ? { modelRole } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -611,6 +621,8 @@ export class RpcClient {
 		message: string,
 		images?: ImageContent[],
 		capabilityProfile?: string,
+		modelRoute?: ModelRouteSelection,
+		modelRole?: ModelRoleSelection,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -619,6 +631,8 @@ export class RpcClient {
 			message,
 			images,
 			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+			...(modelRoute !== undefined ? { modelRoute } : {}),
+			...(modelRole !== undefined ? { modelRole } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -641,6 +655,12 @@ export class RpcClient {
 			type: "get_capabilities",
 			...(bindingId !== undefined ? { bindingId } : {}),
 		});
+		return this.getData(response);
+	}
+
+	/** Read the redacted ModelBroker route/role catalog. */
+	async getModelRoutes(): Promise<GetModelRoutesData> {
+		const response = await this.send({ type: "get_model_routes" });
 		return this.getData(response);
 	}
 

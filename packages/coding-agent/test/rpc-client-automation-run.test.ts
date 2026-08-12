@@ -160,6 +160,30 @@ describe("RpcClient Automation Host request shapes", () => {
 			capabilityProfile: "strict",
 		});
 	});
+
+	it("startRun and resumeRun forward mutually-exclusive model selections", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+
+		await client.startRun("route", undefined, undefined, "balanced");
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "route",
+			images: undefined,
+			modelRoute: "balanced",
+		});
+
+		await client.resumeRun("/tmp/s.jsonl", "r1", "role", undefined, undefined, undefined, "worker");
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "role",
+			images: undefined,
+			modelRole: "worker",
+		});
+	});
 });
 
 describe("RpcClient Automation Host structured failures", () => {
@@ -273,6 +297,25 @@ describe("RpcClient capability inspection", () => {
 
 		await expect(promise).rejects.toThrow("Capability binding not found: binding:ghost");
 		await expect(promise).rejects.not.toBeInstanceOf(AutomationRpcError);
+	});
+});
+
+describe("RpcClient model route inspection", () => {
+	it("getModelRoutes sends the read-only query and returns the safe catalog", async () => {
+		const { client, privateClient } = createClient();
+		const catalog = { schemaVersion: 1, models: [], routes: [], roles: [], bindings: [] };
+		const send = vi.fn(async () => ({
+			type: "response",
+			command: "get_model_routes",
+			success: true,
+			data: catalog,
+		}));
+		privateClient.send = send;
+
+		const data = await client.getModelRoutes();
+
+		expect(send).toHaveBeenCalledWith({ type: "get_model_routes" });
+		expect(data).toEqual(catalog);
 	});
 });
 
