@@ -75,7 +75,9 @@ the redacted catalog and `/model-route <route>` or `/model-route role:<name>` to
 select a route. `/model` remains the explicit manual selector and disables
 automatic fallback for that selection. RPC clients can query the same safe
 catalog with `get_model_routes` and pass `modelRoute` or `modelRole` to
-`run.start`/`run.resume`.
+`run.start`/`run.resume`. Routes may also declare call, token, and cost limits;
+an over-limit response is retained, while later calls in that operation or Run
+are rejected.
 
 ## Package contents
 

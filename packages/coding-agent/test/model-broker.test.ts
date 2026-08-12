@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	classifyFallbackEligibility,
 	ModelBroker,
+	type ModelReference,
 	parseModelReference,
 	preflightBudget,
 	resolveModel,
 	settleBudget,
-	type ModelReference,
 } from "../src/core/model-broker.ts";
 
 describe("model-broker", () => {
@@ -56,10 +56,12 @@ describe("model-broker", () => {
 
 	it("selects the first available route candidate without falling through an explicit route", () => {
 		const routeResult = resolveModel(
-			{ route: [
-				{ provider: "offline", id: "first", available: false },
-				{ provider: "healthy", id: "second", priority: 1 },
-			] },
+			{
+				route: [
+					{ provider: "offline", id: "first", available: false },
+					{ provider: "healthy", id: "second", priority: 1 },
+				],
+			},
 			{ bindingIdFactory: () => "model-binding:inline" },
 		);
 		expect(routeResult.ok).toBe(true);
@@ -79,10 +81,12 @@ describe("model-broker", () => {
 	it("permits fallback only for transient failures before visible side effects", () => {
 		expect(classifyFallbackEligibility({ category: "timeout" })).toMatchObject({ eligible: true });
 		expect(classifyFallbackEligibility({ category: "auth" })).toMatchObject({ eligible: false });
-		expect(
-		classifyFallbackEligibility({ category: "rate_limit" }, ["partial_output"]),
-		).toMatchObject({ eligible: false });
-		expect(classifyFallbackEligibility({ category: "timeout" }, { visibleOutput: true })).toMatchObject({ eligible: false });
+		expect(classifyFallbackEligibility({ category: "rate_limit" }, ["partial_output"])).toMatchObject({
+			eligible: false,
+		});
+		expect(classifyFallbackEligibility({ category: "timeout" }, { visibleOutput: true })).toMatchObject({
+			eligible: false,
+		});
 	});
 
 	it("reserves budget during preflight and settles only actual usage", () => {
@@ -99,10 +103,20 @@ describe("model-broker", () => {
 		expect(blocked.ok).toBe(false);
 		if (!blocked.ok) expect(blocked.error.code).toBe("model_budget_exceeded");
 
-		const settled = broker.settleBudget(first.preflight.reservation.id, { input: 20, output: 10, total: 30, cost: 0.2 });
+		const settled = broker.settleBudget(first.preflight.reservation.id, {
+			input: 20,
+			output: 10,
+			total: 30,
+			cost: 0.2,
+		});
 		expect(settled.ok).toBe(true);
 		if (!settled.ok) return;
-		expect(settled.settlement.state.committed).toEqual({ inputTokens: 20, outputTokens: 10, totalTokens: 30, cost: 0.2 });
+		expect(settled.settlement.state.committed).toEqual({
+			inputTokens: 20,
+			outputTokens: 10,
+			totalTokens: 30,
+			cost: 0.2,
+		});
 		expect(settled.settlement.state.reserved).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 });
 		expect(broker.settleBudget(first.preflight.reservation.id, {}).ok).toBe(false);
 	});
@@ -126,5 +140,32 @@ describe("model-broker", () => {
 		expect(serialized).not.toContain("apiKey");
 		expect(serialized).not.toContain("authorization");
 		expect(serialized).not.toContain("token");
+	});
+
+	it("enforces a route budget against the immutable binding", () => {
+		const broker = new ModelBroker({
+			routes: {
+				bounded: {
+					id: "bounded",
+					candidates: [{ provider: "openai", id: "gpt-5" }],
+					budget: { maxModelCalls: 1 },
+				},
+			},
+			bindingIdFactory: () => "model-binding:bounded",
+		});
+		const resolution = broker.resolve({ route: "bounded" });
+		const first = broker.preflightBudgetForBinding(resolution.bindingId);
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		expect(first.preflight.reservation.estimate.modelCalls).toBe(1);
+		expect(broker.settleBudgetForBinding(resolution.bindingId, first.preflight.reservation.id, {}).ok).toBe(true);
+
+		const blocked = broker.preflightBudgetForBinding(resolution.bindingId);
+		expect(blocked.ok).toBe(false);
+		if (!blocked.ok) expect(blocked.error.code).toBe("model_budget_exceeded");
+		expect(broker.getBindingBudgetSummary(resolution.bindingId)).toMatchObject({
+			committed: { modelCalls: 1 },
+			exceeded: true,
+		});
 	});
 });

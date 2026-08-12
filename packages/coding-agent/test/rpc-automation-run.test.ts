@@ -409,6 +409,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				models: [],
 				routes: [],
 				roles: [],
+				roleRoutes: [],
 				bindings: [],
 			});
 			expect(JSON.stringify(response)).not.toContain("apiKey");

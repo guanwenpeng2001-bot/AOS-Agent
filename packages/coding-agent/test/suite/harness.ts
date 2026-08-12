@@ -8,17 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@aos-agent/agent-core";
 import { Agent } from "@aos-agent/agent-core";
-import type {
-	FauxModelDefinition,
-	FauxProviderRegistration,
-	FauxResponseStep,
-	Model,
-} from "@aos-agent/ai/compat";
+import type { FauxModelDefinition, FauxProviderRegistration, FauxResponseStep, Model } from "@aos-agent/ai/compat";
 import { registerFauxProvider, streamSimple } from "@aos-agent/ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
+import type { ModelBroker } from "../../src/core/model-broker.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -72,6 +68,7 @@ export interface HarnessOptions {
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
+	modelBroker?: ModelBroker;
 }
 
 export interface Harness {
@@ -185,6 +182,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		settingsManager,
 		cwd: tempDir,
 		modelRuntime: getModelRuntime(modelRegistry),
+		modelBroker: options.modelBroker,
 		resourceLoader,
 		baseToolsOverride: toolMap,
 		initialActiveToolNames: options.initialActiveToolNames,

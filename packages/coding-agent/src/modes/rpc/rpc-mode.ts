@@ -27,7 +27,11 @@ import type {
 	ModelRoleSelection,
 	ModelRouteSelection,
 } from "../../core/model-broker.ts";
-import { foldModelBrokerLedger, serializePublicModelAttempt } from "../../core/model-broker-ledger.ts";
+import {
+	foldModelBrokerLedger,
+	type ModelBindingLedgerRecord,
+	serializePublicModelAttempt,
+} from "../../core/model-broker-ledger.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
@@ -311,6 +315,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		if (code === "model_budget_exceeded") {
 			return createAutomationError("model_budget_exceeded", "The model budget is exceeded.", false);
 		}
+		if (code === "model_binding_unavailable") {
+			return createAutomationError("model_binding_unavailable", "The previous model binding is unavailable.", false);
+		}
 		if (code === "model_binding_invalid" || code === "model_binding_conflict" || code === "model_invalid_reference") {
 			return createAutomationError("model_route_invalid", "The model route selection is invalid.", false);
 		}
@@ -334,6 +341,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const resolveRequestedModel = async (
 		modelRoute: ModelRouteSelection | undefined,
 		modelRole: ModelRoleSelection | undefined,
+		inheritedBinding?: ModelBindingLedgerRecord,
 	): Promise<{ resolution?: BrokerModelResolution; error?: AutomationError }> => {
 		if (modelRoute !== undefined && modelRole !== undefined) {
 			return {
@@ -344,14 +352,82 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			};
 		}
-		if (modelRoute === undefined && modelRole === undefined) return {};
+		let requestedRoute = modelRoute;
+		let requestedRole = modelRole;
+		let inheritedDirect: { provider: string; id: string; thinkingLevel?: ThinkingLevel } | undefined;
+		if (requestedRoute === undefined && requestedRole === undefined && inheritedBinding !== undefined) {
+			if (inheritedBinding.role !== undefined) {
+				requestedRole = inheritedBinding.role;
+			} else if (inheritedBinding.mode === "route" && inheritedBinding.routeId !== undefined) {
+				requestedRoute = inheritedBinding.routeId;
+			} else if (inheritedBinding.mode === "route") {
+				return { error: modelSelectionError({ code: "model_binding_unavailable" }) };
+			} else {
+				const inheritedModel = inheritedBinding.candidates[0]?.model;
+				if (inheritedModel === undefined) {
+					return { error: modelSelectionError({ code: "model_binding_unavailable" }) };
+				}
+				inheritedDirect = {
+					provider: inheritedModel.provider,
+					id: inheritedModel.modelId,
+					...(inheritedModel.thinkingLevel === undefined ? {} : { thinkingLevel: inheritedModel.thinkingLevel }),
+				};
+			}
+		}
+		if (requestedRoute === undefined && requestedRole === undefined) {
+			const currentModel = session.model;
+			if (currentModel === undefined) return { error: unavailableModelError() };
+			const result =
+				inheritedDirect !== undefined
+					? session.modelBroker.resolveResult({ direct: inheritedDirect })
+					: session.modelBroker.hasDefaultSelection()
+						? session.modelBroker.resolveResult({})
+						: session.modelBroker.resolveResult({
+								direct: {
+									provider: currentModel.provider,
+									id: currentModel.id,
+									thinkingLevel: session.thinkingLevel,
+								},
+							});
+			if (!result.ok) return { error: modelSelectionError(result.error) };
+			let model = currentModel;
+			if (
+				result.resolution.reference.provider !== currentModel.provider ||
+				result.resolution.reference.id !== currentModel.id
+			) {
+				try {
+					model =
+						session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id) ??
+						model;
+				} catch {
+					return { error: unavailableModelError() };
+				}
+				if (
+					model.provider !== result.resolution.reference.provider ||
+					model.id !== result.resolution.reference.id
+				) {
+					return { error: unavailableModelError() };
+				}
+				try {
+					await session.setModel(model);
+				} catch {
+					return { error: unavailableModelError() };
+				}
+			}
+			try {
+				session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+			} catch {
+				return { error: unavailableModelError() };
+			}
+			return { resolution: result.resolution };
+		}
 
 		const result = session.modelBroker.resolveResult({
-			...(modelRoute === undefined ? {} : { modelRoute }),
-			...(modelRole === undefined ? {} : { modelRole }),
+			...(requestedRoute === undefined ? {} : { modelRoute: requestedRoute }),
+			...(requestedRole === undefined ? {} : { modelRole: requestedRole }),
 		});
 		if (!result.ok) {
-			return { error: modelSelectionError(result.error, modelRole === undefined ? "route" : "role") };
+			return { error: modelSelectionError(result.error, requestedRole === undefined ? "route" : "role") };
 		}
 
 		let model: ReturnType<typeof session.modelRuntime.getModel>;
@@ -363,6 +439,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		if (model === undefined) return { error: unavailableModelError() };
 		try {
 			await session.setModel(model);
+			session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
 			if (
 				result.resolution.reference.thinkingLevel !== undefined &&
 				isThinkingLevel(result.resolution.reference.thinkingLevel)
@@ -433,6 +510,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	} => {
 		const record = handle.record;
 		const modelAttempts = modelAttemptsForBinding(record.modelBindingId);
+		const bindingBudget =
+			record.modelBindingId === undefined
+				? undefined
+				: session.modelBroker.getBindingBudgetSummary(record.modelBindingId);
 		const finalModel =
 			modelAttempts === undefined
 				? record.finalModel
@@ -444,8 +525,35 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				: { previousModelBindingId: record.previousModelBindingId }),
 			...(finalModel === undefined ? {} : { finalModel }),
 			...(modelAttempts === undefined ? {} : { modelAttempts }),
-			// A broker budget is exposed only when a real preflight/settlement has
-			// produced a run-level summary. RPC does not invent one from catalog data.
+			...(bindingBudget === undefined
+				? {}
+				: {
+						modelBudget: {
+							...(bindingBudget.committed.modelCalls === undefined
+								? {}
+								: { modelCalls: bindingBudget.committed.modelCalls }),
+							inputTokens: bindingBudget.committed.inputTokens,
+							outputTokens: bindingBudget.committed.outputTokens,
+							totalTokens: bindingBudget.committed.totalTokens,
+							costUsd: bindingBudget.committed.cost,
+							...(bindingBudget.budget.maxModelCalls === undefined
+								? {}
+								: { maxModelCalls: bindingBudget.budget.maxModelCalls }),
+							...(bindingBudget.budget.maxInputTokens === undefined
+								? {}
+								: { maxInputTokens: bindingBudget.budget.maxInputTokens }),
+							...(bindingBudget.budget.maxOutputTokens === undefined
+								? {}
+								: { maxOutputTokens: bindingBudget.budget.maxOutputTokens }),
+							...(bindingBudget.budget.maxTotalTokens === undefined
+								? {}
+								: { maxTotalTokens: bindingBudget.budget.maxTotalTokens }),
+							...(bindingBudget.budget.maxCostUsd === undefined
+								? {}
+								: { maxCostUsd: bindingBudget.budget.maxCostUsd }),
+							exceeded: bindingBudget.exceeded,
+						},
+					}),
 		};
 	};
 
@@ -519,6 +627,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		capabilityProfile: string | undefined,
 		previousBindingId: string | undefined,
 		previousModelBindingId: string | undefined,
+		inheritedModelBinding: ModelBindingLedgerRecord | undefined,
 		modelRoute: ModelRouteSelection | undefined,
 		modelRole: ModelRoleSelection | undefined,
 	): Promise<RpcAutomationResponse | undefined> => {
@@ -644,7 +753,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
-		const modelSelection = await resolveRequestedModel(modelRoute, modelRole);
+		const modelSelection = await resolveRequestedModel(modelRoute, modelRole, inheritedModelBinding);
 		if (modelSelection.error !== undefined) {
 			activeReservation = undefined;
 			try {
@@ -669,7 +778,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// reservation may already be consumed
 			}
 			const startError =
-				modelSelection.resolution === undefined
+				modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
 					? createAutomationError("start_rejected", errorMessage(err), false)
 					: unavailableModelError();
 			output(automationError(id, commandType, startError));
@@ -1051,7 +1160,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						}
 					}
 					if (errorText !== undefined) {
-						terminalErrorByRun.set(activeHandle.runId, createAutomationError("model_error", errorText, false));
+						const terminalCode =
+							errorText === "Model budget exceeded."
+								? "model_budget_exceeded"
+								: errorText === "Model fallback exhausted."
+									? "model_fallback_exhausted"
+									: "model_error";
+						terminalErrorByRun.set(activeHandle.runId, createAutomationError(terminalCode, errorText, false));
 					} else {
 						terminalErrorByRun.delete(activeHandle.runId);
 					}
@@ -1158,6 +1273,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					1,
 					undefined,
 					command.capabilityProfile,
+					undefined,
 					undefined,
 					undefined,
 					command.modelRoute,
@@ -1321,6 +1437,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// receipt. Preserve #6's binding-drift guard for that recovery path.
 				const previousBindingId = sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
 				const previousModelBindingId = sourceRun.receipt?.modelBindingId ?? sourceRun.record.modelBindingId;
+				const inheritedModelBinding =
+					previousModelBindingId === undefined
+						? undefined
+						: foldModelBrokerLedger(session.sessionManager.getEntries()).bindings.get(previousModelBindingId);
 				return startRun(
 					id,
 					"run.resume",
@@ -1331,6 +1451,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					command.capabilityProfile,
 					previousBindingId,
 					previousModelBindingId,
+					inheritedModelBinding,
 					command.modelRoute,
 					command.modelRole,
 				);

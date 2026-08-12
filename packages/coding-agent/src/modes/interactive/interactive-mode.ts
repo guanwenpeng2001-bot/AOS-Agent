@@ -4748,6 +4748,7 @@ export class InteractiveMode {
 		}
 		try {
 			await this.session.setModel(model);
+			this.session.setModelBrokerResolution(result.resolution);
 			const thinkingLevel = result.resolution.reference.thinkingLevel;
 			if (thinkingLevel !== undefined && isThinkingLevel(thinkingLevel)) {
 				this.session.setThinkingLevel(thinkingLevel);

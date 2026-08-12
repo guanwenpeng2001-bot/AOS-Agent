@@ -144,7 +144,11 @@ const broker = new ModelBroker({
     },
   },
 });
-const { session } = await createAgentSession({ modelRuntime, modelBroker: broker });
+const { session } = await createAgentSession({
+  modelRuntime,
+  modelBroker: broker,
+  modelRoute: "balanced",
+});
 const routes = session.modelBroker.publicSummary();
 ```
 

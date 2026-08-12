@@ -298,6 +298,7 @@ never contains credentials, headers, base URLs, or provider error objects.
     "models": [{"provider": "anthropic", "id": "claude-sonnet-4-5"}],
     "routes": [{"id": "balanced", "candidates": [{"reference": {"provider": "anthropic", "id": "claude-sonnet-4-5"}, "priority": 0, "enabled": true, "available": true}]}],
     "roles": ["worker"],
+    "roleRoutes": [{"id": "worker", "routeId": "balanced"}],
     "bindings": []
   }
 }
