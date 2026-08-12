@@ -60,6 +60,16 @@ describe("CapabilityPublicIdentity", () => {
 		);
 	});
 
+	it("shares the persisted identity with synchronous Registry construction paths", async () => {
+		const agentDir = join(tempDir, "agent");
+		const asynchronous = await CapabilityPublicIdentity.load(agentDir);
+		const synchronous = CapabilityPublicIdentity.loadSync(agentDir);
+
+		expect(synchronous.derive("publicSourceId", PATH_MARKER_WIN)).toBe(
+			asynchronous.derive("publicSourceId", PATH_MARKER_WIN),
+		);
+	});
+
 	it("keeps domains separated and produces fixed-width opaque values", async () => {
 		const identity = await CapabilityPublicIdentity.load(join(tempDir, "agent"));
 		const input = PATH_MARKER_WIN;

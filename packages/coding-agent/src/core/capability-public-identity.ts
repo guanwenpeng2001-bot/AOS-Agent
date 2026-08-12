@@ -88,6 +88,28 @@ async function acquireStateLock(statePath: string): Promise<() => Promise<void>>
 	}
 }
 
+function acquireStateLockSync(statePath: string): () => void {
+	mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+	for (let attempt = 1; attempt <= 20; attempt++) {
+		try {
+			return lockfile.lockSync(statePath, { realpath: false });
+		} catch (error) {
+			const code =
+				typeof error === "object" && error !== null && "code" in error
+					? String((error as { code?: unknown }).code)
+					: undefined;
+			if (code !== "ELOCKED" || attempt === 20) {
+				throw new Error("Failed to lock capability identity state");
+			}
+			const waitUntil = Date.now() + 10;
+			while (Date.now() < waitUntil) {
+				// The synchronous Registry construction path cannot await the async lock.
+			}
+		}
+	}
+	throw new Error("Failed to lock capability identity state");
+}
+
 export class CapabilityPublicIdentity {
 	private readonly secret: Buffer;
 
@@ -113,6 +135,27 @@ export class CapabilityPublicIdentity {
 			return new CapabilityPublicIdentity(secret);
 		} finally {
 			await release();
+		}
+	}
+
+	/**
+	 * Synchronous counterpart for synchronous Registry construction paths.
+	 * It uses the same state file and lock as {@link load}, so the identity is
+	 * stable when synchronous and asynchronous callers share an agentDir.
+	 */
+	static loadSync(agentDir: string): CapabilityPublicIdentity {
+		const statePath = getCapabilityPublicIdentityPath(agentDir);
+		const release = acquireStateLockSync(statePath);
+		try {
+			if (existsSync(statePath)) {
+				const state = readStateFile(statePath);
+				return new CapabilityPublicIdentity(Buffer.from(state.secret, "base64url"));
+			}
+			const secret = randomBytes(SECRET_BYTE_LENGTH);
+			writeStateFile(statePath, secret);
+			return new CapabilityPublicIdentity(secret);
+		} finally {
+			release();
 		}
 	}
 
