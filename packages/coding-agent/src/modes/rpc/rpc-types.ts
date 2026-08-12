@@ -11,6 +11,7 @@ import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -20,6 +21,9 @@ import type {
 	PublicRunRecord,
 	PublicSessionEntry,
 	PublicSessionTreeNode,
+	RunFinalModelReference,
+	RunModelAttemptSummary,
+	RunModelBudgetSummary,
 	RunRecoveryState,
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
@@ -90,9 +94,20 @@ export type RpcCommand =
 	// Capability inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_capabilities"; bindingId?: string }
 
+	// Model route inspection (ordinary, read-only; redacted output only)
+	| { id?: string; type: "get_model_routes" }
+
 	// Automation Host (protocolVersion 1)
 	| { id?: string; type: "initialize"; protocolVersion: number }
-	| { id?: string; type: "run.start"; message: string; images?: ImageContent[]; capabilityProfile?: string }
+	| {
+			id?: string;
+			type: "run.start";
+			message: string;
+			images?: ImageContent[];
+			capabilityProfile?: string;
+			modelRoute?: ModelRouteSelection;
+			modelRole?: ModelRoleSelection;
+	  }
 	| { id?: string; type: "run.get"; runId: string }
 	| { id?: string; type: "run.cancel"; runId: string }
 	| {
@@ -103,6 +118,8 @@ export type RpcCommand =
 			message: string;
 			images?: ImageContent[];
 			capabilityProfile?: string;
+			modelRoute?: ModelRouteSelection;
+			modelRole?: ModelRoleSelection;
 	  };
 
 // ============================================================================
@@ -285,6 +302,13 @@ export type RpcResponse =
 			success: true;
 			data: GetCapabilitiesData;
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_model_routes";
+			success: true;
+			data: PublicModelSummary;
+	  }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
@@ -310,6 +334,9 @@ export interface GetCapabilitiesData {
 	/** Redacted binding history folded from the Session's capability.binding ledger. */
 	bindings: PublicCapabilityBindingLedgerRecord[];
 }
+
+/** Public, metadata-only model route catalog returned by get_model_routes. */
+export type GetModelRoutesData = PublicModelSummary;
 
 // ============================================================================
 // Extension UI Events (stdout)
@@ -393,6 +420,11 @@ export interface RunAcceptedData {
 	sessionId: string;
 	attempt: number;
 	status: "accepted";
+	modelBindingId?: string;
+	previousModelBindingId?: string;
+	finalModel?: RunFinalModelReference;
+	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
+	modelBudget?: RunModelBudgetSummary;
 }
 
 /** Data returned by a successful `run.get`. */
@@ -429,23 +461,19 @@ export type RpcAutomationResponse =
 			error: AutomationError;
 	  };
 
+// Re-export the redacted capability binding view consumed by get_capabilities.
+export type { CapabilityBindingView } from "../../core/capability-registry.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,
 	AutomationErrorCode,
-	PublicRunReceipt as RunReceipt,
-	PublicRunRecord as RunRecord,
-	RunRecoveryState,
-	RunStatus,
-	PublicRunStreamEvent as RunStreamEvent,
-	RunTerminalStatus,
-} from "../../core/run-lifecycle.ts";
-
-export type {
 	PublicContextSnapshot,
 	PublicContextSourceDrift,
 	PublicContextSourceReceipt,
+	PublicRunReceipt as RunReceipt,
+	PublicRunRecord as RunRecord,
+	PublicRunStreamEvent as RunStreamEvent,
+	RunRecoveryState,
+	RunStatus,
+	RunTerminalStatus,
 } from "../../core/run-lifecycle.ts";
-
-// Re-export the redacted capability binding view consumed by get_capabilities.
-export type { CapabilityBindingView } from "../../core/capability-registry.ts";
