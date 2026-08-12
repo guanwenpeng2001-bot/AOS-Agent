@@ -624,11 +624,15 @@ export class RpcClient {
 	}
 
 	/**
-	 * Read-only capability inspection. Returns redacted binding metadata only: the
-	 * current frozen binding (when one is resolved) and the binding history folded
-	 * from the Session ledger. No credentials, header values, tokens, MCP config,
-	 * server instructions, or tool call payloads are ever returned. Available
-	 * without Automation Host initialize.
+	 * Read-only capability inspection. Returns redacted metadata only: the redacted
+	 * catalog of discovered capability descriptors, the current frozen binding
+	 * (when one is resolved), and the binding history folded from the Session
+	 * ledger. The catalog carries only each descriptor's id, kind, name, redacted
+	 * source (`{ source, scope, origin }`), revision, availability, decision,
+	 * trusted, and the public exposed tool name / parent id / mcp server id. Never
+	 * file paths, raw MCP server config, env or header values, URL credentials or
+	 * query, tokens, server instructions/resources/prompts, or tool call payloads.
+	 * Available without Automation Host initialize.
 	 * @param bindingId - Optional binding id; when given, only that binding's view
 	 * is returned and an unknown id rejects with a plain Error.
 	 */
