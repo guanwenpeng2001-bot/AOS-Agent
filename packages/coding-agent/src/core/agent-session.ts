@@ -741,12 +741,16 @@ export class AgentSession {
 		if (resolvedModel === undefined) {
 			throw new ModelBrokerError("model_binding_unavailable", "The selected model binding is unavailable", true);
 		}
+		const requestModel =
+			resolvedModel.provider === model.provider && resolvedModel.id === model.id
+				? { ...resolvedModel, baseUrl: model.baseUrl }
+				: resolvedModel;
 		this._operationModelResolution = resolution;
 		this._lastModelBrokerBindingId = resolution.bindingId;
 		if (this._selectedModelResolution === undefined) {
 			this._modelBroker.beginBindingOperation(resolution.bindingId);
 		}
-		return { model: resolvedModel, resolution };
+		return { model: requestModel, resolution };
 	}
 
 	private _beginModelBrokerOperation(): void {
@@ -1345,7 +1349,7 @@ export class AgentSession {
 							type: "error",
 							reason: options?.signal?.aborted ? "aborted" : "error",
 							error: options?.signal?.aborted
-								? createSyntheticModelError(currentModel, "aborted", "Request aborted.")
+								? finalError
 								: budgetBlocked
 									? createSyntheticModelError(currentModel, "error", "Model budget exceeded.")
 									: fallbackExhausted
