@@ -54,6 +54,8 @@ import {
 } from "./provider-composer.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
+import { ModelBroker, type ModelRouteCandidate } from "./model-broker.ts";
+import type { ModelBrokerSettings } from "./model-broker-settings.ts";
 
 interface ModelRuntimeSnapshot {
 	all: readonly Model<Api>[];
@@ -89,6 +91,33 @@ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
 }
 
 export type CredentialSynchronizationOperation = "login" | "logout" | "setRuntimeApiKey" | "removeRuntimeApiKey";
+
+/**
+ * Construct the broker from the settings plane without copying provider
+ * credentials or endpoint overrides into its route catalog.
+ */
+export function createModelBroker(
+	runtime: Pick<ModelRuntime, "getModels">,
+	settings: ModelBrokerSettings,
+): ModelBroker {
+	const routes: Record<string, { id: string; candidates: readonly ModelRouteCandidate[] }> = {};
+	for (const [routeId, route] of Object.entries(settings.routes)) {
+		routes[routeId] = {
+			id: routeId,
+			candidates: route.candidates.map((candidate) => ({
+				provider: candidate.provider,
+				id: candidate.modelId,
+				...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }),
+			})),
+		};
+	}
+	return new ModelBroker({
+		models: runtime.getModels().map((model) => ({ provider: model.provider, id: model.id })),
+		routes,
+		roles: settings.roleRoutes,
+		...(settings.defaultRoute === undefined ? {} : { defaultRoute: settings.defaultRoute }),
+	});
+}
 
 /** Credentials changed successfully, but the local model/auth snapshot could not be synchronized. */
 export class CredentialSynchronizationError extends Error {

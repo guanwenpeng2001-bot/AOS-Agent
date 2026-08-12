@@ -29,6 +29,7 @@ import type {
 import { contentText, type Tool } from "@aos-agent/ai";
 import type {
 	AssistantMessage,
+	AssistantMessageEventStream,
 	AuthResult,
 	ImageContent,
 	Model,
@@ -121,6 +122,13 @@ import {
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { convertToLlm, type BashExecutionMessage, type CustomMessage } from "./messages.ts";
+import { ModelBroker } from "./model-broker.ts";
+import {
+	persistModelAttempt,
+	persistModelBinding,
+	type ModelAttemptLedgerRecord,
+	type ModelBindingLedgerRecord,
+} from "./model-broker-ledger.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
@@ -263,6 +271,9 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
+	/** Broker for safe model selection and metadata-only binding facts. */
+	modelBroker?: ModelBroker;
+	modelBrokerConfigRevision?: string;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -437,6 +448,8 @@ export class AgentSession {
 	private _extensionErrorUnsubscriber?: () => void;
 
 	private _modelRuntime: ModelRuntime;
+	private _modelBroker: ModelBroker;
+	private _modelBrokerConfigRevision: string;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -512,6 +525,8 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
+		this._modelBroker = config.modelBroker ?? new ModelBroker();
+		this._modelBrokerConfigRevision = config.modelBrokerConfigRevision ?? "runtime";
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
@@ -541,6 +556,14 @@ export class AgentSession {
 
 	get modelRuntime(): ModelRuntime {
 		return this._modelRuntime;
+	}
+
+	get modelBroker(): ModelBroker {
+		return this._modelBroker;
+	}
+
+	get modelBrokerConfigRevision(): string {
+		return this._modelBrokerConfigRevision;
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -796,7 +819,7 @@ export class AgentSession {
 					context.systemPrompt = plan.systemPrompt;
 					context.messages = convertToLlm(plan.messages);
 				}
-				return this._agentStreamFunction(model, context, options);
+				return this._streamWithModelBroker(model, options, () => this._agentStreamFunction(model, context, options));
 			} catch (error) {
 				this._captureContextError(error);
 				throw error;
@@ -822,6 +845,104 @@ export class AgentSession {
 		return this.agent.streamFunction === this._contextEngineStreamBoundary
 			? this._agentStreamFunction
 			: this.agent.streamFunction;
+	}
+
+	/**
+	 * Record one actual provider dispatch at the last in-process stream boundary.
+	 * Only provider/model identity and safe lifecycle facts cross into the
+	 * session ledger; authentication resolution remains owned by ModelRuntime.
+	 */
+	private async _streamWithModelBroker(
+		model: Model<any>,
+		options: Parameters<StreamFn>[2],
+		invoke: () => ReturnType<StreamFn>,
+	): Promise<AssistantMessageEventStream> {
+		const createdAt = new Date().toISOString();
+		const resolution = this._modelBroker.resolve({
+			direct: {
+				provider: model.provider,
+				id: model.id,
+				thinkingLevel: this.agent.state.thinkingLevel,
+			},
+		});
+		const candidate = {
+			provider: resolution.reference.provider,
+			modelId: resolution.reference.id,
+			...(resolution.reference.thinkingLevel === undefined
+				? {}
+				: { thinkingLevel: resolution.reference.thinkingLevel as ThinkingLevel }),
+		};
+		const binding: ModelBindingLedgerRecord = {
+			bindingId: resolution.binding.id,
+			mode: "direct",
+			candidates: [{ order: 0, model: candidate }],
+			fallback: { maxAttempts: 1, on: [] },
+			budget: {},
+			configRevision: this._modelBrokerConfigRevision,
+			createdAt,
+		};
+		persistModelBinding(this.sessionManager, binding);
+
+		const attemptId = `model-attempt:${randomUUID()}`;
+		const contextSnapshotId = this._lastContextSnapshotId;
+		const startedAttempt: ModelAttemptLedgerRecord = {
+			attemptId,
+			bindingId: binding.bindingId,
+			candidate,
+			order: 0,
+			status: "started",
+			startedAt: createdAt,
+			...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
+		};
+		persistModelAttempt(this.sessionManager, startedAttempt);
+
+		const persistTerminalAttempt = (attempt: ModelAttemptLedgerRecord): void => {
+			try {
+				persistModelAttempt(this.sessionManager, attempt);
+			} catch {
+				// The provider result must not be replaced by a ledger serialization error.
+			}
+		};
+
+		try {
+			const stream = await invoke();
+			void stream.result().then(
+				(message) => {
+					const usage = message.usage
+						? {
+							input: message.usage.input,
+							output: message.usage.output,
+							total: message.usage.totalTokens,
+							cost: message.usage.cost.total,
+						}
+						: undefined;
+					persistTerminalAttempt({
+						...startedAttempt,
+						status: "completed",
+						endedAt: new Date().toISOString(),
+						visibleOutput: true,
+						...(usage === undefined ? {} : { usage }),
+					});
+				},
+				() => {
+					persistTerminalAttempt({
+						...startedAttempt,
+						status: options?.signal?.aborted ? "cancelled" : "failed",
+						endedAt: new Date().toISOString(),
+						failureCategory: options?.signal?.aborted ? "cancelled" : "unknown",
+					});
+				},
+			);
+			return stream;
+		} catch (error) {
+			persistTerminalAttempt({
+				...startedAttempt,
+				status: options?.signal?.aborted ? "cancelled" : "failed",
+				endedAt: new Date().toISOString(),
+				failureCategory: options?.signal?.aborted ? "cancelled" : "unknown",
+			});
+			throw error;
+		}
 	}
 
 	/** Build a stream wrapper for direct compaction/branch-summary model calls. */
@@ -851,7 +972,11 @@ export class AgentSession {
 					context.systemPrompt = plan.systemPrompt;
 					context.messages = convertToLlm(plan.messages);
 				}
-				return this._getActiveAgentStreamFunction()(model, context, options);
+				return this._streamWithModelBroker(
+					model,
+					options,
+					() => this._getActiveAgentStreamFunction()(model, context, options),
+				);
 			} catch (error) {
 				this._captureContextError(error);
 				throw error;

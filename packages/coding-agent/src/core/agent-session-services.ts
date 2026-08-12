@@ -7,7 +7,8 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
+import type { ModelBroker } from "./model-broker.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -42,6 +43,7 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	modelBroker?: ModelBroker;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -81,6 +83,8 @@ export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
 	modelRuntime: ModelRuntime;
+	modelBroker: ModelBroker;
+	modelBrokerConfigRevision: string;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
@@ -154,6 +158,8 @@ export async function createAgentSessionServices(
 			signal: options.modelRuntimeSignal,
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const modelBrokerSettings = settingsManager.getModelBrokerSettings();
+	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 	const resourceLoader = new DefaultResourceLoader({
 		...(options.resourceLoaderOptions ?? {}),
 		cwd,
@@ -195,6 +201,8 @@ export async function createAgentSessionServices(
 		cwd,
 		agentDir,
 		modelRuntime,
+		modelBroker,
+		modelBrokerConfigRevision: modelBrokerSettings.configRevision,
 		settingsManager,
 		resourceLoader,
 		capabilityRegistry:
@@ -218,6 +226,8 @@ export async function createAgentSessionFromServices(
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		modelRuntime: options.services.modelRuntime,
+		modelBroker: options.services.modelBroker,
+		modelBrokerConfigRevision: options.services.modelBrokerConfigRevision,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
