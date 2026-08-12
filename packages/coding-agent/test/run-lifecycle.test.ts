@@ -27,8 +27,11 @@ import {
 	type AutomationError,
 	type CapabilityBindingLedgerRecord,
 	type RunHandle,
+	type RunFinalModelReference,
 	type RunLedgerSession,
 	type RunLifecycleCoordinator,
+	type RunModelAttemptSummary,
+	type RunModelBudgetSummary,
 	type RunModelReference,
 	type RunReceipt,
 	type RunRecord,
@@ -64,6 +67,30 @@ vi.mock("@aos-agent/ai/compat", () => ({
 vi.mock("@aos-agent/ai/providers/all", () => ({}));
 
 const MODEL: RunModelReference = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" };
+const FINAL_MODEL: RunFinalModelReference = { provider: "openai", modelId: "gpt-5", thinkingLevel: "medium" };
+const MODEL_ATTEMPTS: RunModelAttemptSummary[] = [
+	{
+		attemptId: "attempt:1",
+		bindingId: "model-binding:route:production",
+		candidate: FINAL_MODEL,
+		order: 0,
+		status: "completed",
+	startedAt: "2026-08-12T00:00:01.000Z",
+	endedAt: "2026-08-12T00:00:02.000Z",
+	usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+	visibleOutput: false,
+	contextSnapshotId: "snapshot:attempt-1",
+	},
+];
+const MODEL_BUDGET: RunModelBudgetSummary = {
+	modelCalls: 1,
+	inputTokens: 100,
+	outputTokens: 20,
+		totalTokens: 120,
+	maxModelCalls: 3,
+	maxTotalTokens: 300,
+	exceeded: false,
+};
 
 /** Metadata-only redacted binding used by capability-related coordinator tests. */
 const BINDING: CapabilityBindingLedgerRecord = {
@@ -227,6 +254,47 @@ describe("state machine", () => {
 		const run = reservation.accept({ runId: "r2", sourceRunId: "r1", attempt: 2, model: MODEL });
 		expect(run.record.sourceRunId).toBe("r1");
 		expect(run.record.attempt).toBe(2);
+	});
+
+	it("records and replays additive ModelBroker binding, final model, attempts and budget metadata", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = coordinator.reserve().accept({
+			runId: "r-model-binding",
+			sourceRunId: "r-source",
+			attempt: 2,
+			model: MODEL,
+			modelBindingId: "model-binding:route:production",
+			previousModelBindingId: "model-binding:route:old",
+			finalModel: FINAL_MODEL,
+			modelAttempts: MODEL_ATTEMPTS,
+			modelBudget: MODEL_BUDGET,
+		});
+		expect(run.record.modelBindingId).toBe("model-binding:route:production");
+		expect(run.record.previousModelBindingId).toBe("model-binding:route:old");
+		expect(run.record.finalModel).toEqual(FINAL_MODEL);
+		expect(run.record.modelAttempts).toEqual(MODEL_ATTEMPTS);
+		expect(run.record.modelBudget).toEqual(MODEL_BUDGET);
+
+		run.start();
+		const terminal = run.settle({ outcome: "completed" });
+		expect(terminal).toMatchObject({
+			type: "run.completed",
+			receipt: {
+				modelBindingId: "model-binding:route:production",
+				previousModelBindingId: "model-binding:route:old",
+				finalModel: FINAL_MODEL,
+				modelAttempts: MODEL_ATTEMPTS,
+				modelBudget: MODEL_BUDGET,
+			},
+		});
+
+		const replayed = makeCoordinator(session).getRun("r-model-binding");
+		expect(replayed?.record.modelBindingId).toBe("model-binding:route:production");
+		expect(replayed?.record.previousModelBindingId).toBe("model-binding:route:old");
+		expect(replayed?.receipt?.finalModel).toEqual(FINAL_MODEL);
+		expect(replayed?.receipt?.modelAttempts).toEqual(MODEL_ATTEMPTS);
+		expect(replayed?.receipt?.modelBudget).toEqual(MODEL_BUDGET);
 	});
 });
 
