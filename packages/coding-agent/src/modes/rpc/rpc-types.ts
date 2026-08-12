@@ -7,7 +7,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { CapabilityBindingView } from "../../core/capability-registry.ts";
+import type { CapabilityBindingView, CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -281,11 +281,23 @@ export interface GetContextData {
 }
 
 /**
- * Redacted capability inspection payload (metadata only). Never carries
- * environment values, header values, tokens, unredacted URLs, MCP server
- * instructions, or tool call payloads.
+ * Redacted capability inspection payload (metadata only). Never carries file
+ * paths, raw MCP server config, env or header values, URL credentials or query,
+ * tokens, server instructions/resources/prompts, or tool call payloads.
+ *
+ * Request semantics:
+ * - No args: the redacted catalog of discovered descriptors plus the current
+ *   frozen binding (may be null when none is resolved) and the binding history
+ *   folded from the Session's capability.binding ledger.
+ * - `bindingId`: only that single binding's redacted view is returned.
+ *
+ * The `catalog` carries only each descriptor's id, kind, name, redacted source
+ * (`{ source, scope, origin }`), revision, availability, decision, trusted, and
+ * the public exposed tool name / parent id / mcp server id.
  */
 export interface GetCapabilitiesData {
+	/** Redacted catalog of discovered capability descriptors. */
+	catalog: CapabilityCatalogView;
 	/** Redacted view of the current frozen binding, or null when none is resolved. */
 	binding: CapabilityBindingView | null;
 	/** Redacted binding history folded from the Session's capability.binding ledger. */
@@ -425,3 +437,5 @@ export type {
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
+// Re-export the redacted capability catalog view consumed by get_capabilities.
+export type { CapabilityCatalogView } from "../../core/capability-registry.ts";
