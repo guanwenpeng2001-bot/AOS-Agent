@@ -48,7 +48,6 @@ describe("CapabilityPublicIdentity", () => {
 
 		expect(identity.derive("publicSourceId", PATH_MARKER_WIN)).toBe(again.derive("publicSourceId", PATH_MARKER_WIN));
 		expect(identity.derive("revision", URL_MARKER)).toBe(again.derive("revision", URL_MARKER));
-		expect(identity.agentDir).toBe(again.agentDir);
 		expect(existsSync(getCapabilityPublicIdentityPath(agentDir))).toBe(true);
 	});
 
@@ -129,25 +128,40 @@ describe("CapabilityPublicIdentity", () => {
 		);
 	});
 
-	it("rejects malformed state without echoing the secret or clobbering the file", async () => {
-		const agentDir = join(tempDir, "agent");
+	it("rejects malformed or noncanonical state without leaking private file details", async () => {
+		const privatePathMarker = "capability-identity-private-path";
+		const agentDir = join(tempDir, privatePathMarker, "agent");
 		const statePath = getCapabilityPublicIdentityPath(agentDir);
 		mkdirSync(agentDir, { recursive: true });
 
 		writeFileSync(statePath, "{invalid-json", "utf8");
-		await expect(CapabilityPublicIdentity.load(agentDir)).rejects.toThrow(/capability identity state/);
+		const malformedJsonError = await loadError(agentDir);
+		expect(malformedJsonError.message).toMatch(/capability identity state/);
+		expect(malformedJsonError.message).not.toContain(privatePathMarker);
+		expect(malformedJsonError.message).not.toContain(statePath);
 		expect(readFileSync(statePath, "utf8")).toBe("{invalid-json");
 
 		const shortSecret = "c2hvcnQ";
 		writeFileSync(statePath, JSON.stringify({ version: 1, secret: shortSecret }), "utf8");
 		const shortError = await loadError(agentDir);
-		expect(shortError.message).toMatch(/decode to 32 bytes/);
+		expect(shortError.message).toBe("Invalid capability identity state");
 		expect(shortError.message).not.toContain(shortSecret);
+		expect(shortError.message).not.toContain(privatePathMarker);
+		expect(shortError.message).not.toContain(statePath);
 		expect(readFileSync(statePath, "utf8")).toBe(JSON.stringify({ version: 1, secret: shortSecret }));
 
-		writeFileSync(statePath, JSON.stringify({ version: 2, secret: randomBytes(32).toString("base64url") }), "utf8");
+		const canonicalSecret = randomBytes(32).toString("base64url");
+		writeFileSync(statePath, JSON.stringify({ version: 1, secret: `${canonicalSecret}=` }), "utf8");
+		const nonCanonicalError = await loadError(agentDir);
+		expect(nonCanonicalError.message).toBe("Invalid capability identity state");
+		expect(nonCanonicalError.message).not.toContain(canonicalSecret);
+		expect(readFileSync(statePath, "utf8")).toBe(JSON.stringify({ version: 1, secret: `${canonicalSecret}=` }));
+
+		writeFileSync(statePath, JSON.stringify({ version: 2, secret: canonicalSecret }), "utf8");
 		const versionError = await loadError(agentDir);
-		expect(versionError.message).toMatch(/Unsupported capability identity state version/);
+		expect(versionError.message).toBe("Unsupported capability identity state version");
+		expect(versionError.message).not.toContain(privatePathMarker);
+		expect(versionError.message).not.toContain(statePath);
 	});
 
 	it("serializes concurrent initialization onto a single secret", async () => {

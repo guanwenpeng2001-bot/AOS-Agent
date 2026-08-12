@@ -19,6 +19,7 @@ import { resolvePath } from "../utils/paths.ts";
 const STATE_FILE_NAME = "capability-public-identity.json";
 const STATE_FILE_VERSION = 1;
 const SECRET_BYTE_LENGTH = 32;
+const SECRET_BASE64URL_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 /** Bump when the HMAC derivation scheme changes; old public IDs then change. */
 const DERIVATION_VERSION = 1;
 /** Single byte between the domain and the input in the HMAC message. */
@@ -35,39 +36,38 @@ export function getCapabilityPublicIdentityPath(agentDir: string): string {
 	return join(resolvePath(agentDir), STATE_FILE_NAME);
 }
 
+function decodeCanonicalSecret(secret: string): Buffer | undefined {
+	if (!SECRET_BASE64URL_PATTERN.test(secret)) return undefined;
+	const decoded = Buffer.from(secret, "base64url");
+	if (decoded.length !== SECRET_BYTE_LENGTH || decoded.toString("base64url") !== secret) return undefined;
+	return decoded;
+}
+
 function readStateFile(statePath: string): CapabilityPublicIdentityStateFile {
 	let raw: string;
 	try {
 		raw = readFileSync(statePath, "utf-8");
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to read capability identity state ${statePath}: ${message}`);
+	} catch {
+		throw new Error("Failed to read capability identity state");
 	}
 
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Invalid capability identity state ${statePath}: ${message}`);
+	} catch {
+		throw new Error("Invalid capability identity state");
 	}
 
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		throw new Error(`Invalid capability identity state ${statePath}: expected an object`);
+		throw new Error("Invalid capability identity state");
 	}
 	const version = (parsed as Record<string, unknown>).version;
 	if (version !== STATE_FILE_VERSION) {
-		throw new Error(`Unsupported capability identity state version ${JSON.stringify(version)} at ${statePath}`);
+		throw new Error("Unsupported capability identity state version");
 	}
 	const secret = (parsed as Record<string, unknown>).secret;
-	if (typeof secret !== "string") {
-		throw new Error(`Invalid capability identity state ${statePath}: secret must be a string`);
-	}
-	// Do not echo the stored secret value here; length is the only safe signal.
-	if (Buffer.from(secret, "base64url").length !== SECRET_BYTE_LENGTH) {
-		throw new Error(
-			`Invalid capability identity state ${statePath}: secret must decode to ${SECRET_BYTE_LENGTH} bytes`,
-		);
+	if (typeof secret !== "string" || decodeCanonicalSecret(secret) === undefined) {
+		throw new Error("Invalid capability identity state");
 	}
 	return { version: STATE_FILE_VERSION, secret };
 }
@@ -83,18 +83,15 @@ async function acquireStateLock(statePath: string): Promise<() => Promise<void>>
 	mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
 	try {
 		return await lockfile.lock(statePath, { realpath: false, retries: LOCK_RETRIES });
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to lock capability identity state ${statePath}: ${message}`);
+	} catch {
+		throw new Error("Failed to lock capability identity state");
 	}
 }
 
 export class CapabilityPublicIdentity {
-	readonly agentDir: string;
 	private readonly secret: Buffer;
 
-	private constructor(agentDir: string, secret: Buffer) {
-		this.agentDir = agentDir;
+	private constructor(secret: Buffer) {
 		this.secret = secret;
 	}
 
@@ -109,11 +106,11 @@ export class CapabilityPublicIdentity {
 		try {
 			if (existsSync(statePath)) {
 				const state = readStateFile(statePath);
-				return new CapabilityPublicIdentity(resolvePath(agentDir), Buffer.from(state.secret, "base64url"));
+				return new CapabilityPublicIdentity(Buffer.from(state.secret, "base64url"));
 			}
 			const secret = randomBytes(SECRET_BYTE_LENGTH);
 			writeStateFile(statePath, secret);
-			return new CapabilityPublicIdentity(resolvePath(agentDir), secret);
+			return new CapabilityPublicIdentity(secret);
 		} finally {
 			await release();
 		}
