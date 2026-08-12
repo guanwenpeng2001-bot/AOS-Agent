@@ -95,6 +95,24 @@ describe("parseArgs", () => {
 			expect(result.model).toBe("gpt-4o");
 		});
 
+		test("parses ModelBroker route and role intents", () => {
+			const result = parseArgs(["--model-route", "balanced", "--model-role", "reviewer"]);
+			expect(result.modelRoute).toBe("balanced");
+			expect(result.modelRole).toBe("reviewer");
+			expect(result.diagnostics).toEqual([
+				{ type: "error", message: "--model-route and --model-role are mutually exclusive" },
+			]);
+		});
+
+		test("reports missing ModelBroker route and role values", () => {
+			expect(parseArgs(["--model-route"]).diagnostics).toEqual([
+				{ type: "error", message: "--model-route requires a value" },
+			]);
+			expect(parseArgs(["--model-role"]).diagnostics).toEqual([
+				{ type: "error", message: "--model-role requires a value" },
+			]);
+		});
+
 		test("parses --api-key", () => {
 			const result = parseArgs(["--api-key", "sk-test-key"]);
 			expect(result.apiKey).toBe("sk-test-key");

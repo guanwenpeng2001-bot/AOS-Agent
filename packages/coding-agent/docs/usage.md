@@ -41,6 +41,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/login`, `/logout` | Manage OAuth or API-key credentials |
 | [`/llama`](llama-cpp.md) | Download, load, and unload llama.cpp router models |
 | `/model` | Switch models |
+| `/model-routes` | List the redacted ModelBroker route and role catalog |
+| `/model-route <route\|role:name>` | Select a declared ModelBroker route or role |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
 | `/settings` | Thinking level, theme, message delivery, transport |
 | `/resume` | AOS Agentck from previous sessions |
@@ -80,7 +82,7 @@ Approvals are session-local and never written to settings; a denied, untrusted, 
 
 Capability trust: project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable/degraded rather than exposing connection internals.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, ModelBroker, external Agent orchestration, or legacy SSE transports.
+Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
 
 ## Message Queue
 
@@ -213,6 +215,8 @@ cat README.md | aos -p "Summarize this text"
 | `--api-key <key>` | API key, overriding environment variables |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--models <patterns>` | Comma-separated patterns for Ctrl+P cycling |
+| `--model-route <id>` | Select a declared ModelBroker route |
+| `--model-role <id>` | Select a declared ModelBroker role |
 | `--list-models [search]` | List available models |
 
 ### Session Options

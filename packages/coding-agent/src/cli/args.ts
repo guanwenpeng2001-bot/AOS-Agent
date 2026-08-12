@@ -13,6 +13,8 @@ export type Mode = "text" | "json" | "rpc";
 export interface Args {
 	provider?: string;
 	model?: string;
+	modelRoute?: string;
+	modelRole?: string;
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
@@ -90,6 +92,18 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
+		} else if (arg === "--model-route") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.modelRoute = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--model-route requires a value" });
+			}
+		} else if (arg === "--model-role") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.modelRole = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--model-role requires a value" });
+			}
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
@@ -222,6 +236,10 @@ export function parseArgs(args: string[]): Args {
 		}
 	}
 
+	if (result.modelRoute !== undefined && result.modelRole !== undefined) {
+		result.diagnostics.push({ type: "error", message: "--model-route and --model-role are mutually exclusive" });
+	}
+
 	return result;
 }
 
@@ -254,6 +272,8 @@ ${chalk.bold("Commands:")}
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
+  --model-route <id>             Select a declared ModelBroker route for the session
+  --model-role <id>              Select a declared ModelBroker role for the session
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)

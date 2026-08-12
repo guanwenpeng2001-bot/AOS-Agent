@@ -395,6 +395,48 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("returns a redacted ModelBroker route catalog", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "routes", type: "get_model_routes" }));
+
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "routes")).toHaveLength(1));
+			const response = responsesFor(rpcIo.outputLines, "routes")[0];
+			expect(response).toMatchObject({ id: "routes", type: "response", command: "get_model_routes", success: true });
+			expect(response.data).toEqual({
+				schemaVersion: 1,
+				models: [],
+				routes: [],
+				roles: [],
+				roleRoutes: [],
+				bindings: [],
+			});
+			expect(JSON.stringify(response)).not.toContain("apiKey");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects a run request that combines modelRoute and modelRole", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i2", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i2")).toHaveLength(1));
+
+			lineHandler(
+				JSON.stringify({ id: "both", type: "run.start", message: "Hello", modelRoute: "balanced", modelRole: "worker" }),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "both")).toHaveLength(1));
+			const response = responsesFor(rpcIo.outputLines, "both")[0];
+			expect(response).toMatchObject({ id: "both", type: "response", command: "run.start", success: false });
+			expect((response.error as { code: string }).code).toBe("model_route_invalid");
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("is idempotent when initialize repeats and does not lose an active run", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });
 

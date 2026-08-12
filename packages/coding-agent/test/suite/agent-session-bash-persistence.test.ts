@@ -4,6 +4,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
+import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/model-broker-ledger.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -224,7 +225,12 @@ describe("AgentSession bash and persistence characterization", () => {
 		await harness.session.prompt("start");
 
 		const entries = harness.sessionManager.getEntries();
-		expect(entries.map((entry) => entry.type)).toEqual([
+		const userFacingEntries = entries.filter(
+			(entry) =>
+				entry.type !== "custom" ||
+				(entry.customType !== MODEL_BINDING_CUSTOM_TYPE && entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE),
+		);
+		expect(userFacingEntries.map((entry) => entry.type)).toEqual([
 			"custom_message",
 			"message",
 			"custom",
@@ -233,7 +239,7 @@ describe("AgentSession bash and persistence characterization", () => {
 			"custom",
 			"message",
 		]);
-		const semanticEntries = entries.filter((entry) => entry.type !== "custom");
+		const semanticEntries = userFacingEntries.filter((entry) => entry.type !== "custom");
 		expect(semanticEntries.map((entry) => entry.type)).toEqual([
 			"custom_message",
 			"message",
@@ -244,7 +250,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		expect(
 			semanticEntries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
 		).toEqual(["user", "assistant", "toolResult", "assistant"]);
-		const contextSnapshots = entries.filter((entry) => entry.type === "custom");
+		const contextSnapshots = userFacingEntries.filter((entry) => entry.type === "custom");
 		expect(contextSnapshots).toHaveLength(2);
 		for (const entry of contextSnapshots) {
 			expect(entry.customType).toBe(CONTEXT_SNAPSHOT_CUSTOM_TYPE);

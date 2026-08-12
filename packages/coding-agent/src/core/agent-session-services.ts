@@ -7,7 +7,8 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import type { ModelBroker } from "./model-broker.ts";
+import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -42,6 +43,7 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	modelBroker?: ModelBroker;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -63,6 +65,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	model?: Model<any>;
+	modelRoute?: CreateAgentSessionOptions["modelRoute"];
+	modelRole?: CreateAgentSessionOptions["modelRole"];
 	thinkingLevel?: ThinkingLevel;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	tools?: string[];
@@ -81,6 +85,8 @@ export interface AgentSessionServices {
 	cwd: string;
 	agentDir: string;
 	modelRuntime: ModelRuntime;
+	modelBroker: ModelBroker;
+	modelBrokerConfigRevision: string;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
@@ -175,7 +181,6 @@ export async function createAgentSessionServices(
 			});
 		}
 	}
-	extensionsResult.runtime.pendingProviderRegistrations = [];
 	for (const { provider, extensionPath } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
 		try {
 			modelRuntime.registerNativeProvider(provider);
@@ -187,14 +192,34 @@ export async function createAgentSessionServices(
 			});
 		}
 	}
-	extensionsResult.runtime.pendingNativeProviderRegistrations = [];
 	await modelRuntime.refresh({ allowNetwork: false });
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
+
+	// Build the Broker only after extension provider registrations and the local
+	// runtime refresh have completed. Route availability must reflect the same
+	// catalog that can serve the first request, including extension models.
+	const availableModels = new Set(
+		modelRuntime
+			.getAvailableSnapshot()
+			.map((availableModel) => `${availableModel.provider}\u0000${availableModel.id}`),
+	);
+	const modelBrokerSettings = settingsManager.getModelBrokerSettings({
+		availableModels: modelRuntime.getModels().map((availableModel) => ({
+			provider: availableModel.provider,
+			modelId: availableModel.id,
+			available: availableModels.has(`${availableModel.provider}\u0000${availableModel.id}`),
+			cost: availableModel.cost,
+			thinkingLevelMap: availableModel.thinkingLevelMap,
+		})),
+	});
+	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 
 	return {
 		cwd,
 		agentDir,
 		modelRuntime,
+		modelBroker,
+		modelBrokerConfigRevision: modelBrokerSettings.configRevision,
 		settingsManager,
 		resourceLoader,
 		capabilityRegistry:
@@ -218,12 +243,16 @@ export async function createAgentSessionFromServices(
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		modelRuntime: options.services.modelRuntime,
+		modelBroker: options.services.modelBroker,
+		modelBrokerConfigRevision: options.services.modelBrokerConfigRevision,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
 		mcpTransportFactory: options.services.mcpTransportFactory,
 		sessionManager: options.sessionManager,
 		model: options.model,
+		modelRoute: options.modelRoute,
+		modelRole: options.modelRole,
 		thinkingLevel: options.thinkingLevel,
 		scopedModels: options.scopedModels,
 		tools: options.tools,

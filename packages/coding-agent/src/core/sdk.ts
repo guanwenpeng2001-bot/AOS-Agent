@@ -9,10 +9,16 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { convertToLlm } from "./messages.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
+import { convertToLlm } from "./messages.ts";
+import {
+	type ModelBroker,
+	ModelBrokerError,
+	type ModelRoleSelection,
+	type ModelRouteSelection,
+} from "./model-broker.ts";
 import { findInitialModel } from "./model-resolver.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -46,6 +52,13 @@ export interface CreateAgentSessionOptions {
 
 	/** Canonical model/auth runtime. Defaults to a runtime using agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;
+	/** Broker for declared route/role selection and safe model binding facts. */
+	modelBroker?: ModelBroker;
+	modelBrokerConfigRevision?: string;
+	/** Optional explicit broker route for the initial session operation. */
+	modelRoute?: ModelRouteSelection;
+	/** Optional explicit broker role for the initial session operation. */
+	modelRole?: ModelRoleSelection;
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model<any>;
@@ -191,11 +204,43 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		time("resourceLoader.reload");
 	}
 
+	// Extension providers are staged by ResourceLoader. Register them before
+	// constructing the Broker so route validation sees the complete runtime
+	// catalog used by the first request.
+	const extensionsResult = resourceLoader.getExtensions();
+	for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
+		modelRuntime.registerProvider(name, config);
+	}
+	for (const { provider } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
+		modelRuntime.registerNativeProvider(provider);
+	}
+	await modelRuntime.refresh({ allowNetwork: false });
+
+	const availableModels = new Set(
+		modelRuntime
+			.getAvailableSnapshot()
+			.map((availableModel) => `${availableModel.provider}\u0000${availableModel.id}`),
+	);
+	const modelBrokerSettings = settingsManager.getModelBrokerSettings({
+		availableModels: modelRuntime.getModels().map((availableModel) => ({
+			provider: availableModel.provider,
+			modelId: availableModel.id,
+			available: availableModels.has(`${availableModel.provider}\u0000${availableModel.id}`),
+			cost: availableModel.cost,
+			thinkingLevelMap: availableModel.thinkingLevelMap,
+		})),
+	});
+	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
+
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
 	const hasExistingSession = existingSession.messages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
+	const explicitModelSelection = options.model !== undefined;
+	if (options.modelRoute !== undefined && options.modelRole !== undefined) {
+		throw new ModelBrokerError("model_invalid_reference", "modelRoute and modelRole are mutually exclusive.");
+	}
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 
@@ -392,6 +437,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		modelBroker,
+		modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
+		initialModelSelection: explicitModelSelection ? "manual" : "default",
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,
@@ -401,8 +449,34 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		mcpTransportFactory: options.mcpTransportFactory,
 		noTools: options.noTools,
 	});
-	const extensionsResult = resourceLoader.getExtensions();
-
+	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
+		const selection = modelBroker.resolveResult({
+			...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),
+			...(options.modelRole === undefined ? {} : { modelRole: options.modelRole }),
+		});
+		if (!selection.ok) throw new ModelBrokerError(selection.error);
+		const selectedModel = modelRuntime.getModel(
+			selection.resolution.reference.provider,
+			selection.resolution.reference.id,
+		);
+		if (selectedModel === undefined) {
+			throw new ModelBrokerError("model_binding_unavailable", "The selected model binding is unavailable", true);
+		}
+		await session.setModel(selectedModel);
+		session.setModelBrokerResolution(selection.resolution);
+		const routeThinkingLevel = selection.resolution.reference.thinkingLevel;
+		if (
+			routeThinkingLevel === "off" ||
+			routeThinkingLevel === "minimal" ||
+			routeThinkingLevel === "low" ||
+			routeThinkingLevel === "medium" ||
+			routeThinkingLevel === "high" ||
+			routeThinkingLevel === "xhigh" ||
+			routeThinkingLevel === "max"
+		) {
+			session.setThinkingLevel(routeThinkingLevel);
+		}
+	}
 	return {
 		session,
 		extensionsResult,
