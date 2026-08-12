@@ -556,6 +556,165 @@ export function foldCapabilityBindingEntries(
 	return bindings;
 }
 
+// ---- Public-safe serialization --------------------------------------------------
+
+/**
+ * Current-format opaque capability values are fixed-width base64url HMAC tokens
+ * under a `source:`/`rev:`/`binding:` prefix, derived by the installation
+ * identity. Legacy or malformed ids — raw source text, paths, URL credentials,
+ * keyless digests — never match these patterns, so the public-safe serializers
+ * below omit them instead of ever echoing source-derived text. The internal
+ * replay path is untouched: raw legacy ids stay available so run.resume can
+ * still fail closed against a recorded binding.
+ */
+const OPAQUE_BINDING_ID_PATTERN = /^binding:[A-Za-z0-9_-]{43}$/;
+const OPAQUE_REVISION_PATTERN = /^rev:[A-Za-z0-9_-]{43}$/;
+const OPAQUE_DESCRIPTOR_ID_PATTERN = /^([a-z_]+):source:[A-Za-z0-9_-]{43}:(.+)$/;
+
+const OPAQUE_CAPABILITY_KINDS = new Set([
+	"builtin_tool",
+	"extension_tool",
+	"sdk_tool",
+	"skill",
+	"extension",
+	"mcp_server",
+	"mcp_tool",
+]);
+
+/** True when {@link value} is a current-format opaque capability binding id. */
+export function isOpaqueCapabilityBindingId(value: unknown): value is string {
+	return typeof value === "string" && OPAQUE_BINDING_ID_PATTERN.test(value);
+}
+
+/** True when {@link value} is a current-format opaque capability revision. */
+export function isOpaqueCapabilityRevision(value: unknown): value is string {
+	return typeof value === "string" && OPAQUE_REVISION_PATTERN.test(value);
+}
+
+/** True when {@link value} is a current-format opaque capability descriptor id. */
+export function isOpaqueCapabilityDescriptorId(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const match = OPAQUE_DESCRIPTOR_ID_PATTERN.exec(value);
+	return match !== null && OPAQUE_CAPABILITY_KINDS.has(match[1]);
+}
+
+export interface PublicCapabilityBindingDescriptorRef {
+	id: string;
+	revision: string;
+	exposedToolName?: string;
+}
+
+export interface PublicCapabilityBindingLedgerRecord {
+	id: string;
+	profile: string;
+	createdAt: string;
+	descriptors: ReadonlyArray<PublicCapabilityBindingDescriptorRef>;
+	decisionSummary: { allowed: number; awaitingApproval: number; denied: number };
+	toolAllowlist: ReadonlyArray<string>;
+}
+
+export interface PublicRunRecord {
+	id: RunId;
+	sessionId: SessionId;
+	sourceRunId?: RunId;
+	/** Only present when the source binding id is a current-format opaque value. */
+	previousBindingId?: string;
+	attempt: number;
+	status: RunStatus;
+	model: RunModelReference;
+	startedAt?: string;
+	endedAt?: string;
+	terminalError?: AutomationError;
+}
+
+export interface PublicRunReceipt {
+	runId: RunId;
+	sessionId: SessionId;
+	status: RunTerminalStatus;
+	finalText?: string;
+	usage: RunUsage;
+	sessionFile?: string;
+	terminalError?: AutomationError;
+	contextSnapshotId?: string;
+	/** Only present when the binding id is a current-format opaque value. */
+	capabilityBindingId?: string;
+}
+
+function isPublicDescriptorRef(
+	ref: CapabilityBindingLedgerRecord["descriptors"][number],
+): ref is PublicCapabilityBindingDescriptorRef {
+	return isOpaqueCapabilityDescriptorId(ref.id) && isOpaqueCapabilityRevision(ref.revision);
+}
+
+/**
+ * Public-safe view of a capability binding ledger record. Returns undefined when
+ * the binding identity is a legacy or malformed raw id (the binding is
+ * unavailable); otherwise it omits descriptor refs whose id or revision is not a
+ * current-format opaque value. Never emits source/path/URL-derived text.
+ */
+export function serializePublicCapabilityBinding(
+	binding: CapabilityBindingLedgerRecord,
+): PublicCapabilityBindingLedgerRecord | undefined {
+	if (!isOpaqueCapabilityBindingId(binding.id)) return undefined;
+	return {
+		id: binding.id,
+		profile: binding.profile,
+		createdAt: binding.createdAt,
+		descriptors: binding.descriptors.filter(isPublicDescriptorRef),
+		decisionSummary: {
+			allowed: binding.decisionSummary.allowed,
+			awaitingApproval: binding.decisionSummary.awaitingApproval,
+			denied: binding.decisionSummary.denied,
+		},
+		toolAllowlist: [...binding.toolAllowlist],
+	};
+}
+
+/**
+ * Public-safe view of a run record. The previous binding id is only emitted when
+ * it is a current-format opaque value; legacy/malformed ids are omitted and the
+ * terminal error message is always redacted.
+ */
+export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
+	const copy: PublicRunRecord = {
+		id: record.id,
+		sessionId: record.sessionId,
+		attempt: record.attempt,
+		status: record.status,
+		model: { ...record.model },
+	};
+	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
+	if (record.previousBindingId !== undefined && isOpaqueCapabilityBindingId(record.previousBindingId)) {
+		copy.previousBindingId = record.previousBindingId;
+	}
+	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
+	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
+	if (record.terminalError !== undefined) copy.terminalError = redactAutomationError(record.terminalError);
+	return copy;
+}
+
+/**
+ * Public-safe view of a run receipt. The capability binding id is only emitted
+ * when it is a current-format opaque value; legacy/malformed ids are omitted and
+ * the terminal error message is always redacted.
+ */
+export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt {
+	const copy: PublicRunReceipt = {
+		runId: receipt.runId,
+		sessionId: receipt.sessionId,
+		status: receipt.status,
+		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
+	};
+	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
+	if (receipt.sessionFile !== undefined) copy.sessionFile = receipt.sessionFile;
+	if (receipt.terminalError !== undefined) copy.terminalError = redactAutomationError(receipt.terminalError);
+	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
+	if (receipt.capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(receipt.capabilityBindingId)) {
+		copy.capabilityBindingId = receipt.capabilityBindingId;
+	}
+	return copy;
+}
+
 // ---- Text and usage helpers --------------------------------------------------
 
 function extractTextContent(content: unknown): string {
