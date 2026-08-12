@@ -12,7 +12,8 @@ import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefi
 import { convertToLlm } from "./messages.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
 import { findInitialModel } from "./model-resolver.ts";
-import { ModelRuntime } from "./model-runtime.ts";
+import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
+import type { ModelBroker } from "./model-broker.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
@@ -46,6 +47,9 @@ export interface CreateAgentSessionOptions {
 
 	/** Canonical model/auth runtime. Defaults to a runtime using agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;
+	/** Broker for declared route/role selection and safe model binding facts. */
+	modelBroker?: ModelBroker;
+	modelBrokerConfigRevision?: string;
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model<any>;
@@ -183,6 +187,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const modelBrokerSettings = settingsManager.getModelBrokerSettings();
+	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
 	if (!resourceLoader) {
@@ -392,6 +398,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		resourceLoader,
 		customTools: options.customTools,
 		modelRuntime,
+		modelBroker,
+		modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,
