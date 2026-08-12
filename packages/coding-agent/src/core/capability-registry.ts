@@ -462,7 +462,7 @@ export function buildCapabilityCatalog(
 	const descriptors = [...byId.values()];
 	const decisions = resolveDecisions(descriptors, undefined);
 	const catalog = deepFreeze({
-		version: 1,
+		version: 1 as const,
 		descriptors: descriptors.map((descriptor) => ({
 			...descriptor,
 			decision: decisions.get(descriptor.id) ?? "deny",

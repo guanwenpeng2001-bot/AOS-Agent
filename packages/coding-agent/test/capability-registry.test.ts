@@ -8,6 +8,7 @@ import {
 	type CapabilityBinding,
 	type CapabilityCandidate,
 	type CapabilityCatalog,
+	type CapabilityCatalogInput,
 	type CapabilityDecision,
 	type CapabilityError,
 	CapabilityNameConflictError,

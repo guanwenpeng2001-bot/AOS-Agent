@@ -21,6 +21,9 @@ import {
 	serializePublicCapabilityBinding,
 	serializePublicRunReceipt,
 	serializePublicRunRecord,
+	serializePublicRunStreamEvent,
+	serializePublicSessionEntry,
+	serializePublicSessionTreeNode,
 	type AutomationError,
 	type CapabilityBindingLedgerRecord,
 	type RunHandle,
@@ -201,7 +204,7 @@ describe("state machine", () => {
 		expect(run.receipt()?.status).toBe("cancelled");
 	});
 
-	it("settles a failed run with a structured terminal error", () => {
+		it("settles a failed run with a structured public-safe terminal error", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.start();
@@ -210,7 +213,11 @@ describe("state machine", () => {
 			terminalError: createAutomationError("host_not_initialized", "boom", false),
 		});
 		expect(terminal?.type).toBe("run.failed");
-		expect(run.receipt()?.terminalError).toEqual({ code: "host_not_initialized", message: "boom", retryable: false });
+		expect(run.receipt()?.terminalError).toEqual({
+			code: "host_not_initialized",
+			message: "Run failed.",
+			retryable: false,
+		});
 		expect(run.record.terminalError?.code).toBe("host_not_initialized");
 	});
 
@@ -224,7 +231,7 @@ describe("state machine", () => {
 });
 
 describe("model_error terminal code", () => {
-	it("appears on the run.failed receipt and terminal event", () => {
+		it("stores a fixed public-safe message on the run.failed receipt and terminal event", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.start();
@@ -234,11 +241,11 @@ describe("model_error terminal code", () => {
 		});
 		expect(terminal?.type).toBe("run.failed");
 		expect(terminal).toMatchObject({
-			receipt: { status: "failed", terminalError: { code: "model_error", message: "529 overloaded_error: Overloaded" } },
+			receipt: { status: "failed", terminalError: { code: "model_error", message: "Run failed." } },
 		});
 		expect(run.receipt()?.terminalError).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 		expect(run.record.status).toBe("failed");
@@ -261,7 +268,7 @@ describe("model_error terminal code", () => {
 		const persisted = (terminalEntry?.data as { receipt?: { terminalError?: AutomationError } }).receipt?.terminalError;
 		expect(persisted).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 	});
@@ -281,7 +288,7 @@ describe("model_error terminal code", () => {
 		expect(result?.record.status).toBe("failed");
 		expect(result?.receipt?.terminalError).toEqual({
 			code: "model_error",
-			message: "529 overloaded_error: Overloaded",
+			message: "Run failed.",
 			retryable: false,
 		});
 		expect(result?.record.terminalError?.code).toBe("model_error");
@@ -1012,7 +1019,7 @@ describe("redacted error serialization", () => {
 });
 
 describe("terminal error redaction", () => {
-	it("redacts a terminalError before persistence, emission and the retained record", () => {
+		it("replaces a terminalError before persistence, emission and the retained record", () => {
 		const session = makeSession();
 		const coordinator = makeCoordinator(session);
 		const run = accept(coordinator.reserve(), "r1");
@@ -1030,7 +1037,7 @@ describe("terminal error redaction", () => {
 		const wireMessage = terminal.receipt.terminalError?.message ?? "";
 		expect(wireMessage).not.toContain("secret");
 		expect(wireMessage).not.toContain("abc123");
-		expect(wireMessage).toContain("[redacted]");
+		expect(wireMessage).toBe("Run failed.");
 
 		// retained record is redacted
 		expect(run.record.terminalError?.message).not.toContain("secret");
@@ -1045,6 +1052,7 @@ describe("terminal error redaction", () => {
 		expect(persisted?.message).toBeDefined();
 		expect(persisted?.message).not.toContain("secret");
 		expect(persisted?.message).not.toContain("abc123");
+		expect(persisted?.message).toBe("Run failed.");
 	});
 
 	it("redacts a hand-written terminal error when replayed from the ledger", () => {
@@ -1171,6 +1179,12 @@ function legacyReceipt(sessionId: string): RunReceipt {
 		sessionId,
 		status: "completed",
 		usage: { input: 1, output: 1, total: 2 },
+		sessionFile: PATH_MARKER_WIN,
+		terminalError: createAutomationError(
+			"model_error",
+			`${PATH_MARKER_POSIX} via https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+			false,
+		),
 		capabilityBindingId: LEGACY_BINDING.id,
 	};
 }
@@ -1255,7 +1269,7 @@ describe("public-safe run record serialization", () => {
 		expectNoPublicMarkers(publicRecord);
 	});
 
-	it("redacts a terminal error on the public record", () => {
+	it("replaces a terminal error with a fixed public-safe message", () => {
 		const publicRecord = serializePublicRunRecord({
 			id: "r-err",
 			sessionId: "s-err",
@@ -1264,13 +1278,11 @@ describe("public-safe run record serialization", () => {
 			model: MODEL,
 			terminalError: createAutomationError(
 				"model_error",
-				`connect to https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+				`${PATH_MARKER_WIN} / ${PATH_MARKER_POSIX} / https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
 				false,
 			),
 		});
-		expect(publicRecord.terminalError?.message).not.toContain("audit-user");
-		expect(publicRecord.terminalError?.message).not.toContain("audit-query-secret");
-		expect(publicRecord.terminalError?.message).toContain("[redacted]");
+		expect(publicRecord.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
 		expectNoPublicMarkers(publicRecord);
 	});
 });
@@ -1280,10 +1292,12 @@ describe("public-safe run receipt serialization", () => {
 		const receipt = legacyReceipt("s-legacy");
 		const publicReceipt = serializePublicRunReceipt(receipt);
 		expect(publicReceipt.capabilityBindingId).toBeUndefined();
+		expect("sessionFile" in publicReceipt).toBe(false);
 		expect(publicReceipt.runId).toBe("r-legacy");
 		expect(publicReceipt.sessionId).toBe("s-legacy");
 		expect(publicReceipt.status).toBe("completed");
 		expect(publicReceipt.usage).toEqual({ input: 1, output: 1, total: 2 });
+		expect(publicReceipt.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
 		expectNoPublicMarkers(publicReceipt);
 	});
 
@@ -1297,6 +1311,109 @@ describe("public-safe run receipt serialization", () => {
 		});
 		expect(publicReceipt.capabilityBindingId).toBe(OPAQUE_BINDING_ID);
 		expectNoPublicMarkers(publicReceipt);
+	});
+});
+
+describe("public-safe session ledger serialization", () => {
+	it("keeps legacy facts internal while omitting their custom data from public entries and trees", () => {
+		const session = makeSession();
+		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: LEGACY_BINDING });
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: legacyRecord(session.getSessionId()),
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-10T12:00:04.000Z",
+			receipt: legacyReceipt(session.getSessionId()),
+		});
+		session.appendCustomEntry("extension.private", {
+			path: PATH_MARKER_WIN,
+			url: `https://${URL_USERINFO_MARKER}@host.invalid/pkg?${URL_QUERY_MARKER}`,
+		});
+
+		const entries = session.getEntries();
+		const publicEntries = entries.map((entry) => serializePublicSessionEntry(entry));
+		const publicTree = session.getTree().map((node) => serializePublicSessionTreeNode(node));
+
+		expectNoPublicMarkers(publicEntries);
+		expectNoPublicMarkers(publicTree);
+		const publicBinding = publicEntries.find(
+			(entry) => entry.type === "custom" && entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE,
+		);
+		expect(publicBinding).toMatchObject({ type: "custom", customType: CAPABILITY_BINDING_CUSTOM_TYPE });
+		if (publicBinding?.type !== "custom") throw new Error("expected public capability binding entry");
+		expect(publicBinding.data).toBeUndefined();
+
+		const publicTerminal = publicEntries.find(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
+				(entry.data as { kind?: string } | undefined)?.kind === "terminal",
+		);
+		if (publicTerminal?.type !== "custom") throw new Error("expected public terminal entry");
+		const receipt = (publicTerminal.data as { receipt?: Record<string, unknown> } | undefined)?.receipt;
+		expect(receipt?.capabilityBindingId).toBeUndefined();
+		expect(receipt?.sessionFile).toBeUndefined();
+		expect(receipt?.terminalError).toEqual({ code: "model_error", message: "Run failed.", retryable: false });
+
+		const privateEntry = publicEntries.find(
+			(entry) => entry.type === "custom" && entry.customType === "extension.private",
+		);
+		expect(privateEntry).toMatchObject({ type: "custom", customType: "extension.private" });
+		if (privateEntry?.type !== "custom") throw new Error("expected extension custom entry");
+		expect(privateEntry.data).toBeUndefined();
+
+		const internal = makeCoordinator(session).getRun("r-legacy");
+		expect(internal?.record.previousBindingId).toBe(LEGACY_BINDING.id);
+		expect(internal?.receipt?.sessionFile).toBe(PATH_MARKER_WIN);
+	});
+
+	it("preserves current opaque ledger references and serializes terminal stream receipts", () => {
+		const record: RunRecord = {
+			id: "r-opaque",
+			sessionId: "s-opaque",
+			previousBindingId: OPAQUE_BINDING_ID,
+			attempt: 1,
+			status: "completed",
+			model: MODEL,
+		};
+		const receipt: RunReceipt = {
+			runId: "r-opaque",
+			sessionId: "s-opaque",
+			status: "completed",
+			usage: { input: 1, output: 2, total: 3 },
+			capabilityBindingId: OPAQUE_BINDING_ID,
+		};
+		const publicAccepted = serializePublicSessionEntry({
+			type: "custom",
+			id: "accepted-entry",
+			parentId: null,
+			timestamp: "2026-08-10T12:00:00.000Z",
+			customType: RUN_LEDGER_CUSTOM_TYPE,
+			data: { schemaVersion: 1, kind: "accepted", record },
+		});
+		const publicTerminal = serializePublicRunStreamEvent({
+			type: "run.completed",
+			runId: "r-opaque",
+			sessionId: "s-opaque",
+			sequence: 1,
+			timestamp: "2026-08-10T12:00:01.000Z",
+			receipt,
+		});
+
+		expectNoPublicMarkers(publicAccepted);
+		expectNoPublicMarkers(publicTerminal);
+		const acceptedRecord =
+			publicAccepted.type === "custom"
+				? (publicAccepted.data as { record?: { previousBindingId?: string } } | undefined)?.record
+				: undefined;
+		expect(acceptedRecord?.previousBindingId).toBe(OPAQUE_BINDING_ID);
+		if (!("receipt" in publicTerminal)) throw new Error("expected terminal public run event");
+		expect(publicTerminal.receipt.capabilityBindingId).toBe(OPAQUE_BINDING_ID);
+		expect("sessionFile" in publicTerminal.receipt).toBe(false);
 	});
 });
 
