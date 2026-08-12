@@ -5,7 +5,8 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import type { CapabilityRegistry } from "./capability-registry.ts";
+import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
+import { CapabilityRegistry } from "./capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
@@ -379,6 +380,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
+	const capabilityRegistry =
+		options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir));
+
 	const session = new AgentSession({
 		agent,
 		sessionManager,
@@ -393,7 +397,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
-		capabilityRegistry: options.capabilityRegistry,
+		capabilityRegistry,
 		mcpTransportFactory: options.mcpTransportFactory,
 		noTools: options.noTools,
 	});

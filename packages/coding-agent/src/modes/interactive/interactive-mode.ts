@@ -88,6 +88,7 @@ import {
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
+import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/run-lifecycle.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
@@ -6046,7 +6047,9 @@ export class InteractiveMode {
 	private async handleContextCommand(snapshotId?: string): Promise<void> {
 		try {
 			const inspection = await this.session.inspectContext({ snapshotId });
-			const { snapshot, drift, preview } = inspection;
+			const snapshot = serializePublicContextSnapshot(inspection.snapshot);
+			const drift = inspection.drift.map((item) => serializePublicContextDrift(item));
+			const { preview } = inspection;
 			let info = `${theme.bold("Context Engine")}\n\n`;
 			info += `${theme.fg("dim", "Mode:")} ${preview ? "preview (not persisted)" : "snapshot"}\n`;
 			info += `${theme.fg("dim", "Snapshot:")} ${snapshot.id}\n`;
@@ -6065,10 +6068,10 @@ export class InteractiveMode {
 			info += `${theme.fg("dim", "Estimated input:")} ${snapshot.budget.estimatedInputTokens}\n`;
 			info += `\n${theme.bold("Sources")} (${snapshot.sources.length})\n`;
 			for (const source of snapshot.sources) {
-				const pathPart = source.path ? ` ${theme.fg("dim", source.path)}` : "";
 				const reason = source.reason ? ` (${source.reason})` : "";
-				info += `${source.disposition.padEnd(9)} ${source.kind.padEnd(18)} ${source.trust.padEnd(18)} ~${source.estimatedTokens} tok${pathPart}${reason}\n`;
-				info += `  ${theme.fg("dim", source.sourceId)} digest=${source.contentDigest.slice(0, 12)}…\n`;
+				const capabilityPart = source.capabilityId ? ` capability=${source.capabilityId}` : "";
+				info += `${source.disposition.padEnd(9)} ${source.kind.padEnd(18)} ${source.trust.padEnd(18)} ~${source.estimatedTokens} tok${capabilityPart}${reason}\n`;
+				info += `  ${theme.fg("dim", `digest=${source.contentDigest.slice(0, 12)}…`)}\n`;
 			}
 			if (drift.length > 0) {
 				info += `\n${theme.bold("Drift vs current sources")}\n`;
@@ -6076,15 +6079,15 @@ export class InteractiveMode {
 					if (item.status === "unchanged") {
 						continue;
 					}
-					info += `${item.status.padEnd(20)} ${item.sourceId}\n`;
+					info += `${item.status}\n`;
 				}
 			}
 			info += `\n${theme.fg("dim", "Note: metadata only — no rule/session/memory bodies or credentials.")}\n`;
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(new Text(info, 1, 0));
 			this.ui.requestRender();
-		} catch (error) {
-			const msg = `${theme.fg("error", "Context error:")} ${error instanceof Error ? error.message : String(error)}`;
+		} catch {
+			const msg = `${theme.fg("error", "Context error:")} Context inspection failed.`;
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(new Text(msg, 1, 0));
 			this.ui.requestRender();

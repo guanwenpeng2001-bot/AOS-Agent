@@ -135,7 +135,6 @@ import {
 	CapabilityNameConflictError,
 	CapabilityProfileNotFoundError,
 	CapabilityRegistry,
-	createCapabilityId,
 	resolveCapabilityBinding,
 	type CapabilityBinding,
 	type CapabilityCandidate,
@@ -3789,7 +3788,7 @@ export class AgentSession {
 		}
 		for (const extension of this._resourceLoader.getExtensions().extensions) {
 			const extensionLocalName = stableExtensionLocalName(extension);
-			const extensionDescriptorId = createCapabilityId(
+			const extensionDescriptorId = this._capabilityRegistry.createCapabilityId(
 				"extension",
 				extension.sourceInfo.source,
 				extensionLocalName,
@@ -3974,6 +3973,7 @@ export class AgentSession {
 					serverId,
 					sourceIdentity: serverToolSourceIdentity,
 					parentDescriptorId: serverDescriptor.id,
+					registry: this._capabilityRegistry,
 					callTool: (toolName, args, signal) =>
 						this._mcpLifecycleManager.callTool(serverId, toolName, args, signal),
 				});
@@ -4047,7 +4047,7 @@ export class AgentSession {
 		const selectedSkills = skills.filter((skill) => {
 			const source =
 				skill.sourceInfo ?? createSyntheticSourceInfo(`<skill:${skill.name}>`, { source: "skill" });
-			return selectedSkillIds.has(createCapabilityId("skill", source.source, skill.name));
+			return selectedSkillIds.has(this._capabilityRegistry.createCapabilityId("skill", source.source, skill.name));
 		});
 		if (selectedSkills.length === 0) {
 			return undefined;

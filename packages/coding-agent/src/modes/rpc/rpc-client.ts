@@ -7,10 +7,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
-import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
@@ -22,6 +21,7 @@ import type {
 	RpcAutomationResponse,
 	RpcCommand,
 	RpcResponse,
+	RpcSessionStats,
 	RpcSessionState,
 	RpcSlashCommand,
 	RunAcceptedData,
@@ -446,7 +446,7 @@ export class RpcClient {
 	/**
 	 * Get session statistics.
 	 */
-	async getSessionStats(): Promise<SessionStats> {
+	async getSessionStats(): Promise<RpcSessionStats> {
 		const response = await this.send({ type: "get_session_stats" });
 		return this.getData(response);
 	}
@@ -497,17 +497,17 @@ export class RpcClient {
 	/**
 	 * Get session entries in append order, optionally only those after the `since` entry id.
 	 */
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
+	async getEntries(since?: string): Promise<{ entries: PublicSessionEntry[]; leafId: string | null }> {
 		const response = await this.send({ type: "get_entries", since });
-		return this.getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
+		return this.getData<{ entries: PublicSessionEntry[]; leafId: string | null }>(response);
 	}
 
 	/**
 	 * Get the session entry tree.
 	 */
-	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+	async getTree(): Promise<{ tree: PublicSessionTreeNode[]; leafId: string | null }> {
 		const response = await this.send({ type: "get_tree" });
-		return this.getData<{ tree: SessionTreeNode[]; leafId: string | null }>(response);
+		return this.getData<{ tree: PublicSessionTreeNode[]; leafId: string | null }>(response);
 	}
 
 	/**

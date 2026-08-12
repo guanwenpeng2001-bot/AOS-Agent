@@ -2,7 +2,7 @@ import type { ImageContent, TextContent } from "@aos-agent/ai";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "./extensions/types.ts";
-import { createCapabilityId } from "./capability-registry.ts";
+import type { CapabilityRegistry } from "./capability-registry.ts";
 import { type MCPCallResult, MCPError, mcpNamespaceSegmentError } from "./mcp-types.ts";
 
 /**
@@ -18,8 +18,14 @@ export interface MCPToolMappingOptions {
 	serverId: string;
 	/** Source identity of this server's mcp_tool capabilities (e.g. "mcp:global:docs"). */
 	sourceIdentity: string;
-	/** Capability id of the parent `mcp_server` descriptor (e.g. "mcp_server:mcp:global:docs"). */
+	/** Capability id of the parent `mcp_server` descriptor. */
 	parentDescriptorId: string;
+	/**
+	 * Registry whose installation identity derives this tool's public descriptor
+	 * id. Every caller must provide the Registry active for the containing
+	 * session so the descriptor and its parent share one identity.
+	 */
+	registry: CapabilityRegistry;
 }
 
 /**
@@ -85,7 +91,7 @@ export function createMCPToolMapping(
 		toolName,
 		exposedToolName: `mcp__${options.serverId}__${toolName}`,
 		parentDescriptorId: options.parentDescriptorId,
-		descriptorId: createCapabilityId("mcp_tool", options.sourceIdentity, toolName),
+		descriptorId: options.registry.createCapabilityId("mcp_tool", options.sourceIdentity, toolName),
 		revisionInput: {
 			name: toolName,
 			description: tool.description,

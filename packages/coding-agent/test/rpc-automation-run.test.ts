@@ -115,12 +115,17 @@ const DEFAULT_MODEL: Model<"anthropic-messages"> = {
 	maxTokens: 64000,
 };
 
-/** Metadata-only redacted binding injected via getActiveCapabilityBinding spies. */
+const OPAQUE_SOURCE_ID = `source:${"s".repeat(43)}`;
+const OPAQUE_BINDING_ID = `binding:${"b".repeat(43)}`;
+const OPAQUE_APPROVAL_BINDING_ID = `binding:${"a".repeat(43)}`;
+const OPAQUE_REVISION_ID = `rev:${"r".repeat(43)}`;
+
+/** Metadata-only opaque binding injected via getActiveCapabilityBinding spies. */
 const BINDING: CapabilityBinding = {
-	id: "binding:default:abc123",
+	id: OPAQUE_BINDING_ID,
 	profile: "default",
 	createdAt: "2026-08-11T00:00:00.000Z",
-	descriptors: [{ id: "builtin_tool:core:read", revision: "rev:1", exposedToolName: "Read" }],
+	descriptors: [{ id: `builtin_tool:${OPAQUE_SOURCE_ID}:read`, revision: OPAQUE_REVISION_ID, exposedToolName: "Read" }],
 	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
 	toolAllowlist: ["Read"],
 };
@@ -128,7 +133,7 @@ const BINDING: CapabilityBinding = {
 /** A binding whose profile leaves an ask capability unapproved (headless must fail). */
 const APPROVAL_BINDING: CapabilityBinding = {
 	...BINDING,
-	id: "binding:default:approval",
+	id: OPAQUE_APPROVAL_BINDING_ID,
 	decisionSummary: { allowed: 1, awaitingApproval: 1, denied: 0 },
 };
 
@@ -1068,7 +1073,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const message = (res.error as { message: string }).message;
 			expect(message).not.toContain("secret");
 			expect(message).not.toContain("abc123");
-			expect(message).toContain("[redacted]");
+			expect(message).toBe("Automation request failed.");
 			expect(JSON.stringify(res)).not.toMatch(/secret|abc123|user:pass/);
 		} finally {
 			await cleanup();
@@ -1195,7 +1200,8 @@ describe("RPC Automation Host run lifecycle", () => {
 				(descriptor) => descriptor.kind === "sdk_tool" && descriptor.name === "cat_tool",
 			);
 			expect(toolDescriptor).toBeDefined();
-			expect(toolDescriptor!.source).toEqual({ source: "sdk", scope: "temporary", origin: "top-level" });
+			expect(toolDescriptor!.source).toMatchObject({ scope: "temporary", origin: "top-level" });
+			expect((toolDescriptor!.source as { source?: unknown }).source).toMatch(/^source:[A-Za-z0-9_-]{43}$/);
 
 			// Redaction contract: every descriptor's source is exactly the public
 			// { source, scope, origin } triple and no descriptor carries path, config,
@@ -1252,7 +1258,8 @@ describe("RPC Automation Host run lifecycle", () => {
 				(descriptor) => descriptor.kind === "skill" && descriptor.name === skillName,
 			);
 			expect(skillDescriptor).toBeDefined();
-			expect(skillDescriptor!.source).toEqual({ source: "local", scope: "project", origin: "top-level" });
+			expect(skillDescriptor!.source).toMatchObject({ scope: "project", origin: "top-level" });
+			expect((skillDescriptor!.source as { source?: unknown }).source).toMatch(/^source:[A-Za-z0-9_-]{43}$/);
 			// the raw file path is stripped from every serialized capability record
 			expect(JSON.stringify(res)).not.toContain(realTempPath);
 			for (const descriptor of data.catalog.descriptors) {
@@ -1630,7 +1637,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const res = responsesFor(rpcIo.outputLines, "rs1")[0];
 			expect(res.success).toBe(false);
 			expect((res.error as { code: string }).code).toBe("capability_mcp_connect_failed");
-			expect((res.error as { message: string }).message).toContain("MCP discovery failed");
+			expect((res.error as { message: string }).message).toBe("Automation request failed.");
 			readinessSpy.mockRestore();
 		} finally {
 			await cleanup();
@@ -1846,10 +1853,10 @@ describe("RPC Automation Host run lifecycle", () => {
 				(terminal.receipt as { terminalError?: { message: string } }).terminalError?.message ?? "";
 			expect(wireMessage).not.toContain("secret");
 			expect(wireMessage).not.toContain("abc123");
-			expect(wireMessage).toContain("[redacted]");
+			expect(wireMessage).toBe("Run failed.");
 			expect(JSON.stringify(terminal)).not.toMatch(/secret|abc123/);
 
-			// the persisted terminal ledger entry is redacted too
+			// the persisted terminal ledger entry also contains only fixed safe text
 			const ledger = runtimeHost.session.sessionManager
 				.getEntries()
 				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
@@ -1862,6 +1869,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const persistedError = (terminalEntry?.data as { receipt?: { terminalError?: { message: string } } }).receipt
 				?.terminalError;
 			expect(persistedError?.message).toBeDefined();
+			expect(persistedError?.message).toBe("Run failed.");
 			expect(persistedError?.message).not.toContain("secret");
 			expect(persistedError?.message).not.toContain("abc123");
 			expect(JSON.stringify(terminalEntry?.data)).not.toMatch(/secret|abc123/);
