@@ -25,8 +25,8 @@ describe("regression #5996: session names do not contain newlines", () => {
 		let api: ExtensionAPI | undefined;
 		const harness = await createHarness({
 			extensionFactories: [
-				(pi) => {
-					api = pi;
+				(agent) => {
+					api = agent;
 				},
 			],
 		});

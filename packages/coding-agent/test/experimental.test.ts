@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { areExperimentalFeaturesEnabled } from "../src/core/experimental.ts";
 
 describe("areExperimentalFeaturesEnabled", () => {
-	const originalPiExperimental = process.env.AOS_AGENT_EXPERIMENTAL;
+	const originalExperimental = process.env.AOS_AGENT_EXPERIMENTAL;
 
 	afterEach(() => {
-		if (originalPiExperimental === undefined) {
+		if (originalExperimental === undefined) {
 			delete process.env.AOS_AGENT_EXPERIMENTAL;
 		} else {
-			process.env.AOS_AGENT_EXPERIMENTAL = originalPiExperimental;
+			process.env.AOS_AGENT_EXPERIMENTAL = originalExperimental;
 		}
 	});
 

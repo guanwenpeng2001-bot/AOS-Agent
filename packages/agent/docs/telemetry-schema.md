@@ -52,7 +52,7 @@ No declared span events.
 
 ## Harness schema
 
-Schema version: 1
+Schema version: 2
 
 ### `aos.harness.run`
 
@@ -67,10 +67,10 @@ One admitted in-process run invocation
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
 | `aos.session.id` | `string` | yes |  | high cardinality | Session id |
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
-| `pi.operation.kind` | `string` | yes | run |  | Run operation kind |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
+| `aos.operation.kind` | `string` | yes | run |  | Run operation kind |
 
 #### End attributes
 
@@ -78,9 +78,9 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.operation.outcome` | `string` | completed, aborted, failed, suspended |  | Run invocation outcome |
-| `pi.error.code` | `string` |  | low cardinality | Stable operation error code |
-| `pi.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
+| `aos.operation.outcome` | `string` | completed, aborted, failed, suspended |  | Run invocation outcome |
+| `aos.error.code` | `string` |  | low cardinality | Stable operation error code |
+| `aos.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
 
 #### Events
 
@@ -99,10 +99,10 @@ One admitted in-process manual compaction invocation
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
 | `aos.session.id` | `string` | yes |  | high cardinality | Session id |
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
-| `pi.operation.kind` | `string` | yes | compaction |  | Compaction operation kind |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
+| `aos.operation.kind` | `string` | yes | compaction |  | Compaction operation kind |
 
 #### End attributes
 
@@ -110,9 +110,9 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.operation.outcome` | `string` | completed, declined, aborted, failed |  | Compaction invocation outcome |
-| `pi.error.code` | `string` |  | low cardinality | Stable operation error code |
-| `pi.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
+| `aos.operation.outcome` | `string` | completed, declined, aborted, failed |  | Compaction invocation outcome |
+| `aos.error.code` | `string` |  | low cardinality | Stable operation error code |
+| `aos.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
 
 #### Events
 
@@ -131,10 +131,10 @@ One admitted in-process navigation invocation
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
 | `aos.session.id` | `string` | yes |  | high cardinality | Session id |
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
-| `pi.operation.kind` | `string` | yes | navigation |  | Navigation operation kind |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.operation.recovery` | `boolean` | yes |  |  | Whether this invocation resumes durable work |
+| `aos.operation.kind` | `string` | yes | navigation |  | Navigation operation kind |
 
 #### End attributes
 
@@ -142,9 +142,9 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.operation.outcome` | `string` | completed, declined, aborted, failed |  | Navigation invocation outcome |
-| `pi.error.code` | `string` |  | low cardinality | Stable operation error code |
-| `pi.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
+| `aos.operation.outcome` | `string` | completed, declined, aborted, failed |  | Navigation invocation outcome |
+| `aos.error.code` | `string` |  | low cardinality | Stable operation error code |
+| `aos.error.type` | `string` |  | low cardinality | Low-cardinality operation error class |
 
 #### Events
 
@@ -162,9 +162,9 @@ One run checkpoint
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.checkpoint.kind` | `string` | yes | normal, failure_drain, abort_reconcile |  | Checkpoint purpose |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.checkpoint.kind` | `string` | yes | normal, failure_drain, abort_reconcile |  | Checkpoint purpose |
 
 #### End attributes
 
@@ -190,9 +190,9 @@ One assistant response and its tool batch
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.turn.id` | `string` | yes |  | high cardinality | Invocation-local turn id |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.turn.id` | `string` | yes |  | high cardinality | Invocation-local turn id |
 
 #### End attributes
 
@@ -218,11 +218,11 @@ One durable retry attempt
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
 | `aos.step.kind` | `string` | yes | assistant, compaction, branch_summary |  | Retryable step kind |
 | `aos.step.attempt` | `number` | yes |  |  | One-based durable attempt number |
-| `pi.compaction.reason` | `string` | no | manual, threshold, overflow |  | Compaction trigger |
+| `aos.compaction.reason` | `string` | no | manual, threshold, overflow |  | Compaction trigger |
 
 #### End attributes
 
@@ -248,13 +248,13 @@ One raw phase-2 tool execution
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.turn.id` | `string` | no |  | high cardinality | Invocation-local live turn id |
-| `pi.tool.name` | `string` | yes |  |  | Tool name |
-| `pi.tool.call_id` | `string` | yes |  | high cardinality | Tool call id |
-| `pi.tool.replay` | `string` | yes | never, safe |  | Declared replay policy |
-| `pi.tool.recovery` | `boolean` | yes |  |  | Whether this is recovery execution |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.turn.id` | `string` | no |  | high cardinality | Invocation-local live turn id |
+| `aos.tool.name` | `string` | yes |  |  | Tool name |
+| `aos.tool.call_id` | `string` | yes |  | high cardinality | Tool call id |
+| `aos.tool.replay` | `string` | yes | never, safe |  | Declared replay policy |
+| `aos.tool.recovery` | `boolean` | yes |  |  | Whether this is recovery execution |
 
 #### End attributes
 
@@ -262,7 +262,7 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.tool.is_error` | `boolean` |  |  | Whether raw phase-2 execution returned an error |
+| `aos.tool.is_error` | `boolean` |  |  | Whether raw phase-2 execution returned an error |
 
 #### Events
 
@@ -280,10 +280,10 @@ One registered hook handler invocation
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | no |  | high cardinality | Durable operation id when accepted |
-| `pi.hook.name` | `string` | yes | before_run, before_resume, before_run_end, transform_context, before_request, before_payload, after_response, before_tool, after_tool, before_compaction, before_navigation |  | Hook name |
-| `pi.hook.registration_id` | `string` | no |  |  | Stable hook registration id |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | no |  | high cardinality | Durable operation id when accepted |
+| `aos.hook.name` | `string` | yes | before_run, before_resume, before_run_end, transform_context, before_request, before_payload, after_response, before_tool, after_tool, before_compaction, before_navigation |  | Hook name |
+| `aos.hook.registration_id` | `string` | no |  |  | Stable hook registration id |
 
 #### End attributes
 
@@ -291,7 +291,7 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.hook.outcome` | `string` | completed, skipped, blocked, failed |  | Handler outcome |
+| `aos.hook.outcome` | `string` | completed, skipped, blocked, failed |  | Handler outcome |
 
 #### Events
 
@@ -309,8 +309,8 @@ One retry delay
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
-| `pi.sleep.delay_ms` | `number` | yes |  |  | Requested delay in milliseconds |
+| `aos.operation.id` | `string` | yes |  | high cardinality | Durable operation id |
+| `aos.sleep.delay_ms` | `number` | yes |  |  | Requested delay in milliseconds |
 
 #### End attributes
 
@@ -318,7 +318,7 @@ All end attributes are optional completion enrichment.
 
 | Name | Type | Values | Notes | Description |
 |---|---|---|---|---|
-| `pi.sleep.outcome` | `string` | elapsed, aborted |  | Delay outcome |
+| `aos.sleep.outcome` | `string` | elapsed, aborted |  | Delay outcome |
 
 #### Events
 
@@ -336,8 +336,8 @@ One passive event listener invocation
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.event.type` | `string` | yes | run_start, run_resume, run_suspend, run_abort, run_end, fault, handler_error, turn_start, turn_end, retry_scheduled, retry_start, retry_end, message_start, message_update, message_end, tool_start, tool_update, tool_end, entry_added, write_pending, queue_update, fact_update, config_update, compaction_start, compaction_end, navigation_start, navigation_end, lane_created, usage | low cardinality | Delivered harness event type |
-| `pi.lane.name` | `string` | no |  | high cardinality | Lane name for lane-scoped events |
+| `aos.event.type` | `string` | yes | run_start, run_resume, run_suspend, run_abort, run_end, fault, handler_error, turn_start, turn_end, retry_scheduled, retry_start, retry_end, message_start, message_update, message_end, tool_start, tool_update, tool_end, entry_added, write_pending, queue_update, fact_update, config_update, compaction_start, compaction_end, navigation_start, navigation_end, lane_created, usage | low cardinality | Delivered harness event type |
+| `aos.lane.name` | `string` | no |  | high cardinality | Lane name for lane-scoped events |
 
 #### End attributes
 
@@ -363,8 +363,8 @@ One committed session mutation
 
 | Name | Type | Required | Values | Notes | Description |
 |---|---|---:|---|---|---|
-| `pi.lane.name` | `string` | yes |  | high cardinality | Lane name |
-| `pi.operation.id` | `string` | no |  | high cardinality | Durable operation id when accepted |
+| `aos.lane.name` | `string` | yes |  | high cardinality | Lane name |
+| `aos.operation.id` | `string` | no |  | high cardinality | Durable operation id when accepted |
 | `aos.session.mutation` | `string` | yes | entry, record, lane, fact |  | Session mutation kind |
 | `aos.session.item_type` | `string` | no |  |  | Entry, record, lane, or fact subtype |
 

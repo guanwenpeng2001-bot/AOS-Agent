@@ -40,13 +40,13 @@ async function closeServer(server: Server, sockets: Set<Socket>): Promise<void> 
 test("rejects invalid Unix transport options", () => {
 	expect(() => createUnixTransportFactory({ path: "" })).toThrow(/must not be empty/);
 	expect(() => createUnixTransportFactory({ path: `/tmp/${"x".repeat(512)}` })).toThrow(/too long/);
-	expect(() => createUnixTransportFactory({ path: "/tmp/pi.sock", maxPendingBytes: 0 })).toThrow(/positive/);
+	expect(() => createUnixTransportFactory({ path: "/tmp/aos.sock", maxPendingBytes: 0 })).toThrow(/positive/);
 });
 
 describe.runIf(process.platform !== "win32")("Unix-domain sockets", () => {
 	test("AosClient exchanges fragmented framed messages over a real Unix socket", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
-		const socketPath = join(directory, "pi.sock");
+		const directory = await mkdtemp(join(tmpdir(), "aos-client-"));
+		const socketPath = join(directory, "aos.sock");
 		const sockets = new Set<Socket>();
 		const server = createServer((socket) => {
 			sockets.add(socket);
@@ -92,8 +92,8 @@ describe.runIf(process.platform !== "win32")("Unix-domain sockets", () => {
 	});
 
 	test("bounds pending writes, preserves order, and reports remote end once", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
-		const socketPath = join(directory, "pi.sock");
+		const directory = await mkdtemp(join(tmpdir(), "aos-client-"));
+		const socketPath = join(directory, "aos.sock");
 		const sockets = new Set<Socket>();
 		const first = new Uint8Array(2 * 1024 * 1024).fill(1);
 		const second = new Uint8Array(2 * 1024 * 1024).fill(2);
@@ -165,8 +165,8 @@ describe.runIf(process.platform !== "win32")("Unix-domain sockets", () => {
 	});
 
 	test("AosClient rejects a truncated final frame from a real Unix socket", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
-		const socketPath = join(directory, "pi.sock");
+		const directory = await mkdtemp(join(tmpdir(), "aos-client-"));
+		const socketPath = join(directory, "aos.sock");
 		const sockets = new Set<Socket>();
 		const server = createServer((socket) => {
 			sockets.add(socket);
@@ -206,7 +206,7 @@ describe.runIf(process.platform !== "win32")("Unix-domain sockets", () => {
 	});
 
 	test("rejects connection errors", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "pi-client-"));
+		const directory = await mkdtemp(join(tmpdir(), "aos-client-"));
 		const missingPath = join(directory, "missing.sock");
 		try {
 			await expect(

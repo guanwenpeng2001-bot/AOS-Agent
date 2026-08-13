@@ -77,7 +77,7 @@ function assertValidServerPayload(item: ProtocolTranscriptItem): void {
 	).not.toThrow();
 }
 
-describe("pi-ai protocol bridge", () => {
+describe("AOS AI protocol bridge", () => {
 	test("maps model metadata and produces protocol-valid output", () => {
 		const result = toProtocolModelMetadata(model, true);
 

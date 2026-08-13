@@ -380,7 +380,7 @@ import {
 } from '@aos-agent/agent-core';
 ```
 
-The schemas use package-owned technical names `pi.ai.*`, `pi.harness.*`, and `pi.session.*`. Adapters may translate them to backend conventions without changing the emitted vocabulary.
+The schemas use package-owned technical names `aos.ai.*`, `aos.harness.*`, and `aos.session.*`. Adapters may translate them to backend conventions without changing the emitted vocabulary.
 
 ## Security and Portability
 

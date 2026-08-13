@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
 
 describe("AuthStorage", () => {
-	const tempDir = join(tmpdir(), `pi-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const tempDir = join(tmpdir(), `aos-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	const authJsonPath = join(tempDir, "auth.json");
 
 	beforeEach(() => {
