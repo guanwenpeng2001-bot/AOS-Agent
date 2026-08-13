@@ -2621,37 +2621,60 @@ export class AgentSession {
 		}
 	}
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private async _prepareAgentRun(): Promise<void> {
 		this._refreshContextEngineStreamBoundary();
 		this._assertContextPayloadHooksSupported();
+		await this.whenCapabilitiesReady(this._activeContextRunId);
+		this._applyPromptPreflightToolRegistryRefresh();
+		const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId);
+		if (policyBindingChanged) {
+			await this._reconnectSelectedMcpServersForPolicyBinding();
+		}
+	}
+
+	private async _runAgentPrompt(
+		messages: AgentMessage | AgentMessage[],
+		options: { agentRunAlreadyActive?: boolean } = {},
+	): Promise<void> {
 		this._isAgentRunActive = true;
 		this._beginModelBrokerOperation();
 		this._pendingContextError = undefined;
-		// Gate every run start on capability readiness so discovery (and any
-		// fail-closed conflict) settles before any provider/tool execution, even
-		// for run starts that bypass prompt() preflight (sendCustomMessage).
-		try {
-			await this.whenCapabilitiesReady(this._activeContextRunId);
-			const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId);
-			if (policyBindingChanged) {
-				await this._reconnectSelectedMcpServersForPolicyBinding();
-			}
-			await this.agent.prompt(messages);
+		const runPreparedPrompt = async (): Promise<void> => {
+			await this.agent.runPreparedPrompt(messages);
 			this._throwPendingContextError();
 			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+				await this.agent.runPreparedContinuation();
 				this._throwPendingContextError();
 			}
+		};
+		try {
+			if (options.agentRunAlreadyActive) {
+				await runPreparedPrompt();
+			} else {
+				// Gate every run start on capability readiness so discovery (and any
+				// fail-closed conflict) settles before any provider/tool execution,
+				// including run starts that bypass prompt() preflight.
+				await this.agent.runWithPreflight(
+					async () => await this._prepareAgentRun(),
+					async () => await runPreparedPrompt(),
+				);
+			}
 		} finally {
-			this._systemPromptOverride = undefined;
-			this._activeContextRunId = undefined;
-			this._pendingExtensionContextSources = [];
-			this._pendingContextError = undefined;
-			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
-			this._operationModelResolution = undefined;
-			this._executionPolicyPreviousBindingIdForRun = undefined;
+			if (!options.agentRunAlreadyActive) {
+				await this._finishAgentPrompt();
+			}
 		}
+	}
+
+	private async _finishAgentPrompt(): Promise<void> {
+		this._systemPromptOverride = undefined;
+		this._activeContextRunId = undefined;
+		this._pendingExtensionContextSources = [];
+		this._pendingContextError = undefined;
+		this._flushPendingBashMessages();
+		await this._emitAgentSettled();
+		this._operationModelResolution = undefined;
+		this._executionPolicyPreviousBindingIdForRun = undefined;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -2788,12 +2811,6 @@ export class AgentSession {
 			this._assertContextPayloadHooksSupported();
 			this._isAgentRunActive = true;
 			reservedRunActive = true;
-			await this.whenCapabilitiesReady(options?.runId);
-			this._applyPromptPreflightToolRegistryRefresh();
-			const policyBindingChanged = await this._ensureExecutionPolicyReady(options?.runId);
-			if (policyBindingChanged) {
-				await this._reconnectSelectedMcpServersForPolicyBinding();
-			}
 
 			// Check if we need to compact before sending (catches aborted responses).
 			// The user's new prompt is sent below, so do not call agent.continue() here.
@@ -2888,18 +2905,35 @@ export class AgentSession {
 			return;
 		}
 
+		let preflightAccepted = false;
 		try {
-			preflightResult?.(true);
+			await this.agent.runWithPreflight(
+				async () => {
+					await this._prepareAgentRun();
+					preflightResult?.(true);
+					preflightAccepted = true;
+				},
+				async () => {
+					try {
+						await this._runAgentPrompt(messages, { agentRunAlreadyActive: true });
+					} finally {
+						await this._finishAgentPrompt();
+					}
+				},
+			);
 		} catch (error) {
-			// Automation Host acceptance can fail after prompt preparation but before
-			// the Agent loop begins. Do not carry its run/source state into a later turn.
-			this._systemPromptOverride = undefined;
-			this._activeContextRunId = undefined;
-			this._pendingExtensionContextSources = [];
-			this._releaseAgentRunPreflightReservation(reservedRunActive);
+			// Capability/policy failures and Automation Host acceptance failures happen
+			// before the Agent loop begins. Release the reservation and run state without
+			// carrying policy-bound context into a later turn.
+			if (!preflightAccepted) {
+				preflightResult?.(false);
+				this._systemPromptOverride = undefined;
+				this._activeContextRunId = undefined;
+				this._pendingExtensionContextSources = [];
+				this._releaseAgentRunPreflightReservation(reservedRunActive);
+			}
 			throw error;
 		}
-		await this._runAgentPrompt(messages);
 	}
 
 	/**

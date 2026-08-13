@@ -329,6 +329,25 @@ export class Agent {
 		return this.activeRun?.promise ?? Promise.resolve();
 	}
 
+	/**
+	 * Keep the Agent run active while an asynchronous caller-owned preflight
+	 * completes, then execute the prepared work within the same lifecycle.
+	 * Preflight and executor errors are propagated to the caller; the executor
+	 * is responsible for handling any operation-specific run failure.
+	 */
+	async runWithPreflight<T>(
+		preflight: (signal: AbortSignal) => Promise<T>,
+		executor: (prepared: T, signal: AbortSignal) => Promise<void>,
+	): Promise<void> {
+		await this.runWithLifecycle(
+			async (signal) => {
+				const prepared = await preflight(signal);
+				await executor(prepared, signal);
+			},
+			{ handleErrors: false },
+		);
+	}
+
 	/** Clear transcript state, runtime state, and queued messages. */
 	reset(): void {
 		if (this.activeRun) {
@@ -411,26 +430,83 @@ export class Agent {
 		options: { skipInitialSteeringPoll?: boolean } = {},
 	): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
-			await runAgentLoop(
-				messages,
-				this.createContextSnapshot(),
-				this.createLoopConfig(options),
-				(event) => this.processEvents(event),
-				signal,
-				this.streamFunction,
-			);
+			await this.runPromptLoop(messages, options, signal);
 		});
+	}
+
+	/** Execute one prepared prompt while an outer Agent lifecycle is active. */
+	async runPreparedPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		const signal = this.activeRun?.abortController.signal;
+		if (signal === undefined) {
+			throw new Error("Cannot execute a prepared prompt without an active Agent run.");
+		}
+		try {
+			await this.runPromptLoop(Array.isArray(messages) ? messages : [messages], {}, signal);
+		} catch (error) {
+			await this.handleRunFailure(error, signal.aborted);
+		}
+	}
+
+	/** Execute a prepared continuation while an outer Agent lifecycle is active. */
+	async runPreparedContinuation(): Promise<void> {
+		const signal = this.activeRun?.abortController.signal;
+		if (signal === undefined) {
+			throw new Error("Cannot execute a prepared continuation without an active Agent run.");
+		}
+		try {
+			const lastMessage = this._state.messages[this._state.messages.length - 1];
+			if (!lastMessage) {
+				throw new Error("No messages to continue from");
+			}
+			if (lastMessage.role === "assistant") {
+				const queuedSteering = this.steeringQueue.drain();
+				if (queuedSteering.length > 0) {
+					await this.runPromptLoop(queuedSteering, { skipInitialSteeringPoll: true }, signal);
+					return;
+				}
+
+				const queuedFollowUps = this.followUpQueue.drain();
+				if (queuedFollowUps.length > 0) {
+					await this.runPromptLoop(queuedFollowUps, {}, signal);
+					return;
+				}
+
+				throw new Error("Cannot continue from message role: assistant");
+			}
+			await this.runContinuationLoop(signal);
+		} catch (error) {
+			await this.handleRunFailure(error, signal.aborted);
+		}
+	}
+
+	private async runPromptLoop(
+		messages: AgentMessage[],
+		options: { skipInitialSteeringPoll?: boolean },
+		signal: AbortSignal,
+	): Promise<void> {
+		await runAgentLoop(
+			messages,
+			this.createContextSnapshot(),
+			this.createLoopConfig(options),
+			(event) => this.processEvents(event),
+			signal,
+			this.streamFunction,
+		);
+	}
+
+	private async runContinuationLoop(signal: AbortSignal): Promise<void> {
+		await runAgentLoopContinue(
+			this.createContextSnapshot(),
+			this.createLoopConfig(),
+			(event) => this.processEvents(event),
+			signal,
+			this.streamFunction,
+		);
 	}
 
 	private async runContinuation(): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
-			await runAgentLoopContinue(
-				this.createContextSnapshot(),
-				this.createLoopConfig(),
-				(event) => this.processEvents(event),
-				signal,
-				this.streamFunction,
-			);
+			await this.runContinuationLoop(signal);
 		});
 	}
 
@@ -483,7 +559,10 @@ export class Agent {
 		};
 	}
 
-	private async runWithLifecycle(executor: (signal: AbortSignal) => Promise<void>): Promise<void> {
+	private async runWithLifecycle(
+		executor: (signal: AbortSignal) => Promise<void>,
+		options: { handleErrors?: boolean } = {},
+	): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
 		}
@@ -502,6 +581,9 @@ export class Agent {
 		try {
 			await executor(abortController.signal);
 		} catch (error) {
+			if (options.handleErrors === false) {
+				throw error;
+			}
 			await this.handleRunFailure(error, abortController.signal.aborted);
 		} finally {
 			this.finishRun();
