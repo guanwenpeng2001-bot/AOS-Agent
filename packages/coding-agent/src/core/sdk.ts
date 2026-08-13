@@ -20,8 +20,8 @@ import {
 import { findInitialModel } from "./model-resolver.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
-import type { ResourceLoader } from "./resource-loader.ts";
-import { DefaultResourceLoader } from "./resource-loader.ts";
+import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
+import type { SandboxProvider } from "./sandbox.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
@@ -59,6 +59,8 @@ export interface CreateAgentSessionOptions {
 	modelRoute?: ModelRouteSelection;
 	/** Optional explicit broker role for the initial session operation. */
 	modelRole?: ModelRoleSelection;
+	/** Optional named Execution Policy profile selector for this session/run. */
+	policyProfile?: string;
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model<any>;
@@ -102,6 +104,8 @@ export interface CreateAgentSessionOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/** Registered sandbox providers available to execution policy. */
+	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 }
 
 /** Result from createAgentSession */
@@ -432,6 +436,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agent,
 		sessionManager,
 		settingsManager,
+		agentDir,
 		cwd,
 		scopedModels: options.scopedModels,
 		resourceLoader,
@@ -447,6 +452,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		capabilityRegistry,
 		mcpTransportFactory: options.mcpTransportFactory,
+		sandboxProviders: options.sandboxProviders,
+		policyProfile: options.policyProfile,
 		noTools: options.noTools,
 	});
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {

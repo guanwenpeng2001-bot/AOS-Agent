@@ -12,8 +12,10 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
+import { sandboxContentBuffer } from "./sandbox-filesystem.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -33,7 +35,6 @@ export type ReadToolInput = Static<typeof readSchema>;
 export interface ReadToolDetails {
 	truncation?: TruncationResult;
 }
-
 interface CompactReadClassification {
 	kind: "docs" | "resource" | "skill";
 	label: string;
@@ -65,6 +66,8 @@ export interface ReadToolOptions {
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
+	/** Optional built-in policy authorizer */
+	policy?: BuiltinToolPolicy;
 }
 
 type ReadRenderArgs = { path?: string; file_path?: string; offset?: number; limit?: number };
@@ -211,6 +214,7 @@ export function createReadToolDefinition(
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
+	const policy = options?.policy;
 	return {
 		name: "read",
 		label: "read",
@@ -240,18 +244,46 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							const absolutePath = await resolveReadPathAsync(path, cwd);
+							const resolvedPath = await resolveReadPathAsync(path, cwd);
+							const authorization =
+								policy === undefined
+									? { absolutePath: resolvedPath, realPath: resolvedPath }
+									: await policy.authorizeFilesystem({
+										resource: "filesystem.read",
+										requestedPath: resolvedPath,
+										access: "read",
+										requestId: _toolCallId,
+									});
+							const absolutePath = authorization.realPath;
 							if (aborted) return;
-							// Check if file exists and is readable.
-							await ops.access(absolutePath);
+							const sandboxRead =
+								authorization.sandbox === undefined
+									? undefined
+									: await authorization.sandbox.execute({
+										bindingId: policy?.binding.id ?? "",
+										resource: "filesystem.read",
+										operation: "file.read",
+										path: absolutePath,
+										signal,
+									});
 							if (aborted) return;
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+							if (sandboxRead === undefined) {
+								// Check if file exists and is readable.
+								await ops.access(absolutePath);
+							}
+							if (aborted) return;
+							const mimeType =
+								sandboxRead?.mimeType ??
+								(sandboxRead === undefined && ops.detectImageMimeType
+									? await ops.detectImageMimeType(absolutePath)
+									: undefined);
 							let content: (TextContent | ImageContent)[];
 							let details: ReadToolDetails | undefined;
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
 							if (mimeType) {
 								// Read image as binary.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer =
+									sandboxRead === undefined ? await ops.readFile(absolutePath) : sandboxContentBuffer(sandboxRead, "file.read");
 								const processed = await processImage(buffer, mimeType, { autoResizeImages });
 								if (!processed.ok) {
 									let textNote = `Read image file [${mimeType}]\n${processed.message}`;
@@ -268,7 +300,8 @@ export function createReadToolDefinition(
 								}
 							} else {
 								// Read text content.
-								const buffer = await ops.readFile(absolutePath);
+								const buffer =
+									sandboxRead === undefined ? await ops.readFile(absolutePath) : sandboxContentBuffer(sandboxRead, "file.read");
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");
 								const totalFileLines = allLines.length;

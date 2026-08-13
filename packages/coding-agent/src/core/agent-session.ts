@@ -59,6 +59,7 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
+import { getShellEnv } from "../utils/shell.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
@@ -141,8 +142,24 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
+import {
+	PolicyError,
+	authorizePolicyOperation,
+	resolveExecutionPolicyProfile,
+	type ExecutionPolicyProfile,
+	type PolicyBinding,
+	type PolicyDecision,
+	type PolicyOperationSource,
+	type PolicyApprovalOutcome,
+	type PolicyApprovalSource,
+	type PublicPolicySummary,
+	type PolicyApprovalRequest,
+	toPublicPolicySummary,
+} from "./execution-policy.ts";
+import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
+import { execCommand, type ExecOptions, type ExecResult } from "./exec.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { MCPLifecycleManager } from "./mcp-lifecycle.ts";
+import { MCPLifecycleManager, createMCPDefaultTransportFactory } from "./mcp-lifecycle.ts";
 import { type MCPToolDefinitionResult, mapMCPToolsToDefinitions } from "./mcp-tool-adapter.ts";
 import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
@@ -163,6 +180,8 @@ import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
+import { createBuiltinToolPolicy, type BuiltinToolPolicy } from "./sandbox-host.ts";
+import { SandboxSession, type SandboxHandle, type SandboxProvider } from "./sandbox.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -345,6 +364,7 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	agentDir?: string;
 	cwd: string;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
@@ -380,6 +400,10 @@ export interface AgentSessionConfig {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/** Registered sandbox providers available to execution policy. */
+	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Optional named Execution Policy profile selector for this session. */
+	policyProfile?: string;
 	/** Session-local approvals for ask capabilities. Never overrides a deny. */
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	/** `noTools` suppression mode from createAgentSession: only narrows the binding. */
@@ -518,6 +542,7 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private _cwd: string;
+	private _agentDir: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
@@ -586,6 +611,10 @@ export class AgentSession {
 	private _mcpTransportFactory?: MCPTransportFactory;
 	private _mcpLifecycleManager!: MCPLifecycleManager;
 	private _mcpRegisteredServerIds = new Set<string>();
+	private _mcpAuthorizedTransportValues = new Map<
+		string,
+		{ readonly environment: Readonly<Record<string, string>>; readonly headers: Readonly<Record<string, string>> }
+	>();
 	private _activeCapabilityBinding: CapabilityBinding | undefined;
 	private _activeCapabilityCatalog: CapabilityCatalog | undefined;
 	private _activeMcpTools: MCPToolDefinitionResult[] = [];
@@ -612,6 +641,20 @@ export class AgentSession {
 	private _profileMaterializationTail: Promise<void> = Promise.resolve();
 	/** Tool registration that arrived mid-run; applied after the run settles. */
 	private _pendingToolRegistryRefresh = false;
+	private readonly _policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
+	private readonly _persistedPolicyBindingIds = new Set<string>();
+	private readonly _sandboxProviders: ReadonlyMap<string, SandboxProvider>;
+	private _activeExecutionPolicyProfile: ExecutionPolicyProfile | undefined;
+	private _activeExecutionPolicyBinding: PolicyBinding | undefined;
+	private _activeExecutionPolicyProfileSelection: string | undefined;
+	private _nextPreviousExecutionPolicyBindingId: string | undefined;
+	private _executionPolicyApprovedRequestIds: string[] = [];
+	private _executionPolicyRejectedRequestIds: string[] = [];
+	private _pendingExecutionPolicyApprovals = new Map<string, PolicyApprovalRequest>();
+	private _activeSandboxSession: SandboxSession | undefined;
+	private _activeSandboxHandle: SandboxHandle | undefined;
+	private _disposePolicyBoundaryPromise: Promise<void> | undefined;
+	private _currentBuiltinToolPolicy: BuiltinToolPolicy | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._agentStreamFunction = config.agent.streamFunction;
@@ -621,6 +664,7 @@ export class AgentSession {
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
+		this._agentDir = config.agentDir ?? config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._modelBroker = config.modelBroker ?? new ModelBroker();
 		this._modelBrokerConfigRevision = config.modelBrokerConfigRevision ?? "runtime";
@@ -637,8 +681,17 @@ export class AgentSession {
 		this._capabilityRegistry = config.capabilityRegistry ?? new CapabilityRegistry();
 		this._capabilityApprovedDescriptorIds = config.capabilityApprovedDescriptorIds ?? [];
 		this._activeCapabilityProfile = undefined;
+		this._activeExecutionPolicyProfileSelection = config.policyProfile;
 		this._noTools = config.noTools;
 		this._mcpTransportFactory = config.mcpTransportFactory;
+		const sandboxProviders = config.sandboxProviders;
+		this._sandboxProviders =
+			sandboxProviders === undefined
+				? new Map()
+				: typeof (sandboxProviders as ReadonlyMap<string, SandboxProvider>).get === "function"
+					? (sandboxProviders as ReadonlyMap<string, SandboxProvider>)
+					: new Map((sandboxProviders as ReadonlyArray<SandboxProvider>).map((provider) => [provider.id, provider]));
+		this._policyLedger = createExecutionPolicyLedger(this.sessionManager);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1600,6 +1653,28 @@ export class AgentSession {
 		resolve();
 	}
 
+	private _releaseAgentRunPreflightReservation(reserved: boolean): void {
+		if (!reserved) {
+			return;
+		}
+		this._isAgentRunActive = false;
+		this._resolveIdleWaitIfIdle();
+	}
+
+	private _applyPromptPreflightToolRegistryRefresh(): void {
+		if (!this._pendingToolRegistryRefresh) {
+			return;
+		}
+		this._pendingToolRegistryRefresh = false;
+		const wasActive = this._isAgentRunActive;
+		this._isAgentRunActive = false;
+		try {
+			this._refreshToolRegistry();
+		} finally {
+			this._isAgentRunActive = wasActive;
+		}
+	}
+
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
 		try {
@@ -1857,7 +1932,7 @@ export class AgentSession {
 		} catch {
 			// Dispose must succeed even if an abort hook throws.
 		}
-		void this._mcpLifecycleManager?.closeAll().catch(() => undefined);
+		this._disposePolicyBoundaryPromise ??= this._disposePolicyBoundaryResources();
 
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured agent or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
@@ -1865,6 +1940,11 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
+	}
+
+	/** Resolves after async policy-boundary cleanup started by dispose() settles. */
+	waitForDispose(): Promise<void> {
+		return this._disposePolicyBoundaryPromise ?? Promise.resolve();
 	}
 
 	// =========================================================================
@@ -2550,6 +2630,7 @@ export class AgentSession {
 		// for run starts that bypass prompt() preflight (sendCustomMessage).
 		try {
 			await this.whenCapabilitiesReady();
+			await this._ensureExecutionPolicyReady(this._activeContextRunId);
 			await this.agent.prompt(messages);
 			this._throwPendingContextError();
 			while (await this._handlePostAgentRun()) {
@@ -2610,6 +2691,7 @@ export class AgentSession {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
+		let reservedRunActive = false;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
@@ -2698,6 +2780,11 @@ export class AgentSession {
 			// A provider payload rewrite is not structurally comparable with the
 			// Context plan, so reject it before any compaction or Agent-loop call.
 			this._assertContextPayloadHooksSupported();
+			this._isAgentRunActive = true;
+			reservedRunActive = true;
+			await this.whenCapabilitiesReady();
+			this._applyPromptPreflightToolRegistryRefresh();
+			await this._ensureExecutionPolicyReady(options?.runId);
 
 			// Check if we need to compact before sending (catches aborted responses).
 			// The user's new prompt is sent below, so do not call agent.continue() here.
@@ -2783,6 +2870,7 @@ export class AgentSession {
 			this._systemPromptOverride = undefined;
 			this._activeContextRunId = undefined;
 			this._pendingExtensionContextSources = [];
+			this._releaseAgentRunPreflightReservation(reservedRunActive);
 			preflightResult?.(false);
 			throw error;
 		}
@@ -2799,6 +2887,7 @@ export class AgentSession {
 			this._systemPromptOverride = undefined;
 			this._activeContextRunId = undefined;
 			this._pendingExtensionContextSources = [];
+			this._releaseAgentRunPreflightReservation(reservedRunActive);
 			throw error;
 		}
 		await this._runAgentPrompt(messages);
@@ -3212,6 +3301,109 @@ export class AgentSession {
 		}
 		this._capabilityApprovedDescriptorIds = [...this._capabilityApprovedDescriptorIds, approvedDescriptorId];
 		await this._refreshCapabilitySetup();
+	}
+
+	/** The named Execution Policy profile selected for the next binding. */
+	getActiveExecutionPolicyProfile(): string {
+		return this._activeExecutionPolicyProfile?.id ?? this._activeExecutionPolicyProfileSelection ?? this.settingsManager.getExecutionPolicySettings({
+			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
+		}).selectedProfileId;
+	}
+
+	/**
+	 * Select a named Execution Policy profile for this session. The selector is a
+	 * name only; inline policy objects are never accepted here.
+	 */
+	async setExecutionPolicyProfile(profileName?: string): Promise<void> {
+		if (this._isAgentRunActive) {
+			await this.waitForIdle();
+		}
+		const policySettings = this.settingsManager.getExecutionPolicySettings({
+			policyProfile: profileName,
+			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
+		});
+		this._activeExecutionPolicyProfileSelection = policySettings.selectedProfileId;
+		this._activeExecutionPolicyProfile = undefined;
+		this._activeExecutionPolicyBinding = undefined;
+		this._nextPreviousExecutionPolicyBindingId = undefined;
+		this._currentBuiltinToolPolicy = undefined;
+		this._pendingExecutionPolicyApprovals.clear();
+		this._executionPolicyApprovedRequestIds = [];
+		this._executionPolicyRejectedRequestIds = [];
+		await this._closeMcpConnectionsForPolicyBoundary();
+		await this._disposeSandboxSession();
+	}
+
+	/** Redacted current Execution Policy binding, if one has been materialized. */
+	getActiveExecutionPolicyBinding(): PolicyBinding | undefined {
+		return this._activeExecutionPolicyBinding;
+	}
+
+	/** Redacted current Execution Policy summary; computes a read-only preview before first run. */
+	getActiveExecutionPolicySummary(): PublicPolicySummary {
+		if (this._activeExecutionPolicyBinding !== undefined) {
+			return toPublicPolicySummary(this._activeExecutionPolicyBinding);
+		}
+		const policySettings = this.settingsManager.getExecutionPolicySettings({
+			policyProfile: this._activeExecutionPolicyProfileSelection,
+			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
+		});
+		const result = resolveExecutionPolicyProfile({
+			profiles: policySettings.profiles,
+			defaultProfile: policySettings.selectedProfileId,
+			policyProfile: policySettings.selectedProfileId,
+			projectTrusted: this.settingsManager.isProjectTrusted(),
+			capabilityBinding: this._policyCapabilityBindingInput(),
+			sandbox: this._createPolicySandboxPreflight(policySettings.selectedProfile),
+			workspaceIdentity: "workspace:active",
+			runId: this._activeContextRunId ?? "run:session",
+			createdAt: new Date().toISOString(),
+		});
+		if (!result.ok) throw result.error;
+		return result.summary;
+	}
+
+	getPendingExecutionPolicyApprovals(): ReadonlyArray<PolicyApprovalRequest> {
+		return [...this._pendingExecutionPolicyApprovals.values()];
+	}
+
+	approveExecutionPolicyRequest(requestId: string, source: PolicyApprovalSource = "interactive"): void {
+		const approval = this._pendingExecutionPolicyApprovals.get(requestId);
+		if (approval === undefined) throw new PolicyError("policy_denied", "Cannot approve unknown policy request.");
+		this._recordExecutionPolicyApproval(approval, "approved", source);
+		this._executionPolicyRejectedRequestIds = this._executionPolicyRejectedRequestIds.filter((id) => id !== requestId);
+		if (!this._executionPolicyApprovedRequestIds.includes(requestId)) {
+			this._executionPolicyApprovedRequestIds = [...this._executionPolicyApprovedRequestIds, requestId];
+		}
+		this._pendingExecutionPolicyApprovals.delete(requestId);
+		this._currentBuiltinToolPolicy = undefined;
+	}
+
+	rejectExecutionPolicyRequest(requestId: string, source: PolicyApprovalSource = "interactive"): void {
+		const approval = this._pendingExecutionPolicyApprovals.get(requestId);
+		if (approval === undefined) throw new PolicyError("policy_denied", "Cannot reject unknown policy request.");
+		this._recordExecutionPolicyApproval(approval, "rejected", source);
+		this._executionPolicyApprovedRequestIds = this._executionPolicyApprovedRequestIds.filter((id) => id !== requestId);
+		if (!this._executionPolicyRejectedRequestIds.includes(requestId)) {
+			this._executionPolicyRejectedRequestIds = [...this._executionPolicyRejectedRequestIds, requestId];
+		}
+		this._pendingExecutionPolicyApprovals.delete(requestId);
+		this._currentBuiltinToolPolicy = undefined;
+	}
+
+	private _recordExecutionPolicyApproval(
+		approval: PolicyApprovalRequest,
+		outcome: PolicyApprovalOutcome,
+		source: PolicyApprovalSource,
+	): void {
+		if (this._activeExecutionPolicyBinding?.id !== approval.bindingId) {
+			throw new PolicyError("policy_denied", "Cannot resolve a policy request outside the current binding.");
+		}
+		this._policyLedger.appendApprovalOutcome(approval, { outcome, source });
+	}
+
+	setPreviousExecutionPolicyBindingIdForNextRun(bindingId?: string): void {
+		this._nextPreviousExecutionPolicyBindingId = bindingId;
 	}
 
 	/**
@@ -4129,6 +4321,7 @@ export class AgentSession {
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
 				getCommands,
+				exec: (command, args, options) => this._executeExtensionExec(command, args, options),
 				setModel: async (model) => {
 					if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false;
 					await this.setModel(model);
@@ -4280,7 +4473,9 @@ export class AgentSession {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 		const runner = this._extensionRunner;
-		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner);
+		const wrappedExtensionTools = wrapRegisteredTools(allCustomTools, runner).map((tool) =>
+			this._wrapToolWithPolicyInvocation(tool, this._toolInvocationSourceFor(tool.name)),
+		);
 		const wrappedBuiltInTools = wrapRegisteredTools(
 			Array.from(this._baseToolDefinitions.values())
 				.filter((definition) => allowedToolNames.has(definition.name))
@@ -4289,7 +4484,7 @@ export class AgentSession {
 					sourceInfo: createSyntheticSourceInfo(`<builtin:${definition.name}>`, { source: "builtin" }),
 				})),
 			runner,
-		);
+		).map((tool) => this._wrapToolWithPolicyInvocation(tool, "builtin"));
 		const wrappedMcpTools = wrapRegisteredTools(
 			Array.from(definitionRegistry.entries())
 				.filter(([name, entry]) => allowedToolNames.has(name) && entry.sourceInfo.source.startsWith("mcp"))
@@ -4298,7 +4493,7 @@ export class AgentSession {
 					sourceInfo: entry.sourceInfo,
 				})),
 			runner,
-		);
+		).map((tool) => this._wrapToolWithPolicyInvocation(tool, "mcp"));
 
 		const toolRegistry = new Map(wrappedBuiltInTools.map((tool) => [tool.name, tool]));
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
@@ -4424,6 +4619,7 @@ export class AgentSession {
 		// binding is still being preflighted.
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
+		this._mcpAuthorizedTransportValues.clear();
 		this._capabilityDiscoveryError = undefined;
 		this._capabilityDiscoveryStarted = false;
 		this._capabilityDiscoveryPromise = Promise.resolve();
@@ -4682,6 +4878,8 @@ export class AgentSession {
 				);
 			}
 			try {
+				await this._ensureExecutionPolicyReady("run:mcp-discovery");
+				await this._authorizeMcpStartup(diagnostic.server, serverId);
 				await this._mcpLifecycleManager.connect(serverId);
 				const tools = await this._mcpLifecycleManager.listTools(serverId);
 				// The tool source identity embeds the server id so two same-scope
@@ -4716,7 +4914,7 @@ export class AgentSession {
 				// discovered must fail preflight instead of degrading to a partial
 				// binding that silently omits the requested capability.
 				const discoveryError =
-					error instanceof MCPError || error instanceof CapabilityError
+					error instanceof MCPError || error instanceof CapabilityError || error instanceof PolicyError
 						? error
 						: new CapabilityError(
 								"capability_mcp_connect_failed",
@@ -4790,6 +4988,483 @@ export class AgentSession {
 		return ref ? { id: ref.id, revision: ref.revision } : undefined;
 	}
 
+	private _policyCapabilityBindingInput(): {
+		id?: string;
+		descriptors?: ReadonlyArray<{ readonly id: string }>;
+		allowedCapabilityIds?: ReadonlyArray<string>;
+	} {
+		const binding = this._activeCapabilityBinding;
+		if (binding === undefined) return {};
+		const allowedCapabilityIds = binding.descriptors.map((descriptor) => descriptor.id);
+		return {
+			id: binding.id,
+			descriptors: binding.descriptors.map((descriptor) => ({ id: descriptor.id })),
+			allowedCapabilityIds,
+		};
+	}
+
+	private _createPolicySandboxPreflight(profile: ExecutionPolicyProfile): {
+		providerConfigured: boolean;
+		providerId?: string;
+		providerStatus: "ready" | "unavailable";
+		providerCapabilities: SandboxProvider["capabilities"];
+	} | undefined {
+		if (profile.enforcement !== "sandbox") return undefined;
+		const providerId = profile.sandboxProvider;
+		const provider = providerId === undefined ? undefined : this._sandboxProviders.get(providerId);
+		const empty = { filesystem: false, process: false, network: false, credentialIsolation: false };
+		return {
+			providerConfigured: provider !== undefined,
+			...(providerId === undefined ? {} : { providerId }),
+			providerStatus: provider === undefined ? "unavailable" : "ready",
+			providerCapabilities: provider?.capabilities ?? empty,
+		};
+	}
+
+	private async _disposeSandboxSession(): Promise<void> {
+		const session = this._activeSandboxSession;
+		this._activeSandboxSession = undefined;
+		this._activeSandboxHandle = undefined;
+		if (session !== undefined) {
+			await session.dispose().catch(() => undefined);
+		}
+	}
+
+	private async _closeMcpConnectionsForPolicyBoundary(): Promise<void> {
+		this._mcpAuthorizedTransportValues.clear();
+		await this._mcpLifecycleManager?.closeAll().catch(() => undefined);
+	}
+
+	private async _disposePolicyBoundaryResources(): Promise<void> {
+		await this._closeMcpConnectionsForPolicyBoundary();
+		await this._disposeSandboxSession();
+	}
+
+	private _recordPolicyDecision(decision: PolicyDecision): void {
+		this._policyLedger.appendDecision(decision);
+		if (decision.approval !== undefined) {
+			this._pendingExecutionPolicyApprovals.set(decision.approval.id, decision.approval);
+			this._policyLedger.appendApproval(decision.approval);
+		}
+		if (decision.outcome !== "allow") {
+			this._policyLedger.appendViolation({
+				bindingId: decision.bindingId,
+				timestamp: decision.timestamp,
+				reasonCode: decision.reasonCode ?? "policy_denied",
+				resource: decision.resource,
+				...(decision.requestId === undefined ? {} : { requestId: decision.requestId }),
+			});
+		}
+	}
+
+	private async _prepareSandboxForBinding(profile: ExecutionPolicyProfile, binding: PolicyBinding): Promise<void> {
+		await this._disposeSandboxSession();
+		if (profile.enforcement !== "sandbox") {
+			return;
+		}
+		const providerId = binding.sandboxProviderId;
+		const provider = providerId === undefined ? undefined : this._sandboxProviders.get(providerId);
+		if (provider === undefined) {
+			throw new PolicyError(binding.sandboxStatus === "unavailable" ? "sandbox_unavailable" : "sandbox_required");
+		}
+		const session = new SandboxSession(provider, binding);
+		this._activeSandboxSession = session;
+		this._policyLedger.appendSandboxLifecycle({
+			bindingId: binding.id,
+			status: "preparing",
+			timestamp: new Date().toISOString(),
+			providerId,
+			capabilities: provider.capabilities,
+		});
+		try {
+			this._activeSandboxHandle = await session.prepare(this.agent.signal);
+			this._policyLedger.appendSandboxLifecycle({
+				bindingId: binding.id,
+				status: "ready",
+				timestamp: new Date().toISOString(),
+				providerId,
+				capabilities: provider.capabilities,
+			});
+		} catch (error) {
+			this._policyLedger.appendSandboxLifecycle({
+				bindingId: binding.id,
+				status: "failed",
+				timestamp: new Date().toISOString(),
+				providerId,
+				capabilities: provider.capabilities,
+				reasonCode: error instanceof PolicyError ? error.code : "sandbox_start_failed",
+			});
+			throw error;
+		}
+	}
+
+	private _createSessionBuiltinToolPolicy(source: PolicyOperationSource): BuiltinToolPolicy {
+		const session = this;
+		return {
+			get profile() {
+				return session._requireExecutionPolicyProfile();
+			},
+			get binding() {
+				return session._requireExecutionPolicyBinding();
+			},
+			roots: {
+				workspace: this._cwd,
+				agentInternal: [this._agentDir],
+			},
+			source,
+			async authorizeFilesystem(input) {
+				await session._ensureExecutionPolicyReady();
+				return session._requireCurrentBuiltinToolPolicy(source).authorizeFilesystem(input);
+			},
+			async authorizeProcess(input) {
+				await session._ensureExecutionPolicyReady();
+				return session._requireCurrentBuiltinToolPolicy(source).authorizeProcess(input);
+			},
+			authorizeRaw(input) {
+				return session._requireCurrentBuiltinToolPolicy(source).authorizeRaw(input);
+			},
+		};
+	}
+
+	private _requireExecutionPolicyProfile(): ExecutionPolicyProfile {
+		if (this._activeExecutionPolicyProfile === undefined) {
+			throw new PolicyError("policy_binding_failed");
+		}
+		return this._activeExecutionPolicyProfile;
+	}
+
+	private _requireExecutionPolicyBinding(): PolicyBinding {
+		if (this._activeExecutionPolicyBinding === undefined) {
+			throw new PolicyError("policy_binding_failed");
+		}
+		return this._activeExecutionPolicyBinding;
+	}
+
+	private _requireCurrentBuiltinToolPolicy(source: PolicyOperationSource): BuiltinToolPolicy {
+		if (this._currentBuiltinToolPolicy === undefined || this._currentBuiltinToolPolicy.source !== source) {
+			this._currentBuiltinToolPolicy = createBuiltinToolPolicy({
+				profile: this._requireExecutionPolicyProfile(),
+				binding: this._requireExecutionPolicyBinding(),
+				roots: {
+					workspace: this._cwd,
+					agentInternal: [this._agentDir],
+				},
+				source,
+				...(this._activeSandboxHandle === undefined ? {} : { sandbox: this._activeSandboxHandle }),
+				approvedRequestIds: this._executionPolicyApprovedRequestIds,
+				rejectedRequestIds: this._executionPolicyRejectedRequestIds,
+				hooks: { onDecision: (decision) => this._recordPolicyDecision(decision) },
+			});
+		}
+		return this._currentBuiltinToolPolicy;
+	}
+
+	private async _executeExtensionExec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
+		await this._ensureExecutionPolicyReady();
+		const cwd = options?.cwd ?? this.sessionManager.getCwd();
+		const requestedEnv = options?.env ?? process.env;
+		const authorized = await this._requireCurrentBuiltinToolPolicy("extension").authorizeProcess({
+			command,
+			args,
+			cwd,
+			env: requestedEnv,
+			timeout: options?.timeout === undefined ? undefined : options.timeout / 1000,
+		});
+
+		if (authorized.sandbox === undefined) {
+			const profile = this._requireExecutionPolicyProfile();
+			const useHostDefaultEnv =
+				options?.env === undefined && (profile.enforcement === "legacy" || profile.process.inheritEnvironment);
+			return execCommand(command, args, cwd, {
+				...options,
+				cwd,
+				...(useHostDefaultEnv ? {} : { env: authorized.env }),
+			});
+		}
+
+		let killed = false;
+		const stdoutChunks: string[] = [];
+		const controller = new AbortController();
+		let timeoutId: NodeJS.Timeout | undefined;
+		const abort = () => {
+			killed = true;
+			controller.abort();
+		};
+		if (options?.signal) {
+			if (options.signal.aborted) {
+				abort();
+			} else {
+				options.signal.addEventListener("abort", abort, { once: true });
+			}
+		}
+		if (options?.timeout !== undefined && options.timeout > 0) {
+			timeoutId = setTimeout(abort, options.timeout);
+		}
+		try {
+			const result = await authorized.sandbox.execute({
+				bindingId: this._requireExecutionPolicyBinding().id,
+				resource: "process.spawn",
+				command,
+				args,
+				cwd,
+				env: authorized.env,
+				timeoutMs: options?.timeout,
+				signal: controller.signal,
+				onData: (data) => stdoutChunks.push(data.toString()),
+			});
+			if (result.content !== undefined) {
+				stdoutChunks.push(Buffer.isBuffer(result.content) ? result.content.toString() : result.content);
+			}
+			const stdout =
+				result.stdout === undefined
+					? stdoutChunks.join("")
+					: Buffer.isBuffer(result.stdout)
+						? result.stdout.toString()
+						: result.stdout;
+			const stderr =
+				result.stderr === undefined ? "" : Buffer.isBuffer(result.stderr) ? result.stderr.toString() : result.stderr;
+			return {
+				stdout,
+				stderr,
+				code: result.exitCode ?? 0,
+				killed: killed || result.killed === true || result.exitCode === null,
+			};
+		} catch (error) {
+			if (!killed) throw error;
+			return {
+				stdout: stdoutChunks.join(""),
+				stderr: "",
+				code: 1,
+				killed: true,
+			};
+		} finally {
+			if (timeoutId) clearTimeout(timeoutId);
+			if (options?.signal) {
+				options.signal.removeEventListener("abort", abort);
+			}
+		}
+	}
+
+	private async _ensureExecutionPolicyReady(runId?: string): Promise<void> {
+		if (this._activeExecutionPolicyBinding !== undefined && (runId === undefined || this._isAgentRunActive)) {
+			return;
+		}
+		if (this._activeCapabilityBinding === undefined) {
+			this._resolveCapabilityBinding();
+		}
+		const policySettings = this.settingsManager.getExecutionPolicySettings({
+			policyProfile: this._activeExecutionPolicyProfileSelection,
+			registeredProviderIds: [
+				"legacy-host",
+				"host-policy",
+				...this._sandboxProviders.keys(),
+			],
+		});
+		const selectedProfile = policySettings.selectedProfile;
+		const previousPolicyBindingId = this._nextPreviousExecutionPolicyBindingId ?? this._activeExecutionPolicyBinding?.id;
+		const result = resolveExecutionPolicyProfile({
+			profiles: policySettings.profiles,
+			defaultProfile: policySettings.selectedProfileId,
+			policyProfile: policySettings.selectedProfileId,
+			projectTrusted: this.settingsManager.isProjectTrusted(),
+			capabilityBinding: this._policyCapabilityBindingInput(),
+			sandbox: this._createPolicySandboxPreflight(selectedProfile),
+			workspaceIdentity: "workspace:active",
+			runId: runId ?? this._activeContextRunId ?? "run:session",
+			createdAt: new Date().toISOString(),
+			...(previousPolicyBindingId === undefined ? {} : { previousPolicyBindingId }),
+		});
+		if (!result.ok) throw result.error;
+		const previousBindingId = this._activeExecutionPolicyBinding?.id;
+		if (previousBindingId !== result.binding.id) {
+			await this._closeMcpConnectionsForPolicyBoundary();
+			await this._disposeSandboxSession();
+			this._activeExecutionPolicyProfile = result.profile;
+			this._activeExecutionPolicyBinding = result.binding;
+			this._currentBuiltinToolPolicy = undefined;
+			this._pendingExecutionPolicyApprovals.clear();
+			this._executionPolicyApprovedRequestIds = [];
+			this._executionPolicyRejectedRequestIds = [];
+			if (!this._persistedPolicyBindingIds.has(result.binding.id)) {
+				this._policyLedger.appendBinding(result.binding);
+				this._persistedPolicyBindingIds.add(result.binding.id);
+			}
+			await this._prepareSandboxForBinding(result.profile, result.binding);
+		}
+		this._nextPreviousExecutionPolicyBindingId = undefined;
+	}
+
+	private _authorizeCapabilityInvocation(
+		toolName: string,
+		source: PolicyOperationSource,
+		requestId: string,
+	): void {
+		const profile = this._requireExecutionPolicyProfile();
+		const binding = this._requireExecutionPolicyBinding();
+		const capability = this._bindingDescriptorForToolName(toolName);
+		const decision = authorizePolicyOperation({
+			profile,
+			binding,
+			operation: {
+				resource: "capability.invoke",
+				source,
+				id: requestId,
+				...(capability === undefined ? {} : { capabilityId: capability.id }),
+			},
+			capabilityBinding: this._policyCapabilityBindingInput(),
+		});
+		this._recordPolicyDecision(decision);
+		if (decision.outcome !== "allow") {
+			throw new PolicyError(decision.reasonCode ?? "policy_denied", decision.reason);
+		}
+	}
+
+	private _toolInvocationSourceFor(toolName: string): PolicyOperationSource {
+		const source = this._toolDefinitions.get(toolName)?.sourceInfo.source ?? "";
+		if (source === "sdk" || source.startsWith("<sdk:")) return "sdk";
+		if (source.startsWith("mcp")) return "mcp";
+		if (source === "builtin" || source.startsWith("<builtin:")) return "builtin";
+		return "extension";
+	}
+
+	private async _authorizeMcpStartup(
+		server: CapabilitySettings["mcpServers"][number]["server"],
+		serverId: string,
+	): Promise<void> {
+		this._mcpAuthorizedTransportValues.delete(serverId);
+		if (server.transport === "stdio") {
+			const requestedEnv: Record<string, string> = {};
+			for (const name of server.env ?? []) {
+				const value = process.env[name];
+				if (value !== undefined) {
+					requestedEnv[name] = value;
+				}
+			}
+			const authorized = await this._requireCurrentBuiltinToolPolicy("mcp").authorizeProcess({
+				command: server.command,
+				cwd: this._cwd,
+				env: requestedEnv,
+				requestId: `mcp-start:${serverId}`,
+			});
+			this._assertMcpSandboxTransportAvailable();
+			const environment = Object.fromEntries(
+				Object.entries(authorized.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+			);
+			this._mcpAuthorizedTransportValues.set(serverId, { environment, headers: {} });
+			return;
+		}
+		const url = new URL(server.url);
+		const decision = authorizePolicyOperation({
+			profile: this._requireExecutionPolicyProfile(),
+			binding: this._requireExecutionPolicyBinding(),
+			operation: {
+				resource: "network.connect",
+				source: "mcp",
+				id: `mcp-connect:${serverId}`,
+				destination: url.origin,
+				...(url.port === "" ? {} : { port: Number(url.port) }),
+			},
+			capabilityBinding: this._policyCapabilityBindingInput(),
+		});
+		this._recordPolicyDecision(decision);
+		if (decision.outcome !== "allow") {
+			throw new PolicyError(decision.reasonCode ?? "policy_denied", decision.reason);
+		}
+		const headerRefs = server.headersFromEnv ?? [];
+		const credentialNames = [...new Set(headerRefs.map((header) => header.valueFromEnv))];
+		const profile = this._requireExecutionPolicyProfile();
+		if (profile.enforcement !== "legacy" && credentialNames.length > 0) {
+			const credentialDecision = authorizePolicyOperation({
+				profile,
+				binding: this._requireExecutionPolicyBinding(),
+				operation: {
+					resource: "credential.expose",
+					source: "mcp",
+					id: `mcp-headers:${serverId}`,
+					credentialNames,
+				},
+				capabilityBinding: this._policyCapabilityBindingInput(),
+			});
+			this._recordPolicyDecision(credentialDecision);
+			if (credentialDecision.outcome !== "allow") {
+				throw new PolicyError(credentialDecision.reasonCode ?? "policy_denied", credentialDecision.reason);
+			}
+		}
+		const headers: Record<string, string> = {};
+		for (const header of headerRefs) {
+			const value = process.env[header.valueFromEnv];
+			if (value !== undefined) {
+				headers[header.name] = value;
+			}
+		}
+		this._assertMcpSandboxTransportAvailable();
+		this._mcpAuthorizedTransportValues.set(serverId, { environment: {}, headers });
+	}
+
+	private _assertMcpSandboxTransportAvailable(): void {
+		if (this._requireExecutionPolicyProfile().enforcement !== "sandbox") return;
+		const sandbox = this._activeSandboxHandle;
+		if (sandbox === undefined) {
+			throw new PolicyError("sandbox_required");
+		}
+		if (sandbox.createMcpTransport === undefined) {
+			throw new PolicyError("sandbox_capability_insufficient", "MCP sandbox transport is unavailable.");
+		}
+	}
+
+	private _createPolicyAwareMcpTransportFactory(): MCPTransportFactory {
+		const defaultFactory = createMCPDefaultTransportFactory();
+		return async (config, env) => {
+			const profile = this._requireExecutionPolicyProfile();
+			const authorized = this._mcpAuthorizedTransportValues.get(config.id) ?? {
+				environment: {},
+				headers: {},
+			};
+			if (profile.enforcement === "sandbox") {
+				const binding = this._requireExecutionPolicyBinding();
+				const sandbox = this._activeSandboxHandle;
+				if (sandbox === undefined) {
+					throw new PolicyError("sandbox_required");
+				}
+				if (sandbox.createMcpTransport === undefined) {
+					throw new PolicyError("sandbox_capability_insufficient", "MCP sandbox transport is unavailable.");
+				}
+				return sandbox.createMcpTransport({
+					bindingId: binding.id,
+					serverId: config.id,
+					config,
+					environment: authorized.environment,
+					headers: authorized.headers,
+				});
+			}
+			const factory = this._mcpTransportFactory ?? defaultFactory;
+			if (config.transport === "stdio") {
+				return factory(config, (name) => authorized.environment[name] ?? env(name));
+			}
+			if (Object.keys(authorized.headers).length > 0) {
+				return factory(config, (name) => {
+					const header = (config.headersFromEnv ?? []).find((ref) => ref.valueFromEnv === name);
+					return header === undefined ? env(name) : authorized.headers[header.name];
+				});
+			}
+			return factory(config, env);
+		};
+	}
+
+	private _wrapToolWithPolicyInvocation(tool: AgentTool, source: PolicyOperationSource): AgentTool {
+		const execute = tool.execute;
+		return {
+			...tool,
+			execute: async (...args: Parameters<AgentTool["execute"]>) => {
+				await this._ensureExecutionPolicyReady();
+				if (source !== "builtin") {
+					this._authorizeCapabilityInvocation(tool.name, source, args[0]);
+				}
+				return execute(...args);
+			},
+		};
+	}
+
 	private _buildRuntime(options: {
 		activeToolNames?: string[];
 		flagValues?: Map<string, boolean | string>;
@@ -4806,8 +5481,17 @@ export class AgentSession {
 					]),
 				)
 			: createAllToolDefinitions(this._cwd, {
-					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					read: { autoResizeImages, policy: this._createSessionBuiltinToolPolicy("builtin") },
+					bash: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						policy: this._createSessionBuiltinToolPolicy("builtin"),
+					},
+					write: { policy: this._createSessionBuiltinToolPolicy("builtin") },
+					edit: { policy: this._createSessionBuiltinToolPolicy("builtin") },
+					grep: { policy: this._createSessionBuiltinToolPolicy("builtin") },
+					find: { policy: this._createSessionBuiltinToolPolicy("builtin") },
+					ls: { policy: this._createSessionBuiltinToolPolicy("builtin") },
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -4841,9 +5525,10 @@ export class AgentSession {
 			void previousMcpManager.closeAll().catch(() => undefined);
 		}
 		this._mcpLifecycleManager = new MCPLifecycleManager({
-			...(this._mcpTransportFactory !== undefined ? { transportFactory: this._mcpTransportFactory } : {}),
+			transportFactory: this._createPolicyAwareMcpTransportFactory(),
 		});
 		this._mcpRegisteredServerIds = new Set();
+		this._mcpAuthorizedTransportValues = new Map();
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
 		this._activeCapabilityBinding = undefined;
@@ -5034,6 +5719,23 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
+	 * Authorize extension handling for a user bash command before extension code
+	 * can run. Returns false when strict sandbox execution must own the command.
+	 */
+	async authorizeUserBashExtension(command: string, options?: { id?: string }): Promise<boolean> {
+		const prefix = this.settingsManager.getShellCommandPrefix();
+		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
+		await this._ensureExecutionPolicyReady();
+		const authorized = await this._requireCurrentBuiltinToolPolicy("user_bash").authorizeProcess({
+			command: resolvedCommand,
+			cwd: this.sessionManager.getCwd(),
+			env: getShellEnv(),
+			requestId: options?.id,
+		});
+		return authorized.sandbox === undefined;
+	}
+
+	/**
 	 * Execute a bash command.
 	 * Adds result to agent context and session.
 	 * @param command The bash command to execute
@@ -5056,9 +5758,17 @@ export class AgentSession {
 		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 
 		try {
+			await this._ensureExecutionPolicyReady();
+			const cwd = this.sessionManager.getCwd();
+			const authorized = await this._requireCurrentBuiltinToolPolicy("user_bash").authorizeProcess({
+				command: resolvedCommand,
+				cwd,
+				env: getShellEnv(),
+				requestId: options?.id,
+			});
 			const result = await executeBashWithOperations(
 				resolvedCommand,
-				this.sessionManager.getCwd(),
+				cwd,
 				options?.operations ?? createLocalBashOperations({ shellPath }),
 				{
 					onChunk: (delta) => {
@@ -5066,6 +5776,10 @@ export class AgentSession {
 						this._emit({ type: "bash_execution_update", id: options?.id, delta });
 					},
 					signal: abortController.signal,
+					env: authorized.env,
+					...(authorized.sandbox === undefined
+						? {}
+						: { sandbox: authorized.sandbox, bindingId: this._requireExecutionPolicyBinding().id }),
 				},
 			);
 

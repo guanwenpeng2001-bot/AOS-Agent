@@ -15,6 +15,8 @@ export interface ExecOptions {
 	timeout?: number;
 	/** Working directory */
 	cwd?: string;
+	/** Explicit environment for the child process. Omit to use the host default in legacy mode. */
+	env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -42,6 +44,7 @@ export async function execCommand(
 			cwd,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
+			...(options?.env === undefined ? {} : { env: options.env }),
 		});
 
 		let stdout = "";

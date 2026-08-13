@@ -329,6 +329,7 @@ export class ExtensionRunner {
 		this.runtime.setActiveTools = actions.setActiveTools;
 		this.runtime.refreshTools = actions.refreshTools;
 		this.runtime.getCommands = actions.getCommands;
+		this.runtime.exec = actions.exec;
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
@@ -743,6 +744,10 @@ export class ExtensionRunner {
 			getSystemPrompt: () => {
 				runner.assertActive();
 				return runner.getSystemPromptFn();
+			},
+			exec: (command, args, options) => {
+				runner.assertActive();
+				return runner.runtime.exec(command, args, { ...options, cwd: options?.cwd ?? runner.cwd });
 			},
 		};
 	}

@@ -162,6 +162,14 @@ export class FooterComponent implements Component {
 		if (areExperimentalFeaturesEnabled()) {
 			statsParts.push(`${theme.fg("dim", "•")} ${theme.bold(theme.fg("warning", "xp"))}`);
 		}
+		try {
+			const policy = this.session.getActiveExecutionPolicySummary();
+			const pending = this.session.getPendingExecutionPolicyApprovals().length;
+			const pendingText = pending > 0 ? ` approvals:${pending}` : "";
+			statsParts.push(`policy:${policy.profileId}/${policy.enforcement}/sandbox:${policy.sandboxStatus}${pendingText}`);
+		} catch {
+			statsParts.push("policy:unavailable");
+		}
 
 		let statsLeft = statsParts.join(" ");
 

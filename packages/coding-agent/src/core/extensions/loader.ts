@@ -28,7 +28,6 @@ import * as _bundledAosCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
-import { execCommand } from "../exec.ts";
 import { readAosAgentManifest } from "../aos-agent-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
@@ -181,6 +180,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,
+		exec: () => Promise.reject(new Error("Extension runtime not initialized")),
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
@@ -342,7 +342,7 @@ function createExtensionAPI(
 
 		exec(command: string, args: string[], options?: ExecOptions) {
 			runtime.assertActive();
-			return execCommand(command, args, options?.cwd ?? cwd, options);
+			return runtime.exec(command, args, { ...options, cwd: options?.cwd ?? cwd });
 		},
 
 		getActiveTools(): string[] {

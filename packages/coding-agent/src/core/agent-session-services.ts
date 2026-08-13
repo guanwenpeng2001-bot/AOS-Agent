@@ -15,6 +15,7 @@ import {
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
+import type { SandboxProvider } from "./sandbox.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -52,6 +53,8 @@ export interface CreateAgentSessionServicesOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override (tests inject in-memory transports). */
 	mcpTransportFactory?: MCPTransportFactory;
+	/** Registered sandbox providers available to execution policy. */
+	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 }
 
 /**
@@ -67,12 +70,14 @@ export interface CreateAgentSessionFromServicesOptions {
 	model?: Model<any>;
 	modelRoute?: CreateAgentSessionOptions["modelRoute"];
 	modelRole?: CreateAgentSessionOptions["modelRole"];
+	policyProfile?: CreateAgentSessionOptions["policyProfile"];
 	thinkingLevel?: ThinkingLevel;
 	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 	tools?: string[];
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
 }
 
 /**
@@ -91,6 +96,7 @@ export interface AgentSessionServices {
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
 	mcpTransportFactory?: MCPTransportFactory;
+	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -225,6 +231,7 @@ export async function createAgentSessionServices(
 		capabilityRegistry:
 			options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir)),
 		mcpTransportFactory: options.mcpTransportFactory,
+		sandboxProviders: options.sandboxProviders,
 		diagnostics,
 	};
 }
@@ -249,10 +256,12 @@ export async function createAgentSessionFromServices(
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
 		mcpTransportFactory: options.services.mcpTransportFactory,
+		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		modelRoute: options.modelRoute,
 		modelRole: options.modelRole,
+		policyProfile: options.policyProfile,
 		thinkingLevel: options.thinkingLevel,
 		scopedModels: options.scopedModels,
 		tools: options.tools,

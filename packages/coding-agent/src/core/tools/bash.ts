@@ -16,6 +16,7 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -36,7 +37,6 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	}
 	return timeoutMs;
 }
-
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
@@ -199,6 +199,8 @@ export interface BashToolOptions {
 	exposeSessionEnvironment?: boolean;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
+	/** Optional built-in policy authorizer. Existing custom operations still run behind this gate. */
+	policy?: BuiltinToolPolicy;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -326,6 +328,7 @@ export function createBashToolDefinition(
 	const commandPrefix = options?.commandPrefix;
 	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
+	const policy = options?.policy;
 	return {
 		name: "bash",
 		label: "bash",
@@ -429,13 +432,35 @@ export function createBashToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await ops.exec(spawnContext.command, spawnContext.cwd, {
-						onData: handleData,
-						signal,
-						timeout,
-						env: spawnContext.env,
-					});
-					exitCode = result.exitCode;
+					const authorized =
+						policy === undefined
+							? { env: spawnContext.env }
+							: await policy.authorizeProcess({
+								command: spawnContext.command,
+								cwd: spawnContext.cwd,
+								env: spawnContext.env,
+								timeout,
+								requestId: _toolCallId,
+							});
+					const result =
+						authorized.sandbox === undefined
+							? await ops.exec(spawnContext.command, spawnContext.cwd, {
+								onData: handleData,
+								signal,
+								timeout,
+								env: authorized.env,
+							})
+							: await authorized.sandbox.execute({
+								bindingId: policy?.binding.id ?? "",
+								resource: "process.spawn",
+								command: spawnContext.command,
+								cwd: spawnContext.cwd,
+								env: authorized.env,
+								timeoutMs: timeout === undefined ? undefined : timeout * 1000,
+								signal,
+								onData: handleData,
+							});
+					exitCode = result.exitCode ?? 0;
 				} catch (err) {
 					const snapshot = await finishOutput();
 					const { text } = formatOutput(snapshot, "");

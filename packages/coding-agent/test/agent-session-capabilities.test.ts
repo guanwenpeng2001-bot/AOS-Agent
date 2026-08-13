@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { inspect } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
@@ -23,12 +24,14 @@ import {
 } from "../src/core/capability-registry.ts";
 import { assertSnapshotMetadataOnly } from "../src/core/context-engine.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
+import type { SandboxHandle, SandboxProvider } from "../src/core/sandbox.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import type { ExtensionFactory, LoadExtensionsResult, ToolDefinition } from "../src/core/extensions/index.ts";
+import type { MCPEnvResolver, MCPServerConfig } from "../src/core/mcp-types.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
@@ -103,6 +106,7 @@ async function createControlledSession(opts: {
 	settingsManager: SettingsManager;
 	customTools?: ToolDefinition[];
 	mcpTransportFactory?: unknown;
+	sandboxProviders?: ReadonlyArray<SandboxProvider>;
 	onStreamCall?: () => void;
 	dir?: string;
 	agentDir?: string;
@@ -142,9 +146,66 @@ async function createControlledSession(opts: {
 		resourceLoader: opts.resourceLoader,
 		customTools: opts.customTools,
 		mcpTransportFactory: opts.mcpTransportFactory as never,
+		sandboxProviders: opts.sandboxProviders,
 		capabilityRegistry: new CapabilityRegistry(identity),
 	});
 	return { session, dir, agentDir, identity };
+}
+
+function executionPolicySettings(options?: {
+	process?: "allow" | "deny";
+	network?: "allow" | "deny";
+	networkApproval?: "allow" | "deny";
+	extensionInvoke?: "allow" | "deny";
+	enforcement?: "host" | "sandbox";
+	sandboxProvider?: string;
+	credentialAction?: "allow" | "ask" | "deny";
+	credentialApproval?: "allow" | "ask" | "deny";
+	credentialNames?: ReadonlyArray<string>;
+	environmentNames?: ReadonlyArray<string>;
+}) {
+	const profile = {
+		id: "locked",
+		enforcement: options?.enforcement ?? "host",
+		...(options?.sandboxProvider === undefined ? {} : { sandboxProvider: options.sandboxProvider }),
+		defaultAction: "allow",
+		workspace: {
+			read: ["workspace", "declared-read-only"],
+			write: ["workspace"],
+			deny: ["credentials", "agent-internal"],
+		},
+		process: {
+			action: options?.process ?? "allow",
+			inheritEnvironment: false,
+			allowEnvironment: [...(options?.environmentNames ?? ["PATH"])],
+			cwdScopes: ["workspace"],
+			timeoutMs: 60_000,
+		},
+		network: { action: options?.network ?? "allow", allowDestinations: [] },
+		credentials:
+			options?.credentialNames === undefined && options?.credentialAction === undefined
+				? { action: "deny", allowNames: [] }
+				: {
+						action: options?.credentialAction ?? "allow",
+						allowNames: [...(options?.credentialNames ?? [])],
+					},
+		approvals: {
+			writeOutsideWorkspace: "deny",
+			network: options?.networkApproval ?? "deny",
+			process: options?.process ?? "allow",
+			...(options?.credentialNames === undefined && options?.credentialAction === undefined
+				? {}
+				: { credentials: options?.credentialApproval ?? options?.credentialAction ?? ("allow" as const) }),
+		},
+		rules:
+			options?.extensionInvoke === undefined
+				? []
+				: [{ resource: "capability.invoke", source: "extension", action: options.extensionInvoke }],
+	};
+	return {
+		defaultProfile: "locked",
+		profiles: { locked: profile },
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +1475,799 @@ describe("AgentSession capability binding integration", () => {
 				expect(
 					session.getActiveCapabilityBinding()?.descriptors.some((descriptor) => descriptor.id === descriptorId),
 				).toBe(false);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	describe("execution policy integration", () => {
+		it("authorizes extension tool invocation before extension code runs", async () => {
+			let extensionExecuteCalls = 0;
+			const extensionsResult = await createTestExtensionsResult([
+				{ name: "ext1", factory: extensionWithTool("ext_helper", () => extensionExecuteCalls++) },
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ extensionInvoke: "deny" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				const tool = session.agent.state.tools.find((candidate) => candidate.name === "ext_helper");
+				expect(tool).toBeDefined();
+				await expect(tool!.execute("ext-call", {})).rejects.toMatchObject({ code: "policy_denied" });
+				expect(extensionExecuteCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("authorizes user_bash before extension bash handlers run", async () => {
+			let extensionHandlerCalls = 0;
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "bash-interceptor",
+					factory: (pi) => {
+						pi.on("user_bash", async () => {
+							extensionHandlerCalls++;
+							return {
+								result: {
+									output: "extension\n",
+									exitCode: 0,
+									cancelled: false,
+									truncated: false,
+								},
+							};
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ process: "deny" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+			});
+			try {
+				await expect(
+					(async () => {
+						if (await session.authorizeUserBashExtension("echo no", { id: "bash-extension-deny" })) {
+							await session.extensionRunner.emitUserBash({
+								type: "user_bash",
+								command: "echo no",
+								excludeFromContext: false,
+								cwd: session.sessionManager.getCwd(),
+							});
+						}
+					})(),
+				).rejects.toMatchObject({ code: "policy_denied" });
+				expect(extensionHandlerCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("authorizes user_bash before custom bash operations run", async () => {
+			let execStarted = false;
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ process: "deny" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+			});
+			try {
+				await expect(
+					session.executeBash("echo no", undefined, {
+						id: "bash-deny",
+						operations: {
+							exec: async () => {
+								execStarted = true;
+								return { exitCode: 0 };
+							},
+						},
+					}),
+				).rejects.toMatchObject({ code: "policy_denied" });
+				expect(execStarted).toBe(false);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("authorizes extension command ctx.exec before spawning a process", async () => {
+			const markerPath = join(tmpdir(), `pi-extension-exec-deny-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "exec-command",
+					factory: (pi) => {
+						pi.registerCommand("exec-deny", {
+							handler: async (_args, ctx) => {
+								await ctx.exec(process.execPath, [
+									"-e",
+									`require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "spawned")`,
+								]);
+							},
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ process: "deny" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+			});
+			try {
+				const command = session.extensionRunner.getCommand("exec-deny")!;
+				await expect(command.handler("", session.extensionRunner.createCommandContext())).rejects.toMatchObject({
+					code: "policy_denied",
+				});
+				expect(existsSync(markerPath)).toBe(false);
+			} finally {
+				session.dispose();
+				if (existsSync(markerPath)) rmSync(markerPath, { force: true });
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("routes strict extension ctx.exec through the sandbox handle with filtered env", async () => {
+			const sandboxRequests: Array<{ command?: string; args?: ReadonlyArray<string>; env?: NodeJS.ProcessEnv; bindingId?: string }> = [];
+			const handle: SandboxHandle = {
+				id: "handle-extension-exec",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async (request) => {
+					sandboxRequests.push({
+						command: request.command,
+						args: request.args,
+						env: request.env,
+						bindingId: request.bindingId,
+					});
+					request.onData?.(Buffer.from("sandboxed\n"));
+					return { exitCode: 0 };
+				},
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			let stdout = "";
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "exec-event",
+					factory: (pi) => {
+						pi.on("agent_start", async (_event, ctx) => {
+							const execResult = await ctx.exec("definitely-not-a-host-command", ["--flag"], {
+								env: { EXT_ALLOWED: "yes", EXT_SECRET: "no" },
+							});
+							stdout = execResult.stdout;
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+					environmentNames: ["EXT_ALLOWED"],
+				}),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+			});
+			try {
+				await session.extensionRunner.emit({ type: "agent_start" });
+				expect(stdout).toBe("sandboxed\n");
+				expect(sandboxRequests).toHaveLength(1);
+				expect(sandboxRequests[0]).toMatchObject({
+					command: "definitely-not-a-host-command",
+					args: ["--flag"],
+				});
+				expect(sandboxRequests[0]?.bindingId).toBeTruthy();
+				expect(sandboxRequests[0]?.env).toEqual({ EXT_ALLOWED: "yes" });
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("preserves allowed host extension ctx.exec result semantics", async () => {
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "exec-tool",
+					factory: (pi) => {
+						pi.registerTool({
+							name: "exec_helper",
+							label: "exec_helper",
+							description: "Extension exec helper",
+							parameters: Type.Object({}),
+							execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+								const result = await ctx.exec(process.execPath, [
+									"-e",
+									"process.stdout.write('out'); process.stderr.write('err'); process.exit(7)",
+								]);
+								return {
+									content: [{ type: "text", text: JSON.stringify(result) }],
+									details: result,
+								};
+							},
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ process: "allow" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				const tool = session.agent.state.tools.find((candidate) => candidate.name === "exec_helper")!;
+				const result = await tool.execute("exec-allow", {});
+				expect(result.details).toEqual({ stdout: "out", stderr: "err", code: 7, killed: false });
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("authorizes MCP stdio startup before creating a transport", async () => {
+			let factoryCalls = 0;
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({ process: "deny" }),
+				mcp: { servers: { docs: { transport: "stdio", command: "node", env: ["SECRET_TOKEN"] } } },
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				mcpTransportFactory: (async () => {
+					factoryCalls++;
+					throw new Error("must never connect");
+				}) as never,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({ code: "policy_denied" });
+				expect(factoryCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("routes strict MCP stdio through the sandbox transport adapter with filtered env", async () => {
+			const previousAllowed = process.env.MCP_ALLOWED_ENV;
+			const previousSecret = process.env.MCP_SECRET_ENV;
+			process.env.MCP_ALLOWED_ENV = "allowed-value";
+			process.env.MCP_SECRET_ENV = "secret-value";
+			let hostFactoryCalls = 0;
+			const receivedCalls: Array<{ name: string; args: unknown }> = [];
+			const mock = createMockMcpServer({
+				tools: [{ name: "list", inputSchema: { type: "object" } }],
+				receivedCalls,
+			});
+			const transportRequests: Array<Parameters<NonNullable<SandboxHandle["createMcpTransport"]>>[0]> = [];
+			const handle: SandboxHandle = {
+				id: "handle-stdio",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async () => ({ exitCode: 0 }),
+				createMcpTransport: async (request) => {
+					transportRequests.push(request);
+					return mock.transportFactory({ id: request.serverId }) as never;
+				},
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+					environmentNames: ["MCP_ALLOWED_ENV"],
+				}),
+				mcp: {
+					servers: {
+						docs: {
+							transport: "stdio",
+							command: "node",
+							env: ["MCP_ALLOWED_ENV", "MCP_SECRET_ENV"],
+						},
+					},
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+				mcpTransportFactory: (async () => {
+					hostFactoryCalls++;
+					throw new Error("host transport must not be used");
+				}) as never,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				expect(hostFactoryCalls).toBe(0);
+				expect(transportRequests).toHaveLength(1);
+				expect(transportRequests[0]?.bindingId).toBeTruthy();
+				expect(transportRequests[0]?.environment).toEqual({ MCP_ALLOWED_ENV: "allowed-value" });
+				expect(transportRequests[0]?.headers).toEqual({});
+				expect(transportRequests[0]?.config).toMatchObject({ transport: "stdio", command: "node" });
+				const definition = session.getToolDefinition("mcp__docs__list")!;
+				await definition.execute("call-1", {}, new AbortController().signal, undefined, {} as never);
+				expect(receivedCalls).toEqual([{ name: "list", args: {} }]);
+			} finally {
+				if (previousAllowed === undefined) {
+					delete process.env.MCP_ALLOWED_ENV;
+				} else {
+					process.env.MCP_ALLOWED_ENV = previousAllowed;
+				}
+				if (previousSecret === undefined) {
+					delete process.env.MCP_SECRET_ENV;
+				} else {
+					process.env.MCP_SECRET_ENV = previousSecret;
+				}
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails strict MCP closed before an injected host transport when the sandbox has no adapter", async () => {
+			let hostFactoryCalls = 0;
+			const handle: SandboxHandle = {
+				id: "handle-no-mcp",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async () => ({ exitCode: 0 }),
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+				}),
+				mcp: { servers: { docs: { transport: "stdio", command: "node" } } },
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+				mcpTransportFactory: (async () => {
+					hostFactoryCalls++;
+					throw new Error("host transport must not be used");
+				}) as never,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "sandbox_capability_insufficient",
+				});
+				expect(hostFactoryCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it.each([
+			{
+				label: "deny",
+				credentialAction: "deny",
+				credentialApproval: "deny",
+				expectedCode: "credential_policy_violation",
+			},
+			{
+				label: "ask",
+				credentialAction: "ask",
+				credentialApproval: "ask",
+				expectedCode: "policy_approval_required",
+			},
+			{
+				label: "rejected",
+				credentialAction: "allow",
+				credentialApproval: "deny",
+				expectedCode: "credential_policy_violation",
+			},
+		] as const)(
+			"fails host MCP HTTP closed when header credential authorization resolves to $label",
+			async ({ credentialAction, credentialApproval, expectedCode }) => {
+				const previousAuth = process.env.MCP_AUTH_HEADER;
+				process.env.MCP_AUTH_HEADER = "Bearer host-secret";
+				let hostFactoryCalls = 0;
+				const sessionSettings = SettingsManager.inMemory({
+					capabilities: {
+						defaultProfile: "default",
+						profiles: {
+							default: {
+								rules: [
+									{ selector: { kind: "mcp_server" }, action: "allow" },
+									{ selector: { kind: "mcp_tool" }, action: "allow" },
+								],
+							},
+						},
+					},
+					executionPolicy: executionPolicySettings({
+						networkApproval: "allow",
+						credentialAction,
+						credentialApproval,
+						credentialNames: ["MCP_AUTH_HEADER"],
+					}),
+					mcp: {
+						servers: {
+							docs: {
+								transport: "streamable-http",
+								url: "https://mcp.example.invalid/mcp",
+								headersFromEnv: [{ name: "Authorization", valueFromEnv: "MCP_AUTH_HEADER" }],
+							},
+						},
+					},
+				});
+				const { session, dir } = await createControlledSession({
+					resourceLoader: createTestResourceLoader(),
+					settingsManager: sessionSettings,
+					mcpTransportFactory: (async () => {
+						hostFactoryCalls++;
+						throw new Error("host transport must not be used");
+					}) as never,
+				});
+				try {
+					await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+						code: expectedCode,
+					});
+					expect(hostFactoryCalls).toBe(0);
+				} finally {
+					if (previousAuth === undefined) {
+						delete process.env.MCP_AUTH_HEADER;
+					} else {
+						process.env.MCP_AUTH_HEADER = previousAuth;
+					}
+					session.dispose();
+					if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+				}
+			},
+		);
+
+		it("passes allowed host MCP HTTP header credentials through the authorized resolver", async () => {
+			const previousAuth = process.env.MCP_AUTH_HEADER;
+			process.env.MCP_AUTH_HEADER = "Bearer host-secret";
+			let hostFactoryCalls = 0;
+			let resolvedCredential: string | undefined;
+			const receivedCalls: Array<{ name: string; args: unknown }> = [];
+			const mock = createMockMcpServer({
+				tools: [{ name: "list", inputSchema: { type: "object" } }],
+				receivedCalls,
+			});
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					networkApproval: "allow",
+					credentialNames: ["MCP_AUTH_HEADER"],
+				}),
+				mcp: {
+					servers: {
+						docs: {
+							transport: "streamable-http",
+							url: "https://mcp.example.invalid/mcp",
+							headersFromEnv: [{ name: "Authorization", valueFromEnv: "MCP_AUTH_HEADER" }],
+						},
+					},
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				mcpTransportFactory: (async (config: MCPServerConfig, env: MCPEnvResolver) => {
+					hostFactoryCalls++;
+					resolvedCredential = env("MCP_AUTH_HEADER");
+					return mock.transportFactory({ id: config.id }) as never;
+				}) as never,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				expect(hostFactoryCalls).toBe(1);
+				expect(resolvedCredential).toBe("Bearer host-secret");
+				const definition = session.getToolDefinition("mcp__docs__list")!;
+				await definition.execute("call-1", {}, new AbortController().signal, undefined, {} as never);
+				expect(receivedCalls).toEqual([{ name: "list", args: {} }]);
+			} finally {
+				if (previousAuth === undefined) {
+					delete process.env.MCP_AUTH_HEADER;
+				} else {
+					process.env.MCP_AUTH_HEADER = previousAuth;
+				}
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("routes strict MCP HTTP through the sandbox adapter and redacts header credentials on failure", async () => {
+			const previousAuth = process.env.MCP_AUTH_HEADER;
+			process.env.MCP_AUTH_HEADER = "Bearer strict-secret";
+			let hostFactoryCalls = 0;
+			const transportRequests: Array<Parameters<NonNullable<SandboxHandle["createMcpTransport"]>>[0]> = [];
+			const handle: SandboxHandle = {
+				id: "handle-http",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async () => ({ exitCode: 0 }),
+				createMcpTransport: async (request) => {
+					transportRequests.push(request);
+					throw new Error(`raw ${request.config.id} ${request.headers.Authorization}`);
+				},
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+					networkApproval: "allow",
+					credentialNames: ["MCP_AUTH_HEADER"],
+				}),
+				mcp: {
+					servers: {
+						docs: {
+							transport: "streamable-http",
+							url: "https://mcp.example.invalid/mcp",
+							headersFromEnv: [{ name: "Authorization", valueFromEnv: "MCP_AUTH_HEADER" }],
+						},
+					},
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+				mcpTransportFactory: (async () => {
+					hostFactoryCalls++;
+					throw new Error("host transport must not be used");
+				}) as never,
+			});
+			try {
+				let thrown: unknown;
+				try {
+					await session.whenCapabilitiesReady();
+				} catch (error) {
+					thrown = error;
+				}
+				expect(thrown).toMatchObject({ code: "capability_mcp_connect_failed" });
+				expect(hostFactoryCalls).toBe(0);
+				expect(transportRequests).toHaveLength(1);
+				expect(transportRequests[0]?.headers).toEqual({ Authorization: "Bearer strict-secret" });
+				const rendered = `${JSON.stringify(thrown)}\n${inspect(thrown, { showHidden: true, depth: 5 })}`;
+				expect(rendered).not.toContain("Bearer strict-secret");
+				expect(rendered).not.toContain("Authorization");
+			} finally {
+				if (previousAuth === undefined) {
+					delete process.env.MCP_AUTH_HEADER;
+				} else {
+					process.env.MCP_AUTH_HEADER = previousAuth;
+				}
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails closed when strict sandbox policy has no real sandbox handle", async () => {
+			let streamCalls = 0;
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "host-policy",
+				}),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				await expect(session.prompt("run")).rejects.toMatchObject({ code: "sandbox_unavailable" });
+				expect(streamCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("routes user_bash through a strict sandbox handle when one is registered", async () => {
+			const sandboxRequests: Array<{ command?: string; env?: NodeJS.ProcessEnv; bindingId?: string }> = [];
+			let hostExecStarted = false;
+			const handle: SandboxHandle = {
+				id: "handle-1",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async (request) => {
+					sandboxRequests.push({ command: request.command, env: request.env, bindingId: request.bindingId });
+					request.onData?.(Buffer.from("sandboxed\n"));
+					return { exitCode: 0 };
+				},
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+				}),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+			});
+			try {
+				const result = await session.executeBash("echo ok", undefined, {
+					id: "bash-sandbox",
+					operations: {
+						exec: async () => {
+							hostExecStarted = true;
+							return { exitCode: 0 };
+						},
+					},
+				});
+				expect(result.output).toBe("sandboxed\n");
+				expect(hostExecStarted).toBe(false);
+				expect(sandboxRequests).toHaveLength(1);
+				expect(sandboxRequests[0]?.bindingId).toBeTruthy();
+				expect(sandboxRequests[0]?.env?.PATH).toBeDefined();
+				expect(sandboxRequests[0]?.env?.SECRET_TOKEN).toBeUndefined();
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not use extension bash results as strict sandbox host fallback", async () => {
+			let extensionHandlerCalls = 0;
+			let hostExecStarted = false;
+			const sandboxRequests: Array<{ command?: string; bindingId?: string }> = [];
+			const handle: SandboxHandle = {
+				id: "handle-1",
+				capabilities: { filesystem: true, process: true, network: true, credentialIsolation: true },
+				execute: async (request) => {
+					sandboxRequests.push({ command: request.command, bindingId: request.bindingId });
+					request.onData?.(Buffer.from("sandboxed\n"));
+					return { exitCode: 0 };
+				},
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "bash-interceptor",
+					factory: (pi) => {
+						pi.on("user_bash", async () => {
+							extensionHandlerCalls++;
+							return {
+								result: {
+									output: "host-extension\n",
+									exitCode: 0,
+									cancelled: false,
+									truncated: false,
+								},
+							};
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+				}),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+			});
+			try {
+				let eventResult: Awaited<ReturnType<typeof session.extensionRunner.emitUserBash>> | undefined;
+				if (await session.authorizeUserBashExtension("echo ok", { id: "bash-extension-sandbox" })) {
+					eventResult = await session.extensionRunner.emitUserBash({
+						type: "user_bash",
+						command: "echo ok",
+						excludeFromContext: false,
+						cwd: session.sessionManager.getCwd(),
+					});
+				}
+				const result = eventResult?.result ?? await session.executeBash("echo ok", undefined, {
+					id: "bash-extension-sandbox-exec",
+					operations: {
+						exec: async () => {
+							hostExecStarted = true;
+							return { exitCode: 0 };
+						},
+					},
+				});
+				expect(result.output).toBe("sandboxed\n");
+				expect(extensionHandlerCalls).toBe(0);
+				expect(hostExecStarted).toBe(false);
+				expect(sandboxRequests).toHaveLength(1);
+				expect(sandboxRequests[0]?.bindingId).toBeTruthy();
 			} finally {
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });

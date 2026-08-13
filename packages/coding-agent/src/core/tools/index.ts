@@ -67,6 +67,25 @@ export {
 	type WriteToolInput,
 	type WriteToolOptions,
 } from "./write.ts";
+export {
+	type BuiltinToolPolicy,
+	type BuiltinToolPolicyHooks,
+	type BuiltinToolPolicyOptions,
+	createBuiltinToolPolicy,
+} from "../sandbox-host.ts";
+export {
+	type SandboxDirectoryEntry,
+	type SandboxHandle,
+	type SandboxLifecycleStatus,
+	type SandboxOperationRequest,
+	type SandboxOperationResult,
+	type SandboxProvider,
+	SandboxCapabilityError,
+	SandboxError,
+	SandboxHandleDisposedError,
+	SandboxSession,
+	requireSandboxCapability,
+} from "../sandbox.ts";
 
 import type { AgentTool } from "@aos-agent/agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
@@ -92,7 +111,6 @@ export interface ToolsOptions {
 	find?: FindToolOptions;
 	ls?: LsToolOptions;
 }
-
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":

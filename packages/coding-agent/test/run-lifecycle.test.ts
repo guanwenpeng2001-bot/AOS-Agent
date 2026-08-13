@@ -7,6 +7,17 @@ import {
 	type CapabilityBinding,
 } from "../src/core/capability-registry.ts";
 import {
+	resolveExecutionPolicy,
+	type ExecutionPolicyProfile,
+	type PolicyResolutionResult,
+} from "../src/core/execution-policy.ts";
+import {
+	POLICY_APPROVAL_CUSTOM_TYPE,
+	POLICY_DECISION_CUSTOM_TYPE,
+	POLICY_VIOLATION_CUSTOM_TYPE,
+	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+} from "../src/core/execution-policy-ledger.ts";
+import {
 	CAPABILITY_BINDING_CUSTOM_TYPE,
 	createAutomationError,
 	createRunLifecycleCoordinator,
@@ -19,10 +30,10 @@ import {
 	redactErrorText,
 	RUN_LEDGER_CUSTOM_TYPE,
 	serializePublicCapabilityBinding,
+	serializePublicSessionEntry,
 	serializePublicRunReceipt,
 	serializePublicRunRecord,
 	serializePublicRunStreamEvent,
-	serializePublicSessionEntry,
 	serializePublicSessionTreeNode,
 	type AutomationError,
 	type CapabilityBindingLedgerRecord,
@@ -101,6 +112,42 @@ const BINDING: CapabilityBindingLedgerRecord = {
 	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
 	toolAllowlist: ["Read"],
 };
+
+const POLICY_PROFILE: ExecutionPolicyProfile = {
+	id: "host-safe",
+	enforcement: "host",
+	defaultAction: "deny",
+	workspace: { read: ["workspace"], write: ["workspace"], deny: ["credentials", "agent-internal"] },
+	process: { action: "ask", inheritEnvironment: false, allowEnvironment: ["PATH"] },
+	network: { action: "deny", allowDestinations: [] },
+	credentials: { action: "deny", allowNames: [] },
+	approvals: { writeOutsideWorkspace: "deny", network: "ask", process: "ask" },
+};
+
+function resolveLifecyclePolicy(options: { runId: string; previousPolicyBindingId?: string }): Extract<PolicyResolutionResult, { ok: true }> {
+	const resolved = resolveExecutionPolicy({
+		profiles: { [POLICY_PROFILE.id]: POLICY_PROFILE },
+		defaultProfile: POLICY_PROFILE.id,
+		runId: options.runId,
+		workspaceIdentity: "workspace-policy-lifecycle",
+		createdAt: "2026-08-13T00:00:00.000Z",
+		previousPolicyBindingId: options.previousPolicyBindingId,
+		operation: {
+			resource: "process.spawn",
+			source: "user_bash",
+			id: `request-${options.runId}`,
+			command: "cat C:\\private\\secret.txt",
+			args: ["--token", "secret"],
+			cwd: "C:\\private",
+			environmentNames: ["PATH"],
+		},
+	});
+	if (!resolved.ok) throw resolved.error;
+	if (resolved.decision === undefined || resolved.approval === undefined) {
+		throw new Error("expected ask decision and approval");
+	}
+	return resolved;
+}
 
 function makeSession(): SessionManager {
 	return SessionManager.inMemory("/workspace/automation");
@@ -295,6 +342,218 @@ describe("state machine", () => {
 		expect(replayed?.receipt?.finalModel).toEqual(FINAL_MODEL);
 		expect(replayed?.receipt?.modelAttempts).toEqual(MODEL_ATTEMPTS);
 		expect(replayed?.receipt?.modelBudget).toEqual(MODEL_BUDGET);
+	});
+
+	it("records Execution Policy binding metadata and safe policy facts", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const policy = resolveLifecyclePolicy({ runId: "r-policy" });
+
+		const run = coordinator.reserve().accept({
+			runId: "r-policy",
+			attempt: 1,
+			model: MODEL,
+			policyBinding: policy.binding,
+			policyDecision: policy.decision,
+			policyApproval: policy.approval,
+			policySummary: policy.summary,
+		});
+
+		expect(run.record.policyBindingId).toBe(policy.binding.id);
+		expect(run.record.previousPolicyBindingId).toBeUndefined();
+		expect(run.record.policySummary).toMatchObject({ bindingId: policy.binding.id, outcome: "ask" });
+		expect(run.result().policySummary).toMatchObject({ bindingId: policy.binding.id, outcome: "ask" });
+
+		run.start();
+		const terminal = run.settle({
+			outcome: "failed",
+			sandboxLifecycle: {
+				bindingId: policy.binding.id,
+				status: "disposed",
+				timestamp: "2026-08-13T00:00:01.000Z",
+				providerId: "host-policy",
+				capabilities: { filesystem: false, process: false, network: false, credentialIsolation: false },
+			},
+			policyViolation: {
+				bindingId: policy.binding.id,
+				timestamp: "2026-08-13T00:00:02.000Z",
+				reasonCode: "policy_violation",
+				resource: "process.spawn",
+				requestId: "request-r-policy",
+			},
+		});
+		expect(terminal?.type).toBe("run.failed");
+		expect(terminal).toMatchObject({
+			receipt: {
+				policyBindingId: policy.binding.id,
+				policySummary: { bindingId: policy.binding.id, outcome: "ask" },
+			},
+		});
+
+		const customTypes = session
+			.getEntries()
+			.filter((entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom")
+			.map((entry) => entry.customType);
+		expect(customTypes).toEqual([
+			RUN_LEDGER_CUSTOM_TYPE,
+			"policy.binding",
+			POLICY_DECISION_CUSTOM_TYPE,
+			POLICY_APPROVAL_CUSTOM_TYPE,
+			RUN_LEDGER_CUSTOM_TYPE,
+			SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+			POLICY_VIOLATION_CUSTOM_TYPE,
+			RUN_LEDGER_CUSTOM_TYPE,
+		]);
+
+		const persisted = JSON.stringify(session.getEntries());
+		expect(persisted).not.toContain("secret.txt");
+		expect(persisted).not.toContain("--token");
+		expect(persisted).not.toContain("C:\\private");
+
+		const publicEntries = session.getEntries().map((entry) => serializePublicSessionEntry(entry));
+		expect(JSON.stringify(publicEntries)).not.toContain("secret.txt");
+		expect(JSON.stringify(publicEntries)).not.toContain("bindingHash");
+		expect(JSON.stringify(publicEntries)).not.toContain("workspaceIdentity");
+
+		const replayed = makeCoordinator(session).getRun("r-policy");
+		expect(replayed?.record.policyBindingId).toBe(policy.binding.id);
+		expect(replayed?.receipt?.policyBindingId).toBe(policy.binding.id);
+		expect(replayed?.policySummary).toMatchObject({ bindingId: policy.binding.id, outcome: "ask" });
+	});
+
+	it("replays resolved approval records with public redaction", () => {
+		const session = makeSession();
+		session.appendCustomEntry(POLICY_APPROVAL_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			sequence: 1,
+			record: {
+				id: "policy-request:approved",
+				requestId: "policy-request:approved",
+				bindingId: "policy-binding:approved",
+				resource: "process.spawn",
+				reasonCode: "policy_approval_required",
+				createdAt: "2026-08-13T00:00:00.000Z",
+				outcome: "approved",
+				source: "rpc",
+				scope: { resource: "process.spawn" },
+				command: "cat C:\\private\\secret.txt",
+				args: ["--token", "secret"],
+				path: "C:\\private\\secret.txt",
+			},
+		});
+		session.appendCustomEntry(POLICY_APPROVAL_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			sequence: 2,
+			record: {
+				id: "policy-request:rejected",
+				requestId: "policy-request:rejected",
+				bindingId: "policy-binding:approved",
+				resource: "network.connect",
+				reasonCode: "policy_approval_required",
+				createdAt: "2026-08-13T00:00:01.000Z",
+				outcome: "rejected",
+				source: "interactive",
+				scope: { resource: "network.connect", destinationCount: 1 },
+				environment: { API_TOKEN: "secret" },
+				headers: { authorization: "Bearer secret" },
+			},
+		});
+
+		const publicEntries = session.getEntries().map((entry) => serializePublicSessionEntry(entry));
+		const approvalEntries = publicEntries.filter(
+			(entry) => entry.type === "custom" && entry.customType === POLICY_APPROVAL_CUSTOM_TYPE,
+		);
+		expect(approvalEntries).toEqual([
+			expect.objectContaining({
+				data: {
+					schemaVersion: 1,
+					sequence: 1,
+					approval: expect.objectContaining({
+						requestId: "policy-request:approved",
+						outcome: "approved",
+						source: "rpc",
+					}),
+				},
+			}),
+			expect.objectContaining({
+				data: {
+					schemaVersion: 1,
+					sequence: 2,
+					approval: expect.objectContaining({
+						requestId: "policy-request:rejected",
+						outcome: "rejected",
+						source: "interactive",
+					}),
+				},
+			}),
+		]);
+		const serialized = JSON.stringify(publicEntries);
+		expect(serialized).not.toContain("secret.txt");
+		expect(serialized).not.toContain("--token");
+		expect(serialized).not.toContain("API_TOKEN");
+		expect(serialized).not.toContain("authorization");
+		expect(JSON.stringify(session.getTree().map((node) => serializePublicSessionTreeNode(node)))).not.toContain("secret.txt");
+	});
+
+	it("records resume as a successor Execution Policy binding without reusing the source binding", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const firstPolicy = resolveLifecyclePolicy({ runId: "r-policy-1" });
+		const first = coordinator.reserve().accept({
+			runId: "r-policy-1",
+			attempt: 1,
+			model: MODEL,
+			policyBinding: firstPolicy.binding,
+			policyDecision: firstPolicy.decision,
+			policyApproval: firstPolicy.approval,
+		});
+		first.start();
+		first.settle({ outcome: "completed" });
+
+		const secondPolicy = resolveLifecyclePolicy({
+			runId: "r-policy-2",
+			previousPolicyBindingId: firstPolicy.binding.id,
+		});
+		const second = coordinator.reserve().accept({
+			runId: "r-policy-2",
+			sourceRunId: "r-policy-1",
+			previousPolicyBindingId: firstPolicy.binding.id,
+			attempt: 2,
+			model: MODEL,
+			policyBinding: secondPolicy.binding,
+			policyDecision: secondPolicy.decision,
+			policyApproval: secondPolicy.approval,
+		});
+
+		expect(second.record.policyBindingId).toBe(secondPolicy.binding.id);
+		expect(second.record.previousPolicyBindingId).toBe(firstPolicy.binding.id);
+		expect(second.record.policyBindingId).not.toBe(second.record.previousPolicyBindingId);
+		expect(secondPolicy.approval?.bindingId).toBe(secondPolicy.binding.id);
+		expect(secondPolicy.approval?.id).not.toBe(firstPolicy.approval?.id);
+	});
+
+	it("rejects a resumed Run that tries to reuse the previous Execution Policy binding", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const policy = resolveLifecyclePolicy({ runId: "r-policy-reuse" });
+
+		let error: unknown;
+		try {
+			coordinator.reserve().accept({
+				runId: "r-policy-reuse",
+				sourceRunId: "r-source",
+				previousPolicyBindingId: policy.binding.id,
+				attempt: 2,
+				model: MODEL,
+				policyBinding: policy.binding,
+			});
+		} catch (caught) {
+			error = caught;
+		}
+
+		expect(error).toMatchObject({ code: "policy_binding_failed" });
+
+		expect(session.getEntries().filter(isAutomationRunEntry)).toHaveLength(0);
 	});
 });
 
@@ -1528,6 +1787,90 @@ describe("public-safe run receipt serialization", () => {
 });
 
 describe("public-safe session ledger serialization", () => {
+	it("preserves search policy resources in run and policy ledger public records while rejecting unknown resources", () => {
+		const session = makeSession();
+		const basePolicySummary = {
+			bindingId: "policy-binding:search",
+			profileId: "host-safe",
+			profileRevision: "rev-search",
+			projectTrust: "trusted",
+			enforcement: "host",
+			sandboxStatus: "not_required",
+			sandboxCapabilities: { filesystem: false, process: false, network: false, credentialIsolation: false },
+			action: "allow",
+			outcome: "allow",
+			timestamp: "2026-08-13T00:00:00.000Z",
+		} as const;
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: "r-search-find",
+				sessionId: session.getSessionId(),
+				attempt: 1,
+				status: "completed",
+				model: MODEL,
+				policySummary: { ...basePolicySummary, resource: "filesystem.find" },
+			},
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: "r-search-grep",
+				sessionId: session.getSessionId(),
+				attempt: 1,
+				status: "completed",
+				model: MODEL,
+			},
+		});
+		session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: "2026-08-13T00:00:01.000Z",
+			receipt: {
+				runId: "r-search-grep",
+				sessionId: session.getSessionId(),
+				status: "completed",
+				usage: { input: 1, output: 2, total: 3 },
+				policySummary: { ...basePolicySummary, resource: "filesystem.grep" },
+			},
+		});
+		session.appendCustomEntry(POLICY_DECISION_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			sequence: 1,
+			record: { ...basePolicySummary, bindingId: "policy-binding:find", resource: "filesystem.find" },
+		});
+		session.appendCustomEntry(POLICY_DECISION_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			sequence: 2,
+			record: { ...basePolicySummary, bindingId: "policy-binding:grep", resource: "filesystem.grep" },
+		});
+		session.appendCustomEntry(POLICY_DECISION_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			sequence: 3,
+			record: { ...basePolicySummary, bindingId: "policy-binding:unknown", resource: "filesystem.search" },
+		});
+
+		const coordinator = makeCoordinator(session);
+		expect(coordinator.getRun("r-search-find")?.record.policySummary?.resource).toBe("filesystem.find");
+		expect(coordinator.getRun("r-search-grep")?.receipt?.policySummary?.resource).toBe("filesystem.grep");
+
+		const publicEntries = session.getEntries().map((entry) => serializePublicSessionEntry(entry));
+		const publicRunRecords = publicEntries.flatMap((entry) =>
+			entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE ? [entry.data] : [],
+		);
+		expect(JSON.stringify(publicRunRecords)).toContain("filesystem.find");
+		expect(JSON.stringify(publicRunRecords)).toContain("filesystem.grep");
+
+		const publicDecisionResources = publicEntries.flatMap((entry) =>
+			entry.type === "custom" && entry.customType === POLICY_DECISION_CUSTOM_TYPE
+				? [(entry.data as { summary?: { resource?: string } } | undefined)?.summary?.resource]
+				: [],
+		);
+		expect(publicDecisionResources).toEqual(["filesystem.find", "filesystem.grep", undefined]);
+	});
+
 	it("keeps legacy facts internal while omitting their custom data from public entries and trees", () => {
 		const session = makeSession();
 		session.appendCustomEntry(CAPABILITY_BINDING_CUSTOM_TYPE, { schemaVersion: 1, binding: LEGACY_BINDING });

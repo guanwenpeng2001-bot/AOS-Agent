@@ -29,6 +29,20 @@ export { type BashExecutorOptions, type BashResult, executeBashWithOperations } 
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
+export {
+	PolicyError,
+	resolveExecutionPolicy,
+	resolveExecutionPolicyProfile,
+	type ExecutionPolicyProfile,
+	type PolicyApprovalOutcome,
+	type PolicyApprovalRequest,
+	type PolicyApprovalSource,
+	type PolicyBinding,
+	type PolicyDecision,
+	type PolicyErrorCode,
+	type PublicPolicySummary,
+} from "./execution-policy.ts";
+export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./execution-policy-ledger.ts";
 // Extensions system
 export {
 	type AgentEndEvent,

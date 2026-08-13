@@ -184,6 +184,33 @@ describe("RpcClient Automation Host request shapes", () => {
 			modelRole: "worker",
 		});
 	});
+
+	it("startRun and resumeRun forward optional policyProfile without changing model argument positions", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+
+		await client.startRun("policy", undefined, "cap", "balanced", undefined, "workspace-safe");
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "policy",
+			images: undefined,
+			capabilityProfile: "cap",
+			modelRoute: "balanced",
+			policyProfile: "workspace-safe",
+		});
+
+		await client.resumeRun("/tmp/s.jsonl", "r1", "policy", undefined, undefined, undefined, "worker", "strict");
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "policy",
+			images: undefined,
+			modelRole: "worker",
+			policyProfile: "strict",
+		});
+	});
 });
 
 describe("RpcClient Automation Host structured failures", () => {
@@ -297,6 +324,50 @@ describe("RpcClient capability inspection", () => {
 
 		await expect(promise).rejects.toThrow("Capability binding not found: binding:ghost");
 		await expect(promise).rejects.not.toBeInstanceOf(AutomationRpcError);
+	});
+});
+
+describe("RpcClient execution policy inspection", () => {
+	it("getExecutionPolicy sends get_execution_policy and returns safe metadata", async () => {
+		const { client, privateClient } = createClient();
+		const data = {
+			summary: {
+				bindingId: "policy-binding:abc",
+				profileId: "legacy",
+				profileRevision: "rev",
+				projectTrust: "trusted",
+				enforcement: "legacy",
+				sandboxStatus: "not_required",
+				sandboxCapabilities: { filesystem: false, process: false, network: false, credentialIsolation: false },
+			},
+			pendingApprovals: [],
+		};
+		const send = vi.fn(async () => ({
+			type: "response",
+			command: "get_execution_policy",
+			success: true,
+			data,
+		}));
+		privateClient.send = send;
+
+		await expect(client.getExecutionPolicy()).resolves.toEqual(data);
+		expect(send).toHaveBeenCalledWith({ type: "get_execution_policy" });
+	});
+
+	it("approvePolicy and rejectPolicy send session-scoped policy commands", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async (command: { type: string }) => ({
+			type: "response",
+			command: command.type,
+			success: true,
+		}));
+		privateClient.send = send;
+
+		await client.approvePolicy("policy-request:1");
+		await client.rejectPolicy("policy-request:2");
+
+		expect(send).toHaveBeenNthCalledWith(1, { type: "policy.approve", requestId: "policy-request:1" });
+		expect(send).toHaveBeenNthCalledWith(2, { type: "policy.reject", requestId: "policy-request:2" });
 	});
 });
 

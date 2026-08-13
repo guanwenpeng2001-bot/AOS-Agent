@@ -15,6 +15,7 @@ import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import type { ModelBroker } from "../../src/core/model-broker.ts";
+import type { SandboxProvider } from "../../src/core/sandbox.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -69,6 +70,8 @@ export interface HarnessOptions {
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
 	modelBroker?: ModelBroker;
+	sandboxProviders?: ReadonlyArray<SandboxProvider>;
+	policyProfile?: string;
 }
 
 export interface Harness {
@@ -86,7 +89,7 @@ export interface Harness {
 	events: AgentSessionEvent[];
 	eventsOfType<T extends AgentSessionEvent["type"]>(type: T): Extract<AgentSessionEvent, { type: T }>[];
 	tempDir: string;
-	cleanup: () => void;
+	cleanup: () => Promise<void>;
 }
 
 function createTempDir(): string {
@@ -106,7 +109,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
-	const sessionManager = SessionManager.inMemory();
+	const sessionManager = SessionManager.inMemory(tempDir);
 	const settingsManager = SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();
@@ -185,6 +188,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		modelBroker: options.modelBroker,
 		resourceLoader,
 		baseToolsOverride: toolMap,
+		sandboxProviders: options.sandboxProviders,
+		policyProfile: options.policyProfile,
 		initialActiveToolNames: options.initialActiveToolNames,
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
@@ -215,9 +220,11 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		cleanup() {
 			session.dispose();
 			fauxProvider.unregister();
-			if (existsSync(tempDir)) {
-				rmSync(tempDir, { recursive: true });
-			}
+			return session.waitForDispose().finally(() => {
+				if (existsSync(tempDir)) {
+					rmSync(tempDir, { recursive: true });
+				}
+			});
 		},
 	};
 }

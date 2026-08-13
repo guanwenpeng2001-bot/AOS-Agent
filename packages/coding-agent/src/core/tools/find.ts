@@ -7,9 +7,12 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
+import { getShellEnv } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
+import { sandboxEntries, sandboxEntryName, sandboxProcessOutputText } from "./sandbox-filesystem.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -25,7 +28,6 @@ export function relativizeFindResultPath(
 	const posixPath = relativePath.split(pathModule.sep).join("/");
 	return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
-
 const findSchema = Type.Object({
 	pattern: Type.String({
 		description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
@@ -68,6 +70,8 @@ const defaultFindOperations: FindOperations = {
 export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
 	operations?: FindOperations;
+	/** Optional built-in policy authorizer */
+	policy?: BuiltinToolPolicy;
 }
 
 function formatFindCall(args: { pattern: string; path?: string; limit?: number } | undefined, theme: Theme): string {
@@ -125,6 +129,7 @@ export function createFindToolDefinition(
 	options?: FindToolOptions,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	const customOps = options?.operations;
+	const policy = options?.policy;
 	return {
 		name: "find",
 		label: "find",
@@ -161,12 +166,22 @@ export function createFindToolDefinition(
 
 				(async () => {
 					try {
-						const searchPath = resolveToCwd(searchDir || ".", cwd);
+						const resolvedSearchPath = resolveToCwd(searchDir || ".", cwd);
+						const authorization =
+							policy === undefined
+								? { absolutePath: resolvedSearchPath, realPath: resolvedSearchPath }
+								: await policy.authorizeFilesystem({
+									resource: "filesystem.find",
+									requestedPath: resolvedSearchPath,
+									access: "read",
+									requestId: `${_toolCallId}:read`,
+								});
+						const searchPath = authorization.absolutePath;
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
 						const ops = customOps ?? defaultFindOperations;
 
 						// If custom operations provide glob(), use that instead of fd.
-						if (customOps?.glob) {
+						if (authorization.sandbox === undefined && customOps?.glob) {
 							if (!(await ops.exists(searchPath))) {
 								settle(() => reject(new Error(`Path not found: ${searchPath}`)));
 								return;
@@ -221,34 +236,27 @@ export function createFindToolDefinition(
 							return;
 						}
 
-						// Default implementation uses fd.
-						const fdPath = await ensureTool("fd", true);
-						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
-							return;
-						}
-						if (!fdPath) {
-							settle(() => reject(new Error("fd is not available and could not be downloaded")));
-							return;
-						}
-
 						const args: string[] = ["--glob", "--color=never", "--hidden"];
 
 						// fd normally ignores .gitignore outside git repos, so keep --no-require-git
 						// there. Inside repos, use fd's default git-aware behavior so parent
 						// .gitignore rules stop at nested repo boundaries:
 						// upstream-issue
-						let insideGitRepo = false;
-						for (let current = searchPath; ; ) {
-							if (await pathExists(path.join(current, ".git"))) {
-								insideGitRepo = true;
-								break;
+						if (authorization.sandbox === undefined) {
+							let insideGitRepo = false;
+							for (let current = searchPath; ; ) {
+								if (await pathExists(path.join(current, ".git"))) {
+									insideGitRepo = true;
+									break;
+								}
+								const parent = path.dirname(current);
+								if (parent === current) break;
+								current = parent;
 							}
-							const parent = path.dirname(current);
-							if (parent === current) break;
-							current = parent;
+							if (!insideGitRepo) args.push("--no-require-git");
+						} else {
+							args.push("--no-require-git");
 						}
-						if (!insideGitRepo) args.push("--no-require-git");
 						args.push("--max-results", String(effectiveLimit));
 
 						// fd --glob matches against the basename unless --full-path is set; in --full-path
@@ -265,8 +273,104 @@ export function createFindToolDefinition(
 								effectivePattern = effectivePattern.replaceAll("/", String.raw`[/\\]`);
 						}
 						args.push("--", effectivePattern, searchPath);
+						const fdPath =
+							authorization.sandbox === undefined || policy?.profile.enforcement !== "sandbox"
+								? await ensureTool("fd", true)
+								: "fd";
+						if (signal?.aborted) {
+							settle(() => reject(new Error("Operation aborted")));
+							return;
+						}
+						if (!fdPath) {
+							settle(() => reject(new Error("fd is not available and could not be downloaded")));
+							return;
+						}
+						const env = getShellEnv();
+						const authorized =
+							policy === undefined
+								? { env }
+								: await policy.authorizeProcess({
+									command: `${fdPath} ${args.join(" ")}`,
+									args,
+									cwd: searchPath,
+									env,
+									requestId: `${_toolCallId}:process`,
+								});
+						const sandbox = authorized.sandbox ?? authorization.sandbox;
+						if (sandbox !== undefined) {
+							let streamedOutput = "";
+							const result = await sandbox.execute({
+								bindingId: policy?.binding.id ?? "",
+								resource: "filesystem.find",
+								operation: "filesystem.find",
+								command: fdPath,
+								args,
+								cwd: searchPath,
+								env: authorized.env,
+								timeoutMs: policy?.profile.process.timeoutMs,
+								path: searchPath,
+								pattern,
+								limit: effectiveLimit,
+								signal,
+								onData: (data) => {
+									streamedOutput += data.toString();
+								},
+							});
+							if (signal?.aborted) {
+								settle(() => reject(new Error("Operation aborted")));
+								return;
+							}
+							const { stdout, stderr } = sandboxProcessOutputText(result, streamedOutput);
+							let rawResults: string[];
+							if (result.entries !== undefined) {
+								rawResults = sandboxEntries(result, "filesystem.find").map(sandboxEntryName);
+							} else {
+								if (result.exitCode !== undefined && result.exitCode !== null && result.exitCode !== 0 && !stdout.trim()) {
+									settle(() => reject(new Error(stderr.trim() || `fd exited with code ${result.exitCode}`)));
+									return;
+								}
+								rawResults = stdout.split(/\r?\n/).map((line) => line.replace(/\r$/, "").trim()).filter(Boolean);
+							}
+							if (rawResults.length === 0) {
+								settle(() =>
+									resolve({
+										content: [{ type: "text", text: "No files found matching pattern" }],
+										details: undefined,
+									}),
+								);
+								return;
+							}
 
-						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+							const relativized = rawResults.map((p) => relativizeFindResultPath(p, searchPath));
+							const resultLimitReached = relativized.length >= effectiveLimit;
+							const rawOutput = relativized.join("\n");
+							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
+							let resultOutput = truncation.content;
+							const details: FindToolDetails = {};
+							const notices: string[] = [];
+							if (resultLimitReached) {
+								notices.push(
+									`${effectiveLimit} results limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
+								);
+								details.resultLimitReached = effectiveLimit;
+							}
+							if (truncation.truncated) {
+								notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+								details.truncation = truncation;
+							}
+							if (notices.length > 0) {
+								resultOutput += `\n\n[${notices.join(". ")}]`;
+							}
+							settle(() =>
+								resolve({
+									content: [{ type: "text", text: resultOutput }],
+									details: Object.keys(details).length > 0 ? details : undefined,
+								}),
+							);
+							return;
+						}
+
+						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"], env: authorized.env });
 						const rl = createInterface({ input: child.stdout });
 						let stderr = "";
 						const lines: string[] = [];

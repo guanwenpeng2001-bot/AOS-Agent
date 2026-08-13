@@ -77,6 +77,7 @@ import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	GetCapabilitiesData,
+	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
@@ -99,6 +100,7 @@ export type {
 	AutomationErrorCode,
 	CapabilityBindingView,
 	GetCapabilitiesData,
+	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
@@ -625,7 +627,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		attempt: number,
 		sourceRunId: string | undefined,
 		capabilityProfile: string | undefined,
+		policyProfile: string | undefined,
 		previousBindingId: string | undefined,
+		previousPolicyBindingId: string | undefined,
 		previousModelBindingId: string | undefined,
 		inheritedModelBinding: ModelBindingLedgerRecord | undefined,
 		modelRoute: ModelRouteSelection | undefined,
@@ -753,6 +757,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
+		try {
+			await session.setExecutionPolicyProfile(policyProfile);
+			session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
+		} catch (err) {
+			return automationError(id, commandType, asAutomationError(err));
+		}
 		const modelSelection = await resolveRequestedModel(modelRoute, modelRole, inheritedModelBinding);
 		if (modelSelection.error !== undefined) {
 			activeReservation = undefined;
@@ -801,6 +811,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						attempt,
 						sourceRunId,
 						previousBindingId,
+						previousPolicyBindingId,
 						previousModelBindingId,
 						model: currentRunModel(),
 						...(modelSelection.resolution === undefined
@@ -812,6 +823,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						// Persist the frozen binding as the run's capability binding;
 						// its id is recorded on the terminal receipt.
 						capabilityBinding: session.getActiveCapabilityBinding(),
+						policyBinding: session.getActiveExecutionPolicyBinding(),
+						policySummary: session.getActiveExecutionPolicySummary(),
 					});
 					handle.setUsageBaseline(usageSnapshot());
 					// Persist the started fact before publishing accepted. The returned events
@@ -857,6 +870,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (publicRecord.finalModel !== undefined) acceptedData.finalModel = publicRecord.finalModel;
 				if (publicRecord.modelAttempts !== undefined) acceptedData.modelAttempts = publicRecord.modelAttempts;
 				if (publicRecord.modelBudget !== undefined) acceptedData.modelBudget = publicRecord.modelBudget;
+				if (publicRecord.policyBindingId !== undefined) acceptedData.policyBindingId = publicRecord.policyBindingId;
+				if (publicRecord.previousPolicyBindingId !== undefined) {
+					acceptedData.previousPolicyBindingId = publicRecord.previousPolicyBindingId;
+				}
+				if (publicRecord.policySummary !== undefined) acceptedData.policySummary = publicRecord.policySummary;
 				output({ id, type: "response", command: commandType, success: true, data: acceptedData });
 				for (const event of startEvents) {
 					outputRunEvent(event);
@@ -1273,6 +1291,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					1,
 					undefined,
 					command.capabilityProfile,
+					command.policyProfile,
+					undefined,
 					undefined,
 					undefined,
 					undefined,
@@ -1436,6 +1456,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// An interrupted run may have an accepted record but no terminal
 				// receipt. Preserve #6's binding-drift guard for that recovery path.
 				const previousBindingId = sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
+				const previousPolicyBindingId = sourceRun.receipt?.policyBindingId ?? sourceRun.record.policyBindingId;
 				const previousModelBindingId = sourceRun.receipt?.modelBindingId ?? sourceRun.record.modelBindingId;
 				const inheritedModelBinding =
 					previousModelBindingId === undefined
@@ -1449,7 +1470,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					sourceRun.record.attempt + 1,
 					command.sourceRunId,
 					command.capabilityProfile,
+					command.policyProfile,
 					previousBindingId,
+					previousPolicyBindingId,
 					previousModelBindingId,
 					inheritedModelBinding,
 					command.modelRoute,
@@ -1626,12 +1649,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "bash": {
-				const eventResult = await session.extensionRunner.emitUserBash({
-					type: "user_bash",
-					command: command.command,
-					excludeFromContext: command.excludeFromContext ?? false,
-					cwd: session.sessionManager.getCwd(),
-				});
+				const allowExtensionBash = await session.authorizeUserBashExtension(command.command, { id });
+				const eventResult = allowExtensionBash
+					? await session.extensionRunner.emitUserBash({
+						type: "user_bash",
+						command: command.command,
+						excludeFromContext: command.excludeFromContext ?? false,
+						cwd: session.sessionManager.getCwd(),
+					})
+					: undefined;
 
 				if (eventResult?.result) {
 					session.recordBashResult(command.command, eventResult.result, {
@@ -1697,6 +1723,23 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						.map((binding) => serializePublicCapabilityBinding(binding))
 						.filter((binding): binding is NonNullable<typeof binding> => binding !== undefined),
 				} satisfies GetCapabilitiesData);
+			}
+
+			case "get_execution_policy": {
+				return success(id, "get_execution_policy", {
+					summary: session.getActiveExecutionPolicySummary(),
+					pendingApprovals: session.getPendingExecutionPolicyApprovals(),
+				} satisfies GetExecutionPolicyData);
+			}
+
+			case "policy.approve": {
+				session.approveExecutionPolicyRequest(command.requestId, "rpc");
+				return success(id, "policy.approve");
+			}
+
+			case "policy.reject": {
+				session.rejectExecutionPolicyRequest(command.requestId, "rpc");
+				return success(id, "policy.reject");
 			}
 
 			case "get_model_routes": {
