@@ -648,6 +648,8 @@ export class AgentSession {
 	private _activeExecutionPolicyBinding: PolicyBinding | undefined;
 	private _activeExecutionPolicyProfileSelection: string | undefined;
 	private _nextPreviousExecutionPolicyBindingId: string | undefined;
+	/** Source binding id retained across capability-discovery rebindings for one run. */
+	private _executionPolicyPreviousBindingIdForRun: string | undefined;
 	private _executionPolicyApprovedRequestIds: string[] = [];
 	private _executionPolicyRejectedRequestIds: string[] = [];
 	private _pendingExecutionPolicyApprovals = new Map<string, PolicyApprovalRequest>();
@@ -2629,8 +2631,11 @@ export class AgentSession {
 		// fail-closed conflict) settles before any provider/tool execution, even
 		// for run starts that bypass prompt() preflight (sendCustomMessage).
 		try {
-			await this.whenCapabilitiesReady();
-			await this._ensureExecutionPolicyReady(this._activeContextRunId);
+			await this.whenCapabilitiesReady(this._activeContextRunId);
+			const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId);
+			if (policyBindingChanged) {
+				await this._reconnectSelectedMcpServersForPolicyBinding();
+			}
 			await this.agent.prompt(messages);
 			this._throwPendingContextError();
 			while (await this._handlePostAgentRun()) {
@@ -2645,6 +2650,7 @@ export class AgentSession {
 			this._flushPendingBashMessages();
 			await this._emitAgentSettled();
 			this._operationModelResolution = undefined;
+			this._executionPolicyPreviousBindingIdForRun = undefined;
 		}
 	}
 
@@ -2782,9 +2788,12 @@ export class AgentSession {
 			this._assertContextPayloadHooksSupported();
 			this._isAgentRunActive = true;
 			reservedRunActive = true;
-			await this.whenCapabilitiesReady();
+			await this.whenCapabilitiesReady(options?.runId);
 			this._applyPromptPreflightToolRegistryRefresh();
-			await this._ensureExecutionPolicyReady(options?.runId);
+			const policyBindingChanged = await this._ensureExecutionPolicyReady(options?.runId);
+			if (policyBindingChanged) {
+				await this._reconnectSelectedMcpServersForPolicyBinding();
+			}
 
 			// Check if we need to compact before sending (catches aborted responses).
 			// The user's new prompt is sent below, so do not call agent.continue() here.
@@ -3191,8 +3200,8 @@ export class AgentSession {
 	 * connects to MCP servers during construction. Throws the recorded discovery
 	 * failure when one occurred (e.g. a name conflict).
 	 */
-	async whenCapabilitiesReady(): Promise<void> {
-		this._ensureCapabilityDiscoveryStarted();
+	async whenCapabilitiesReady(policyRunId?: string): Promise<void> {
+		this._ensureCapabilityDiscoveryStarted(policyRunId);
 		await this._capabilityDiscoveryPromise;
 		if (this._capabilityDiscoveryError) {
 			throw this._capabilityDiscoveryError;
@@ -3205,12 +3214,12 @@ export class AgentSession {
 	 * the frozen binding is re-resolved with the namespaced mcp_tool
 	 * descriptors. Failures are recorded and fail discovery closed.
 	 */
-	private _ensureCapabilityDiscoveryStarted(): void {
+	private _ensureCapabilityDiscoveryStarted(policyRunId?: string): void {
 		if (this._capabilityDiscoveryStarted) {
 			return;
 		}
 		this._capabilityDiscoveryStarted = true;
-		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding().catch((error) => {
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding(policyRunId).catch((error) => {
 			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
 		});
 	}
@@ -3230,7 +3239,7 @@ export class AgentSession {
 	 * running binding is never mutated; materialization and discovery readiness
 	 * complete before the returned promise resolves.
 	 */
-	async setCapabilityProfile(profileName?: string): Promise<void> {
+	async setCapabilityProfile(profileName?: string, options?: { runId?: string }): Promise<void> {
 		const capabilitySettings = this.settingsManager.getCapabilitySettings();
 		const effectiveProfile = profileName ?? capabilitySettings.defaultProfile;
 		if (capabilitySettings.profiles[effectiveProfile] === undefined) {
@@ -3239,7 +3248,7 @@ export class AgentSession {
 		if (this._isAgentRunActive) {
 			await this.waitForIdle();
 		}
-		await this._materializeCapabilityProfile(effectiveProfile);
+		await this._materializeCapabilityProfile(effectiveProfile, options?.runId);
 	}
 
 	/**
@@ -3326,6 +3335,7 @@ export class AgentSession {
 		this._activeExecutionPolicyProfile = undefined;
 		this._activeExecutionPolicyBinding = undefined;
 		this._nextPreviousExecutionPolicyBindingId = undefined;
+		this._executionPolicyPreviousBindingIdForRun = undefined;
 		this._currentBuiltinToolPolicy = undefined;
 		this._pendingExecutionPolicyApprovals.clear();
 		this._executionPolicyApprovedRequestIds = [];
@@ -3404,6 +3414,7 @@ export class AgentSession {
 
 	setPreviousExecutionPolicyBindingIdForNextRun(bindingId?: string): void {
 		this._nextPreviousExecutionPolicyBindingId = bindingId;
+		this._executionPolicyPreviousBindingIdForRun = bindingId;
 	}
 
 	/**
@@ -4594,11 +4605,11 @@ export class AgentSession {
 	 * last-invoked profile is the last to materialize. A rejected predecessor is
 	 * swallowed so one failed transition cannot wedge the queue for later callers.
 	 */
-	private async _materializeCapabilityProfile(profileName: string): Promise<void> {
+	private async _materializeCapabilityProfile(profileName: string, policyRunId?: string): Promise<void> {
 		const run = async (): Promise<void> => {
 			await this._mcpLifecycleManager.setSelectedServerIds([]);
 			this._activeCapabilityProfile = profileName;
-			await this._refreshCapabilitySetup();
+			await this._refreshCapabilitySetup(policyRunId);
 		};
 		const previous = this._profileMaterializationTail;
 		const next = previous.catch(() => undefined).then(run);
@@ -4613,7 +4624,7 @@ export class AgentSession {
 	 * re-run MCP discovery readiness for the current selection, and await
 	 * readiness so the caller's promise only resolves once setup is complete.
 	 */
-	private async _refreshCapabilitySetup(): Promise<void> {
+	private async _refreshCapabilitySetup(policyRunId?: string): Promise<void> {
 		// A profile change starts a fresh MCP discovery attempt. Do not let tools
 		// discovered under the previous binding remain visible while the new
 		// binding is still being preflighted.
@@ -4629,7 +4640,7 @@ export class AgentSession {
 		// servers close in the background; wait for that teardown so no stale
 		// live connection survives a profile change that drops a server.
 		await this._serverSelectionSyncPromise;
-		await this.whenCapabilitiesReady();
+		await this.whenCapabilitiesReady(policyRunId);
 	}
 
 	private _registerConfiguredMcpServers(capabilitySettings: CapabilitySettings): void {
@@ -4840,7 +4851,7 @@ export class AgentSession {
 	 * are recorded redacted and fail discovery closed; the server and its tools
 	 * stay out of the binding.
 	 */
-	private async _discoverMcpToolsForBinding(): Promise<void> {
+	private async _discoverMcpToolsForBinding(policyRunId?: string): Promise<void> {
 		const binding = this._activeCapabilityBinding;
 		const catalog = this._activeCapabilityCatalog;
 		if (!binding || !catalog) {
@@ -4878,7 +4889,7 @@ export class AgentSession {
 				);
 			}
 			try {
-				await this._ensureExecutionPolicyReady("run:mcp-discovery");
+				await this._ensureExecutionPolicyReady(policyRunId);
 				await this._authorizeMcpStartup(diagnostic.server, serverId);
 				await this._mcpLifecycleManager.connect(serverId);
 				const tools = await this._mcpLifecycleManager.listTools(serverId);
@@ -4930,6 +4941,11 @@ export class AgentSession {
 		if (mcpResults.length > 0) {
 			if (this.isIdle) {
 				this._refreshToolRegistry({ includeAllExtensionTools: true });
+				// Discovered tools change the Capability Binding. Rebind the policy
+				// before reconnecting so the live MCP transport belongs to the final
+				// binding, not the discovery-only binding.
+				await this._ensureExecutionPolicyReady(policyRunId);
+				await this._reconnectSelectedMcpServersForPolicyBinding();
 			} else {
 				// Discovery completed mid-run: the active run stays bound to the
 				// frozen binding; re-resolve the registry only after the run settles.
@@ -5043,10 +5059,19 @@ export class AgentSession {
 	private _recordPolicyDecision(decision: PolicyDecision): void {
 		this._policyLedger.appendDecision(decision);
 		if (decision.approval !== undefined) {
-			this._pendingExecutionPolicyApprovals.set(decision.approval.id, decision.approval);
-			this._policyLedger.appendApproval(decision.approval);
+			const resolved =
+				this._executionPolicyApprovedRequestIds.includes(decision.approval.id) ||
+				this._executionPolicyRejectedRequestIds.includes(decision.approval.id);
+			if (!resolved) {
+				this._pendingExecutionPolicyApprovals.set(decision.approval.id, decision.approval);
+				this._policyLedger.appendApproval(decision.approval);
+			}
 		}
-		if (decision.outcome !== "allow") {
+		const approvedAsk =
+			decision.outcome === "ask" &&
+			decision.requestId !== undefined &&
+			this._executionPolicyApprovedRequestIds.includes(decision.requestId);
+		if (decision.outcome !== "allow" && !approvedAsk) {
 			this._policyLedger.appendViolation({
 				bindingId: decision.bindingId,
 				timestamp: decision.timestamp,
@@ -5245,9 +5270,14 @@ export class AgentSession {
 		}
 	}
 
-	private async _ensureExecutionPolicyReady(runId?: string): Promise<void> {
-		if (this._activeExecutionPolicyBinding !== undefined && (runId === undefined || this._isAgentRunActive)) {
-			return;
+	private async _ensureExecutionPolicyReady(runId?: string): Promise<boolean> {
+		const requestedRunId = runId ?? this._activeContextRunId;
+		if (
+			this._activeExecutionPolicyBinding !== undefined &&
+			this._activeExecutionPolicyBinding.capabilityBindingId === this._activeCapabilityBinding?.id &&
+			(requestedRunId === undefined || this._activeExecutionPolicyBinding.runId === requestedRunId)
+		) {
+			return false;
 		}
 		if (this._activeCapabilityBinding === undefined) {
 			this._resolveCapabilityBinding();
@@ -5261,7 +5291,8 @@ export class AgentSession {
 			],
 		});
 		const selectedProfile = policySettings.selectedProfile;
-		const previousPolicyBindingId = this._nextPreviousExecutionPolicyBindingId ?? this._activeExecutionPolicyBinding?.id;
+		const previousPolicyBindingId =
+			this._nextPreviousExecutionPolicyBindingId ?? this._executionPolicyPreviousBindingIdForRun;
 		const result = resolveExecutionPolicyProfile({
 			profiles: policySettings.profiles,
 			defaultProfile: policySettings.selectedProfileId,
@@ -5276,7 +5307,8 @@ export class AgentSession {
 		});
 		if (!result.ok) throw result.error;
 		const previousBindingId = this._activeExecutionPolicyBinding?.id;
-		if (previousBindingId !== result.binding.id) {
+		const bindingChanged = previousBindingId !== result.binding.id;
+		if (bindingChanged) {
 			await this._closeMcpConnectionsForPolicyBoundary();
 			await this._disposeSandboxSession();
 			this._activeExecutionPolicyProfile = result.profile;
@@ -5292,6 +5324,7 @@ export class AgentSession {
 			await this._prepareSandboxForBinding(result.profile, result.binding);
 		}
 		this._nextPreviousExecutionPolicyBindingId = undefined;
+		return bindingChanged;
 	}
 
 	private _authorizeCapabilityInvocation(
@@ -5314,9 +5347,18 @@ export class AgentSession {
 			capabilityBinding: this._policyCapabilityBindingInput(),
 		});
 		this._recordPolicyDecision(decision);
-		if (decision.outcome !== "allow") {
-			throw new PolicyError(decision.reasonCode ?? "policy_denied", decision.reason);
+		this._assertPolicyDecisionAllowed(decision);
+	}
+
+	private _assertPolicyDecisionAllowed(decision: PolicyDecision): void {
+		if (decision.outcome === "allow") return;
+		if (decision.outcome === "ask" && decision.requestId !== undefined) {
+			if (this._executionPolicyRejectedRequestIds.includes(decision.requestId)) {
+				throw new PolicyError("policy_denied", "The operation was rejected by execution policy approval.");
+			}
+			if (this._executionPolicyApprovedRequestIds.includes(decision.requestId)) return;
 		}
+		throw new PolicyError(decision.reasonCode ?? "policy_denied", decision.reason);
 	}
 
 	private _toolInvocationSourceFor(toolName: string): PolicyOperationSource {
@@ -5367,9 +5409,7 @@ export class AgentSession {
 			capabilityBinding: this._policyCapabilityBindingInput(),
 		});
 		this._recordPolicyDecision(decision);
-		if (decision.outcome !== "allow") {
-			throw new PolicyError(decision.reasonCode ?? "policy_denied", decision.reason);
-		}
+		this._assertPolicyDecisionAllowed(decision);
 		const headerRefs = server.headersFromEnv ?? [];
 		const credentialNames = [...new Set(headerRefs.map((header) => header.valueFromEnv))];
 		const profile = this._requireExecutionPolicyProfile();
@@ -5386,9 +5426,7 @@ export class AgentSession {
 				capabilityBinding: this._policyCapabilityBindingInput(),
 			});
 			this._recordPolicyDecision(credentialDecision);
-			if (credentialDecision.outcome !== "allow") {
-				throw new PolicyError(credentialDecision.reasonCode ?? "policy_denied", credentialDecision.reason);
-			}
+			this._assertPolicyDecisionAllowed(credentialDecision);
 		}
 		const headers: Record<string, string> = {};
 		for (const header of headerRefs) {
@@ -5399,6 +5437,25 @@ export class AgentSession {
 		}
 		this._assertMcpSandboxTransportAvailable();
 		this._mcpAuthorizedTransportValues.set(serverId, { environment: {}, headers });
+	}
+
+	private async _reconnectSelectedMcpServersForPolicyBinding(): Promise<void> {
+		const selectedServerIds = this._mcpLifecycleManager.getSelectedServerIds();
+		if (selectedServerIds.size === 0) return;
+		const diagnostics = new Map(
+			this.settingsManager.getCapabilitySettings().mcpServers.map((diagnostic) => [diagnostic.id, diagnostic]),
+		);
+		for (const serverId of selectedServerIds) {
+			const diagnostic = diagnostics.get(serverId);
+			if (diagnostic === undefined || !diagnostic.trusted) {
+				throw new CapabilityError(
+					"capability_denied",
+					`MCP server ${serverId} is not trusted for this capability binding`,
+				);
+			}
+			await this._authorizeMcpStartup(diagnostic.server, serverId);
+			await this._mcpLifecycleManager.connect(serverId);
+		}
 	}
 
 	private _assertMcpSandboxTransportAvailable(): void {
@@ -5439,15 +5496,17 @@ export class AgentSession {
 			}
 			const factory = this._mcpTransportFactory ?? defaultFactory;
 			if (config.transport === "stdio") {
-				return factory(config, (name) => authorized.environment[name] ?? env(name));
+				return factory(config, (name) =>
+					profile.enforcement === "legacy" ? (authorized.environment[name] ?? env(name)) : authorized.environment[name],
+				);
 			}
-			if (Object.keys(authorized.headers).length > 0) {
-				return factory(config, (name) => {
-					const header = (config.headersFromEnv ?? []).find((ref) => ref.valueFromEnv === name);
-					return header === undefined ? env(name) : authorized.headers[header.name];
-				});
-			}
-			return factory(config, env);
+			return factory(config, (name) => {
+				const header = (config.headersFromEnv ?? []).find((ref) => ref.valueFromEnv === name);
+				if (header === undefined) return profile.enforcement === "legacy" ? env(name) : undefined;
+				return profile.enforcement === "legacy"
+					? (authorized.headers[header.name] ?? env(name))
+					: authorized.headers[header.name];
+			});
 		};
 	}
 
@@ -5458,7 +5517,7 @@ export class AgentSession {
 			execute: async (...args: Parameters<AgentTool["execute"]>) => {
 				await this._ensureExecutionPolicyReady();
 				if (source !== "builtin") {
-					this._authorizeCapabilityInvocation(tool.name, source, args[0]);
+					this._authorizeCapabilityInvocation(tool.name, source, String(args[0]));
 				}
 				return execute(...args);
 			},

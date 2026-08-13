@@ -225,29 +225,30 @@ function createMockMcpServer(opts: {
 }): {
 	transportFactory: (config: { id: string }) => Promise<unknown>;
 } {
-	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-	const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+	return {
+		transportFactory: async () => {
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
 
-	server.setRequestHandler(ListToolsRequestSchema, async () => {
-		if (opts.listToolsError !== undefined) {
-			throw opts.listToolsError;
-		}
-		return { tools: [...opts.tools] };
-	});
-	server.setRequestHandler(CallToolRequestSchema, async (request) => {
-		opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
-		return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
-	});
+			server.setRequestHandler(ListToolsRequestSchema, async () => {
+				if (opts.listToolsError !== undefined) {
+					throw opts.listToolsError;
+				}
+				return { tools: [...opts.tools] };
+			});
+			server.setRequestHandler(CallToolRequestSchema, async (request) => {
+				opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
+				return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
+			});
 
-	const serverReady = server.connect(serverTransport);
-	serverReady.catch(() => undefined);
-
-	serverCleanups.push(async () => {
-		await server.close().catch(() => undefined);
-		await clientTransport.close().catch(() => undefined);
-	});
-
-	return { transportFactory: async () => clientTransport };
+			server.connect(serverTransport).catch(() => undefined);
+			serverCleanups.push(async () => {
+				await server.close().catch(() => undefined);
+				await clientTransport.close().catch(() => undefined);
+			});
+			return clientTransport;
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -559,21 +560,23 @@ describe("AgentSession capability binding integration", () => {
 					},
 				},
 			});
-			const clientTransports = new Map<string, unknown>();
+			const transportFactories = new Map<string, () => unknown>();
 			for (const id of ["docs", "git"]) {
-				const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-				const server = new Server({ name: `mock-${id}`, version: "1.0.0" }, { capabilities: { tools: {} } });
-				server.setRequestHandler(ListToolsRequestSchema, async () => ({
-					tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
-				}));
-				server.setRequestHandler(CallToolRequestSchema, async (request) => ({
-					content: [{ type: "text", text: `ok:${request.params.name}` }],
-				}));
-				server.connect(serverTransport).catch(() => undefined);
-				clientTransports.set(id, clientTransport);
-				serverCleanups.push(async () => {
-					await server.close().catch(() => undefined);
-					await clientTransport.close().catch(() => undefined);
+				transportFactories.set(id, () => {
+					const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+					const server = new Server({ name: `mock-${id}`, version: "1.0.0" }, { capabilities: { tools: {} } });
+					server.setRequestHandler(ListToolsRequestSchema, async () => ({
+						tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+					}));
+					server.setRequestHandler(CallToolRequestSchema, async (request) => ({
+						content: [{ type: "text", text: `ok:${request.params.name}` }],
+					}));
+					server.connect(serverTransport).catch(() => undefined);
+					serverCleanups.push(async () => {
+						await server.close().catch(() => undefined);
+						await clientTransport.close().catch(() => undefined);
+					});
+					return clientTransport;
 				});
 			}
 			const sessionManager = SessionManager.inMemory(dir);
@@ -583,7 +586,7 @@ describe("AgentSession capability binding integration", () => {
 					agentDir,
 					settingsManager,
 					sessionManager,
-					mcpTransportFactory: (async (config: { id: string }) => clientTransports.get(config.id)) as never,
+					mcpTransportFactory: (async (config: { id: string }) => transportFactories.get(config.id)?.()) as never,
 				});
 				await session.whenCapabilitiesReady();
 
@@ -777,21 +780,6 @@ describe("AgentSession capability binding integration", () => {
 				},
 			});
 			const receivedCalls: Array<{ name: string; args: unknown }> = [];
-			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-			const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
-			server.setRequestHandler(ListToolsRequestSchema, async () => ({
-				tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
-			}));
-			server.setRequestHandler(CallToolRequestSchema, async (request) => {
-				receivedCalls.push({ name: request.params.name, args: request.params.arguments });
-				return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
-			});
-			server.connect(serverTransport).catch(() => undefined);
-			serverCleanups.push(async () => {
-				await server.close().catch(() => undefined);
-				await clientTransport.close().catch(() => undefined);
-			});
-
 			let releaseDiscovery: (() => void) | undefined;
 			const discoveryGate = new Promise<void>((resolve) => {
 				releaseDiscovery = resolve;
@@ -800,6 +788,20 @@ describe("AgentSession capability binding integration", () => {
 			const transportFactory = async () => {
 				factoryCalls++;
 				await discoveryGate;
+				const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+				const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+				server.setRequestHandler(ListToolsRequestSchema, async () => ({
+					tools: [{ name: "list", inputSchema: { type: "object", properties: {} } }],
+				}));
+				server.setRequestHandler(CallToolRequestSchema, async (request) => {
+					receivedCalls.push({ name: request.params.name, args: request.params.arguments });
+					return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
+				});
+				server.connect(serverTransport).catch(() => undefined);
+				serverCleanups.push(async () => {
+					await server.close().catch(() => undefined);
+					await clientTransport.close().catch(() => undefined);
+				});
 				return clientTransport;
 			};
 
@@ -1825,11 +1827,12 @@ describe("AgentSession capability binding integration", () => {
 			try {
 				await session.whenCapabilitiesReady();
 				expect(hostFactoryCalls).toBe(0);
-				expect(transportRequests).toHaveLength(1);
-				expect(transportRequests[0]?.bindingId).toBeTruthy();
-				expect(transportRequests[0]?.environment).toEqual({ MCP_ALLOWED_ENV: "allowed-value" });
-				expect(transportRequests[0]?.headers).toEqual({});
-				expect(transportRequests[0]?.config).toMatchObject({ transport: "stdio", command: "node" });
+				expect(transportRequests).toHaveLength(2);
+				expect(transportRequests.every((request) => request.bindingId)).toBe(true);
+				expect(transportRequests.every((request) => request.environment.MCP_ALLOWED_ENV === "allowed-value")).toBe(true);
+				expect(transportRequests.every((request) => request.environment.MCP_SECRET_ENV === undefined)).toBe(true);
+				expect(transportRequests.every((request) => Object.keys(request.headers).length === 0)).toBe(true);
+				expect(transportRequests.every((request) => request.config.transport === "stdio" && request.config.command === "node")).toBe(true);
 				const definition = session.getToolDefinition("mcp__docs__list")!;
 				await definition.execute("call-1", {}, new AbortController().signal, undefined, {} as never);
 				expect(receivedCalls).toEqual([{ name: "list", args: {} }]);
@@ -1895,6 +1898,76 @@ describe("AgentSession capability binding integration", () => {
 				});
 				expect(hostFactoryCalls).toBe(0);
 			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not fall back to parent environment values for host MCP stdio", async () => {
+			const previousAllowed = process.env.MCP_ALLOWED_ENV;
+			const previousSecret = process.env.MCP_SECRET_ENV;
+			process.env.MCP_ALLOWED_ENV = "allowed-value";
+			process.env.MCP_SECRET_ENV = "secret-value";
+			const resolvedEnvironments: Array<{ allowed: string | undefined; secret: string | undefined }> = [];
+			const mock = createMockMcpServer({
+				tools: [{ name: "list", inputSchema: { type: "object" } }],
+				receivedCalls: [],
+			});
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					enforcement: "host",
+					environmentNames: ["MCP_ALLOWED_ENV"],
+				}),
+				mcp: {
+					servers: {
+						docs: {
+							transport: "stdio",
+							command: "node",
+							env: ["MCP_ALLOWED_ENV", "MCP_SECRET_ENV"],
+						},
+					},
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				mcpTransportFactory: (async (config: MCPServerConfig, env: MCPEnvResolver) => {
+					resolvedEnvironments.push({
+						allowed: env("MCP_ALLOWED_ENV"),
+						secret: env("MCP_SECRET_ENV"),
+					});
+					return mock.transportFactory({ id: config.id }) as never;
+				}) as never,
+			});
+			try {
+				await session.whenCapabilitiesReady();
+				expect(resolvedEnvironments).toHaveLength(2);
+				expect(resolvedEnvironments).toEqual([
+					{ allowed: "allowed-value", secret: undefined },
+					{ allowed: "allowed-value", secret: undefined },
+				]);
+			} finally {
+				if (previousAllowed === undefined) {
+					delete process.env.MCP_ALLOWED_ENV;
+				} else {
+					process.env.MCP_ALLOWED_ENV = previousAllowed;
+				}
+				if (previousSecret === undefined) {
+					delete process.env.MCP_SECRET_ENV;
+				} else {
+					process.env.MCP_SECRET_ENV = previousSecret;
+				}
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
@@ -2025,7 +2098,7 @@ describe("AgentSession capability binding integration", () => {
 			});
 			try {
 				await session.whenCapabilitiesReady();
-				expect(hostFactoryCalls).toBe(1);
+				expect(hostFactoryCalls).toBe(2);
 				expect(resolvedCredential).toBe("Bearer host-secret");
 				const definition = session.getToolDefinition("mcp__docs__list")!;
 				await definition.execute("call-1", {}, new AbortController().signal, undefined, {} as never);

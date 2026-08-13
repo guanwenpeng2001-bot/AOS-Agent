@@ -34,6 +34,7 @@ import {
 	serializePublicRunReceipt,
 	serializePublicRunRecord,
 	serializePublicRunStreamEvent,
+	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 	type AutomationError,
 	type CapabilityBindingLedgerRecord,
@@ -49,6 +50,7 @@ import {
 	type RunReservation,
 	type RunResult,
 } from "../src/core/run-lifecycle.ts";
+import type { BashExecutionMessage } from "../src/core/messages.ts";
 import {
 	SessionManager,
 	type SessionEntry,
@@ -493,6 +495,41 @@ describe("state machine", () => {
 		expect(serialized).not.toContain("API_TOKEN");
 		expect(serialized).not.toContain("authorization");
 		expect(JSON.stringify(session.getTree().map((node) => serializePublicSessionTreeNode(node)))).not.toContain("secret.txt");
+	});
+
+	it("redacts structured bash messages and streaming output at the public boundary", () => {
+		const bashMessage: BashExecutionMessage = {
+			role: "bashExecution",
+			command: "cat C:\\private\\secret.txt",
+			output: "TOKEN=secret",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			fullOutputPath: "C:\\private\\full-output.txt",
+			timestamp: 1,
+		};
+		const publicEntry = serializePublicSessionEntry({
+			type: "message",
+			id: "bash-entry",
+			parentId: null,
+			timestamp: "2026-08-13T00:00:00.000Z",
+			message: bashMessage,
+		});
+		const publicEvent = serializePublicSessionEvent({
+			type: "bash_execution_update",
+			id: "bash-execution",
+			delta: "TOKEN=secret",
+		});
+
+		expect(publicEntry).toMatchObject({
+			type: "message",
+			message: { role: "bashExecution", command: "[redacted]", output: "[redacted]" },
+		});
+		if (publicEntry.type !== "message") throw new Error("expected a public message entry");
+		expect("fullOutputPath" in publicEntry.message).toBe(false);
+		expect(publicEvent).toMatchObject({ type: "bash_execution_update", delta: "[redacted]" });
+		expect(JSON.stringify({ publicEntry, publicEvent })).not.toContain("secret");
+		expect(JSON.stringify({ publicEntry, publicEvent })).not.toContain("C:\\private");
 	});
 
 	it("records resume as a successor Execution Policy binding without reusing the source binding", () => {

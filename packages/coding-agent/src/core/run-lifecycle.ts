@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
 import {
@@ -1507,14 +1508,37 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 	switch (event.type) {
 		case "entry_appended":
 			return { ...event, entry: serializePublicSessionEntry(event.entry) };
+		case "message_start":
+		case "message_end":
+			return { ...event, message: serializePublicAgentMessage(event.message) };
+		case "message_update":
+			return {
+				...event,
+				message: serializePublicAgentMessage(event.message),
+				assistantMessageEvent: serializePublicAssistantMessageEvent(event.assistantMessageEvent),
+			};
+		case "turn_end":
+			return {
+				...event,
+				message: serializePublicAgentMessage(event.message),
+				toolResults: event.toolResults.map((message) => serializePublicToolResult(message)),
+			};
+		case "tool_execution_start":
+			return { ...event, args: {} };
+		case "tool_execution_update":
+			return { ...event, args: {}, partialResult: {} };
+		case "tool_execution_end":
+			return { ...event, result: {} };
 		case "agent_end":
 			return {
 				...event,
-				messages: event.messages.map((message) =>
-					message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")
-						? { ...message, errorMessage: "Agent run failed." }
-						: message,
-				),
+				messages: event.messages.map((message) => {
+					const publicMessage = serializePublicAgentMessage(message);
+					return publicMessage.role === "assistant" &&
+						(publicMessage.stopReason === "error" || publicMessage.stopReason === "aborted")
+						? { ...publicMessage, errorMessage: "Agent run failed." }
+						: publicMessage;
+				}),
 			};
 		case "compaction_end":
 			return event.errorMessage === undefined ? event : { ...event, errorMessage: "Operation failed." };
@@ -1524,6 +1548,8 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 			return event.finalError === undefined ? event : { ...event, finalError: "Operation failed." };
 		case "summarization_retry_scheduled":
 			return { ...event, errorMessage: "Operation failed." };
+		case "bash_execution_update":
+			return { ...event, delta: event.delta.length === 0 ? "" : "[redacted]" };
 		default:
 			return event;
 	}
@@ -1544,18 +1570,15 @@ export function serializePublicRunStreamEvent(event: RunStreamEvent): PublicRunS
  * Return a public-safe copy of a Session entry. Capability and run ledgers are
  * decoded before output so historic raw identities remain internally replayable
  * but cannot escape. Other extension-owned custom metadata is omitted because
- * it has no stable public contract; ordinary session messages remain unchanged.
+ * it has no stable public contract; structured execution message payloads are
+ * redacted before they cross the public boundary.
  */
 export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionEntry {
 	switch (entry.type) {
 		case "message":
 			return {
 				...entry,
-				message:
-					entry.message.role === "assistant" &&
-					(entry.message.stopReason === "error" || entry.message.stopReason === "aborted")
-						? { ...entry.message, errorMessage: "Agent run failed." }
-						: entry.message,
+				message: serializePublicAgentMessage(entry.message),
 			};
 		case "custom":
 			return serializePublicCustomEntry(entry);
@@ -1570,6 +1593,62 @@ export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionE
 		}
 		default:
 			return { ...entry };
+	}
+}
+
+function serializePublicAgentMessage(message: AgentMessage): AgentMessage {
+	if (message.role === "bashExecution") {
+		const { fullOutputPath: _fullOutputPath, ...publicMessage } = message;
+		return {
+			...publicMessage,
+			command: "[redacted]",
+			output: message.output.length === 0 ? "" : "[redacted]",
+		};
+	}
+	if (message.role === "assistant") {
+		return serializePublicAssistantMessage(message);
+	}
+	if (message.role === "toolResult") {
+		return serializePublicToolResult(message);
+	}
+	return message;
+}
+
+function serializePublicToolResult(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+): Extract<AgentMessage, { role: "toolResult" }> {
+	const { details: _details, usage: _usage, ...publicMessage } = message;
+	return {
+		...publicMessage,
+		content: message.content.length === 0 ? [] : [{ type: "text", text: "[redacted]" }],
+	};
+}
+
+function serializePublicAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return {
+		...message,
+		content: message.content.map((block) =>
+			block.type === "toolCall" ? { ...block, arguments: {}, thoughtSignature: undefined } : block,
+		),
+	};
+}
+
+function serializePublicAssistantMessageEvent(event: AssistantMessageEvent): AssistantMessageEvent {
+	switch (event.type) {
+		case "done":
+			return { ...event, message: serializePublicAssistantMessage(event.message) };
+		case "error":
+			return { ...event, error: serializePublicAssistantMessage(event.error) };
+		case "toolcall_end":
+			return {
+				...event,
+				toolCall: { ...event.toolCall, arguments: {}, thoughtSignature: undefined },
+				partial: serializePublicAssistantMessage(event.partial),
+			};
+		case "toolcall_delta":
+			return { ...event, delta: "", partial: serializePublicAssistantMessage(event.partial) };
+		default:
+			return { ...event, partial: serializePublicAssistantMessage(event.partial) };
 	}
 }
 

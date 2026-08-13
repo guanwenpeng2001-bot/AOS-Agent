@@ -662,6 +662,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
+		const proposedRunId = crypto.randomUUID();
 		// Capability profile preflight: materialize the requested capability profile
 		// into the frozen binding before any reservation or prompt. The public API
 		// owns the undefined => configured default semantics and waits for capability
@@ -669,7 +670,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		// structured capability error before any ledger write; an unapprovable ask
 		// still fails the run below.
 		try {
-			await session.setCapabilityProfile(capabilityProfile);
+			// Policy selection and the Run ID must be established before capability
+			// discovery. MCP startup is a policy operation and its binding must be
+			// the same binding that reservation.accept validates below.
+			await session.setExecutionPolicyProfile(policyProfile);
+			session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
+			await session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
 		} catch (err) {
 			return automationError(id, commandType, capabilityError(err));
 		}
@@ -684,7 +690,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 		activeReservation = reservation;
 		try {
-			await session.whenCapabilitiesReady();
+			await session.whenCapabilitiesReady(proposedRunId);
 		} catch (err) {
 			activeReservation = undefined;
 			try {
@@ -757,12 +763,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				),
 			);
 		}
-		try {
-			await session.setExecutionPolicyProfile(policyProfile);
-			session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
-		} catch (err) {
-			return automationError(id, commandType, asAutomationError(err));
-		}
 		const modelSelection = await resolveRequestedModel(modelRoute, modelRole, inheritedModelBinding);
 		if (modelSelection.error !== undefined) {
 			activeReservation = undefined;
@@ -773,7 +773,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 			return automationError(id, commandType, modelSelection.error);
 		}
-		const proposedRunId = crypto.randomUUID();
 		// Reserve before the prompt's preflight so the session is busy while the run
 		// is pending. Only a preflight that succeeds persists the accepted fact and
 		// starts the run; otherwise the reservation is released and the caller gets
