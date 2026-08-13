@@ -498,7 +498,7 @@ describe("parseCommandArgs + substituteArgs integration", () => {
 // ============================================================================
 
 describe("loadPromptTemplates - argument-hint", () => {
-	const testDir = join(tmpdir(), `pi-test-prompts-${Date.now()}`);
+	const testDir = join(tmpdir(), `aos-test-prompts-${Date.now()}`);
 
 	function writeTemplate(name: string, content: string) {
 		mkdirSync(testDir, { recursive: true });

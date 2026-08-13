@@ -8,7 +8,7 @@ describe("experimental CLI command composition", () => {
 	test("composes aos command options with the existing parser", () => {
 		const result = experimentalCli.parse([
 			"--listen",
-			"unix:///tmp/pi.sock",
+			"unix:///tmp/aos.sock",
 			"--auth-token",
 			"secret",
 			"--provider",
@@ -24,7 +24,7 @@ describe("experimental CLI command composition", () => {
 			ok: true,
 			command: {
 				command: "aos",
-				listen: [{ transport: "unix", path: "/tmp/pi.sock" }],
+				listen: [{ transport: "unix", path: "/tmp/aos.sock" }],
 				auth: { type: "token", token: "secret" },
 				options: {
 					provider: "anthropic",

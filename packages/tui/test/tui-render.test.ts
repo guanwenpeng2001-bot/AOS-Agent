@@ -116,7 +116,7 @@ describe("TUI render scheduling", () => {
 
 describe("TUI debug logging", () => {
 	it("writes redraw logs to the provided directory", async () => {
-		const logDir = mkdtempSync(join(tmpdir(), "pi-tui-log-"));
+		const logDir = mkdtempSync(join(tmpdir(), "aos-tui-log-"));
 		try {
 			await withEnv({ AOS_AGENT_DEBUG_REDRAW: "1" }, async () => {
 				const terminal = new VirtualTerminal(40, 10);

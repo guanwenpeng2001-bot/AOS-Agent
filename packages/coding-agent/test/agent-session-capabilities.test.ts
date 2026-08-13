@@ -36,7 +36,7 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 function tmpDir(name: string): { dir: string; agentDir: string } {
-	const dir = join(tmpdir(), `pi-capabilities-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const dir = join(tmpdir(), `aos-capabilities-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	const agentDir = join(dir, "agent");
 	mkdirSync(agentDir, { recursive: true });
 	return { dir, agentDir };
@@ -82,8 +82,8 @@ function sdkToolWithExecuteSpy(name: string, onExecute?: () => void) {
 }
 
 function extensionWithTool(name: string, onExecute?: () => void): ExtensionFactory {
-	return (pi) => {
-		pi.registerTool({
+	return (agent) => {
+		agent.registerTool({
 			name,
 			label: name,
 			description: `Extension tool ${name}`,
@@ -1543,8 +1543,8 @@ describe("AgentSession capability binding integration", () => {
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "bash-interceptor",
-					factory: (pi) => {
-						pi.on("user_bash", async () => {
+					factory: (agent) => {
+						agent.on("user_bash", async () => {
 							extensionHandlerCalls++;
 							return {
 								result: {
@@ -1614,12 +1614,12 @@ describe("AgentSession capability binding integration", () => {
 		});
 
 		it("authorizes extension command ctx.exec before spawning a process", async () => {
-			const markerPath = join(tmpdir(), `pi-extension-exec-deny-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+			const markerPath = join(tmpdir(), `aos-extension-exec-deny-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "exec-command",
-					factory: (pi) => {
-						pi.registerCommand("exec-deny", {
+					factory: (agent) => {
+						agent.registerCommand("exec-deny", {
 							handler: async (_args, ctx) => {
 								await ctx.exec(process.execPath, [
 									"-e",
@@ -1676,8 +1676,8 @@ describe("AgentSession capability binding integration", () => {
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "exec-event",
-					factory: (pi) => {
-						pi.on("agent_start", async (_event, ctx) => {
+					factory: (agent) => {
+						agent.on("agent_start", async (_event, ctx) => {
 							const execResult = await ctx.exec("definitely-not-a-host-command", ["--flag"], {
 								env: { EXT_ALLOWED: "yes", EXT_SECRET: "no" },
 							});
@@ -1718,8 +1718,8 @@ describe("AgentSession capability binding integration", () => {
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "exec-tool",
-					factory: (pi) => {
-						pi.registerTool({
+					factory: (agent) => {
+						agent.registerTool({
 							name: "exec_helper",
 							label: "exec_helper",
 							description: "Extension exec helper",
@@ -2320,8 +2320,8 @@ describe("AgentSession capability binding integration", () => {
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "bash-interceptor",
-					factory: (pi) => {
-						pi.on("user_bash", async () => {
+					factory: (agent) => {
+						agent.on("user_bash", async () => {
 							extensionHandlerCalls++;
 							return {
 								result: {

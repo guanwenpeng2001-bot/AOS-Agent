@@ -195,7 +195,7 @@ async function createRuntimeHost(options: {
 	customTools?: ToolDefinition[];
 	resourceLoader?: ResourceLoader;
 }): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
-	const tempDir = join(tmpdir(), `pi-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const tempDir = join(tmpdir(), `aos-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
 	const model = options.model ?? DEFAULT_MODEL;
@@ -1370,7 +1370,7 @@ describe("RPC Automation Host run lifecycle", () => {
 	});
 
 	it("never leaks project resource paths into the capability catalog", async () => {
-		const realTempPath = join(tmpdir(), `pi-rpc-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const realTempPath = join(tmpdir(), `aos-rpc-skill-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		const skillName = "project_skill";
 		const skills: Skill[] = [
 			{

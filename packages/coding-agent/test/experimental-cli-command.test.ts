@@ -29,21 +29,21 @@ describe("experimental CLI commands", () => {
 	});
 
 	test("parses a server listener", () => {
-		expect(experimentalCli.parse(["server", "--listen", "unix:///tmp/pi.sock"])).toEqual({
+		expect(experimentalCli.parse(["server", "--listen", "unix:///tmp/aos.sock"])).toEqual({
 			ok: true,
 			command: {
 				command: "server",
-				listen: [{ transport: "unix", path: "/tmp/pi.sock" }],
+				listen: [{ transport: "unix", path: "/tmp/aos.sock" }],
 			},
 		});
 	});
 
 	test("leaves experimental-looking existing option values with the existing parser", () => {
-		expect(experimentalCli.parse(["--system-prompt", "--listen", "unix:///tmp/pi.sock"])).toMatchObject({
+		expect(experimentalCli.parse(["--system-prompt", "--listen", "unix:///tmp/aos.sock"])).toMatchObject({
 			ok: true,
 			command: {
 				command: "aos",
-				options: { systemPrompt: "--listen", messages: ["unix:///tmp/pi.sock"] },
+				options: { systemPrompt: "--listen", messages: ["unix:///tmp/aos.sock"] },
 			},
 		});
 	});
@@ -60,11 +60,11 @@ describe("experimental CLI commands", () => {
 	});
 
 	test("parses a client transport address", () => {
-		expect(experimentalCli.parse(["client", "--connect", "unix:///tmp/pi.sock"])).toEqual({
+		expect(experimentalCli.parse(["client", "--connect", "unix:///tmp/aos.sock"])).toEqual({
 			ok: true,
 			command: {
 				command: "client",
-				connect: { transport: "unix", path: "/tmp/pi.sock" },
+				connect: { transport: "unix", path: "/tmp/aos.sock" },
 			},
 		});
 	});
@@ -89,19 +89,19 @@ describe("experimental CLI commands", () => {
 	);
 
 	test("passes unknown options, file arguments, and the positional separator to the existing parser", () => {
-		const result = experimentalCli.parse(["--unknown", "@prompt.md", "--", "--listen", "unix:///tmp/pi.sock"]);
+		const result = experimentalCli.parse(["--unknown", "@prompt.md", "--", "--listen", "unix:///tmp/aos.sock"]);
 		expect(result).toMatchObject({
 			ok: true,
 			command: { command: "aos", options: { fileArgs: ["prompt.md"] } },
 		});
 		if (!result.ok || result.command.command !== "aos") return;
 		expect(result.command.options.unknownFlags.get("unknown")).toBe(true);
-		expect(result.command.options.unknownFlags.get("listen")).toBe("unix:///tmp/pi.sock");
+		expect(result.command.options.unknownFlags.get("listen")).toBe("unix:///tmp/aos.sock");
 	});
 
 	test.each([
 		[
-			["--listen", "unix:///tmp/pi.sock", "--listen", "unix:///tmp/pi-admin.sock"],
+			["--listen", "unix:///tmp/aos.sock", "--listen", "unix:///tmp/aos-admin.sock"],
 			"--listen may only be specified once",
 		],
 		[
@@ -113,19 +113,19 @@ describe("experimental CLI commands", () => {
 			["--auth-token-file", "/tmp/first", "--auth-token-file=/tmp/second"],
 			"--auth-token-file may only be specified once",
 		],
-		[["--listen", "/tmp/pi.sock"], 'Invalid --listen address "/tmp/pi.sock"'],
+		[["--listen", "/tmp/aos.sock"], 'Invalid --listen address "/tmp/aos.sock"'],
 		[["--listen", "ws://localhost:8080"], 'Unsupported --listen transport "ws:"'],
 		[["--listen", "unix://relative.sock"], "Unix transport address must not include an authority"],
-		[["--listen", "unix:///tmp/pi.sock?wrong=value"], 'Invalid --listen address "unix:///tmp/pi.sock?wrong=value"'],
-		[["--listen", "unix:///tmp/pi.sock#fragment"], 'Invalid --listen address "unix:///tmp/pi.sock#fragment"'],
-		[["--listen", "unix:/tmp/pi.sock"], 'Invalid --listen address "unix:/tmp/pi.sock"'],
-		[["--listen", "unix:///tmp/%00pi.sock"], 'Invalid --listen address "unix:///tmp/%00pi.sock"'],
+		[["--listen", "unix:///tmp/aos.sock?wrong=value"], 'Invalid --listen address "unix:///tmp/aos.sock?wrong=value"'],
+		[["--listen", "unix:///tmp/aos.sock#fragment"], 'Invalid --listen address "unix:///tmp/aos.sock#fragment"'],
+		[["--listen", "unix:/tmp/aos.sock"], 'Invalid --listen address "unix:/tmp/aos.sock"'],
+		[["--listen", "unix:///tmp/%00aos.sock"], 'Invalid --listen address "unix:///tmp/%00aos.sock"'],
 		[
-			["client", "--listen", "unix:///tmp/pi.sock"],
+			["client", "--listen", "unix:///tmp/aos.sock"],
 			"The experimental client command does not support existing CLI options yet",
 		],
 		[
-			["server", "--connect", "unix:///tmp/pi.sock"],
+			["server", "--connect", "unix:///tmp/aos.sock"],
 			"The experimental server command does not support existing CLI options yet",
 		],
 		[["client", "--connect", "ws://localhost:8080"], 'Unsupported --connect transport "ws:"'],

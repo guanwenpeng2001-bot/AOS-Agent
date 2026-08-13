@@ -7,13 +7,13 @@ import { ENV_AGENT_DIR } from "../src/config.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("shouldRunFirstTimeSetup", () => {
-	const originalPiExperimental = process.env.AOS_AGENT_EXPERIMENTAL;
+	const originalExperimental = process.env.AOS_AGENT_EXPERIMENTAL;
 	const originalAgentDir = process.env[ENV_AGENT_DIR];
 	let tempDir: string;
 	let settingsPath: string;
 
 	beforeEach(() => {
-		tempDir = mkdtempSync(join(tmpdir(), "pi-first-time-setup-"));
+		tempDir = mkdtempSync(join(tmpdir(), "aos-first-time-setup-"));
 		settingsPath = join(tempDir, "settings.json");
 		process.env.AOS_AGENT_EXPERIMENTAL = "1";
 		delete process.env[ENV_AGENT_DIR];
@@ -21,10 +21,10 @@ describe("shouldRunFirstTimeSetup", () => {
 
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true });
-		if (originalPiExperimental === undefined) {
+		if (originalExperimental === undefined) {
 			delete process.env.AOS_AGENT_EXPERIMENTAL;
 		} else {
-			process.env.AOS_AGENT_EXPERIMENTAL = originalPiExperimental;
+			process.env.AOS_AGENT_EXPERIMENTAL = originalExperimental;
 		}
 		if (originalAgentDir === undefined) {
 			delete process.env[ENV_AGENT_DIR];

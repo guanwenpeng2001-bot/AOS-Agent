@@ -197,19 +197,19 @@ const operationStartAttributes = {
 		cardinality: "high",
 		description: "Session id",
 	},
-	"pi.lane.name": {
+	"aos.lane.name": {
 		type: "string",
 		required: true,
 		cardinality: "high",
 		description: "Lane name",
 	},
-	"pi.operation.id": {
+	"aos.operation.id": {
 		type: "string",
 		required: true,
 		cardinality: "high",
 		description: "Durable operation id",
 	},
-	"pi.operation.recovery": {
+	"aos.operation.recovery": {
 		type: "boolean",
 		required: true,
 		description: "Whether this invocation resumes durable work",
@@ -217,12 +217,12 @@ const operationStartAttributes = {
 } as const;
 
 const operationErrorAttributes = {
-	"pi.error.code": {
+	"aos.error.code": {
 		type: "string",
 		cardinality: "low",
 		description: "Stable operation error code",
 	},
-	"pi.error.type": {
+	"aos.error.type": {
 		type: "string",
 		cardinality: "low",
 		description: "Low-cardinality operation error class",
@@ -230,14 +230,14 @@ const operationErrorAttributes = {
 } as const;
 
 export const HARNESS_TELEMETRY_SCHEMA = {
-	version: 1,
+	version: 2,
 	spans: {
 		"aos.harness.run": {
 			description: "One admitted in-process run invocation",
 			parents: { kind: "root_or_external" },
 			startAttributes: {
 				...operationStartAttributes,
-				"pi.operation.kind": {
+				"aos.operation.kind": {
 					type: "string",
 					required: true,
 					values: ["run"],
@@ -245,7 +245,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				},
 			},
 			endAttributes: {
-				"pi.operation.outcome": {
+				"aos.operation.outcome": {
 					type: "string",
 					values: ["completed", "aborted", "failed", "suspended"],
 					description: "Run invocation outcome",
@@ -259,7 +259,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			parents: { kind: "root_or_external" },
 			startAttributes: {
 				...operationStartAttributes,
-				"pi.operation.kind": {
+				"aos.operation.kind": {
 					type: "string",
 					required: true,
 					values: ["compaction"],
@@ -267,7 +267,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				},
 			},
 			endAttributes: {
-				"pi.operation.outcome": {
+				"aos.operation.outcome": {
 					type: "string",
 					values: ["completed", "declined", "aborted", "failed"],
 					description: "Compaction invocation outcome",
@@ -281,7 +281,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			parents: { kind: "root_or_external" },
 			startAttributes: {
 				...operationStartAttributes,
-				"pi.operation.kind": {
+				"aos.operation.kind": {
 					type: "string",
 					required: true,
 					values: ["navigation"],
@@ -289,7 +289,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				},
 			},
 			endAttributes: {
-				"pi.operation.outcome": {
+				"aos.operation.outcome": {
 					type: "string",
 					values: ["completed", "declined", "aborted", "failed"],
 					description: "Navigation invocation outcome",
@@ -302,19 +302,19 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One run checkpoint",
 			parents: { kind: "spans", spans: ["aos.harness.run"] },
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Durable operation id",
 				},
-				"pi.checkpoint.kind": {
+				"aos.checkpoint.kind": {
 					type: "string",
 					required: true,
 					values: ["normal", "failure_drain", "abort_reconcile"],
@@ -328,19 +328,19 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One assistant response and its tool batch",
 			parents: { kind: "spans", spans: ["aos.harness.run"] },
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Durable operation id",
 				},
-				"pi.turn.id": {
+				"aos.turn.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
@@ -357,13 +357,13 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 				spans: ["aos.harness.turn", "aos.harness.checkpoint", "aos.harness.compaction", "aos.harness.navigation"],
 			},
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
@@ -380,7 +380,7 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 					required: true,
 					description: "One-based durable attempt number",
 				},
-				"pi.compaction.reason": {
+				"aos.compaction.reason": {
 					type: "string",
 					required: false,
 					values: ["manual", "threshold", "overflow"],
@@ -400,49 +400,49 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One raw phase-2 tool execution",
 			parents: { kind: "spans", spans: ["aos.harness.turn", "aos.harness.run"] },
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Durable operation id",
 				},
-				"pi.turn.id": {
+				"aos.turn.id": {
 					type: "string",
 					required: false,
 					cardinality: "high",
 					description: "Invocation-local live turn id",
 				},
-				"pi.tool.name": {
+				"aos.tool.name": {
 					type: "string",
 					required: true,
 					description: "Tool name",
 				},
-				"pi.tool.call_id": {
+				"aos.tool.call_id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Tool call id",
 				},
-				"pi.tool.replay": {
+				"aos.tool.replay": {
 					type: "string",
 					required: true,
 					values: ["never", "safe"],
 					description: "Declared replay policy",
 				},
-				"pi.tool.recovery": {
+				"aos.tool.recovery": {
 					type: "boolean",
 					required: true,
 					description: "Whether this is recovery execution",
 				},
 			},
 			endAttributes: {
-				"pi.tool.is_error": {
+				"aos.tool.is_error": {
 					type: "boolean",
 					description: "Whether raw phase-2 execution returned an error",
 				},
@@ -453,32 +453,32 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One registered hook handler invocation",
 			parents: { kind: "any" },
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: false,
 					cardinality: "high",
 					description: "Durable operation id when accepted",
 				},
-				"pi.hook.name": {
+				"aos.hook.name": {
 					type: "string",
 					required: true,
 					values: HOOK_NAMES,
 					description: "Hook name",
 				},
-				"pi.hook.registration_id": {
+				"aos.hook.registration_id": {
 					type: "string",
 					required: false,
 					description: "Stable hook registration id",
 				},
 			},
 			endAttributes: {
-				"pi.hook.outcome": {
+				"aos.hook.outcome": {
 					type: "string",
 					values: ["completed", "skipped", "blocked", "failed"],
 					description: "Handler outcome",
@@ -490,20 +490,20 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One retry delay",
 			parents: { kind: "spans", spans: ["aos.harness.step", "aos.harness.run"] },
 			startAttributes: {
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Durable operation id",
 				},
-				"pi.sleep.delay_ms": {
+				"aos.sleep.delay_ms": {
 					type: "number",
 					required: true,
 					description: "Requested delay in milliseconds",
 				},
 			},
 			endAttributes: {
-				"pi.sleep.outcome": {
+				"aos.sleep.outcome": {
 					type: "string",
 					values: ["elapsed", "aborted"],
 					description: "Delay outcome",
@@ -515,14 +515,14 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One passive event listener invocation",
 			parents: { kind: "any" },
 			startAttributes: {
-				"pi.event.type": {
+				"aos.event.type": {
 					type: "string",
 					required: true,
 					cardinality: "low",
 					values: EVENT_TYPES,
 					description: "Delivered harness event type",
 				},
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: false,
 					cardinality: "high",
@@ -536,13 +536,13 @@ export const HARNESS_TELEMETRY_SCHEMA = {
 			description: "One committed session mutation",
 			parents: { kind: "any" },
 			startAttributes: {
-				"pi.lane.name": {
+				"aos.lane.name": {
 					type: "string",
 					required: true,
 					cardinality: "high",
 					description: "Lane name",
 				},
-				"pi.operation.id": {
+				"aos.operation.id": {
 					type: "string",
 					required: false,
 					cardinality: "high",

@@ -60,7 +60,7 @@ Skill content here.`,
 		});
 
 		it("should ignore extra markdown files in auto-discovered skill dirs", async () => {
-			const skillDir = join(agentDir, "skills", "pi-skills", "browser-tools");
+			const skillDir = join(agentDir, "skills", "aos-skills", "browser-tools");
 			mkdirSync(skillDir, { recursive: true });
 			writeFileSync(
 				join(skillDir, "SKILL.md"),
@@ -404,10 +404,10 @@ Content`,
 			expect(agentsFiles).toEqual([]);
 		});
 
-		it("should discover SYSTEM.md from cwd/.pi", async () => {
-			const piDir = join(cwd, ".aos-agent");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(join(piDir, "SYSTEM.md"), "You are a helpful assistant.");
+		it("should discover SYSTEM.md from cwd/.aos-agent", async () => {
+			const agentDir = join(cwd, ".aos-agent");
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(join(agentDir, "SYSTEM.md"), "You are a helpful assistant.");
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
@@ -416,16 +416,16 @@ Content`,
 		});
 
 		it("should skip project resources that require trust when project is not trusted", async () => {
-			const piDir = join(cwd, ".aos-agent");
-			const extensionsDir = join(piDir, "extensions");
-			const skillDir = join(piDir, "skills", "project-skill");
-			const promptsDir = join(piDir, "prompts");
-			const themesDir = join(piDir, "themes");
+			const agentDir = join(cwd, ".aos-agent");
+			const extensionsDir = join(agentDir, "extensions");
+			const skillDir = join(agentDir, "skills", "project-skill");
+			const promptsDir = join(agentDir, "prompts");
+			const themesDir = join(agentDir, "themes");
 			mkdirSync(extensionsDir, { recursive: true });
 			mkdirSync(skillDir, { recursive: true });
 			mkdirSync(promptsDir, { recursive: true });
 			mkdirSync(themesDir, { recursive: true });
-			writeFileSync(join(piDir, "SYSTEM.md"), "Project system prompt.");
+			writeFileSync(join(agentDir, "SYSTEM.md"), "Project system prompt.");
 			writeFileSync(join(agentDir, "SYSTEM.md"), "Global system prompt.");
 			writeFileSync(join(agentDir, "AGENTS.md"), "Global instructions");
 			writeFileSync(join(cwd, "AGENTS.md"), "Project instructions");
@@ -462,9 +462,9 @@ Project skill content`,
 		});
 
 		it("should discover APPEND_SYSTEM.md", async () => {
-			const piDir = join(cwd, ".aos-agent");
-			mkdirSync(piDir, { recursive: true });
-			writeFileSync(join(piDir, "APPEND_SYSTEM.md"), "Additional instructions.");
+			const agentDir = join(cwd, ".aos-agent");
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(join(agentDir, "APPEND_SYSTEM.md"), "Additional instructions.");
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
@@ -475,9 +475,9 @@ Project skill content`,
 
 	describe("system prompt sources", () => {
 		it("exposes discovered project SYSTEM.md as the system prompt source", async () => {
-			const piDir = join(cwd, ".aos-agent");
-			const systemPromptPath = join(piDir, "SYSTEM.md");
-			mkdirSync(piDir, { recursive: true });
+			const agentDir = join(cwd, ".aos-agent");
+			const systemPromptPath = join(agentDir, "SYSTEM.md");
+			mkdirSync(agentDir, { recursive: true });
 			writeFileSync(systemPromptPath, "Project system prompt.");
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
@@ -518,9 +518,9 @@ Project skill content`,
 		});
 
 		it("exposes discovered APPEND_SYSTEM.md as an append system prompt source", async () => {
-			const piDir = join(cwd, ".aos-agent");
-			const appendSystemPromptPath = join(piDir, "APPEND_SYSTEM.md");
-			mkdirSync(piDir, { recursive: true });
+			const agentDir = join(cwd, ".aos-agent");
+			const appendSystemPromptPath = join(agentDir, "APPEND_SYSTEM.md");
+			mkdirSync(agentDir, { recursive: true });
 			writeFileSync(appendSystemPromptPath, "Project append prompt.");
 
 			const loader = new DefaultResourceLoader({ cwd, agentDir });

@@ -19,7 +19,7 @@ describe("package commands", () => {
 	let packageDir: string;
 	let originalCwd: string;
 	let originalAgentDir: string | undefined;
-	let originalPiPackageDir: string | undefined;
+	let originalPackageDir: string | undefined;
 	let originalLatestVersionUrl: string | undefined;
 	let originalPath: string | undefined;
 	let originalExitCode: typeof process.exitCode;
@@ -54,7 +54,7 @@ describe("package commands", () => {
 
 	beforeEach(() => {
 		allowNetwork();
-		tempDir = join(tmpdir(), `pi-package-commands-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		tempDir = join(tmpdir(), `aos-package-commands-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		agentDir = join(tempDir, "agent");
 		projectDir = join(tempDir, "project");
 		packageDir = join(tempDir, "local-package");
@@ -64,7 +64,7 @@ describe("package commands", () => {
 
 		originalCwd = process.cwd();
 		originalAgentDir = process.env[ENV_AGENT_DIR];
-		originalPiPackageDir = process.env.AOS_AGENT_PACKAGE_DIR;
+		originalPackageDir = process.env.AOS_AGENT_PACKAGE_DIR;
 		originalLatestVersionUrl = process.env.AOS_AGENT_LATEST_VERSION_URL;
 		process.env.AOS_AGENT_LATEST_VERSION_URL = "https://example.test/aos/latest";
 		originalPath = process.env.PATH;
@@ -93,10 +93,10 @@ describe("package commands", () => {
 		} else {
 			process.env[ENV_AGENT_DIR] = originalAgentDir;
 		}
-		if (originalPiPackageDir === undefined) {
+		if (originalPackageDir === undefined) {
 			delete process.env.AOS_AGENT_PACKAGE_DIR;
 		} else {
-			process.env.AOS_AGENT_PACKAGE_DIR = originalPiPackageDir;
+			process.env.AOS_AGENT_PACKAGE_DIR = originalPackageDir;
 		}
 		if (originalLatestVersionUrl === undefined) {
 			delete process.env.AOS_AGENT_LATEST_VERSION_URL;
@@ -421,9 +421,9 @@ describe("package commands", () => {
 
 	it("cycles project package overrides in config local mode", async () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () => JSON.stringify({ packages: ["npm:pi-tools"] }));
+		storage.withLock("global", () => JSON.stringify({ packages: ["npm:aos-tools"] }));
 		const settingsManager = SettingsManager.fromStorage(storage, { projectTrusted: true });
-		const resolvedPaths = extensionPaths(join(tempDir, "pkg"), "npm:pi-tools", "user", ["bar.ts"]);
+		const resolvedPaths = extensionPaths(join(tempDir, "pkg"), "npm:aos-tools", "user", ["bar.ts"]);
 		const selector = new ConfigSelectorComponent(
 			{ global: resolvedPaths, project: resolvedPaths },
 			settingsManager,
@@ -438,12 +438,12 @@ describe("package commands", () => {
 
 		selector.getResourceList().handleInput(" ");
 		expect(settingsManager.getProjectSettings().packages).toEqual([
-			{ source: "npm:pi-tools", autoload: false, extensions: [join("-extensions", "bar.ts")] },
+			{ source: "npm:aos-tools", autoload: false, extensions: [join("-extensions", "bar.ts")] },
 		]);
 
 		selector.getResourceList().handleInput(" ");
 		expect(settingsManager.getProjectSettings().packages).toEqual([
-			{ source: "npm:pi-tools", autoload: false, extensions: [join("+extensions", "bar.ts")] },
+			{ source: "npm:aos-tools", autoload: false, extensions: [join("+extensions", "bar.ts")] },
 		]);
 
 		selector.getResourceList().handleInput(" ");
@@ -656,7 +656,7 @@ else {
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
+		const activePackageName = PACKAGE_NAME === "@new-scope/aos-agent" ? "@newer-scope/aos-agent" : "@new-scope/aos-agent";
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
@@ -753,7 +753,7 @@ if(args.includes("install")) process.exit(23);
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
+		const activePackageName = PACKAGE_NAME === "@new-scope/aos-agent" ? "@newer-scope/aos-agent" : "@new-scope/aos-agent";
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
@@ -783,22 +783,22 @@ if(args.includes("install")) process.exit(23);
 
 	it("suggests the configured source when update input omits the npm prefix", async () => {
 		const settingsPath = join(agentDir, "settings.json");
-		writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:pi-formatter"] }, null, 2));
+		writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:aos-formatter"] }, null, 2));
 
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		try {
-			await expect(main(["update", "pi-formatter"])).resolves.toBeUndefined();
+			await expect(main(["update", "aos-formatter"])).resolves.toBeUndefined();
 
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stderr).toContain("Did you mean npm:pi-formatter?");
-			expect(stdout).not.toContain("Updated pi-formatter");
+			expect(stderr).toContain("Did you mean npm:aos-formatter?");
+			expect(stdout).not.toContain("Updated aos-formatter");
 			expect(process.exitCode).toBe(1);
 
 			const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: string[] };
-			expect(settings.packages).toContain("npm:pi-formatter");
+			expect(settings.packages).toContain("npm:aos-formatter");
 		} finally {
 			errorSpy.mockRestore();
 			logSpy.mockRestore();

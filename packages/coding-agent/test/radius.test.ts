@@ -39,7 +39,7 @@ let tempDir: string;
 
 beforeEach(() => {
 	allowNetwork();
-	tempDir = join(tmpdir(), `pi-test-radius-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	tempDir = join(tmpdir(), `aos-test-radius-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 });
 

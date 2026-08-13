@@ -42,8 +42,8 @@ describe("agent telemetry schemas", () => {
 		await startSpan(
 			"aos.harness.step",
 			{
-				"pi.lane.name": "main",
-				"pi.operation.id": "operation",
+				"aos.lane.name": "main",
+				"aos.operation.id": "operation",
 				"aos.step.kind": "assistant",
 				"aos.step.attempt": 1,
 			},
@@ -119,8 +119,8 @@ describe("agent telemetry schemas", () => {
 	it("infers per-span harness literals and optional completion enrichment", async () => {
 		type RunStart = HarnessSpanStartAttributes<"aos.harness.run">;
 		type RunEnd = HarnessSpanEndAttributes<"aos.harness.run">;
-		expectTypeOf<RunStart["pi.operation.kind"]>().toEqualTypeOf<"run">();
-		expectTypeOf<RunEnd["pi.operation.outcome"]>().toEqualTypeOf<
+		expectTypeOf<RunStart["aos.operation.kind"]>().toEqualTypeOf<"run">();
+		expectTypeOf<RunEnd["aos.operation.outcome"]>().toEqualTypeOf<
 			"completed" | "aborted" | "failed" | "suspended" | undefined
 		>();
 
@@ -130,13 +130,13 @@ describe("agent telemetry schemas", () => {
 			"aos.harness.run",
 			{
 				"aos.session.id": "session",
-				"pi.lane.name": "main",
-				"pi.operation.id": "operation",
-				"pi.operation.kind": "run",
-				"pi.operation.recovery": false,
+				"aos.lane.name": "main",
+				"aos.operation.id": "operation",
+				"aos.operation.kind": "run",
+				"aos.operation.recovery": false,
 			},
 			(span) => {
-				span.setAttributes({ "pi.operation.outcome": "completed" });
+				span.setAttributes({ "aos.operation.outcome": "completed" });
 				span.setAttributes({});
 				// @ts-expect-error the harness schema declares no span events
 				span.addEvent("result");
@@ -146,11 +146,11 @@ describe("agent telemetry schemas", () => {
 		const compileTimeFailures = () => {
 			const extraRunAttributes = {
 				"aos.session.id": "session",
-				"pi.lane.name": "main",
-				"pi.operation.id": "operation",
-				"pi.operation.kind": "run",
-				"pi.operation.recovery": false,
-				"pi.unknown": true,
+				"aos.lane.name": "main",
+				"aos.operation.id": "operation",
+				"aos.operation.kind": "run",
+				"aos.operation.recovery": false,
+				"aos.unknown": true,
 			} as const;
 			// @ts-expect-error variables with unknown attributes are rejected
 			void startHarnessSpan(telemetryContext, "aos.harness.run", extraRunAttributes, () => {});
@@ -158,13 +158,13 @@ describe("agent telemetry schemas", () => {
 				telemetryContext,
 				"aos.harness.checkpoint",
 				{
-					"pi.lane.name": "main",
-					"pi.operation.id": "operation",
-					"pi.checkpoint.kind": "normal",
+					"aos.lane.name": "main",
+					"aos.operation.id": "operation",
+					"aos.checkpoint.kind": "normal",
 				},
 				(span) => {
 					// @ts-expect-error empty end schemas reject every attribute
-					span.setAttributes({ "pi.unknown": true });
+					span.setAttributes({ "aos.unknown": true });
 				},
 			);
 			void startHarnessSpan(
@@ -172,11 +172,11 @@ describe("agent telemetry schemas", () => {
 				"aos.harness.run",
 				{
 					"aos.session.id": "session",
-					"pi.lane.name": "main",
-					"pi.operation.id": "operation",
+					"aos.lane.name": "main",
+					"aos.operation.id": "operation",
 					// @ts-expect-error run spans accept only the run operation kind
-					"pi.operation.kind": "navigation",
-					"pi.operation.recovery": false,
+					"aos.operation.kind": "navigation",
+					"aos.operation.recovery": false,
 				},
 				() => {},
 			);

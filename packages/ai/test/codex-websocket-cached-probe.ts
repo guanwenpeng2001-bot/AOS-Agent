@@ -37,7 +37,7 @@ function parseArgs(argv: string[]): Args {
 	let transport: Transport = "websocket-cached";
 	let maxTokens = DEFAULT_MAX_TOKENS;
 	let reasoning: ThinkingLevel = "low";
-	let sessionId = `pi-ai-codex-ws-cached-probe-${Date.now()}`;
+	let sessionId = `aos-ai-codex-ws-cached-probe-${Date.now()}`;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];

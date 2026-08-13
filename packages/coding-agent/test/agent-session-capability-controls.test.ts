@@ -28,7 +28,7 @@ import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils
 import { createTestResourceLoader } from "./utilities.ts";
 
 function tmpDir(name: string): { dir: string; agentDir: string } {
-	const dir = join(tmpdir(), `pi-h2-controls-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const dir = join(tmpdir(), `aos-h2-controls-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	const agentDir = join(dir, "agent");
 	mkdirSync(agentDir, { recursive: true });
 	return { dir, agentDir };

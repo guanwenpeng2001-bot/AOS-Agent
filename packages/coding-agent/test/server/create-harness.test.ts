@@ -171,7 +171,7 @@ describe("coding-agent Harness construction", () => {
 		}
 	});
 
-	test("keeps bash PI model variables synchronized with Harness state", async () => {
+	test("keeps bash AOS model variables synchronized with Harness state", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "dynamic-bash-session", createdAt: 1 }));
 		const env = new CapturingExecutionEnv({
 			cwd: process.cwd(),
