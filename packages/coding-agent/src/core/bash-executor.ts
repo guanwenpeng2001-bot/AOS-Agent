@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripAnsi } from "../utils/ansi.ts";
 import { sanitizeBinaryOutput } from "../utils/shell.ts";
+import type { SandboxHandle } from "./sandbox.ts";
 import type { BashOperations } from "./tools/bash.ts";
 import { DEFAULT_MAX_BYTES, truncateTail } from "./tools/truncate.ts";
 
@@ -24,6 +25,12 @@ export interface BashExecutorOptions {
 	onChunk?: (chunk: string) => void;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
+	/** Explicit environment after policy filtering. */
+	env?: NodeJS.ProcessEnv;
+	/** Sandbox handle for strict process execution. */
+	sandbox?: SandboxHandle;
+	/** Frozen policy binding id for sandbox audit. */
+	bindingId?: string;
 }
 
 export interface BashResult {
@@ -105,10 +112,22 @@ export async function executeBashWithOperations(
 	};
 
 	try {
-		const result = await operations.exec(command, cwd, {
-			onData,
-			signal: options?.signal,
-		});
+		const result =
+			options?.sandbox === undefined
+				? await operations.exec(command, cwd, {
+					onData,
+					signal: options?.signal,
+					env: options?.env,
+				})
+				: await options.sandbox.execute({
+					bindingId: options.bindingId ?? "",
+					resource: "process.spawn",
+					command,
+					cwd,
+					env: options.env ?? {},
+					signal: options.signal,
+					onData,
+				});
 
 		const fullOutput = outputChunks.join("");
 		const truncationResult = truncateTail(fullOutput);

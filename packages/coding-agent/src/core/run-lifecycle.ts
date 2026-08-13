@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
 import {
@@ -25,6 +26,37 @@ import {
 	type PublicModelAttemptLedgerRecord,
 	type PublicModelBindingLedgerRecord,
 } from "./model-broker-ledger.ts";
+import {
+	createExecutionPolicyLedger,
+	POLICY_APPROVAL_CUSTOM_TYPE,
+	POLICY_DECISION_CUSTOM_TYPE,
+	POLICY_VIOLATION_CUSTOM_TYPE,
+	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+	type PolicyApprovalLedgerRecord,
+	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
+	type PolicyDecisionLedgerRecord,
+	type PolicyLedgerRecord,
+	type PolicyViolationLedgerRecord,
+	type SandboxLifecycleLedgerRecord,
+} from "./execution-policy-ledger.ts";
+import {
+	POLICY_BINDING_CUSTOM_TYPE,
+	toPublicPolicySummary,
+	type PolicyApprovalRequest,
+	type PolicyApprovalOutcome,
+	type PolicyApprovalSource,
+	type PolicyBinding,
+	type PolicyDecision,
+	type PolicyDecisionOutcome,
+	type PolicyEnforcement,
+	type PolicyErrorCode,
+	type PolicyResource,
+	type PolicyAction,
+	type PolicyTrust,
+	type PublicPolicySummary,
+	type SandboxCapabilities,
+	type SandboxStatus,
+} from "./execution-policy.ts";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
@@ -135,6 +167,10 @@ export interface RunRecord {
 	modelBindingId?: string;
 	/** Id of the source Run's ModelBroker binding when this is a resume. */
 	previousModelBindingId?: string;
+	/** Id of the frozen Execution Policy binding used by this Run. */
+	policyBindingId?: string;
+	/** Id of the source Run's Execution Policy binding when this is a resume. */
+	previousPolicyBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
@@ -142,6 +178,8 @@ export interface RunRecord {
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
+	/** Public-safe Execution Policy summary for the accepted binding/decision. */
+	policySummary?: PublicPolicySummary;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -185,10 +223,16 @@ export interface RunReceipt {
 	modelBindingId?: string;
 	/** Id of the source Run's ModelBroker binding when this is a resume. */
 	previousModelBindingId?: string;
+	/** Id of the frozen Execution Policy binding used by this Run. */
+	policyBindingId?: string;
+	/** Id of the source Run's Execution Policy binding when this is a resume. */
+	previousPolicyBindingId?: string;
 	/** Final candidate and safe attempt/budget summaries are additive metadata. */
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
+	/** Public-safe Execution Policy summary for the accepted binding/decision. */
+	policySummary?: PublicPolicySummary;
 }
 
 export type RunStreamEvent =
@@ -256,6 +300,22 @@ export type AutomationErrorCode =
 	| "model_binding_unavailable"
 	| "model_budget_exceeded"
 	| "model_fallback_exhausted"
+	// Execution Policy preflight / ledger failures.
+	| "policy_settings_invalid"
+	| "policy_profile_not_found"
+	| "policy_profile_untrusted"
+	| "policy_binding_failed"
+	| "policy_approval_required"
+	| "policy_denied"
+	| "policy_violation"
+	| "workspace_boundary_violation"
+	| "network_policy_violation"
+	| "credential_policy_violation"
+	| "sandbox_required"
+	| "sandbox_unavailable"
+	| "sandbox_start_failed"
+	| "sandbox_capability_insufficient"
+	| "policy_ledger_persistence_failed"
 	// Terminal run.failed receipt code; not a command-level error.
 	| "model_error";
 
@@ -297,6 +357,21 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "model_binding_unavailable" ||
 		value === "model_budget_exceeded" ||
 		value === "model_fallback_exhausted" ||
+		value === "policy_settings_invalid" ||
+		value === "policy_profile_not_found" ||
+		value === "policy_profile_untrusted" ||
+		value === "policy_binding_failed" ||
+		value === "policy_approval_required" ||
+		value === "policy_denied" ||
+		value === "policy_violation" ||
+		value === "workspace_boundary_violation" ||
+		value === "network_policy_violation" ||
+		value === "credential_policy_violation" ||
+		value === "sandbox_required" ||
+		value === "sandbox_unavailable" ||
+		value === "sandbox_start_failed" ||
+		value === "sandbox_capability_insufficient" ||
+		value === "policy_ledger_persistence_failed" ||
 		value === "model_error"
 	);
 }
@@ -370,6 +445,7 @@ export interface RunResult {
 	record: RunRecord;
 	receipt?: RunReceipt;
 	recovery?: RunRecoveryState;
+	policySummary?: PublicPolicySummary;
 }
 
 export interface AcceptOptions {
@@ -380,6 +456,8 @@ export interface AcceptOptions {
 	/** ModelBroker binding metadata; additive and optional for legacy callers. */
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	/** Expected source Execution Policy binding id for a resume successor. */
+	previousPolicyBindingId?: string;
 	attempt: number;
 	model: RunModelReference;
 	finalModel?: RunFinalModelReference;
@@ -390,6 +468,15 @@ export interface AcceptOptions {
 	 * entry. Its id becomes the run receipt's capabilityBindingId.
 	 */
 	capabilityBinding?: CapabilityBindingLedgerRecord;
+	/** Frozen Execution Policy binding resolved for this Run. */
+	policyBinding?: PolicyBinding;
+	/** Optional safe policy facts to persist with the accepted run. */
+	policyDecision?: PolicyDecision;
+	policyApproval?: PolicyApprovalRequest;
+	sandboxLifecycle?: SandboxLifecycleLedgerRecord;
+	policyViolation?: PolicyViolationLedgerRecord;
+	/** Public-safe Execution Policy summary. Derived from policyBinding when omitted. */
+	policySummary?: PublicPolicySummary;
 }
 
 export interface RunReservation {
@@ -412,6 +499,11 @@ export interface SettleInput {
 	/** Additive ModelBroker receipt metadata. */
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	policyDecision?: PolicyDecision;
+	policyApproval?: PolicyApprovalRequest;
+	sandboxLifecycle?: SandboxLifecycleLedgerRecord;
+	policyViolation?: PolicyViolationLedgerRecord;
+	policySummary?: PublicPolicySummary;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
@@ -620,6 +712,144 @@ function isRunModelBudgetSummary(value: unknown): value is RunModelBudgetSummary
 	});
 }
 
+function isPolicyTrust(value: unknown): value is PolicyTrust {
+	return value === "trusted" || value === "untrusted";
+}
+
+function isPolicyEnforcement(value: unknown): value is PolicyEnforcement {
+	return value === "legacy" || value === "host" || value === "sandbox";
+}
+
+function isPolicyResource(value: unknown): value is PolicyResource {
+	return (
+		value === "capability.invoke" ||
+		value === "filesystem.read" ||
+		value === "filesystem.find" ||
+		value === "filesystem.grep" ||
+		value === "filesystem.write" ||
+		value === "process.spawn" ||
+		value === "network.connect" ||
+		value === "credential.expose" ||
+		value === "sandbox.prepare"
+	);
+}
+
+function isPolicyAction(value: unknown): value is PolicyAction {
+	return value === "allow" || value === "ask" || value === "deny";
+}
+
+function isPolicyDecisionOutcome(value: unknown): value is PolicyDecisionOutcome {
+	return value === "allow" || value === "ask" || value === "deny" || value === "sandbox_required";
+}
+
+function isPolicyApprovalOutcome(value: unknown): value is PolicyApprovalOutcome {
+	return value === "approved" || value === "rejected";
+}
+
+function isPolicyApprovalSource(value: unknown): value is PolicyApprovalSource {
+	return value === "interactive" || value === "rpc" || value === "sdk" || value === "system";
+}
+
+function isSandboxStatus(value: unknown): value is SandboxStatus {
+	return (
+		value === "not_required" ||
+		value === "unavailable" ||
+		value === "preparing" ||
+		value === "ready" ||
+		value === "failed" ||
+		value === "disposed"
+	);
+}
+
+function isPolicyErrorCode(value: unknown): value is PolicyErrorCode {
+	return (
+		value === "policy_settings_invalid" ||
+		value === "policy_profile_not_found" ||
+		value === "policy_profile_untrusted" ||
+		value === "policy_binding_failed" ||
+		value === "policy_approval_required" ||
+		value === "policy_denied" ||
+		value === "policy_violation" ||
+		value === "workspace_boundary_violation" ||
+		value === "network_policy_violation" ||
+		value === "credential_policy_violation" ||
+		value === "sandbox_required" ||
+		value === "sandbox_unavailable" ||
+		value === "sandbox_start_failed" ||
+		value === "sandbox_capability_insufficient" ||
+		value === "policy_ledger_persistence_failed"
+	);
+}
+
+function isSandboxCapabilities(value: unknown): value is SandboxCapabilities {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	return (
+		typeof obj.filesystem === "boolean" &&
+		typeof obj.process === "boolean" &&
+		typeof obj.network === "boolean" &&
+		typeof obj.credentialIsolation === "boolean"
+	);
+}
+
+function cloneSandboxCapabilities(value: SandboxCapabilities): SandboxCapabilities {
+	return {
+		filesystem: value.filesystem,
+		process: value.process,
+		network: value.network,
+		credentialIsolation: value.credentialIsolation,
+	};
+}
+
+function isPublicPolicySummary(value: unknown): value is PublicPolicySummary {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	if (
+		!isRunMetadataId(obj.bindingId) ||
+		!isRunMetadataId(obj.profileId) ||
+		!isRunMetadataId(obj.profileRevision) ||
+		!isPolicyTrust(obj.projectTrust) ||
+		!isPolicyEnforcement(obj.enforcement) ||
+		!isSandboxStatus(obj.sandboxStatus) ||
+		!isSandboxCapabilities(obj.sandboxCapabilities)
+	) {
+		return false;
+	}
+	if (obj.sandboxProviderId !== undefined && !isRunMetadataId(obj.sandboxProviderId)) return false;
+	if (obj.resource !== undefined && !isPolicyResource(obj.resource)) return false;
+	if (obj.action !== undefined && !isPolicyAction(obj.action)) return false;
+	if (obj.outcome !== undefined && !isPolicyDecisionOutcome(obj.outcome)) return false;
+	if (obj.reasonCode !== undefined && !isPolicyErrorCode(obj.reasonCode)) return false;
+	if (obj.requestId !== undefined && !isRunMetadataId(obj.requestId)) return false;
+	if (obj.timestamp !== undefined && !isRunMetadataText(obj.timestamp)) return false;
+	return true;
+}
+
+function clonePublicPolicySummary(value: PublicPolicySummary): PublicPolicySummary | undefined {
+	if (!isPublicPolicySummary(value)) return undefined;
+	return {
+		bindingId: value.bindingId,
+		profileId: value.profileId,
+		profileRevision: value.profileRevision,
+		projectTrust: value.projectTrust,
+		enforcement: value.enforcement,
+		...(value.sandboxProviderId === undefined ? {} : { sandboxProviderId: value.sandboxProviderId }),
+		sandboxStatus: value.sandboxStatus,
+		sandboxCapabilities: cloneSandboxCapabilities(value.sandboxCapabilities),
+		...(value.resource === undefined ? {} : { resource: value.resource }),
+		...(value.action === undefined ? {} : { action: value.action }),
+		...(value.outcome === undefined ? {} : { outcome: value.outcome }),
+		...(value.reasonCode === undefined ? {} : { reasonCode: value.reasonCode }),
+		...(value.requestId === undefined ? {} : { requestId: value.requestId }),
+		...(value.timestamp === undefined ? {} : { timestamp: value.timestamp }),
+	};
+}
+
+function publicPolicySummaryFrom(binding: PolicyBinding, summary?: PublicPolicySummary): PublicPolicySummary | undefined {
+	if (summary !== undefined) return clonePublicPolicySummary(summary);
+	return clonePublicPolicySummary(toPublicPolicySummary(binding));
+}
+
 function cloneRunFinalModel(value: RunFinalModelReference): RunFinalModelReference | undefined {
 	if (!isRunFinalModelReference(value)) return undefined;
 	const copy: RunFinalModelReference = { provider: value.provider };
@@ -686,11 +916,14 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
 	if (obj.modelBindingId !== undefined && !isRunMetadataId(obj.modelBindingId)) return false;
 	if (obj.previousModelBindingId !== undefined && !isRunMetadataId(obj.previousModelBindingId)) return false;
+	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
+	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
 	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
+	if (obj.policySummary !== undefined && !isPublicPolicySummary(obj.policySummary)) return false;
 	if (obj.startedAt !== undefined && typeof obj.startedAt !== "string") return false;
 	if (obj.endedAt !== undefined && typeof obj.endedAt !== "string") return false;
 	if (obj.terminalError !== undefined && !isAutomationError(obj.terminalError)) return false;
@@ -710,11 +943,14 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
 	if (obj.modelBindingId !== undefined && !isRunMetadataId(obj.modelBindingId)) return false;
 	if (obj.previousModelBindingId !== undefined && !isRunMetadataId(obj.previousModelBindingId)) return false;
+	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
+	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
 	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
+	if (obj.policySummary !== undefined && !isPublicPolicySummary(obj.policySummary)) return false;
 	return true;
 }
 
@@ -905,12 +1141,15 @@ export interface PublicRunRecord {
 	capabilityBindingId?: string;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	policyBindingId?: string;
+	previousPolicyBindingId?: string;
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
+	policySummary?: PublicPolicySummary;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -928,9 +1167,12 @@ export interface PublicRunReceipt {
 	capabilityBindingId?: string;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	policyBindingId?: string;
+	previousPolicyBindingId?: string;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
+	policySummary?: PublicPolicySummary;
 }
 
 /**
@@ -960,6 +1202,10 @@ export type PublicSessionCustomData =
 	| { schemaVersion: 1; binding: PublicCapabilityBindingLedgerRecord }
 	| { schemaVersion: 1; binding: PublicModelBindingLedgerRecord }
 	| { schemaVersion: 1; attempt: PublicModelAttemptLedgerRecord }
+	| { schemaVersion: 1; sequence: number; summary: PublicPolicySummary }
+	| { schemaVersion: 1; sequence: number; approval: PolicyApprovalLedgerRecord }
+	| { schemaVersion: 1; sequence: number; sandboxLifecycle: SandboxLifecycleLedgerRecord }
+	| { schemaVersion: 1; sequence: number; violation: PolicyViolationLedgerRecord }
 	| { schemaVersion: 1; kind: "accepted"; record: PublicRunRecord }
 	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
 	| { schemaVersion: 1; kind: "terminal"; receipt: PublicRunReceipt; endedAt: string };
@@ -1132,6 +1378,12 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 	if (record.previousModelBindingId !== undefined && isRunMetadataId(record.previousModelBindingId)) {
 		copy.previousModelBindingId = record.previousModelBindingId;
 	}
+	if (record.policyBindingId !== undefined && isRunMetadataId(record.policyBindingId)) {
+		copy.policyBindingId = record.policyBindingId;
+	}
+	if (record.previousPolicyBindingId !== undefined && isRunMetadataId(record.previousPolicyBindingId)) {
+		copy.previousPolicyBindingId = record.previousPolicyBindingId;
+	}
 	if (record.finalModel !== undefined) {
 		const finalModel = serializePublicRunFinalModel(record.finalModel);
 		if (finalModel !== undefined) copy.finalModel = finalModel;
@@ -1142,6 +1394,10 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
 	}
 	if (record.modelBudget !== undefined) copy.modelBudget = serializePublicRunModelBudget(record.modelBudget);
+	if (record.policySummary !== undefined) {
+		const policySummary = clonePublicPolicySummary(record.policySummary);
+		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(record.terminalError);
@@ -1172,6 +1428,12 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 	if (receipt.previousModelBindingId !== undefined && isRunMetadataId(receipt.previousModelBindingId)) {
 		copy.previousModelBindingId = receipt.previousModelBindingId;
 	}
+	if (receipt.policyBindingId !== undefined && isRunMetadataId(receipt.policyBindingId)) {
+		copy.policyBindingId = receipt.policyBindingId;
+	}
+	if (receipt.previousPolicyBindingId !== undefined && isRunMetadataId(receipt.previousPolicyBindingId)) {
+		copy.previousPolicyBindingId = receipt.previousPolicyBindingId;
+	}
 	if (receipt.finalModel !== undefined) {
 		const finalModel = serializePublicRunFinalModel(receipt.finalModel);
 		if (finalModel !== undefined) copy.finalModel = finalModel;
@@ -1182,6 +1444,10 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
 	}
 	if (receipt.modelBudget !== undefined) copy.modelBudget = serializePublicRunModelBudget(receipt.modelBudget);
+	if (receipt.policySummary !== undefined) {
+		const policySummary = clonePublicPolicySummary(receipt.policySummary);
+		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
 	return copy;
 }
 
@@ -1242,14 +1508,37 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 	switch (event.type) {
 		case "entry_appended":
 			return { ...event, entry: serializePublicSessionEntry(event.entry) };
+		case "message_start":
+		case "message_end":
+			return { ...event, message: serializePublicAgentMessage(event.message) };
+		case "message_update":
+			return {
+				...event,
+				message: serializePublicAgentMessage(event.message),
+				assistantMessageEvent: serializePublicAssistantMessageEvent(event.assistantMessageEvent),
+			};
+		case "turn_end":
+			return {
+				...event,
+				message: serializePublicAgentMessage(event.message),
+				toolResults: event.toolResults.map((message) => serializePublicToolResult(message)),
+			};
+		case "tool_execution_start":
+			return { ...event, args: {} };
+		case "tool_execution_update":
+			return { ...event, args: {}, partialResult: {} };
+		case "tool_execution_end":
+			return { ...event, result: {} };
 		case "agent_end":
 			return {
 				...event,
-				messages: event.messages.map((message) =>
-					message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")
-						? { ...message, errorMessage: "Agent run failed." }
-						: message,
-				),
+				messages: event.messages.map((message) => {
+					const publicMessage = serializePublicAgentMessage(message);
+					return publicMessage.role === "assistant" &&
+						(publicMessage.stopReason === "error" || publicMessage.stopReason === "aborted")
+						? { ...publicMessage, errorMessage: "Agent run failed." }
+						: publicMessage;
+				}),
 			};
 		case "compaction_end":
 			return event.errorMessage === undefined ? event : { ...event, errorMessage: "Operation failed." };
@@ -1259,6 +1548,8 @@ export function serializePublicSessionEvent(event: AgentSessionEvent): PublicAge
 			return event.finalError === undefined ? event : { ...event, finalError: "Operation failed." };
 		case "summarization_retry_scheduled":
 			return { ...event, errorMessage: "Operation failed." };
+		case "bash_execution_update":
+			return { ...event, delta: event.delta.length === 0 ? "" : "[redacted]" };
 		default:
 			return event;
 	}
@@ -1279,18 +1570,15 @@ export function serializePublicRunStreamEvent(event: RunStreamEvent): PublicRunS
  * Return a public-safe copy of a Session entry. Capability and run ledgers are
  * decoded before output so historic raw identities remain internally replayable
  * but cannot escape. Other extension-owned custom metadata is omitted because
- * it has no stable public contract; ordinary session messages remain unchanged.
+ * it has no stable public contract; structured execution message payloads are
+ * redacted before they cross the public boundary.
  */
 export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionEntry {
 	switch (entry.type) {
 		case "message":
 			return {
 				...entry,
-				message:
-					entry.message.role === "assistant" &&
-					(entry.message.stopReason === "error" || entry.message.stopReason === "aborted")
-						? { ...entry.message, errorMessage: "Agent run failed." }
-						: entry.message,
+				message: serializePublicAgentMessage(entry.message),
 			};
 		case "custom":
 			return serializePublicCustomEntry(entry);
@@ -1308,6 +1596,62 @@ export function serializePublicSessionEntry(entry: SessionEntry): PublicSessionE
 	}
 }
 
+function serializePublicAgentMessage(message: AgentMessage): AgentMessage {
+	if (message.role === "bashExecution") {
+		const { fullOutputPath: _fullOutputPath, ...publicMessage } = message;
+		return {
+			...publicMessage,
+			command: "[redacted]",
+			output: message.output.length === 0 ? "" : "[redacted]",
+		};
+	}
+	if (message.role === "assistant") {
+		return serializePublicAssistantMessage(message);
+	}
+	if (message.role === "toolResult") {
+		return serializePublicToolResult(message);
+	}
+	return message;
+}
+
+function serializePublicToolResult(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+): Extract<AgentMessage, { role: "toolResult" }> {
+	const { details: _details, usage: _usage, ...publicMessage } = message;
+	return {
+		...publicMessage,
+		content: message.content.length === 0 ? [] : [{ type: "text", text: "[redacted]" }],
+	};
+}
+
+function serializePublicAssistantMessage(message: AssistantMessage): AssistantMessage {
+	return {
+		...message,
+		content: message.content.map((block) =>
+			block.type === "toolCall" ? { ...block, arguments: {}, thoughtSignature: undefined } : block,
+		),
+	};
+}
+
+function serializePublicAssistantMessageEvent(event: AssistantMessageEvent): AssistantMessageEvent {
+	switch (event.type) {
+		case "done":
+			return { ...event, message: serializePublicAssistantMessage(event.message) };
+		case "error":
+			return { ...event, error: serializePublicAssistantMessage(event.error) };
+		case "toolcall_end":
+			return {
+				...event,
+				toolCall: { ...event.toolCall, arguments: {}, thoughtSignature: undefined },
+				partial: serializePublicAssistantMessage(event.partial),
+			};
+		case "toolcall_delta":
+			return { ...event, delta: "", partial: serializePublicAssistantMessage(event.partial) };
+		default:
+			return { ...event, partial: serializePublicAssistantMessage(event.partial) };
+	}
+}
+
 /** Recursively serialize a Session tree without exposing custom ledger metadata. */
 export function serializePublicSessionTreeNode(node: SessionTreeNode): PublicSessionTreeNode {
 	const copy: PublicSessionTreeNode = {
@@ -1319,10 +1663,178 @@ export function serializePublicSessionTreeNode(node: SessionTreeNode): PublicSes
 	return copy;
 }
 
+function isPolicyLedgerRecord(value: unknown): value is PolicyLedgerRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPersistedPolicyLedgerEntry(value: unknown): value is { schemaVersion: 1; sequence: number; record: PolicyLedgerRecord } {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	return obj.schemaVersion === 1 && Number.isSafeInteger(obj.sequence) && typeof obj.sequence === "number" && isPolicyLedgerRecord(obj.record);
+}
+
+function isExecutionPolicyBindingLedgerRecord(value: unknown): value is ExecutionPolicyBindingLedgerRecord {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	return (
+		isRunMetadataId(obj.id) &&
+		isRunMetadataId(obj.profileId) &&
+		isRunMetadataId(obj.profileRevision) &&
+		isPolicyTrust(obj.projectTrust) &&
+		isPolicyEnforcement(obj.enforcement) &&
+		(obj.sandboxProviderId === undefined || isRunMetadataId(obj.sandboxProviderId)) &&
+		isSandboxCapabilities(obj.sandboxCapabilities) &&
+		isSandboxStatus(obj.sandboxStatus)
+	);
+}
+
+function isPolicyDecisionLedgerRecord(value: unknown): value is PolicyDecisionLedgerRecord {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	return (
+		isRunMetadataId(obj.bindingId) &&
+		isRunMetadataId(obj.profileId) &&
+		isRunMetadataId(obj.profileRevision) &&
+		isPolicyTrust(obj.projectTrust) &&
+		isPolicyEnforcement(obj.enforcement) &&
+		isPolicyResource(obj.resource) &&
+		isPolicyAction(obj.action) &&
+		isPolicyDecisionOutcome(obj.outcome) &&
+		(obj.reasonCode === undefined || isPolicyErrorCode(obj.reasonCode)) &&
+		(obj.requestId === undefined || isRunMetadataId(obj.requestId)) &&
+		isRunMetadataText(obj.timestamp)
+	);
+}
+
+function publicPolicySummaryFromBindingRecord(record: ExecutionPolicyBindingLedgerRecord): PublicPolicySummary | undefined {
+	return clonePublicPolicySummary({
+		bindingId: record.id,
+		profileId: record.profileId,
+		profileRevision: record.profileRevision,
+		projectTrust: record.projectTrust,
+		enforcement: record.enforcement,
+		...(record.sandboxProviderId === undefined ? {} : { sandboxProviderId: record.sandboxProviderId }),
+		sandboxStatus: record.sandboxStatus,
+		sandboxCapabilities: cloneSandboxCapabilities(record.sandboxCapabilities),
+	});
+}
+
+function publicPolicySummaryFromDecisionRecord(record: PolicyDecisionLedgerRecord): PublicPolicySummary | undefined {
+	return clonePublicPolicySummary({
+		bindingId: record.bindingId,
+		profileId: record.profileId,
+		profileRevision: record.profileRevision,
+		projectTrust: record.projectTrust,
+		enforcement: record.enforcement,
+		sandboxStatus: "not_required",
+		sandboxCapabilities: { filesystem: false, process: false, network: false, credentialIsolation: false },
+		resource: record.resource,
+		action: record.action,
+		outcome: record.outcome,
+		...(record.reasonCode === undefined ? {} : { reasonCode: record.reasonCode }),
+		...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+		timestamp: record.timestamp,
+	});
+}
+
+function clonePublicPolicyApproval(record: PolicyApprovalLedgerRecord): PolicyApprovalLedgerRecord | undefined {
+	if (!isRunMetadataId(record.id) || !isRunMetadataId(record.bindingId) || !isPolicyResource(record.resource)) return undefined;
+	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
+	if (record.outcome !== undefined && !isPolicyApprovalOutcome(record.outcome)) return undefined;
+	if (record.source !== undefined && !isPolicyApprovalSource(record.source)) return undefined;
+	if ((record.outcome === undefined) !== (record.source === undefined)) return undefined;
+	if (record.reasonCode !== "policy_approval_required" || !isRunMetadataText(record.createdAt)) return undefined;
+	if (typeof record.scope !== "object" || record.scope === null || Array.isArray(record.scope)) return undefined;
+	if (!isPolicyResource(record.scope.resource)) return undefined;
+	return {
+		id: record.id,
+		...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+		bindingId: record.bindingId,
+		resource: record.resource,
+		reasonCode: record.reasonCode,
+		createdAt: record.createdAt,
+		...(record.outcome === undefined ? {} : { outcome: record.outcome }),
+		...(record.source === undefined ? {} : { source: record.source }),
+		scope: {
+			resource: record.scope.resource,
+			...(record.scope.workspaceScopes === undefined ? {} : { workspaceScopes: [...record.scope.workspaceScopes] }),
+			...(record.scope.environmentCount === undefined ? {} : { environmentCount: record.scope.environmentCount }),
+			...(record.scope.destinationCount === undefined ? {} : { destinationCount: record.scope.destinationCount }),
+			...(record.scope.credentialCount === undefined ? {} : { credentialCount: record.scope.credentialCount }),
+		},
+	};
+}
+
+function clonePublicSandboxLifecycle(record: SandboxLifecycleLedgerRecord): SandboxLifecycleLedgerRecord | undefined {
+	if (!isRunMetadataId(record.bindingId) || !isSandboxStatus(record.status) || !isRunMetadataText(record.timestamp)) return undefined;
+	if (record.providerId !== undefined && !isRunMetadataId(record.providerId)) return undefined;
+	if (record.capabilities !== undefined && !isSandboxCapabilities(record.capabilities)) return undefined;
+	if (record.reasonCode !== undefined && !isPolicyErrorCode(record.reasonCode)) return undefined;
+	return {
+		bindingId: record.bindingId,
+		status: record.status,
+		timestamp: record.timestamp,
+		...(record.providerId === undefined ? {} : { providerId: record.providerId }),
+		...(record.capabilities === undefined ? {} : { capabilities: cloneSandboxCapabilities(record.capabilities) }),
+		...(record.reasonCode === undefined ? {} : { reasonCode: record.reasonCode }),
+	};
+}
+
+function clonePublicPolicyViolation(record: PolicyViolationLedgerRecord): PolicyViolationLedgerRecord | undefined {
+	if (!isRunMetadataId(record.bindingId) || !isRunMetadataText(record.timestamp) || !isPolicyErrorCode(record.reasonCode)) return undefined;
+	if (record.resource !== undefined && !isPolicyResource(record.resource)) return undefined;
+	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
+	return {
+		bindingId: record.bindingId,
+		timestamp: record.timestamp,
+		reasonCode: record.reasonCode,
+		...(record.resource === undefined ? {} : { resource: record.resource }),
+		...(record.requestId === undefined ? {} : { requestId: record.requestId }),
+	};
+}
+
 function serializePublicCustomEntry(
 	entry: Extract<SessionEntry, { type: "custom" }>,
 ): PublicSessionCustomEntry {
 	const { data: _data, ...publicEntry } = entry;
+	if (entry.customType === POLICY_BINDING_CUSTOM_TYPE || entry.customType === POLICY_DECISION_CUSTOM_TYPE) {
+		const parsed = isPersistedPolicyLedgerEntry(entry.data) ? entry.data : undefined;
+		if (parsed === undefined) return publicEntry;
+		const summary = entry.customType === POLICY_BINDING_CUSTOM_TYPE
+			? isExecutionPolicyBindingLedgerRecord(parsed.record)
+				? publicPolicySummaryFromBindingRecord(parsed.record)
+				: undefined
+			: isPolicyDecisionLedgerRecord(parsed.record)
+				? publicPolicySummaryFromDecisionRecord(parsed.record)
+				: undefined;
+		return summary === undefined
+			? publicEntry
+			: { ...publicEntry, data: { schemaVersion: 1, sequence: parsed.sequence, summary } };
+	}
+	if (entry.customType === POLICY_APPROVAL_CUSTOM_TYPE) {
+		const parsed = isPersistedPolicyLedgerEntry(entry.data) ? entry.data : undefined;
+		if (parsed === undefined) return publicEntry;
+		const approval = clonePublicPolicyApproval(parsed.record as PolicyApprovalLedgerRecord);
+		return approval === undefined
+			? publicEntry
+			: { ...publicEntry, data: { schemaVersion: 1, sequence: parsed.sequence, approval } };
+	}
+	if (entry.customType === SANDBOX_LIFECYCLE_CUSTOM_TYPE) {
+		const parsed = isPersistedPolicyLedgerEntry(entry.data) ? entry.data : undefined;
+		if (parsed === undefined) return publicEntry;
+		const sandboxLifecycle = clonePublicSandboxLifecycle(parsed.record as SandboxLifecycleLedgerRecord);
+		return sandboxLifecycle === undefined
+			? publicEntry
+			: { ...publicEntry, data: { schemaVersion: 1, sequence: parsed.sequence, sandboxLifecycle } };
+	}
+	if (entry.customType === POLICY_VIOLATION_CUSTOM_TYPE) {
+		const parsed = isPersistedPolicyLedgerEntry(entry.data) ? entry.data : undefined;
+		if (parsed === undefined) return publicEntry;
+		const violation = clonePublicPolicyViolation(parsed.record as PolicyViolationLedgerRecord);
+		return violation === undefined
+			? publicEntry
+			: { ...publicEntry, data: { schemaVersion: 1, sequence: parsed.sequence, violation } };
+	}
 	if (entry.customType === MODEL_BINDING_CUSTOM_TYPE || entry.customType === MODEL_ATTEMPT_CUSTOM_TYPE) {
 		const serialized = serializePublicModelBrokerLedgerEntry(entry);
 		if (serialized.data === undefined) return publicEntry;
@@ -1403,6 +1915,8 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 	if (record.capabilityBindingId !== undefined) copy.capabilityBindingId = record.capabilityBindingId;
 	if (record.modelBindingId !== undefined) copy.modelBindingId = record.modelBindingId;
 	if (record.previousModelBindingId !== undefined) copy.previousModelBindingId = record.previousModelBindingId;
+	if (record.policyBindingId !== undefined) copy.policyBindingId = record.policyBindingId;
+	if (record.previousPolicyBindingId !== undefined) copy.previousPolicyBindingId = record.previousPolicyBindingId;
 	if (record.finalModel !== undefined) copy.finalModel = { ...record.finalModel };
 	if (record.modelAttempts !== undefined) {
 		copy.modelAttempts = record.modelAttempts.map((attempt) => ({
@@ -1412,6 +1926,10 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		}));
 	}
 	if (record.modelBudget !== undefined) copy.modelBudget = { ...record.modelBudget };
+	if (record.policySummary !== undefined) {
+		const policySummary = clonePublicPolicySummary(record.policySummary);
+		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = cloneAutomationError(record.terminalError);
@@ -1432,6 +1950,8 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 	if (receipt.capabilityBindingId !== undefined) copy.capabilityBindingId = receipt.capabilityBindingId;
 	if (receipt.modelBindingId !== undefined) copy.modelBindingId = receipt.modelBindingId;
 	if (receipt.previousModelBindingId !== undefined) copy.previousModelBindingId = receipt.previousModelBindingId;
+	if (receipt.policyBindingId !== undefined) copy.policyBindingId = receipt.policyBindingId;
+	if (receipt.previousPolicyBindingId !== undefined) copy.previousPolicyBindingId = receipt.previousPolicyBindingId;
 	if (receipt.finalModel !== undefined) copy.finalModel = { ...receipt.finalModel };
 	if (receipt.modelAttempts !== undefined) {
 		copy.modelAttempts = receipt.modelAttempts.map((attempt) => ({
@@ -1441,6 +1961,10 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 		}));
 	}
 	if (receipt.modelBudget !== undefined) copy.modelBudget = { ...receipt.modelBudget };
+	if (receipt.policySummary !== undefined) {
+		const policySummary = clonePublicPolicySummary(receipt.policySummary);
+		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
 	return copy;
 }
 
@@ -1453,6 +1977,9 @@ class RunHandleImpl implements RunHandle {
 	private readonly coordinator: RunLifecycleCoordinatorImpl;
 	private readonly _record: RunRecord;
 	private readonly _capabilityBindingId: string | undefined;
+	private readonly _policyBindingId: string | undefined;
+	private readonly _previousPolicyBindingId: string | undefined;
+	private _policySummary: PublicPolicySummary | undefined;
 	private _sequence = 0;
 	private _cancelled = false;
 	private _finalText = "";
@@ -1466,6 +1993,14 @@ class RunHandleImpl implements RunHandle {
 		this.sessionId = sessionId;
 		this.runId = options.runId ?? coordinator.nextRunId();
 		this._capabilityBindingId = options.capabilityBinding?.id;
+		this._policyBindingId = options.policyBinding?.id;
+		this._previousPolicyBindingId = options.policyBinding?.previousPolicyBindingId ?? options.previousPolicyBindingId;
+		this._policySummary =
+			options.policyBinding === undefined
+				? options.policySummary === undefined
+					? undefined
+					: clonePublicPolicySummary(options.policySummary)
+				: publicPolicySummaryFrom(options.policyBinding, options.policySummary);
 		this._record = {
 			id: this.runId,
 			sessionId,
@@ -1488,6 +2023,12 @@ class RunHandleImpl implements RunHandle {
 		if (options.previousModelBindingId !== undefined && isRunMetadataId(options.previousModelBindingId)) {
 			this._record.previousModelBindingId = options.previousModelBindingId;
 		}
+		if (this._policyBindingId !== undefined) {
+			this._record.policyBindingId = this._policyBindingId;
+		}
+		if (this._previousPolicyBindingId !== undefined) {
+			this._record.previousPolicyBindingId = this._previousPolicyBindingId;
+		}
 		if (options.finalModel !== undefined) {
 			const finalModel = cloneRunFinalModel(options.finalModel);
 			if (finalModel !== undefined) this._record.finalModel = finalModel;
@@ -1497,6 +2038,7 @@ class RunHandleImpl implements RunHandle {
 			const modelBudget = cloneRunModelBudget(options.modelBudget);
 			if (modelBudget !== undefined) this._record.modelBudget = modelBudget;
 		}
+		if (this._policySummary !== undefined) this._record.policySummary = this._policySummary;
 	}
 
 	get record(): RunRecord {
@@ -1614,6 +2156,20 @@ class RunHandleImpl implements RunHandle {
 		const modelBudget = input.modelBudget === undefined ? this._record.modelBudget : cloneRunModelBudget(input.modelBudget);
 		if (modelBindingId !== undefined) receipt.modelBindingId = modelBindingId;
 		if (previousModelBindingId !== undefined) receipt.previousModelBindingId = previousModelBindingId;
+		if (this._policyBindingId !== undefined) receipt.policyBindingId = this._policyBindingId;
+		if (this._previousPolicyBindingId !== undefined) receipt.previousPolicyBindingId = this._previousPolicyBindingId;
+		if (input.policySummary !== undefined) {
+			const policySummary = clonePublicPolicySummary(input.policySummary);
+			if (policySummary !== undefined) this._policySummary = policySummary;
+		}
+		this.coordinator.persistPolicyFacts({
+			policyBindingId: this._policyBindingId,
+			policyDecision: input.policyDecision,
+			policyApproval: input.policyApproval,
+			sandboxLifecycle: input.sandboxLifecycle,
+			policyViolation: input.policyViolation,
+		});
+		if (this._policySummary !== undefined) receipt.policySummary = this._policySummary;
 		if (finalModel !== undefined) receipt.finalModel = { ...finalModel };
 		if (modelAttempts !== undefined) {
 			receipt.modelAttempts = modelAttempts.map((attempt) => ({
@@ -1630,6 +2186,9 @@ class RunHandleImpl implements RunHandle {
 		if (terminalError !== undefined) this._record.terminalError = terminalError;
 		if (modelBindingId !== undefined) this._record.modelBindingId = modelBindingId;
 		if (previousModelBindingId !== undefined) this._record.previousModelBindingId = previousModelBindingId;
+		if (this._policyBindingId !== undefined) this._record.policyBindingId = this._policyBindingId;
+		if (this._previousPolicyBindingId !== undefined) this._record.previousPolicyBindingId = this._previousPolicyBindingId;
+		if (this._policySummary !== undefined) this._record.policySummary = this._policySummary;
 		if (finalModel !== undefined) this._record.finalModel = { ...finalModel };
 		if (modelAttempts !== undefined) {
 			this._record.modelAttempts = modelAttempts.map((attempt) => ({
@@ -1652,6 +2211,10 @@ class RunHandleImpl implements RunHandle {
 		const result: RunResult = { record: this.record };
 		if (this._receipt !== undefined) result.receipt = cloneRunReceipt(this._receipt);
 		if (!isTerminalStatus(this._record.status)) result.recovery = "interrupted";
+		if (this._policySummary !== undefined) {
+			const policySummary = clonePublicPolicySummary(this._policySummary);
+			if (policySummary !== undefined) result.policySummary = policySummary;
+		}
 		return result;
 	}
 
@@ -1736,10 +2299,12 @@ class RunReservationImpl implements RunReservation {
 		}
 		const run = new RunHandleImpl(this.coordinator, this.sessionId, options);
 		try {
+			this.coordinator.validateAcceptedPolicyFacts(run.runId, options);
 			this.coordinator.persist({ schemaVersion: 1, kind: "accepted", record: run.record });
 			if (options.capabilityBinding !== undefined) {
 				this.coordinator.persistCapabilityBinding(options.capabilityBinding);
 			}
+			this.coordinator.persistAcceptedPolicyFacts(run.runId, options);
 		} catch (error) {
 			// Consume and release the held reservation so the session is free for the next reserve.
 			this.consumed = true;
@@ -1770,6 +2335,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly nowFn: () => string;
 	private readonly runIdFn: () => RunId;
 	private readonly diagnosticsSink: (message: string) => void;
+	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
 	private readonly diagnosedEntries = new Set<string>();
 	private readonly _diagnostics: LedgerDiagnostic[] = [];
@@ -1783,6 +2349,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 		this.runIdFn = options.runId ?? (() => randomUUID());
 		this.diagnosticsSink = options.diagnostics ?? ((message) => console.error(message));
+		this.policyLedger = createExecutionPolicyLedger(session);
 	}
 
 	get activeRun(): RunResult | undefined {
@@ -1887,6 +2454,14 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (fact.receipt.previousModelBindingId !== undefined) {
 					result.record.previousModelBindingId = fact.receipt.previousModelBindingId;
 				}
+				if (fact.receipt.policyBindingId !== undefined) result.record.policyBindingId = fact.receipt.policyBindingId;
+				if (fact.receipt.previousPolicyBindingId !== undefined) {
+					result.record.previousPolicyBindingId = fact.receipt.previousPolicyBindingId;
+				}
+				if (fact.receipt.policySummary !== undefined) {
+					const policySummary = clonePublicPolicySummary(fact.receipt.policySummary);
+					if (policySummary !== undefined) result.record.policySummary = policySummary;
+				}
 				if (fact.receipt.finalModel !== undefined) result.record.finalModel = { ...fact.receipt.finalModel };
 				if (fact.receipt.modelAttempts !== undefined) {
 					result.record.modelAttempts = fact.receipt.modelAttempts.map((attempt) => ({
@@ -1900,6 +2475,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		}
 		for (const result of results.values()) {
 			if (result.receipt === undefined) result.recovery = "interrupted";
+			const policySummary = result.receipt?.policySummary ?? result.record.policySummary;
+			if (policySummary !== undefined) {
+				const cloned = clonePublicPolicySummary(policySummary);
+				if (cloned !== undefined) result.policySummary = cloned;
+			}
 		}
 		this._capabilityBindings = bindings;
 		return results;
@@ -1937,6 +2517,89 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		}
 	}
 
+	persistAcceptedPolicyFacts(runId: RunId, options: AcceptOptions): void {
+		this.validateAcceptedPolicyFacts(runId, options);
+		const binding = options.policyBinding;
+		if (binding === undefined) return;
+		this.persistPolicyFacts({
+			policyBindingId: binding.id,
+			policyBinding: binding,
+			policyDecision: options.policyDecision,
+			policyApproval: options.policyApproval,
+			sandboxLifecycle: options.sandboxLifecycle,
+			policyViolation: options.policyViolation,
+		});
+	}
+
+	validateAcceptedPolicyFacts(runId: RunId, options: AcceptOptions): void {
+		const binding = options.policyBinding;
+		if (binding === undefined) return;
+		if (binding.runId !== runId) {
+			throw createAutomationError("policy_binding_failed", "Execution Policy binding runId does not match the accepted run.", false);
+		}
+		if (binding.previousPolicyBindingId !== undefined && binding.previousPolicyBindingId === binding.id) {
+			throw createAutomationError("policy_binding_failed", "Execution Policy resume binding must be a successor binding.", false);
+		}
+		if (options.previousPolicyBindingId !== undefined && binding.previousPolicyBindingId !== options.previousPolicyBindingId) {
+			throw createAutomationError("policy_binding_failed", "Execution Policy resume binding does not match the source binding.", false);
+		}
+		if (options.policyDecision !== undefined) this.assertPolicyFactBinding(binding.id, options.policyDecision.bindingId);
+		if (options.policyApproval !== undefined) this.assertPolicyFactBinding(binding.id, options.policyApproval.bindingId);
+		if (options.sandboxLifecycle !== undefined) this.assertPolicyFactBinding(binding.id, options.sandboxLifecycle.bindingId);
+		if (options.policyViolation !== undefined) this.assertPolicyFactBinding(binding.id, options.policyViolation.bindingId);
+	}
+
+	persistPolicyFacts(input: {
+		policyBindingId?: string;
+		policyBinding?: PolicyBinding;
+		policyDecision?: PolicyDecision;
+		policyApproval?: PolicyApprovalRequest;
+		sandboxLifecycle?: SandboxLifecycleLedgerRecord;
+		policyViolation?: PolicyViolationLedgerRecord;
+	}): void {
+		try {
+			const bindingId = input.policyBinding?.id ?? input.policyBindingId;
+			if (bindingId === undefined) {
+				if (
+					input.policyDecision !== undefined ||
+					input.policyApproval !== undefined ||
+					input.sandboxLifecycle !== undefined ||
+					input.policyViolation !== undefined
+				) {
+					throw createAutomationError("policy_binding_failed", "Execution Policy facts require a policy binding.", false);
+				}
+				return;
+			}
+			if (input.policyBinding !== undefined) this.policyLedger.appendBinding(input.policyBinding);
+			if (input.policyDecision !== undefined) {
+				this.assertPolicyFactBinding(bindingId, input.policyDecision.bindingId);
+				this.policyLedger.appendDecision(input.policyDecision);
+			}
+			if (input.policyApproval !== undefined) {
+				this.assertPolicyFactBinding(bindingId, input.policyApproval.bindingId);
+				this.policyLedger.appendApproval(input.policyApproval);
+			}
+			if (input.sandboxLifecycle !== undefined) {
+				this.assertPolicyFactBinding(bindingId, input.sandboxLifecycle.bindingId);
+				this.policyLedger.appendSandboxLifecycle(input.sandboxLifecycle);
+			}
+			if (input.policyViolation !== undefined) {
+				this.assertPolicyFactBinding(bindingId, input.policyViolation.bindingId);
+				this.policyLedger.appendViolation(input.policyViolation);
+			}
+		} catch (error) {
+			if (isAutomationError(error)) throw error;
+			const code = typeof error === "object" && error !== null && isPolicyErrorCode((error as { code?: unknown }).code)
+				? (error as { code: PolicyErrorCode }).code
+				: "policy_ledger_persistence_failed";
+			throw createAutomationError(
+				code === "policy_binding_failed" ? "policy_binding_failed" : "policy_ledger_persistence_failed",
+				code === "policy_binding_failed" ? "Execution Policy binding could not be created." : "Execution Policy facts could not be recorded safely.",
+				false,
+			);
+		}
+	}
+
 	recordDiagnostic(diag: LedgerDiagnostic): void {
 		this._diagnostics.push(diag);
 		this.diagnosticsSink(formatDiagnostic(diag));
@@ -1964,6 +2627,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		if (this.diagnosedEntries.has(entryId)) return;
 		this.diagnosedEntries.add(entryId);
 		this.recordDiagnostic(diag);
+	}
+
+	private assertPolicyFactBinding(policyBindingId: string, factBindingId: string): void {
+		if (factBindingId === policyBindingId) return;
+		throw createAutomationError("policy_binding_failed", "Execution Policy fact does not match the run binding.", false);
 	}
 }
 

@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import {
 	applyEditsToNormalizedContent,
 	computeEditsDiff,
@@ -22,6 +23,7 @@ import {
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { renderToolPath, str } from "./render-utils.ts";
+import { sandboxContentBuffer } from "./sandbox-filesystem.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 type EditPreview = EditDiffResult | EditDiffError;
@@ -76,7 +78,6 @@ export interface EditToolDetails {
 	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
 }
-
 /**
  * Pluggable operations for the edit tool.
  * Override these to delegate file editing to remote systems (for example SSH).
@@ -99,6 +100,8 @@ const defaultEditOperations: EditOperations = {
 export interface EditToolOptions {
 	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
+	/** Optional built-in policy authorizer */
+	policy?: BuiltinToolPolicy;
 }
 
 function prepareEditArguments(input: unknown): EditToolInput {
@@ -299,6 +302,7 @@ export function createEditToolDefinition(
 	options?: EditToolOptions,
 ): ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState> {
 	const ops = options?.operations ?? defaultEditOperations;
+	const policy = options?.policy;
 	return {
 		name: "edit",
 		label: "edit",
@@ -311,7 +315,27 @@ export function createEditToolDefinition(
 		prepareArguments: prepareEditArguments,
 		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
+			const resolvedPath = resolveToCwd(path, cwd);
+			const readAuthorization =
+				policy === undefined
+					? { absolutePath: resolvedPath, realPath: resolvedPath }
+					: await policy.authorizeFilesystem({
+						resource: "filesystem.read",
+						requestedPath: resolvedPath,
+						access: "read",
+						requestId: `${_toolCallId}:read`,
+					});
+			const writeAuthorization =
+				policy === undefined
+					? { absolutePath: resolvedPath, realPath: resolvedPath }
+					: await policy.authorizeFilesystem({
+					resource: "filesystem.write",
+					requestedPath: resolvedPath,
+					access: "write",
+					requestId: `${_toolCallId}:write`,
+				});
+			const absolutePath = readAuthorization.absolutePath;
+			const sandbox = readAuthorization.sandbox ?? writeAuthorization.sandbox;
 
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
@@ -324,19 +348,33 @@ export function createEditToolDefinition(
 
 				throwIfAborted();
 
-				// Check if file exists.
-				try {
-					await ops.access(absolutePath);
-				} catch (error: unknown) {
-					throwIfAborted();
-					const errorMessage =
-						error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-					throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+				if (sandbox === undefined) {
+					// Check if file exists.
+					try {
+						await ops.access(absolutePath);
+					} catch (error: unknown) {
+						throwIfAborted();
+						const errorMessage =
+							error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
+						throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+					}
 				}
 				throwIfAborted();
 
 				// Read the file.
-				const buffer = await ops.readFile(absolutePath);
+				const buffer =
+					sandbox === undefined
+						? await ops.readFile(absolutePath)
+						: sandboxContentBuffer(
+							await sandbox.execute({
+								bindingId: policy?.binding.id ?? "",
+								resource: "filesystem.read",
+								operation: "file.read",
+								path: absolutePath,
+								signal,
+							}),
+							"file.read",
+						);
 				const rawContent = buffer.toString("utf-8");
 				throwIfAborted();
 
@@ -348,7 +386,18 @@ export function createEditToolDefinition(
 				throwIfAborted();
 
 				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				await ops.writeFile(absolutePath, finalContent);
+				if (sandbox === undefined) {
+					await ops.writeFile(absolutePath, finalContent);
+				} else {
+					await sandbox.execute({
+						bindingId: policy?.binding.id ?? "",
+						resource: "filesystem.write",
+						operation: "file.write",
+						path: writeAuthorization.absolutePath,
+						content: finalContent,
+						signal,
+					});
+				}
 				throwIfAborted();
 
 				const diffResult = generateDiffString(baseContent, newContent);

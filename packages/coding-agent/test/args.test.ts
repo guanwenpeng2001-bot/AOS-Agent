@@ -95,6 +95,11 @@ describe("parseArgs", () => {
 			expect(result.model).toBe("gpt-4o");
 		});
 
+		test("parses --policy", () => {
+			const result = parseArgs(["--policy", "workspace-safe"]);
+			expect(result.policyProfile).toBe("workspace-safe");
+		});
+
 		test("parses ModelBroker route and role intents", () => {
 			const result = parseArgs(["--model-route", "balanced", "--model-role", "reviewer"]);
 			expect(result.modelRoute).toBe("balanced");
@@ -110,6 +115,9 @@ describe("parseArgs", () => {
 			]);
 			expect(parseArgs(["--model-role"]).diagnostics).toEqual([
 				{ type: "error", message: "--model-role requires a value" },
+			]);
+			expect(parseArgs(["--policy"]).diagnostics).toEqual([
+				{ type: "error", message: "--policy requires a value" },
 			]);
 		});
 

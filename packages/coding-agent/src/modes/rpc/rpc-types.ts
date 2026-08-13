@@ -12,6 +12,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -93,6 +94,9 @@ export type RpcCommand =
 
 	// Capability inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_capabilities"; bindingId?: string }
+	| { id?: string; type: "get_execution_policy" }
+	| { id?: string; type: "policy.approve"; requestId: string }
+	| { id?: string; type: "policy.reject"; requestId: string }
 
 	// Model route inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_model_routes" }
@@ -105,6 +109,7 @@ export type RpcCommand =
 			message: string;
 			images?: ImageContent[];
 			capabilityProfile?: string;
+			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
 			modelRole?: ModelRoleSelection;
 	  }
@@ -118,6 +123,7 @@ export type RpcCommand =
 			message: string;
 			images?: ImageContent[];
 			capabilityProfile?: string;
+			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
 			modelRole?: ModelRoleSelection;
 	  };
@@ -189,6 +195,15 @@ export type RpcResponse =
 			success: true;
 			data: Model<any>;
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_execution_policy";
+			success: true;
+			data: GetExecutionPolicyData;
+	  }
+	| { id?: string; type: "response"; command: "policy.approve"; success: true }
+	| { id?: string; type: "response"; command: "policy.reject"; success: true }
 	| {
 			id?: string;
 			type: "response";
@@ -335,6 +350,12 @@ export interface GetCapabilitiesData {
 	bindings: PublicCapabilityBindingLedgerRecord[];
 }
 
+/** Redacted execution policy inspection payload. */
+export interface GetExecutionPolicyData {
+	summary: PublicPolicySummary;
+	pendingApprovals: ReadonlyArray<PolicyApprovalRequest>;
+}
+
 /** Public, metadata-only model route catalog returned by get_model_routes. */
 export type GetModelRoutesData = PublicModelSummary;
 
@@ -422,9 +443,12 @@ export interface RunAcceptedData {
 	status: "accepted";
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	policyBindingId?: string;
+	previousPolicyBindingId?: string;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
+	policySummary?: PublicPolicySummary;
 }
 
 /** Data returned by a successful `run.get`. */

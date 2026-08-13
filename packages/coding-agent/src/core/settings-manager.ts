@@ -24,6 +24,12 @@ import {
 	type ModelBrokerSettingsConfig,
 	type ModelBrokerSettingsInput,
 } from "./model-broker-settings.ts";
+import {
+	buildExecutionPolicySettings,
+	type ExecutionPolicySettings,
+	type ExecutionPolicySettingsConfig,
+	type ExecutionPolicySettingsSelectionOptions,
+} from "./execution-policy-settings.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -171,6 +177,7 @@ export interface Settings {
 	capabilities?: CapabilitiesSettingsConfig; // Capability Registry profiles and default profile
 	mcp?: McpSettingsConfig; // MCP server configs (env/header names only, never values)
 	modelBroker?: ModelBrokerSettingsInput; // Route selection only; never provider credentials or endpoints
+	executionPolicy?: ExecutionPolicySettingsConfig;
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -321,6 +328,7 @@ export class SettingsManager {
 	private projectTrusted: boolean;
 	private untrustedProjectCapabilitySettings: CapabilitySettingsInput;
 	private untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined;
+	private untrustedProjectExecutionPolicySettings: unknown;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -340,6 +348,7 @@ export class SettingsManager {
 		projectTrusted = true,
 		untrustedProjectCapabilitySettings: CapabilitySettingsInput = {},
 		untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined = undefined,
+		untrustedProjectExecutionPolicySettings: unknown = undefined,
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
@@ -347,6 +356,7 @@ export class SettingsManager {
 		this.projectTrusted = projectTrusted;
 		this.untrustedProjectCapabilitySettings = untrustedProjectCapabilitySettings;
 		this.untrustedProjectModelBrokerSettings = untrustedProjectModelBrokerSettings;
+		this.untrustedProjectExecutionPolicySettings = untrustedProjectExecutionPolicySettings;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
@@ -384,6 +394,9 @@ export class SettingsManager {
 		const untrustedProjectModelBrokerSettings = projectTrusted
 			? undefined
 			: SettingsManager.loadRawProjectModelBrokerSettings(storage);
+		const untrustedProjectExecutionPolicySettings = projectTrusted
+			? undefined
+			: SettingsManager.loadRawProjectExecutionPolicySettings(storage);
 
 		return new SettingsManager(
 			storage,
@@ -395,6 +408,7 @@ export class SettingsManager {
 			projectTrusted,
 			untrustedProjectCapabilitySettings,
 			untrustedProjectModelBrokerSettings,
+			untrustedProjectExecutionPolicySettings,
 		);
 	}
 
@@ -458,6 +472,13 @@ export class SettingsManager {
 		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
 		if (load.error) return undefined;
 		return load.settings.modelBroker;
+	}
+
+	/** Read only raw project policy settings so an untrusted narrowing is checked fail-closed. */
+	private static loadRawProjectExecutionPolicySettings(storage: SettingsStorage): unknown {
+		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
+		if (load.error) return undefined;
+		return load.settings.executionPolicy;
 	}
 
 	/** Migrate old settings format to new format */
@@ -548,6 +569,7 @@ export class SettingsManager {
 			this.projectSettingsLoadError = null;
 			this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 			this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
+			this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(this.storage);
 			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 			return;
 		}
@@ -580,6 +602,20 @@ export class SettingsManager {
 				mcp: this.globalSettings.mcp,
 			},
 			project: projectInput,
+			projectTrusted: this.projectTrusted,
+		});
+	}
+
+	/**
+	 * Return trust-aware execution policy settings for the next run. Project
+	 * trust comes from the existing trust flow; this method does not create a
+	 * second trust store or treat project settings as a new authority.
+	 */
+	getExecutionPolicySettings(options: ExecutionPolicySettingsSelectionOptions = {}): ExecutionPolicySettings {
+		return buildExecutionPolicySettings({
+			...options,
+			global: this.globalSettings.executionPolicy,
+			project: this.projectTrusted ? this.projectSettings.executionPolicy : this.untrustedProjectExecutionPolicySettings,
 			projectTrusted: this.projectTrusted,
 		});
 	}
@@ -645,6 +681,7 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 		this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 		this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
+		this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(this.storage);
 
 		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {

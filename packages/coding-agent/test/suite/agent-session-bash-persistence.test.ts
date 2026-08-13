@@ -4,6 +4,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
+import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/execution-policy.ts";
 import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/model-broker-ledger.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import { createHarness, type Harness } from "./harness.ts";
@@ -13,21 +14,42 @@ function getEntryTypes(harness: Harness): string[] {
 }
 
 interface ControlledBashInvocation {
+	command: string;
 	signal: AbortSignal | undefined;
 	finish: () => void;
 }
 
 function createControlledBashOperations(invocations: ControlledBashInvocation[]): BashOperations {
 	return {
-		exec: async (_command, _cwd, options) => {
+		exec: async (command, _cwd, options) => {
 			return await new Promise<{ exitCode: number | null }>((resolve) => {
 				invocations.push({
+					command,
 					signal: options.signal,
 					finish: () => resolve({ exitCode: 0 }),
 				});
 			});
 		},
 	};
+}
+
+async function waitForInvocationCount(invocations: ControlledBashInvocation[], count: number): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (invocations.length >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	throw new Error(`Timed out waiting for ${count} bash invocation(s)`);
+}
+
+function getInvocationByCommand(
+	invocations: ControlledBashInvocation[],
+	command: string,
+): ControlledBashInvocation {
+	const invocation = invocations.find((candidate) => candidate.command === command);
+	if (invocation === undefined) {
+		throw new Error(`Timed out waiting for bash invocation: ${command}`);
+	}
+	return invocation;
 }
 
 describe("AgentSession bash and persistence characterization", () => {
@@ -128,9 +150,18 @@ describe("AgentSession bash and persistence characterization", () => {
 	it("cancels running bash commands with abortBash", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
+		let markOperationStarted: (() => void) | undefined;
+		const operationStarted = new Promise<void>((resolve) => {
+			markOperationStarted = resolve;
+		});
 		const operations: BashOperations = {
 			exec: async (_command, _cwd, options) => {
+				markOperationStarted?.();
 				return await new Promise<{ exitCode: number | null }>((_resolve, reject) => {
+					if (options.signal?.aborted) {
+						reject(new Error("aborted"));
+						return;
+					}
 					options.signal?.addEventListener(
 						"abort",
 						() => {
@@ -143,7 +174,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		};
 
 		const bashPromise = harness.session.executeBash("sleep", undefined, { operations });
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await operationStarted;
 		expect(harness.session.isBashRunning).toBe(true);
 		harness.session.abortBash();
 
@@ -161,13 +192,16 @@ describe("AgentSession bash and persistence characterization", () => {
 		const firstBash = harness.session.executeBash("first", undefined, { operations });
 		const secondBash = harness.session.executeBash("second", undefined, { operations });
 
-		invocations[0].finish();
+		await waitForInvocationCount(invocations, 2);
+		const firstInvocation = getInvocationByCommand(invocations, "first");
+		const secondInvocation = getInvocationByCommand(invocations, "second");
+		firstInvocation.finish();
 		const firstResult = await firstBash;
 		const runningAfterFirstSettles = harness.session.isBashRunning;
 
 		harness.session.abortBash();
-		const secondWasAborted = invocations[1].signal?.aborted;
-		invocations[1].finish();
+		const secondWasAborted = secondInvocation.signal?.aborted;
+		secondInvocation.finish();
 		const secondResult = await secondBash;
 
 		expect(firstResult.cancelled).toBe(false);
@@ -186,6 +220,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		const firstBash = harness.session.executeBash("first", undefined, { operations });
 		const secondBash = harness.session.executeBash("second", undefined, { operations });
 
+		await waitForInvocationCount(invocations, 2);
 		harness.session.abortBash();
 		const abortedSignals = invocations.map((invocation) => invocation.signal?.aborted);
 		for (const invocation of invocations) {
@@ -228,7 +263,9 @@ describe("AgentSession bash and persistence characterization", () => {
 		const userFacingEntries = entries.filter(
 			(entry) =>
 				entry.type !== "custom" ||
-				(entry.customType !== MODEL_BINDING_CUSTOM_TYPE && entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE),
+				(entry.customType !== MODEL_BINDING_CUSTOM_TYPE &&
+					entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE &&
+					entry.customType !== POLICY_BINDING_CUSTOM_TYPE),
 		);
 		expect(userFacingEntries.map((entry) => entry.type)).toEqual([
 			"custom_message",

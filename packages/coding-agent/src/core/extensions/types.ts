@@ -350,6 +350,8 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string;
+	/** Execute a command through the current session Execution Policy. */
+	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 }
 
 /**
@@ -1665,6 +1667,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	exec: (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 }
 
 /**

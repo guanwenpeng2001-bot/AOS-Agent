@@ -23,6 +23,7 @@ export { runRpcMode } from "./rpc/rpc-mode.ts";
 export type {
 	AutomationError,
 	AutomationErrorCode,
+	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,

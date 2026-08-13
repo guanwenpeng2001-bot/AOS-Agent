@@ -1865,7 +1865,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				expect(res).toHaveLength(1);
 				expect(res[0].success).toBe(true);
 			});
-			expect(setProfileSpy).toHaveBeenCalledWith(undefined);
+			expect(setProfileSpy).toHaveBeenCalledWith(undefined, { runId: expect.any(String) });
 			expect(runtimeHost.session.getActiveCapabilityProfile()).toBe("default");
 			expect(runtimeHost.session.getActiveCapabilityBinding()?.profile).toBe("default");
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));

@@ -57,24 +57,25 @@ afterEach(async () => {
 function createMockMcpServer(opts: { tools: Tool[]; receivedCalls: Array<{ name: string; args: unknown }> }): {
 	transportFactory: (config: { id: string }) => Promise<unknown>;
 } {
-	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-	const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
+	return {
+		transportFactory: async () => {
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			const server = new Server({ name: "mock-server", version: "1.0.0" }, { capabilities: { tools: {} } });
 
-	server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...opts.tools] }));
-	server.setRequestHandler(CallToolRequestSchema, async (request) => {
-		opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
-		return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
-	});
+			server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...opts.tools] }));
+			server.setRequestHandler(CallToolRequestSchema, async (request) => {
+				opts.receivedCalls.push({ name: request.params.name, args: request.params.arguments });
+				return { content: [{ type: "text", text: `ok:${request.params.name}` }] };
+			});
 
-	const serverReady = server.connect(serverTransport);
-	serverReady.catch(() => undefined);
-
-	serverCleanups.push(async () => {
-		await server.close().catch(() => undefined);
-		await clientTransport.close().catch(() => undefined);
-	});
-
-	return { transportFactory: async () => clientTransport };
+			server.connect(serverTransport).catch(() => undefined);
+			serverCleanups.push(async () => {
+				await server.close().catch(() => undefined);
+				await clientTransport.close().catch(() => undefined);
+			});
+			return clientTransport;
+		},
+	};
 }
 
 /**
@@ -558,12 +559,13 @@ describe("AgentSession H2 session capability control", () => {
 			});
 			await session.whenCapabilitiesReady();
 
-			// First materialization: the mcp profile connects the server once.
+			// First materialization discovers tools under a pre-discovery binding,
+			// then reconnects once under the final binding that includes those tools.
 			expect(mock.factoryCallCount()).toBe(0);
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "configured" });
 
 			await session.setCapabilityProfile("mcp");
-			expect(mock.factoryCallCount()).toBe(1);
+			expect(mock.factoryCallCount()).toBe(2);
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
 			expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
 			expect(session.getActiveToolNames()).toContain("mcp__docs__list");
@@ -571,7 +573,7 @@ describe("AgentSession H2 session capability control", () => {
 			// Dropping the profile closes the old transport exactly once before
 			// the transition resolves; no stale live connection survives.
 			await session.setCapabilityProfile("default");
-			expect(mock.factoryCallCount()).toBe(1);
+			expect(mock.factoryCallCount()).toBe(2);
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
 			expect(session.getActiveCapabilityBinding()?.toolAllowlist).not.toContain("mcp__docs__list");
 			expect(session.getActiveToolNames()).not.toContain("mcp__docs__list");
@@ -580,7 +582,7 @@ describe("AgentSession H2 session capability control", () => {
 			// with a brand-new transport (the closed one is never reused), and the
 			// server returns to ready without a close/reselect race.
 			await session.setCapabilityProfile("mcp");
-			expect(mock.factoryCallCount()).toBe(2);
+			expect(mock.factoryCallCount()).toBe(4);
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
 			expect(session.getActiveCapabilityBinding()?.toolAllowlist).toContain("mcp__docs__list");
 			expect(session.getActiveToolNames()).toContain("mcp__docs__list");
@@ -639,11 +641,16 @@ describe("AgentSession H2 session capability control", () => {
 			});
 			await session.whenCapabilitiesReady();
 
-			// First materialization connects the selected server with the initial transport.
-			await session.setCapabilityProfile("mcp");
-			expect(mock.factoryCallCount()).toBe(1);
+			// First materialization discovers tools, then reconnects under the final
+			// binding. Release the discovery transport's gated close before awaiting
+			// the transition so the final transport can be installed.
+			const initialProfile = session.setCapabilityProfile("mcp");
+			await waitUntil(() => mock.transports()[0]?.closeInvoked() === true);
+			mock.transports()[0]?.release();
+			await initialProfile;
+			expect(mock.factoryCallCount()).toBe(2);
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
-			const firstTransport = mock.transports()[0]!;
+			const firstTransport = mock.transports()[1]!;
 
 			// Deselect the server, but hold its transport close open: the transition
 			// parks mid-teardown and cannot complete until the gate is released.
@@ -654,6 +661,8 @@ describe("AgentSession H2 session capability control", () => {
 			// unfixed HEAD it raced the pending close and rejected as unavailable.
 			const p2 = session.setCapabilityProfile("mcp");
 			firstTransport.release();
+			await waitUntil(() => mock.transports()[2]?.closeInvoked() === true);
+			mock.transports()[2]?.release();
 			const [settled1, settled2] = await Promise.allSettled([p1, p2]);
 			expect(settled1.status).toBe("fulfilled");
 			expect(settled2.status).toBe("fulfilled");
@@ -665,7 +674,7 @@ describe("AgentSession H2 session capability control", () => {
 			// The old transport is torn down exactly once, and a fresh transport
 			// is created for the re-selected connect.
 			expect(firstTransport.closeCalls()).toBe(1);
-			expect(mock.factoryCallCount()).toBe(2);
+			expect(mock.factoryCallCount()).toBe(4);
 			// A fresh connection is ready with the re-selected server's tools.
 			expect(session.getMcpConnectionStatus("docs")).toMatchObject({
 				state: "ready",

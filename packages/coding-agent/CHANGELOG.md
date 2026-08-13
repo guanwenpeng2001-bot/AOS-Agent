@@ -12,6 +12,7 @@
 
 - Context Engine v1: governed context sources (trust/scope/digest), input budget packing that includes provider tool schemas and formal extension contributions, metadata-only `context.snapshot` Session entries, optional explicit session/project memory (default off), compaction/branch-summary snapshot provenance, RPC `get_context` / `RpcClient.getContext()`, interactive `/context` and `/memory`, and additive `RunReceipt.contextSnapshotId`.
 - Capability Registry/MCP v1: stable capability descriptors and frozen bindings for built-in, extension, SDK, skill, and MCP capabilities; trust-aware `allow`/`ask`/`deny` profiles; stdio and Streamable HTTP MCP lifecycle with explicit environment/header references; namespaced MCP tools; redacted inspection and run/Context Engine binding audit metadata; interactive approval and RPC `get_capabilities` support.
+- Execution Policy/Sandbox v1: named trust-aware `allow`/`ask`/`deny` profiles, immutable per-run policy bindings, fail-closed Sandbox Provider enforcement, approval/decision ledger entries, and redacted policy inspection across RPC, SDK, CLI, and TUI surfaces.
 - Interactive `/capabilities` command: list the redacted capability catalog, inspect a descriptor, and approve an ask capability for the current session (`/capabilities`, `/capabilities inspect <id>`, `/capabilities approve <id>`). Backed by the public Session capability surface (`inspectCapabilityCatalog()`, `getActiveCapabilityBinding()`, `getActiveCapabilityProfile()`, and `approveCapability()`); approvals are session-local, output is redacted (no command arguments, env/header values, tokens, unredacted URLs, or raw local paths), and only `CapabilityError` codes and redacted messages are surfaced. Adds type-only exports `CapabilityCatalogView`, `CapabilityDescriptorView`, and `CapabilityBindingView`.
 - RPC `get_capabilities` now also returns the redacted capability catalog (descriptor id/kind/name, redacted source, revision, availability, decision, trust, and public tool/parent/server identity) alongside the current binding and binding history; `RpcClient.getCapabilities()` surfaces the catalog and the optional per-binding query.
 
@@ -21,6 +22,7 @@
 - Preserved schema structure during secret-safe revision sanitization, re-enabled explicit MCP reconnect after terminal close, made failed profile transitions tear down prior MCP selection, exposed all extension-source tools for conflict detection, and added binding ledger/replay coverage.
 - Serialized overlapping capability-profile transitions so MCP close/reselect races settle with the latest invocation and a fresh ready transport.
 - Trusted project extensions, their tools, and project skills now enter the capability profile as trusted candidates when the project is trusted; untrusted projects remain force-denied with no bypass, while user/temporary sources keep their existing trust behavior and parent extension governance is unchanged.
+- MCP discovery and reconnect now establish the Run ID and policy binding before side effects, preserve binding lineage across capability discovery, and pass only explicitly authorized host-policy environment and header values.
 
 ### Fixed
 
@@ -30,6 +32,8 @@
 - Context Engine initial budget validation now uses post-compaction Agent state, allowing eligible compaction before rejecting over-budget prompts.
 - Kept native Node ESM startup compatible with MCP SDK 1.30.0, preserved built-in tool registration for `noTools: "builtin"`, and retained extension active-tool switching within a frozen capability binding.
 - `run.resume` now recovers the original capability binding for interrupted (accepted, never-terminal) source runs by persisting `capabilityBindingId` on the accepted run record through validation, clone, and ledger replay; drift between the recorded and settled binding rejects with `capability_binding_unavailable` before any successor run/ledger write, and historical ledgers without a binding remain resumable and backward compatible.
+- Public RPC/session run events now redact command arguments, execution output, full paths, environment/header values, and tool-result details while retaining safe event structure for automation clients.
+- Agent lifecycle state now remains active through asynchronous capability and execution-policy preflight, so extension-triggered prompts are observable by `waitForIdle()` while RPC acceptance still follows fail-closed preflight.
 
 ### Removed
 

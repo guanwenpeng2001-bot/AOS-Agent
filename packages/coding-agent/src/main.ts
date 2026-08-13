@@ -545,6 +545,11 @@ function buildSessionOptions(
 	// API key from CLI - set as a non-persistent runtime override
 	// (handled by caller before createAgentSession)
 
+	// Execution Policy
+	if (parsed.policyProfile !== undefined) {
+		options.policyProfile = parsed.policyProfile;
+	}
+
 	// Tools
 	if (parsed.noTools) {
 		options.noTools = "all";
@@ -836,6 +841,7 @@ export async function main(args: string[], options?: MainOptions) {
 			model: sessionOptions.model,
 			modelRoute: sessionOptions.modelRoute,
 			modelRole: sessionOptions.modelRole,
+			policyProfile: sessionOptions.policyProfile,
 			thinkingLevel: sessionOptions.thinkingLevel,
 			scopedModels: sessionOptions.scopedModels,
 			tools: sessionOptions.tools,

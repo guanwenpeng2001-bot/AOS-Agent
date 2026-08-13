@@ -15,6 +15,7 @@ export interface Args {
 	model?: string;
 	modelRoute?: string;
 	modelRole?: string;
+	policyProfile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string[];
@@ -103,6 +104,12 @@ export function parseArgs(args: string[]): Args {
 				result.modelRole = args[++i];
 			} else {
 				result.diagnostics.push({ type: "error", message: "--model-role requires a value" });
+			}
+		} else if (arg === "--policy") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.policyProfile = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--policy requires a value" });
 			}
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
@@ -274,6 +281,7 @@ ${chalk.bold("Options:")}
   --model <pattern>              Model pattern or ID (supports "provider/id" and optional ":<thinking>")
   --model-route <id>             Select a declared ModelBroker route for the session
   --model-role <id>              Select a declared ModelBroker role for the session
+  --policy <profile>             Select a named execution policy profile for this run
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)

@@ -6,8 +6,10 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
+import { sandboxEntries, sandboxEntryIsDirectory, sandboxEntryName } from "./sandbox-filesystem.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -29,7 +31,6 @@ export interface LsToolDetails {
 	truncation?: TruncationResult;
 	entryLimitReached?: number;
 }
-
 /**
  * Pluggable operations for the ls tool.
  * Override these to delegate directory listing to remote systems (for example SSH).
@@ -52,6 +53,8 @@ const defaultLsOperations: LsOperations = {
 export interface LsToolOptions {
 	/** Custom operations for directory listing. Default: local filesystem */
 	operations?: LsOperations;
+	/** Optional built-in policy authorizer */
+	policy?: BuiltinToolPolicy;
 }
 
 function formatLsCall(args: { path?: string; limit?: number } | undefined, theme: Theme, cwd: string): string {
@@ -102,6 +105,7 @@ export function createLsToolDefinition(
 	options?: LsToolOptions,
 ): ToolDefinition<typeof lsSchema, LsToolDetails | undefined> {
 	const ops = options?.operations ?? defaultLsOperations;
+	const policy = options?.policy;
 	return {
 		name: "ls",
 		label: "ls",
@@ -126,63 +130,93 @@ export function createLsToolDefinition(
 
 				(async () => {
 					try {
-						const dirPath = resolveToCwd(path || ".", cwd);
+						const resolvedDirPath = resolveToCwd(path || ".", cwd);
+						const authorization =
+							policy === undefined
+								? { absolutePath: resolvedDirPath, realPath: resolvedDirPath }
+								: await policy.authorizeFilesystem({
+									resource: "filesystem.read",
+									requestedPath: resolvedDirPath,
+									access: "read",
+									requestId: _toolCallId,
+								});
+						const dirPath = authorization.absolutePath;
 						const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
-						// Check if path exists.
-						if (!(await ops.exists(dirPath))) {
-							reject(new Error(`Path not found: ${dirPath}`));
-							return;
-						}
-
-						// Check if path is a directory.
-						const stat = await ops.stat(dirPath);
-						if (!stat.isDirectory()) {
-							reject(new Error(`Not a directory: ${dirPath}`));
-							return;
-						}
-
-						// Read directory entries.
 						let entries: string[];
-						try {
-							entries = await ops.readdir(dirPath);
-						} catch (e: any) {
-							reject(new Error(`Cannot read directory: ${e.message}`));
-							return;
-						}
-
-						// Sort alphabetically, case-insensitive.
-						entries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-
-						// Format entries with directory indicators.
-						const results: string[] = [];
 						let entryLimitReached = false;
-						for (const entry of entries) {
-							if (results.length >= effectiveLimit) {
-								entryLimitReached = true;
-								break;
+						if (authorization.sandbox === undefined) {
+							// Check if path exists.
+							if (!(await ops.exists(dirPath))) {
+								reject(new Error(`Path not found: ${dirPath}`));
+								return;
 							}
 
-							const fullPath = nodePath.join(dirPath, entry);
-							let suffix = "";
-							try {
-								const entryStat = await ops.stat(fullPath);
-								if (entryStat.isDirectory()) suffix = "/";
-							} catch {
-								// Skip entries we cannot stat.
-								continue;
+							// Check if path is a directory.
+							const stat = await ops.stat(dirPath);
+							if (!stat.isDirectory()) {
+								reject(new Error(`Not a directory: ${dirPath}`));
+								return;
 							}
-							results.push(entry + suffix);
+
+							// Read directory entries.
+							let hostEntries: string[];
+							try {
+								hostEntries = await ops.readdir(dirPath);
+							} catch (e: any) {
+								reject(new Error(`Cannot read directory: ${e.message}`));
+								return;
+							}
+
+							// Sort alphabetically, case-insensitive.
+							hostEntries.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+							// Format entries with directory indicators.
+							entries = [];
+							for (const entry of hostEntries) {
+								if (entries.length >= effectiveLimit) {
+									entryLimitReached = true;
+									break;
+								}
+								const fullPath = nodePath.join(dirPath, entry);
+								let suffix = "";
+								try {
+									const entryStat = await ops.stat(fullPath);
+									if (entryStat.isDirectory()) suffix = "/";
+								} catch {
+									// Skip entries we cannot stat.
+									continue;
+								}
+								entries.push(entry + suffix);
+							}
+						} else {
+							const result = await authorization.sandbox.execute({
+								bindingId: policy?.binding.id ?? "",
+								resource: "filesystem.read",
+								operation: "directory.list",
+								path: dirPath,
+								limit: effectiveLimit,
+								signal,
+							});
+							if (result.isDirectory === false) {
+								reject(new Error(`Not a directory: ${dirPath}`));
+								return;
+							}
+							entries = [...sandboxEntries(result, "directory.list")]
+								.map((entry) => `${sandboxEntryName(entry)}${sandboxEntryIsDirectory(entry) ? "/" : ""}`)
+								.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+								.slice(0, effectiveLimit);
+							entryLimitReached = entries.length >= effectiveLimit;
 						}
 
 						signal?.removeEventListener("abort", onAbort);
 
-						if (results.length === 0) {
+						if (entries.length === 0) {
 							resolve({ content: [{ type: "text", text: "(empty directory)" }], details: undefined });
 							return;
 						}
 
-						const rawOutput = results.join("\n");
+						const rawOutput = entries.join("\n");
 						// Apply byte truncation. There is no separate line limit because entry count is already capped.
 						const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 						let output = truncation.content;

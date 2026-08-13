@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import type { BuiltinToolPolicy } from "../sandbox-host.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.ts";
@@ -33,7 +34,6 @@ export interface WriteOperations {
 	/** Create directory recursively */
 	mkdir: (dir: string) => Promise<void>;
 }
-
 const defaultWriteOperations: WriteOperations = {
 	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
@@ -42,6 +42,8 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
+	/** Optional built-in policy authorizer */
+	policy?: BuiltinToolPolicy;
 }
 
 type WriteHighlightCache = {
@@ -188,6 +190,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
+	const policy = options?.policy;
 	return {
 		name: "write",
 		label: "write",
@@ -203,7 +206,17 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
-			const absolutePath = resolveToCwd(path, cwd);
+			const resolvedPath = resolveToCwd(path, cwd);
+			const authorization =
+				policy === undefined
+					? { absolutePath: resolvedPath, realPath: resolvedPath }
+					: await policy.authorizeFilesystem({
+						resource: "filesystem.write",
+						requestedPath: resolvedPath,
+						access: "write",
+						requestId: _toolCallId,
+					});
+			const absolutePath = authorization.absolutePath;
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
 				// Do not reject from an abort event listener here: that would release the
@@ -215,12 +228,23 @@ export function createWriteToolDefinition(
 				};
 
 				throwIfAborted();
-				// Create parent directories if needed.
-				await ops.mkdir(dir);
-				throwIfAborted();
+				if (authorization.sandbox === undefined) {
+					// Create parent directories if needed.
+					await ops.mkdir(dir);
+					throwIfAborted();
 
-				// Write the file contents.
-				await ops.writeFile(absolutePath, content);
+					// Write the file contents.
+					await ops.writeFile(absolutePath, content);
+				} else {
+					await authorization.sandbox.execute({
+						bindingId: policy?.binding.id ?? "",
+						resource: "filesystem.write",
+						operation: "file.write",
+						path: absolutePath,
+						content,
+						signal,
+					});
+				}
 				throwIfAborted();
 
 				return {

@@ -18,6 +18,7 @@ import type {
 	AutomationErrorCode,
 	GetCapabilitiesData,
 	GetContextData,
+	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationResponse,
@@ -573,6 +574,7 @@ export class RpcClient {
 	 * @param capabilityProfile - Optional named capability profile; defaults to the
 	 * session's configured default profile. The Automation Host fails the run when
 	 * the profile is unknown or would require an ask approval.
+	 * @param policyProfile - Optional named Execution Policy profile selector.
 	 */
 	async startRun(
 		message: string,
@@ -580,12 +582,14 @@ export class RpcClient {
 		capabilityProfile?: string,
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
+		policyProfile?: string,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
 			message,
 			images,
 			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 		});
@@ -614,6 +618,8 @@ export class RpcClient {
 	 * Resume a source run in the restored session as a new attempt.
 	 * @param capabilityProfile - Optional named capability profile for the new
 	 * attempt's successor binding; defaults to the session's default profile.
+	 * @param policyProfile - Optional named Execution Policy profile selector for
+	 * the new attempt's successor binding.
 	 */
 	async resumeRun(
 		sessionPath: string,
@@ -623,6 +629,7 @@ export class RpcClient {
 		capabilityProfile?: string,
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
+		policyProfile?: string,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -631,6 +638,7 @@ export class RpcClient {
 			message,
 			images,
 			...(capabilityProfile !== undefined ? { capabilityProfile } : {}),
+			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 		});
@@ -656,6 +664,22 @@ export class RpcClient {
 			...(bindingId !== undefined ? { bindingId } : {}),
 		});
 		return this.getData(response);
+	}
+
+	/** Read-only Execution Policy inspection. Returns safe metadata only. */
+	async getExecutionPolicy(): Promise<GetExecutionPolicyData> {
+		const response = await this.send({ type: "get_execution_policy" });
+		return this.getData(response);
+	}
+
+	/** Approve a pending Execution Policy request for this session only. */
+	async approvePolicy(requestId: string): Promise<void> {
+		await this.send({ type: "policy.approve", requestId });
+	}
+
+	/** Reject a pending Execution Policy request for this session only. */
+	async rejectPolicy(requestId: string): Promise<void> {
+		await this.send({ type: "policy.reject", requestId });
 	}
 
 	/** Read the redacted ModelBroker route/role catalog. */

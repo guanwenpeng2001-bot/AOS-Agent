@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { CapabilityError, type CapabilityBinding, type CapabilityCatalogView } from "../src/core/capability-registry.ts";
 import type { ContextSnapshot, ContextSourceDrift } from "../src/core/context-engine.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../src/core/execution-policy.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {
 	formatCapabilitiesError,
@@ -18,6 +19,11 @@ import {
 	createInteractiveTuiReference,
 	InteractiveMode,
 } from "../src/modes/interactive/interactive-mode.ts";
+import {
+	formatPolicyAction,
+	formatPolicySummary,
+	formatPolicyUsage,
+} from "../src/modes/interactive/policy.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
@@ -385,6 +391,178 @@ describe("capability formatters", () => {
 		const info = plain(formatCapabilitiesError(new Error("secret internal detail")));
 		expect(info).toContain("Capability failure.");
 		expect(info).not.toContain("secret internal detail");
+	});
+});
+
+describe("policy formatter", () => {
+	beforeEach(() => {
+		initTheme("dark");
+	});
+
+	it("renders policy metadata and pending approvals without raw operation data", () => {
+		const secret = "rm -rf /private/audit SECRET_TOKEN https://user:pass@example.invalid";
+		const output = formatPolicySummary(
+			{
+				bindingId: "policy-binding:abc",
+				profileId: "workspace-safe",
+				profileRevision: "rev",
+				projectTrust: "trusted",
+				enforcement: "sandbox",
+				sandboxProviderId: "provider-1",
+				sandboxStatus: "ready",
+				sandboxCapabilities: { filesystem: true, process: true, network: false, credentialIsolation: true },
+				resource: "process.spawn",
+				action: "ask",
+				outcome: "ask",
+				reasonCode: "policy_approval_required",
+				requestId: "policy-request:abc",
+			},
+			[
+				{
+					id: "policy-request:abc",
+					bindingId: "policy-binding:abc",
+					resource: "process.spawn",
+					source: "user_bash",
+					scope: { resource: "process.spawn", environmentCount: 1, credentialCount: 1 },
+					reasonCode: "policy_approval_required",
+					reason: secret,
+					createdAt: "2026-08-12T00:00:00.000Z",
+					command: secret,
+					path: secret,
+					environmentValue: secret,
+				} as unknown as PolicyApprovalRequest,
+			],
+		).replace(/\x1b\[[0-9;]*m/g, "");
+
+		expect(output).toContain("Profile: workspace-safe");
+		expect(output).toContain("Enforcement: sandbox");
+		expect(output).toContain("Sandbox: ready");
+		expect(output).toContain("policy-request:abc");
+		expect(output).toContain("Reason: policy_approval_required");
+		expect(output).toContain("environment values=1");
+		expect(output).toContain("credentials=1");
+		expect(output).not.toContain(secret);
+	});
+
+	it("formats explicit actions and usage without exposing an arbitrary request argument", () => {
+		const output = `${formatPolicyAction("approve", "policy-request:abc")}\n${formatPolicyUsage()}`.replace(
+			/\x1b\[[0-9;]*m/g,
+			"",
+		);
+		expect(output).toContain("Approved policy request policy-request:abc");
+		expect(output).toContain("/policy approve <request-id>");
+		expect(output).toContain("/policy reject <request-id>");
+		expect(output).not.toContain("SECRET_TOKEN");
+	});
+});
+
+const samplePolicySummary: PublicPolicySummary = {
+	bindingId: "policy-binding:abc",
+	profileId: "workspace-safe",
+	profileRevision: "rev",
+	projectTrust: "trusted",
+	enforcement: "host",
+	sandboxStatus: "not_required",
+	sandboxCapabilities: { filesystem: true, process: true, network: true, credentialIsolation: false },
+};
+
+const samplePolicyApproval: PolicyApprovalRequest = {
+	id: "policy-request:abc",
+	bindingId: "policy-binding:abc",
+	resource: "process.spawn",
+	source: "user_bash",
+	scope: { resource: "process.spawn", environmentCount: 1 },
+	reasonCode: "policy_approval_required",
+	reason: "Policy approval is required before this operation.",
+	createdAt: "2026-08-12T00:00:00.000Z",
+};
+
+type PolicyCommandSession = {
+	getActiveExecutionPolicySummary: () => PublicPolicySummary;
+	getPendingExecutionPolicyApprovals: () => ReadonlyArray<PolicyApprovalRequest>;
+	approveExecutionPolicyRequest: (requestId: string) => void;
+	rejectExecutionPolicyRequest: (requestId: string) => void;
+};
+
+type PolicyCommandContext = {
+	session: PolicyCommandSession;
+	chatContainer: Container;
+	ui: { requestRender: () => void };
+};
+
+type PolicyCommandPrototype = {
+	handlePolicyCommand(this: PolicyCommandContext, args?: string): Promise<void>;
+};
+
+const policyCommandPrototype = InteractiveMode.prototype as unknown as PolicyCommandPrototype;
+
+function createPolicyCommandContext(overrides?: Partial<PolicyCommandSession>): PolicyCommandContext {
+	return {
+		session: {
+			getActiveExecutionPolicySummary: () => samplePolicySummary,
+			getPendingExecutionPolicyApprovals: () => [samplePolicyApproval],
+			approveExecutionPolicyRequest: () => {},
+			rejectExecutionPolicyRequest: () => {},
+			...overrides,
+		},
+		chatContainer: new Container(),
+		ui: { requestRender: vi.fn() },
+	};
+}
+
+describe("InteractiveMode /policy approval commands", () => {
+	beforeEach(() => {
+		initTheme("dark");
+	});
+
+	const rendered = (context: PolicyCommandContext): string =>
+		context.chatContainer.render(100).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+
+	it("routes approve to the session-scoped policy approval method", async () => {
+		const approve = vi.fn();
+		const reject = vi.fn();
+		const context = createPolicyCommandContext({
+			approveExecutionPolicyRequest: approve,
+			rejectExecutionPolicyRequest: reject,
+		});
+
+		await policyCommandPrototype.handlePolicyCommand.call(context, "approve policy-request:abc");
+
+		expect(approve).toHaveBeenCalledWith("policy-request:abc");
+		expect(reject).not.toHaveBeenCalled();
+		expect(rendered(context)).toContain("Approved policy request policy-request:abc");
+	});
+
+	it("routes reject to the session-scoped policy rejection method", async () => {
+		const approve = vi.fn();
+		const reject = vi.fn();
+		const context = createPolicyCommandContext({
+			approveExecutionPolicyRequest: approve,
+			rejectExecutionPolicyRequest: reject,
+		});
+
+		await policyCommandPrototype.handlePolicyCommand.call(context, "reject policy-request:abc");
+
+		expect(reject).toHaveBeenCalledWith("policy-request:abc");
+		expect(approve).not.toHaveBeenCalled();
+		expect(rendered(context)).toContain("Rejected policy request policy-request:abc");
+	});
+
+	it("keeps the bare command read-only and reports usage for incomplete actions", async () => {
+		const approve = vi.fn();
+		const reject = vi.fn();
+		const context = createPolicyCommandContext({
+			approveExecutionPolicyRequest: approve,
+			rejectExecutionPolicyRequest: reject,
+		});
+
+		await policyCommandPrototype.handlePolicyCommand.call(context, "");
+		await policyCommandPrototype.handlePolicyCommand.call(context, "approve");
+
+		expect(approve).not.toHaveBeenCalled();
+		expect(reject).not.toHaveBeenCalled();
+		expect(rendered(context)).toContain("Pending approvals (1)");
+		expect(rendered(context)).toContain("/policy approve <request-id>");
 	});
 });
 

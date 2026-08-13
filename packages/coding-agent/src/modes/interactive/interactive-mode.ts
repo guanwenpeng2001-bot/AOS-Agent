@@ -159,6 +159,12 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { editInExternalEditor } from "./external-editor.ts";
 import { getModelSearchText } from "./model-search.ts";
 import {
+	formatPolicyAction,
+	formatPolicyError,
+	formatPolicySummary,
+	formatPolicyUsage,
+} from "./policy.ts";
+import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
 	getEditorTheme,
@@ -695,6 +701,49 @@ export class InteractiveMode {
 					label: provider.id,
 					description: formatLoginProviderCompletionDescription(provider),
 				}));
+			};
+		}
+
+		const policyCommand = slashCommands.find((command) => command.name === "policy");
+		if (policyCommand) {
+			policyCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const pendingApprovals = this.session.getPendingExecutionPolicyApprovals();
+				const items: Array<{ value: string; label: string; search: string; description: string }> = [
+					{
+						value: "approve ",
+						label: "approve",
+						search: "approve",
+						description: "Approve a pending policy request for this session",
+					},
+					{
+						value: "reject ",
+						label: "reject",
+						search: "reject",
+						description: "Reject a pending policy request for this session",
+					},
+				];
+				for (const approval of pendingApprovals) {
+					items.push(
+						{
+							value: `approve ${approval.id}`,
+							label: approval.id,
+							search: `approve ${approval.id}`,
+							description: `Approve ${approval.resource} (${approval.source})`,
+						},
+						{
+							value: `reject ${approval.id}`,
+							label: approval.id,
+							search: `reject ${approval.id}`,
+							description: `Reject ${approval.resource} (${approval.source})`,
+						},
+					);
+				}
+				return createFuzzyAutocompleteItems(
+					items,
+					prefix,
+					(item) => item.search,
+					(item) => ({ value: item.value, label: item.label, description: item.description }),
+				);
 			};
 		}
 
@@ -2070,6 +2119,7 @@ export class InteractiveMode {
 				})();
 			},
 			getSystemPrompt: () => this.session.systemPrompt,
+			exec: (command, args, options) => extensionRunner.createContext().exec(command, args, options),
 		});
 
 		// Set up the extension shortcut handler on the default editor
@@ -2945,6 +2995,12 @@ export class InteractiveMode {
 			if (text === "/model-routes") {
 				this.editor.setText("");
 				this.handleModelRoutesCommand();
+				return;
+			}
+			if (text === "/policy" || text.startsWith("/policy ")) {
+				const args = text === "/policy" ? "" : text.slice("/policy".length).trim();
+				this.editor.setText("");
+				await this.handlePolicyCommand(args);
 				return;
 			}
 			if (text === "/model-route" || text.startsWith("/model-route ")) {
@@ -4715,6 +4771,46 @@ export class InteractiveMode {
 				"/model is manual and disables fallback; route and role selections use guarded fallback.",
 			].join("\n"),
 		);
+	}
+
+	private async handlePolicyCommand(args = ""): Promise<void> {
+		const show = (info: string): void => {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		};
+		const parts = args.split(/\s+/).filter((part) => part.length > 0);
+		try {
+			if (parts.length === 0) {
+				show(
+					formatPolicySummary(
+						this.session.getActiveExecutionPolicySummary(),
+						this.session.getPendingExecutionPolicyApprovals(),
+					),
+				);
+				return;
+			}
+			if (parts.length !== 2 || (parts[0] !== "approve" && parts[0] !== "reject")) {
+				show(`${theme.fg("error", "Usage:")}\n${formatPolicyUsage()}`);
+				return;
+			}
+
+			const action: "approve" | "reject" = parts[0] === "approve" ? "approve" : "reject";
+			const requestId = parts[1];
+			const pendingRequest = this.session
+				.getPendingExecutionPolicyApprovals()
+				.find((approval) => approval.id === requestId);
+			if (action === "approve") {
+				this.session.approveExecutionPolicyRequest(requestId);
+			} else {
+				this.session.rejectExecutionPolicyRequest(requestId);
+			}
+			// Only render an id obtained from the redacted pending-request view. An
+			// arbitrary argument is never echoed back into the TUI.
+			show(formatPolicyAction(action, pendingRequest?.id));
+		} catch (error) {
+			show(formatPolicyError(error));
+		}
 	}
 
 	private async handleModelRouteCommand(selection?: string): Promise<void> {
@@ -6629,13 +6725,15 @@ export class InteractiveMode {
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
 		const extensionRunner = this.session.extensionRunner;
 
-		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.sessionManager.getCwd(),
-		});
+		const allowExtensionBash = await this.session.authorizeUserBashExtension(command);
+		const eventResult = allowExtensionBash
+			? await extensionRunner.emitUserBash({
+				type: "user_bash",
+				command,
+				excludeFromContext,
+				cwd: this.sessionManager.getCwd(),
+			})
+			: undefined;
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {
