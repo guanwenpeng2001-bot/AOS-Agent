@@ -416,16 +416,16 @@ Content`,
 		});
 
 		it("should skip project resources that require trust when project is not trusted", async () => {
-			const agentDir = join(cwd, ".aos-agent");
-			const extensionsDir = join(agentDir, "extensions");
-			const skillDir = join(agentDir, "skills", "project-skill");
-			const promptsDir = join(agentDir, "prompts");
-			const themesDir = join(agentDir, "themes");
+			const projectAgentDir = join(cwd, ".aos-agent");
+			const extensionsDir = join(projectAgentDir, "extensions");
+			const skillDir = join(projectAgentDir, "skills", "project-skill");
+			const promptsDir = join(projectAgentDir, "prompts");
+			const themesDir = join(projectAgentDir, "themes");
 			mkdirSync(extensionsDir, { recursive: true });
 			mkdirSync(skillDir, { recursive: true });
 			mkdirSync(promptsDir, { recursive: true });
 			mkdirSync(themesDir, { recursive: true });
-			writeFileSync(join(agentDir, "SYSTEM.md"), "Project system prompt.");
+			writeFileSync(join(projectAgentDir, "SYSTEM.md"), "Project system prompt.");
 			writeFileSync(join(agentDir, "SYSTEM.md"), "Global system prompt.");
 			writeFileSync(join(agentDir, "AGENTS.md"), "Global instructions");
 			writeFileSync(join(cwd, "AGENTS.md"), "Project instructions");

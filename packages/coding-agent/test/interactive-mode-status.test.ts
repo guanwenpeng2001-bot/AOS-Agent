@@ -757,7 +757,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
 "[Extensions]
-  @scope/aos-scoped, answer.ts, cli-extension.ts, HazAT/aos-interactive-subagents, HazAT/aos-interactive-subagents:subagents, local-index, aos-markdown-preview, user-index"`);
+  @scope/aos-scoped, answer.ts, aos-markdown-preview, cli-extension.ts, HazAT/aos-interactive-subagents, HazAT/aos-interactive-subagents:subagents, local-index, user-index"`);
 	});
 
 	test("adds more parent folders until local extension labels are unique", () => {
