@@ -395,6 +395,115 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("serves redacted audit query/replay and external mapping without execution side effects", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i-audit", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-audit")).toHaveLength(1));
+			expect(
+				(responsesFor(rpcIo.outputLines, "i-audit")[0].data as { auditCommands: string[] }).auditCommands,
+			).toEqual(["audit.query", "audit.replay", "external.map"]);
+
+			const external = { namespace: "ci", externalSessionId: "job-1", externalRunId: "attempt-1" };
+			lineHandler(JSON.stringify({ id: "run-audit", type: "run.start", message: "Hello", external }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const response = responsesFor(rpcIo.outputLines, "run-audit")[0];
+				expect(response?.success).toBe(true);
+				runId = (response.data as { runId: string }).runId;
+				expect((response.data as { external?: typeof external }).external).toEqual(external);
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			// Unknown custom data is deliberately present in the Session, but the audit
+			// response must expose only its stable warning code.
+			runtimeHost.session.sessionManager.appendCustomEntry("unknown.source", { raw: "sensitive-payload" });
+			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
+			const appendSpy = vi.spyOn(runtimeHost.session.sessionManager, "appendCustomEntry");
+
+			lineHandler(
+				JSON.stringify({
+					id: "audit-query",
+					type: "audit.query",
+					scope: "current-session",
+					types: ["run.completed"],
+					limit: 10,
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "audit-query")).toHaveLength(1));
+			const queryResponse = responsesFor(rpcIo.outputLines, "audit-query")[0];
+			expect(queryResponse.success).toBe(true);
+			expect(JSON.stringify(queryResponse)).not.toContain("sensitive-payload");
+			expect(
+				(queryResponse.data as { events: Array<{ type: string }>; warnings: Array<{ code: string }> }).events,
+			).toEqual(expect.arrayContaining([expect.objectContaining({ type: "run.completed" })]));
+			expect((queryResponse.data as { warnings: Array<{ code: string }> }).warnings).toEqual(
+				expect.arrayContaining([expect.objectContaining({ code: "unknown_source" })]),
+			);
+
+			lineHandler(
+				JSON.stringify({ id: "audit-replay", type: "audit.replay", runId: runId!, scope: "current-session" }),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "audit-replay")).toHaveLength(1));
+			const replayResponse = responsesFor(rpcIo.outputLines, "audit-replay")[0];
+			expect(replayResponse.success).toBe(true);
+			expect((replayResponse.data as { status: string }).status).toBe("incomplete");
+
+			lineHandler(JSON.stringify({ id: "audit-invalid", type: "audit.query", scope: "invalid-scope" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "audit-invalid")).toHaveLength(1));
+			expect((responsesFor(rpcIo.outputLines, "audit-invalid")[0].error as { code: string }).code).toBe(
+				"audit_query_invalid",
+			);
+
+			lineHandler(
+				JSON.stringify({ id: "audit-cursor", type: "audit.query", scope: "current-session", cursor: "bad" }),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "audit-cursor")).toHaveLength(1));
+			expect((responsesFor(rpcIo.outputLines, "audit-cursor")[0].error as { code: string }).code).toBe(
+				"audit_cursor_invalid",
+			);
+
+			lineHandler(JSON.stringify({ id: "audit-missing", type: "audit.replay", runId: "missing-run" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "audit-missing")).toHaveLength(1));
+			expect((responsesFor(rpcIo.outputLines, "audit-missing")[0].error as { code: string }).code).toBe(
+				"audit_run_not_found",
+			);
+
+			lineHandler(
+				JSON.stringify({
+					id: "map-idempotent",
+					type: "external.map",
+					external,
+					aosSessionId: runtimeHost.session.sessionId,
+					aosRunId: runId!,
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "map-idempotent")).toHaveLength(1));
+			const idempotentResponse = responsesFor(rpcIo.outputLines, "map-idempotent")[0];
+			expect(idempotentResponse).toMatchObject({ success: true, data: { idempotent: true } });
+
+			lineHandler(
+				JSON.stringify({
+					id: "map-conflict",
+					type: "external.map",
+					external: { namespace: "ci", externalSessionId: "job-2", externalRunId: "attempt-2" },
+					aosSessionId: runtimeHost.session.sessionId,
+					aosRunId: runId!,
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "map-conflict")).toHaveLength(1));
+			const conflict = responsesFor(rpcIo.outputLines, "map-conflict")[0];
+			expect(conflict.success).toBe(false);
+			expect((conflict.error as { code: string }).code).toBe("external_mapping_conflict");
+			expect(JSON.stringify(conflict)).not.toContain("job-2");
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(appendSpy).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("returns a redacted ModelBroker route catalog", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 

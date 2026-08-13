@@ -1444,12 +1444,13 @@ Response:
     "protocolVersion": 1,
     "sessionId": "abc123",
     "sessionFile": "/path/to/session.jsonl",
-    "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"]
+    "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"],
+    "auditCommands": ["audit.query", "audit.replay", "external.map"]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run commands available on this host (the host's capabilities). `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run and audit commands available on this host. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 Unsupported version:
 ```json
@@ -1489,7 +1490,7 @@ With images and an optional declared route or role:
 {"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}], "modelRoute": "balanced"}
 ```
 
-The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
 Accepted response (emitted before any run event):
 ```json
@@ -1503,13 +1504,15 @@ Accepted response (emitted before any run event):
     "sessionId": "abc123",
     "attempt": 1,
     "status": "accepted",
+    "external": {"namespace": "ci", "externalSessionId": "job-123", "externalRunId": "attempt-1"},
     "modelBindingId": "model-binding:...",
     "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
   }
 }
 ```
 
-Accepted and terminal run records may also include `previousModelBindingId`,
+When `external` was supplied, the accepted response includes the validated
+external reference. Accepted and terminal run records may also include `previousModelBindingId`,
 `modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
 same fields are available from `run.get` and terminal receipts; attempt
 records contain candidate identity, status, timestamps, and safe usage only.
@@ -1518,6 +1521,7 @@ Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
 - `start_rejected` when the host preflight rejects the input. In v1, inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
+- `audit_persistence_failed` when an optional external mapping cannot be durably appended. The host does not publish a successful accepted response or acknowledge the mapping.
 
 ```json
 {
@@ -1633,6 +1637,9 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 }
 ```
 
+`run.resume` accepts the same optional `external` reference. It is persisted as
+the successor attempt's mapping; omitting it does not create a new mapping.
+
 Failures:
 - `session_busy` when the current session already has an active run
 - `session_not_persistent` when the session has no `sessionFile` (in-memory only); the host does not fabricate a resumability promise
@@ -1641,6 +1648,93 @@ Failures:
 - `session_switch_cancelled` when a session-switch extension cancelled the switch
 - `start_rejected` when the new run input is rejected (including the v1 slash-command rule)
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
+- `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
+
+### Audit query, replay, and external mapping
+
+These commands require a successful `initialize`. `audit.query` and
+`audit.replay` are read-only: they only fold safe audit summaries from the
+current Session or the current configured Session directory. They do not run a
+model, tool, Bash command, MCP or Extension operation, policy approval, or
+Sandbox action, and they never append a Session entry.
+
+#### audit.query
+
+The request uses the flattened `AuditQuery` shape:
+
+```json
+{
+  "type": "audit.query",
+  "scope": "session-directory",
+  "runId": "run_abc123",
+  "types": ["run.accepted", "run.completed"],
+  "from": "2026-08-10T12:00:00.000Z",
+  "to": "2026-08-10T13:00:00.000Z",
+  "limit": 50
+}
+```
+
+`scope` is `current-session` or `session-directory`. The latter is restricted
+to regular files below the server-configured Session root; callers cannot
+provide a path or alternate root. Filters are exact matches. `from` is
+inclusive and `to` is exclusive. `limit` defaults to `50` and is restricted to
+`1..200`. `types` is deduplicated and canonicalized before cursor binding.
+
+The response contains `schemaVersion: 1`, safe `events`, optional `nextCursor`,
+and safe `warnings`. A cursor is opaque, integrity-protected, and bound to the
+complete query (scope, filters, time bounds, and limit); changing any filter or
+using a malformed cursor returns `audit_cursor_invalid`.
+
+#### audit.replay
+
+`audit.replay` uses `runId` plus the same scope, filters, cursor, and limit
+rules. It returns one safe Run summary, an event page, warnings, and one of:
+
+- `complete`: a terminal fact exists and relevant sources are safely and
+  unambiguously readable;
+- `interrupted`: an accepted/started Run has no terminal fact;
+- `incomplete`: a relevant source is malformed, unavailable, contradictory, or
+  ambiguous.
+
+Missing runs return `audit_run_not_found`. A safe partial replay returns
+`status: "incomplete"` rather than exposing source errors or failing closed
+with a raw exception. Warning codes are stable (`unknown_source`,
+`malformed_source`, `unsupported_schema`, `orphan_source`, `duplicate_source`,
+`source_unavailable`, `ambiguous_run_association`, and `mapping_conflict`);
+warnings contain only safe identifiers and never raw custom-entry data.
+
+#### external.map
+
+`external.map` appends a validated mapping for the current Session:
+
+```json
+{
+  "type": "external.map",
+  "external": {
+    "namespace": "ci",
+    "externalSessionId": "job-123",
+    "externalRunId": "attempt-1"
+  },
+  "aosSessionId": "abc123",
+  "aosRunId": "run_abc123",
+  "source": "ci",
+  "correlationId": "trace-1"
+}
+```
+
+Identifiers are bounded safe identifiers, not URLs, paths, commands, or
+payload containers. Repeating the same mapping is idempotent. Mapping either
+the same external execution or the same AOS execution to a different target
+returns `external_mapping_conflict`; the append-only history is never rewritten
+and contradictory historical entries produce a `mapping_conflict` warning.
+If persistence cannot be confirmed, the command returns
+`audit_persistence_failed` and no success acknowledgement.
+
+All audit and mapping responses are redacted public types. They omit prompts,
+messages, final text, custom-entry `data`, raw source bodies, paths, URLs,
+commands, environment/header values, credentials, provider errors, stacks, and
+other free-form diagnostics. Public error messages are generic; clients should
+branch on stable `error.code`, not message text.
 
 ### Structured errors
 
@@ -1669,6 +1763,14 @@ Error codes:
 | `source_run_not_resumable` | The source run cannot be the basis for a new attempt | no |
 | `session_switch_cancelled` | A session-switch extension cancelled the switch during `run.resume` | no |
 | `ledger_persistence_failed` | The run ledger could not be appended to the session | no |
+| `audit_query_invalid` | The audit query or filter shape is invalid | no |
+| `audit_cursor_invalid` | The cursor is malformed or bound to a different query | no |
+| `audit_scope_unavailable` | The requested Session audit scope cannot be read safely | no |
+| `audit_run_not_found` | The requested Run has no accepted audit fact in scope | no |
+| `audit_replay_incomplete` | No safe replay result could be constructed | no |
+| `external_mapping_invalid` | External mapping identifiers or metadata are invalid | no |
+| `external_mapping_conflict` | Mapping history already binds a key to another target | no |
+| `audit_persistence_failed` | The external mapping could not be durably appended | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.

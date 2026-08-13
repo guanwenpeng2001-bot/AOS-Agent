@@ -11,6 +11,17 @@ import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type {
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
+} from "../../core/execution-audit-query.ts";
+import type {
+	ExternalExecutionRef,
+	ExternalMappingPersistenceResult,
+	ExternalMappingRequest,
+} from "../../core/external-session-mapping.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type {
@@ -33,6 +44,15 @@ import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
 // ============================================================================
 // RPC Commands (stdin)
 // ============================================================================
+
+/** Flattened Automation Host request for a cross-session audit query. */
+export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQuery;
+
+/** Flattened Automation Host request for a single-run audit replay. */
+export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
+
+/** Flattened Automation Host request for an append-only external mapping. */
+export type RpcExternalMapCommand = { id?: string; type: "external.map" } & ExternalMappingRequest;
 
 export type RpcCommand =
 	// Prompting
@@ -108,6 +128,7 @@ export type RpcCommand =
 			type: "run.start";
 			message: string;
 			images?: ImageContent[];
+			external?: ExternalExecutionRef;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -122,11 +143,15 @@ export type RpcCommand =
 			sourceRunId: string;
 			message: string;
 			images?: ImageContent[];
+			external?: ExternalExecutionRef;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
 			modelRole?: ModelRoleSelection;
-	  };
+	  }
+	| RpcAuditQueryCommand
+	| RpcAuditReplayCommand
+	| RpcExternalMapCommand;
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -424,8 +449,11 @@ export type RpcCommandType = RpcCommand["type"];
 /** Commands introduced by the Automation Host v1 protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
+/** Automation Host v1 audit and external mapping commands. */
+export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
-export type RpcAutomationCommandType = "initialize" | RpcRunCommandType;
+export type RpcAutomationCommandType = "initialize" | RpcRunCommandType | RpcAuditCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -433,6 +461,8 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
+	/** Additive audit and external mapping command list. */
+	auditCommands?: RpcAuditCommandType[];
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -441,6 +471,7 @@ export interface RunAcceptedData {
 	sessionId: string;
 	attempt: number;
 	status: "accepted";
+	external?: ExternalExecutionRef;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
 	policyBindingId?: string;
@@ -464,6 +495,15 @@ export interface RunCancelData {
 	status: RunStatus;
 }
 
+/** Data returned by a successful `audit.query`. */
+export type AuditQueryData = AuditQueryResult;
+
+/** Data returned by a successful `audit.replay`. */
+export type AuditReplayData = AuditReplayResult;
+
+/** Data returned by a successful `external.map`. */
+export type ExternalMapData = ExternalMappingPersistenceResult;
+
 /**
  * Automation Host v1 responses.
  *
@@ -477,6 +517,9 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.resume"; success: true; data: RunAcceptedData }
 	| { id?: string; type: "response"; command: "run.get"; success: true; data: RunGetData }
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
+	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
+	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
+	| { id?: string; type: "response"; command: "external.map"; success: true; data: ExternalMapData }
 	| {
 			id?: string;
 			type: "response";
@@ -487,6 +530,24 @@ export type RpcAutomationResponse =
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
+// Re-export public audit query/replay types.
+export type {
+	AuditEvent,
+	AuditEventType,
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
+	AuditWarning,
+} from "../../core/execution-audit-query.ts";
+// Re-export public external mapping types.
+export type {
+	ExternalExecutionMapping,
+	ExternalExecutionRef,
+	ExternalMappingSummary,
+	ExternalMappingPersistenceResult,
+	ExternalMappingRequest,
+} from "../../core/external-session-mapping.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,

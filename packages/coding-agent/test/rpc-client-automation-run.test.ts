@@ -211,6 +211,94 @@ describe("RpcClient Automation Host request shapes", () => {
 			policyProfile: "strict",
 		});
 	});
+
+	it("startRun and resumeRun forward optional external references", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+		const external = { namespace: "ci", externalSessionId: "job-1", externalRunId: "attempt-1" };
+
+		await client.startRun("external", undefined, undefined, undefined, undefined, undefined, external);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "external",
+			images: undefined,
+			external,
+		});
+
+		await client.resumeRun(
+			"/tmp/s.jsonl",
+			"r1",
+			"external resume",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			external,
+		);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "external resume",
+			images: undefined,
+			external,
+		});
+	});
+
+	it("sends audit query, replay, and external mapping commands with explicit payloads", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async (command: { type: string }) => ({
+			type: "response",
+			command: command.type,
+			success: true,
+			data:
+				command.type === "audit.query"
+					? { schemaVersion: 1, scope: "current-session", events: [], warnings: [] }
+					: command.type === "audit.replay"
+						? {
+								schemaVersion: 1,
+								run: {
+									status: "interrupted",
+									attempt: 1,
+									model: { provider: "p", id: "m", thinkingLevel: "low" },
+								},
+								events: [],
+								status: "interrupted",
+								warnings: [],
+							}
+						: {
+								mapping: { namespace: "ci", externalSessionId: "job-1", aosSessionId: "s1", createdAt: "t" },
+								appended: true,
+								idempotent: false,
+							},
+		}));
+		privateClient.send = send;
+
+		await expect(
+			client.auditQuery({ scope: "current-session", types: ["run.completed"], limit: 10 }),
+		).resolves.toMatchObject({
+			schemaVersion: 1,
+		});
+		expect(send).toHaveBeenLastCalledWith({
+			type: "audit.query",
+			scope: "current-session",
+			types: ["run.completed"],
+			limit: 10,
+		});
+
+		await client.auditReplay("r1", { scope: "current-session", limit: 5 });
+		expect(send).toHaveBeenLastCalledWith({ type: "audit.replay", runId: "r1", scope: "current-session", limit: 5 });
+
+		const request = {
+			external: { namespace: "ci", externalSessionId: "job-1" },
+			aosSessionId: "s1",
+			aosRunId: "r1",
+		};
+		await client.externalMap(request);
+		expect(send).toHaveBeenLastCalledWith({ type: "external.map", ...request });
+	});
 });
 
 describe("RpcClient Automation Host structured failures", () => {
