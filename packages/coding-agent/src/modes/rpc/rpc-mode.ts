@@ -38,6 +38,9 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
+import { ExecutionAuditError } from "../../core/execution-audit.ts";
+import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
 import type {
 	AutomationError,
 	RunFinalModelReference,
@@ -79,6 +82,13 @@ import type {
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
+	AuditQuery,
+	AuditQueryData,
+	AuditReplayQuery,
+	AuditReplayData,
+	ExternalMapData,
+	ExternalExecutionRef,
+	ExternalMappingRequest,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
@@ -96,19 +106,37 @@ import type {
 
 // Re-export types for consumers
 export type {
+	AuditEvent,
+	AuditEventType,
+	AuditQuery,
+	AuditQueryData,
+	AuditQueryResult,
+	AuditReplayData,
+	AuditReplayQuery,
+	AuditReplayResult,
+	AuditWarning,
 	AutomationError,
 	AutomationErrorCode,
 	CapabilityBindingView,
+	ExternalExecutionMapping,
+	ExternalExecutionRef,
+	ExternalMappingSummary,
+	ExternalMappingPersistenceResult,
+	ExternalMappingRequest,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcAuditCommandType,
+	RpcAuditQueryCommand,
+	RpcAuditReplayCommand,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
+	RpcExternalMapCommand,
 	RpcRunCommandType,
 	RpcSessionState,
 	RunAcceptedData,
@@ -224,6 +252,58 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		error: serializePublicAutomationError(redactAutomationError(err), "Automation request failed."),
 	});
 
+	type AuditAutomationCode =
+		| "audit_query_invalid"
+		| "audit_cursor_invalid"
+		| "audit_scope_unavailable"
+		| "audit_run_not_found"
+		| "audit_replay_incomplete"
+		| "external_mapping_invalid"
+		| "external_mapping_conflict"
+		| "audit_persistence_failed";
+
+	const isAuditAutomationCode = (value: unknown): value is AuditAutomationCode =>
+		value === "audit_query_invalid" ||
+		value === "audit_cursor_invalid" ||
+		value === "audit_scope_unavailable" ||
+		value === "audit_run_not_found" ||
+		value === "audit_replay_incomplete" ||
+		value === "external_mapping_invalid" ||
+		value === "external_mapping_conflict" ||
+		value === "audit_persistence_failed";
+
+	const auditErrorMessage = (code: AuditAutomationCode): string => {
+		switch (code) {
+			case "audit_query_invalid":
+				return "The audit query is invalid.";
+			case "audit_cursor_invalid":
+				return "The audit cursor is invalid.";
+			case "audit_scope_unavailable":
+				return "The requested audit scope is unavailable.";
+			case "audit_run_not_found":
+				return "The requested run was not found in the audit scope.";
+			case "audit_replay_incomplete":
+				return "The audit replay could not be constructed safely.";
+			case "external_mapping_invalid":
+				return "The external mapping is invalid.";
+			case "external_mapping_conflict":
+				return "The external mapping conflicts with append-only mapping history.";
+			case "audit_persistence_failed":
+				return "The external mapping could not be persisted.";
+		}
+	};
+
+	const auditCommandError = (err: unknown, fallback: AuditAutomationCode): AutomationError => {
+		const candidate =
+			err instanceof ExecutionAuditError
+				? err.code
+				: typeof err === "object" && err !== null && "code" in err
+					? (err as { code?: unknown }).code
+					: undefined;
+		const code = isAuditAutomationCode(candidate) ? candidate : fallback;
+		return createAutomationError(code, auditErrorMessage(code), false);
+	};
+
 	const hostNotInitializedError = (): AutomationError =>
 		createAutomationError(
 			"host_not_initialized",
@@ -253,6 +333,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const asAutomationError = (err: unknown): AutomationError => {
 		if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
 			const candidate = err as AutomationError;
+			if (isAuditAutomationCode(candidate.code)) {
+				return createAutomationError(candidate.code, auditErrorMessage(candidate.code), false);
+			}
 			return createAutomationError(candidate.code, candidate.message, candidate.retryable);
 		}
 		return createAutomationError("start_rejected", errorMessage(err), false);
@@ -634,9 +717,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		inheritedModelBinding: ModelBindingLedgerRecord | undefined,
 		modelRoute: ModelRouteSelection | undefined,
 		modelRole: ModelRoleSelection | undefined,
+		external: ExternalExecutionRef | undefined,
 	): Promise<RpcAutomationResponse | undefined> => {
 		const inputError = slashRunInputError(id, commandType, message);
 		if (inputError !== undefined) return inputError;
+		if (external !== undefined && !isExternalExecutionRef(external)) {
+			return automationError(id, commandType, auditCommandError(undefined, "external_mapping_invalid"));
+		}
 		if (shuttingDown) {
 			return automationError(
 				id,
@@ -809,6 +896,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 						runId: proposedRunId,
 						attempt,
 						sourceRunId,
+						external,
 						previousBindingId,
 						previousPolicyBindingId,
 						previousModelBindingId,
@@ -862,6 +950,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					status: "accepted",
 				};
 				const publicRecord = serializePublicRunRecord(handle.record);
+				if (publicRecord.external !== undefined) acceptedData.external = publicRecord.external;
 				if (publicRecord.modelBindingId !== undefined) acceptedData.modelBindingId = publicRecord.modelBindingId;
 				if (publicRecord.previousModelBindingId !== undefined) {
 					acceptedData.previousModelBindingId = publicRecord.previousModelBindingId;
@@ -1270,6 +1359,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					protocolVersion: 1,
 					sessionId: session.sessionId,
 					runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+					auditCommands: ["audit.query", "audit.replay", "external.map"],
 				};
 				const initializeResponse: RpcAutomationResponse = {
 					id,
@@ -1279,6 +1369,74 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					data: initializeData,
 				};
 				return initializeResponse;
+			}
+
+			case "audit.query": {
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "audit.query", hostNotInitializedError());
+				}
+				const query: AuditQuery = {
+					scope: command.scope,
+					...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+					...(command.runId === undefined ? {} : { runId: command.runId }),
+					...(command.external === undefined ? {} : { external: command.external }),
+					...(command.types === undefined ? {} : { types: command.types }),
+					...(command.from === undefined ? {} : { from: command.from }),
+					...(command.to === undefined ? {} : { to: command.to }),
+					...(command.cursor === undefined ? {} : { cursor: command.cursor }),
+					...(command.limit === undefined ? {} : { limit: command.limit }),
+				};
+				try {
+					const data = new ExecutionAuditQuery(session.sessionManager).query(query) satisfies AuditQueryData;
+					return { id, type: "response", command: "audit.query", success: true, data };
+				} catch (err) {
+					return automationError(id, "audit.query", auditCommandError(err, "audit_query_invalid"));
+				}
+			}
+
+			case "audit.replay": {
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "audit.replay", hostNotInitializedError());
+				}
+				const query: AuditReplayQuery = {
+					runId: command.runId,
+					...(command.scope === undefined ? {} : { scope: command.scope }),
+					...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+					...(command.external === undefined ? {} : { external: command.external }),
+					...(command.types === undefined ? {} : { types: command.types }),
+					...(command.from === undefined ? {} : { from: command.from }),
+					...(command.to === undefined ? {} : { to: command.to }),
+					...(command.cursor === undefined ? {} : { cursor: command.cursor }),
+					...(command.limit === undefined ? {} : { limit: command.limit }),
+				};
+				try {
+					const data = new ExecutionAuditQuery(session.sessionManager).replay(query) satisfies AuditReplayData;
+					return { id, type: "response", command: "audit.replay", success: true, data };
+				} catch (err) {
+					return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
+				}
+			}
+
+			case "external.map": {
+				if (!hostInitialized || coordinator === undefined) {
+					return automationError(id, "external.map", hostNotInitializedError());
+				}
+				if (command.aosSessionId !== session.sessionId || !isExternalExecutionRef(command.external)) {
+					return automationError(id, "external.map", auditCommandError(undefined, "external_mapping_invalid"));
+				}
+				const request: ExternalMappingRequest = {
+					external: command.external,
+					aosSessionId: command.aosSessionId,
+					...(command.aosRunId === undefined ? {} : { aosRunId: command.aosRunId }),
+					...(command.source === undefined ? {} : { source: command.source }),
+					...(command.correlationId === undefined ? {} : { correlationId: command.correlationId }),
+				};
+				try {
+					const data = coordinator.persistExternalMapping(request) satisfies ExternalMapData;
+					return { id, type: "response", command: "external.map", success: true, data };
+				} catch (err) {
+					return automationError(id, "external.map", auditCommandError(err, "audit_persistence_failed"));
+				}
 			}
 
 			case "run.start": {
@@ -1297,6 +1455,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					undefined,
 					command.modelRoute,
 					command.modelRole,
+					command.external,
 				);
 			}
 
@@ -1379,6 +1538,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "run.resume": {
 				const inputError = slashRunInputError(id, "run.resume", command.message);
 				if (inputError !== undefined) return inputError;
+				if (command.external !== undefined && !isExternalExecutionRef(command.external)) {
+					return automationError(id, "run.resume", auditCommandError(undefined, "external_mapping_invalid"));
+				}
 				if (shuttingDown) {
 					return automationError(
 						id,
@@ -1476,6 +1638,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					inheritedModelBinding,
 					command.modelRoute,
 					command.modelRole,
+					command.external,
 				);
 			}
 

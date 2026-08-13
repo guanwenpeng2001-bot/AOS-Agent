@@ -22,6 +22,13 @@ import type {
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationResponse,
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
+	ExternalExecutionRef,
+	ExternalMappingPersistenceResult,
+	ExternalMappingRequest,
 	RpcCommand,
 	RpcResponse,
 	RpcSessionState,
@@ -583,6 +590,7 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
+		external?: ExternalExecutionRef,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
@@ -592,6 +600,7 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
+			...(external !== undefined ? { external } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -630,6 +639,7 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
+		external?: ExternalExecutionRef,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -641,6 +651,7 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
+			...(external !== undefined ? { external } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -686,6 +697,46 @@ export class RpcClient {
 	async getModelRoutes(): Promise<GetModelRoutesData> {
 		const response = await this.send({ type: "get_model_routes" });
 		return this.getData(response);
+	}
+
+	/** Read a safe, filtered execution-audit page. */
+	async auditQuery(query: AuditQuery): Promise<AuditQueryResult> {
+		const response = await this.sendAutomation({ type: "audit.query", ...query });
+		return this.getAutomationData<AuditQueryResult>(response);
+	}
+
+	/** Alias for auditQuery for callers that prefer verb-first naming. */
+	async queryAudit(query: AuditQuery): Promise<AuditQueryResult> {
+		return this.auditQuery(query);
+	}
+
+	/** Replay one run from the safe audit ledger, optionally with query filters. */
+	async auditReplay(
+		query: AuditReplayQuery | string,
+		options: Omit<AuditReplayQuery, "runId"> = {},
+	): Promise<AuditReplayResult> {
+		const request: AuditReplayQuery = typeof query === "string" ? { ...options, runId: query } : query;
+		const response = await this.sendAutomation({ type: "audit.replay", ...request });
+		return this.getAutomationData<AuditReplayResult>(response);
+	}
+
+	/** Alias for auditReplay for callers that prefer verb-first naming. */
+	async replayAudit(
+		query: AuditReplayQuery | string,
+		options: Omit<AuditReplayQuery, "runId"> = {},
+	): Promise<AuditReplayResult> {
+		return this.auditReplay(query, options);
+	}
+
+	/** Persist a validated external-to-AOS mapping in the current Session. */
+	async externalMap(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
+		const response = await this.sendAutomation({ type: "external.map", ...request });
+		return this.getAutomationData<ExternalMappingPersistenceResult>(response);
+	}
+
+	/** Alias for externalMap for callers that prefer verb-first naming. */
+	async mapExternal(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
+		return this.externalMap(request);
 	}
 
 	// =========================================================================
