@@ -955,6 +955,35 @@ describe("AgentSession capability binding integration", () => {
 	});
 
 	describe("static catalog collisions fail closed", () => {
+		it("reports a rejected preflight and settles the Agent run on a capability conflict", async () => {
+			let streamCalls = 0;
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: SettingsManager.inMemory(),
+				customTools: [sdkToolWithExecuteSpy("read")],
+				onStreamCall: () => streamCalls++,
+			});
+			try {
+				const preflightResults: boolean[] = [];
+
+				await expect(
+					session.prompt("run", {
+						source: "rpc",
+						preflightResult: (success) => preflightResults.push(success),
+					}),
+				).rejects.toMatchObject({ code: "capability_name_conflict" });
+
+				expect(preflightResults).toEqual([false]);
+				expect(session.isStreaming).toBe(false);
+				await expect(session.agent.waitForIdle()).resolves.toBeUndefined();
+				expect(streamCalls).toBe(0);
+				expect(session.getActiveToolNames()).toEqual([]);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
 		it("fails closed with capability_name_conflict on a selected builtin/SDK name collision", async () => {
 			let executeCalls = 0;
 			let streamCalls = 0;

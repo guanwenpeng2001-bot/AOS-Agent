@@ -260,6 +260,71 @@ describe("Agent", () => {
 		expect(agent.state.isStreaming).toBe(false);
 	});
 
+	it("keeps prepared prompt and continuation runs active through async preflight", async () => {
+		const preflightStarted = createDeferred();
+		const releasePreflight = createDeferred();
+		let responseCount = 0;
+		const agent = new Agent({
+			streamFn: () => {
+				responseCount++;
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage(`response ${responseCount}`),
+					});
+				});
+				return stream;
+			},
+		});
+		const promptMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "prepared prompt" }],
+			timestamp: Date.now(),
+		};
+		const continuationMessage = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: "prepared follow-up" }],
+			timestamp: Date.now() + 1,
+		};
+
+		const runPromise = agent.runWithPreflight(
+			async () => {
+				preflightStarted.resolve();
+				await releasePreflight.promise;
+				return [promptMessage];
+			},
+			async (messages) => {
+				await agent.runPreparedPrompt(messages);
+				agent.followUp(continuationMessage);
+				await agent.runPreparedContinuation();
+			},
+		);
+
+		await preflightStarted.promise;
+		let idleResolved = false;
+		const idlePromise = agent.waitForIdle().then(() => {
+			idleResolved = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(idleResolved).toBe(false);
+		expect(agent.state.isStreaming).toBe(true);
+
+		releasePreflight.resolve();
+		await Promise.all([runPromise, idlePromise]);
+
+		expect(responseCount).toBe(2);
+		expect(agent.state.messages.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(agent.state.isStreaming).toBe(false);
+	});
+
 	it("should pass the active abort signal to subscribers", async () => {
 		let receivedSignal: AbortSignal | undefined;
 		const agent = new Agent({
