@@ -10,6 +10,7 @@
 
 - Agent lifecycle state now remains active through caller-owned asynchronous preflight and prepared prompt execution, so `waitForIdle()` observes the complete run.
 - Caller cancellation and deadline expiry are classified before uncertain model-output side effects, preserving the `aborted` terminal state.
+- Retained redacted provider diagnostics and recognized wrapped DNS transport failures when retrying a model request.
 
 ## [0.84.3] - 2026-08-10
 

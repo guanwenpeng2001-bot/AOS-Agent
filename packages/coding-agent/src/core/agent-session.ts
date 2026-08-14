@@ -6038,7 +6038,9 @@ export class AgentSession {
 
 		try {
 			await this._ensureExecutionPolicyReady(undefined, boundary.signal);
-			if (boundary.signal.aborted) throw new DOMException("Bash operation aborted", "AbortError");
+			if (boundary.signal.aborted) {
+				return { output: "", exitCode: undefined, cancelled: true, truncated: false };
+			}
 			const cwd = this.sessionManager.getCwd();
 			const authorized = await this._requireCurrentBuiltinToolPolicy("user_bash").authorizeProcess({
 				command: resolvedCommand,
@@ -6046,7 +6048,6 @@ export class AgentSession {
 				env: getShellEnv(),
 				requestId: options?.id,
 			});
-			if (boundary.signal.aborted) throw new DOMException("Bash operation aborted", "AbortError");
 			const result = await executeBashWithOperations(
 				resolvedCommand,
 				cwd,

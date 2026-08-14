@@ -300,7 +300,7 @@ export function classifyAgentLoopError(
 	if (isDeadlineError(error, options, text)) {
 		category = "deadline";
 		fallbackCode = "deadline_exceeded";
-	} else if (isCancelledError(error, options, text)) {
+	} else if (isCancelledError(error, options, text) && !isTransientError(text, status)) {
 		category = "cancelled";
 		fallbackCode = "cancelled";
 	} else if (possibleSideEffect) {
@@ -320,10 +320,14 @@ export function classifyAgentLoopError(
 	const safeToRetry = category === "transient_provider" && sideEffect !== "unknown";
 	const explicitRetryable = booleanProperty(error, "retryable") ?? booleanProperty(asRecord(error)?.error, "retryable");
 	const retryable = safeToRetry && explicitRetryable !== false;
+	const message =
+		category === "transient_provider" || category === "unknown"
+			? redactedThrownAgentError(error)
+			: ERROR_MESSAGES[category];
 	return {
 		category,
 		...(safeCode(error, fallbackCode) === undefined ? {} : { code: safeCode(error, fallbackCode) }),
-		message: ERROR_MESSAGES[category],
+		message,
 		operation,
 		phase,
 		sideEffect: sideEffect === "unknown" ? "unknown" : "none",

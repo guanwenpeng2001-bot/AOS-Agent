@@ -63,7 +63,7 @@ function classifyCategory(message: string): {
 		return { category: "rate_limit", fallbackReason: "transient_provider_error" };
 	}
 	if (
-		/(unavailable|temporar|transient|network|fetch failed|econn|502|503|504|5xx|gateway|server.?error|internal.?error|provider.?returned.?error|connection|socket|stream ended|ended without|terminated|try your request again|you can retry|resourceexhausted)/.test(
+		/(unavailable|temporar|transient|network|fetch failed|econn|getaddrinfo|eai_again|enotfound|502|503|504|5xx|gateway|server.?error|internal.?error|provider.?returned.?error|connection|socket|stream ended|ended without|terminated|try your request again|you can retry|resourceexhausted)/.test(
 			normalized,
 		)
 	) {
@@ -95,9 +95,6 @@ export function classifyProviderFailure(
 	}
 	const message = messageText(value);
 	const normalized = message.toLowerCase();
-	if (/(abort|cancel|cancelled|canceled)/.test(normalized)) {
-		return { kind: "cancelled", category: "cancelled", sideEffectStatus: "none", retryable: false };
-	}
 	const classified = classifyCategory(message);
 	if (options.visibleOutput) {
 		return {
@@ -107,20 +104,23 @@ export function classifyProviderFailure(
 			retryable: false,
 		};
 	}
-	if (options.dispatched) {
-		return {
-			kind: "side_effect_unknown",
-			category: "side_effect_unknown",
-			sideEffectStatus: "unknown",
-			retryable: false,
-		};
-	}
 	if (classified.fallbackReason !== undefined) {
 		return {
 			kind: "transient_provider",
 			...classified,
 			sideEffectStatus: "none",
 			retryable: true,
+		};
+	}
+	if (/(abort|cancel|cancelled|canceled)/.test(normalized)) {
+		return { kind: "cancelled", category: "cancelled", sideEffectStatus: "none", retryable: false };
+	}
+	if (options.dispatched) {
+		return {
+			kind: "side_effect_unknown",
+			category: "side_effect_unknown",
+			sideEffectStatus: "unknown",
+			retryable: false,
 		};
 	}
 	const kind: ExecutionErrorKind =
