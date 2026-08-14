@@ -47,6 +47,7 @@ not create a second event ledger.
 | `sandbox.lifecycle` | `sandbox.lifecycle` | `bindingId` through policy binding |
 | `policy.violation` | `policy.violation` | `bindingId` through policy binding |
 | `external.mapping` | `external.mapping` | mapping `aosSessionId` and optional `aosRunId` |
+| `remote.operation` | `remote.operation` | receipt `sessionId` and optional `runId` |
 
 `context.memory` is deliberately not an audit source. It contains explicit
 user text and must not be made visible through an audit summary. Unknown
@@ -88,7 +89,8 @@ type AuditEventType =
   | "policy.approval"
   | "sandbox.lifecycle"
   | "policy.violation"
-  | "external.mapping";
+  | "external.mapping"
+  | "remote.operation";
 ```
 
 Every event has this base shape:
@@ -123,7 +125,8 @@ type AuditEvent =
   | (AuditEventBase & { type: "policy.approval"; runId?: string; summary: AuditPolicyApprovalSummary })
   | (AuditEventBase & { type: "sandbox.lifecycle"; runId?: string; summary: AuditSandboxLifecycleSummary })
   | (AuditEventBase & { type: "policy.violation"; runId?: string; summary: AuditPolicyViolationSummary })
-  | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping });
+  | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping })
+  | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt });
 ```
 
 `sourceEntryId` is the outer SessionEntry `id`, not an inner ledger sequence
@@ -274,6 +277,16 @@ binding's `runId`; raw operation requests are never included.
 `external.mapping` contains only the mapping keys in section 4. It never
 contains an external payload, prompt, callback data, URL, token, request
 headers, or provider diagnostic.
+
+### Remote operation summary
+
+`remote.operation` contains the validated terminal `RemoteOperationReceipt`
+and no raw request, provider exception, transport detail, payload, path, URL,
+credential, or secret. A receipt may carry a public-safe binding association so
+an orchestrator can join the operation to the Run's ModelBroker, Capability,
+Policy, and Sandbox facts. The optional Session ledger sink writes this fact
+through the existing append-only Session custom-entry API; it does not create
+a second execution ledger.
 
 ### Forbidden keys
 

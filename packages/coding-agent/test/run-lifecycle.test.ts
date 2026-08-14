@@ -6,6 +6,7 @@ import {
 	resolveCapabilityBinding,
 	type CapabilityBinding,
 } from "../src/core/capability-registry.ts";
+import { createBindingHandle, createRunBindingAssociation } from "../src/core/binding-handles.ts";
 import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
@@ -19,7 +20,9 @@ import {
 } from "../src/core/execution-policy-ledger.ts";
 import {
 	CAPABILITY_BINDING_CUSTOM_TYPE,
+	canonicalizeRunRequest,
 	createAutomationError,
+	createRunRequestFingerprint,
 	createRunLifecycleCoordinator,
 	foldCapabilityBindingEntries,
 	isOpaqueCapabilityBindingId,
@@ -51,11 +54,7 @@ import {
 	type RunResult,
 } from "../src/core/run-lifecycle.ts";
 import type { BashExecutionMessage } from "../src/core/messages.ts";
-import {
-	SessionManager,
-	type SessionEntry,
-	type SessionTreeNode,
-} from "../src/core/session-manager.ts";
+import { SessionManager, type SessionEntry, type SessionTreeNode } from "../src/core/session-manager.ts";
 
 // agent-session.ts / session-manager.ts transitively load @aos-agent/ai/compat,
 // whose entrypoint pulls in gitignored generated model catalogs absent under
@@ -126,7 +125,10 @@ const POLICY_PROFILE: ExecutionPolicyProfile = {
 	approvals: { writeOutsideWorkspace: "deny", network: "ask", process: "ask" },
 };
 
-function resolveLifecyclePolicy(options: { runId: string; previousPolicyBindingId?: string }): Extract<PolicyResolutionResult, { ok: true }> {
+function resolveLifecyclePolicy(options: {
+	runId: string;
+	previousPolicyBindingId?: string;
+}): Extract<PolicyResolutionResult, { ok: true }> {
 	const resolved = resolveExecutionPolicy({
 		profiles: { [POLICY_PROFILE.id]: POLICY_PROFILE },
 		defaultProfile: POLICY_PROFILE.id,
@@ -156,7 +158,7 @@ function makeSession(): SessionManager {
 }
 
 function makeCoordinator(
-	session?: SessionManager,
+	session?: RunLedgerSession,
 	now?: () => string,
 	diagnostics?: (message: string) => void,
 ): RunLifecycleCoordinator {
@@ -256,7 +258,12 @@ describe("state machine", () => {
 		expect(started.map((event) => event.type)).toEqual(["run.started"]);
 		expect(run.record.status).toBe("running");
 		expect(run.record.startedAt).toBeDefined();
-		expect(started[0]).toMatchObject({ type: "run.started", runId: "r1", sessionId: session.getSessionId(), sequence: 1 });
+		expect(started[0]).toMatchObject({
+			type: "run.started",
+			runId: "r1",
+			sessionId: session.getSessionId(),
+			sequence: 1,
+		});
 
 		const terminal = run.settle({ outcome: "completed" });
 		expect(terminal?.type).toBe("run.completed");
@@ -267,6 +274,38 @@ describe("state machine", () => {
 		expect(isTerminalStatus("accepted")).toBe(false);
 		expect(isTerminalStatus("running")).toBe(false);
 		expect(coordinator.activeRun).toBeUndefined();
+	});
+
+	it("persists the Run deadline and stable binding association through receipt and replay", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const deadlineAt = "2026-08-14T00:01:00.000Z";
+		const modelHandle = createBindingHandle({
+			domain: "model",
+			bindingId: "model-binding-1",
+			revision: "rev-1",
+			relation: "run.model",
+		});
+		const expectedAssociation = createRunBindingAssociation("r-bound", [modelHandle]);
+		const run = coordinator.reserve().accept({
+			runId: "r-bound",
+			attempt: 1,
+			model: MODEL,
+			deadlineAt,
+			bindingHandles: [modelHandle],
+		});
+
+		expect(run.record.deadlineAt).toBe(deadlineAt);
+		expect(run.record.bindingAssociation).toEqual(expectedAssociation);
+		run.start();
+		run.settle({ outcome: "completed" });
+		expect(run.receipt()).toMatchObject({ deadlineAt, bindingAssociation: expectedAssociation });
+
+		const replayed = makeCoordinator(session).getRun("r-bound");
+		expect(replayed?.record.deadlineAt).toBe(deadlineAt);
+		expect(replayed?.record.bindingAssociation).toEqual(expectedAssociation);
+		expect(serializePublicRunRecord(replayed!.record).bindingAssociation).toEqual(expectedAssociation);
+		expect(serializePublicRunReceipt(replayed!.receipt!).bindingAssociation).toEqual(expectedAssociation);
 	});
 
 	it("records cancellation intent; cancelled beats completed and failed at settle", () => {
@@ -303,6 +342,106 @@ describe("state machine", () => {
 		const run = reservation.accept({ runId: "r2", sourceRunId: "r1", attempt: 2, model: MODEL });
 		expect(run.record.sourceRunId).toBe("r1");
 		expect(run.record.attempt).toBe(2);
+	});
+
+	it("canonicalizes request material by structure while excluding raw prompt data", () => {
+		const left = canonicalizeRunRequest({
+			command: "run.start",
+			sessionId: "session-1",
+			message: "secret=not-persisted",
+			images: [{ data: "image-bytes", type: "image" }],
+			modelRoute: { id: "route-1", candidates: [] },
+		});
+		const right = canonicalizeRunRequest({
+			command: "run.start",
+			sessionId: "session-1",
+			message: "secret=not-persisted",
+			images: [{ type: "image", data: "image-bytes" }],
+			modelRoute: { candidates: [], id: "route-1" },
+		});
+		expect(
+			createRunRequestFingerprint({
+				command: "run.start",
+				sessionId: "session-1",
+				message: "secret=not-persisted",
+				images: [{ data: "image-bytes", type: "image" }],
+				modelRoute: { id: "route-1", candidates: [] },
+			}),
+		).toBe(
+			createRunRequestFingerprint({
+				command: "run.start",
+				sessionId: "session-1",
+				message: "secret=not-persisted",
+				images: [{ type: "image", data: "image-bytes" }],
+				modelRoute: { candidates: [], id: "route-1" },
+			}),
+		);
+		expect(left).toEqual(right);
+		expect(JSON.stringify(left)).not.toContain("secret=not-persisted");
+		expect(JSON.stringify(left)).not.toContain("image-bytes");
+		expect(
+			createRunRequestFingerprint({
+				command: "run.start",
+				sessionId: "session-1",
+				message: "different",
+			}),
+		).not.toBe(
+			createRunRequestFingerprint({
+				command: "run.start",
+				sessionId: "session-1",
+				message: "secret=not-persisted",
+			}),
+		);
+	});
+
+	it("persists and replays a Session-scoped request relation without a second Run", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = coordinator.reserve().accept({
+			runId: "request-run",
+			attempt: 1,
+			model: MODEL,
+			requestScope: "start",
+			clientRequestId: "request-1",
+			requestFingerprint: "a".repeat(64),
+		});
+		run.start();
+		run.settle({ outcome: "completed" });
+
+		const lookup = coordinator.getRunByClientRequestId("request-1");
+		expect(lookup?.fingerprint).toBe("a".repeat(64));
+		expect(lookup?.result.record.id).toBe("request-run");
+		expect(lookup?.result.receipt?.status).toBe("completed");
+
+		const replayed = makeCoordinator(session).getRunByClientRequestId("request-1");
+		expect(replayed?.result.record.id).toBe("request-run");
+		expect(ledgerKinds(session)).toEqual(["accepted", "started", "terminal"]);
+	});
+
+	it("keeps an accepted request relation visible when the started append fails", () => {
+		const session = failingSession(1);
+		const coordinator = makeCoordinator(session);
+		const run = coordinator.reserve().accept({
+			runId: "accepted-only-request",
+			attempt: 1,
+			model: MODEL,
+			requestScope: "start",
+			clientRequestId: "request-after-kill-boundary",
+			requestFingerprint: "b".repeat(64),
+		});
+		expect(() => run.start()).toThrow();
+
+		const replayed = makeCoordinator(session).getRunByClientRequestId("request-after-kill-boundary");
+		expect(replayed?.result.record.id).toBe("accepted-only-request");
+		expect(replayed?.result.record.status).toBe("accepted");
+		expect(replayed?.result.receipt).toBeUndefined();
+		expect(replayed?.result.recovery).toBe("interrupted");
+		expect(
+			session
+				.getEntries()
+				.filter(isAutomationRunEntry)
+				.map((entry) => (entry.data as { kind?: string }).kind),
+		).toEqual(["accepted"]);
 	});
 
 	it("records and replays additive ModelBroker binding, final model, attempts and budget metadata", () => {
@@ -494,7 +633,9 @@ describe("state machine", () => {
 		expect(serialized).not.toContain("--token");
 		expect(serialized).not.toContain("API_TOKEN");
 		expect(serialized).not.toContain("authorization");
-		expect(JSON.stringify(session.getTree().map((node) => serializePublicSessionTreeNode(node)))).not.toContain("secret.txt");
+		expect(JSON.stringify(session.getTree().map((node) => serializePublicSessionTreeNode(node)))).not.toContain(
+			"secret.txt",
+		);
 	});
 
 	it("redacts structured bash messages and streaming output at the public boundary", () => {
@@ -798,7 +939,7 @@ describe("event buffering and sequence", () => {
 		expect(events.map((event) => event.type)).toEqual(["run.started", "run.event", "run.event", "run.event"]);
 		expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
 		expect(events[0]).toMatchObject({ type: "run.started", runId: "r1" });
-		expect((events[1] as Extract<typeof events[number], { type: "run.event" }>).event.type).toBe("agent_end");
+		expect((events[1] as Extract<(typeof events)[number], { type: "run.event" }>).event.type).toBe("agent_end");
 
 		const terminal = run.settle({ outcome: "completed" });
 		expect(terminal?.sequence).toBe(5);
@@ -847,7 +988,11 @@ describe("usage deltas", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.setUsageBaseline({ input: 100, output: 20, total: 120 });
-		expect(run.computeUsageDelta({ input: 150, output: 25, total: 180 })).toEqual({ input: 50, output: 5, total: 60 });
+		expect(run.computeUsageDelta({ input: 150, output: 25, total: 180 })).toEqual({
+			input: 50,
+			output: 5,
+			total: 60,
+		});
 		expect(run.computeUsageDelta({ input: 80, output: 10, total: 100 })).toEqual({ input: 0, output: 0, total: 0 });
 	});
 
@@ -887,11 +1032,15 @@ describe("ledger persistence and context isolation", () => {
 		expect(context2.messages[0].role).toBe("user");
 
 		const entries: SessionEntry[] = session.getEntries();
-		expect(entries.some((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE)).toBe(true);
+		expect(entries.some((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE)).toBe(
+			true,
+		);
 
 		const tree = session.getTree();
 		const flat = flattenTree(tree);
-		expect(flat.some((node) => node.entry.type === "custom" && node.entry.customType === RUN_LEDGER_CUSTOM_TYPE)).toBe(true);
+		expect(
+			flat.some((node) => node.entry.type === "custom" && node.entry.customType === RUN_LEDGER_CUSTOM_TYPE),
+		).toBe(true);
 	});
 });
 
@@ -912,8 +1061,16 @@ describe("persistence failures", () => {
 	});
 
 	it("surfaces a ledger persistence failure at settle without a terminal", () => {
-		const coordinator = createRunLifecycleCoordinator(failingSession(2), { diagnostics: () => {} });
-		const run = accept(coordinator.reserve(), "r1");
+		const session = failingSession(2);
+		const requestCoordinator = createRunLifecycleCoordinator(session, { diagnostics: () => {} });
+		const run = requestCoordinator.reserve().accept({
+			runId: "terminal-boundary-request",
+			attempt: 1,
+			model: MODEL,
+			requestScope: "start",
+			clientRequestId: "terminal-boundary-1",
+			requestFingerprint: "c".repeat(64),
+		});
 		run.start();
 		let error: AutomationError | undefined;
 		try {
@@ -924,6 +1081,10 @@ describe("persistence failures", () => {
 		expect(error?.code).toBe("ledger_persistence_failed");
 		expect(run.receipt()).toBeUndefined();
 		expect(run.record.status).toBe("running");
+		const replayed = makeCoordinator(session).getRunByClientRequestId("terminal-boundary-1");
+		expect(replayed?.result.record.status).toBe("running");
+		expect(replayed?.result.recovery).toBe("interrupted");
+		expect(replayed?.result.receipt).toBeUndefined();
 	});
 
 	it("consumes and releases the reservation when persisting the accepted fact fails", () => {
@@ -2002,7 +2163,11 @@ describe("public-safe session ledger serialization", () => {
 		expectNoPublicMarkers(publicTerminal);
 		const acceptedRecord =
 			publicAccepted.type === "custom"
-				? (publicAccepted.data as { record?: { previousBindingId?: string; capabilityBindingId?: string } } | undefined)?.record
+				? (
+						publicAccepted.data as
+							| { record?: { previousBindingId?: string; capabilityBindingId?: string } }
+							| undefined
+					)?.record
 				: undefined;
 		expect(acceptedRecord?.previousBindingId).toBe(OPAQUE_BINDING_ID);
 		expect(acceptedRecord?.capabilityBindingId).toBe(OPAQUE_BINDING_ID);

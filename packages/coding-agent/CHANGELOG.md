@@ -10,6 +10,7 @@
 
 ### Added
 
+- Remote-ready execution contracts: session-scoped idempotent run requests, durable lifecycle observations, reconnect-safe run event recovery, stable binding handles, serialized Session writes, and an in-process fake remote provider contract.
 - Context Engine v1: governed context sources (trust/scope/digest), input budget packing that includes provider tool schemas and formal extension contributions, metadata-only `context.snapshot` Session entries, optional explicit session/project memory (default off), compaction/branch-summary snapshot provenance, RPC `get_context` / `RpcClient.getContext()`, interactive `/context` and `/memory`, and additive `RunReceipt.contextSnapshotId`.
 - Capability Registry/MCP v1: stable capability descriptors and frozen bindings for built-in, extension, SDK, skill, and MCP capabilities; trust-aware `allow`/`ask`/`deny` profiles; stdio and Streamable HTTP MCP lifecycle with explicit environment/header references; namespaced MCP tools; redacted inspection and run/Context Engine binding audit metadata; interactive approval and RPC `get_capabilities` support.
 - Execution Policy/Sandbox v1: named trust-aware `allow`/`ask`/`deny` profiles, immutable per-run policy bindings, fail-closed Sandbox Provider enforcement, approval/decision ledger entries, and redacted policy inspection across RPC, SDK, CLI, and TUI surfaces.

@@ -31,6 +31,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { SessionWriteCoordinator } from "./session-write-coordinator.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -1134,16 +1135,23 @@ export class SessionManager {
 		}
 	}
 
+	private _withWriteLock<T>(operation: () => T): T {
+		if (!this.persist || !this.sessionFile) return operation();
+		return new SessionWriteCoordinator(this.sessionFile, this.sessionDir).withWriteLock(operation);
+	}
+
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const fd = openSync(this.sessionFile, "w");
-		try {
-			for (const entry of this.fileEntries) {
-				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+		this._withWriteLock(() => {
+			const fd = openSync(this.sessionFile!, "w");
+			try {
+				for (const entry of this.fileEntries) {
+					writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+				}
+			} finally {
+				closeSync(fd);
 			}
-		} finally {
-			closeSync(fd);
-		}
+		});
 	}
 
 	isPersisted(): boolean {
@@ -1170,13 +1178,15 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
-	_persist(entry: SessionEntry): void {
+	_persist(entry: SessionEntry, entries: FileEntry[] = this.fileEntries): void {
 		if (!this.persist || !this.sessionFile) return;
 
-		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+		const hasAssistant = entries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {
 			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+				this._withWriteLock(() => {
+					appendFileSync(this.sessionFile!, `${JSON.stringify(entry)}\n`);
+				});
 			} else {
 				// Mark as not flushed so when assistant arrives, all entries get written
 				this.flushed = false;
@@ -1185,25 +1195,30 @@ export class SessionManager {
 		}
 
 		if (!this.flushed) {
-			const fd = openSync(this.sessionFile, "wx");
-			try {
-				for (const e of this.fileEntries) {
-					writeFileSync(fd, `${JSON.stringify(e)}\n`);
+			this._withWriteLock(() => {
+				const fd = openSync(this.sessionFile!, "wx");
+				try {
+					for (const e of entries) {
+						writeFileSync(fd, `${JSON.stringify(e)}\n`);
+					}
+				} finally {
+					closeSync(fd);
 				}
-			} finally {
-				closeSync(fd);
-			}
+			});
 			this.flushed = true;
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this._withWriteLock(() => {
+				appendFileSync(this.sessionFile!, `${JSON.stringify(entry)}\n`);
+			});
 		}
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
+		const nextEntries = [...this.fileEntries, entry];
+		this._persist(entry, nextEntries);
 		this.fileEntries.push(entry);
 		this.byId.set(entry.id, entry);
 		this.leafId = entry.id;
-		this._persist(entry);
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -1580,7 +1595,6 @@ export class SessionManager {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
-		this.leafId = branchFromId;
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
 			id: generateId(this.byId),
@@ -1661,23 +1675,32 @@ export class SessionManager {
 				parentId = labelEntry.id;
 			}
 
-			this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
-			this.sessionId = newSessionId;
-			this.sessionFile = newSessionFile;
-			this._buildIndex();
+			const nextFileEntries: FileEntry[] = [header, ...pathWithoutLabels, ...labelEntries];
 
 			// Only write the file now if it contains an assistant message.
 			// Otherwise defer to _persist(), which creates the file on the
 			// first assistant response, matching the newSession() contract
 			// and avoiding the duplicate-header bug when _persist()'s
 			// no-assistant guard later resets flushed to false.
-			const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+			const hasAssistant = nextFileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 			if (hasAssistant) {
-				this._rewriteFile();
-				this.flushed = true;
-			} else {
-				this.flushed = false;
+				new SessionWriteCoordinator(newSessionFile, this.getSessionDir()).withWriteLock(() => {
+					const fd = openSync(newSessionFile, "wx");
+					try {
+						for (const entry of nextFileEntries) {
+							writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+						}
+					} finally {
+						closeSync(fd);
+					}
+				});
 			}
+
+			this.fileEntries = nextFileEntries;
+			this.sessionId = newSessionId;
+			this.sessionFile = newSessionFile;
+			this._buildIndex();
+			this.flushed = hasAssistant;
 
 			return newSessionFile;
 		}
@@ -1809,14 +1832,16 @@ export class SessionManager {
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
 		};
-		writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
+		new SessionWriteCoordinator(newSessionFile, dir).withWriteLock(() => {
+			writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
 
-		// Copy all non-header entries from source
-		for (const entry of sourceEntries) {
-			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+			// Copy all non-header entries from source
+			for (const entry of sourceEntries) {
+				if (entry.type !== "session") {
+					appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+				}
 			}
-		}
+		});
 
 		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
 	}

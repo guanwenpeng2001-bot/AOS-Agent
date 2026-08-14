@@ -14,6 +14,7 @@ import type {
 	Usage,
 } from "@aos-agent/ai";
 import type { Static, TSchema } from "typebox";
+import type { AgentLoopLimits } from "./loop-convergence.ts";
 
 /**
  * Stream function used by the agent loop. `Models.streamSimple` satisfies
@@ -148,6 +149,8 @@ export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
+	/** Explicit convergence limits for this prompt/continuation. */
+	loopLimits?: AgentLoopLimits;
 
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.

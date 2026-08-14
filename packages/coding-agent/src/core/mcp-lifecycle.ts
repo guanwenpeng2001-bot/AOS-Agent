@@ -13,17 +13,17 @@ import {
 	type MCPCallResult,
 	type MCPConnectionState,
 	type MCPConnectionStatus,
-	type MCPServerConfig,
-	type MCPServerConfigView,
 	type MCPEnvResolver,
 	type MCPError,
 	type MCPErrorKind,
 	type MCPErrorView,
+	MCPError as MCPLifecycleError,
+	type MCPServerConfig,
+	type MCPServerConfigView,
 	type MCPStdioServerConfig,
 	type MCPStreamableHttpServerConfig,
 	type MCPToolContentBlock,
 	type MCPTransportFactory,
-	MCPError as MCPLifecycleError,
 	mcpStateToAvailability,
 	validateMCPServerConfig,
 } from "./mcp-types.ts";
@@ -31,6 +31,28 @@ import {
 const MCP_CLIENT_NAME = "aos-agent-mcp-client";
 const MCP_CLIENT_VERSION = "1.0.0";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+function abortError(signal: AbortSignal): DOMException {
+	return new DOMException(
+		signal.reason instanceof Error ? signal.reason.message : "MCP operation aborted",
+		"AbortError",
+	);
+}
+
+async function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (signal === undefined) return operation;
+	if (signal.aborted) throw abortError(signal);
+	let onAbort: (() => void) | undefined;
+	const aborted = new Promise<never>((_, reject) => {
+		onAbort = () => reject(abortError(signal));
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([operation, aborted]);
+	} finally {
+		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+	}
+}
 
 /** Fail-closed message templates; never embed remote error text or secrets. */
 function mcpFailureMessage(kind: MCPErrorKind, serverId: string): string {
@@ -55,10 +77,7 @@ function mcpFailureMessage(kind: MCPErrorKind, serverId: string): string {
  * into every transport environment, so every default key is explicitly
  * neutralized and only values from the configured allowlist survive.
  */
-export function createMCPStdioTransport(
-	config: MCPStdioServerConfig,
-	env: MCPEnvResolver,
-): StdioClientTransport {
+export function createMCPStdioTransport(config: MCPStdioServerConfig, env: MCPEnvResolver): StdioClientTransport {
 	const serverParams: StdioServerParameters = {
 		command: config.command,
 		...(config.args !== undefined ? { args: [...config.args] } : {}),
@@ -183,7 +202,8 @@ export class MCPServerLifecycle {
 	 * and transitions to `unavailable` (or records the auth-required
 	 * classification).
 	 */
-	async connect(): Promise<void> {
+	async connect(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw abortError(signal);
 		if (this.state === "ready") {
 			return;
 		}
@@ -191,17 +211,23 @@ export class MCPServerLifecycle {
 			throw this.failure("unavailable");
 		}
 		if (this.connectPromise !== undefined) {
-			return this.connectPromise;
+			return raceWithAbort(this.connectPromise, signal);
 		}
-		this.connectPromise = this.doConnect();
-		try {
-			await this.connectPromise;
-		} finally {
-			this.connectPromise = undefined;
-		}
+		const connectPromise = this.doConnect(signal);
+		this.connectPromise = connectPromise;
+		void connectPromise.then(
+			() => {
+				if (this.connectPromise === connectPromise) this.connectPromise = undefined;
+			},
+			() => {
+				if (this.connectPromise === connectPromise) this.connectPromise = undefined;
+			},
+		);
+		await raceWithAbort(connectPromise, signal);
 	}
 
-	private async doConnect(): Promise<void> {
+	private async doConnect(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw abortError(signal);
 		const problems = validateMCPServerConfig(this.config);
 		if (problems.length > 0) {
 			this.setState("unavailable");
@@ -223,13 +249,21 @@ export class MCPServerLifecycle {
 		let pendingClient: Client | undefined;
 		try {
 			const transport = await this.transportFactory(this.config, this.env);
+			if (signal?.aborted) {
+				await transport.close?.().catch(() => undefined);
+				throw abortError(signal);
+			}
 			if (this.isClosingOrClosed()) {
 				await transport.close?.().catch(() => undefined);
 				throw this.failure("unavailable");
 			}
 			pendingClient = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
 			this.pendingClient = pendingClient;
-			await pendingClient.connect(transport, { timeout: this.requestTimeoutMs });
+			await pendingClient.connect(transport, { timeout: this.requestTimeoutMs, signal });
+			if (signal?.aborted) {
+				await pendingClient.close().catch(() => undefined);
+				throw abortError(signal);
+			}
 			if (this.isClosingOrClosed()) {
 				await pendingClient.close().catch(() => undefined);
 				throw this.failure("unavailable");
@@ -248,6 +282,10 @@ export class MCPServerLifecycle {
 			if (this.isClosingOrClosed()) {
 				throw this.failure("unavailable");
 			}
+			if (signal?.aborted) {
+				this.setState("unavailable");
+				throw abortError(signal);
+			}
 			const kind: MCPErrorKind = error instanceof UnauthorizedError ? "auth_required" : "connect_failed";
 			this.setState("unavailable");
 			this.recordError(kind);
@@ -265,14 +303,18 @@ export class MCPServerLifecycle {
 	 * fake tool list. A degraded or unconnected server throws instead of
 	 * auto-reconnecting.
 	 */
-	async listTools(): Promise<Tool[]> {
+	async listTools(signal?: AbortSignal): Promise<Tool[]> {
 		const client = this.requireReady();
 		try {
-			const result = await client.listTools({}, { timeout: this.requestTimeoutMs });
+			const result = await raceWithAbort(client.listTools({}, { timeout: this.requestTimeoutMs, signal }), signal);
+			if (signal?.aborted) throw abortError(signal);
 			this.toolCount = result.tools.length;
 			this.lastError = undefined;
 			return result.tools;
-		} catch {
+		} catch (error) {
+			if (signal?.aborted) {
+				throw error instanceof DOMException && error.name === "AbortError" ? error : abortError(signal);
+			}
 			this.markDegraded();
 			throw this.failure("unavailable");
 		}
@@ -284,12 +326,9 @@ export class MCPServerLifecycle {
 	 * server degraded and throw capability_mcp_unavailable. Cancelling the caller
 	 * signal rejects with an AbortError without degrading the server.
 	 */
-	async callTool(
-		toolName: string,
-		args: Record<string, unknown>,
-		signal?: AbortSignal,
-	): Promise<MCPCallResult> {
+	async callTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MCPCallResult> {
 		const client = this.requireReady();
+		if (signal?.aborted) throw abortError(signal);
 		const controller = new AbortController();
 		this.inflightCalls.add(controller);
 		const onAbort = (): void => {
@@ -297,11 +336,10 @@ export class MCPServerLifecycle {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		try {
-			const result = await client.callTool(
-				{ name: toolName, arguments: args },
-				undefined,
-				{ signal: controller.signal, timeout: this.requestTimeoutMs },
-			);
+			const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
+				signal: controller.signal,
+				timeout: this.requestTimeoutMs,
+			});
 			return {
 				serverId: this.config.id,
 				toolName,
@@ -446,19 +484,14 @@ export class MCPLifecycleManager {
 	constructor(options: MCPLifecycleManagerOptions = {}) {
 		this.options = options;
 		// Copy the set so later mutation of the caller's Set cannot change selection.
-		this.selectedServerIds =
-			options.selectedServerIds === undefined ? new Set() : new Set(options.selectedServerIds);
+		this.selectedServerIds = options.selectedServerIds === undefined ? new Set() : new Set(options.selectedServerIds);
 	}
 
 	/** Registers configured servers. Duplicate ids are rejected; nothing connects. */
 	registerServers(configs: ReadonlyArray<MCPServerConfig>): void {
 		for (const config of configs) {
 			if (this.lifecycles.has(config.id)) {
-				throw new MCPLifecycleError(
-					"invalid_config",
-					config.id,
-					`Duplicate MCP server id: "${config.id}"`,
-				);
+				throw new MCPLifecycleError("invalid_config", config.id, `Duplicate MCP server id: "${config.id}"`);
 			}
 			this.lifecycles.set(config.id, new MCPServerLifecycle(config, this.options));
 		}
@@ -542,17 +575,17 @@ export class MCPLifecycleManager {
 	}
 
 	/** Connects a server only when it is registered and selected by the binding. */
-	async connect(serverId: string): Promise<void> {
+	async connect(serverId: string, signal?: AbortSignal): Promise<void> {
 		const lifecycle = this.requireServer(serverId);
 		this.assertSelected(serverId);
-		await lifecycle.connect();
+		await lifecycle.connect(signal);
 	}
 
 	/** Lists tools of a connected, selected server. */
-	async listTools(serverId: string): Promise<Tool[]> {
+	async listTools(serverId: string, signal?: AbortSignal): Promise<Tool[]> {
 		const lifecycle = this.requireServer(serverId);
 		this.assertSelected(serverId);
-		return lifecycle.listTools();
+		return lifecycle.listTools(signal);
 	}
 
 	/** Calls a tool on a selected server. */

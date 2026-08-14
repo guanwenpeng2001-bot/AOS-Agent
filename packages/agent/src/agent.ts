@@ -8,6 +8,8 @@ import type {
 	Transport,
 } from "@aos-agent/ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import type { AgentLoopLimits } from "./loop-convergence.ts";
+import { type AgentOperationSignal, createAgentOperationSignal } from "./operation-signal.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -120,6 +122,17 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/** Default convergence limits for one prompt or continuation. */
+	loopLimits?: AgentLoopLimits;
+}
+
+export interface AgentRunOptions {
+	/** Parent cancellation signal for prepared runs. */
+	signal?: AbortSignal;
+	/** Maximum duration in milliseconds for the operation. */
+	deadlineMs?: number;
+	/** Per-run convergence limits, overriding constructor defaults. */
+	loopLimits?: AgentLoopLimits;
 }
 
 class PendingMessageQueue {
@@ -161,7 +174,8 @@ class PendingMessageQueue {
 type ActiveRun = {
 	promise: Promise<void>;
 	resolve: () => void;
-	abortController: AbortController;
+	abortController: AgentOperationSignal;
+	loopLimits?: AgentLoopLimits;
 };
 
 /**
@@ -212,6 +226,7 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	public loopLimits?: AgentLoopLimits;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -235,6 +250,7 @@ export class Agent {
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
+		this.loopLimits = runtimeOptions.loopLimits;
 	}
 
 	/**
@@ -338,13 +354,14 @@ export class Agent {
 	async runWithPreflight<T>(
 		preflight: (signal: AbortSignal) => Promise<T>,
 		executor: (prepared: T, signal: AbortSignal) => Promise<void>,
+		options: AgentRunOptions = {},
 	): Promise<void> {
 		await this.runWithLifecycle(
 			async (signal) => {
 				const prepared = await preflight(signal);
 				await executor(prepared, signal);
 			},
-			{ handleErrors: false },
+			{ handleErrors: false, ...options },
 		);
 	}
 
@@ -531,6 +548,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			loopLimits: this.activeRun?.loopLimits ?? this.loopLimits,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			shouldStopAfterTurn: shouldStopAfterTurn
@@ -561,31 +579,37 @@ export class Agent {
 
 	private async runWithLifecycle(
 		executor: (signal: AbortSignal) => Promise<void>,
-		options: { handleErrors?: boolean } = {},
+		options: { handleErrors?: boolean } & AgentRunOptions = {},
 	): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing.");
 		}
 
-		const abortController = new AbortController();
+		const operation = createAgentOperationSignal(options.signal, options.deadlineMs);
 		let resolvePromise = () => {};
 		const promise = new Promise<void>((resolve) => {
 			resolvePromise = resolve;
 		});
-		this.activeRun = { promise, resolve: resolvePromise, abortController };
+		this.activeRun = {
+			promise,
+			resolve: resolvePromise,
+			abortController: operation,
+			loopLimits: options.loopLimits,
+		};
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;
 		this._state.errorMessage = undefined;
 
 		try {
-			await executor(abortController.signal);
+			await executor(operation.signal);
 		} catch (error) {
 			if (options.handleErrors === false) {
 				throw error;
 			}
-			await this.handleRunFailure(error, abortController.signal.aborted);
+			await this.handleRunFailure(error, operation.signal.aborted);
 		} finally {
+			operation.dispose();
 			this.finishRun();
 		}
 	}

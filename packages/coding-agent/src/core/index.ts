@@ -28,21 +28,81 @@ export {
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
-export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 export {
-	PolicyError,
-	resolveExecutionPolicy,
-	resolveExecutionPolicyProfile,
+	EXECUTION_ASSOCIATION_CUSTOM_TYPE,
+	EXECUTION_ASSOCIATION_SCHEMA_VERSION,
+	type ExecutionAssociationRecord,
+	type ExecutionAssociationSession,
+	getExecutionAssociations,
+	isExecutionAssociationRecord,
+	parseExecutionAssociation,
+	persistExecutionAssociation,
+} from "./execution-association.ts";
+export {
+	classifyAssistantFailure,
+	classifyProviderFailure,
+	type ExecutionErrorClassification,
+	type ExecutionErrorKind,
+	type ProviderFailureClassificationOptions,
+} from "./execution-error.ts";
+export {
 	type ExecutionPolicyProfile,
 	type PolicyApprovalOutcome,
 	type PolicyApprovalRequest,
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
+	PolicyError,
 	type PolicyErrorCode,
 	type PublicPolicySummary,
+	resolveExecutionPolicy,
+	resolveExecutionPolicyProfile,
 } from "./execution-policy.ts";
 export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./execution-policy-ledger.ts";
+export {
+	REMOTE_ARTIFACT_KINDS,
+	REMOTE_OPERATION_ERROR_CATEGORIES,
+	REMOTE_OPERATION_CUSTOM_TYPE,
+	REMOTE_OPERATION_LEDGER_SCHEMA_VERSION,
+	REMOTE_OPERATION_SCHEMA_VERSION,
+	REMOTE_OPERATION_SIDE_EFFECT_STATES,
+	REMOTE_OPERATION_STATUSES,
+	RemoteOperationError,
+	createSessionRemoteOperationLedger,
+	executeRemoteOperation,
+	isRemoteOperationReceipt,
+	startRemoteOperation,
+	toRemoteOperationErrorInfo,
+	type ArtifactReference,
+	type OperationId,
+	type RemoteArtifactKind,
+	type RemoteArtifactRef,
+	type RemoteArtifactReference,
+	type RemoteOperationBindingRefs,
+	type RemoteOperationErrorCategory,
+	type RemoteOperationErrorCode,
+	type RemoteOperationErrorInfo,
+	type RemoteOperationExecutionContext,
+	type RemoteOperationHandle,
+	type RemoteOperationHeartbeat,
+	type RemoteOperationId,
+	type RemoteOperationInvoker,
+	type RemoteOperationLease,
+	type RemoteOperationLeaseId,
+	type RemoteOperationLedger,
+	type RemoteOperationLedgerSession,
+	type RemoteOperationProvider,
+	type RemoteOperationReceipt,
+	type RemoteOperationRequest,
+	type RemoteOperationResult,
+	type RemoteOperationRunStatus,
+	type RemoteOperationSideEffectState,
+	type RemoteOperationStartOptions,
+	type RemoteOperationStatus,
+	type RemoteOperationTerminalStatus,
+	type RemoteOperationTransport,
+} from "./remote-operation.ts";
+export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 // Extensions system
 export {
 	type AgentEndEvent,
@@ -91,4 +151,22 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export {
+	createOperationBoundary,
+	type OperationBoundary,
+	type OperationBoundaryOptions,
+} from "./operation-boundary.ts";
+export {
+	createSessionBranchBoundary,
+	createSessionCheckpoint,
+	getSessionBoundaries,
+	isSessionBoundaryRecord,
+	recoverSessionCheckpoint,
+	SESSION_BOUNDARY_CUSTOM_TYPE,
+	SESSION_BOUNDARY_SCHEMA_VERSION,
+	SessionBoundaryError,
+	type SessionBoundaryKind,
+	type SessionBoundaryRecord,
+	type SessionBoundaryStatus,
+} from "./session-boundary.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";

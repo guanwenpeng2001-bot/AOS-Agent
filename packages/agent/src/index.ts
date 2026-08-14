@@ -137,6 +137,8 @@ export {
 } from "./harness/types.ts";
 export * from "./harness/utils/shell-output.ts";
 export * from "./harness/utils/truncate.ts";
+export * from "./loop-convergence.ts";
+export * from "./operation-signal.ts";
 // Proxy utilities
 export * from "./proxy.ts";
 // Stream defaults

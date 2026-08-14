@@ -7,6 +7,13 @@
  */
 
 import type { ThinkingLevel } from "@aos-agent/agent-core";
+import {
+	createBindingHandle,
+	createBindingRevision,
+	isBindingHandle,
+	type BindingHandle,
+	type PublicBindingSummary,
+} from "./binding-handles.ts";
 
 export const MODEL_BROKER_LEDGER_SCHEMA_VERSION = 1;
 export const MODEL_BINDING_SCHEMA_VERSION = 1;
@@ -58,6 +65,7 @@ export type ModelFailureCategory =
 	| "tool_error"
 	| "tool"
 	| "partial_output"
+	| "side_effect_unknown"
 	| "invalid_request"
 	| "unknown";
 
@@ -205,7 +213,10 @@ export interface PublicModelAttemptLedgerRecord {
 	summary?: string;
 }
 
-export type ModelBrokerLedgerErrorCode = "model_binding_invalid" | "model_attempt_invalid" | "ledger_persistence_failed";
+export type ModelBrokerLedgerErrorCode =
+	| "model_binding_invalid"
+	| "model_attempt_invalid"
+	| "ledger_persistence_failed";
 
 /** Error with a stable code and a message that never embeds the source error. */
 export class ModelBrokerLedgerError extends Error {
@@ -236,7 +247,13 @@ function isNonNegativeInteger(value: unknown): value is number {
 }
 
 function isSafeIdentifier(value: unknown): value is string {
-	return typeof value === "string" && SAFE_ID_PATTERN.test(value) && !value.includes("://") && !value.includes("@") && !value.includes("?");
+	return (
+		typeof value === "string" &&
+		SAFE_ID_PATTERN.test(value) &&
+		!value.includes("://") &&
+		!value.includes("@") &&
+		!value.includes("?")
+	);
 }
 
 function isSafeLabel(value: unknown): value is string {
@@ -244,7 +261,9 @@ function isSafeLabel(value: unknown): value is string {
 }
 
 function isSafeModelText(value: unknown): value is string {
-	return typeof value === "string" && SAFE_MODEL_TEXT_PATTERN.test(value) && !value.includes("://") && !value.includes("@");
+	return (
+		typeof value === "string" && SAFE_MODEL_TEXT_PATTERN.test(value) && !value.includes("://") && !value.includes("@")
+	);
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -300,7 +319,8 @@ function parseFallback(value: unknown): ModelFallbackPolicy | undefined {
 
 function cloneFallback(fallback: ModelFallbackPolicy): ModelFallbackPolicy {
 	const parsed = parseFallback(fallback);
-	if (parsed === undefined) throw new ModelBrokerLedgerError("model_binding_invalid", "model binding fallback is invalid");
+	if (parsed === undefined)
+		throw new ModelBrokerLedgerError("model_binding_invalid", "model binding fallback is invalid");
 	return { maxAttempts: parsed.maxAttempts, on: [...parsed.on] };
 }
 
@@ -325,13 +345,17 @@ function parseBudget(value: unknown): ModelBudgetLimit | undefined {
 
 function cloneBudget(budget: ModelBudgetLimit): ModelBudgetLimit {
 	const parsed = parseBudget(budget);
-	if (parsed === undefined) throw new ModelBrokerLedgerError("model_binding_invalid", "model binding budget is invalid");
+	if (parsed === undefined)
+		throw new ModelBrokerLedgerError("model_binding_invalid", "model binding budget is invalid");
 	return { ...parsed };
 }
 
 function parseBinding(value: unknown): ModelBindingLedgerRecord | undefined {
 	if (!isRecord(value)) return undefined;
-	if (!isSafeIdentifier(value.bindingId) || (value.mode !== "manual" && value.mode !== "route" && value.mode !== "direct")) {
+	if (
+		!isSafeIdentifier(value.bindingId) ||
+		(value.mode !== "manual" && value.mode !== "route" && value.mode !== "direct")
+	) {
 		return undefined;
 	}
 	if (value.routeId !== undefined && !isSafeLabel(value.routeId)) return undefined;
@@ -348,7 +372,12 @@ function parseBinding(value: unknown): ModelBindingLedgerRecord | undefined {
 	if (value.mode !== "route" && parsedCandidates.length !== 1) return undefined;
 	const fallback = parseFallback(value.fallback);
 	const budget = parseBudget(value.budget);
-	if (fallback === undefined || budget === undefined || !isSafeLabel(value.configRevision) || !isSafeModelText(value.createdAt)) {
+	if (
+		fallback === undefined ||
+		budget === undefined ||
+		!isSafeLabel(value.configRevision) ||
+		!isSafeModelText(value.createdAt)
+	) {
 		return undefined;
 	}
 	if (value.previousModelBindingId !== undefined && !isSafeIdentifier(value.previousModelBindingId)) return undefined;
@@ -393,7 +422,8 @@ function parseUsage(value: unknown): ModelUsage | undefined {
 
 function cloneUsage(usage: ModelUsage): ModelUsage {
 	const parsed = parseUsage(usage);
-	if (parsed === undefined) throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt usage is invalid");
+	if (parsed === undefined)
+		throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt usage is invalid");
 	return { ...parsed };
 }
 
@@ -404,7 +434,10 @@ function safeSummary(value: unknown): string | undefined {
 	if (/[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return undefined;
 	const redacted = trimmed
 		.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/gi, (_match) => "[redacted]@")
-		.replace(/\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi, (_match, key: string) => `${key}=[redacted]`)
+		.replace(
+			/\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi,
+			(_match, key: string) => `${key}=[redacted]`,
+		)
 		.replace(/\bbearer\s+[^\s"'`,;]+/gi, "[redacted]");
 	if (redacted.includes("://") || redacted.includes("\\") || redacted.includes("/")) return undefined;
 	return redacted.slice(0, 512);
@@ -453,7 +486,8 @@ function cloneAttempt(attempt: ModelAttemptLedgerRecord): ModelAttemptLedgerReco
 	const parsed = parseAttempt(attempt);
 	if (parsed === undefined) throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt is invalid");
 	const candidate = modelFromCandidate(parsed.candidate);
-	if (candidate === undefined) throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt candidate is invalid");
+	if (candidate === undefined)
+		throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt candidate is invalid");
 	return {
 		...parsed,
 		candidate: cloneModelReference(candidate),
@@ -461,7 +495,10 @@ function cloneAttempt(attempt: ModelAttemptLedgerRecord): ModelAttemptLedgerReco
 	};
 }
 
-function parseEntryData(value: unknown, customType: string):
+function parseEntryData(
+	value: unknown,
+	customType: string,
+):
 	| { ok: true; value: ModelBindingLedgerRecord | ModelAttemptLedgerRecord }
 	| { ok: false; reason: "malformed" | "unknown-schema-version"; version?: number; detail: string } {
 	if (!isRecord(value)) return { ok: false, reason: "malformed", detail: "data is not an object" };
@@ -488,7 +525,12 @@ function parseEntryData(value: unknown, customType: string):
 		: { ok: true, value: attempt };
 }
 
-function persistEntry(session: ModelBrokerLedgerSession, customType: string, data: unknown, code: ModelBrokerLedgerErrorCode): string {
+function persistEntry(
+	session: ModelBrokerLedgerSession,
+	customType: string,
+	data: unknown,
+	code: ModelBrokerLedgerErrorCode,
+): string {
 	try {
 		return session.appendCustomEntry(customType, data);
 	} catch {
@@ -508,7 +550,10 @@ export function persistModelBinding(session: ModelBrokerLedgerSession, binding: 
 export function persistModelAttempt(session: ModelBrokerLedgerSession, attempt: ModelAttemptLedgerRecord): string {
 	const parsed = parseAttempt(attempt);
 	if (parsed === undefined) throw new ModelBrokerLedgerError("model_attempt_invalid", "model attempt is invalid");
-	const data: PersistedModelAttemptEntry = { schemaVersion: MODEL_ATTEMPT_SCHEMA_VERSION, attempt: cloneAttempt(parsed) };
+	const data: PersistedModelAttemptEntry = {
+		schemaVersion: MODEL_ATTEMPT_SCHEMA_VERSION,
+		attempt: cloneAttempt(parsed),
+	};
 	return persistEntry(session, MODEL_ATTEMPT_CUSTOM_TYPE, data, "ledger_persistence_failed");
 }
 
@@ -549,7 +594,9 @@ export function isModelAttemptLedgerRecord(value: unknown): value is ModelAttemp
 	return parseAttempt(value) !== undefined;
 }
 
-function entriesFrom(input: ModelBrokerLedgerSession | ReadonlyArray<ModelBrokerLedgerEntry>): ReadonlyArray<ModelBrokerLedgerEntry> {
+function entriesFrom(
+	input: ModelBrokerLedgerSession | ReadonlyArray<ModelBrokerLedgerEntry>,
+): ReadonlyArray<ModelBrokerLedgerEntry> {
 	return "getEntries" in input ? input.getEntries() : input;
 }
 
@@ -561,7 +608,7 @@ function entriesFrom(input: ModelBrokerLedgerSession | ReadonlyArray<ModelBroker
  */
 export function replayModelBrokerLedger(
 	input: ModelBrokerLedgerSession | ReadonlyArray<ModelBrokerLedgerEntry>,
-	 diagnostics?: (diagnostic: ModelBrokerLedgerDiagnostic) => void,
+	diagnostics?: (diagnostic: ModelBrokerLedgerDiagnostic) => void,
 ): ModelBrokerLedgerReplay {
 	const bindings = new Map<string, ModelBindingLedgerRecord>();
 	const attempts = new Map<string, ModelAttemptLedgerRecord>();
@@ -575,7 +622,11 @@ export function replayModelBrokerLedger(
 	for (const entry of entriesFrom(input)) {
 		if (entry.type !== "custom") continue;
 		if (entry.customType !== MODEL_BINDING_CUSTOM_TYPE && entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE) {
-			report({ kind: "unknown-ledger-kind", entryId: entry.id ?? "unknown", customType: entry.customType ?? "unknown" });
+			report({
+				kind: "unknown-ledger-kind",
+				entryId: entry.id ?? "unknown",
+				customType: entry.customType ?? "unknown",
+			});
 			continue;
 		}
 		const parsed = parseEntryData(entry.data, entry.customType);
@@ -588,7 +639,12 @@ export function replayModelBrokerLedger(
 					version: parsed.version ?? -1,
 				});
 			} else {
-				report({ kind: "malformed", entryId: entry.id ?? "unknown", customType: entry.customType, detail: parsed.detail });
+				report({
+					kind: "malformed",
+					entryId: entry.id ?? "unknown",
+					customType: entry.customType,
+					detail: parsed.detail,
+				});
 			}
 			continue;
 		}
@@ -602,7 +658,12 @@ export function replayModelBrokerLedger(
 		if (!("status" in parsed.value)) continue;
 		const attempt = parsed.value;
 		if (!bindings.has(attempt.bindingId)) {
-			report({ kind: "orphan-attempt", entryId: entry.id ?? "unknown", attemptId: attempt.attemptId, bindingId: attempt.bindingId });
+			report({
+				kind: "orphan-attempt",
+				entryId: entry.id ?? "unknown",
+				attemptId: attempt.attemptId,
+				bindingId: attempt.bindingId,
+			});
 			continue;
 		}
 		if (terminalAttempts.has(attempt.attemptId)) {
@@ -610,7 +671,12 @@ export function replayModelBrokerLedger(
 			continue;
 		}
 		if (attempts.get(attempt.attemptId)?.status !== undefined && attempt.status === "started") {
-			report({ kind: "malformed", entryId: entry.id ?? "unknown", customType: entry.customType, detail: "duplicate started attempt" });
+			report({
+				kind: "malformed",
+				entryId: entry.id ?? "unknown",
+				customType: entry.customType,
+				detail: "duplicate started attempt",
+			});
 			continue;
 		}
 		attempts.set(attempt.attemptId, cloneAttempt(attempt));
@@ -661,7 +727,8 @@ export function serializePublicModelBinding(value: unknown): PublicModelBindingL
 		...(binding.role === undefined ? {} : { role: binding.role }),
 		candidates: binding.candidates.map((candidate) => {
 			const model = modelFromCandidate(candidate);
-			if (model === undefined) throw new ModelBrokerLedgerError("model_binding_invalid", "model binding candidate is invalid");
+			if (model === undefined)
+				throw new ModelBrokerLedgerError("model_binding_invalid", "model binding candidate is invalid");
 			return { order: candidate.order, model: cloneModelReference(model) };
 		}),
 		fallback: {
@@ -671,7 +738,9 @@ export function serializePublicModelBinding(value: unknown): PublicModelBindingL
 		budget: cloneBudget(binding.budget),
 		configRevision: binding.configRevision,
 		createdAt: binding.createdAt,
-		...(binding.previousModelBindingId === undefined ? {} : { previousModelBindingId: binding.previousModelBindingId }),
+		...(binding.previousModelBindingId === undefined
+			? {}
+			: { previousModelBindingId: binding.previousModelBindingId }),
 	};
 }
 
@@ -720,3 +789,38 @@ export function serializePublicModelBrokerLedgerEntry(entry: ModelBrokerLedgerEn
 /** Short alias retained for callers that name the adapter's public entry view. */
 export const serializePublicModelLedgerEntry = serializePublicModelBrokerLedgerEntry;
 export const serializePublicModelBrokerEntry = serializePublicModelBrokerLedgerEntry;
+
+/** Build a stable handle directly from a replayable model.binding fact. */
+export function toModelLedgerBindingHandle(binding: ModelBindingLedgerRecord): BindingHandle {
+	const first = binding.candidates[0]?.model;
+	const summary: PublicBindingSummary = {
+		mode: binding.mode,
+		candidateCount: binding.candidates.length,
+		...(first === undefined ? {} : { provider: first.provider }),
+		...(first === undefined || first.modelId.length > 256 || /[\\/@]/.test(first.modelId) ? {} : { modelId: first.modelId }),
+		...(binding.routeId === undefined ? {} : { routeId: binding.routeId }),
+		...(binding.role === undefined ? {} : { role: binding.role }),
+	};
+	return createBindingHandle({
+		domain: "model",
+		bindingId: binding.bindingId,
+		revision: createBindingRevision({
+			mode: binding.mode,
+			routeId: binding.routeId,
+			role: binding.role,
+			candidates: binding.candidates,
+			fallback: binding.fallback,
+			budget: binding.budget,
+			configRevision: binding.configRevision,
+		}),
+		relation: "run.model",
+		role: binding.role ?? binding.mode,
+		summary,
+	});
+}
+
+export const createModelLedgerBindingHandle = toModelLedgerBindingHandle;
+
+export function isModelLedgerBindingHandle(value: unknown): value is BindingHandle {
+	return isBindingHandle(value) && value.domain === "model";
+}

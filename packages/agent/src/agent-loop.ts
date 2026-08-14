@@ -10,6 +10,8 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@aos-agent/ai";
+import { createAgentLoopGuard } from "./loop-convergence.ts";
+import { throwIfAgentOperationAborted } from "./operation-signal.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AgentContext,
@@ -46,9 +48,18 @@ export function agentLoop(
 		},
 		signal,
 		streamFn,
-	).then((messages) => {
-		stream.end(messages);
-	});
+	).then(
+		(messages) => {
+			stream.end(messages);
+		},
+		(error: unknown) => {
+			const failure = createAgentFailureMessage(config, signal, error);
+			stream.push({ type: "message_start", message: failure });
+			stream.push({ type: "message_end", message: failure });
+			stream.push({ type: "turn_end", message: failure, toolResults: [] });
+			stream.push({ type: "agent_end", messages: [failure] });
+		},
+	);
 
 	return stream;
 }
@@ -85,9 +96,18 @@ export function agentLoopContinue(
 		},
 		signal,
 		streamFn,
-	).then((messages) => {
-		stream.end(messages);
-	});
+	).then(
+		(messages) => {
+			stream.end(messages);
+		},
+		(error: unknown) => {
+			const failure = createAgentFailureMessage(config, signal, error);
+			stream.push({ type: "message_start", message: failure });
+			stream.push({ type: "message_end", message: failure });
+			stream.push({ type: "turn_end", message: failure, toolResults: [] });
+			stream.push({ type: "agent_end", messages: [failure] });
+		},
+	);
 
 	return stream;
 }
@@ -149,6 +169,31 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 	);
 }
 
+function createAgentFailureMessage(
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	error: unknown,
+): AgentMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: signal?.aborted ? "aborted" : "error",
+		errorMessage: error instanceof Error ? error.message : String(error),
+		timestamp: Date.now(),
+	};
+}
+
 /**
  * Main loop logic shared by agentLoop and agentLoopContinue.
  */
@@ -163,6 +208,7 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let firstTurn = true;
+	const guard = createAgentLoopGuard(config.loopLimits);
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -172,6 +218,8 @@ async function runLoop(
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
+			throwIfAgentOperationAborted(signal);
+			guard.startTurn();
 			if (!firstTurn) {
 				await emit({ type: "turn_start" });
 			} else {
@@ -205,6 +253,7 @@ async function runLoop(
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
 			if (toolCalls.length > 0) {
+				guard.recordToolCalls(toolCalls);
 				// A "length" stop means the output was cut off by the token limit, so
 				// every tool call in the message may carry truncated arguments. Fail
 				// them all instead of executing potentially borked calls.
@@ -262,6 +311,7 @@ async function runLoop(
 		// Agent would stop here. Check for follow-up messages.
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
+			guard.recordFollowUps(followUpMessages.length);
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;
@@ -285,14 +335,17 @@ async function streamAssistantResponse(
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
 ): Promise<AssistantMessage> {
+	throwIfAgentOperationAborted(signal);
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
+		throwIfAgentOperationAborted(signal);
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
 	const llmMessages = await config.convertToLlm(messages);
+	throwIfAgentOperationAborted(signal);
 
 	// Build LLM context
 	const llmContext: Context = {
@@ -304,6 +357,7 @@ async function streamAssistantResponse(
 	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+	throwIfAgentOperationAborted(signal);
 
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
@@ -315,6 +369,7 @@ async function streamAssistantResponse(
 	let addedPartial = false;
 
 	for await (const event of response) {
+		throwIfAgentOperationAborted(signal);
 		switch (event.type) {
 			case "start":
 				partialMessage = event.partial;
@@ -721,7 +776,7 @@ async function finalizeExecutedToolCall(
 	let result = executed.result;
 	let isError = executed.isError;
 
-	if (config.afterToolCall) {
+	if (config.afterToolCall && !signal?.aborted) {
 		try {
 			const afterResult = await config.afterToolCall(
 				{
