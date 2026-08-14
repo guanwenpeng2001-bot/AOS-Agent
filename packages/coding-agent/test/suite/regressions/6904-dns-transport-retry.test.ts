@@ -18,7 +18,7 @@ describe("issue #6904 DNS transport failure retry", () => {
 
 			expect(harness.faux.state.callCount).toBe(2);
 			expect(harness.eventsOfType("auto_retry_start").map((event) => event.errorMessage)).toEqual([
-				wrappedDnsLookupError,
+			"The operation outcome is unknown after a possible side effect.",
 			]);
 			expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
 		} finally {

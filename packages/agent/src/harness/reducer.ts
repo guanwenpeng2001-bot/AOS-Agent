@@ -76,6 +76,65 @@ export interface ToolBatchState {
 	unresolved: boolean;
 }
 
+/** Why a loop must stop before another provider turn is started. */
+export type LoopConvergenceReason = "max_iterations" | "duplicate_tool_call" | "dead_loop";
+
+/** Explicit bounds for one provider/tool loop. */
+export interface LoopConvergenceOptions {
+	/** Maximum number of provider iterations, including the current observation. */
+	maxIterations: number;
+	/** Number of observations of one tool-call fingerprint allowed across iterations. */
+	maxDuplicateToolCalls?: number;
+	/** Consecutive observations without a progress token change before stopping. */
+	maxNoProgressIterations?: number;
+}
+
+/** One provider-loop observation used by {@link advanceLoopConvergence}. */
+export interface LoopIterationObservation {
+	toolCalls?: readonly Pick<AgentToolCall, "arguments" | "name">[];
+	progressToken?: string;
+	madeProgress?: boolean;
+}
+
+export interface LoopConvergenceDecision {
+	stop: boolean;
+	iteration: number;
+	reason?: LoopConvergenceReason;
+	fingerprint?: string;
+}
+
+export interface LoopConvergenceState {
+	readonly maxIterations: number;
+	readonly maxDuplicateToolCalls: number;
+	readonly maxNoProgressIterations: number;
+	readonly iterations: number;
+	readonly toolCallCounts: readonly { fingerprint: string; count: number }[];
+	readonly lastProgressToken?: string;
+	readonly noProgressIterations: number;
+	readonly decision?: LoopConvergenceDecision;
+}
+
+/** Durable checkpoint boundary used to decide whether resume may re-enter a step. */
+export type ResumeBoundaryStatus =
+	| "before_step"
+	| "awaiting_checkpoint"
+	| "awaiting_tool_results"
+	| "deferred"
+	| "terminal_failure"
+	| "checkpointed"
+	| "aborting";
+
+export interface ResumeBoundary {
+	operationId: string;
+	operationKind: OperationStartedRecord["intent"]["kind"];
+	/** Source branch/leaf from which the operation was started. */
+	branchId: string | null;
+	/** Result/checkpoint identity, even when the result is not durable yet. */
+	checkpointId: string | null;
+	attempt: number;
+	status: ResumeBoundaryStatus;
+}
+
 export interface LaneState {
 	lane: string;
 	leafId: string | null;
@@ -91,6 +150,7 @@ export interface LaneState {
 			compactionReason?: "manual" | "threshold" | "overflow";
 		};
 		toolBatch: ToolBatchState | null;
+		resumeBoundary: ResumeBoundary;
 		missingInitialMessages: ProvisionedEntry[];
 		pendingSteer: ProvisionedEntry[];
 		pendingFollowUp: ProvisionedEntry[];
@@ -106,6 +166,103 @@ export interface LaneState {
 		targets: { result?: boolean; summary?: boolean };
 	};
 	pendingNextRun: ProvisionedEntry[];
+}
+
+const DEFAULT_MAX_DUPLICATE_TOOL_CALLS = 2;
+const DEFAULT_MAX_NO_PROGRESS_ITERATIONS = 3;
+
+function assertPositiveInteger(value: number, name: string): void {
+	if (!Number.isInteger(value) || value <= 0) throw new RangeError(`${name} must be a positive integer`);
+}
+
+/** Return a deterministic representation for JSON-like tool arguments. */
+function stableValue(value: unknown, active: Set<object>): string {
+	if (value === null) return "null";
+	if (typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
+	if (typeof value === "bigint") return `bigint:${value.toString()}`;
+	if (typeof value !== "object") return String(value);
+	if (active.has(value)) return "[Circular]";
+	active.add(value);
+	let result: string;
+	if (Array.isArray(value)) result = `[${value.map((item) => stableValue(item, active)).join(",")}]`;
+	else {
+		const entries = Object.keys(value)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${stableValue((value as Record<string, unknown>)[key], active)}`);
+		result = `{${entries.join(",")}}`;
+	}
+	active.delete(value);
+	return result;
+}
+
+type FingerprintToolCall = Pick<AgentToolCall, "arguments" | "name"> & { namespace?: string };
+
+/** Fingerprint a tool call without using its provider-generated id. */
+export function fingerprintToolCall(toolCall: FingerprintToolCall): string {
+	const namespace = toolCall.namespace === undefined ? "" : `${toolCall.namespace}:`;
+	return `${namespace}${toolCall.name}:${stableValue(toolCall.arguments, new Set<object>())}`;
+}
+
+/** Create an empty loop guard with explicit maximum iteration bounds. */
+export function createLoopConvergenceState(options: LoopConvergenceOptions): LoopConvergenceState {
+	assertPositiveInteger(options.maxIterations, "maxIterations");
+	const maxDuplicateToolCalls = options.maxDuplicateToolCalls ?? DEFAULT_MAX_DUPLICATE_TOOL_CALLS;
+	const maxNoProgressIterations = options.maxNoProgressIterations ?? DEFAULT_MAX_NO_PROGRESS_ITERATIONS;
+	assertPositiveInteger(maxDuplicateToolCalls, "maxDuplicateToolCalls");
+	assertPositiveInteger(maxNoProgressIterations, "maxNoProgressIterations");
+	return {
+		maxIterations: options.maxIterations,
+		maxDuplicateToolCalls,
+		maxNoProgressIterations,
+		iterations: 0,
+		toolCallCounts: [],
+		noProgressIterations: 0,
+	};
+}
+
+/** Observe one loop iteration and stop before the next one when convergence is unsafe. */
+export function advanceLoopConvergence(
+	state: LoopConvergenceState,
+	observation: LoopIterationObservation,
+): { state: LoopConvergenceState; decision: LoopConvergenceDecision } {
+	if (state.decision?.stop) return { state, decision: state.decision };
+	const iteration = state.iterations + 1;
+	const counts = new Map(state.toolCallCounts.map((entry) => [entry.fingerprint, entry.count]));
+	let duplicateFingerprint: string | undefined;
+	const observedFingerprints = new Set<string>();
+	for (const toolCall of observation.toolCalls ?? []) {
+		const fingerprint = fingerprintToolCall(toolCall);
+		if (observedFingerprints.has(fingerprint)) continue;
+		observedFingerprints.add(fingerprint);
+		const previousCount = counts.get(fingerprint) ?? 0;
+		const count = previousCount + 1;
+		counts.set(fingerprint, count);
+		if (count >= state.maxDuplicateToolCalls && duplicateFingerprint === undefined) {
+			duplicateFingerprint = fingerprint;
+		}
+	}
+	const repeatedProgress =
+		observation.progressToken !== undefined && observation.progressToken === state.lastProgressToken;
+	const noProgress = observation.madeProgress === false || repeatedProgress;
+	const noProgressIterations = noProgress ? state.noProgressIterations + 1 : 0;
+	const decision: LoopConvergenceDecision =
+		iteration >= state.maxIterations
+			? { stop: true, iteration, reason: "max_iterations" }
+			: duplicateFingerprint !== undefined
+				? { stop: true, iteration, reason: "duplicate_tool_call", fingerprint: duplicateFingerprint }
+				: noProgressIterations >= state.maxNoProgressIterations
+					? { stop: true, iteration, reason: "dead_loop" }
+					: { stop: false, iteration };
+	const nextState: LoopConvergenceState = {
+		...state,
+		iterations: iteration,
+		toolCallCounts: [...counts.entries()].map(([fingerprint, count]) => ({ fingerprint, count })),
+		...(observation.progressToken === undefined ? {} : { lastProgressToken: observation.progressToken }),
+		noProgressIterations,
+		...(decision.stop ? { decision } : {}),
+	};
+	return { state: nextState, decision };
 }
 
 export interface LaneReductionInput extends RecordLogSlice {
@@ -502,6 +659,52 @@ function deriveToolBatch(
 	};
 }
 
+function deriveResumeBoundary(
+	started: OperationStartedRecord,
+	step: NonNullable<LaneState["operation"]>["step"],
+	latestAttempt: StepAttemptRecord | undefined,
+	toolBatch: ToolBatchState | null,
+	newestOwnEntry: Entry | undefined,
+	deferred: DeferredHandle | null,
+	terminalFailure: TerminalFailureState | null,
+	targets: { result?: boolean; summary?: boolean },
+	aborting: boolean,
+): ResumeBoundary {
+	const checkpointId =
+		(step && "resultEntryId" in step ? step.resultEntryId : undefined) ??
+		latestAttempt?.resultEntryId ??
+		(started.intent.kind === "compaction"
+			? started.intent.resultEntryId
+			: started.intent.kind === "navigation"
+				? (started.intent.summaryEntryId ?? null)
+				: (toolBatch?.assistantEntryId ??
+					(newestOwnEntry?.type === "message" && newestOwnEntry.message.role === "assistant"
+						? newestOwnEntry.id
+						: null)));
+	const attempt = step && "attempts" in step ? step.attempts : (latestAttempt?.attempt ?? 0);
+	let status: ResumeBoundaryStatus = "before_step";
+	if (aborting) status = "aborting";
+	else if (terminalFailure) status = "terminal_failure";
+	else if (deferred) status = "deferred";
+	else if (toolBatch?.unresolved) status = "awaiting_tool_results";
+	else if (step) status = "awaiting_checkpoint";
+	else if (
+		(started.intent.kind === "compaction" && targets.result) ||
+		(started.intent.kind === "navigation" && targets.summary) ||
+		(newestOwnEntry?.type === "message" && newestOwnEntry.message.role === "assistant")
+	) {
+		status = "checkpointed";
+	}
+	return {
+		operationId: started.id,
+		operationKind: started.intent.kind,
+		branchId: started.sourceLeafId,
+		checkpointId,
+		attempt,
+		status,
+	};
+}
+
 /** Purely reconstructs one lane's orchestration state from its bounded recovery inputs. */
 export function reduceLaneState(input: LaneReductionInput): LaneReductionResult {
 	validateRecordLog(input);
@@ -571,6 +774,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 					...(newestAttempt.step === "compaction" ? { compactionReason: newestAttempt.compactionReason } : {}),
 				}
 			: null;
+	const operationStep = step;
 
 	const consumedInputIds = new Set<string>();
 	if (started.intent.kind === "run") {
@@ -611,6 +815,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 	const deferredWriteIds = new Set(
 		operationRecords.filter((record) => record.type === "write_deferred").map((record) => record.target.id),
 	);
+	const toolBatch = deriveToolBatch(started.id, operationRecords, ownEntries, entriesById, deferredWriteIds);
 	let terminalFailure: TerminalFailureState | null = null;
 	if (
 		newestOwnEntry?.type === "message" &&
@@ -638,6 +843,17 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 			};
 		}
 	}
+	const resumeBoundary = deriveResumeBoundary(
+		started,
+		operationStep,
+		newestAttempt,
+		toolBatch,
+		newestOwnEntry,
+		deferred,
+		terminalFailure,
+		targets,
+		aborting,
+	);
 
 	return {
 		laneState: {
@@ -649,7 +865,8 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 				intent: clone(started.intent),
 				aborting,
 				step,
-				toolBatch: deriveToolBatch(started.id, operationRecords, ownEntries, entriesById, deferredWriteIds),
+				toolBatch,
+				resumeBoundary,
 				missingInitialMessages,
 				pendingSteer,
 				pendingFollowUp,

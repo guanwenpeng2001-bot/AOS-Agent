@@ -99,7 +99,7 @@ describe("test harness", () => {
 		const assistantMessages = harness.session.messages.filter((m): m is AssistantMessage => m.role === "assistant");
 		expect(assistantMessages).toHaveLength(1);
 		expect(assistantMessages[0].stopReason).toBe("error");
-		expect(assistantMessages[0].errorMessage).toBe("Faux response ended without a stop reason");
+		expect(assistantMessages[0].errorMessage).toBe("The operation outcome is unknown after a possible side effect.");
 	});
 
 	it("retry on transient error", async () => {

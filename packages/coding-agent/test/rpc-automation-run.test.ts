@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { createBindingHandle } from "../src/core/binding-handles.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
@@ -125,7 +126,9 @@ const BINDING: CapabilityBinding = {
 	id: OPAQUE_BINDING_ID,
 	profile: "default",
 	createdAt: "2026-08-11T00:00:00.000Z",
-	descriptors: [{ id: `builtin_tool:${OPAQUE_SOURCE_ID}:read`, revision: OPAQUE_REVISION_ID, exposedToolName: "Read" }],
+	descriptors: [
+		{ id: `builtin_tool:${OPAQUE_SOURCE_ID}:read`, revision: OPAQUE_REVISION_ID, exposedToolName: "Read" },
+	],
 	decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
 	toolAllowlist: ["Read"],
 };
@@ -535,7 +538,13 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i2")).toHaveLength(1));
 
 			lineHandler(
-				JSON.stringify({ id: "both", type: "run.start", message: "Hello", modelRoute: "balanced", modelRole: "worker" }),
+				JSON.stringify({
+					id: "both",
+					type: "run.start",
+					message: "Hello",
+					modelRoute: "balanced",
+					modelRole: "worker",
+				}),
 			);
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "both")).toHaveLength(1));
 			const response = responsesFor(rpcIo.outputLines, "both")[0];
@@ -657,6 +666,101 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("replays duplicate run.start from the durable request relation without a second Run", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const request = {
+				type: "run.start",
+				clientRequestId: "start-idempotency-1",
+				message: "prompt with secret=never-persisted",
+			};
+			lineHandler(JSON.stringify({ id: "first", ...request }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "first")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+
+			const firstData = responsesFor(rpcIo.outputLines, "first")[0].data as {
+				runId: string;
+				status: string;
+			};
+			const ledgerEntries = () =>
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+			const ledgerCount = ledgerEntries().length;
+			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
+
+			lineHandler(JSON.stringify({ id: "duplicate", ...request }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "duplicate")).toHaveLength(1));
+			const duplicate = responsesFor(rpcIo.outputLines, "duplicate")[0];
+			expect(duplicate.success).toBe(true);
+			expect(duplicate.data).toMatchObject({
+				runId: firstData.runId,
+				status: "completed",
+				idempotent: true,
+				receipt: { runId: firstData.runId, status: "completed" },
+			});
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(ledgerEntries()).toHaveLength(ledgerCount);
+			expect(JSON.stringify(ledgerEntries())).not.toContain("secret=never-persisted");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("returns a stable conflict for same-key run.start with a different fingerprint", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+			lineHandler(
+				JSON.stringify({
+					id: "first",
+					type: "run.start",
+					clientRequestId: "start-conflict-1",
+					message: "first request",
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "first")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const ledgerCount = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
+
+			lineHandler(
+				JSON.stringify({
+					id: "conflict",
+					type: "run.start",
+					clientRequestId: "start-conflict-1",
+					message: "second request secret=not-public",
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "conflict")).toHaveLength(1));
+			const conflict = responsesFor(rpcIo.outputLines, "conflict")[0];
+			expect(conflict.success).toBe(false);
+			expect(conflict.error).toMatchObject({
+				code: "client_request_conflict",
+				message: "Automation request failed.",
+			});
+			expect(JSON.stringify(conflict)).not.toContain("not-public");
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(ledgerCount);
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("rejects run.start with start_rejected when preflight fails, without a run id or ledger entry", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: false, responseDelayMs: 0 });
 
@@ -696,15 +800,15 @@ describe("RPC Automation Host run lifecycle", () => {
 			const rejection = responsesFor(rpcIo.outputLines, "slash")[0];
 			expect(rejection.success).toBe(false);
 			expect((rejection.error as { code: string }).code).toBe("start_rejected");
-			expect(currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run."))).toBe(
-			false,
-		);
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
 			expect(runEventsOfType(currentLines(), "message_start")).toHaveLength(0);
 			expect(
-			runtimeHost.session.sessionManager
-				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
-		).toHaveLength(0);
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
 
 			// The early rejection releases no Session ownership and a valid request can
 			// start immediately afterwards.
@@ -744,9 +848,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(rejection.success).toBe(false);
 			expect((rejection.error as { code: string }).code).toBe("ledger_persistence_failed");
 			await sleep(20);
-			expect(currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run."))).toBe(
-			false,
-		);
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
 			expect(runEventsOfType(currentLines(), "message_start")).toHaveLength(0);
 
 			appendSpy.mockRestore();
@@ -780,22 +884,42 @@ describe("RPC Automation Host run lifecycle", () => {
 				return appendCustomEntry(customType, data);
 			});
 
-			lineHandler(JSON.stringify({ id: "persist-started", type: "run.start", message: "Hello" }));
+			lineHandler(
+				JSON.stringify({
+					id: "persist-started",
+					type: "run.start",
+					clientRequestId: "started-boundary-1",
+					message: "Hello",
+				}),
+			);
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "persist-started")).toHaveLength(1));
 			const rejection = responsesFor(rpcIo.outputLines, "persist-started")[0];
 			expect(rejection.success).toBe(false);
 			expect((rejection.error as { code: string }).code).toBe("ledger_persistence_failed");
 			expect("data" in rejection).toBe(false);
 			await sleep(20);
-			expect(currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run."))).toBe(
-			false,
-		);
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
 			expect(runEventsOfType(currentLines(), "message_start")).toHaveLength(0);
 
 			appendSpy.mockRestore();
-			lineHandler(JSON.stringify({ id: "retry", type: "run.start", message: "Hello" }));
+			lineHandler(
+				JSON.stringify({
+					id: "retry",
+					type: "run.start",
+					clientRequestId: "started-boundary-1",
+					message: "Hello",
+				}),
+			);
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "retry")[0]?.success).toBe(true));
-			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const retryData = responsesFor(rpcIo.outputLines, "retry")[0].data as {
+				status: string;
+				idempotent?: boolean;
+			};
+			expect(retryData.status).toBe("accepted");
+			expect(retryData.idempotent).toBe(true);
+			expect(terminalEvents(currentLines())).toHaveLength(0);
 		} finally {
 			await cleanup();
 		}
@@ -858,7 +982,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			const c1 = responsesFor(rpcIo.outputLines, "c1")[0];
 			expect(c1.success).toBe(true);
 			expect((c1.data as { status: string }).status).toBe("running");
-			const cancelResponseIndex = currentLines().findIndex((record) => record.id === "c1" && record.type === "response");
+			const cancelResponseIndex = currentLines().findIndex(
+				(record) => record.id === "c1" && record.type === "response",
+			);
 
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
 			expect(terminalEvents(currentLines())[0].type).toBe("run.cancelled");
@@ -874,6 +1000,53 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(terminalEvents(currentLines())).toHaveLength(1);
 
 			await sleep(150);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("propagates the Run deadline and binding association to the terminal receipt", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
+		const modelHandle = createBindingHandle({
+			domain: "model",
+			bindingId: "model-binding-rpc",
+			revision: "rev-rpc",
+			relation: "run.model",
+		});
+		vi.spyOn(runtimeHost.session, "getActiveBindingHandles").mockReturnValue([modelHandle]);
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 1000).toISOString();
+			lineHandler(JSON.stringify({ id: "deadline-run", type: "run.start", message: "Hello", deadlineAt }));
+
+			let acceptedData: {
+				runId: string;
+				deadlineAt?: string;
+				bindingAssociation?: { bindings: Array<{ bindingId: string }> };
+			};
+			await vi.waitFor(() => {
+				const responses = responsesFor(rpcIo.outputLines, "deadline-run");
+				expect(responses).toHaveLength(1);
+				expect(responses[0].success).toBe(true);
+				acceptedData = responses[0].data as typeof acceptedData;
+			});
+			expect(acceptedData!.deadlineAt).toBe(deadlineAt);
+			expect(acceptedData!.bindingAssociation?.bindings).toEqual([
+				expect.objectContaining({ bindingId: "model-binding-rpc" }),
+			]);
+
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
+			const terminal = terminalEvents(currentLines())[0];
+			expect(terminal.type).toBe("run.cancelled");
+			expect(terminal.receipt).toMatchObject({
+				status: "cancelled",
+				deadlineAt,
+				bindingAssociation: acceptedData!.bindingAssociation,
+				terminalError: { code: "run_deadline_exceeded" },
+			});
 		} finally {
 			await cleanup();
 		}
@@ -1032,6 +1205,64 @@ describe("RPC Automation Host run lifecycle", () => {
 				const data = res[0].data as { run: { status: string } };
 				expect(data.run.status).toBe("completed");
 			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("replays duplicate run.resume before switching sessions or prompting again", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+			lineHandler(JSON.stringify({ id: "seed", type: "run.start", message: "seed" }));
+			let sourceRunId: string;
+			await vi.waitFor(() => {
+				const response = responsesFor(rpcIo.outputLines, "seed")[0];
+				expect(response?.success).toBe(true);
+				sourceRunId = (response.data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			const sessionPath = runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const switchSpy = vi.mocked(runtimeHost.switchSession);
+			const switchCount = switchSpy.mock.calls.length;
+
+			const request = {
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId: sourceRunId!,
+				clientRequestId: "resume-idempotency-1",
+				message: "continue",
+			};
+			lineHandler(JSON.stringify({ id: "resume-first", ...request }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "resume-first")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2));
+			const firstData = responsesFor(rpcIo.outputLines, "resume-first")[0].data as { runId: string };
+			const ledgerCount = runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
+
+			lineHandler(JSON.stringify({ id: "resume-duplicate", ...request }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "resume-duplicate")).toHaveLength(1));
+			const duplicate = responsesFor(rpcIo.outputLines, "resume-duplicate")[0];
+			expect(duplicate.success).toBe(true);
+			expect(duplicate.data).toMatchObject({
+				runId: firstData.runId,
+				status: "completed",
+				idempotent: true,
+				receipt: { runId: firstData.runId, status: "completed" },
+			});
+			expect(switchSpy.mock.calls).toHaveLength(switchCount + 1);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(terminalEvents(currentLines())).toHaveLength(2);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(ledgerCount);
 		} finally {
 			await cleanup();
 		}
@@ -1287,7 +1518,13 @@ describe("RPC Automation Host run lifecycle", () => {
 			const res = responsesFor(rpcIo.outputLines, "gc1")[0];
 			expect(res.success).toBe(true);
 			const data = res.data as {
-				binding: { id: string; profile: string; descriptors: unknown[]; decisionSummary: unknown; toolAllowlist: string[] };
+				binding: {
+					id: string;
+					profile: string;
+					descriptors: unknown[];
+					decisionSummary: unknown;
+					toolAllowlist: string[];
+				};
 				bindings: { id: string }[];
 			};
 			expect(data.binding?.id).toBe(BINDING.id);
@@ -1650,9 +1887,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				runId = (res[0].data as { runId: string }).runId;
 			});
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
-			expect((terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(
-				BINDING.id,
-			);
+			expect(
+				(terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string }).capabilityBindingId,
+			).toBe(BINDING.id);
 
 			const sessionFile = runtimeHost.session.sessionFile;
 			expect(sessionFile).toBeTruthy();
@@ -1871,9 +2108,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
 
-			lineHandler(
-				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }),
-			);
+			lineHandler(JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }));
 			await vi.waitFor(() => {
 				const res = responsesFor(rpcIo.outputLines, "u1");
 				expect(res).toHaveLength(1);
@@ -1909,9 +2144,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				.spyOn(runtimeHost.session, "setCapabilityProfile")
 				.mockRejectedValue(new CapabilityError("capability_mcp_connect_failed", "MCP connect failed for profile"));
 
-			lineHandler(
-				JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }),
-			);
+			lineHandler(JSON.stringify({ id: "u1", type: "run.start", message: "Hello", capabilityProfile: "strict" }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "u1")).toHaveLength(1));
 			const res = responsesFor(rpcIo.outputLines, "u1")[0];
 			expect(res.success).toBe(false);

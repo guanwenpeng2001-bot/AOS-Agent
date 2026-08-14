@@ -7,6 +7,8 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	RetryCallbacks,
+	RetryPolicy,
 	SimpleStreamOptions,
 	TextContent,
 	Tool,
@@ -14,6 +16,7 @@ import type {
 	Usage,
 } from "@aos-agent/ai";
 import type { Static, TSchema } from "typebox";
+import type { AgentLoopConvergenceOptions, AgentLoopConvergenceReason } from "./loop-convergence.ts";
 
 /**
  * Stream function used by the agent loop. `Models.streamSimple` satisfies
@@ -148,6 +151,12 @@ export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
+	/** Optional bounded retry policy for transient provider turns. */
+	retry?: RetryPolicy;
+	/** Optional lifecycle callbacks for production-loop retries. */
+	retryCallbacks?: RetryCallbacks;
+	/** Bounded convergence policy for provider/tool turns in this loop. */
+	loopConvergence?: AgentLoopConvergenceOptions;
 
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.
@@ -428,7 +437,7 @@ export interface AgentContext {
 export type AgentEvent =
 	// Agent lifecycle
 	| { type: "agent_start" }
-	| { type: "agent_end"; messages: AgentMessage[] }
+	| { type: "agent_end"; messages: AgentMessage[]; terminationReason?: AgentLoopConvergenceReason }
 	// Turn lifecycle - a turn is one assistant response + any tool calls/results
 	| { type: "turn_start" }
 	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }

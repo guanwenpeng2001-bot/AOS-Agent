@@ -14,11 +14,19 @@
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
+import {
+	createRunBindingAssociation,
+	parseRunBindingAssociation,
+	serializePublicRunBindingAssociation,
+	type BindingHandle,
+	type RunBindingAssociation,
+} from "./binding-handles.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
 import {
 	MODEL_ATTEMPT_CUSTOM_TYPE,
 	MODEL_BINDING_CUSTOM_TYPE,
@@ -72,6 +80,178 @@ import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
 export type RunId = string;
+
+/** A client request key is scoped to one persisted Session and Run operation. */
+export type RunRequestScope = "start" | "resume";
+export type RunRequestCommand = "run.start" | "run.resume";
+
+const RUN_CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const RUN_REQUEST_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
+
+/** A stable, secret-free relation persisted on the accepted Run record. */
+export interface RunRequestRelation {
+	readonly scope: RunRequestScope;
+	readonly clientRequestId: string;
+	readonly fingerprint: string;
+}
+
+/** Public request identity used by the lifecycle coordinator and integrations. */
+export interface RunRequestIdentity {
+	readonly scope: RunRequestScope;
+	readonly clientRequestId: string;
+	readonly requestFingerprint: string;
+}
+
+/**
+ * Input to the request fingerprint. Prompts and images are hashed as opaque
+ * values; they are never included in the canonical representation or ledger.
+ * `sessionId` is the Session that owns the request relation. For a resume this
+ * is the restored target Session, not the source Session currently in memory.
+ */
+export interface RunRequestFingerprintInput {
+	readonly command: RunRequestCommand;
+	readonly scope?: RunRequestScope;
+	readonly sessionId: SessionId;
+	readonly targetSessionId?: SessionId;
+	readonly sourceRunId?: RunId;
+	readonly message: string;
+	readonly images?: unknown;
+	readonly capabilityProfile?: string;
+	readonly policyProfile?: string;
+	readonly modelRoute?: ModelRouteSelection;
+	readonly modelRole?: ModelRoleSelection;
+	readonly external?: ExternalExecutionRef;
+	readonly deadlineAt?: string;
+}
+
+/** Canonical request material used to derive a persisted fingerprint. */
+export interface CanonicalRunRequest {
+	readonly schemaVersion: 1;
+	readonly scope: RunRequestScope;
+	readonly command: RunRequestCommand;
+	readonly sessionId: SessionId;
+	readonly targetSessionId?: SessionId;
+	readonly sourceRunId?: RunId;
+	readonly messageDigest: string;
+	readonly imagesDigest?: string;
+	readonly capabilityProfileDigest?: string;
+	readonly policyProfileDigest?: string;
+	readonly modelRouteDigest?: string;
+	readonly modelRoleDigest?: string;
+	readonly external?: ExternalExecutionRef;
+	readonly deadlineAt?: string;
+}
+
+/** Validate the public request-key contract without echoing the key. */
+export function isRunClientRequestId(value: unknown): value is string {
+	return typeof value === "string" && RUN_CLIENT_REQUEST_ID_PATTERN.test(value);
+}
+
+/** Compatibility aliases for callers that use the generic identifier names. */
+export const isClientRequestId = isRunClientRequestId;
+export const isRunRequestIdentifier = isRunClientRequestId;
+
+export function isRunRequestScope(value: unknown): value is RunRequestScope {
+	return value === "start" || value === "resume";
+}
+
+/** Validate a persisted SHA-256 request fingerprint. */
+export function isRunRequestFingerprint(value: unknown): value is string {
+	return typeof value === "string" && RUN_REQUEST_FINGERPRINT_PATTERN.test(value);
+}
+
+const RUN_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Validate the canonical UTC timestamp used by Run deadlines and receipts. */
+export function isRunTimestamp(value: unknown): value is string {
+	if (typeof value !== "string" || !RUN_TIMESTAMP_PATTERN.test(value)) return false;
+	const parsed = new Date(value);
+	return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+export function isRunRequestIdentity(value: unknown): value is RunRequestIdentity {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		isRunRequestScope(candidate.scope) &&
+		isRunClientRequestId(candidate.clientRequestId) &&
+		isRunRequestFingerprint(candidate.requestFingerprint)
+	);
+}
+
+export function createRunRequestKey(identity: RunRequestIdentity): string {
+	if (!isRunRequestIdentity(identity)) throw new TypeError("Invalid Run request identity.");
+	return `${identity.scope}\u0000${identity.clientRequestId}`;
+}
+
+function digestRequestValue(value: unknown): string {
+	return createHash("sha256").update(stableRequestSerialization(value), "utf8").digest("hex");
+}
+
+/**
+ * Serialize request values deterministically for hashing. Raw values are only
+ * held while deriving the digest; the canonical value persisted with a Run
+ * contains digests, never this serialization.
+ */
+function stableRequestSerialization(value: unknown): string {
+	if (value === null) return "null";
+	if (typeof value === "string") return JSON.stringify(value);
+	if (typeof value === "number") return Number.isFinite(value) ? String(value) : "null";
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (typeof value !== "object") return "null";
+	if (Array.isArray(value)) return `[${value.map((item) => stableRequestSerialization(item)).join(",")}]`;
+	const object = value as Record<string, unknown>;
+	const fields: string[] = [];
+	for (const key of Object.keys(object).sort((left, right) => left.localeCompare(right))) {
+		const candidate = object[key];
+		if (candidate === undefined) continue;
+		fields.push(`${JSON.stringify(key)}:${stableRequestSerialization(candidate)}`);
+	}
+	return `{${fields.join(",")}}`;
+}
+
+/**
+ * Build the safe canonical request. Only digests of free-form input are kept;
+ * changing a prompt/image/selector still changes the fingerprint without
+ * persisting the raw value.
+ */
+export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
+	const external = input.external === undefined ? undefined : serializeExternalExecutionRef(input.external);
+	const scope = input.scope ?? (input.command === "run.start" ? "start" : "resume");
+	return {
+		schemaVersion: 1,
+		scope,
+		command: input.command,
+		sessionId: input.sessionId,
+		...(input.targetSessionId === undefined ? {} : { targetSessionId: input.targetSessionId }),
+		...(input.sourceRunId === undefined ? {} : { sourceRunId: input.sourceRunId }),
+		messageDigest: digestRequestValue(input.message),
+		...(input.images === undefined ? {} : { imagesDigest: digestRequestValue(input.images) }),
+		...(input.capabilityProfile === undefined
+			? {}
+			: { capabilityProfileDigest: digestRequestValue(input.capabilityProfile) }),
+		...(input.policyProfile === undefined ? {} : { policyProfileDigest: digestRequestValue(input.policyProfile) }),
+		...(input.modelRoute === undefined ? {} : { modelRouteDigest: digestRequestValue(input.modelRoute) }),
+		...(input.modelRole === undefined ? {} : { modelRoleDigest: digestRequestValue(input.modelRole) }),
+		...(external === undefined ? {} : { external }),
+		...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
+	};
+}
+
+/** Derive the stable SHA-256 identity used for request-to-run idempotence. */
+export function createRunRequestFingerprint(input: unknown): string {
+	if (
+		typeof input === "object" &&
+		input !== null &&
+		!Array.isArray(input) &&
+		typeof (input as { command?: unknown }).command === "string" &&
+		typeof (input as { sessionId?: unknown }).sessionId === "string" &&
+		typeof (input as { message?: unknown }).message === "string"
+	) {
+		return digestRequestValue(canonicalizeRunRequest(input as RunRequestFingerprintInput));
+	}
+	return digestRequestValue(input);
+}
 
 // ---- Status ----------------------------------------------------------------
 
@@ -162,8 +342,14 @@ export type ModelBudgetSummary = RunModelBudgetSummary;
 export interface RunRecord {
 	id: RunId;
 	sessionId: SessionId;
+	/** Scope-explicit client request relation; absent for legacy calls. */
+	requestScope?: RunRequestScope;
+	clientRequestId?: string;
+	requestFingerprint?: string;
 	/** Safe external execution reference persisted separately in external.mapping. */
 	external?: ExternalExecutionRef;
+	/** Inclusive UTC deadline propagated to the model/tool/MCP/Sandbox operation. */
+	deadlineAt?: string;
 	sourceRunId?: RunId;
 	/**
 	 * Binding id of the source run this attempt resumes from. Set on run.resume
@@ -193,6 +379,8 @@ export interface RunRecord {
 	modelBudget?: RunModelBudgetSummary;
 	/** Public-safe Execution Policy summary for the accepted binding/decision. */
 	policySummary?: PublicPolicySummary;
+	/** Stable public-safe handles associated with this Run. */
+	bindingAssociation?: RunBindingAssociation;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -219,6 +407,8 @@ export interface RunReceipt {
 	sessionId: SessionId;
 	/** Safe external execution reference persisted separately in external.mapping. */
 	external?: ExternalExecutionRef;
+	/** Inclusive UTC deadline propagated to the model/tool/MCP/Sandbox operation. */
+	deadlineAt?: string;
 	status: RunTerminalStatus;
 	finalText?: string;
 	usage: RunUsage;
@@ -248,14 +438,44 @@ export interface RunReceipt {
 	modelBudget?: RunModelBudgetSummary;
 	/** Public-safe Execution Policy summary for the accepted binding/decision. */
 	policySummary?: PublicPolicySummary;
+	/** Stable public-safe handles associated with this Run. */
+	bindingAssociation?: RunBindingAssociation;
 }
 
 export type RunStreamEvent =
 	| { type: "run.started"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string }
-	| { type: "run.event"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string; event: AgentSessionEvent }
-	| { type: "run.completed"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string; receipt: RunReceipt }
-	| { type: "run.failed"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string; receipt: RunReceipt }
-	| { type: "run.cancelled"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string; receipt: RunReceipt };
+	| {
+			type: "run.event";
+			runId: RunId;
+			sessionId: SessionId;
+			sequence: number;
+			timestamp: string;
+			event: AgentSessionEvent;
+	  }
+	| {
+			type: "run.completed";
+			runId: RunId;
+			sessionId: SessionId;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  }
+	| {
+			type: "run.failed";
+			runId: RunId;
+			sessionId: SessionId;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  }
+	| {
+			type: "run.cancelled";
+			runId: RunId;
+			sessionId: SessionId;
+			sequence: number;
+			timestamp: string;
+			receipt: RunReceipt;
+	  };
 
 export type PersistedRunLedgerEntry =
 	| { schemaVersion: 1; kind: "accepted"; record: RunRecord }
@@ -288,9 +508,15 @@ export type AutomationErrorCode =
 	| "unsupported_protocol_version"
 	| "host_not_initialized"
 	| "session_busy"
+	| "run_request_invalid"
+	| "run_request_conflict"
+	| "client_request_id_invalid"
+	| "client_request_conflict"
 	| "start_rejected"
 	| "run_not_found"
 	| "run_not_cancellable"
+	| "run_deadline_invalid"
+	| "run_deadline_exceeded"
 	| "session_not_persistent"
 	| "source_run_not_found"
 	| "source_run_not_resumable"
@@ -357,9 +583,15 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "unsupported_protocol_version" ||
 		value === "host_not_initialized" ||
 		value === "session_busy" ||
+		value === "run_request_invalid" ||
+		value === "run_request_conflict" ||
+		value === "client_request_id_invalid" ||
+		value === "client_request_conflict" ||
 		value === "start_rejected" ||
 		value === "run_not_found" ||
 		value === "run_not_cancellable" ||
+		value === "run_deadline_invalid" ||
+		value === "run_deadline_exceeded" ||
 		value === "session_not_persistent" ||
 		value === "source_run_not_found" ||
 		value === "source_run_not_resumable" ||
@@ -425,7 +657,10 @@ const BEARER_TOKEN_PATTERN = /\bbearer\s+[^\s"'`,;]+/gi;
  */
 export function redactErrorText(text: string): string {
 	const urlRedacted = text.replace(URL_USERINFO_PATTERN, "$1$2");
-	const assignmentsRedacted = urlRedacted.replace(SECRET_ASSIGNMENT_PATTERN, (_match, key: string) => `${key}=[redacted]`);
+	const assignmentsRedacted = urlRedacted.replace(
+		SECRET_ASSIGNMENT_PATTERN,
+		(_match, key: string) => `${key}=[redacted]`,
+	);
 	return assignmentsRedacted.replace(BEARER_TOKEN_PATTERN, "[redacted]");
 }
 
@@ -485,10 +720,28 @@ export interface RunResult {
 	policySummary?: PublicPolicySummary;
 }
 
+/** Persisted request relation and the current reconstructed Run result. */
+export interface RunRequestLookup {
+	readonly clientRequestId: string;
+	readonly scope: RunRequestScope;
+	readonly fingerprint: string;
+	readonly result: RunResult;
+}
+
+export type RunRequestReservation =
+	| { kind: "new"; reservation: RunReservation }
+	| { kind: "duplicate"; result: RunResult };
+
 export interface AcceptOptions {
 	runId?: RunId;
+	/** Scope-explicit request identity. All three fields are required together. */
+	requestScope?: RunRequestScope;
+	clientRequestId?: string;
+	requestFingerprint?: string;
 	/** Optional validated external execution reference for this Run. */
 	external?: ExternalExecutionRef;
+	/** Inclusive UTC deadline for this Run's model/tool/MCP/Sandbox operation. */
+	deadlineAt?: string;
 	sourceRunId?: RunId;
 	/** Binding id of the source run this attempt resumes from. */
 	previousBindingId?: string;
@@ -516,6 +769,8 @@ export interface AcceptOptions {
 	policyViolation?: PolicyViolationLedgerRecord;
 	/** Public-safe Execution Policy summary. Derived from policyBinding when omitted. */
 	policySummary?: PublicPolicySummary;
+	/** Public-safe binding handles frozen for this Run. */
+	bindingHandles?: ReadonlyArray<BindingHandle>;
 }
 
 export interface RunReservation {
@@ -589,7 +844,13 @@ export interface RunLifecycleCoordinator {
 	readonly activeRun: RunResult | undefined;
 	/** Synchronously lock the session; throws session_busy when a run is active. */
 	reserve(): RunReservation;
+	/** Resolve a retry key before taking the Session reservation. */
+	reserveForRequest(request: RunRequestIdentity): RunRequestReservation;
+	/** Return the original Run for a matching retry key, or throw on conflict. */
+	getRunForRequest(request: RunRequestIdentity): RunResult | undefined;
 	getRun(runId: RunId): RunResult | undefined;
+	/** Find the durable request relation without creating another Run. */
+	getRunByClientRequestId(clientRequestId: string, scope?: RunRequestScope): RunRequestLookup | undefined;
 	getActiveRun(): RunResult | undefined;
 	rebuildIndex(): ReadonlyMap<RunId, RunResult>;
 	/** Fold the Session's capability.binding custom entries into a redacted history. */
@@ -676,7 +937,12 @@ function isRunMetadataId(value: unknown): value is string {
 }
 
 function isRunMetadataText(value: unknown): value is string {
-	return typeof value === "string" && RUN_METADATA_TEXT_PATTERN.test(value) && !value.includes("://") && !value.includes("@");
+	return (
+		typeof value === "string" &&
+		RUN_METADATA_TEXT_PATTERN.test(value) &&
+		!value.includes("://") &&
+		!value.includes("@")
+	);
 }
 
 function isRunFinalModelReference(value: unknown): value is RunFinalModelReference {
@@ -756,6 +1022,88 @@ function isRunModelBudgetSummary(value: unknown): value is RunModelBudgetSummary
 			? candidate === undefined || typeof candidate === "boolean"
 			: candidate === undefined || (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0);
 	});
+}
+
+function isRunRequestRelation(value: unknown): value is RunRequestRelation {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const obj = value as Record<string, unknown>;
+	return (
+		isRunRequestScope(obj.scope) &&
+		isRunClientRequestId(obj.clientRequestId) &&
+		isRunRequestFingerprint(obj.fingerprint)
+	);
+}
+
+function requestRelationFromRecord(record: RunRecord): RunRequestRelation | undefined {
+	const hasRelation =
+		record.requestScope !== undefined || record.clientRequestId !== undefined || record.requestFingerprint !== undefined;
+	if (!hasRelation) return undefined;
+	const relation = {
+		scope: record.requestScope,
+		clientRequestId: record.clientRequestId,
+		fingerprint: record.requestFingerprint,
+	};
+	return isRunRequestRelation(relation) ? relation : undefined;
+}
+
+function validateRequestRelationOptions(options: {
+	requestScope?: RunRequestScope;
+	clientRequestId?: string;
+	requestFingerprint?: string;
+}): void {
+	const hasRelation =
+		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+	if (!hasRelation) return;
+	if (
+		!isRunRequestScope(options.requestScope) ||
+		!isRunClientRequestId(options.clientRequestId) ||
+		!isRunRequestFingerprint(options.requestFingerprint)
+	) {
+		throw createAutomationError("client_request_id_invalid", "The client request identity is invalid.", false);
+	}
+}
+
+function requestIdentityFromOptions(options: {
+	requestScope?: unknown;
+	clientRequestId?: unknown;
+	requestFingerprint?: unknown;
+}): RunRequestIdentity | undefined {
+	const hasIdentity =
+		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+	if (!hasIdentity) return undefined;
+	const identity = {
+		scope: options.requestScope,
+		clientRequestId: options.clientRequestId,
+		requestFingerprint: options.requestFingerprint,
+	};
+	if (!isRunRequestIdentity(identity)) {
+		throw createAutomationError(
+			"run_request_invalid",
+			"Run request idempotency metadata must include a valid scope, clientRequestId, and requestFingerprint.",
+			false,
+		);
+	}
+	return identity;
+}
+
+function runRequestConflictError(): AutomationError {
+	return createAutomationError(
+		"run_request_conflict",
+		"clientRequestId is already associated with a different Run request.",
+		false,
+	);
+}
+
+function requestIdentityFromRecord(record: RunRecord): RunRequestIdentity | undefined {
+	if (record.requestScope === undefined && record.clientRequestId === undefined && record.requestFingerprint === undefined) {
+		return undefined;
+	}
+	const identity = {
+		scope: record.requestScope,
+		clientRequestId: record.clientRequestId,
+		requestFingerprint: record.requestFingerprint,
+	};
+	return isRunRequestIdentity(identity) ? identity : undefined;
 }
 
 function isPolicyTrust(value: unknown): value is PolicyTrust {
@@ -891,7 +1239,10 @@ function clonePublicPolicySummary(value: PublicPolicySummary): PublicPolicySumma
 	};
 }
 
-function publicPolicySummaryFrom(binding: PolicyBinding, summary?: PublicPolicySummary): PublicPolicySummary | undefined {
+function publicPolicySummaryFrom(
+	binding: PolicyBinding,
+	summary?: PublicPolicySummary,
+): PublicPolicySummary | undefined {
 	if (summary !== undefined) return clonePublicPolicySummary(summary);
 	return clonePublicPolicySummary(toPublicPolicySummary(binding));
 }
@@ -954,7 +1305,25 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
 	if (typeof obj.id !== "string" || typeof obj.sessionId !== "string") return false;
+	const hasRequestRelation =
+		obj.requestScope !== undefined || obj.clientRequestId !== undefined || obj.requestFingerprint !== undefined;
+	if (
+		hasRequestRelation &&
+		!isRunRequestRelation({
+			scope: obj.requestScope,
+			clientRequestId: obj.clientRequestId,
+			fingerprint: obj.requestFingerprint,
+		})
+	)
+		return false;
 	if (obj.external !== undefined && !isExternalExecutionRef(obj.external)) return false;
+	if (obj.deadlineAt !== undefined && !isRunTimestamp(obj.deadlineAt)) return false;
+	if (
+		obj.bindingAssociation !== undefined &&
+		(parseRunBindingAssociation(obj.bindingAssociation) === undefined ||
+			parseRunBindingAssociation(obj.bindingAssociation)?.runId !== obj.id)
+	)
+		return false;
 	if (typeof obj.attempt !== "number") return false;
 	if (!isRunStatus(obj.status)) return false;
 	if (!isRunModelReference(obj.model)) return false;
@@ -982,6 +1351,13 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	const obj = value as Record<string, unknown>;
 	if (typeof obj.runId !== "string" || typeof obj.sessionId !== "string") return false;
 	if (obj.external !== undefined && !isExternalExecutionRef(obj.external)) return false;
+	if (obj.deadlineAt !== undefined && !isRunTimestamp(obj.deadlineAt)) return false;
+	if (
+		obj.bindingAssociation !== undefined &&
+		(parseRunBindingAssociation(obj.bindingAssociation) === undefined ||
+			parseRunBindingAssociation(obj.bindingAssociation)?.runId !== obj.runId)
+	)
+		return false;
 	if (!isRunTerminalStatus(obj.status)) return false;
 	if (!isRunUsage(obj.usage)) return false;
 	if (obj.finalText !== undefined && typeof obj.finalText !== "string") return false;
@@ -1079,7 +1455,9 @@ function isCapabilityBindingLedgerRecord(value: unknown): value is CapabilityBin
 function parseCapabilityBindingEntry(
 	value: unknown,
 	entryId: string,
-): { ok: true; entry: PersistedCapabilityBindingEntry } | { ok: false; diag: { kind: "malformed-binding"; entryId: string; detail: string } } {
+):
+	| { ok: true; entry: PersistedCapabilityBindingEntry }
+	| { ok: false; diag: { kind: "malformed-binding"; entryId: string; detail: string } } {
 	if (typeof value !== "object" || value === null) {
 		return { ok: false, diag: { kind: "malformed-binding", entryId, detail: "data is not an object" } };
 	}
@@ -1182,7 +1560,11 @@ export interface PublicCapabilityBindingLedgerRecord {
 export interface PublicRunRecord {
 	id: RunId;
 	sessionId: SessionId;
+	requestScope?: RunRequestScope;
+	clientRequestId?: string;
+	requestFingerprint?: string;
 	external?: ExternalExecutionRef;
+	deadlineAt?: string;
 	sourceRunId?: RunId;
 	/** Only present when the source binding id is a current-format opaque value. */
 	previousBindingId?: string;
@@ -1199,6 +1581,7 @@ export interface PublicRunRecord {
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
 	policySummary?: PublicPolicySummary;
+	bindingAssociation?: RunBindingAssociation;
 	startedAt?: string;
 	endedAt?: string;
 	terminalError?: AutomationError;
@@ -1208,6 +1591,7 @@ export interface PublicRunReceipt {
 	runId: RunId;
 	sessionId: SessionId;
 	external?: ExternalExecutionRef;
+	deadlineAt?: string;
 	status: RunTerminalStatus;
 	finalText?: string;
 	usage: RunUsage;
@@ -1223,6 +1607,7 @@ export interface PublicRunReceipt {
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
 	policySummary?: PublicPolicySummary;
+	bindingAssociation?: RunBindingAssociation;
 }
 
 /**
@@ -1415,10 +1800,17 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	const requestRelation = requestRelationFromRecord(record);
+	if (requestRelation !== undefined) {
+		copy.requestScope = requestRelation.scope;
+		copy.clientRequestId = requestRelation.clientRequestId;
+		copy.requestFingerprint = requestRelation.fingerprint;
+	}
 	if (record.external !== undefined) {
 		const external = serializeExternalExecutionRef(record.external);
 		if (external !== undefined) copy.external = external;
 	}
+	if (record.deadlineAt !== undefined && isRunTimestamp(record.deadlineAt)) copy.deadlineAt = record.deadlineAt;
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
 	if (record.previousBindingId !== undefined && isOpaqueCapabilityBindingId(record.previousBindingId)) {
 		copy.previousBindingId = record.previousBindingId;
@@ -1452,6 +1844,10 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 		const policySummary = clonePublicPolicySummary(record.policySummary);
 		if (policySummary !== undefined) copy.policySummary = policySummary;
 	}
+	if (record.bindingAssociation !== undefined) {
+		const bindingAssociation = serializePublicRunBindingAssociation(record.bindingAssociation);
+		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
+	}
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(record.terminalError);
@@ -1474,6 +1870,7 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 		const external = serializeExternalExecutionRef(receipt.external);
 		if (external !== undefined) copy.external = external;
 	}
+	if (receipt.deadlineAt !== undefined && isRunTimestamp(receipt.deadlineAt)) copy.deadlineAt = receipt.deadlineAt;
 	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
 	if (receipt.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(receipt.terminalError);
 	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
@@ -1505,6 +1902,10 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 	if (receipt.policySummary !== undefined) {
 		const policySummary = clonePublicPolicySummary(receipt.policySummary);
 		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
+	if (receipt.bindingAssociation !== undefined) {
+		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
+		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
 	}
 	return copy;
 }
@@ -1554,10 +1955,7 @@ export function serializePublicContextDrift(drift: ContextSourceDrift): PublicCo
  * credential-shaped values but deliberately preserves ordinary text, including
  * file paths, so it cannot serve as this public serialization boundary.
  */
-export function serializePublicAutomationError(
-	error: AutomationError,
-	message = "Run failed.",
-): AutomationError {
+export function serializePublicAutomationError(error: AutomationError, message = "Run failed."): AutomationError {
 	return createAutomationError(error.code, message, error.retryable);
 }
 
@@ -1725,10 +2123,17 @@ function isPolicyLedgerRecord(value: unknown): value is PolicyLedgerRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPersistedPolicyLedgerEntry(value: unknown): value is { schemaVersion: 1; sequence: number; record: PolicyLedgerRecord } {
+function isPersistedPolicyLedgerEntry(
+	value: unknown,
+): value is { schemaVersion: 1; sequence: number; record: PolicyLedgerRecord } {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const obj = value as Record<string, unknown>;
-	return obj.schemaVersion === 1 && Number.isSafeInteger(obj.sequence) && typeof obj.sequence === "number" && isPolicyLedgerRecord(obj.record);
+	return (
+		obj.schemaVersion === 1 &&
+		Number.isSafeInteger(obj.sequence) &&
+		typeof obj.sequence === "number" &&
+		isPolicyLedgerRecord(obj.record)
+	);
 }
 
 function isExecutionPolicyBindingLedgerRecord(value: unknown): value is ExecutionPolicyBindingLedgerRecord {
@@ -1764,7 +2169,9 @@ function isPolicyDecisionLedgerRecord(value: unknown): value is PolicyDecisionLe
 	);
 }
 
-function publicPolicySummaryFromBindingRecord(record: ExecutionPolicyBindingLedgerRecord): PublicPolicySummary | undefined {
+function publicPolicySummaryFromBindingRecord(
+	record: ExecutionPolicyBindingLedgerRecord,
+): PublicPolicySummary | undefined {
 	return clonePublicPolicySummary({
 		bindingId: record.id,
 		profileId: record.profileId,
@@ -1851,20 +2258,19 @@ function clonePublicPolicyViolation(record: PolicyViolationLedgerRecord): Policy
 	};
 }
 
-function serializePublicCustomEntry(
-	entry: Extract<SessionEntry, { type: "custom" }>,
-): PublicSessionCustomEntry {
+function serializePublicCustomEntry(entry: Extract<SessionEntry, { type: "custom" }>): PublicSessionCustomEntry {
 	const { data: _data, ...publicEntry } = entry;
 	if (entry.customType === POLICY_BINDING_CUSTOM_TYPE || entry.customType === POLICY_DECISION_CUSTOM_TYPE) {
 		const parsed = isPersistedPolicyLedgerEntry(entry.data) ? entry.data : undefined;
 		if (parsed === undefined) return publicEntry;
-		const summary = entry.customType === POLICY_BINDING_CUSTOM_TYPE
-			? isExecutionPolicyBindingLedgerRecord(parsed.record)
-				? publicPolicySummaryFromBindingRecord(parsed.record)
-				: undefined
-			: isPolicyDecisionLedgerRecord(parsed.record)
-				? publicPolicySummaryFromDecisionRecord(parsed.record)
-				: undefined;
+		const summary =
+			entry.customType === POLICY_BINDING_CUSTOM_TYPE
+				? isExecutionPolicyBindingLedgerRecord(parsed.record)
+					? publicPolicySummaryFromBindingRecord(parsed.record)
+					: undefined
+				: isPolicyDecisionLedgerRecord(parsed.record)
+					? publicPolicySummaryFromDecisionRecord(parsed.record)
+					: undefined;
 		return summary === undefined
 			? publicEntry
 			: { ...publicEntry, data: { schemaVersion: 1, sequence: parsed.sequence, summary } };
@@ -1968,10 +2374,17 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	const requestRelation = requestRelationFromRecord(record);
+	if (requestRelation !== undefined) {
+		copy.requestScope = requestRelation.scope;
+		copy.clientRequestId = requestRelation.clientRequestId;
+		copy.requestFingerprint = requestRelation.fingerprint;
+	}
 	if (record.external !== undefined) {
 		const external = serializeExternalExecutionRef(record.external);
 		if (external !== undefined) copy.external = external;
 	}
+	if (record.deadlineAt !== undefined && isRunTimestamp(record.deadlineAt)) copy.deadlineAt = record.deadlineAt;
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
 	if (record.previousBindingId !== undefined) copy.previousBindingId = record.previousBindingId;
 	if (record.capabilityBindingId !== undefined) copy.capabilityBindingId = record.capabilityBindingId;
@@ -1992,6 +2405,10 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		const policySummary = clonePublicPolicySummary(record.policySummary);
 		if (policySummary !== undefined) copy.policySummary = policySummary;
 	}
+	if (record.bindingAssociation !== undefined) {
+		const bindingAssociation = serializePublicRunBindingAssociation(record.bindingAssociation);
+		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
+	}
 	if (record.startedAt !== undefined) copy.startedAt = record.startedAt;
 	if (record.endedAt !== undefined) copy.endedAt = record.endedAt;
 	if (record.terminalError !== undefined) copy.terminalError = cloneAutomationError(record.terminalError);
@@ -2009,6 +2426,7 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 		const external = serializeExternalExecutionRef(receipt.external);
 		if (external !== undefined) copy.external = external;
 	}
+	if (receipt.deadlineAt !== undefined && isRunTimestamp(receipt.deadlineAt)) copy.deadlineAt = receipt.deadlineAt;
 	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
 	if (receipt.sessionFile !== undefined) copy.sessionFile = receipt.sessionFile;
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
@@ -2030,6 +2448,10 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 	if (receipt.policySummary !== undefined) {
 		const policySummary = clonePublicPolicySummary(receipt.policySummary);
 		if (policySummary !== undefined) copy.policySummary = policySummary;
+	}
+	if (receipt.bindingAssociation !== undefined) {
+		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
+		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
 	}
 	return copy;
 }
@@ -2054,6 +2476,7 @@ class RunHandleImpl implements RunHandle {
 	private readonly _capabilityBindingId: string | undefined;
 	private readonly _policyBindingId: string | undefined;
 	private readonly _previousPolicyBindingId: string | undefined;
+	private readonly _bindingAssociation: RunBindingAssociation | undefined;
 	private _policySummary: PublicPolicySummary | undefined;
 	private _sequence = 0;
 	private _cancelled = false;
@@ -2063,13 +2486,26 @@ class RunHandleImpl implements RunHandle {
 	private readonly _emitted: RunStreamEvent[] = [];
 	private _receipt: RunReceipt | undefined;
 
-	constructor(coordinator: RunLifecycleCoordinatorImpl, sessionId: SessionId, options: AcceptOptions) {
+	constructor(
+		coordinator: RunLifecycleCoordinatorImpl,
+		sessionId: SessionId,
+		options: AcceptOptions,
+		requestIdentity = requestIdentityFromOptions(options),
+	) {
 		this.coordinator = coordinator;
 		this.sessionId = sessionId;
 		this.runId = options.runId ?? coordinator.nextRunId();
+		validateRequestRelationOptions(options);
+		if (options.deadlineAt !== undefined && !isRunTimestamp(options.deadlineAt)) {
+			throw createAutomationError("run_deadline_invalid", "Run deadline must be a canonical UTC timestamp.", false);
+		}
 		this._capabilityBindingId = options.capabilityBinding?.id;
 		this._policyBindingId = options.policyBinding?.id;
 		this._previousPolicyBindingId = options.policyBinding?.previousPolicyBindingId ?? options.previousPolicyBindingId;
+		this._bindingAssociation =
+			options.bindingHandles === undefined || options.bindingHandles.length === 0
+				? undefined
+				: createRunBindingAssociation(this.runId, options.bindingHandles);
 		this._policySummary =
 			options.policyBinding === undefined
 				? options.policySummary === undefined
@@ -2083,10 +2519,16 @@ class RunHandleImpl implements RunHandle {
 			status: "accepted",
 			model: options.model,
 		};
+		if (requestIdentity !== undefined) {
+			this._record.requestScope = requestIdentity.scope;
+			this._record.clientRequestId = requestIdentity.clientRequestId;
+			this._record.requestFingerprint = requestIdentity.requestFingerprint;
+		}
 		if (options.external !== undefined) {
 			const external = serializeExternalExecutionRef(options.external);
 			if (external !== undefined) this._record.external = external;
 		}
+		if (options.deadlineAt !== undefined) this._record.deadlineAt = options.deadlineAt;
 		if (options.sourceRunId !== undefined) {
 			this._record.sourceRunId = options.sourceRunId;
 		}
@@ -2112,12 +2554,14 @@ class RunHandleImpl implements RunHandle {
 			const finalModel = cloneRunFinalModel(options.finalModel);
 			if (finalModel !== undefined) this._record.finalModel = finalModel;
 		}
-		if (options.modelAttempts !== undefined) this._record.modelAttempts = cloneRunModelAttempts(options.modelAttempts);
+		if (options.modelAttempts !== undefined)
+			this._record.modelAttempts = cloneRunModelAttempts(options.modelAttempts);
 		if (options.modelBudget !== undefined) {
 			const modelBudget = cloneRunModelBudget(options.modelBudget);
 			if (modelBudget !== undefined) this._record.modelBudget = modelBudget;
 		}
 		if (this._policySummary !== undefined) this._record.policySummary = this._policySummary;
+		if (this._bindingAssociation !== undefined) this._record.bindingAssociation = this._bindingAssociation;
 	}
 
 	get record(): RunRecord {
@@ -2151,8 +2595,10 @@ class RunHandleImpl implements RunHandle {
 	}
 
 	start(): RunStreamEvent[] {
-		if (this._record.status === "running" || isTerminalStatus(this._record.status)) return [];
+		if (this._record.status !== "accepted") return [];
 		const startedAt = this.coordinator.now();
+		// The append is the state transition boundary: in-memory status remains
+		// accepted until the durable started fact succeeds.
 		this.coordinator.persist({ schemaVersion: 1, kind: "started", runId: this.runId, startedAt });
 		this._record.status = "running";
 		this._record.startedAt = startedAt;
@@ -2199,6 +2645,9 @@ class RunHandleImpl implements RunHandle {
 			this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
 			return undefined;
 		}
+		if (this._record.status !== "running") {
+			throw createAutomationError("start_rejected", "Run must be started before terminal persistence.", false);
+		}
 		// Store only a fixed public-safe terminal error. Run ledgers can be read
 		// after process restart, so retaining free text here could preserve local
 		// paths or source identities even when every live RPC serializer is safe.
@@ -2216,6 +2665,8 @@ class RunHandleImpl implements RunHandle {
 			const external = serializeExternalExecutionRef(this._record.external);
 			if (external !== undefined) receipt.external = external;
 		}
+		if (this._record.deadlineAt !== undefined) receipt.deadlineAt = this._record.deadlineAt;
+		if (this._bindingAssociation !== undefined) receipt.bindingAssociation = this._bindingAssociation;
 		const finalText = input.finalText ?? this._finalText;
 		if (finalText !== "") receipt.finalText = finalText;
 		const sessionFile = this.coordinator.session.getSessionFile();
@@ -2262,6 +2713,9 @@ class RunHandleImpl implements RunHandle {
 			}));
 		}
 		if (modelBudget !== undefined) receipt.modelBudget = { ...modelBudget };
+		// Persist terminal before publishing the receipt/event or mutating the
+		// in-memory status. A failed append therefore remains visibly running and
+		// can be recovered as interrupted after restart.
 		this.coordinator.persist({ schemaVersion: 1, kind: "terminal", receipt, endedAt });
 		this._receipt = receipt;
 		this._record.status = status;
@@ -2293,7 +2747,8 @@ class RunHandleImpl implements RunHandle {
 	result(): RunResult {
 		const result: RunResult = { record: this.record };
 		if (this._receipt !== undefined) result.receipt = cloneRunReceipt(this._receipt);
-		if (!isTerminalStatus(this._record.status)) result.recovery = "interrupted";
+		// Live handles are not recovered. The replay fold adds `interrupted` only
+		// when accepted/started facts are reconstructed from persisted history.
 		if (this._policySummary !== undefined) {
 			const policySummary = clonePublicPolicySummary(this._policySummary);
 			if (policySummary !== undefined) result.policySummary = policySummary;
@@ -2365,18 +2820,108 @@ class RunHandleImpl implements RunHandle {
 	}
 }
 
+/** Read-only handle returned when a retry key resolves to an existing Run. */
+class ReplayedRunHandleImpl implements RunHandle {
+	readonly runId: RunId;
+	readonly sessionId: SessionId;
+	private readonly coordinator: RunLifecycleCoordinatorImpl;
+	private readonly _record: RunRecord;
+	private readonly _receipt: RunReceipt | undefined;
+	private readonly _recovery: RunRecoveryState | undefined;
+	private readonly _policySummary: PublicPolicySummary | undefined;
+	private _usageBaseline: RunUsageSnapshot | undefined;
+
+	constructor(coordinator: RunLifecycleCoordinatorImpl, result: RunResult) {
+		this.coordinator = coordinator;
+		this._record = cloneRunRecord(result.record);
+		this._receipt = result.receipt === undefined ? undefined : cloneRunReceipt(result.receipt);
+		this._recovery = result.recovery;
+		this._policySummary = result.policySummary === undefined ? undefined : clonePublicPolicySummary(result.policySummary);
+		this.runId = this._record.id;
+		this.sessionId = this._record.sessionId;
+	}
+
+	get record(): RunRecord {
+		return cloneRunRecord(this._record);
+	}
+
+	get sequence(): number {
+		return 0;
+	}
+
+	get cancelled(): boolean {
+		return this._record.status === "cancelled";
+	}
+
+	get emitted(): readonly RunStreamEvent[] {
+		return [];
+	}
+
+	get terminal(): RunStreamEvent | undefined {
+		return undefined;
+	}
+
+	start(): RunStreamEvent[] {
+		return [];
+	}
+
+	captureSessionEvent(_event: AgentSessionEvent): RunStreamEvent | undefined {
+		return undefined;
+	}
+
+	requestCancel(): void {
+		// A retry must not mutate a recovered Run or append a second terminal fact.
+	}
+
+	setUsageBaseline(baseline: RunUsageSnapshot): void {
+		this._usageBaseline = { input: baseline.input, output: baseline.output, total: baseline.total };
+	}
+
+	computeUsageDelta(current: RunUsageSnapshot): RunUsage {
+		const baseline = this._usageBaseline;
+		return {
+			input: nonNegative(current.input - (baseline?.input ?? 0)),
+			output: nonNegative(current.output - (baseline?.output ?? 0)),
+			total: nonNegative(current.total - (baseline?.total ?? 0)),
+		};
+	}
+
+	finalText(): string {
+		return this._receipt?.finalText ?? "";
+	}
+
+	settle(_input: SettleInput): RunStreamEvent | undefined {
+		this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
+		return undefined;
+	}
+
+	receipt(): RunReceipt | undefined {
+		return this._receipt === undefined ? undefined : cloneRunReceipt(this._receipt);
+	}
+
+	result(): RunResult {
+		const result: RunResult = { record: this.record };
+		if (this._receipt !== undefined) result.receipt = cloneRunReceipt(this._receipt);
+		if (this._recovery !== undefined) result.recovery = this._recovery;
+		if (this._policySummary !== undefined) result.policySummary = clonePublicPolicySummary(this._policySummary);
+		return result;
+	}
+}
+
 // ---- Reservation --------------------------------------------------------------
 
 class RunReservationImpl implements RunReservation {
 	readonly sessionId: SessionId;
 
 	private readonly coordinator: RunLifecycleCoordinatorImpl;
+	private readonly requestIdentity: RunRequestIdentity | undefined;
 	private readonly _buffered: AgentSessionEvent[] = [];
 	private consumed = false;
 
-	constructor(coordinator: RunLifecycleCoordinatorImpl) {
+	constructor(coordinator: RunLifecycleCoordinatorImpl, requestIdentity?: RunRequestIdentity) {
 		this.coordinator = coordinator;
 		this.sessionId = coordinator.sessionId;
+		this.requestIdentity = requestIdentity;
 	}
 
 	captureSessionEvent(event: AgentSessionEvent): void {
@@ -2387,28 +2932,58 @@ class RunReservationImpl implements RunReservation {
 		if (this.consumed) {
 			throw createAutomationError("start_rejected", "reservation has already been accepted or released", false);
 		}
-		const run = new RunHandleImpl(this.coordinator, this.sessionId, options);
+		let run: RunHandleImpl;
 		try {
-			this.coordinator.validateAcceptedPolicyFacts(run.runId, options);
-			if (options.external !== undefined) {
+			const optionIdentity = requestIdentityFromOptions(options);
+			if (
+				this.requestIdentity !== undefined &&
+				optionIdentity !== undefined &&
+				(this.requestIdentity.scope !== optionIdentity.scope ||
+					this.requestIdentity.clientRequestId !== optionIdentity.clientRequestId ||
+					this.requestIdentity.requestFingerprint !== optionIdentity.requestFingerprint)
+			) {
+				throw runRequestConflictError();
+			}
+			const requestIdentity = this.requestIdentity ?? optionIdentity;
+			if (requestIdentity !== undefined) {
+				const duplicate = this.coordinator.getRunForRequest(requestIdentity);
+				if (duplicate !== undefined) {
+					this.consumed = true;
+					this.coordinator.confirmRelease(this);
+					return this.coordinator.replayedHandle(duplicate);
+				}
+			}
+			const acceptedOptions =
+				requestIdentity === undefined
+					? options
+					: {
+							...options,
+							requestScope: requestIdentity.scope,
+							clientRequestId: requestIdentity.clientRequestId,
+							requestFingerprint: requestIdentity.requestFingerprint,
+						};
+			run = new RunHandleImpl(this.coordinator, this.sessionId, acceptedOptions, requestIdentity);
+			this.coordinator.validateAcceptedPolicyFacts(run.runId, acceptedOptions);
+			if (acceptedOptions.external !== undefined) {
 				this.coordinator.validateExternalMapping({
-					external: options.external,
+					external: acceptedOptions.external,
 					aosSessionId: this.sessionId,
 					aosRunId: run.runId,
 				});
 			}
 			this.coordinator.persist({ schemaVersion: 1, kind: "accepted", record: run.record });
-			if (options.external !== undefined) {
+			this.coordinator.indexAcceptedRun(run.record);
+			if (acceptedOptions.external !== undefined) {
 				this.coordinator.persistExternalMapping({
-					external: options.external,
+					external: acceptedOptions.external,
 					aosSessionId: this.sessionId,
 					aosRunId: run.runId,
 				});
 			}
-			if (options.capabilityBinding !== undefined) {
-				this.coordinator.persistCapabilityBinding(options.capabilityBinding);
+			if (acceptedOptions.capabilityBinding !== undefined) {
+				this.coordinator.persistCapabilityBinding(acceptedOptions.capabilityBinding);
 			}
-			this.coordinator.persistAcceptedPolicyFacts(run.runId, options);
+			this.coordinator.persistAcceptedPolicyFacts(run.runId, acceptedOptions);
 		} catch (error) {
 			// Consume and release the held reservation so the session is free for the next reserve.
 			this.consumed = true;
@@ -2445,6 +3020,8 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly diagnosedEntries = new Set<string>();
 	private readonly _diagnostics: LedgerDiagnostic[] = [];
 	private _capabilityBindings = new Map<string, CapabilityBindingLedgerRecord>();
+	private readonly _requestIndex = new Map<string, { runId: RunId; requestFingerprint: string }>();
+	private readonly _requestConflicts = new Set<string>();
 	private _active: RunHandleImpl | undefined;
 	private _reserved: RunReservationImpl | undefined;
 
@@ -2463,7 +3040,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			if (error instanceof ExternalMappingError) {
 				throw createAutomationError(error.code, error.message, false);
 			}
-			throw createAutomationError("audit_persistence_failed", "External mapping state could not be loaded safely.", false);
+			throw createAutomationError(
+				"audit_persistence_failed",
+				"External mapping state could not be loaded safely.",
+				false,
+			);
 		}
 		this.policyLedger = createExecutionPolicyLedger(session);
 	}
@@ -2481,19 +3062,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	}
 
 	reserve(): RunReservation {
-		if (this._active !== undefined) {
-			throw createAutomationError(
-				"session_busy",
-				`Session ${this.sessionId} already has an active run (${this._active.runId})`,
-				true,
-			);
-		}
-		if (this._reserved !== undefined) {
-			throw createAutomationError("session_busy", `Session ${this.sessionId} already has a pending reservation`, true);
-		}
-		const reservation = new RunReservationImpl(this);
-		this._reserved = reservation;
-		return reservation;
+		return this.reserveWithRequest();
 	}
 
 	getActiveRun(): RunResult | undefined {
@@ -2506,10 +3075,85 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		return this.rebuildIndex().get(runId);
 	}
 
+	reserveForRequest(request: RunRequestIdentity): RunRequestReservation {
+		const duplicate = this.getRunForRequest(request);
+		if (duplicate !== undefined) return { kind: "duplicate", result: duplicate };
+		return { kind: "new", reservation: this.reserveWithRequest(request) };
+	}
+
+	getRunForRequest(request: RunRequestIdentity): RunResult | undefined {
+		if (!isRunRequestIdentity(request)) {
+			throw createAutomationError(
+				"run_request_invalid",
+				"Run request idempotency metadata must include a valid scope, clientRequestId, and requestFingerprint.",
+				false,
+			);
+		}
+		const key = createRunRequestKey(request);
+		if (this._requestConflicts.has(key)) throw runRequestConflictError();
+		const indexed = this._requestIndex.get(key);
+		if (indexed !== undefined) {
+			if (indexed.requestFingerprint !== request.requestFingerprint) throw runRequestConflictError();
+			const live = this.runs.get(indexed.runId);
+			if (live !== undefined) return live.result();
+			const rebuilt = this.rebuildIndex();
+			if (this._requestConflicts.has(key)) throw runRequestConflictError();
+			const result = rebuilt.get(indexed.runId);
+			if (result === undefined) return undefined;
+			const identity = requestIdentityFromRecord(result.record);
+			if (identity === undefined || identity.requestFingerprint !== request.requestFingerprint) {
+				this._requestConflicts.add(key);
+				throw runRequestConflictError();
+			}
+			return result;
+		}
+		const rebuilt = this.rebuildIndex();
+		if (this._requestConflicts.has(key)) throw runRequestConflictError();
+		const result = [...rebuilt.values()].find((candidate) => {
+			const identity = requestIdentityFromRecord(candidate.record);
+			return identity !== undefined && createRunRequestKey(identity) === key;
+		});
+		if (result === undefined) return undefined;
+		const identity = requestIdentityFromRecord(result.record);
+		if (identity === undefined) return undefined;
+		if (identity.requestFingerprint !== request.requestFingerprint) {
+			this._requestConflicts.add(key);
+			throw runRequestConflictError();
+		}
+		this._requestIndex.set(key, { runId: result.record.id, requestFingerprint: identity.requestFingerprint });
+		return result;
+	}
+
+	getRunByClientRequestId(clientRequestId: string, scope?: RunRequestScope): RunRequestLookup | undefined {
+		for (const run of this.runs.values()) {
+			const relation = requestRelationFromRecord(run.record);
+			if (relation === undefined || relation.clientRequestId !== clientRequestId) continue;
+			if (scope !== undefined && relation.scope !== scope) continue;
+			return { clientRequestId, scope: relation.scope, fingerprint: relation.fingerprint, result: run.result() };
+		}
+		const results = this.rebuildIndex();
+		const scopes: RunRequestScope[] = scope === undefined ? ["start", "resume"] : [scope];
+		for (const candidateScope of scopes) {
+			const indexed = this._requestIndex.get(`${candidateScope}\u0000${clientRequestId}`);
+			if (indexed === undefined) continue;
+			const result = results.get(indexed.runId);
+			if (result === undefined) continue;
+			return {
+				clientRequestId,
+				scope: candidateScope,
+				fingerprint: indexed.requestFingerprint,
+				result,
+			};
+		}
+		return undefined;
+	}
+
 	rebuildIndex(): ReadonlyMap<RunId, RunResult> {
 		this.externalMappings.refresh();
 		const results = new Map<RunId, RunResult>();
 		const bindings = new Map<string, CapabilityBindingLedgerRecord>();
+		this._requestIndex.clear();
+		this._requestConflicts.clear();
 		for (const entry of this.session.getEntries()) {
 			if (entry.type !== "custom") continue;
 			if (entry.customType === CAPABILITY_BINDING_CUSTOM_TYPE) {
@@ -2537,6 +3181,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				} else {
 					existing.record = record;
 				}
+				if (existing === undefined) this.indexAcceptedRun(record);
 			} else if (fact.kind === "started") {
 				const result = results.get(fact.runId);
 				if (result === undefined) {
@@ -2567,11 +3212,17 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (fact.receipt.terminalError !== undefined) {
 					result.record.terminalError = cloneAutomationError(fact.receipt.terminalError);
 				}
+				if (fact.receipt.deadlineAt !== undefined) result.record.deadlineAt = fact.receipt.deadlineAt;
+				if (fact.receipt.bindingAssociation !== undefined) {
+					const bindingAssociation = serializePublicRunBindingAssociation(fact.receipt.bindingAssociation);
+					if (bindingAssociation !== undefined) result.record.bindingAssociation = bindingAssociation;
+				}
 				if (fact.receipt.modelBindingId !== undefined) result.record.modelBindingId = fact.receipt.modelBindingId;
 				if (fact.receipt.previousModelBindingId !== undefined) {
 					result.record.previousModelBindingId = fact.receipt.previousModelBindingId;
 				}
-				if (fact.receipt.policyBindingId !== undefined) result.record.policyBindingId = fact.receipt.policyBindingId;
+				if (fact.receipt.policyBindingId !== undefined)
+					result.record.policyBindingId = fact.receipt.policyBindingId;
 				if (fact.receipt.previousPolicyBindingId !== undefined) {
 					result.record.previousPolicyBindingId = fact.receipt.previousPolicyBindingId;
 				}
@@ -2622,7 +3273,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			this.session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, entry);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			throw createAutomationError("ledger_persistence_failed", `failed to persist run ledger entry: ${detail}`, false);
+			throw createAutomationError(
+				"ledger_persistence_failed",
+				`failed to persist run ledger entry: ${detail}`,
+				false,
+			);
 		}
 	}
 
@@ -2671,7 +3326,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			if (error instanceof ExternalMappingError) {
 				throw createAutomationError(error.code, error.message, false);
 			}
-			throw createAutomationError("audit_persistence_failed", "External mapping state could not be validated safely.", false);
+			throw createAutomationError(
+				"audit_persistence_failed",
+				"External mapping state could not be validated safely.",
+				false,
+			);
 		}
 	}
 
@@ -2693,7 +3352,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			});
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			throw createAutomationError("ledger_persistence_failed", `failed to persist capability binding entry: ${detail}`, false);
+			throw createAutomationError(
+				"ledger_persistence_failed",
+				`failed to persist capability binding entry: ${detail}`,
+				false,
+			);
 		}
 	}
 
@@ -2715,18 +3378,37 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		const binding = options.policyBinding;
 		if (binding === undefined) return;
 		if (binding.runId !== runId) {
-			throw createAutomationError("policy_binding_failed", "Execution Policy binding runId does not match the accepted run.", false);
+			throw createAutomationError(
+				"policy_binding_failed",
+				"Execution Policy binding runId does not match the accepted run.",
+				false,
+			);
 		}
 		if (binding.previousPolicyBindingId !== undefined && binding.previousPolicyBindingId === binding.id) {
-			throw createAutomationError("policy_binding_failed", "Execution Policy resume binding must be a successor binding.", false);
+			throw createAutomationError(
+				"policy_binding_failed",
+				"Execution Policy resume binding must be a successor binding.",
+				false,
+			);
 		}
-		if (options.previousPolicyBindingId !== undefined && binding.previousPolicyBindingId !== options.previousPolicyBindingId) {
-			throw createAutomationError("policy_binding_failed", "Execution Policy resume binding does not match the source binding.", false);
+		if (
+			options.previousPolicyBindingId !== undefined &&
+			binding.previousPolicyBindingId !== options.previousPolicyBindingId
+		) {
+			throw createAutomationError(
+				"policy_binding_failed",
+				"Execution Policy resume binding does not match the source binding.",
+				false,
+			);
 		}
-		if (options.policyDecision !== undefined) this.assertPolicyFactBinding(binding.id, options.policyDecision.bindingId);
-		if (options.policyApproval !== undefined) this.assertPolicyFactBinding(binding.id, options.policyApproval.bindingId);
-		if (options.sandboxLifecycle !== undefined) this.assertPolicyFactBinding(binding.id, options.sandboxLifecycle.bindingId);
-		if (options.policyViolation !== undefined) this.assertPolicyFactBinding(binding.id, options.policyViolation.bindingId);
+		if (options.policyDecision !== undefined)
+			this.assertPolicyFactBinding(binding.id, options.policyDecision.bindingId);
+		if (options.policyApproval !== undefined)
+			this.assertPolicyFactBinding(binding.id, options.policyApproval.bindingId);
+		if (options.sandboxLifecycle !== undefined)
+			this.assertPolicyFactBinding(binding.id, options.sandboxLifecycle.bindingId);
+		if (options.policyViolation !== undefined)
+			this.assertPolicyFactBinding(binding.id, options.policyViolation.bindingId);
 	}
 
 	persistPolicyFacts(input: {
@@ -2746,7 +3428,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 					input.sandboxLifecycle !== undefined ||
 					input.policyViolation !== undefined
 				) {
-					throw createAutomationError("policy_binding_failed", "Execution Policy facts require a policy binding.", false);
+					throw createAutomationError(
+						"policy_binding_failed",
+						"Execution Policy facts require a policy binding.",
+						false,
+					);
 				}
 				return;
 			}
@@ -2804,7 +3490,44 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	registerRun(run: RunHandleImpl): void {
 		this.runs.set(run.runId, run);
+		this.indexAcceptedRun(run.record);
 		this._active = run;
+	}
+
+	replayedHandle(result: RunResult): RunHandle {
+		return new ReplayedRunHandleImpl(this, result);
+	}
+
+	private reserveWithRequest(requestIdentity?: RunRequestIdentity): RunReservation {
+		if (this._active !== undefined) {
+			throw createAutomationError(
+				"session_busy",
+				`Session ${this.sessionId} already has an active run (${this._active.runId})`,
+				true,
+			);
+		}
+		if (this._reserved !== undefined) {
+			throw createAutomationError(
+				"session_busy",
+				`Session ${this.sessionId} already has a pending reservation`,
+				true,
+			);
+		}
+		const reservation = new RunReservationImpl(this, requestIdentity);
+		this._reserved = reservation;
+		return reservation;
+	}
+
+	indexAcceptedRun(record: RunRecord): void {
+		const identity = requestIdentityFromRecord(record);
+		if (identity === undefined) return;
+		const key = createRunRequestKey(identity);
+		const existing = this._requestIndex.get(key);
+		if (existing !== undefined && (existing.runId !== record.id || existing.requestFingerprint !== identity.requestFingerprint)) {
+			this._requestConflicts.add(key);
+			return;
+		}
+		this._requestIndex.set(key, { runId: record.id, requestFingerprint: identity.requestFingerprint });
 	}
 
 	onTerminal(run: RunHandleImpl): void {
@@ -2819,7 +3542,11 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	private assertPolicyFactBinding(policyBindingId: string, factBindingId: string): void {
 		if (factBindingId === policyBindingId) return;
-		throw createAutomationError("policy_binding_failed", "Execution Policy fact does not match the run binding.", false);
+		throw createAutomationError(
+			"policy_binding_failed",
+			"Execution Policy fact does not match the run binding.",
+			false,
+		);
 	}
 }
 

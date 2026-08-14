@@ -1,22 +1,24 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import {
-	PolicyError,
 	type PolicyBinding,
+	PolicyError,
 	type PolicyErrorCode,
 	type PolicyResource,
 	type SandboxCapabilities,
 } from "./execution-policy.ts";
+import {
+	createBindingHandle,
+	createBindingRevision,
+	isBindingHandle,
+	type BindingHandle,
+	type PublicBindingSummary,
+} from "./binding-handles.ts";
 import type { MCPServerConfig } from "./mcp-types.ts";
 
 export interface SandboxOperationRequest {
 	readonly bindingId: string;
 	readonly resource: PolicyResource;
-	readonly operation?:
-		| "file.read"
-		| "file.write"
-		| "directory.list"
-		| "filesystem.find"
-		| "filesystem.grep";
+	readonly operation?: "file.read" | "file.write" | "directory.list" | "filesystem.find" | "filesystem.grep";
 	readonly command?: string;
 	readonly cwd?: string;
 	readonly timeoutMs?: number;
@@ -77,6 +79,56 @@ export interface SandboxProvider {
 	dispose(handle: SandboxHandle): Promise<void>;
 }
 
+/**
+ * Inputs needed to create a stable Sandbox binding reference. The live
+ * SandboxHandle is optional and its process/runtime id is never serialized.
+ */
+export interface SandboxBindingHandleOptions {
+	readonly binding: Pick<PolicyBinding, "id" | "sandboxProviderId" | "sandboxCapabilities" | "sandboxStatus">;
+	readonly handle?: Pick<SandboxHandle, "providerId" | "status" | "capabilities">;
+}
+
+/**
+ * Build a stable Sandbox handle from the persisted policy binding and public
+ * provider capabilities. A provider's live handle id is intentionally not a
+ * part of the identity because it changes across restart/replay.
+ */
+export function toSandboxBindingHandle(options: SandboxBindingHandleOptions): BindingHandle {
+	const providerId = options.handle?.providerId ?? options.binding.sandboxProviderId;
+	const capabilities = options.handle?.capabilities ?? options.binding.sandboxCapabilities;
+	const status = options.handle?.status ?? options.binding.sandboxStatus;
+	const summary: PublicBindingSummary = {
+		policyBindingId: options.binding.id,
+		status,
+		filesystem: capabilities.filesystem,
+		process: capabilities.process,
+		network: capabilities.network,
+		credentialIsolation: capabilities.credentialIsolation,
+		...(providerId === undefined ? {} : { providerId }),
+	};
+	return createBindingHandle({
+		domain: "sandbox",
+		bindingId: options.binding.id,
+		revision: createBindingRevision({
+			policyBindingId: options.binding.id,
+			providerId,
+			status,
+			capabilities,
+		}),
+		relation: "policy.sandbox",
+		...(providerId === undefined ? {} : { role: providerId }),
+		summary,
+	});
+}
+
+export const createSandboxBindingHandle = toSandboxBindingHandle;
+export const toPublicSandboxBindingHandle = toSandboxBindingHandle;
+export const serializePublicSandboxBindingHandle = toSandboxBindingHandle;
+
+export function isSandboxBindingHandle(value: unknown): value is BindingHandle {
+	return isBindingHandle(value) && value.domain === "sandbox";
+}
+
 export type SandboxLifecycleStatus = "new" | "preparing" | "ready" | "disposed" | "failed";
 
 export class SandboxError extends PolicyError {
@@ -105,6 +157,13 @@ export class SandboxHandleDisposedError extends SandboxError {
 		super("sandbox_unavailable", `Sandbox handle "${handleId}" has been disposed.`, { handleId });
 		this.name = "SandboxHandleDisposedError";
 	}
+}
+
+function sandboxAbortError(signal: AbortSignal): DOMException {
+	return new DOMException(
+		signal.reason instanceof Error ? signal.reason.message : "Sandbox operation aborted",
+		"AbortError",
+	);
 }
 
 export function requireSandboxCapability(
@@ -137,6 +196,10 @@ export class SandboxSession {
 	async prepare(signal?: AbortSignal): Promise<SandboxHandle> {
 		if (this.status === "disposed") throw new SandboxError("sandbox_unavailable", "Sandbox session is disposed.");
 		if (this.handle !== undefined) return this.handle;
+		if (signal?.aborted) {
+			this.status = "failed";
+			throw sandboxAbortError(signal);
+		}
 		this.status = "preparing";
 		for (const capability of Object.keys(this.provider.capabilities) as Array<keyof SandboxCapabilities>) {
 			if (this.binding.sandboxCapabilities[capability] && !this.provider.capabilities[capability]) {
@@ -144,8 +207,15 @@ export class SandboxSession {
 				throw new SandboxCapabilityError(this.provider.id, capability);
 			}
 		}
+		let preparedHandle: SandboxHandle | undefined;
 		try {
 			const handle = await this.provider.prepare(this.binding, signal);
+			preparedHandle = handle;
+			if (signal?.aborted) {
+				await this.provider.dispose(handle).catch(() => undefined);
+				preparedHandle = undefined;
+				throw sandboxAbortError(signal);
+			}
 			if (handle.bindingId !== undefined && handle.bindingId !== this.binding.id) {
 				throw new SandboxError("sandbox_start_failed", "Sandbox handle does not match the policy binding.", {
 					providerId: this.provider.id,
@@ -169,6 +239,10 @@ export class SandboxSession {
 			return this.handle;
 		} catch (error) {
 			this.status = "failed";
+			if (signal?.aborted) {
+				if (preparedHandle !== undefined) await this.provider.dispose(preparedHandle).catch(() => undefined);
+				throw sandboxAbortError(signal);
+			}
 			if (error instanceof SandboxError || error instanceof PolicyError) throw error;
 			throw new SandboxError("sandbox_start_failed", "The sandbox provider failed to prepare a handle.", {
 				providerId: this.provider.id,

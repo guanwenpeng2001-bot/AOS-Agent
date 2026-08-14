@@ -1,5 +1,12 @@
 import { getAgentDir } from "../config.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
+import {
+	createBindingHandle,
+	createBindingRevision,
+	isBindingHandle,
+	type BindingHandle,
+	type PublicBindingSummary,
+} from "./binding-handles.ts";
 import type { SourceInfo, SourceOrigin, SourceScope } from "./source-info.ts";
 
 export type CapabilityKind =
@@ -733,6 +740,54 @@ export function createCapabilityBindingView(binding: CapabilityBinding): Capabil
 	});
 }
 
+/**
+ * The binding revision covers only the stable descriptor and selection facts;
+ * createdAt is deliberately excluded so replaying a persisted binding keeps
+ * the same public handle.
+ */
+export function getCapabilityBindingRevision(binding: CapabilityBinding): string {
+	return createBindingRevision({
+		profile: binding.profile,
+		descriptors: [...binding.descriptors]
+			.sort((left, right) => left.id.localeCompare(right.id) || left.revision.localeCompare(right.revision))
+			.map((descriptor) => ({
+				id: descriptor.id,
+				revision: descriptor.revision,
+				exposedToolName: descriptor.exposedToolName,
+			})),
+		decisionSummary: binding.decisionSummary,
+		toolAllowlist: [...binding.toolAllowlist].sort(),
+	});
+}
+
+/** Build the small, public-safe Capability Registry binding handle. */
+export function toCapabilityBindingHandle(binding: CapabilityBinding): BindingHandle {
+	const summary: PublicBindingSummary = {
+		profile: binding.profile,
+		descriptorCount: binding.descriptors.length,
+		allowed: binding.decisionSummary.allowed,
+		awaitingApproval: binding.decisionSummary.awaitingApproval,
+		denied: binding.decisionSummary.denied,
+		toolCount: binding.toolAllowlist.length,
+	};
+	return createBindingHandle({
+		domain: "capability",
+		bindingId: binding.id,
+		revision: getCapabilityBindingRevision(binding),
+		relation: "run.capability",
+		role: binding.profile,
+		summary,
+	});
+}
+
+export const createCapabilityBindingHandle = toCapabilityBindingHandle;
+export const toPublicCapabilityBindingHandle = toCapabilityBindingHandle;
+export const serializePublicCapabilityBindingHandle = toCapabilityBindingHandle;
+
+export function isCapabilityBindingHandle(value: unknown): value is BindingHandle {
+	return isBindingHandle(value) && value.domain === "capability";
+}
+
 export class CapabilityRegistry {
 	private catalog: CapabilityCatalog | undefined;
 	private readonly bindings = new Map<string, CapabilityBinding>();
@@ -764,5 +819,10 @@ export class CapabilityRegistry {
 	inspectBinding(id: string): CapabilityBindingView | undefined {
 		const binding = this.bindings.get(id);
 		return binding !== undefined ? createCapabilityBindingView(binding) : undefined;
+	}
+
+	inspectBindingHandle(id: string): BindingHandle | undefined {
+		const binding = this.bindings.get(id);
+		return binding === undefined ? undefined : toCapabilityBindingHandle(binding);
 	}
 }

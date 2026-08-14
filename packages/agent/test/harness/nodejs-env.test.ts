@@ -281,12 +281,18 @@ describe("NodeExecutionEnv", () => {
 	it("executes commands in cwd with env overrides", async () => {
 		const root = createTempDir();
 		const env = new NodeExecutionEnv({ cwd: root });
+		const printCwd = process.platform === "win32" ? '"$(pwd -W)"' : '"$PWD"';
 		const result = getOrThrow(
-			await env.exec('printf \'%s:%s\' "$PWD" "$NODE_ENV_TEST"', {
+			await env.exec(`printf '%s:%s' ${printCwd} "$NODE_ENV_TEST"`, {
 				env: { NODE_ENV_TEST: "ok" },
 			}),
 		);
-		expect(result).toEqual({ stdout: `${await realpath(root)}:ok`, stderr: "", exitCode: 0 });
+		const expectedCwd = await realpath(root);
+		expect(result).toEqual({
+			stdout: `${process.platform === "win32" ? expectedCwd.replaceAll("\\", "/") : expectedCwd}:ok`,
+			stderr: "",
+			exitCode: 0,
+		});
 	});
 
 	it.each([

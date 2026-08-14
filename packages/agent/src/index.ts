@@ -43,6 +43,46 @@ export {
 export * from "./agent.ts";
 // Loop functions
 export * from "./agent-loop.ts";
+export {
+	AGENT_LOOP_ERROR_CATEGORIES,
+	AGENT_LOOP_ERROR_CODES,
+	classifyAgentLoopError,
+	classifyAssistantMessageError,
+	decideAgentLoopRetry,
+	getAgentLoopErrorMessage,
+	redactedThrownAgentError,
+	redactAgentLoopErrorMessage,
+	type AgentLoopErrorCategory,
+	type AgentLoopErrorClassification,
+	type AgentLoopErrorCode,
+	type AgentLoopErrorOptions,
+	type AgentLoopErrorSideEffect,
+	type AgentLoopProviderKind,
+	type AgentLoopProviderPhase,
+	type AgentLoopRetryDecision,
+	type AgentLoopRetryDecisionReason,
+	type AgentLoopRetryOptions,
+	type AgentLoopRetryCallbacks,
+} from "./agent-errors.ts";
+export {
+	AgentLoopConvergenceGuard,
+	DEFAULT_AGENT_LOOP_CONVERGENCE,
+	createAgentLoopConvergenceGuard,
+	fingerprintAgentTurn,
+	type AgentLoopConvergenceDecision,
+	type AgentLoopConvergenceObservation,
+	type AgentLoopConvergenceOptions,
+	type AgentLoopConvergenceReason,
+	type AgentLoopConvergenceState,
+} from "./loop-convergence.ts";
+export {
+	AgentDeadlineExceeded,
+	AgentOperationError,
+	createAgentOperationSignal,
+	raceWithAbortSignal,
+	type AgentOperationSignal,
+	type AgentOperationSignalOptions,
+} from "./operation-signal.ts";
 export * from "./harness/agent-harness.ts";
 export {
 	type BranchPreparation,
@@ -113,6 +153,20 @@ export {
 	type AgentHarnessStreamOptionsPatch,
 	type AgentHarnessTool,
 	type AgentHarnessToolContextSource,
+	type HarnessCancellation,
+	type HarnessCancellationOptions,
+	type HarnessOperationContext,
+	type HarnessProviderCallback,
+	type HarnessProviderContext,
+	type HarnessProviderErrorCategory,
+	type HarnessProviderErrorClassification,
+	type HarnessProviderErrorOptions,
+	type HarnessProviderKind,
+	type HarnessProviderPhase,
+	type HarnessRetryDecision,
+	type HarnessRetryDecisionReason,
+	type HarnessRetryOptions,
+	type HarnessSideEffectState,
 	BranchSummaryError,
 	type BranchSummaryErrorCode,
 	CompactionError,
@@ -126,6 +180,11 @@ export {
 	type FileInfo,
 	type FileKind,
 	type FileSystem,
+	HarnessDeadlineExceeded,
+	classifyHarnessProviderError,
+	createHarnessCancellation,
+	createHarnessProviderContext,
+	decideHarnessRetry,
 	getOrThrow,
 	getOrUndefined,
 	ok,
@@ -134,6 +193,7 @@ export {
 	type ShellExecOptions,
 	type Skill,
 	toError,
+	invokeHarnessProvider,
 } from "./harness/types.ts";
 export * from "./harness/utils/shell-output.ts";
 export * from "./harness/utils/truncate.ts";

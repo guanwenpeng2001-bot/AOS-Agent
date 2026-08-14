@@ -4,6 +4,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
+import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/execution-association.ts";
 import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/execution-policy.ts";
 import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/model-broker-ledger.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
@@ -265,6 +266,7 @@ describe("AgentSession bash and persistence characterization", () => {
 				entry.type !== "custom" ||
 				(entry.customType !== MODEL_BINDING_CUSTOM_TYPE &&
 					entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE &&
+					entry.customType !== EXECUTION_ASSOCIATION_CUSTOM_TYPE &&
 					entry.customType !== POLICY_BINDING_CUSTOM_TYPE),
 		);
 		expect(userFacingEntries.map((entry) => entry.type)).toEqual([

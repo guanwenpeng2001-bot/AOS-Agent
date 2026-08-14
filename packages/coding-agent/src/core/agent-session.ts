@@ -50,7 +50,6 @@ import {
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	isRecoverableLength,
-	isRetryableAssistantError,
 	modelsAreEqual,
 	type RetryCallbacks,
 	resetApiProviders,
@@ -63,6 +62,7 @@ import { getShellEnv } from "../utils/shell.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
+import type { BindingHandle } from "./binding-handles.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CapabilityBinding,
@@ -76,6 +76,7 @@ import {
 	matchesCapabilityDescriptorId,
 	type ResolveBindingInput,
 	resolveCapabilityBinding,
+	toCapabilityBindingHandle,
 } from "./capability-registry.ts";
 import { type CapabilitySettings, createMcpServerCapabilityCandidate } from "./capability-settings.ts";
 import type { BranchSummaryDetails } from "./compaction/branch-summarization.ts";
@@ -112,6 +113,29 @@ import {
 	memoryToContextSourceInputs,
 } from "./context-memory-store.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { type ExecOptions, type ExecResult, execCommand } from "./exec.ts";
+import { type ExecutionAssociationRecord, persistExecutionAssociation } from "./execution-association.ts";
+import {
+	classifyAssistantFailure,
+	classifyProviderFailure,
+	type ExecutionErrorClassification,
+} from "./execution-error.ts";
+import {
+	authorizePolicyOperation,
+	type ExecutionPolicyProfile,
+	type PolicyApprovalOutcome,
+	type PolicyApprovalRequest,
+	type PolicyApprovalSource,
+	type PolicyBinding,
+	type PolicyDecision,
+	PolicyError,
+	type PolicyOperationSource,
+	type PublicPolicySummary,
+	resolveExecutionPolicyProfile,
+	toPublicPolicySummary,
+	toPolicyBindingHandle,
+} from "./execution-policy.ts";
+import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -142,34 +166,12 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
-import {
-	PolicyError,
-	authorizePolicyOperation,
-	resolveExecutionPolicyProfile,
-	type ExecutionPolicyProfile,
-	type PolicyBinding,
-	type PolicyDecision,
-	type PolicyOperationSource,
-	type PolicyApprovalOutcome,
-	type PolicyApprovalSource,
-	type PublicPolicySummary,
-	type PolicyApprovalRequest,
-	toPublicPolicySummary,
-} from "./execution-policy.ts";
-import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
-import { execCommand, type ExecOptions, type ExecResult } from "./exec.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { MCPLifecycleManager, createMCPDefaultTransportFactory } from "./mcp-lifecycle.ts";
+import { createMCPDefaultTransportFactory, MCPLifecycleManager } from "./mcp-lifecycle.ts";
 import { type MCPToolDefinitionResult, mapMCPToolsToDefinitions } from "./mcp-tool-adapter.ts";
 import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
-import {
-	ModelBroker,
-	ModelBrokerError,
-	type ModelFallbackReason,
-	type ModelResolution,
-	type NormalizedModelReference,
-} from "./model-broker.ts";
+import { ModelBroker, ModelBrokerError, type ModelResolution, type NormalizedModelReference } from "./model-broker.ts";
 import {
 	type ModelAttemptLedgerRecord,
 	type ModelBindingLedgerRecord,
@@ -178,10 +180,18 @@ import {
 } from "./model-broker-ledger.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { createOperationBoundary } from "./operation-boundary.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import { createBuiltinToolPolicy, type BuiltinToolPolicy } from "./sandbox-host.ts";
-import { SandboxSession, type SandboxHandle, type SandboxProvider } from "./sandbox.ts";
+import { type SandboxHandle, type SandboxProvider, SandboxSession, toSandboxBindingHandle } from "./sandbox.ts";
+import { type BuiltinToolPolicy, createBuiltinToolPolicy } from "./sandbox-host.ts";
+import {
+	createSessionBranchBoundary,
+	createSessionCheckpoint,
+	getSessionBoundaries,
+	recoverSessionCheckpoint,
+	type SessionBoundaryRecord,
+} from "./session-boundary.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -288,51 +298,58 @@ function stableExtensionLocalName(extension: Extension): string {
 }
 
 function hasVisibleModelEvent(event: AssistantMessageEvent): boolean {
+	const hasVisibleContent = (message: AssistantMessage): boolean =>
+		message.content.some((part) => {
+			if (part.type === "toolCall") return true;
+			if (part.type === "text") return part.text.length > 0;
+			return part.thinking.length > 0;
+		});
+
 	switch (event.type) {
 		case "start":
-			return event.partial.content.length > 0;
+			return hasVisibleContent(event.partial);
 		case "text_start":
 		case "text_delta":
 		case "text_end":
 		case "thinking_start":
 		case "thinking_delta":
 		case "thinking_end":
+			return hasVisibleContent(event.partial);
 		case "toolcall_start":
 		case "toolcall_delta":
 		case "toolcall_end":
 			return true;
 		case "done":
-			return event.reason === "toolUse" || event.message.content.length > 0;
+			return event.reason === "toolUse" || hasVisibleContent(event.message);
 		default:
 			return false;
 	}
 }
 
-function classifyModelStreamFailure(value: AssistantMessage | string): {
-	category: string;
-	fallbackReason?: ModelFallbackReason;
-} {
-	const message = typeof value === "string" ? value : (value.errorMessage ?? "");
-	const normalized = message.toLowerCase();
-	if (/(401|403|auth|api key|apikey|credential|unauthorized|forbidden|permission)/.test(normalized)) {
-		return { category: "auth" };
+function classifyModelStreamFailure(
+	value: AssistantMessage | string,
+	options: { dispatched?: boolean; visibleOutput?: boolean } = {},
+): ExecutionErrorClassification {
+	return classifyProviderFailure(value, options);
+}
+
+function operationAbortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new DOMException("Operation aborted", "AbortError");
+}
+
+async function awaitWithOperationSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (signal === undefined) return operation;
+	if (signal.aborted) throw operationAbortReason(signal);
+	let onAbort: (() => void) | undefined;
+	const aborted = new Promise<never>((_, reject) => {
+		onAbort = () => reject(operationAbortReason(signal));
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([operation, aborted]);
+	} finally {
+		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
 	}
-	if (/(context|too many tokens|token limit|maximum input|prompt too long)/.test(normalized)) {
-		return { category: "context_error" };
-	}
-	if (/(tool|invalid request|bad request|unsupported|schema)/.test(normalized)) {
-		return { category: "configuration_error" };
-	}
-	if (/(timeout|timed out|etimedout)/.test(normalized)) {
-		return { category: "timeout", fallbackReason: "transient_provider_error" };
-	}
-	if (/(rate limit|429|overloaded|too many requests)/.test(normalized)) {
-		return { category: "rate_limit", fallbackReason: "transient_provider_error" };
-	}
-	if (/(unavailable|temporar|network|fetch failed|econn|502|503|504|5xx|gateway)/.test(normalized)) {
-		return { category: "network", fallbackReason: "provider_unavailable" };
-	}
-	return { category: "unknown" };
 }
 
 function createSyntheticModelError(
@@ -433,6 +450,10 @@ export interface PromptOptions {
 	preflightResult?: (success: boolean) => void;
 	/** Automation Host run identifier propagated to each model-call snapshot. */
 	runId?: string;
+	/** Caller cancellation signal linked to model, tool, MCP, and sandbox work. */
+	signal?: AbortSignal;
+	/** Maximum duration for the active Agent operation. */
+	deadlineMs?: number;
 }
 
 /** Result from cycleModel() */
@@ -529,6 +550,8 @@ export class AgentSession {
 	// Retry state
 	private _retryAbortController: AbortController | undefined = undefined;
 	private _retryAttempt = 0;
+	/** Classification captured at the provider boundary for the next retry decision. */
+	private _pendingProviderFailure: ExecutionErrorClassification | undefined;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -692,7 +715,9 @@ export class AgentSession {
 				? new Map()
 				: typeof (sandboxProviders as ReadonlyMap<string, SandboxProvider>).get === "function"
 					? (sandboxProviders as ReadonlyMap<string, SandboxProvider>)
-					: new Map((sandboxProviders as ReadonlyArray<SandboxProvider>).map((provider) => [provider.id, provider]));
+					: new Map(
+							(sandboxProviders as ReadonlyArray<SandboxProvider>).map((provider) => [provider.id, provider]),
+						);
 		this._policyLedger = createExecutionPolicyLedger(this.sessionManager);
 
 		// Always subscribe to agent events for internal handling
@@ -729,6 +754,36 @@ export class AgentSession {
 			this._operationModelResolution?.bindingId ??
 			this._lastModelBrokerBindingId
 		);
+	}
+
+	/**
+	 * Return the public-safe binding handles frozen for the current operation.
+	 * Handles are references only; live providers, credentials, and runtime
+	 * sandbox identifiers never cross this boundary.
+	 */
+	getActiveBindingHandles(): ReadonlyArray<BindingHandle> {
+		const handles: BindingHandle[] = [];
+		const modelBindingId = this.modelBrokerBindingId;
+		if (modelBindingId !== undefined) {
+			const modelHandle = this._modelBroker.getBindingHandle(modelBindingId);
+			if (modelHandle !== undefined) handles.push(modelHandle);
+		}
+		if (this._activeCapabilityBinding !== undefined) {
+			handles.push(toCapabilityBindingHandle(this._activeCapabilityBinding));
+		}
+		if (this._activeExecutionPolicyBinding !== undefined) {
+			const policyBinding = this._activeExecutionPolicyBinding;
+			handles.push(toPolicyBindingHandle(policyBinding));
+			if (policyBinding.enforcement === "sandbox" || this._activeSandboxHandle !== undefined) {
+				handles.push(
+					toSandboxBindingHandle({
+						binding: policyBinding,
+						handle: this._activeSandboxHandle,
+					}),
+				);
+			}
+		}
+		return handles;
 	}
 
 	/**
@@ -1221,6 +1276,55 @@ export class AgentSession {
 					// The provider result must not be replaced by a ledger serialization error.
 				}
 			};
+			const persistAttemptAssociation = (attemptId: string, contextSnapshotId: string | undefined): void => {
+				if (options?.signal?.aborted) return;
+				const association: ExecutionAssociationRecord = {
+					schemaVersion: 1,
+					associationId: `association:${randomUUID()}`,
+					sessionId: this.sessionManager.getSessionId(),
+					modelAttemptId: attemptId,
+					modelBindingId: ledgerBinding.bindingId,
+					...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
+					...(this._activeExecutionPolicyBinding?.id === undefined
+						? {}
+						: { policyBindingId: this._activeExecutionPolicyBinding.id }),
+					...(this._activeCapabilityBinding?.id === undefined
+						? {}
+						: { capabilityBindingId: this._activeCapabilityBinding.id }),
+					...(this._activeContextRunId === undefined ? {} : { runId: this._activeContextRunId }),
+					createdAt: new Date().toISOString(),
+				};
+				try {
+					persistExecutionAssociation(this.sessionManager, association);
+				} catch {
+					// Association persistence must not replace a provider result.
+				}
+			};
+			const finishCancelledAttempt = (
+				attempt: ModelAttemptLedgerRecord,
+				contextSnapshotId: string | undefined,
+				visibleOutput: boolean,
+			): void => {
+				this._pendingProviderFailure = {
+					kind: "cancelled",
+					category: "cancelled",
+					sideEffectStatus: visibleOutput ? "visible" : "none",
+					retryable: false,
+				};
+				persistAttempt({
+					...attempt,
+					status: "cancelled",
+					endedAt: new Date().toISOString(),
+					failureCategory: "cancelled",
+					visibleOutput,
+					...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
+				});
+				outerStream.push({
+					type: "error",
+					reason: "aborted",
+					error: createSyntheticModelError(currentModel, "aborted", "Request aborted."),
+				});
+			};
 			const usageForMessage = (message: AssistantMessage) => ({
 				input: message.usage.input,
 				output: message.usage.output,
@@ -1229,6 +1333,25 @@ export class AgentSession {
 			});
 
 			while (true) {
+				if (options?.signal?.reason instanceof Error && "code" in options.signal.reason) {
+					const code = (options.signal.reason as { code?: unknown }).code;
+					if (code === "deadline_exceeded" || code === "cancelled") {
+						this._pendingProviderFailure = {
+							kind: code,
+							category: code,
+							sideEffectStatus: "none",
+							retryable: false,
+						};
+					}
+				}
+				if (options?.signal?.aborted) {
+					outerStream.push({
+						type: "error",
+						reason: "aborted",
+						error: createSyntheticModelError(currentModel, "aborted", "Request aborted."),
+					});
+					return;
+				}
 				let attemptContextSnapshotId: string | undefined;
 				const candidateReference: NormalizedModelReference = candidates[currentOrder] ?? resolution.reference;
 				const candidate = {
@@ -1279,18 +1402,32 @@ export class AgentSession {
 						currentModel,
 						currentOrder === initialCandidateIndex ? undefined : parentSnapshotId,
 					);
+					if (options?.signal?.aborted) {
+						finishCancelledAttempt(startedAttempt, undefined, visibleOutput);
+						return;
+					}
 					if (this.settingsManager.getContextSettings().enabled) {
 						attemptContextSnapshotId = this._lastContextSnapshotId;
+					}
+					persistAttemptAssociation(startedAttempt.attemptId, attemptContextSnapshotId);
+					if (options?.signal?.aborted) {
+						finishCancelledAttempt(startedAttempt, attemptContextSnapshotId, visibleOutput);
+						return;
 					}
 					const stream = await invoke(currentModel, currentContext, currentOptions);
 					let finalError: AssistantMessage | undefined;
 					for await (const event of stream) {
+						if (options?.signal?.aborted) {
+							finishCancelledAttempt(startedAttempt, attemptContextSnapshotId, visibleOutput);
+							return;
+						}
 						if (hasVisibleModelEvent(event)) visibleOutput = true;
 						if (event.type === "error") {
 							finalError = event.error;
 							break;
 						}
 						if (event.type === "done") {
+							this._pendingProviderFailure = undefined;
 							const usage = usageForMessage(event.message);
 							const budgetSettlement =
 								budgetReservationId === undefined
@@ -1307,9 +1444,7 @@ export class AgentSession {
 									? {}
 									: { contextSnapshotId: attemptContextSnapshotId }),
 								usage,
-								...(budgetExceeded
-									? { summary: "Model budget exceeded; subsequent calls are blocked." }
-									: {}),
+								...(budgetExceeded ? { summary: "Model budget exceeded; subsequent calls are blocked." } : {}),
 							});
 							if (budgetExceeded) {
 								outerStream.push({
@@ -1327,7 +1462,7 @@ export class AgentSession {
 							}
 							return;
 						}
-						outerStream.push(event);
+						if (!options?.signal?.aborted) outerStream.push(event);
 					}
 
 					if (finalError === undefined) {
@@ -1344,9 +1479,7 @@ export class AgentSession {
 							endedAt: new Date().toISOString(),
 							failureCategory: "unknown",
 							visibleOutput,
-							...(attemptContextSnapshotId === undefined
-								? {}
-								: { contextSnapshotId: attemptContextSnapshotId }),
+							...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 						});
 						outerStream.push({
 							type: "error",
@@ -1356,7 +1489,8 @@ export class AgentSession {
 						return;
 					}
 
-					const failure = classifyModelStreamFailure(finalError);
+					const failure = classifyModelStreamFailure(finalError, { visibleOutput });
+					this._pendingProviderFailure = failure;
 					const budgetSettlement =
 						budgetReservationId === undefined
 							? undefined
@@ -1373,17 +1507,18 @@ export class AgentSession {
 						binding.fallbackAllowed &&
 						failure.fallbackReason !== undefined &&
 						binding.fallback?.on.includes(failure.fallbackReason) === true &&
-						this._modelBroker.classifyFallback({ category: failure.category }).eligible;
-					const fallbackAllowed =
-						fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
+						this._modelBroker.classifyFallback({
+							category: failure.category,
+							sideEffectStatus: failure.sideEffectStatus,
+						}).eligible;
+					const fallbackAllowed = fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
 					const nextOrder = candidates.findIndex(
 						(candidateValue, index) =>
 							index > currentOrder &&
 							(candidateValue.provider !== currentModel.provider || candidateValue.id !== currentModel.id),
 					);
 					const fallbackExhausted =
-						fallbackCandidateEligible &&
-						(nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
+						fallbackCandidateEligible && (nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
 					if (!fallbackAllowed || nextOrder < 0) {
 						persistAttempt({
 							...startedAttempt,
@@ -1395,9 +1530,7 @@ export class AgentSession {
 									? "model_budget_exceeded"
 									: (failure.fallbackReason ?? failure.category),
 							visibleOutput,
-							...(attemptContextSnapshotId === undefined
-								? {}
-								: { contextSnapshotId: attemptContextSnapshotId }),
+							...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 							...(budgetBlocked ? { summary: "Model budget exceeded; subsequent calls are blocked." } : {}),
 						});
 						outerStream.push({
@@ -1420,9 +1553,7 @@ export class AgentSession {
 						endedAt: new Date().toISOString(),
 						failureCategory: failure.fallbackReason ?? failure.category,
 						visibleOutput,
-						...(attemptContextSnapshotId === undefined
-							? {}
-							: { contextSnapshotId: attemptContextSnapshotId }),
+						...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 					});
 					currentOrder = nextOrder;
 					const nextReference = candidates[currentOrder];
@@ -1454,9 +1585,7 @@ export class AgentSession {
 							endedAt: new Date().toISOString(),
 							failureCategory: "context_error",
 							visibleOutput,
-							...(attemptContextSnapshotId === undefined
-								? {}
-								: { contextSnapshotId: attemptContextSnapshotId }),
+							...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 						});
 						outerStream.push({
 							type: "error",
@@ -1465,7 +1594,11 @@ export class AgentSession {
 						});
 						return;
 					}
-					const failure = classifyModelStreamFailure(error instanceof Error ? error.message : String(error));
+					const failure = classifyModelStreamFailure(error instanceof Error ? error.message : String(error), {
+						dispatched: true,
+						visibleOutput,
+					});
+					this._pendingProviderFailure = failure;
 					const budgetSettlement =
 						budgetReservationId === undefined
 							? undefined
@@ -1478,17 +1611,18 @@ export class AgentSession {
 						binding.fallbackAllowed &&
 						failure.fallbackReason !== undefined &&
 						binding.fallback?.on.includes(failure.fallbackReason) === true &&
-						this._modelBroker.classifyFallback({ category: failure.category }).eligible;
-					const fallbackAllowed =
-						fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
+						this._modelBroker.classifyFallback({
+							category: failure.category,
+							sideEffectStatus: failure.sideEffectStatus,
+						}).eligible;
+					const fallbackAllowed = fallbackCandidateEligible && attempts < (binding.fallback?.maxAttempts ?? 1);
 					const nextOrder = candidates.findIndex(
 						(candidateValue, index) =>
 							index > currentOrder &&
 							(candidateValue.provider !== currentModel.provider || candidateValue.id !== currentModel.id),
 					);
 					const fallbackExhausted =
-						fallbackCandidateEligible &&
-						(nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
+						fallbackCandidateEligible && (nextOrder < 0 || attempts >= (binding.fallback?.maxAttempts ?? 1));
 					if (!fallbackAllowed || nextOrder < 0) {
 						persistAttempt({
 							...startedAttempt,
@@ -1496,13 +1630,11 @@ export class AgentSession {
 							endedAt: new Date().toISOString(),
 							failureCategory: options?.signal?.aborted
 								? "cancelled"
-									: budgetBlocked
-										? "model_budget_exceeded"
-										: (failure.fallbackReason ?? failure.category),
+								: budgetBlocked
+									? "model_budget_exceeded"
+									: (failure.fallbackReason ?? failure.category),
 							visibleOutput,
-							...(attemptContextSnapshotId === undefined
-								? {}
-								: { contextSnapshotId: attemptContextSnapshotId }),
+							...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 						});
 						outerStream.push({
 							type: "error",
@@ -1524,9 +1656,7 @@ export class AgentSession {
 						endedAt: new Date().toISOString(),
 						failureCategory: failure.fallbackReason ?? failure.category,
 						visibleOutput,
-					...(attemptContextSnapshotId === undefined
-						? {}
-						: { contextSnapshotId: attemptContextSnapshotId }),
+						...(attemptContextSnapshotId === undefined ? {} : { contextSnapshotId: attemptContextSnapshotId }),
 					});
 					currentOrder = nextOrder;
 					const nextReference = candidates[currentOrder];
@@ -2621,14 +2751,14 @@ export class AgentSession {
 		}
 	}
 
-	private async _prepareAgentRun(): Promise<void> {
+	private async _prepareAgentRun(signal?: AbortSignal): Promise<void> {
 		this._refreshContextEngineStreamBoundary();
 		this._assertContextPayloadHooksSupported();
-		await this.whenCapabilitiesReady(this._activeContextRunId);
+		await this.whenCapabilitiesReady(this._activeContextRunId, signal);
 		this._applyPromptPreflightToolRegistryRefresh();
-		const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId);
+		const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId, signal);
 		if (policyBindingChanged) {
-			await this._reconnectSelectedMcpServersForPolicyBinding();
+			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
 		}
 	}
 
@@ -2655,7 +2785,7 @@ export class AgentSession {
 				// fail-closed conflict) settles before any provider/tool execution,
 				// including run starts that bypass prompt() preflight.
 				await this.agent.runWithPreflight(
-					async () => await this._prepareAgentRun(),
+					async (signal) => await this._prepareAgentRun(signal),
 					async () => await runPreparedPrompt(),
 				);
 			}
@@ -2671,6 +2801,7 @@ export class AgentSession {
 		this._activeContextRunId = undefined;
 		this._pendingExtensionContextSources = [];
 		this._pendingContextError = undefined;
+		this._pendingProviderFailure = undefined;
 		this._flushPendingBashMessages();
 		await this._emitAgentSettled();
 		this._operationModelResolution = undefined;
@@ -2717,6 +2848,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		if (options?.signal?.aborted) throw operationAbortReason(options.signal);
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -2908,8 +3040,8 @@ export class AgentSession {
 		let preflightAccepted = false;
 		try {
 			await this.agent.runWithPreflight(
-				async () => {
-					await this._prepareAgentRun();
+				async (signal) => {
+					await this._prepareAgentRun(signal);
 					preflightResult?.(true);
 					preflightAccepted = true;
 				},
@@ -2920,6 +3052,7 @@ export class AgentSession {
 						await this._finishAgentPrompt();
 					}
 				},
+				{ signal: options?.signal, deadlineMs: options?.deadlineMs },
 			);
 		} catch (error) {
 			// Capability/policy failures and Automation Host acceptance failures happen
@@ -3234,9 +3367,9 @@ export class AgentSession {
 	 * connects to MCP servers during construction. Throws the recorded discovery
 	 * failure when one occurred (e.g. a name conflict).
 	 */
-	async whenCapabilitiesReady(policyRunId?: string): Promise<void> {
-		this._ensureCapabilityDiscoveryStarted(policyRunId);
-		await this._capabilityDiscoveryPromise;
+	async whenCapabilitiesReady(policyRunId?: string, signal?: AbortSignal): Promise<void> {
+		this._ensureCapabilityDiscoveryStarted(policyRunId, signal);
+		await awaitWithOperationSignal(this._capabilityDiscoveryPromise, signal);
 		if (this._capabilityDiscoveryError) {
 			throw this._capabilityDiscoveryError;
 		}
@@ -3248,12 +3381,19 @@ export class AgentSession {
 	 * the frozen binding is re-resolved with the namespaced mcp_tool
 	 * descriptors. Failures are recorded and fail discovery closed.
 	 */
-	private _ensureCapabilityDiscoveryStarted(policyRunId?: string): void {
+	private _ensureCapabilityDiscoveryStarted(policyRunId?: string, signal?: AbortSignal): void {
 		if (this._capabilityDiscoveryStarted) {
 			return;
 		}
 		this._capabilityDiscoveryStarted = true;
-		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding(policyRunId).catch((error) => {
+		this._capabilityDiscoveryPromise = this._discoverMcpToolsForBinding(policyRunId, signal).catch((error) => {
+			if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+				// A caller-scoped cancellation must not poison the runtime's one-shot
+				// discovery state. A later run can retry against fresh MCP connections.
+				this._capabilityDiscoveryStarted = false;
+				this._capabilityDiscoveryError = undefined;
+				return;
+			}
 			this._capabilityDiscoveryError = error instanceof Error ? error : new Error(String(error));
 		});
 	}
@@ -3348,9 +3488,13 @@ export class AgentSession {
 
 	/** The named Execution Policy profile selected for the next binding. */
 	getActiveExecutionPolicyProfile(): string {
-		return this._activeExecutionPolicyProfile?.id ?? this._activeExecutionPolicyProfileSelection ?? this.settingsManager.getExecutionPolicySettings({
-			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
-		}).selectedProfileId;
+		return (
+			this._activeExecutionPolicyProfile?.id ??
+			this._activeExecutionPolicyProfileSelection ??
+			this.settingsManager.getExecutionPolicySettings({
+				registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
+			}).selectedProfileId
+		);
 	}
 
 	/**
@@ -3415,7 +3559,9 @@ export class AgentSession {
 		const approval = this._pendingExecutionPolicyApprovals.get(requestId);
 		if (approval === undefined) throw new PolicyError("policy_denied", "Cannot approve unknown policy request.");
 		this._recordExecutionPolicyApproval(approval, "approved", source);
-		this._executionPolicyRejectedRequestIds = this._executionPolicyRejectedRequestIds.filter((id) => id !== requestId);
+		this._executionPolicyRejectedRequestIds = this._executionPolicyRejectedRequestIds.filter(
+			(id) => id !== requestId,
+		);
 		if (!this._executionPolicyApprovedRequestIds.includes(requestId)) {
 			this._executionPolicyApprovedRequestIds = [...this._executionPolicyApprovedRequestIds, requestId];
 		}
@@ -3427,7 +3573,9 @@ export class AgentSession {
 		const approval = this._pendingExecutionPolicyApprovals.get(requestId);
 		if (approval === undefined) throw new PolicyError("policy_denied", "Cannot reject unknown policy request.");
 		this._recordExecutionPolicyApproval(approval, "rejected", source);
-		this._executionPolicyApprovedRequestIds = this._executionPolicyApprovedRequestIds.filter((id) => id !== requestId);
+		this._executionPolicyApprovedRequestIds = this._executionPolicyApprovedRequestIds.filter(
+			(id) => id !== requestId,
+		);
 		if (!this._executionPolicyRejectedRequestIds.includes(requestId)) {
 			this._executionPolicyRejectedRequestIds = [...this._executionPolicyRejectedRequestIds, requestId];
 		}
@@ -4885,7 +5033,7 @@ export class AgentSession {
 	 * are recorded redacted and fail discovery closed; the server and its tools
 	 * stay out of the binding.
 	 */
-	private async _discoverMcpToolsForBinding(policyRunId?: string): Promise<void> {
+	private async _discoverMcpToolsForBinding(policyRunId?: string, signal?: AbortSignal): Promise<void> {
 		const binding = this._activeCapabilityBinding;
 		const catalog = this._activeCapabilityCatalog;
 		if (!binding || !catalog) {
@@ -4904,6 +5052,7 @@ export class AgentSession {
 		const mcpResults: MCPToolDefinitionResult[] = [];
 		const mcpCandidates: CapabilityCandidate[] = [];
 		for (const serverId of [...selectedServerIds]) {
+			if (signal?.aborted) throw new DOMException("MCP capability discovery aborted", "AbortError");
 			const diagnostic = diagnosticByServerId.get(serverId);
 			// Untrusted servers are force-denied by the registry and never selected;
 			// this check is belt-and-suspenders so a trusted override cannot leak.
@@ -4923,10 +5072,13 @@ export class AgentSession {
 				);
 			}
 			try {
-				await this._ensureExecutionPolicyReady(policyRunId);
+				await this._ensureExecutionPolicyReady(policyRunId, signal);
 				await this._authorizeMcpStartup(diagnostic.server, serverId);
-				await this._mcpLifecycleManager.connect(serverId);
-				const tools = await this._mcpLifecycleManager.listTools(serverId);
+				await this._mcpLifecycleManager.connect(serverId, signal);
+				const tools = await this._mcpLifecycleManager.listTools(serverId, signal);
+				if (signal?.aborted) {
+					throw new DOMException("MCP capability discovery aborted", "AbortError");
+				}
 				// The tool source identity embeds the server id so two same-scope
 				// servers exposing the same local tool never share a descriptor id.
 				const serverToolSourceIdentity = `${diagnostic.source.source}:${diagnostic.id}`;
@@ -4954,6 +5106,9 @@ export class AgentSession {
 					});
 				}
 			} catch (error) {
+				if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+					throw error;
+				}
 				// The lifecycle records a redacted MCPError; the server and its tools
 				// remain excluded from the binding. A selected server that cannot be
 				// discovered must fail preflight instead of degrading to a partial
@@ -4970,16 +5125,22 @@ export class AgentSession {
 			}
 		}
 
+		if (signal?.aborted) {
+			throw new DOMException("MCP capability discovery aborted", "AbortError");
+		}
 		this._activeMcpTools = mcpResults;
 		this._activeMcpToolCandidates = mcpCandidates;
 		if (mcpResults.length > 0) {
 			if (this.isIdle) {
+				if (signal?.aborted) {
+					throw new DOMException("MCP capability discovery aborted", "AbortError");
+				}
 				this._refreshToolRegistry({ includeAllExtensionTools: true });
 				// Discovered tools change the Capability Binding. Rebind the policy
 				// before reconnecting so the live MCP transport belongs to the final
 				// binding, not the discovery-only binding.
-				await this._ensureExecutionPolicyReady(policyRunId);
-				await this._reconnectSelectedMcpServersForPolicyBinding();
+				await this._ensureExecutionPolicyReady(policyRunId, signal);
+				await this._reconnectSelectedMcpServersForPolicyBinding(signal);
 			} else {
 				// Discovery completed mid-run: the active run stays bound to the
 				// frozen binding; re-resolve the registry only after the run settles.
@@ -5053,12 +5214,14 @@ export class AgentSession {
 		};
 	}
 
-	private _createPolicySandboxPreflight(profile: ExecutionPolicyProfile): {
-		providerConfigured: boolean;
-		providerId?: string;
-		providerStatus: "ready" | "unavailable";
-		providerCapabilities: SandboxProvider["capabilities"];
-	} | undefined {
+	private _createPolicySandboxPreflight(profile: ExecutionPolicyProfile):
+		| {
+				providerConfigured: boolean;
+				providerId?: string;
+				providerStatus: "ready" | "unavailable";
+				providerCapabilities: SandboxProvider["capabilities"];
+		  }
+		| undefined {
 		if (profile.enforcement !== "sandbox") return undefined;
 		const providerId = profile.sandboxProvider;
 		const provider = providerId === undefined ? undefined : this._sandboxProviders.get(providerId);
@@ -5116,7 +5279,11 @@ export class AgentSession {
 		}
 	}
 
-	private async _prepareSandboxForBinding(profile: ExecutionPolicyProfile, binding: PolicyBinding): Promise<void> {
+	private async _prepareSandboxForBinding(
+		profile: ExecutionPolicyProfile,
+		binding: PolicyBinding,
+		signal?: AbortSignal,
+	): Promise<void> {
 		await this._disposeSandboxSession();
 		if (profile.enforcement !== "sandbox") {
 			return;
@@ -5136,7 +5303,7 @@ export class AgentSession {
 			capabilities: provider.capabilities,
 		});
 		try {
-			this._activeSandboxHandle = await session.prepare(this.agent.signal);
+			this._activeSandboxHandle = await session.prepare(signal ?? this.agent.signal);
 			this._policyLedger.appendSandboxLifecycle({
 				bindingId: binding.id,
 				status: "ready",
@@ -5145,6 +5312,10 @@ export class AgentSession {
 				capabilities: provider.capabilities,
 			});
 		} catch (error) {
+			if (signal?.aborted) {
+				await this._disposeSandboxSession();
+				throw error;
+			}
 			this._policyLedger.appendSandboxLifecycle({
 				bindingId: binding.id,
 				status: "failed",
@@ -5281,7 +5452,11 @@ export class AgentSession {
 						? result.stdout.toString()
 						: result.stdout;
 			const stderr =
-				result.stderr === undefined ? "" : Buffer.isBuffer(result.stderr) ? result.stderr.toString() : result.stderr;
+				result.stderr === undefined
+					? ""
+					: Buffer.isBuffer(result.stderr)
+						? result.stderr.toString()
+						: result.stderr;
 			return {
 				stdout,
 				stderr,
@@ -5304,7 +5479,8 @@ export class AgentSession {
 		}
 	}
 
-	private async _ensureExecutionPolicyReady(runId?: string): Promise<boolean> {
+	private async _ensureExecutionPolicyReady(runId?: string, signal?: AbortSignal): Promise<boolean> {
+		if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
 		const requestedRunId = runId ?? this._activeContextRunId;
 		if (
 			this._activeExecutionPolicyBinding !== undefined &&
@@ -5318,11 +5494,7 @@ export class AgentSession {
 		}
 		const policySettings = this.settingsManager.getExecutionPolicySettings({
 			policyProfile: this._activeExecutionPolicyProfileSelection,
-			registeredProviderIds: [
-				"legacy-host",
-				"host-policy",
-				...this._sandboxProviders.keys(),
-			],
+			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
 		});
 		const selectedProfile = policySettings.selectedProfile;
 		const previousPolicyBindingId =
@@ -5345,6 +5517,7 @@ export class AgentSession {
 		if (bindingChanged) {
 			await this._closeMcpConnectionsForPolicyBoundary();
 			await this._disposeSandboxSession();
+			if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
 			this._activeExecutionPolicyProfile = result.profile;
 			this._activeExecutionPolicyBinding = result.binding;
 			this._currentBuiltinToolPolicy = undefined;
@@ -5352,20 +5525,17 @@ export class AgentSession {
 			this._executionPolicyApprovedRequestIds = [];
 			this._executionPolicyRejectedRequestIds = [];
 			if (!this._persistedPolicyBindingIds.has(result.binding.id)) {
+				if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
 				this._policyLedger.appendBinding(result.binding);
 				this._persistedPolicyBindingIds.add(result.binding.id);
 			}
-			await this._prepareSandboxForBinding(result.profile, result.binding);
+			await this._prepareSandboxForBinding(result.profile, result.binding, signal);
 		}
 		this._nextPreviousExecutionPolicyBindingId = undefined;
 		return bindingChanged;
 	}
 
-	private _authorizeCapabilityInvocation(
-		toolName: string,
-		source: PolicyOperationSource,
-		requestId: string,
-	): void {
+	private _authorizeCapabilityInvocation(toolName: string, source: PolicyOperationSource, requestId: string): void {
 		const profile = this._requireExecutionPolicyProfile();
 		const binding = this._requireExecutionPolicyBinding();
 		const capability = this._bindingDescriptorForToolName(toolName);
@@ -5473,7 +5643,7 @@ export class AgentSession {
 		this._mcpAuthorizedTransportValues.set(serverId, { environment: {}, headers });
 	}
 
-	private async _reconnectSelectedMcpServersForPolicyBinding(): Promise<void> {
+	private async _reconnectSelectedMcpServersForPolicyBinding(signal?: AbortSignal): Promise<void> {
 		const selectedServerIds = this._mcpLifecycleManager.getSelectedServerIds();
 		if (selectedServerIds.size === 0) return;
 		const diagnostics = new Map(
@@ -5487,8 +5657,9 @@ export class AgentSession {
 					`MCP server ${serverId} is not trusted for this capability binding`,
 				);
 			}
+			if (signal?.aborted) throw new DOMException("MCP policy binding reconnect aborted", "AbortError");
 			await this._authorizeMcpStartup(diagnostic.server, serverId);
-			await this._mcpLifecycleManager.connect(serverId);
+			await this._mcpLifecycleManager.connect(serverId, signal);
 		}
 	}
 
@@ -5531,7 +5702,9 @@ export class AgentSession {
 			const factory = this._mcpTransportFactory ?? defaultFactory;
 			if (config.transport === "stdio") {
 				return factory(config, (name) =>
-					profile.enforcement === "legacy" ? (authorized.environment[name] ?? env(name)) : authorized.environment[name],
+					profile.enforcement === "legacy"
+						? (authorized.environment[name] ?? env(name))
+						: authorized.environment[name],
 				);
 			}
 			return factory(config, (name) => {
@@ -5693,7 +5866,10 @@ export class AgentSession {
 	private _isRetryableError(message: AssistantMessage): boolean {
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
-		return isRetryableAssistantError(message);
+		if (this._pendingProviderFailure !== undefined) {
+			return this._pendingProviderFailure.retryable;
+		}
+		return classifyAssistantFailure(message).retryable;
 	}
 
 	/**
@@ -5840,10 +6016,20 @@ export class AgentSession {
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
+		options?: {
+			excludeFromContext?: boolean;
+			id?: string;
+			operations?: BashOperations;
+			signal?: AbortSignal;
+			deadlineMs?: number;
+		},
 	): Promise<BashResult> {
 		const abortController = new AbortController();
 		this._bashAbortControllers.add(abortController);
+		const boundary = createOperationBoundary({
+			signals: [this.agent.signal, options?.signal, abortController.signal],
+			deadlineMs: options?.deadlineMs,
+		});
 
 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 		const prefix = this.settingsManager.getShellCommandPrefix();
@@ -5851,7 +6037,10 @@ export class AgentSession {
 		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 
 		try {
-			await this._ensureExecutionPolicyReady();
+			await this._ensureExecutionPolicyReady(undefined, boundary.signal);
+			if (boundary.signal.aborted) {
+				return { output: "", exitCode: undefined, cancelled: true, truncated: false };
+			}
 			const cwd = this.sessionManager.getCwd();
 			const authorized = await this._requireCurrentBuiltinToolPolicy("user_bash").authorizeProcess({
 				command: resolvedCommand,
@@ -5865,10 +6054,12 @@ export class AgentSession {
 				options?.operations ?? createLocalBashOperations({ shellPath }),
 				{
 					onChunk: (delta) => {
-						onChunk?.(delta);
-						this._emit({ type: "bash_execution_update", id: options?.id, delta });
+						if (!boundary.signal.aborted) {
+							onChunk?.(delta);
+							this._emit({ type: "bash_execution_update", id: options?.id, delta });
+						}
 					},
-					signal: abortController.signal,
+					signal: boundary.signal,
 					env: authorized.env,
 					...(authorized.sandbox === undefined
 						? {}
@@ -5876,10 +6067,11 @@ export class AgentSession {
 				},
 			);
 
-			this.recordBashResult(command, result, options);
+			if (!boundary.signal.aborted) this.recordBashResult(command, result, options);
 			return result;
 		} finally {
 			this._bashAbortControllers.delete(abortController);
+			boundary.dispose();
 		}
 	}
 
@@ -5953,6 +6145,25 @@ export class AgentSession {
 	// =========================================================================
 	// Session Management
 	// =========================================================================
+
+	/** Persist a durable checkpoint at the current Session leaf. */
+	createCheckpoint(reason?: string): SessionBoundaryRecord {
+		if (this.isStreaming) throw new Error("Wait for the current response to finish before creating a checkpoint.");
+		return createSessionCheckpoint(this.sessionManager, reason);
+	}
+
+	/** Return valid branch/checkpoint/recovery facts from this Session. */
+	getSessionBoundaries(): SessionBoundaryRecord[] {
+		return getSessionBoundaries(this.sessionManager);
+	}
+
+	/** Restore a checkpoint and rebuild the Agent transcript from the active branch. */
+	recoverCheckpoint(checkpointId: string, reason?: string): SessionBoundaryRecord {
+		if (this.isStreaming) throw new Error("Wait for the current response to finish before recovering a checkpoint.");
+		const boundary = recoverSessionCheckpoint(this.sessionManager, checkpointId, reason);
+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
+		return boundary;
+	}
 
 	/**
 	 * Set a display name for the current session.
@@ -6129,6 +6340,7 @@ export class AgentSession {
 				// Non-user message: leaf = selected node
 				newLeafId = targetId;
 			}
+			createSessionBranchBoundary(this.sessionManager, oldLeafId, newLeafId, options.label);
 
 			// Switch leaf (with or without summary)
 			// Summary is attached at the navigation target position (newLeafId), not the old branch
@@ -6160,7 +6372,6 @@ export class AgentSession {
 			if (label && !summaryText) {
 				this.sessionManager.appendLabelChange(targetId, label);
 			}
-
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;

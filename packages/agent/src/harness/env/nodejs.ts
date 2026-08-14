@@ -237,17 +237,25 @@ async function getShellConfig(customShellPath?: string): Promise<Result<ShellCon
 	return ok({ shell: "sh", args: ["-c"] });
 }
 
+async function resolveShellCwd(cwd: string): Promise<string> {
+	if (process.platform !== "win32") return cwd;
+	try {
+		return await realpath(cwd);
+	} catch {
+		return cwd;
+	}
+}
+
 function getShellEnv(
 	baseEnv?: NodeJS.ProcessEnv,
 	extraEnv?: Record<string, string>,
 	inheritEnv = true,
+	shellCwd?: string,
 ): NodeJS.ProcessEnv {
-	if (!inheritEnv) return { ...extraEnv };
-	return {
-		...process.env,
-		...baseEnv,
-		...extraEnv,
-	};
+	// Git Bash rewrites a Windows spawn cwd to /c/...; carry the native path through PWD for shell context.
+	const shellContextEnv = process.platform === "win32" && shellCwd ? { PWD: shellCwd } : {};
+	if (!inheritEnv) return { ...shellContextEnv, ...extraEnv };
+	return { ...process.env, ...baseEnv, ...shellContextEnv, ...extraEnv };
 }
 
 function killProcessTree(pid: number): void {
@@ -388,6 +396,7 @@ export class NodeExecutionEnv implements ExecutionEnv {
 				),
 			);
 		}
+		const shellCwd = await resolveShellCwd(cwd);
 
 		return await new Promise((resolvePromise) => {
 			let stdout = "";
@@ -419,9 +428,9 @@ export class NodeExecutionEnv implements ExecutionEnv {
 					shellConfig.value.shell,
 					commandFromStdin ? shellConfig.value.args : [...shellConfig.value.args, command],
 					{
-						cwd,
+						cwd: shellCwd,
 						detached: process.platform !== "win32",
-						env: getShellEnv(this.shellEnv, options?.env, options?.inheritEnv),
+						env: getShellEnv(this.shellEnv, options?.env, options?.inheritEnv, shellCwd),
 						stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 						windowsHide: true,
 					},

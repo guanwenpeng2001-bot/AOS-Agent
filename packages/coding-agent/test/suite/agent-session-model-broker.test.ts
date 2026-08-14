@@ -99,8 +99,8 @@ describe("AgentSession ModelBroker integration", () => {
 		expect(assistant).toMatchObject({
 			role: "assistant",
 			stopReason: "error",
-			errorMessage: "Model budget exceeded.",
-			content: [{ type: "text", text: "retained" }],
+			errorMessage: "The operation outcome is unknown after a possible side effect.",
+			content: [{ type: "text", text: "" }],
 		});
 		const attempts = [...foldModelAttemptEntries(harness.sessionManager.getEntries()).values()];
 		expect(attempts).toHaveLength(1);

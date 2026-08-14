@@ -11,6 +11,7 @@ import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { RunBindingAssociation } from "../../core/binding-handles.ts";
 import type {
 	AuditQuery,
 	AuditQueryResult,
@@ -127,6 +128,10 @@ export type RpcCommand =
 			id?: string;
 			type: "run.start";
 			message: string;
+			/** Optional caller-chosen idempotency key, scoped to this Session. */
+			clientRequestId?: string;
+			/** Optional inclusive canonical UTC deadline for the Run. */
+			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
 			capabilityProfile?: string;
@@ -142,6 +147,10 @@ export type RpcCommand =
 			sessionPath: string;
 			sourceRunId: string;
 			message: string;
+			/** Optional caller-chosen idempotency key, scoped to the target Session. */
+			clientRequestId?: string;
+			/** Optional inclusive canonical UTC deadline for the resumed Run. */
+			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
 			capabilityProfile?: string;
@@ -470,7 +479,15 @@ export interface RunAcceptedData {
 	runId: string;
 	sessionId: string;
 	attempt: number;
-	status: "accepted";
+	status: RunStatus;
+	requestScope?: "start" | "resume";
+	clientRequestId?: string;
+	requestFingerprint?: string;
+	deadlineAt?: string;
+	/** True when this response replays an already durable request-to-Run relation. */
+	idempotent?: boolean;
+	receipt?: PublicRunReceipt;
+	recovery?: RunRecoveryState;
 	external?: ExternalExecutionRef;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
@@ -480,6 +497,7 @@ export interface RunAcceptedData {
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
 	policySummary?: PublicPolicySummary;
+	bindingAssociation?: RunBindingAssociation;
 }
 
 /** Data returned by a successful `run.get`. */

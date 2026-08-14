@@ -10,6 +10,26 @@ Sessions are stored as JSONL (JSON Lines) files. Each line is a JSON object with
 
 Where `<path>` is the working directory with `/` replaced by `-`.
 
+## Write Coordination
+
+A persisted Session has one logical writer by default. Every SessionManager
+mutation that reaches disk takes an exclusive sidecar lock at
+`<session>.jsonl.lock`, writes either one complete JSONL entry or one complete
+rewrite, and releases the lock. `proper-lockfile` makes this coordination work
+across processes; concurrent append operations are serialized in lock-acquisition
+order, so readers see complete lines and no append is silently concurrent.
+
+The lock wait is bounded at two seconds. A lock older than thirty seconds is
+treated as stale and may be recovered by the next writer. A timeout, unsafe
+session-root/path (including a symlink escaping that root), or failed lock
+operation raises `SessionWriteCoordinationError` before acknowledging the write.
+Callers should still assign one process as the Session writer when branch and
+leaf state matters: the lock serializes bytes, but each process keeps its own
+`getEntries()` snapshot and branch pointer.
+
+Read-only SessionManager access and execution audit/replay do not acquire the
+write lock. They can inspect a Session while another process is appending.
+
 ## Deleting Sessions
 
 Sessions can be removed by deleting their `.jsonl` files under `~/.aos-agent/agent/sessions/`.

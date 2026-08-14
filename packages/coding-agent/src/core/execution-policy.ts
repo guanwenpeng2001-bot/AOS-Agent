@@ -1,3 +1,11 @@
+import {
+	createBindingHandle,
+	createBindingRevision,
+	isBindingHandle,
+	type BindingHandle,
+	type PublicBindingSummary,
+} from "./binding-handles.ts";
+
 /**
  * Pure Execution Policy v1 resolver.
  *
@@ -1675,6 +1683,50 @@ export function toPublicPolicySummary(binding: PolicyBinding, decision?: PolicyD
 				timestamp: decision.timestamp,
 			}),
 	});
+}
+
+/** Stable policy revision used by the public binding handle. */
+export function getPolicyBindingRevision(binding: PolicyBinding): string {
+	return binding.bindingHash.startsWith("digest:") ? binding.bindingHash : createBindingRevision({ bindingHash: binding.bindingHash });
+}
+
+/** Build the small, public-safe Execution Policy binding handle. */
+export function toPolicyBindingHandle(binding: PolicyBinding, decision?: PolicyDecision): BindingHandle {
+	const summarySource = toPublicPolicySummary(binding, decision);
+	const summary: PublicBindingSummary = {
+		profileId: summarySource.profileId,
+		profileRevision: summarySource.profileRevision,
+		projectTrust: summarySource.projectTrust,
+		enforcement: summarySource.enforcement,
+		sandboxStatus: summarySource.sandboxStatus,
+		filesystem: summarySource.sandboxCapabilities.filesystem,
+		process: summarySource.sandboxCapabilities.process,
+		network: summarySource.sandboxCapabilities.network,
+		credentialIsolation: summarySource.sandboxCapabilities.credentialIsolation,
+		...(summarySource.sandboxProviderId === undefined ? {} : { sandboxProviderId: summarySource.sandboxProviderId }),
+		...(summarySource.resource === undefined ? {} : { resource: summarySource.resource }),
+		...(summarySource.action === undefined ? {} : { action: summarySource.action }),
+		...(summarySource.outcome === undefined ? {} : { outcome: summarySource.outcome }),
+		...(summarySource.reasonCode === undefined ? {} : { reasonCode: summarySource.reasonCode }),
+		...(summarySource.requestId === undefined ? {} : { requestId: summarySource.requestId }),
+		...(summarySource.timestamp === undefined ? {} : { timestamp: summarySource.timestamp }),
+	};
+	return createBindingHandle({
+		domain: "policy",
+		bindingId: binding.id,
+		revision: getPolicyBindingRevision(binding),
+		relation: "run.policy",
+		role: binding.profileId,
+		summary,
+	});
+}
+
+export const createPolicyBindingHandle = toPolicyBindingHandle;
+export const toPublicPolicyBindingHandle = toPolicyBindingHandle;
+export const serializePublicPolicyBindingHandle = toPolicyBindingHandle;
+
+export function isPolicyBindingHandle(value: unknown): value is BindingHandle {
+	return isBindingHandle(value) && value.domain === "policy";
 }
 
 export const createPolicySummary = toPublicPolicySummary;

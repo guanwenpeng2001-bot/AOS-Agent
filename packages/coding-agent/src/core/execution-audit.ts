@@ -9,6 +9,7 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
+import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
 import {
 	isOpaqueCapabilityBindingId,
 	isOpaqueCapabilityDescriptorId,
@@ -52,6 +53,7 @@ import type {
 	WorkspaceScope,
 } from "./execution-policy.ts";
 import type { SessionEntry } from "./session-manager.ts";
+import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "./remote-operation.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -68,6 +70,7 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"sandbox.lifecycle",
 	"policy.violation",
 	"external.mapping",
+	"remote.operation",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
@@ -89,6 +92,7 @@ export const AUDIT_EVENT_TYPES = [
 	"sandbox.lifecycle",
 	"policy.violation",
 	"external.mapping",
+	"remote.operation",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -201,6 +205,7 @@ export interface AuditRunSummary {
 	readonly status: AuditRunEventStatus;
 	readonly attempt: number;
 	readonly model: AuditRunModelReference;
+	readonly deadlineAt?: string;
 	readonly sourceRunId?: string;
 	readonly previousBindingId?: string;
 	readonly capabilityBindingId?: string;
@@ -214,6 +219,7 @@ export interface AuditRunSummary {
 	readonly terminalError?: { readonly code: string; readonly retryable: boolean };
 	readonly finalModel?: AuditRunFinalModelReference;
 	readonly modelBudget?: AuditModelBudgetSummary;
+	readonly bindingAssociation?: RunBindingAssociation;
 }
 
 export interface AuditModelBudgetLimitSummary {
@@ -335,6 +341,8 @@ export interface AuditPolicyViolationSummary {
 	readonly requestId?: string;
 }
 
+export type AuditRemoteOperationSummary = RemoteOperationReceipt;
+
 export interface AuditEventBase {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
@@ -351,16 +359,61 @@ export type AuditEvent =
 	| (AuditEventBase & { readonly type: "run.failed"; readonly runId: string; readonly summary: AuditRunSummary })
 	| (AuditEventBase & { readonly type: "run.cancelled"; readonly runId: string; readonly summary: AuditRunSummary })
 	| (AuditEventBase & { readonly type: "run.interrupted"; readonly runId: string; readonly summary: AuditRunSummary })
-	| (AuditEventBase & { readonly type: "model.binding"; readonly runId?: string; readonly summary: AuditModelBindingSummary })
-	| (AuditEventBase & { readonly type: "model.attempt"; readonly runId?: string; readonly summary: AuditModelAttemptSummary })
-	| (AuditEventBase & { readonly type: "context.snapshot"; readonly runId?: string; readonly summary: AuditContextSnapshotSummary })
-	| (AuditEventBase & { readonly type: "capability.binding"; readonly runId?: string; readonly summary: AuditCapabilityBindingSummary })
-	| (AuditEventBase & { readonly type: "policy.binding"; readonly runId?: string; readonly summary: AuditPolicySummary })
-	| (AuditEventBase & { readonly type: "policy.decision"; readonly runId?: string; readonly summary: AuditPolicySummary })
-	| (AuditEventBase & { readonly type: "policy.approval"; readonly runId?: string; readonly summary: AuditPolicyApprovalSummary })
-	| (AuditEventBase & { readonly type: "sandbox.lifecycle"; readonly runId?: string; readonly summary: AuditSandboxLifecycleSummary })
-	| (AuditEventBase & { readonly type: "policy.violation"; readonly runId?: string; readonly summary: AuditPolicyViolationSummary })
-	| (AuditEventBase & { readonly type: "external.mapping"; readonly runId?: string; readonly summary: ExternalExecutionMapping });
+	| (AuditEventBase & {
+			readonly type: "model.binding";
+			readonly runId?: string;
+			readonly summary: AuditModelBindingSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "model.attempt";
+			readonly runId?: string;
+			readonly summary: AuditModelAttemptSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "context.snapshot";
+			readonly runId?: string;
+			readonly summary: AuditContextSnapshotSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "capability.binding";
+			readonly runId?: string;
+			readonly summary: AuditCapabilityBindingSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.binding";
+			readonly runId?: string;
+			readonly summary: AuditPolicySummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.decision";
+			readonly runId?: string;
+			readonly summary: AuditPolicySummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.approval";
+			readonly runId?: string;
+			readonly summary: AuditPolicyApprovalSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "sandbox.lifecycle";
+			readonly runId?: string;
+			readonly summary: AuditSandboxLifecycleSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.violation";
+			readonly runId?: string;
+			readonly summary: AuditPolicyViolationSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "external.mapping";
+			readonly runId?: string;
+			readonly summary: ExternalExecutionMapping;
+	  })
+	| (AuditEventBase & {
+			readonly type: "remote.operation";
+			readonly runId?: string;
+			readonly summary: AuditRemoteOperationSummary;
+	  });
 
 export interface AuditWarning {
 	readonly code: AuditWarningCode;
@@ -508,11 +561,26 @@ const SANDBOX_STATUSES = new Set<SandboxStatus>([
 	"disposed",
 ]);
 const CONTEXT_PURPOSES = new Set(["agent_turn", "compaction", "branch_summary"]);
-const CONTEXT_KINDS = new Set(["system", "instruction", "capability_index", "session_summary", "session_message", "memory", "extension"]);
+const CONTEXT_KINDS = new Set([
+	"system",
+	"instruction",
+	"capability_index",
+	"session_summary",
+	"session_message",
+	"memory",
+	"extension",
+]);
 const CONTEXT_SCOPES = new Set(["global", "project", "directory", "session", "turn"]);
 const CONTEXT_TRUSTS = new Set(["builtin", "user_owned", "trusted_project", "untrusted_project"]);
 const CONTEXT_DISPOSITIONS = new Set(["included", "trimmed", "excluded"]);
-const CONTEXT_REASONS = new Set(["within_budget", "budget_exhausted", "untrusted", "disabled", "revoked", "snapshot_only"]);
+const CONTEXT_REASONS = new Set([
+	"within_budget",
+	"budget_exhausted",
+	"untrusted",
+	"disabled",
+	"revoked",
+	"snapshot_only",
+]);
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
 const EXTERNAL_MAPPING_KEYS = new Set([
 	"namespace",
@@ -556,7 +624,12 @@ function isSafeModelText(value: unknown): value is string {
 }
 
 function isSafeSummary(value: unknown): value is string {
-	return typeof value === "string" && SAFE_TEXT_PATTERN.test(value) && SAFE_SUMMARY_PATTERN.test(value) && !value.includes("://");
+	return (
+		typeof value === "string" &&
+		SAFE_TEXT_PATTERN.test(value) &&
+		SAFE_SUMMARY_PATTERN.test(value) &&
+		!value.includes("://")
+	);
 }
 
 function isCanonicalTimestamp(value: unknown): value is string {
@@ -640,7 +713,16 @@ function isModelBudgetLimit(value: unknown): value is ModelBudgetLimit {
 function isModelUsage(value: unknown): value is ModelUsage {
 	if (!isRecord(value)) return false;
 	let hasValue = false;
-	for (const key of ["inputTokens", "outputTokens", "totalTokens", "costUsd", "input", "output", "total", "cost"] as const) {
+	for (const key of [
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"input",
+		"output",
+		"total",
+		"cost",
+	] as const) {
 		if (value[key] !== undefined) {
 			if (!isFiniteNonNegative(value[key])) return false;
 			hasValue = true;
@@ -773,13 +855,39 @@ function isPolicySummary(value: unknown): boolean {
 
 function isRunRecord(value: unknown): value is RunRecord {
 	if (!isRecord(value)) return false;
-	if (!isSafeIdentifier(value.id) || !isSafeIdentifier(value.sessionId) || !isCount(value.attempt) || !isRunModelReference(value.model)) return false;
-	if (value.status !== "accepted" && value.status !== "running" && value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") return false;
-	for (const key of ["sourceRunId", "previousBindingId", "capabilityBindingId", "modelBindingId", "previousModelBindingId", "policyBindingId", "previousPolicyBindingId", "contextSnapshotId"] as const) {
+	if (
+		!isSafeIdentifier(value.id) ||
+		!isSafeIdentifier(value.sessionId) ||
+		!isCount(value.attempt) ||
+		!isRunModelReference(value.model)
+	)
+		return false;
+	if (
+		value.status !== "accepted" &&
+		value.status !== "running" &&
+		value.status !== "completed" &&
+		value.status !== "failed" &&
+		value.status !== "cancelled"
+	)
+		return false;
+	for (const key of [
+		"sourceRunId",
+		"previousBindingId",
+		"capabilityBindingId",
+		"modelBindingId",
+		"previousModelBindingId",
+		"policyBindingId",
+		"previousPolicyBindingId",
+		"contextSnapshotId",
+	] as const) {
 		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
 	}
 	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (value.modelAttempts !== undefined && (!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) return false;
+	if (
+		value.modelAttempts !== undefined &&
+		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	)
+		return false;
 	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
 	if (value.policySummary !== undefined && !isPolicySummary(value.policySummary)) return false;
 	if (value.startedAt !== undefined && !isCanonicalTimestamp(value.startedAt)) return false;
@@ -794,11 +902,22 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (value.finalText !== undefined && typeof value.finalText !== "string") return false;
 	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
 	if (value.terminalError !== undefined && !isAutomationError(value.terminalError)) return false;
-	for (const key of ["contextSnapshotId", "capabilityBindingId", "modelBindingId", "previousModelBindingId", "policyBindingId", "previousPolicyBindingId"] as const) {
+	for (const key of [
+		"contextSnapshotId",
+		"capabilityBindingId",
+		"modelBindingId",
+		"previousModelBindingId",
+		"policyBindingId",
+		"previousPolicyBindingId",
+	] as const) {
 		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
 	}
 	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (value.modelAttempts !== undefined && (!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) return false;
+	if (
+		value.modelAttempts !== undefined &&
+		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	)
+		return false;
 	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
 	return value.policySummary === undefined || isPolicySummary(value.policySummary);
 }
@@ -1030,7 +1149,16 @@ function safeFinalModelReference(value: RunFinalModelReference): AuditRunFinalMo
 
 function safeUsage(value: ModelUsage | RunModelAttemptSummary["usage"]): AuditModelUsageSummary {
 	const usage = {} as DeepMutable<AuditModelUsageSummary>;
-	for (const key of ["inputTokens", "outputTokens", "totalTokens", "costUsd", "input", "output", "total", "cost"] as const) {
+	for (const key of [
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"input",
+		"output",
+		"total",
+		"cost",
+	] as const) {
 		const candidate = (value as unknown as Record<string, unknown>)[key];
 		if (candidate !== undefined && isFiniteNonNegative(candidate)) usage[key] = candidate;
 	}
@@ -1062,7 +1190,19 @@ function safeAttempt(value: ModelAttemptLedgerRecord | RunModelAttemptSummary): 
 
 function safeBudget(value: ModelBudgetLimit | RunModelBudgetSummary): AuditModelBudgetSummary {
 	const budget = {} as DeepMutable<AuditModelBudgetSummary>;
-	for (const key of ["modelCalls", "inputTokens", "outputTokens", "totalTokens", "costUsd", "maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxTotalTokens", "maxCostUsd", "exceeded"] as const) {
+	for (const key of [
+		"modelCalls",
+		"inputTokens",
+		"outputTokens",
+		"totalTokens",
+		"costUsd",
+		"maxModelCalls",
+		"maxInputTokens",
+		"maxOutputTokens",
+		"maxTotalTokens",
+		"maxCostUsd",
+		"exceeded",
+	] as const) {
 		const candidate = (value as unknown as Record<string, unknown>)[key];
 		if (candidate !== undefined) {
 			if (key === "exceeded" && typeof candidate === "boolean") budget.exceeded = candidate;
@@ -1081,7 +1221,9 @@ function safePolicyCapabilities(value: SandboxCapabilities): AuditPolicySummary[
 	};
 }
 
-function safePolicySummary(value: PolicyBindingLedgerRecord | PolicyDecisionLedgerRecord | AuditPolicySummary): AuditPolicySummary {
+function safePolicySummary(
+	value: PolicyBindingLedgerRecord | PolicyDecisionLedgerRecord | AuditPolicySummary,
+): AuditPolicySummary {
 	const summary = {
 		bindingId: "id" in value ? value.id : value.bindingId,
 		profileId: value.profileId,
@@ -1114,15 +1256,21 @@ function safeRunSummary(
 		attempt: record.attempt,
 		model: safeRunModelReference(record.model),
 	} as DeepMutable<AuditRunSummary>;
+	const deadlineAt = receipt?.deadlineAt ?? record.deadlineAt;
+	if (deadlineAt !== undefined && isCanonicalTimestamp(deadlineAt)) summary.deadlineAt = deadlineAt;
 	if (record.sourceRunId !== undefined) summary.sourceRunId = record.sourceRunId;
 	const previousBindingId = safeOptionalOpaqueBindingId(record.previousBindingId);
 	const capabilityBindingId = safeOptionalOpaqueBindingId(receipt?.capabilityBindingId ?? record.capabilityBindingId);
 	if (previousBindingId !== undefined) summary.previousBindingId = previousBindingId;
 	if (capabilityBindingId !== undefined) summary.capabilityBindingId = capabilityBindingId;
 	const modelBindingId = safeOptionalIdentifier(receipt?.modelBindingId ?? record.modelBindingId);
-	const previousModelBindingId = safeOptionalIdentifier(receipt?.previousModelBindingId ?? record.previousModelBindingId);
+	const previousModelBindingId = safeOptionalIdentifier(
+		receipt?.previousModelBindingId ?? record.previousModelBindingId,
+	);
 	const policyBindingId = safeOptionalIdentifier(receipt?.policyBindingId ?? record.policyBindingId);
-	const previousPolicyBindingId = safeOptionalIdentifier(receipt?.previousPolicyBindingId ?? record.previousPolicyBindingId);
+	const previousPolicyBindingId = safeOptionalIdentifier(
+		receipt?.previousPolicyBindingId ?? record.previousPolicyBindingId,
+	);
 	if (modelBindingId !== undefined) summary.modelBindingId = modelBindingId;
 	if (previousModelBindingId !== undefined) summary.previousModelBindingId = previousModelBindingId;
 	if (policyBindingId !== undefined) summary.policyBindingId = policyBindingId;
@@ -1140,6 +1288,11 @@ function safeRunSummary(
 	if (finalModel !== undefined) summary.finalModel = safeFinalModelReference(finalModel);
 	const modelBudget = receipt?.modelBudget ?? record.modelBudget;
 	if (modelBudget !== undefined) summary.modelBudget = safeBudget(modelBudget);
+	const bindingAssociation = serializePublicRunBindingAssociation(
+		receipt?.bindingAssociation ?? record.bindingAssociation,
+	);
+	if (bindingAssociation !== undefined)
+		summary.bindingAssociation = { ...bindingAssociation, bindings: [...bindingAssociation.bindings] };
 	return summary;
 }
 
@@ -1180,13 +1333,17 @@ function safeContextSnapshot(value: ContextSnapshot): AuditContextSnapshotSummar
 function safeCapabilityBinding(value: CapabilityBindingLedgerRecord): AuditCapabilityBindingSummary | undefined {
 	if (!isOpaqueCapabilityBindingId(value.id)) return undefined;
 	const descriptors = value.descriptors
-		.filter((descriptor) => isOpaqueCapabilityDescriptorId(descriptor.id) && isOpaqueCapabilityRevision(descriptor.revision))
+		.filter(
+			(descriptor) =>
+				isOpaqueCapabilityDescriptorId(descriptor.id) && isOpaqueCapabilityRevision(descriptor.revision),
+		)
 		.map((descriptor) => {
 			const safeDescriptor: { id: string; revision: string; exposedToolName?: string } = {
 				id: descriptor.id,
 				revision: descriptor.revision,
 			};
-			if (descriptor.exposedToolName !== undefined && isSafeIdentifier(descriptor.exposedToolName)) safeDescriptor.exposedToolName = descriptor.exposedToolName;
+			if (descriptor.exposedToolName !== undefined && isSafeIdentifier(descriptor.exposedToolName))
+				safeDescriptor.exposedToolName = descriptor.exposedToolName;
 			return safeDescriptor;
 		});
 	return {
@@ -1293,12 +1450,19 @@ type RunFact =
 interface RunState {
 	readonly runId: string;
 	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: RunRecord }) | undefined;
-	started: (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string }) | undefined;
-	terminal: (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string }) | undefined;
+	started:
+		| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
+		| undefined;
+	terminal:
+		| (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string })
+		| undefined;
 }
 
 interface SourceCandidateBase {
-	readonly eventType: Exclude<AuditEventType, "run.accepted" | "run.started" | "run.completed" | "run.failed" | "run.cancelled" | "run.interrupted">;
+	readonly eventType: Exclude<
+		AuditEventType,
+		"run.accepted" | "run.started" | "run.completed" | "run.failed" | "run.cancelled" | "run.interrupted"
+	>;
 	readonly entry: Extract<SessionEntry, { type: "custom" }>;
 	readonly recordedAt: string;
 	readonly external?: ExternalExecutionRef;
@@ -1315,7 +1479,8 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "policy.approval"; readonly value: PolicyApprovalLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "sandbox.lifecycle"; readonly value: SandboxLifecycleLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "policy.violation"; readonly value: PolicyViolationLedgerRecord })
-	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping });
+	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
+	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -1324,7 +1489,8 @@ type Relation =
 	| { readonly kind: "policy-binding"; readonly bindingId: string; readonly runId: string }
 	| { readonly kind: "policy"; readonly bindingId: string }
 	| { readonly kind: "context"; readonly runId?: string }
-	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string };
+	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string }
+	| { readonly kind: "remote-operation"; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -1386,6 +1552,7 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "sandbox.lifecycle") return "sandbox.lifecycle";
 	if (customType === "policy.violation") return "policy.violation";
 	if (customType === "external.mapping") return "external.mapping";
+	if (customType === "remote.operation") return "remote.operation";
 	return undefined;
 }
 
@@ -1398,8 +1565,15 @@ function addMapSet(map: Map<string, Set<string>>, key: string, value: string): v
 function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): ReadonlySet<string> | undefined {
 	if (relation === undefined) return undefined;
 	if (relation.kind === "policy-binding") return new Set([relation.runId]);
-	if (relation.kind === "context" || relation.kind === "external") return relation.runId === undefined ? undefined : new Set([relation.runId]);
-	const map = relation.kind === "model-binding" || relation.kind === "model-attempt" ? maps.modelBindings : relation.kind === "capability" ? maps.capabilities : maps.policies;
+	if (relation.kind === "context" || relation.kind === "external" || relation.kind === "remote-operation") {
+		return relation.runId === undefined ? undefined : new Set([relation.runId]);
+	}
+	const map =
+		relation.kind === "model-binding" || relation.kind === "model-attempt"
+			? maps.modelBindings
+			: relation.kind === "capability"
+				? maps.capabilities
+				: maps.policies;
 	return map.get(relation.bindingId);
 }
 
@@ -1409,17 +1583,31 @@ interface AssociationMaps {
 	readonly policies: Map<string, Set<string>>;
 }
 
-function buildAssociationMaps(states: Map<string, RunState>, candidates: ReadonlyArray<SourceCandidate>): AssociationMaps {
+function buildAssociationMaps(
+	states: Map<string, RunState>,
+	candidates: ReadonlyArray<SourceCandidate>,
+): AssociationMaps {
 	const maps: AssociationMaps = { modelBindings: new Map(), capabilities: new Map(), policies: new Map() };
 	for (const state of states.values()) {
 		const record = state.accepted?.record;
 		if (record === undefined) continue;
 		const receipt = state.terminal?.receipt;
-		for (const id of [record.modelBindingId, record.previousModelBindingId, receipt?.modelBindingId, receipt?.previousModelBindingId]) {
+		for (const id of [
+			record.modelBindingId,
+			record.previousModelBindingId,
+			receipt?.modelBindingId,
+			receipt?.previousModelBindingId,
+		]) {
 			if (id !== undefined) addMapSet(maps.modelBindings, id, state.runId);
 		}
-		for (const id of [record.capabilityBindingId, receipt?.capabilityBindingId]) if (id !== undefined) addMapSet(maps.capabilities, id, state.runId);
-		for (const id of [record.policyBindingId, record.previousPolicyBindingId, receipt?.policyBindingId, receipt?.previousPolicyBindingId]) {
+		for (const id of [record.capabilityBindingId, receipt?.capabilityBindingId])
+			if (id !== undefined) addMapSet(maps.capabilities, id, state.runId);
+		for (const id of [
+			record.policyBindingId,
+			record.previousPolicyBindingId,
+			receipt?.policyBindingId,
+			receipt?.previousPolicyBindingId,
+		]) {
 			if (id !== undefined) addMapSet(maps.policies, id, state.runId);
 		}
 	}
@@ -1429,7 +1617,11 @@ function buildAssociationMaps(states: Map<string, RunState>, candidates: Readonl
 	return maps;
 }
 
-function createBase(sessionId: string, entry: Extract<SessionEntry, { type: "custom" }>, external?: ExternalExecutionRef): AuditEventBase {
+function createBase(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	external?: ExternalExecutionRef,
+): AuditEventBase {
 	const base = {
 		schemaVersion: 1,
 		eventId: entry.id,
@@ -1444,7 +1636,9 @@ function createBase(sessionId: string, entry: Extract<SessionEntry, { type: "cus
 function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSummary | undefined {
 	const accepted = state.accepted;
 	if (accepted === undefined) return undefined;
-	const summary = { ...safeRunSummary(accepted.record, status, state.terminal?.receipt, state.terminal?.endedAt) } as DeepMutable<AuditRunSummary>;
+	const summary = {
+		...safeRunSummary(accepted.record, status, state.terminal?.receipt, state.terminal?.endedAt),
+	} as DeepMutable<AuditRunSummary>;
 	if (summary.startedAt === undefined && state.started !== undefined) summary.startedAt = state.started.startedAt;
 	return summary;
 }
@@ -1460,11 +1654,15 @@ function parseSourceCandidate(
 	if (customType === "automation.run") return;
 	const eventType = sourceEventType(customType);
 	if (eventType === undefined) {
-		internalWarnings.push(warning(sessionId, "unknown_source", entry, undefined, schemaVersion(entry.data), undefined, true));
+		internalWarnings.push(
+			warning(sessionId, "unknown_source", entry, undefined, schemaVersion(entry.data), undefined, true),
+		);
 		return;
 	}
 	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
-		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, schemaVersion(entry.data), undefined, true));
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, eventType, schemaVersion(entry.data), undefined, true),
+		);
 		return;
 	}
 	const version = schemaVersion(entry.data);
@@ -1484,36 +1682,108 @@ function parseSourceCandidate(
 	let candidate: SourceCandidate | undefined;
 	if (eventType === "model.binding") {
 		const value = data.binding ?? data.record;
-		if (isModelBindingAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "model-binding", bindingId: value.bindingId } };
+		if (isModelBindingAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "model-binding", bindingId: value.bindingId },
+			};
 	} else if (eventType === "model.attempt") {
 		const value = data.attempt ?? data.record;
-		if (isModelAttemptAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "model-attempt", bindingId: value.bindingId } };
+		if (isModelAttemptAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "model-attempt", bindingId: value.bindingId },
+			};
 	} else if (eventType === "context.snapshot") {
 		if (isContextSnapshotAuditRecord(data)) {
 			if (data.sessionId !== sessionId) {
-				internalWarnings.push(warning(sessionId, "orphan_source", entry, eventType, version, data.runId === undefined ? undefined : new Set([data.runId]), false));
+				internalWarnings.push(
+					warning(
+						sessionId,
+						"orphan_source",
+						entry,
+						eventType,
+						version,
+						data.runId === undefined ? undefined : new Set([data.runId]),
+						false,
+					),
+				);
 				return;
 			}
-			candidate = { eventType, entry, recordedAt: entry.timestamp, value: data, relation: { kind: "context", runId: data.runId } };
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value: data,
+				relation: { kind: "context", runId: data.runId },
+			};
 		}
 	} else if (eventType === "capability.binding") {
 		const value = data.binding ?? data.record;
-		if (isCapabilityBindingAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "capability", bindingId: value.id } };
+		if (isCapabilityBindingAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "capability", bindingId: value.id },
+			};
 	} else if (eventType === "policy.binding") {
 		const value = data.record ?? data.binding ?? data.summary;
-		if (isPolicyBindingAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "policy-binding", bindingId: value.id, runId: value.runId } };
+		if (isPolicyBindingAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "policy-binding", bindingId: value.id, runId: value.runId },
+			};
 	} else if (eventType === "policy.decision") {
 		const value = data.record ?? data.decision ?? data.summary;
-		if (isPolicyDecisionAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "policy", bindingId: value.bindingId } };
+		if (isPolicyDecisionAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "policy", bindingId: value.bindingId },
+			};
 	} else if (eventType === "policy.approval") {
 		const value = data.approval ?? data.record;
-		if (isPolicyApprovalAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "policy", bindingId: value.bindingId } };
+		if (isPolicyApprovalAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "policy", bindingId: value.bindingId },
+			};
 	} else if (eventType === "sandbox.lifecycle") {
 		const value = data.sandboxLifecycle ?? data.record;
-		if (isSandboxLifecycleAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "policy", bindingId: value.bindingId } };
+		if (isSandboxLifecycleAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "policy", bindingId: value.bindingId },
+			};
 	} else if (eventType === "policy.violation") {
 		const value = data.violation ?? data.record;
-		if (isPolicyViolationAuditRecord(value)) candidate = { eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "policy", bindingId: value.bindingId } };
+		if (isPolicyViolationAuditRecord(value))
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "policy", bindingId: value.bindingId },
+			};
 	} else if (eventType === "external.mapping") {
 		const value = data.mapping ?? data.record;
 		if (isExternalMappingAuditRecord(value)) {
@@ -1528,6 +1798,32 @@ function parseSourceCandidate(
 				value,
 				external: externalFromMapping(value),
 				relation: { kind: "external", runId: value.aosRunId, sessionId: value.aosSessionId },
+			};
+		}
+	} else if (eventType === "remote.operation") {
+		const value = data.receipt ?? data.operation ?? data;
+		if (isRemoteOperationReceipt(value)) {
+			const relationRunId = value.runId ?? value.bindingAssociation?.runId;
+			if (value.sessionId !== undefined && value.sessionId !== sessionId) {
+				internalWarnings.push(
+					warning(
+						sessionId,
+						"orphan_source",
+						entry,
+						eventType,
+						version,
+						relationRunId === undefined ? undefined : new Set([relationRunId]),
+						false,
+					),
+				);
+				return;
+			}
+			candidate = {
+				eventType,
+				entry,
+				recordedAt: entry.timestamp,
+				value,
+				relation: { kind: "remote-operation", runId: relationRunId },
 			};
 		}
 	}
@@ -1546,7 +1842,9 @@ function parseRunFact(
 	internalWarnings: InternalWarning[],
 ): void {
 	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
-		internalWarnings.push(warning(sessionId, "malformed_source", entry, undefined, schemaVersion(entry.data), undefined, true));
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, undefined, schemaVersion(entry.data), undefined, true),
+		);
 		return;
 	}
 	const version = schemaVersion(entry.data);
@@ -1570,9 +1868,12 @@ function parseRunFact(
 		}
 		const fact: RunFact = { kind: "accepted", entry, recordedAt: entry.timestamp, record: data.record };
 		const existing = states.get(data.record.id);
-		if (existing === undefined) states.set(data.record.id, { runId: data.record.id, accepted: fact, started: undefined, terminal: undefined });
+		if (existing === undefined)
+			states.set(data.record.id, { runId: data.record.id, accepted: fact, started: undefined, terminal: undefined });
 		else if (existing.accepted !== undefined) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, undefined, version, new Set([data.record.id]), false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, undefined, version, new Set([data.record.id]), false),
+			);
 			return;
 		} else existing.accepted = fact;
 		facts.push(fact);
@@ -1581,12 +1882,22 @@ function parseRunFact(
 	if (data.kind === "started") {
 		const state = states.get(data.runId);
 		if (state === undefined || state.accepted === undefined) {
-			internalWarnings.push(warning(sessionId, "orphan_source", entry, "run.started", version, new Set([data.runId]), false));
+			internalWarnings.push(
+				warning(sessionId, "orphan_source", entry, "run.started", version, new Set([data.runId]), false),
+			);
 			return;
 		}
-		const fact: RunFact = { kind: "started", entry, recordedAt: entry.timestamp, runId: data.runId, startedAt: data.startedAt };
+		const fact: RunFact = {
+			kind: "started",
+			entry,
+			recordedAt: entry.timestamp,
+			runId: data.runId,
+			startedAt: data.startedAt,
+		};
 		if (state.started !== undefined) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "run.started", version, new Set([data.runId]), false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "run.started", version, new Set([data.runId]), false),
+			);
 			return;
 		}
 		state.started = fact;
@@ -1594,7 +1905,9 @@ function parseRunFact(
 		return;
 	}
 	if (data.receipt.sessionId !== sessionId) {
-		internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, new Set([data.receipt.runId]), false));
+		internalWarnings.push(
+			warning(sessionId, "orphan_source", entry, undefined, version, new Set([data.receipt.runId]), false),
+		);
 		return;
 	}
 	const runId = data.receipt.runId;
@@ -1603,7 +1916,13 @@ function parseRunFact(
 		internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, new Set([runId]), false));
 		return;
 	}
-	const fact: RunFact = { kind: "terminal", entry, recordedAt: entry.timestamp, receipt: data.receipt, endedAt: data.endedAt };
+	const fact: RunFact = {
+		kind: "terminal",
+		entry,
+		recordedAt: entry.timestamp,
+		receipt: data.receipt,
+		endedAt: data.endedAt,
+	};
 	if (state.terminal !== undefined) {
 		internalWarnings.push(warning(sessionId, "duplicate_source", entry, undefined, version, new Set([runId]), false));
 		return;
@@ -1612,19 +1931,28 @@ function parseRunFact(
 	facts.push(fact);
 }
 
-function runEventForFact(sessionId: string, fact: RunFact, state: RunState, external?: ExternalExecutionRef): AuditEvent | undefined {
+function runEventForFact(
+	sessionId: string,
+	fact: RunFact,
+	state: RunState,
+	external?: ExternalExecutionRef,
+): AuditEvent | undefined {
 	if (fact.kind === "accepted") {
 		const summary = safeRunSummary(fact.record, "accepted");
 		return { ...createBase(sessionId, fact.entry, external), type: "run.accepted", runId: fact.record.id, summary };
 	}
 	if (state.accepted === undefined) return undefined;
 	if (fact.kind === "started") {
-		const summary = { ...safeRunSummary(state.accepted.record, "running", undefined, undefined) } as DeepMutable<AuditRunSummary>;
+		const summary = {
+			...safeRunSummary(state.accepted.record, "running", undefined, undefined),
+		} as DeepMutable<AuditRunSummary>;
 		if (summary.startedAt === undefined) summary.startedAt = fact.startedAt;
 		return { ...createBase(sessionId, fact.entry, external), type: "run.started", runId: fact.runId, summary };
 	}
 	const status = fact.receipt.status;
-	const summary = { ...safeRunSummary(state.accepted.record, status, fact.receipt, fact.endedAt) } as DeepMutable<AuditRunSummary>;
+	const summary = {
+		...safeRunSummary(state.accepted.record, status, fact.receipt, fact.endedAt),
+	} as DeepMutable<AuditRunSummary>;
 	if (summary.startedAt === undefined && state.started !== undefined) summary.startedAt = state.started.startedAt;
 	const type = status === "completed" ? "run.completed" : status === "failed" ? "run.failed" : "run.cancelled";
 	return { ...createBase(sessionId, fact.entry, external), type, runId: fact.receipt.runId, summary };
@@ -1665,31 +1993,74 @@ function sourceEventForCandidate(
 	}
 	if (candidate.eventType === "capability.binding") {
 		const summary = safeCapabilityBinding(candidate.value);
-		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
+		return summary === undefined
+			? undefined
+			: { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
 	}
 	if (candidate.eventType === "policy.binding") {
-		return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safePolicySummary(candidate.value) };
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safePolicySummary(candidate.value),
+		};
 	}
 	if (candidate.eventType === "policy.decision") {
-		return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safePolicySummary(candidate.value) };
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safePolicySummary(candidate.value),
+		};
 	}
 	if (candidate.eventType === "policy.approval") {
-		return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safePolicyApproval(candidate.value) };
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safePolicyApproval(candidate.value),
+		};
 	}
 	if (candidate.eventType === "sandbox.lifecycle") {
-		return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safeSandboxLifecycle(candidate.value) };
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeSandboxLifecycle(candidate.value),
+		};
 	}
 	if (candidate.eventType === "policy.violation") {
-		return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safePolicyViolation(candidate.value) };
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safePolicyViolation(candidate.value),
+		};
 	}
-	return { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary: safeExternalMapping(candidate.value) };
+	if (candidate.eventType === "remote.operation") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: candidate.value,
+		};
+	}
+	return {
+		...base,
+		type: candidate.eventType,
+		...(runId === undefined ? {} : { runId }),
+		summary: safeExternalMapping(candidate.value),
+	};
 }
 
 function safeModelBinding(value: ModelBindingLedgerRecord): AuditModelBindingSummary {
 	const binding = {
 		bindingId: value.bindingId,
 		mode: value.mode,
-		candidates: value.candidates.map((candidate) => ({ order: candidate.order, model: safeModelReference(candidate.model) })),
+		candidates: value.candidates.map((candidate) => ({
+			order: candidate.order,
+			model: safeModelReference(candidate.model),
+		})),
 		fallback: { maxAttempts: value.fallback.maxAttempts, on: [...value.fallback.on] },
 		budget: safeBudget(value.budget),
 		configRevision: value.configRevision,
@@ -1701,12 +2072,16 @@ function safeModelBinding(value: ModelBindingLedgerRecord): AuditModelBindingSum
 	return binding;
 }
 
-function sessionAndEntries(input: AuditSession | AuditSessionInput | ReadonlyArray<SessionEntry>, sessionId?: string): AuditSessionInput {
+function sessionAndEntries(
+	input: AuditSession | AuditSessionInput | ReadonlyArray<SessionEntry>,
+	sessionId?: string,
+): AuditSessionInput {
 	if (Array.isArray(input)) {
 		if (!isSafeIdentifier(sessionId)) throw new ExecutionAuditError("audit_scope_unavailable");
 		return { sessionId, entries: input };
 	}
-	if ("getSessionId" in input && "getEntries" in input) return { sessionId: input.getSessionId(), entries: input.getEntries() };
+	if ("getSessionId" in input && "getEntries" in input)
+		return { sessionId: input.getSessionId(), entries: input.getEntries() };
 	if ("sessionId" in input && "entries" in input) return { sessionId: input.sessionId, entries: input.entries };
 	throw new ExecutionAuditError("audit_scope_unavailable");
 }
@@ -1722,7 +2097,17 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
 		if (seenEntryIds.has(entry.id)) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, sourceEventType(entry.customType), schemaVersion(entry.data), undefined, true));
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"duplicate_source",
+					entry,
+					sourceEventType(entry.customType),
+					schemaVersion(entry.data),
+					undefined,
+					true,
+				),
+			);
 			continue;
 		}
 		seenEntryIds.add(entry.id);
@@ -1773,23 +2158,29 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				conflictedExternalKeys.add(externalKey);
 				conflictedAosKeys.add(targetKey);
 				if (previousMapping !== undefined) {
-					conflictedAosKeys.add(`${previousMapping.namespace}\u0000${previousMapping.aosSessionId}\u0000${previousMapping.aosRunId ?? "<absent>"}`);
+					conflictedAosKeys.add(
+						`${previousMapping.namespace}\u0000${previousMapping.aosSessionId}\u0000${previousMapping.aosRunId ?? "<absent>"}`,
+					);
 					markMappingRun(previousMapping);
 				}
 				if (previousAosMapping !== undefined) {
-					conflictedExternalKeys.add(`${previousAosMapping.namespace}\u0000${previousAosMapping.externalSessionId}\u0000${previousAosMapping.externalRunId ?? "<absent>"}`);
+					conflictedExternalKeys.add(
+						`${previousAosMapping.namespace}\u0000${previousAosMapping.externalSessionId}\u0000${previousAosMapping.externalRunId ?? "<absent>"}`,
+					);
 					markMappingRun(previousAosMapping);
 				}
 				markMappingRun(mapping);
-				internalWarnings.push(warning(
-					sessionId,
-					"mapping_conflict",
-					candidate.entry,
-					candidate.eventType,
-					schemaVersion(candidate.entry.data),
-					relatedRunIds.size === 0 ? undefined : relatedRunIds,
-					false,
-				));
+				internalWarnings.push(
+					warning(
+						sessionId,
+						"mapping_conflict",
+						candidate.entry,
+						candidate.eventType,
+						schemaVersion(candidate.entry.data),
+						relatedRunIds.size === 0 ? undefined : relatedRunIds,
+						false,
+					),
+				);
 			}
 			if (previousTarget === undefined) {
 				externalTargets.set(externalKey, targetKey);
@@ -1804,7 +2195,17 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				const previous = externalByRun.get(mapping.aosRunId);
 				if (previous !== undefined && !sameExternalRef(previous, external)) {
 					conflictedRunIds.add(mapping.aosRunId);
-					internalWarnings.push(warning(sessionId, "mapping_conflict", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), new Set([mapping.aosRunId]), false));
+					internalWarnings.push(
+						warning(
+							sessionId,
+							"mapping_conflict",
+							candidate.entry,
+							candidate.eventType,
+							schemaVersion(candidate.entry.data),
+							new Set([mapping.aosRunId]),
+							false,
+						),
+					);
 				} else if (previous === undefined) {
 					externalByRun.set(mapping.aosRunId, external);
 				}
@@ -1828,29 +2229,97 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	for (const candidate of candidates) {
 		const runIds = relationRunIds(candidate.relation, maps);
 		const ids = runIds === undefined ? undefined : new Set(runIds);
-		const relationNeedsRun = candidate.relation?.kind === "model-binding" || candidate.relation?.kind === "model-attempt" || candidate.relation?.kind === "capability" || candidate.relation?.kind === "policy";
-		if (relationNeedsRun && (ids === undefined || ids.size === 0)) internalWarnings.push(warning(sessionId, "orphan_source", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), ids, false));
-		if (ids !== undefined && ids.size > 1) internalWarnings.push(warning(sessionId, "ambiguous_run_association", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), ids, false));
-		const directRunId = candidate.relation?.kind === "policy-binding" || candidate.relation?.kind === "context" || candidate.relation?.kind === "external"
-			? candidate.relation.runId
-			: undefined;
+		const relationNeedsRun =
+			candidate.relation?.kind === "model-binding" ||
+			candidate.relation?.kind === "model-attempt" ||
+			candidate.relation?.kind === "capability" ||
+			candidate.relation?.kind === "policy";
+		if (relationNeedsRun && (ids === undefined || ids.size === 0))
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"orphan_source",
+					candidate.entry,
+					candidate.eventType,
+					schemaVersion(candidate.entry.data),
+					ids,
+					false,
+				),
+			);
+		if (ids !== undefined && ids.size > 1)
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"ambiguous_run_association",
+					candidate.entry,
+					candidate.eventType,
+					schemaVersion(candidate.entry.data),
+					ids,
+					false,
+				),
+			);
+		const directRunId =
+			candidate.relation?.kind === "policy-binding" ||
+			candidate.relation?.kind === "context" ||
+			candidate.relation?.kind === "external" ||
+			candidate.relation?.kind === "remote-operation"
+				? candidate.relation.runId
+				: undefined;
 		if (directRunId !== undefined && !states.has(directRunId)) {
-			internalWarnings.push(warning(sessionId, "orphan_source", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), new Set([directRunId]), false));
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"orphan_source",
+					candidate.entry,
+					candidate.eventType,
+					schemaVersion(candidate.entry.data),
+					new Set([directRunId]),
+					false,
+				),
+			);
 		}
 		if (candidate.relation?.kind === "external" && candidate.relation.sessionId !== sessionId) {
-			internalWarnings.push(warning(sessionId, "orphan_source", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), ids, false));
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"orphan_source",
+					candidate.entry,
+					candidate.eventType,
+					schemaVersion(candidate.entry.data),
+					ids,
+					false,
+				),
+			);
 		}
-		const runId = ids !== undefined && ids.size === 1 ? [...ids][0] : candidate.relation?.kind === "context" || candidate.relation?.kind === "external" ? candidate.relation.runId : undefined;
+		const runId =
+			ids !== undefined && ids.size === 1
+				? [...ids][0]
+				: candidate.relation?.kind === "context" ||
+						candidate.relation?.kind === "external" ||
+						candidate.relation?.kind === "remote-operation"
+					? candidate.relation.runId
+					: undefined;
 		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);
 		const event = sourceEventForCandidate(sessionId, candidate, runId, external);
 		if (event === undefined) {
-			internalWarnings.push(warning(sessionId, "source_unavailable", candidate.entry, candidate.eventType, schemaVersion(candidate.entry.data), ids, false));
+			internalWarnings.push(
+				warning(
+					sessionId,
+					"source_unavailable",
+					candidate.entry,
+					candidate.eventType,
+					schemaVersion(candidate.entry.data),
+					ids,
+					false,
+				),
+			);
 			continue;
 		}
 		events.push(event);
 	}
 	const uniqueEvents = new Map<string, AuditEvent>();
-	for (const event of events) uniqueEvents.set(`${event.sessionId}\u0000${event.sourceEntryId}\u0000${event.eventId}`, event);
+	for (const event of events)
+		uniqueEvents.set(`${event.sessionId}\u0000${event.sourceEntryId}\u0000${event.eventId}`, event);
 	const sortedEvents = [...uniqueEvents.values()].sort(compareEvents);
 	internalWarnings.sort((left, right) => {
 		const leftKey = `${left.warning.sessionId ?? ""}\u0000${left.warning.sourceEntryId ?? ""}\u0000${left.warning.code}`;
@@ -1877,7 +2346,10 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 }
 
 /** Fold one Session's custom entries into safe, deterministic audit events. */
-export function foldSessionAudit(input: AuditSession | AuditSessionInput | ReadonlyArray<SessionEntry>, sessionId?: string): AuditFoldResult;
+export function foldSessionAudit(
+	input: AuditSession | AuditSessionInput | ReadonlyArray<SessionEntry>,
+	sessionId?: string,
+): AuditFoldResult;
 export function foldSessionAudit(sessionId: string, entries: ReadonlyArray<SessionEntry>): AuditFoldResult;
 export function foldSessionAudit(
 	input: AuditSession | AuditSessionInput | ReadonlyArray<SessionEntry> | string,
@@ -1891,7 +2363,10 @@ export function foldSessionAudit(
 }
 
 function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
-	const result = { namespace: value.namespace, externalSessionId: value.externalSessionId } as DeepMutable<ExternalExecutionRef>;
+	const result = {
+		namespace: value.namespace,
+		externalSessionId: value.externalSessionId,
+	} as DeepMutable<ExternalExecutionRef>;
 	if (value.externalRunId !== undefined) result.externalRunId = value.externalRunId;
 	return result;
 }
@@ -1907,17 +2382,36 @@ function isAuditEventType(value: unknown): value is AuditEventType {
 }
 
 function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
-	if (!isRecord(query) || Object.keys(query).some((key) => !AUDIT_QUERY_KEYS.has(key)) || query.scope !== "current-session") {
-		throw new ExecutionAuditError(query?.scope === "session-directory" ? "audit_scope_unavailable" : "audit_query_invalid");
+	if (
+		!isRecord(query) ||
+		Object.keys(query).some((key) => !AUDIT_QUERY_KEYS.has(key)) ||
+		query.scope !== "current-session"
+	) {
+		throw new ExecutionAuditError(
+			query?.scope === "session-directory" ? "audit_scope_unavailable" : "audit_query_invalid",
+		);
 	}
-	if (query.sessionId !== undefined && query.sessionId !== sessionId) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.runId !== undefined && !isSafeIdentifier(query.runId)) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.external !== undefined && !isExternalExecutionRef(query.external)) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.types !== undefined && (!Array.isArray(query.types) || query.types.some((type) => !isAuditEventType(type)))) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.from !== undefined && !isCanonicalTimestamp(query.from)) throw new ExecutionAuditError("audit_query_invalid");
+	if (query.sessionId !== undefined && query.sessionId !== sessionId)
+		throw new ExecutionAuditError("audit_query_invalid");
+	if (query.runId !== undefined && !isSafeIdentifier(query.runId))
+		throw new ExecutionAuditError("audit_query_invalid");
+	if (query.external !== undefined && !isExternalExecutionRef(query.external))
+		throw new ExecutionAuditError("audit_query_invalid");
+	if (
+		query.types !== undefined &&
+		(!Array.isArray(query.types) || query.types.some((type) => !isAuditEventType(type)))
+	)
+		throw new ExecutionAuditError("audit_query_invalid");
+	if (query.from !== undefined && !isCanonicalTimestamp(query.from))
+		throw new ExecutionAuditError("audit_query_invalid");
 	if (query.to !== undefined && !isCanonicalTimestamp(query.to)) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.from !== undefined && query.to !== undefined && query.from > query.to) throw new ExecutionAuditError("audit_query_invalid");
-	if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > AUDIT_MAX_LIMIT)) throw new ExecutionAuditError("audit_query_invalid");
+	if (query.from !== undefined && query.to !== undefined && query.from > query.to)
+		throw new ExecutionAuditError("audit_query_invalid");
+	if (
+		query.limit !== undefined &&
+		(!Number.isInteger(query.limit) || query.limit < 1 || query.limit > AUDIT_MAX_LIMIT)
+	)
+		throw new ExecutionAuditError("audit_query_invalid");
 	const normalized = {
 		scope: "current-session",
 		limit: query.limit ?? AUDIT_DEFAULT_LIMIT,
@@ -1970,7 +2464,9 @@ function decodeBase64(value: string): string | undefined {
 	}
 }
 
-function normalizeCursorInput(value: AuditCursorPayload | { readonly fingerprint: string; readonly sortKey: AuditSortKey }): AuditCursorPayload {
+function normalizeCursorInput(
+	value: AuditCursorPayload | { readonly fingerprint: string; readonly sortKey: AuditSortKey },
+): AuditCursorPayload {
 	if ("queryFingerprint" in value) return value;
 	return { queryFingerprint: value.fingerprint, last: value.sortKey };
 }
@@ -1981,15 +2477,27 @@ export function encodeAuditCursor(
 	secret?: AuditCursorSecret,
 ): string {
 	const normalized = normalizeCursorInput(payload);
-	if (typeof normalized.queryFingerprint !== "string" || !isAuditSortKey(normalized.last)) throw new ExecutionAuditError("audit_cursor_invalid");
-	const body = encodeBase64(JSON.stringify({ version: AUDIT_SCHEMA_VERSION, fingerprint: normalized.queryFingerprint, last: normalized.last }));
+	if (typeof normalized.queryFingerprint !== "string" || !isAuditSortKey(normalized.last))
+		throw new ExecutionAuditError("audit_cursor_invalid");
+	const body = encodeBase64(
+		JSON.stringify({
+			version: AUDIT_SCHEMA_VERSION,
+			fingerprint: normalized.queryFingerprint,
+			last: normalized.last,
+		}),
+	);
 	const mac = createHmac("sha256", cursorSecret(secret)).update(body).digest("base64url");
 	return `aos-audit-v1.${body}.${mac}`;
 }
 
 function isAuditSortKey(value: unknown): value is AuditSortKey {
 	if (!isRecord(value)) return false;
-	return isCanonicalTimestamp(value.recordedAt) && isSafeIdentifier(value.sessionId) && isSafeIdentifier(value.sourceEntryId) && isSafeIdentifier(value.eventId);
+	return (
+		isCanonicalTimestamp(value.recordedAt) &&
+		isSafeIdentifier(value.sessionId) &&
+		isSafeIdentifier(value.sourceEntryId) &&
+		isSafeIdentifier(value.eventId)
+	);
 }
 
 /** Decode and authenticate an opaque audit cursor; malformed values return undefined. */
@@ -2038,18 +2546,26 @@ function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): Aud
 	});
 }
 
-function paginate(events: ReadonlyArray<AuditEvent>, query: AuditQuery, secret: AuditCursorSecret | undefined): { events: ReadonlyArray<AuditEvent>; nextCursor?: string } {
+function paginate(
+	events: ReadonlyArray<AuditEvent>,
+	query: AuditQuery,
+	secret: AuditCursorSecret | undefined,
+): { events: ReadonlyArray<AuditEvent>; nextCursor?: string } {
 	let filtered = [...events].sort(compareEvents);
 	const fingerprint = queryFingerprint(query);
 	if (query.cursor !== undefined) {
 		const cursor = decodeAuditCursor(query.cursor, secret);
-		if (cursor === undefined || cursor.queryFingerprint !== fingerprint) throw new ExecutionAuditError("audit_cursor_invalid");
+		if (cursor === undefined || cursor.queryFingerprint !== fingerprint)
+			throw new ExecutionAuditError("audit_cursor_invalid");
 		filtered = filtered.filter((event) => compareSortKeys(sortKey(event), cursor.last) > 0);
 	}
 	const limit = query.limit ?? AUDIT_DEFAULT_LIMIT;
 	const page = filtered.slice(0, limit);
 	if (filtered.length <= limit || page.length === 0) return { events: page };
-	return { events: page, nextCursor: encodeAuditCursor({ queryFingerprint: fingerprint, last: sortKey(page[page.length - 1]) }, secret) };
+	return {
+		events: page,
+		nextCursor: encodeAuditCursor({ queryFingerprint: fingerprint, last: sortKey(page[page.length - 1]) }, secret),
+	};
 }
 
 function warningAffectsRun(item: InternalWarning, runId: string): boolean {
@@ -2135,5 +2651,7 @@ export class ExecutionAuditAdapter {
 	}
 }
 
-export const createExecutionAuditAdapter = (session: AuditSession, options?: ExecutionAuditAdapterOptions): ExecutionAuditAdapter =>
-	new ExecutionAuditAdapter(session, options);
+export const createExecutionAuditAdapter = (
+	session: AuditSession,
+	options?: ExecutionAuditAdapterOptions,
+): ExecutionAuditAdapter => new ExecutionAuditAdapter(session, options);

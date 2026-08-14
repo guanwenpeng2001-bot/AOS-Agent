@@ -10,6 +10,7 @@
 
 ### Added
 
+- Remote-ready execution contracts: session-scoped idempotent run requests, durable lifecycle observations, reconnect-safe run event recovery, stable binding handles, serialized Session writes, and an in-process fake remote provider contract.
 - Context Engine v1: governed context sources (trust/scope/digest), input budget packing that includes provider tool schemas and formal extension contributions, metadata-only `context.snapshot` Session entries, optional explicit session/project memory (default off), compaction/branch-summary snapshot provenance, RPC `get_context` / `RpcClient.getContext()`, interactive `/context` and `/memory`, and additive `RunReceipt.contextSnapshotId`.
 - Capability Registry/MCP v1: stable capability descriptors and frozen bindings for built-in, extension, SDK, skill, and MCP capabilities; trust-aware `allow`/`ask`/`deny` profiles; stdio and Streamable HTTP MCP lifecycle with explicit environment/header references; namespaced MCP tools; redacted inspection and run/Context Engine binding audit metadata; interactive approval and RPC `get_capabilities` support.
 - Execution Policy/Sandbox v1: named trust-aware `allow`/`ask`/`deny` profiles, immutable per-run policy bindings, fail-closed Sandbox Provider enforcement, approval/decision ledger entries, and redacted policy inspection across RPC, SDK, CLI, and TUI surfaces.
@@ -35,6 +36,8 @@
 - `run.resume` now recovers the original capability binding for interrupted (accepted, never-terminal) source runs by persisting `capabilityBindingId` on the accepted run record through validation, clone, and ledger replay; drift between the recorded and settled binding rejects with `capability_binding_unavailable` before any successor run/ledger write, and historical ledgers without a binding remain resumable and backward compatible.
 - Public RPC/session run events now redact command arguments, execution output, full paths, environment/header values, and tool-result details while retaining safe event structure for automation clients.
 - Agent lifecycle state now remains active through asynchronous capability and execution-policy preflight, so extension-triggered prompts are observable by `waitForIdle()` while RPC acceptance still follows fail-closed preflight.
+- Preserved model retry compatibility for known transient transport failures and excluded execution-association audit facts from user-facing session message ordering.
+- Kept recognized transient model failures retryable only before a possible provider side effect, while treating wrapped DNS cancellation errors as retryable transport failures and preserving safe terminal summaries.
 
 ### Removed
 

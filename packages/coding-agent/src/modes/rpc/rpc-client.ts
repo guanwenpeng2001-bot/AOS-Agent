@@ -13,6 +13,12 @@ import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-b
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import {
+	RunReplayRecovery,
+	type RpcRunStreamEvent,
+	type RunReplayReconnectResult,
+	type RunReplayRecoveryOptions,
+} from "./run-replay-recovery.ts";
 import type {
 	AutomationError,
 	AutomationErrorCode,
@@ -37,7 +43,6 @@ import type {
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
-	RunReceipt,
 } from "./rpc-types.ts";
 
 // ============================================================================
@@ -74,44 +79,23 @@ export interface ModelInfo {
 
 export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
 
-/**
- * A run stream record emitted by the Automation Host as received by the client.
- * The `run.event` variant wraps a JSON-safe session event (`event.event`).
- */
-export type RpcRunStreamEvent =
-	| { type: "run.started"; runId: string; sessionId: string; sequence: number; timestamp: string }
-	| {
-			type: "run.event";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
-			event: JsonAgentSessionEvent;
-	  }
-	| {
-			type: "run.completed";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
-			receipt: RunReceipt;
-	  }
-	| {
-			type: "run.failed";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
-			receipt: RunReceipt;
-	  }
-	| {
-			type: "run.cancelled";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
-			receipt: RunReceipt;
-	  };
+export {
+	RunReplayRecovery,
+	createRunReplayRecovery,
+	type RunReplayEventDisposition,
+	type RunReplayEventResult,
+	type RunReplayGap,
+	type RunReplayPageResult,
+	type RunReplayReconnectResult,
+	type RunReplayRecoveryOptions,
+	type RunReplayRecoverySource,
+	type RunReplayRecoveryState,
+	type RunReplayRunSnapshotResult,
+	type RunReplayTerminalConfirmation,
+	type RunReplayTerminalConflict,
+	type RunReplayTerminalStatus,
+} from "./run-replay-recovery.ts";
+export type { RpcRunStreamEvent } from "./run-replay-recovery.ts";
 
 export type RpcRunEventListener = (event: RpcRunStreamEvent) => void;
 
@@ -591,6 +575,8 @@ export class RpcClient {
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
 		external?: ExternalExecutionRef,
+		clientRequestId?: string,
+		deadlineAt?: string,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
@@ -601,6 +587,8 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(external !== undefined ? { external } : {}),
+			...(clientRequestId !== undefined ? { clientRequestId } : {}),
+			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -640,6 +628,8 @@ export class RpcClient {
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
 		external?: ExternalExecutionRef,
+		clientRequestId?: string,
+		deadlineAt?: string,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -652,6 +642,8 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(external !== undefined ? { external } : {}),
+			...(clientRequestId !== undefined ? { clientRequestId } : {}),
+			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
 		return this.getAutomationData<RunAcceptedData>(response);
 	}
@@ -726,6 +718,33 @@ export class RpcClient {
 		options: Omit<AuditReplayQuery, "runId"> = {},
 	): Promise<AuditReplayResult> {
 		return this.auditReplay(query, options);
+	}
+
+	/**
+	 * Create a read-only run reconnect/replay consumer. Its live sequence
+	 * watermark and audit cursor are independent checkpoints; use
+	 * consumeRunEvent() for stream records and reconnect() for durable replay.
+	 */
+	createRunReplayRecovery(
+		runId: string,
+		options: Omit<RunReplayRecoveryOptions, "runId" | "source"> = {},
+	): RunReplayRecovery {
+		return new RunReplayRecovery({
+			...options,
+			runId,
+			source: {
+				getRun: (id) => this.getRun(id),
+				auditReplay: (query) => this.auditReplay(query),
+			},
+		});
+	}
+
+	/** Reconcile one run and consume its read-only audit replay pages. */
+	async reconnectRun(
+		runId: string,
+		options: Omit<RunReplayRecoveryOptions, "runId" | "source"> = {},
+	): Promise<RunReplayReconnectResult> {
+		return this.createRunReplayRecovery(runId, options).reconnect();
 	}
 
 	/** Persist a validated external-to-AOS mapping in the current Session. */

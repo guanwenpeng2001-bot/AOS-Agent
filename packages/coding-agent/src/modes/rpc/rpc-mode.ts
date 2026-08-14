@@ -12,7 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
-import type { ThinkingLevel } from "@aos-agent/agent-core";
+import { AgentOperationError, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
@@ -41,6 +41,7 @@ import {
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError } from "../../core/execution-audit.ts";
 import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
+import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type {
 	AutomationError,
 	RunFinalModelReference,
@@ -50,15 +51,21 @@ import type {
 	RunModelAttemptSummary,
 	RunModelBudgetSummary,
 	RunModelReference,
+	RunRequestLookup,
+	RunResult,
 	RunReservation,
+	RunLedgerSession,
 	RunStreamEvent,
 	RunUsageSnapshot,
 } from "../../core/run-lifecycle.ts";
 import {
 	createAutomationError,
+	createRunRequestFingerprint,
 	createRunLifecycleCoordinator,
 	foldCapabilityBindingEntries,
 	isAutomationErrorCode,
+	isRunClientRequestId,
+	isRunTimestamp,
 	isTerminalStatus,
 	redactAutomationError,
 	redactErrorText,
@@ -160,6 +167,51 @@ function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
 }
 
 /**
+ * Read a target Session's existing automation ledger without opening it through
+ * SessionManager. Resume idempotency must inspect durable state before
+ * switchSession() runs any recovery side effects.
+ */
+function loadReadOnlyRunCoordinator(
+	sessionPath: string,
+): { sessionId: string; coordinator?: RunLifecycleCoordinator } | undefined {
+	try {
+		const fileEntries = loadEntriesFromFile(sessionPath);
+		const header = fileEntries[0];
+		if (header === undefined || header.type !== "session" || typeof header.id !== "string") return undefined;
+		const sessionEntries: SessionEntry[] = [];
+		for (const entry of fileEntries) {
+			if (entry.type !== "session") sessionEntries.push(entry);
+		}
+		const readOnlySession: RunLedgerSession = {
+			getSessionId: () => header.id,
+			getSessionFile: () => sessionPath,
+			appendCustomEntry: () => {
+				throw new Error("read-only run ledger");
+			},
+			getEntries: () => sessionEntries,
+		};
+		try {
+			return {
+				sessionId: header.id,
+				coordinator: createRunLifecycleCoordinator(readOnlySession, { diagnostics: () => {} }),
+			};
+		} catch {
+			// The header still provides a stable scope even when unrelated persisted
+			// history cannot be folded safely.
+			return { sessionId: header.id };
+		}
+	} catch {
+		// The ordinary resume path remains authoritative for malformed/unavailable
+		// targets. This helper is only a pre-switch idempotency lookup.
+		return undefined;
+	}
+}
+
+function hashResumeTargetPath(sessionPath: string): string {
+	return `path:${crypto.createHash("sha256").update(sessionPath, "utf8").digest("hex")}`;
+}
+
+/**
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
@@ -179,6 +231,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const settledRunIds = new Set<RunId>();
 	/** Terminal error detected from agent_end (stopReason "error"); used to settle failed/model_error. */
 	const terminalErrorByRun = new Map<RunId, AutomationError>();
+	const runDeadlineTimers = new Map<RunId, ReturnType<typeof setTimeout>>();
+
+	type RunRequestIdentity = {
+		scopeSessionId: string;
+		clientRequestId: string;
+		fingerprint: string;
+		key: string;
+	};
+	type PendingRunRequest = {
+		fingerprint: string;
+		waiters: Array<{ id: string | undefined; command: "run.start" | "run.resume" }>;
+	};
+	type RunRequestGate =
+		| { kind: "none" }
+		| { kind: "new"; identity: RunRequestIdentity }
+		| { kind: "pending" }
+		| { kind: "response"; response: RpcAutomationResponse };
+	const pendingRunRequests = new Map<string, PendingRunRequest>();
 
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeRawStdout(serializeJsonLine(obj));
@@ -652,6 +722,169 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
+	const requestIdentity = (
+		clientRequestId: string | undefined,
+		command: "run.start" | "run.resume",
+		sessionId: string,
+		input: {
+			message: string;
+			images?: ImageContent[];
+			targetSessionId?: string;
+			sourceRunId?: string;
+			capabilityProfile?: string;
+			policyProfile?: string;
+			modelRoute?: ModelRouteSelection;
+			modelRole?: ModelRoleSelection;
+			external?: ExternalExecutionRef;
+			deadlineAt?: string;
+		},
+	): RunRequestIdentity | undefined => {
+		if (clientRequestId === undefined) return undefined;
+		const identityScope = input.targetSessionId ?? sessionId;
+		return {
+			scopeSessionId: identityScope,
+			clientRequestId,
+			fingerprint: createRunRequestFingerprint({
+				command,
+				sessionId: identityScope,
+				targetSessionId: input.targetSessionId,
+				sourceRunId: input.sourceRunId,
+				message: input.message,
+				images: input.images,
+				capabilityProfile: input.capabilityProfile,
+				policyProfile: input.policyProfile,
+				modelRoute: input.modelRoute,
+				modelRole: input.modelRole,
+				external: input.external,
+				deadlineAt: input.deadlineAt,
+			}),
+			key: `${identityScope}\u0000${clientRequestId}`,
+		};
+	};
+
+	const acceptedDataFromResult = (
+		result: RunResult,
+		idempotent: boolean,
+		statusOverride?: "accepted",
+	): RunAcceptedData => {
+		const publicRecord = serializePublicRunRecord(result.record);
+		const data: RunAcceptedData = {
+			runId: publicRecord.id,
+			sessionId: publicRecord.sessionId,
+			attempt: publicRecord.attempt,
+			status: statusOverride ?? publicRecord.status,
+		};
+		if (publicRecord.requestScope !== undefined) data.requestScope = publicRecord.requestScope;
+		if (publicRecord.clientRequestId !== undefined) data.clientRequestId = publicRecord.clientRequestId;
+		if (publicRecord.requestFingerprint !== undefined) data.requestFingerprint = publicRecord.requestFingerprint;
+		if (idempotent) data.idempotent = true;
+		if (publicRecord.external !== undefined) data.external = publicRecord.external;
+		if (publicRecord.deadlineAt !== undefined) data.deadlineAt = publicRecord.deadlineAt;
+		if (publicRecord.bindingAssociation !== undefined) data.bindingAssociation = publicRecord.bindingAssociation;
+		if (publicRecord.modelBindingId !== undefined) data.modelBindingId = publicRecord.modelBindingId;
+		if (publicRecord.previousModelBindingId !== undefined)
+			data.previousModelBindingId = publicRecord.previousModelBindingId;
+		if (publicRecord.finalModel !== undefined) data.finalModel = publicRecord.finalModel;
+		if (publicRecord.modelAttempts !== undefined) data.modelAttempts = publicRecord.modelAttempts;
+		if (publicRecord.modelBudget !== undefined) data.modelBudget = publicRecord.modelBudget;
+		if (publicRecord.policyBindingId !== undefined) data.policyBindingId = publicRecord.policyBindingId;
+		if (publicRecord.previousPolicyBindingId !== undefined)
+			data.previousPolicyBindingId = publicRecord.previousPolicyBindingId;
+		if (publicRecord.policySummary !== undefined) data.policySummary = publicRecord.policySummary;
+		if (statusOverride === undefined) {
+			if (result.receipt !== undefined) data.receipt = serializePublicRunReceipt(result.receipt);
+			if (result.recovery !== undefined) data.recovery = result.recovery;
+		}
+		return data;
+	};
+
+	const acceptedResponseFromResult = (
+		id: string | undefined,
+		command: "run.start" | "run.resume",
+		result: RunResult,
+		idempotent: boolean,
+	): RpcAutomationResponse => ({
+		id,
+		type: "response",
+		command,
+		success: true,
+		data: acceptedDataFromResult(result, idempotent),
+	});
+
+	const beginRunRequest = (
+		id: string | undefined,
+		command: "run.start" | "run.resume",
+		identity: RunRequestIdentity | undefined,
+		lookup: () => RunRequestLookup | undefined,
+	): RunRequestGate => {
+		if (identity === undefined) return { kind: "none" };
+		const existing = lookup();
+		if (existing !== undefined) {
+			if (existing.fingerprint !== identity.fingerprint) {
+				return {
+					kind: "response",
+					response: automationError(
+						id,
+						command,
+						createAutomationError(
+							"client_request_conflict",
+							"The client request id was already used with a different request.",
+							false,
+						),
+					),
+				};
+			}
+			return {
+				kind: "response",
+				response: acceptedResponseFromResult(id, command, existing.result, true),
+			};
+		}
+		const pending = pendingRunRequests.get(identity.key);
+		if (pending !== undefined) {
+			if (pending.fingerprint !== identity.fingerprint) {
+				return {
+					kind: "response",
+					response: automationError(
+						id,
+						command,
+						createAutomationError(
+							"client_request_conflict",
+							"The client request id was already used with a different request.",
+							false,
+						),
+					),
+				};
+			}
+			pending.waiters.push({ id, command });
+			return { kind: "pending" };
+		}
+		pendingRunRequests.set(identity.key, { fingerprint: identity.fingerprint, waiters: [] });
+		return { kind: "new", identity };
+	};
+
+	const finishRunRequest = (identity: RunRequestIdentity | undefined, response: RpcAutomationResponse): void => {
+		if (identity === undefined) return;
+		const pending = pendingRunRequests.get(identity.key);
+		if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+		pendingRunRequests.delete(identity.key);
+		for (const waiter of pending.waiters) {
+			output({ ...response, id: waiter.id, command: waiter.command });
+		}
+	};
+
+	const clearRunDeadline = (runId: RunId): void => {
+		const timer = runDeadlineTimers.get(runId);
+		if (timer !== undefined) clearTimeout(timer);
+		runDeadlineTimers.delete(runId);
+	};
+
+	const discardRunRequest = (identity: RunRequestIdentity | undefined): void => {
+		if (identity === undefined) return;
+		const pending = pendingRunRequests.get(identity.key);
+		if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+		pendingRunRequests.delete(identity.key);
+	};
+
 	const finalizeRun = async (
 		handle: RunHandle,
 		outcome: "completed" | "failed",
@@ -659,14 +892,31 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	): Promise<void> => {
 		if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
 		settledRunIds.add(handle.runId);
-		const terminal = handle.settle({
-			outcome,
-			terminalError,
-			currentUsage: usageSnapshot(),
-			contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
-			...runModelMetadata(handle),
-		});
+		let terminal: RunStreamEvent | undefined;
+		try {
+			terminal = handle.settle({
+				outcome,
+				terminalError,
+				currentUsage: usageSnapshot(),
+				contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
+				...runModelMetadata(handle),
+			});
+		} catch {
+			// The terminal append is the durable transition. Rebuild the coordinator
+			// from accepted/started facts so a failed append leaves the run visible as
+			// interrupted and does not leave a phantom in-memory session lock.
+			settledRunIds.delete(handle.runId);
+			if (activeHandle === handle) {
+				activeHandle = undefined;
+				coordinator = createRunLifecycleCoordinator(session.sessionManager);
+			}
+			clearRunDeadline(handle.runId);
+			runPromptPromises.delete(handle.runId);
+			terminalErrorByRun.delete(handle.runId);
+			return;
+		}
 		if (terminal !== undefined) outputRunEvent(terminal);
+		clearRunDeadline(handle.runId);
 		activeHandle = undefined;
 		runPromptPromises.delete(handle.runId);
 		terminalErrorByRun.delete(handle.runId);
@@ -678,7 +928,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		// Await the tracked prompt so a post-preflight failure settles the run as
 		// failed first; the settledRunIds guard makes this later settle a no-op.
 		await runPromptPromises.get(handle.runId);
-		await finalizeRun(handle, "completed");
+		const terminalError = terminalErrorByRun.get(handle.runId);
+		await finalizeRun(handle, terminalError === undefined ? "completed" : "failed", terminalError);
 	};
 
 	/**
@@ -696,7 +947,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const terminalError = terminalErrorByRun.get(handle.runId);
 				await finalizeRun(handle, terminalError !== undefined ? "failed" : "completed", terminalError);
 			} catch {
-				await finalizeRun(handle, "failed", createAutomationError("model_error", "Run failed.", false));
+				const terminalError = terminalErrorByRun.get(handle.runId);
+				await finalizeRun(
+					handle,
+					"failed",
+					terminalError ?? createAutomationError("model_error", "Run failed.", false),
+				);
 			}
 		})();
 		runPromptPromises.set(handle.runId, tracked);
@@ -718,13 +974,46 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		modelRoute: ModelRouteSelection | undefined,
 		modelRole: ModelRoleSelection | undefined,
 		external: ExternalExecutionRef | undefined,
+		deadlineAt: string | undefined,
+		clientRequestId: string | undefined,
+		precomputedRequestIdentity: RunRequestIdentity | undefined,
+		requestAlreadyClaimed: boolean,
 	): Promise<RpcAutomationResponse | undefined> => {
 		const inputError = slashRunInputError(id, commandType, message);
-		if (inputError !== undefined) return inputError;
+		if (inputError !== undefined) {
+			discardRunRequest(precomputedRequestIdentity);
+			return inputError;
+		}
 		if (external !== undefined && !isExternalExecutionRef(external)) {
+			discardRunRequest(precomputedRequestIdentity);
 			return automationError(id, commandType, auditCommandError(undefined, "external_mapping_invalid"));
 		}
+		if (deadlineAt !== undefined && !isRunTimestamp(deadlineAt)) {
+			discardRunRequest(precomputedRequestIdentity);
+			return automationError(
+				id,
+				commandType,
+				createAutomationError("run_deadline_invalid", "The Run deadline must be a canonical UTC timestamp.", false),
+			);
+		}
+		if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
+			discardRunRequest(precomputedRequestIdentity);
+			return automationError(
+				id,
+				commandType,
+				createAutomationError("run_deadline_exceeded", "The Run deadline has already expired.", false),
+			);
+		}
+		if (clientRequestId !== undefined && !isRunClientRequestId(clientRequestId)) {
+			discardRunRequest(precomputedRequestIdentity);
+			return automationError(
+				id,
+				commandType,
+				createAutomationError("client_request_id_invalid", "The client request id is invalid.", false),
+			);
+		}
 		if (shuttingDown) {
+			discardRunRequest(precomputedRequestIdentity);
 			return automationError(
 				id,
 				commandType,
@@ -736,16 +1025,60 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			);
 		}
 		if (!hostInitialized || coordinator === undefined) {
+			discardRunRequest(precomputedRequestIdentity);
 			return automationError(id, commandType, hostNotInitializedError());
 		}
+		const identity =
+			precomputedRequestIdentity ??
+			requestIdentity(clientRequestId, commandType, session.sessionId, {
+				message,
+				images,
+				sourceRunId,
+				capabilityProfile,
+				policyProfile,
+				modelRoute,
+				modelRole,
+				external,
+				deadlineAt,
+			});
+		let requestClaim: RunRequestIdentity | undefined;
+		const startFailure = (response: RpcAutomationResponse): RpcAutomationResponse => {
+			finishRunRequest(requestClaim, response);
+			return response;
+		};
+		if (requestAlreadyClaimed) {
+			if (identity === undefined) {
+				discardRunRequest(precomputedRequestIdentity);
+				return startFailure(
+					automationError(
+						id,
+						commandType,
+						createAutomationError("client_request_id_invalid", "The client request id is invalid.", false),
+					),
+				);
+			}
+			requestClaim = identity;
+		} else {
+			const gate = beginRunRequest(id, commandType, identity, () =>
+				coordinator!.getRunByClientRequestId(
+					identity!.clientRequestId,
+					commandType === "run.start" ? "start" : "resume",
+				),
+			);
+			if (gate.kind === "response") return gate.response;
+			if (gate.kind === "pending") return undefined;
+			if (gate.kind === "new") requestClaim = gate.identity;
+		}
 		if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
-			return automationError(
-				id,
-				commandType,
-				createAutomationError(
-					"session_busy",
-					"A run is already active in this session. Wait for its terminal event before starting another.",
-					true,
+			return startFailure(
+				automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"session_busy",
+						"A run is already active in this session. Wait for its terminal event before starting another.",
+						true,
+					),
 				),
 			);
 		}
@@ -764,7 +1097,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
 			await session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
 		} catch (err) {
-			return automationError(id, commandType, capabilityError(err));
+			return startFailure(automationError(id, commandType, capabilityError(err)));
 		}
 		// The materialized profile (requested, or the configured default when omitted)
 		// names the effective profile for the approval-required message below.
@@ -773,7 +1106,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		try {
 			reservation = coordinator.reserve();
 		} catch (err) {
-			return automationError(id, commandType, asAutomationError(err));
+			return startFailure(automationError(id, commandType, asAutomationError(err)));
 		}
 		activeReservation = reservation;
 		try {
@@ -785,7 +1118,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} catch {
 				// reservation may already be consumed
 			}
-			return automationError(id, commandType, capabilityError(err));
+			return startFailure(automationError(id, commandType, capabilityError(err)));
 		}
 		const preflightBinding = session.getActiveCapabilityBinding();
 		if (previousBindingId !== undefined) {
@@ -803,13 +1136,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				} catch {
 					// reservation may already be consumed
 				}
-				return automationError(
-					id,
-					commandType,
-					createAutomationError(
-						"capability_binding_unavailable",
-						`Source run ${sourceRunId} requires capability binding ${previousBindingId} which is not recorded in this session`,
-						false,
+				return startFailure(
+					automationError(
+						id,
+						commandType,
+						createAutomationError(
+							"capability_binding_unavailable",
+							`Source run ${sourceRunId} requires capability binding ${previousBindingId} which is not recorded in this session`,
+							false,
+						),
 					),
 				);
 			}
@@ -820,13 +1155,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				} catch {
 					// reservation may already be consumed
 				}
-				return automationError(
-					id,
-					commandType,
-					createAutomationError(
-						"capability_binding_unavailable",
-						`Source run ${sourceRunId} used capability binding ${previousBindingId} but the settled binding for this session no longer matches it; the original capability set cannot be safely restored`,
-						false,
+				return startFailure(
+					automationError(
+						id,
+						commandType,
+						createAutomationError(
+							"capability_binding_unavailable",
+							`Source run ${sourceRunId} used capability binding ${previousBindingId} but the settled binding for this session no longer matches it; the original capability set cannot be safely restored`,
+							false,
+						),
 					),
 				);
 			}
@@ -840,13 +1177,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} catch {
 				// reservation may already be consumed
 			}
-			return automationError(
-				id,
-				commandType,
-				createAutomationError(
-					"capability_approval_required",
-					`Capability profile "${effectiveProfile}" has ${preflightBinding.decisionSummary.awaitingApproval} capability(-ies) awaiting approval; the Automation Host cannot auto-approve ask.`,
-					false,
+			return startFailure(
+				automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"capability_approval_required",
+						`Capability profile "${effectiveProfile}" has ${preflightBinding.decisionSummary.awaitingApproval} capability(-ies) awaiting approval; the Automation Host cannot auto-approve ask.`,
+						false,
+					),
 				),
 			);
 		}
@@ -858,118 +1197,171 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			} catch {
 				// reservation may already be consumed
 			}
-			return automationError(id, commandType, modelSelection.error);
+			return startFailure(automationError(id, commandType, modelSelection.error));
 		}
-		// Reserve before the prompt's preflight so the session is busy while the run
-		// is pending. Only a preflight that succeeds persists the accepted fact and
-		// starts the run; otherwise the reservation is released and the caller gets
-		// start_rejected with no run id and no ledger entry.
-		let promptPromise: Promise<unknown>;
-		const rejectStart = (err: unknown): void => {
-			if (activeReservation !== reservation) return;
+		if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
 			activeReservation = undefined;
 			try {
 				reservation.release();
 			} catch {
 				// reservation may already be consumed
 			}
-			const startError =
-				modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
+			return startFailure(
+				automationError(
+					id,
+					commandType,
+					createAutomationError("run_deadline_exceeded", "The Run deadline expired during preflight.", false),
+				),
+			);
+		}
+		// Reserve before the prompt's preflight so the session is busy while the run
+		// is pending. Only a preflight that succeeds persists the accepted fact and
+		// starts the run; otherwise the reservation is released and the caller gets
+		// start_rejected with no run id and no ledger entry.
+		const deadlineController = new AbortController();
+		if (deadlineAt !== undefined) {
+			const deadlineTimer = setTimeout(
+				() => {
+					const deadlineError = createAutomationError(
+						"run_deadline_exceeded",
+						"The Run deadline was exceeded.",
+						false,
+					);
+					terminalErrorByRun.set(proposedRunId, deadlineError);
+					deadlineController.abort(new AgentOperationError("deadline_exceeded"));
+					if (activeHandle?.runId === proposedRunId) {
+						activeHandle.requestCancel();
+						void session.abort().catch(() => {
+							// The normal Run settlement path owns the terminal transition.
+						});
+					}
+				},
+				Math.max(0, Date.parse(deadlineAt) - Date.now()),
+			);
+			if (
+				typeof deadlineTimer === "object" &&
+				"unref" in deadlineTimer &&
+				typeof deadlineTimer.unref === "function"
+			) {
+				deadlineTimer.unref();
+			}
+			runDeadlineTimers.set(proposedRunId, deadlineTimer);
+		}
+		let promptPromise: Promise<unknown>;
+		const rejectStart = (err: unknown): void => {
+			if (activeReservation !== reservation) return;
+			activeReservation = undefined;
+			clearRunDeadline(proposedRunId);
+			terminalErrorByRun.delete(proposedRunId);
+			try {
+				reservation.release();
+			} catch {
+				// reservation may already be consumed
+			}
+			const startError = deadlineController.signal.aborted
+				? createAutomationError("run_deadline_exceeded", "The Run deadline was exceeded before acceptance.", false)
+				: modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
 					? createAutomationError("start_rejected", errorMessage(err), false)
 					: unavailableModelError();
-			output(automationError(id, commandType, startError));
+			const response = automationError(id, commandType, startError);
+			output(response);
+			finishRunRequest(requestClaim, response);
 		};
-		promptPromise = session.prompt(message, {
-			images,
-			source: "rpc",
-			runId: proposedRunId,
-			preflightResult: (didSucceed) => {
-				if (!didSucceed) {
-					rejectStart(new Error("Preflight rejected the run input"));
-					return;
-				}
-				if (activeReservation !== reservation) return;
-				let handle: RunHandle | undefined;
-				let startEvents: RunStreamEvent[];
-				try {
-					handle = reservation.accept({
-						runId: proposedRunId,
-						attempt,
-						sourceRunId,
-						external,
-						previousBindingId,
-						previousPolicyBindingId,
-						previousModelBindingId,
-						model: currentRunModel(),
-						...(modelSelection.resolution === undefined
-							? {}
-							: {
-									modelBindingId: modelSelection.resolution.bindingId,
-									finalModel: finalModelForResolution(modelSelection.resolution),
-								}),
-						// Persist the frozen binding as the run's capability binding;
-						// its id is recorded on the terminal receipt.
-						capabilityBinding: session.getActiveCapabilityBinding(),
-						policyBinding: session.getActiveExecutionPolicyBinding(),
-						policySummary: session.getActiveExecutionPolicySummary(),
-					});
-					handle.setUsageBaseline(usageSnapshot());
-					// Persist the started fact before publishing accepted. The returned events
-					// remain buffered locally so the external contract is still accepted ->
-					// run.started -> run.event* -> terminal.
-					startEvents = handle.start();
-				} catch (err) {
-					activeReservation = undefined;
-					if (handle === undefined) {
-						try {
-							reservation.release();
-						} catch {
-							// reservation may already be consumed
-						}
-					} else {
-						// The accepted fact was durable but the started fact was not. Discard
-						// the live coordinator so this failed start cannot retain Session
-						// ownership; its ledger record is replayed as interrupted if recovered.
-						coordinator = createRunLifecycleCoordinator(session.sessionManager);
+		try {
+			promptPromise = session.prompt(message, {
+				images,
+				source: "rpc",
+				runId: proposedRunId,
+				signal: deadlineController.signal,
+				preflightResult: (didSucceed) => {
+					if (!didSucceed) {
+						rejectStart(new Error("Preflight rejected the run input"));
+						return;
 					}
-					output(automationError(id, commandType, asAutomationError(err)));
-					// preflightResult has no rejection return value. Throwing prevents
-					// AgentSession.prompt() from proceeding into the Agent loop after an
-					// accepted/start ledger failure; promptPromise.catch() sees the same
-					// failure but does not output a duplicate because the reservation cleared.
-					throw err;
-				}
-				activeReservation = undefined;
-				activeHandle = handle;
-				// Emit the accepted response before run.started and the buffered events so
-				// records appear in the contract order: response -> run.started -> run.event* -> terminal.
-				const acceptedData: RunAcceptedData = {
-					runId: handle.runId,
-					sessionId: session.sessionId,
-					attempt,
-					status: "accepted",
-				};
-				const publicRecord = serializePublicRunRecord(handle.record);
-				if (publicRecord.external !== undefined) acceptedData.external = publicRecord.external;
-				if (publicRecord.modelBindingId !== undefined) acceptedData.modelBindingId = publicRecord.modelBindingId;
-				if (publicRecord.previousModelBindingId !== undefined) {
-					acceptedData.previousModelBindingId = publicRecord.previousModelBindingId;
-				}
-				if (publicRecord.finalModel !== undefined) acceptedData.finalModel = publicRecord.finalModel;
-				if (publicRecord.modelAttempts !== undefined) acceptedData.modelAttempts = publicRecord.modelAttempts;
-				if (publicRecord.modelBudget !== undefined) acceptedData.modelBudget = publicRecord.modelBudget;
-				if (publicRecord.policyBindingId !== undefined) acceptedData.policyBindingId = publicRecord.policyBindingId;
-				if (publicRecord.previousPolicyBindingId !== undefined) {
-					acceptedData.previousPolicyBindingId = publicRecord.previousPolicyBindingId;
-				}
-				if (publicRecord.policySummary !== undefined) acceptedData.policySummary = publicRecord.policySummary;
-				output({ id, type: "response", command: commandType, success: true, data: acceptedData });
-				for (const event of startEvents) {
-					outputRunEvent(event);
-				}
-				trackRunPrompt(handle, promptPromise);
-			},
-		});
+					if (activeReservation !== reservation) return;
+					let handle: RunHandle | undefined;
+					let startEvents: RunStreamEvent[];
+					try {
+						handle = reservation.accept({
+							runId: proposedRunId,
+							requestScope:
+								clientRequestId === undefined ? undefined : commandType === "run.start" ? "start" : "resume",
+							clientRequestId,
+							requestFingerprint: requestClaim?.fingerprint,
+							attempt,
+							sourceRunId,
+							external,
+							deadlineAt,
+							previousBindingId,
+							previousPolicyBindingId,
+							previousModelBindingId,
+							model: currentRunModel(),
+							...(modelSelection.resolution === undefined
+								? {}
+								: {
+										modelBindingId: modelSelection.resolution.bindingId,
+										finalModel: finalModelForResolution(modelSelection.resolution),
+									}),
+							// Persist the frozen binding as the run's capability binding;
+							// its id is recorded on the terminal receipt.
+							capabilityBinding: session.getActiveCapabilityBinding(),
+							policyBinding: session.getActiveExecutionPolicyBinding(),
+							policySummary: session.getActiveExecutionPolicySummary(),
+							bindingHandles: session.getActiveBindingHandles(),
+						});
+						handle.setUsageBaseline(usageSnapshot());
+						// Persist the started fact before publishing accepted. The returned events
+						// remain buffered locally so the external contract is still accepted ->
+						// run.started -> run.event* -> terminal.
+						startEvents = handle.start();
+					} catch (err) {
+						activeReservation = undefined;
+						clearRunDeadline(proposedRunId);
+						terminalErrorByRun.delete(proposedRunId);
+						if (handle === undefined) {
+							try {
+								reservation.release();
+							} catch {
+								// reservation may already be consumed
+							}
+						} else {
+							// The accepted fact was durable but the started fact was not. Discard
+							// the live coordinator so this failed start cannot retain Session
+							// ownership; its ledger record is replayed as interrupted if recovered.
+							coordinator = createRunLifecycleCoordinator(session.sessionManager);
+						}
+						const response = automationError(id, commandType, asAutomationError(err));
+						output(response);
+						finishRunRequest(requestClaim, response);
+						// preflightResult has no rejection return value. Throwing prevents
+						// AgentSession.prompt() from proceeding into the Agent loop after an
+						// accepted/start ledger failure; promptPromise.catch() sees the same
+						// failure but does not output a duplicate because the reservation cleared.
+						throw err;
+					}
+					activeReservation = undefined;
+					activeHandle = handle;
+					// Emit the accepted response before run.started and the buffered events so
+					// records appear in the contract order: response -> run.started -> run.event* -> terminal.
+					const acceptedResponse: RpcAutomationResponse = {
+						id,
+						type: "response",
+						command: commandType,
+						success: true,
+						data: acceptedDataFromResult(handle.result(), false, "accepted"),
+					};
+					output(acceptedResponse);
+					finishRunRequest(requestClaim, acceptedResponse);
+					for (const event of startEvents) {
+						outputRunEvent(event);
+					}
+					trackRunPrompt(handle, promptPromise);
+				},
+			});
+		} catch (err) {
+			rejectStart(err);
+			return undefined;
+		}
 		promptPromise.catch((err) => {
 			// When preflight rejects the promise no run was started, so release and
 			// report start_rejected. Otherwise the tracked prompt settled the run.
@@ -1273,7 +1665,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 									? "model_fallback_exhausted"
 									: "model_error";
 						terminalErrorByRun.set(activeHandle.runId, createAutomationError(terminalCode, errorText, false));
-					} else {
+					} else if (terminalErrorByRun.get(activeHandle.runId)?.code !== "run_deadline_exceeded") {
 						terminalErrorByRun.delete(activeHandle.runId);
 					}
 				}
@@ -1456,6 +1848,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					command.modelRoute,
 					command.modelRole,
 					command.external,
+					command.deadlineAt,
+					command.clientRequestId,
+					undefined,
+					false,
 				);
 			}
 
@@ -1541,6 +1937,31 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (command.external !== undefined && !isExternalExecutionRef(command.external)) {
 					return automationError(id, "run.resume", auditCommandError(undefined, "external_mapping_invalid"));
 				}
+				if (command.clientRequestId !== undefined && !isRunClientRequestId(command.clientRequestId)) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError("client_request_id_invalid", "The client request id is invalid.", false),
+					);
+				}
+				if (command.deadlineAt !== undefined && !isRunTimestamp(command.deadlineAt)) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError(
+							"run_deadline_invalid",
+							"The Run deadline must be a canonical UTC timestamp.",
+							false,
+						),
+					);
+				}
+				if (command.deadlineAt !== undefined && Date.parse(command.deadlineAt) <= Date.now()) {
+					return automationError(
+						id,
+						"run.resume",
+						createAutomationError("run_deadline_exceeded", "The Run deadline has already expired.", false),
+					);
+				}
 				if (shuttingDown) {
 					return automationError(
 						id,
@@ -1555,37 +1976,76 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!hostInitialized || coordinator === undefined) {
 					return automationError(id, "run.resume", hostNotInitializedError());
 				}
+				const targetLedger =
+					command.clientRequestId === undefined ? undefined : loadReadOnlyRunCoordinator(command.sessionPath);
+				const targetSessionId = targetLedger?.sessionId ?? hashResumeTargetPath(command.sessionPath);
+				const resumeIdentity = requestIdentity(command.clientRequestId, "run.resume", targetSessionId, {
+					message: command.message,
+					images: command.images,
+					targetSessionId,
+					sourceRunId: command.sourceRunId,
+					capabilityProfile: command.capabilityProfile,
+					policyProfile: command.policyProfile,
+					modelRoute: command.modelRoute,
+					modelRole: command.modelRole,
+					external: command.external,
+					deadlineAt: command.deadlineAt,
+				});
+				let resumeClaim: RunRequestIdentity | undefined;
+				if (resumeIdentity !== undefined) {
+					const gate = beginRunRequest(id, "run.resume", resumeIdentity, () =>
+						targetLedger?.coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
+					);
+					if (gate.kind === "response") return gate.response;
+					if (gate.kind === "pending") return undefined;
+					if (gate.kind === "new") resumeClaim = gate.identity;
+				}
+				const resumeFailure = (response: RpcAutomationResponse): RpcAutomationResponse => {
+					finishRunRequest(resumeClaim, response);
+					return response;
+				};
 				if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
-					return automationError(
-						id,
-						"run.resume",
-						createAutomationError(
-							"session_busy",
-							"A run is already active in this session. Wait for its terminal event before starting another.",
-							true,
+					return resumeFailure(
+						automationError(
+							id,
+							"run.resume",
+							createAutomationError(
+								"session_busy",
+								"A run is already active in this session. Wait for its terminal event before starting another.",
+								true,
+							),
 						),
 					);
 				}
 				if (session.sessionFile === undefined) {
-					return automationError(
-						id,
-						"run.resume",
-						createAutomationError(
-							"session_not_persistent",
-							"The current session has no sessionFile and cannot be resumed.",
-							false,
+					return resumeFailure(
+						automationError(
+							id,
+							"run.resume",
+							createAutomationError(
+								"session_not_persistent",
+								"The current session has no sessionFile and cannot be resumed.",
+								false,
+							),
 						),
 					);
 				}
-				const switchResult = await runtimeHost.switchSession(command.sessionPath);
+				let switchResult: Awaited<ReturnType<typeof runtimeHost.switchSession>>;
+				try {
+					switchResult = await runtimeHost.switchSession(command.sessionPath);
+				} catch (err) {
+					return resumeFailure(automationError(id, "run.resume", asAutomationError(err)));
+				}
 				if (switchResult.cancelled) {
-					return automationError(
-						id,
-						"run.resume",
-						createAutomationError(
-							"session_switch_cancelled",
-							"A session-switch extension cancelled the switch.",
-							false,
+					return resumeFailure(
+						automationError(
+							id,
+							"run.resume",
+							createAutomationError(
+								"session_switch_cancelled",
+								"A session-switch extension cancelled the switch.",
+								false,
+							),
 						),
 					);
 				}
@@ -1593,24 +2053,28 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// for the restored session's ledger.
 				const sourceRun = coordinator!.getRun(command.sourceRunId);
 				if (sourceRun === undefined) {
-					return automationError(
-						id,
-						"run.resume",
-						createAutomationError(
-							"source_run_not_found",
-							`Source run not found in restored session: ${command.sourceRunId}`,
-							false,
+					return resumeFailure(
+						automationError(
+							id,
+							"run.resume",
+							createAutomationError(
+								"source_run_not_found",
+								`Source run not found in restored session: ${command.sourceRunId}`,
+								false,
+							),
 						),
 					);
 				}
 				if (!isTerminalStatus(sourceRun.record.status) && sourceRun.recovery !== "interrupted") {
-					return automationError(
-						id,
-						"run.resume",
-						createAutomationError(
-							"source_run_not_resumable",
-							`Source run ${command.sourceRunId} cannot be the basis for a new attempt`,
-							false,
+					return resumeFailure(
+						automationError(
+							id,
+							"run.resume",
+							createAutomationError(
+								"source_run_not_resumable",
+								`Source run ${command.sourceRunId} cannot be the basis for a new attempt`,
+								false,
+							),
 						),
 					);
 				}
@@ -1639,6 +2103,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					command.modelRoute,
 					command.modelRole,
 					command.external,
+					command.deadlineAt,
+					command.clientRequestId,
+					resumeIdentity,
+					resumeClaim !== undefined,
 				);
 			}
 

@@ -1,3 +1,11 @@
+import {
+	createBindingHandle,
+	createBindingRevision,
+	isBindingHandle,
+	type BindingHandle,
+	type PublicBindingSummary,
+} from "./binding-handles.ts";
+
 /**
  * Model Broker v1.
  *
@@ -826,6 +834,7 @@ export type ProviderFailureCategory =
 	| "content_policy"
 	| "billing"
 	| "tool_error"
+	| "side_effect_unknown"
 	| "unknown";
 
 export type VisibleSideEffect =
@@ -836,6 +845,7 @@ export type VisibleSideEffect =
 	| "tool_result"
 	| "external_request"
 	| "state_change"
+	| "unknown"
 	| "user_visible";
 
 export interface ModelVisibleSideEffectState {
@@ -853,6 +863,9 @@ export interface ModelVisibleSideEffectState {
 	stateChange?: boolean;
 	stateChanged?: boolean;
 	userVisible?: boolean;
+	/** The provider may have performed work that was not observable locally. */
+	sideEffectUnknown?: boolean;
+	unknown?: boolean;
 }
 
 export type VisibleSideEffectsInput = readonly VisibleSideEffect[] | ModelVisibleSideEffectState | boolean;
@@ -863,6 +876,8 @@ export interface ProviderFailure {
 	message?: string;
 	visibleSideEffects?: VisibleSideEffectsInput;
 	sideEffects?: VisibleSideEffectsInput;
+	/** Explicitly records whether a dispatch may have produced an unobserved effect. */
+	sideEffectStatus?: "none" | "visible" | "unknown";
 }
 
 export interface FallbackEligibility {
@@ -892,6 +907,7 @@ const VISIBLE_SIDE_EFFECTS = new Set<VisibleSideEffect>([
 	"tool_result",
 	"external_request",
 	"state_change",
+	"unknown",
 	"user_visible",
 ]);
 
@@ -910,6 +926,7 @@ function normalizedSideEffects(value: VisibleSideEffectsInput | undefined): Visi
 	if (state.toolResult === true || hasCount(state.toolResults)) effects.push("tool_result");
 	if (state.externalRequest === true || hasCount(state.externalRequests)) effects.push("external_request");
 	if (state.stateChange === true || state.stateChanged === true) effects.push("state_change");
+	if (state.sideEffectUnknown === true || state.unknown === true) effects.push("unknown");
 	if (state.userVisible === true) effects.push("user_visible");
 	return [...new Set(effects)];
 }
@@ -932,6 +949,9 @@ export function classifyFallbackEligibility(
 	const visibleSideEffects = normalizedSideEffects(
 		sideEffects ?? providerFailure.visibleSideEffects ?? providerFailure.sideEffects,
 	);
+	if (providerFailure.sideEffectStatus === "unknown" && !visibleSideEffects.includes("unknown")) {
+		visibleSideEffects.push("unknown");
+	}
 	if (!fallbackAllowed) {
 		return deepFreeze({
 			eligible: false,
@@ -954,7 +974,7 @@ export function classifyFallbackEligibility(
 			eligible: false,
 			category,
 			visibleSideEffects,
-			reason: `Fallback is unsafe after visible side effect ${unsafeEffect}`,
+			reason: `Fallback is unsafe after ${unsafeEffect === "unknown" ? "an unknown side effect" : `visible side effect ${unsafeEffect}`}`,
 		});
 	}
 	return deepFreeze({
@@ -1463,6 +1483,56 @@ export function toPublicModelBinding(binding: ModelBinding): PublicModelBinding 
 	});
 }
 
+/**
+ * Derive a stable public revision from the persisted ModelBroker facts. The
+ * creation timestamp is intentionally excluded so replaying the same binding
+ * does not create a new handle.
+ */
+export function getModelBindingRevision(binding: ModelBinding): string {
+	return createBindingRevision({
+		reference: binding.reference,
+		source: binding.source,
+		candidates: binding.candidates ?? [binding.reference],
+		fallback: binding.fallback,
+		budget: binding.budget,
+		configRevision: binding.configRevision,
+		routeId: binding.routeId,
+		role: binding.role,
+		candidateIndex: binding.candidateIndex,
+	});
+}
+
+/** Build the small, public-safe ModelBroker binding handle. */
+export function toModelBindingHandle(binding: ModelBinding): BindingHandle {
+	const summary: PublicBindingSummary = {
+		source: binding.source,
+		provider: binding.reference.provider,
+		candidateCount: binding.candidates?.length ?? 1,
+		fallbackAllowed: binding.fallbackAllowed,
+		...(binding.reference.id.length <= 256 && !/[\\/@]/.test(binding.reference.id) && !/[a-z][a-z0-9+.-]*:\/\//i.test(binding.reference.id)
+			? { modelId: binding.reference.id }
+			: {}),
+		...(binding.routeId === undefined ? {} : { routeId: binding.routeId }),
+		...(binding.role === undefined ? {} : { role: binding.role }),
+	};
+	return createBindingHandle({
+		domain: "model",
+		bindingId: binding.id,
+		revision: getModelBindingRevision(binding),
+		relation: "run.model",
+		role: binding.role ?? binding.source,
+		summary,
+	});
+}
+
+export const createModelBindingHandle = toModelBindingHandle;
+export const toPublicModelBindingHandle = toModelBindingHandle;
+export const serializePublicModelBindingHandle = toModelBindingHandle;
+
+export function isModelBindingHandle(value: unknown): value is BindingHandle {
+	return isBindingHandle(value) && value.domain === "model";
+}
+
 export function createPublicModelSummary(input: {
 	models?: readonly NormalizedModelReference[];
 	routes?: ReadonlyMap<string, readonly NormalizedRouteCandidate[]>;
@@ -1617,6 +1687,16 @@ export class ModelBroker {
 
 	getBindings(): readonly ModelBinding[] {
 		return deepFreeze([...this.bindings.values()]);
+	}
+
+	/** Return the stable public handle for a persisted broker binding. */
+	getBindingHandle(bindingId: string): BindingHandle | undefined {
+		const binding = this.bindings.get(bindingId);
+		return binding === undefined ? undefined : toModelBindingHandle(binding);
+	}
+
+	getBindingHandles(): readonly BindingHandle[] {
+		return deepFreeze([...this.bindings.values()].map(toModelBindingHandle));
 	}
 
 	hasDefaultSelection(): boolean {

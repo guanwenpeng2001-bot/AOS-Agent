@@ -1490,7 +1490,7 @@ With images and an optional declared route or role:
 {"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}], "modelRoute": "balanced"}
 ```
 
-The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
 Accepted response (emitted before any run event):
 ```json
@@ -1516,6 +1516,9 @@ external reference. Accepted and terminal run records may also include `previous
 `modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
 same fields are available from `run.get` and terminal receipts; attempt
 records contain candidate identity, status, timestamps, and safe usage only.
+Accepted and terminal records may also include `deadlineAt` and a
+`bindingAssociation` of public-safe stable handles for the ModelBroker,
+Capability, Policy, and Sandbox bindings used by the Run.
 
 Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
@@ -1637,8 +1640,10 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 }
 ```
 
-`run.resume` accepts the same optional `external` reference. It is persisted as
-the successor attempt's mapping; omitting it does not create a new mapping.
+`run.resume` accepts the same optional `external` reference and `deadlineAt`.
+The deadline participates in idempotency and is persisted on the successor
+attempt. The external reference is persisted as the successor attempt's
+mapping; omitting it does not create a new mapping.
 
 Failures:
 - `session_busy` when the current session already has an active run
@@ -1649,6 +1654,7 @@ Failures:
 - `start_rejected` when the new run input is rejected (including the v1 slash-command rule)
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
 - `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
+- `run_deadline_invalid` or `run_deadline_exceeded` when the requested deadline is malformed or already expired
 
 ### Audit query, replay, and external mapping
 
@@ -1947,6 +1953,8 @@ The protocol writes only JSONL records to stdout. Diagnostics — errors, corrup
 - `attempt`: 1 for a fresh run, incremented by `run.resume`
 - `status`: `"accepted"`, `"running"`, `"completed"`, `"failed"`, or `"cancelled"`. Only `completed`, `failed`, and `cancelled` are terminal; terminal statuses cannot transition
 - `model`: snapshot of the model used, as `{ provider, id, thinkingLevel }`
+- `deadlineAt`: optional canonical UTC deadline shared by the Run and its downstream operations
+- `bindingAssociation`: optional public-safe stable handles that associate the Run with ModelBroker, Capability, Policy, and Sandbox facts
 - `startedAt` / `endedAt`: ISO timestamps, set as the run starts and terminates
 - `terminalError`: structured error retained when the terminal receipt records a failure
 
