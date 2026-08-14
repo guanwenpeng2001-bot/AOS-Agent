@@ -426,14 +426,17 @@ class AttemptEventBuffer {
 }
 
 function eventHasVisibleOutput(event: AgentEvent): boolean {
-	if (event.type === "message_update") return true;
-	if (event.type !== "message_start" && event.type !== "message_end") return false;
+	if (event.type !== "message_start" && event.type !== "message_end" && event.type !== "message_update") return false;
 	if (event.message.role !== "assistant") return false;
 	return event.message.content.some((content) => {
 		if (content.type === "text") return content.text.length > 0;
 		if (content.type === "thinking") return content.thinking.length > 0;
 		return true;
 	});
+}
+
+function isWrappedTransportCancellation(message: AssistantMessage): boolean {
+	return /pending stream has been cancell?ed.*(?:getaddrinfo|enotfound)/i.test(message.errorMessage ?? "");
 }
 
 type StreamAssistantAttempt = {
@@ -602,13 +605,33 @@ async function streamAssistantResponseAttempt(
 			signal,
 			sideEffect: events.hasVisibleOutput ? "unknown" : "none",
 		});
+		const preserveLegacyRetryMessage =
+			config.retry === undefined &&
+			classification.category === "transient_provider" &&
+			!events.hasVisibleOutput &&
+			!isWrappedTransportCancellation(finalMessage);
+		const safeSummaryClassification: AgentLoopErrorClassification = isWrappedTransportCancellation(finalMessage)
+			? {
+					...classification,
+					category: "side_effect_unknown",
+					code: "side_effect_unknown",
+					sideEffect: "unknown",
+					safeToRetry: false,
+					retryable: false,
+				}
+			: classification;
 		const safeMessage: AssistantMessage =
 			classification.category === "unknown" && !events.hasVisibleOutput
 				? {
 						...finalMessage,
 						errorMessage: redactedThrownAgentError(finalMessage),
 					}
-				: createClassifiedFailureMessage(config, classification);
+				: preserveLegacyRetryMessage
+					? {
+						...finalMessage,
+						errorMessage: redactedThrownAgentError(finalMessage),
+					}
+					: createClassifiedFailureMessage(config, safeSummaryClassification);
 		await events.finishFailure(safeMessage);
 		return { message: safeMessage, classification, visibleOutput: events.hasVisibleOutput };
 	};
