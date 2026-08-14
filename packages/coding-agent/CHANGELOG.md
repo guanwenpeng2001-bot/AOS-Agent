@@ -37,6 +37,7 @@
 - Public RPC/session run events now redact command arguments, execution output, full paths, environment/header values, and tool-result details while retaining safe event structure for automation clients.
 - Agent lifecycle state now remains active through asynchronous capability and execution-policy preflight, so extension-triggered prompts are observable by `waitForIdle()` while RPC acceptance still follows fail-closed preflight.
 - Preserved model retry compatibility for known transient transport failures and excluded execution-association audit facts from user-facing session message ordering.
+- Kept recognized transient model failures retryable only before a possible provider side effect, while treating wrapped DNS cancellation errors as retryable transport failures and preserving safe terminal summaries.
 
 ### Removed
 

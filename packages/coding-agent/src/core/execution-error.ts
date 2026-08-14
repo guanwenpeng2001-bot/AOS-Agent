@@ -96,11 +96,24 @@ export function classifyProviderFailure(
 	const message = messageText(value);
 	const normalized = message.toLowerCase();
 	const classified = classifyCategory(message);
+	const wrappedTransientCancellation =
+		/(abort|cancel|cancelled|canceled)/.test(normalized) && classified.fallbackReason === "provider_unavailable";
+	if (/(abort|cancel|cancelled|canceled)/.test(normalized) && !wrappedTransientCancellation) {
+		return { kind: "cancelled", category: "cancelled", sideEffectStatus: "none", retryable: false };
+	}
 	if (options.visibleOutput) {
 		return {
 			kind: "permanent_provider",
 			category: "partial_output",
 			sideEffectStatus: "visible",
+			retryable: false,
+		};
+	}
+	if (options.dispatched) {
+		return {
+			kind: "side_effect_unknown",
+			category: "side_effect_unknown",
+			sideEffectStatus: "unknown",
 			retryable: false,
 		};
 	}
@@ -110,17 +123,6 @@ export function classifyProviderFailure(
 			...classified,
 			sideEffectStatus: "none",
 			retryable: true,
-		};
-	}
-	if (/(abort|cancel|cancelled|canceled)/.test(normalized)) {
-		return { kind: "cancelled", category: "cancelled", sideEffectStatus: "none", retryable: false };
-	}
-	if (options.dispatched) {
-		return {
-			kind: "side_effect_unknown",
-			category: "side_effect_unknown",
-			sideEffectStatus: "unknown",
-			retryable: false,
 		};
 	}
 	const kind: ExecutionErrorKind =

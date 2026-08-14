@@ -602,10 +602,13 @@ async function streamAssistantResponseAttempt(
 			signal,
 			sideEffect: events.hasVisibleOutput ? "unknown" : "none",
 		});
-		const safeMessage: AssistantMessage = {
-			...finalMessage,
-			errorMessage: redactedThrownAgentError(finalMessage),
-		};
+		const safeMessage: AssistantMessage =
+			classification.category === "unknown" && !events.hasVisibleOutput
+				? {
+						...finalMessage,
+						errorMessage: redactedThrownAgentError(finalMessage),
+					}
+				: createClassifiedFailureMessage(config, classification);
 		await events.finishFailure(safeMessage);
 		return { message: safeMessage, classification, visibleOutput: events.hasVisibleOutput };
 	};
