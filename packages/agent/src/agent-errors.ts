@@ -297,15 +297,15 @@ export function classifyAgentLoopError(
 		sideEffect === "unknown" || (operation !== "model" && phase === "after_request" && sideEffect === undefined);
 	let category: AgentLoopErrorCategory;
 	let fallbackCode: AgentLoopErrorCode | undefined;
-	if (possibleSideEffect) {
-		category = "side_effect_unknown";
-		fallbackCode = "side_effect_unknown";
-	} else if (isDeadlineError(error, options, text)) {
+	if (isDeadlineError(error, options, text)) {
 		category = "deadline";
 		fallbackCode = "deadline_exceeded";
 	} else if (isCancelledError(error, options, text)) {
 		category = "cancelled";
 		fallbackCode = "cancelled";
+	} else if (possibleSideEffect) {
+		category = "side_effect_unknown";
+		fallbackCode = "side_effect_unknown";
 	} else if (explicitCategory !== undefined) {
 		category = explicitCategory;
 	} else if (isPermissionError(text, status) || isParameterError(text, status)) {
