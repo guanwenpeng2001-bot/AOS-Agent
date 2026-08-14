@@ -1,124 +1,195 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream } from "@aos-agent/ai";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	type Message,
+	type Model,
+	type UserMessage,
+} from "@aos-agent/ai";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { runAgentLoop } from "../src/agent-loop.ts";
-import { AgentLoopError } from "../src/loop-convergence.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, StreamFn } from "../src/types.ts";
+import { Agent, agentLoop, createAgentLoopConvergenceGuard } from "../src/index.ts";
+import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
 
-const model = {
-	id: "test-model",
-	name: "test-model",
-	api: "test",
-	provider: "test",
-	baseUrl: "",
-	reasoning: false,
-	input: ["text"],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	contextWindow: 1000,
-	maxTokens: 100,
-} as AgentLoopConfig["model"];
+class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+	constructor() {
+		super(
+			(event) => event.type === "done" || event.type === "error",
+			(event) => {
+				if (event.type === "done") return event.message;
+				if (event.type === "error") return event.error;
+				throw new Error("Unexpected event type");
+			},
+		);
+	}
+}
 
-function assistant(toolCallId?: string): AgentMessage {
+function createModel(): Model<"openai-responses"> {
+	return {
+		id: "convergence-test",
+		name: "convergence-test",
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://example.invalid",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 8192,
+		maxTokens: 2048,
+	};
+}
+
+function createAssistantMessage(
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
 	return {
 		role: "assistant",
-		content:
-			toolCallId === undefined
-				? [{ type: "text", text: "done" }]
-				: [{ type: "toolCall", id: toolCallId, name: "repeat", arguments: { value: "same" } }],
-		api: "test",
-		provider: "test",
-		model: "test-model",
+		content,
+		api: "openai-responses",
+		provider: "openai",
+		model: "convergence-test",
 		usage: {
 			input: 0,
-			output: 1,
+			output: 0,
 			cacheRead: 0,
 			cacheWrite: 0,
-			totalTokens: 1,
+			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: toolCallId === undefined ? "stop" : "toolUse",
+		stopReason,
 		timestamp: Date.now(),
 	};
 }
 
-function streamFor(messages: AgentMessage[]): StreamFn {
-	return () => {
-		const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
-			() => true,
-			() => messages[0]! as AssistantMessage,
-		);
-		queueMicrotask(() => {
-			const message = messages.shift();
-			if (message === undefined) return;
-			stream.push({
-				type: "done",
-				reason:
-					message.role === "assistant" && message.content.some((part) => part.type === "toolCall")
-						? "toolUse"
-						: "stop",
-				message,
-			} as AssistantMessageEvent);
-		});
-		return stream;
-	};
+function createUserMessage(text: string): UserMessage {
+	return { role: "user", content: text, timestamp: Date.now() };
 }
 
-function config(overrides: Partial<AgentLoopConfig> = {}): AgentLoopConfig {
+function identityConverter(messages: AgentMessage[]): Message[] {
+	return messages.filter(
+		(message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult",
+	) as Message[];
+}
+
+function toolConfig(loopConvergence: AgentLoopConfig["loopConvergence"]): {
+	context: AgentContext;
+	config: AgentLoopConfig;
+} {
+	const schema = Type.Object({ value: Type.String() });
+	const tool: AgentTool<typeof schema, { value: string }> = {
+		name: "echo",
+		label: "Echo",
+		description: "Echo a value",
+		parameters: schema,
+		async execute(_toolCallId, params) {
+			return {
+				content: [{ type: "text", text: params.value }],
+				details: params,
+			};
+		},
+	};
 	return {
-		model,
-		convertToLlm: (messages) => messages as never,
-		...overrides,
+		context: { systemPrompt: "", messages: [], tools: [tool] },
+		config: { model: createModel(), convertToLlm: identityConverter, loopConvergence },
 	};
 }
 
-describe("agent loop convergence", () => {
-	it("stops repeated identical tool calls at the configured bound", async () => {
-		const context: AgentContext = {
-			systemPrompt: "",
-			messages: [],
-			tools: [
-				{
-					name: "repeat",
-					label: "repeat",
-					description: "repeat",
-					parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
-					execute: async () => ({ content: [{ type: "text", text: "again" }], details: {} }),
-				},
-			],
-		};
-		const events: AgentEvent[] = [];
-		const pending = [assistant("1"), assistant("2"), assistant("3"), assistant("4"), assistant("5")];
-		await expect(
-			runAgentLoop(
-				[{ role: "user", content: [{ type: "text", text: "go" }], timestamp: Date.now() }],
-				context,
-				config({ loopLimits: { maxRepeatedToolCalls: 2 }, toolExecution: "sequential" }),
-				async (event) => {
-					events.push(event);
-				},
-				new AbortController().signal,
-				streamFor(pending),
-			),
-		).rejects.toBeInstanceOf(AgentLoopError);
-		expect(events.some((event) => event.type === "tool_execution_start")).toBe(true);
+describe("production agent loop convergence", () => {
+	it("stops repeated tool calls before starting a third provider turn", async () => {
+		const { context, config } = toolConfig({
+			maxIterations: 10,
+			maxDuplicateToolCalls: 2,
+			maxNoProgressIterations: 10,
+		});
+		let providerCalls = 0;
+		const stream = agentLoop([createUserMessage("repeat")], context, config, undefined, () => {
+			providerCalls += 1;
+			const response = new MockAssistantStream();
+			queueMicrotask(() => {
+				response.push({
+					type: "done",
+					reason: "toolUse",
+					message: createAssistantMessage(
+						[{ type: "toolCall", id: `call-${providerCalls}`, name: "echo", arguments: { value: "same" } }],
+						"toolUse",
+					),
+				});
+			});
+			return response;
+		});
+		const events = [] as Array<{ type: string; terminationReason?: string }>;
+		for await (const event of stream) events.push(event);
+
+		expect(providerCalls).toBe(2);
+		expect(events.at(-1)).toMatchObject({ type: "agent_end", terminationReason: "duplicate_tool_call" });
 	});
 
-	it("rejects a deadline before starting the provider", async () => {
-		const controller = new AbortController();
-		controller.abort();
-		let calls = 0;
-		await expect(
-			runAgentLoop(
-				[{ role: "user", content: [{ type: "text", text: "go" }], timestamp: Date.now() }],
-				{ systemPrompt: "", messages: [], tools: [] },
-				config(),
-				() => undefined,
-				controller.signal,
-				() => {
-					calls += 1;
-					throw new Error("provider called");
-				},
-			),
-		).rejects.toThrow("Operation cancelled");
-		expect(calls).toBe(0);
+	it("stops changing tool calls at the configured maximum iteration", async () => {
+		const { context, config } = toolConfig({
+			maxIterations: 2,
+			maxDuplicateToolCalls: 10,
+			maxNoProgressIterations: 10,
+		});
+		let providerCalls = 0;
+		const stream = agentLoop([createUserMessage("bounded")], context, config, undefined, () => {
+			providerCalls += 1;
+			const response = new MockAssistantStream();
+			queueMicrotask(() => {
+				response.push({
+					type: "done",
+					reason: "toolUse",
+					message: createAssistantMessage(
+						[
+							{
+								type: "toolCall",
+								id: `call-${providerCalls}`,
+								name: "echo",
+								arguments: { value: String(providerCalls) },
+							},
+						],
+						"toolUse",
+					),
+				});
+			});
+			return response;
+		});
+		const events = [] as Array<{ type: string; terminationReason?: string }>;
+		for await (const event of stream) events.push(event);
+
+		expect(providerCalls).toBe(2);
+		expect(events.at(-1)).toMatchObject({ type: "agent_end", terminationReason: "max_iterations" });
+	});
+
+	it("detects a dead loop when progress remains unchanged", () => {
+		const guard = createAgentLoopConvergenceGuard({ maxIterations: 10, maxNoProgressIterations: 2 });
+		guard.beforeTurn();
+		expect(guard.observe({ progressToken: "same", madeProgress: false }).stop).toBe(false);
+		guard.beforeTurn();
+		expect(guard.observe({ progressToken: "same", madeProgress: false })).toMatchObject({
+			stop: true,
+			reason: "dead_loop",
+		});
+	});
+});
+
+describe("Agent operation deadline", () => {
+	it("aborts a stalled provider stream and forwards the same signal", async () => {
+		let providerSignal: AbortSignal | undefined;
+		const agent = new Agent({
+			deadlineMs: 10,
+			streamFn: (_model, _context, options) => {
+				providerSignal = options?.signal;
+				return new MockAssistantStream();
+			},
+		});
+
+		await agent.prompt("deadline");
+
+		expect(providerSignal?.aborted).toBe(true);
+		expect(agent.state.errorMessage).toContain("deadline");
+		const lastMessage = agent.state.messages.at(-1);
+		expect(lastMessage?.role).toBe("assistant");
+		if (lastMessage?.role === "assistant") expect(lastMessage.stopReason).toBe("aborted");
 	});
 });

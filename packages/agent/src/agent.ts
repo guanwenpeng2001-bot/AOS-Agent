@@ -2,15 +2,17 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	RetryCallbacks,
+	RetryPolicy,
 	SimpleStreamOptions,
 	TextContent,
 	ThinkingBudgets,
 	Transport,
 } from "@aos-agent/ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
-import type { AgentLoopLimits } from "./loop-convergence.ts";
-import { type AgentOperationSignal, createAgentOperationSignal } from "./operation-signal.ts";
+import { classifyAgentLoopError, getAgentLoopErrorMessage, redactedThrownAgentError } from "./agent-errors.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import { createAgentOperationSignal } from "./operation-signal.ts";
 import type {
 	AfterToolCallContext,
 	AfterToolCallResult,
@@ -29,6 +31,7 @@ import type {
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.ts";
+import type { AgentLoopConvergenceOptions } from "./loop-convergence.ts";
 
 export type { QueueMode } from "./types.ts";
 
@@ -121,18 +124,23 @@ export interface AgentOptions {
 	thinkingBudgets?: ThinkingBudgets;
 	transport?: Transport;
 	maxRetryDelayMs?: number;
+	/** Optional bounded retry policy for transient provider turns. */
+	retry?: RetryPolicy;
+	/** Optional lifecycle callbacks for production-loop retries. */
+	retryCallbacks?: RetryCallbacks;
 	toolExecution?: ToolExecutionMode;
-	/** Default convergence limits for one prompt or continuation. */
-	loopLimits?: AgentLoopLimits;
+	/** Maximum duration of each prompt or continuation run. */
+	deadlineMs?: number;
+	/** Absolute Unix epoch deadline of each prompt or continuation run. */
+	deadlineAt?: number;
+	/** Bounds for provider/tool loop convergence. */
+	loopConvergence?: AgentLoopConvergenceOptions;
 }
 
+/** Per-run overrides used by prepared Automation Host invocations. */
 export interface AgentRunOptions {
-	/** Parent cancellation signal for prepared runs. */
 	signal?: AbortSignal;
-	/** Maximum duration in milliseconds for the operation. */
 	deadlineMs?: number;
-	/** Per-run convergence limits, overriding constructor defaults. */
-	loopLimits?: AgentLoopLimits;
 }
 
 class PendingMessageQueue {
@@ -174,8 +182,7 @@ class PendingMessageQueue {
 type ActiveRun = {
 	promise: Promise<void>;
 	resolve: () => void;
-	abortController: AgentOperationSignal;
-	loopLimits?: AgentLoopLimits;
+	abortController: AbortController;
 };
 
 /**
@@ -224,9 +231,18 @@ export class Agent {
 	public transport: Transport;
 	/** Optional cap for provider-requested retry delays. */
 	public maxRetryDelayMs?: number;
+	/** Optional bounded retry policy for transient provider turns. */
+	public retry?: RetryPolicy;
+	/** Optional lifecycle callbacks for production-loop retries. */
+	public retryCallbacks?: RetryCallbacks;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
-	public loopLimits?: AgentLoopLimits;
+	/** Maximum duration of each prompt or continuation run. */
+	public deadlineMs?: number;
+	/** Absolute Unix epoch deadline of each prompt or continuation run. */
+	public deadlineAt?: number;
+	/** Bounds for provider/tool loop convergence. */
+	public loopConvergence?: AgentLoopConvergenceOptions;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -249,8 +265,12 @@ export class Agent {
 		this.thinkingBudgets = runtimeOptions.thinkingBudgets;
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
+		this.retry = runtimeOptions.retry ? { ...runtimeOptions.retry } : undefined;
+		this.retryCallbacks = runtimeOptions.retryCallbacks;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
-		this.loopLimits = runtimeOptions.loopLimits;
+		this.deadlineMs = runtimeOptions.deadlineMs;
+		this.deadlineAt = runtimeOptions.deadlineAt;
+		this.loopConvergence = runtimeOptions.loopConvergence;
 	}
 
 	/**
@@ -332,8 +352,8 @@ export class Agent {
 	}
 
 	/** Abort the current run, if one is active. */
-	abort(): void {
-		this.activeRun?.abortController.abort();
+	abort(reason?: unknown): void {
+		this.activeRun?.abortController.abort(reason);
 	}
 
 	/**
@@ -460,7 +480,7 @@ export class Agent {
 		try {
 			await this.runPromptLoop(Array.isArray(messages) ? messages : [messages], {}, signal);
 		} catch (error) {
-			await this.handleRunFailure(error, signal.aborted);
+			await this.handleRunFailure(error, signal);
 		}
 	}
 
@@ -492,7 +512,7 @@ export class Agent {
 			}
 			await this.runContinuationLoop(signal);
 		} catch (error) {
-			await this.handleRunFailure(error, signal.aborted);
+			await this.handleRunFailure(error, signal);
 		}
 	}
 
@@ -547,8 +567,10 @@ export class Agent {
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			retry: this.retry ? { ...this.retry } : undefined,
+			retryCallbacks: this.retryCallbacks,
 			toolExecution: this.toolExecution,
-			loopLimits: this.activeRun?.loopLimits ?? this.loopLimits,
+			loopConvergence: this.loopConvergence,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			shouldStopAfterTurn: shouldStopAfterTurn
@@ -585,36 +607,37 @@ export class Agent {
 			throw new Error("Agent is already processing.");
 		}
 
-		const operation = createAgentOperationSignal(options.signal, options.deadlineMs);
+		const operation = createAgentOperationSignal({
+			parent: options.signal,
+			deadlineAt: this.deadlineAt,
+			deadlineMs: options.deadlineMs ?? this.deadlineMs,
+		});
+		const abortController = operation.controller;
 		let resolvePromise = () => {};
 		const promise = new Promise<void>((resolve) => {
 			resolvePromise = resolve;
 		});
-		this.activeRun = {
-			promise,
-			resolve: resolvePromise,
-			abortController: operation,
-			loopLimits: options.loopLimits,
-		};
+		this.activeRun = { promise, resolve: resolvePromise, abortController };
 
 		this._state.isStreaming = true;
 		this._state.streamingMessage = undefined;
 		this._state.errorMessage = undefined;
 
 		try {
-			await executor(operation.signal);
+			await executor(abortController.signal);
 		} catch (error) {
 			if (options.handleErrors === false) {
 				throw error;
 			}
-			await this.handleRunFailure(error, operation.signal.aborted);
+			await this.handleRunFailure(error, abortController.signal);
 		} finally {
-			operation.dispose();
 			this.finishRun();
+			operation.cleanup();
 		}
 	}
 
-	private async handleRunFailure(error: unknown, aborted: boolean): Promise<void> {
+	private async handleRunFailure(error: unknown, signal: AbortSignal): Promise<void> {
+		const classification = classifyAgentLoopError(error, { signal });
 		const failureMessage = {
 			role: "assistant",
 			content: [{ type: "text", text: "" }],
@@ -622,8 +645,9 @@ export class Agent {
 			provider: this._state.model.provider,
 			model: this._state.model.id,
 			usage: EMPTY_USAGE,
-			stopReason: aborted ? "aborted" : "error",
-			errorMessage: error instanceof Error ? error.message : String(error),
+			stopReason: classification.category === "cancelled" || classification.category === "deadline" ? "aborted" : "error",
+			errorMessage:
+				classification.category === "unknown" ? redactedThrownAgentError(error) : getAgentLoopErrorMessage(classification),
 			timestamp: Date.now(),
 		} satisfies AgentMessage;
 		await this.processEvents({ type: "message_start", message: failureMessage });

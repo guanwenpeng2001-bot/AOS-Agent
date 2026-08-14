@@ -23,13 +23,16 @@ export function createOperationBoundary(options: OperationBoundaryOptions = {}):
 		else signal.addEventListener("abort", abortParent, { once: true });
 	}
 	const operation = createAgentOperationSignal(parent.signal, options.deadlineMs);
+	const dispose = (): void => {
+		for (const [signal, listener] of listeners) signal.removeEventListener("abort", listener);
+		operation.dispose();
+	};
 	return {
+		controller: operation.controller,
 		signal: operation.signal,
 		...(operation.deadlineAt === undefined ? {} : { deadlineAt: operation.deadlineAt }),
 		abort: operation.abort,
-		dispose(): void {
-			for (const [signal, listener] of listeners) signal.removeEventListener("abort", listener);
-			operation.dispose();
-		},
+		dispose,
+		cleanup: dispose,
 	};
 }

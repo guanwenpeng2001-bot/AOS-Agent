@@ -173,6 +173,23 @@ The last message in context must be `user` or `toolResult` (not `assistant`).
 
 `Agent.subscribe()` listeners are awaited in registration order. `agent_end` means no more loop events will be emitted, but `await agent.waitForIdle()` and `await agent.prompt(...)` only settle after awaited `agent_end` listeners finish.
 
+The loop is bounded by default. `maxIterations` protects against unbounded provider turns, repeated tool-call fingerprints stop duplicate calls, and unchanged progress tokens stop dead loops. When a convergence bound stops a run, `agent_end.terminationReason` is `max_iterations`, `duplicate_tool_call`, or `dead_loop`.
+
+### Production error categories and retry safety
+
+The production loop classifies failures into stable categories:
+
+- `transient_provider`: a provider or transport failure that may be retried when the outcome is known to be safe.
+- `permission_or_parameter`: permission, schema, or parameter validation rejected the operation; do not retry unchanged input.
+- `side_effect_unknown`: the operation may have reached a tool, MCP server, sandbox, or provider before failing; the outcome must be reconciled before another attempt.
+- `cancelled`: the caller aborted the operation.
+- `deadline`: the operation exceeded its deadline.
+- `unknown`: a failure that does not match a stable category.
+
+Classifications also expose a stable operation (`model`, `tool`, `mcp`, or `sandbox`), phase, side-effect state, and `safeToRetry`/`retryable` flags. The exported error codes are `provider_unavailable`, `permission_denied`, `invalid_request`, `side_effect_unknown`, `cancelled`, `deadline_exceeded`, and `lease_expired`; an unclassified failure may have no stable code.
+
+Retries are bounded and apply only when a retry policy is enabled. A transient provider failure is retryable only before visible output and when no side effect is possible. Model retries use that rule directly; tool, MCP, and sandbox retries additionally require an explicit safe replay decision. Permission/parameter failures, cancellation, deadlines, unknown failures, and any `side_effect_unknown` result are terminal for automatic retry. Never blindly retry after `side_effect_unknown`; inspect or reconcile the external operation first because repeating it may duplicate a side effect.
+
 ## Agent Options
 
 ```typescript
@@ -209,6 +226,17 @@ const agent = new Agent({
 
   // Tool execution mode: "parallel" (default) or "sequential"
   toolExecution: "parallel",
+
+  // Bound provider/tool turns and stop repeated or dead loops.
+  loopConvergence: {
+    maxIterations: 100,
+    maxDuplicateToolCalls: 3,
+    maxNoProgressIterations: 5,
+  },
+
+  // Optional operation deadline. Use one form; deadlineAt takes precedence.
+  deadlineMs: 60_000,
+  // deadlineAt: Date.now() + 60_000,
 
   // Preflight each tool call after args are validated. Can block execution.
   beforeToolCall: async ({ toolCall, args, context }) => {
@@ -294,6 +322,8 @@ agent.state.model = getModel("openai", "gpt-4o");
 agent.state.thinkingLevel = "medium";
 agent.state.tools = [myTool];
 agent.toolExecution = "sequential";
+agent.loopConvergence = { maxIterations: 100, maxDuplicateToolCalls: 3 };
+agent.deadlineMs = 60_000;
 agent.beforeToolCall = async ({ toolCall }) => undefined;
 agent.afterToolCall = async ({ toolCall, result }) => undefined;
 agent.shouldStopAfterTurn = async ({ context }) => shouldCompactBeforeNextTurn(context.messages);

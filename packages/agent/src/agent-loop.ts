@@ -10,9 +10,19 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@aos-agent/ai";
-import { createAgentLoopGuard } from "./loop-convergence.ts";
-import { throwIfAgentOperationAborted } from "./operation-signal.ts";
 import { getDefaultStreamFn } from "./stream-fn.ts";
+import {
+	createAgentLoopConvergenceGuard,
+	fingerprintAgentTurn,
+} from "./loop-convergence.ts";
+import {
+	classifyAgentLoopError,
+	decideAgentLoopRetry,
+	getAgentLoopErrorMessage,
+	redactedThrownAgentError,
+	type AgentLoopErrorClassification,
+} from "./agent-errors.ts";
+import { raceWithAbortSignal } from "./operation-signal.ts";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -49,15 +59,14 @@ export function agentLoop(
 		signal,
 		streamFn,
 	).then(
-		(messages) => {
-			stream.end(messages);
-		},
+		(messages) => stream.end(messages),
 		(error: unknown) => {
-			const failure = createAgentFailureMessage(config, signal, error);
+			const failure = createFailureMessage(config, error, signal);
 			stream.push({ type: "message_start", message: failure });
 			stream.push({ type: "message_end", message: failure });
 			stream.push({ type: "turn_end", message: failure, toolResults: [] });
-			stream.push({ type: "agent_end", messages: [failure] });
+			stream.push({ type: "agent_end", messages: [...prompts, failure] });
+			stream.end([...prompts, failure]);
 		},
 	);
 
@@ -97,15 +106,14 @@ export function agentLoopContinue(
 		signal,
 		streamFn,
 	).then(
-		(messages) => {
-			stream.end(messages);
-		},
+		(messages) => stream.end(messages),
 		(error: unknown) => {
-			const failure = createAgentFailureMessage(config, signal, error);
+			const failure = createFailureMessage(config, error, signal);
 			stream.push({ type: "message_start", message: failure });
 			stream.push({ type: "message_end", message: failure });
 			stream.push({ type: "turn_end", message: failure, toolResults: [] });
 			stream.push({ type: "agent_end", messages: [failure] });
+			stream.end([failure]);
 		},
 	);
 
@@ -169,11 +177,11 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 	);
 }
 
-function createAgentFailureMessage(
+function createFailureMessage(
 	config: AgentLoopConfig,
-	signal: AbortSignal | undefined,
 	error: unknown,
-): AgentMessage {
+	signal: AbortSignal | undefined,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "" }],
@@ -189,7 +197,31 @@ function createAgentFailureMessage(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: signal?.aborted ? "aborted" : "error",
-		errorMessage: error instanceof Error ? error.message : String(error),
+		errorMessage: redactedThrownAgentError(error),
+		timestamp: Date.now(),
+	};
+}
+
+function createClassifiedFailureMessage(
+	config: AgentLoopConfig,
+	classification: AgentLoopErrorClassification,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: config.model.api,
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: classification.category === "cancelled" || classification.category === "deadline" ? "aborted" : "error",
+		errorMessage: getAgentLoopErrorMessage(classification),
 		timestamp: Date.now(),
 	};
 }
@@ -207,8 +239,8 @@ async function runLoop(
 ): Promise<void> {
 	let currentContext = initialContext;
 	let config = initialConfig;
+	const convergence = createAgentLoopConvergenceGuard(initialConfig.loopConvergence);
 	let firstTurn = true;
-	const guard = createAgentLoopGuard(config.loopLimits);
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -218,8 +250,11 @@ async function runLoop(
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
-			throwIfAgentOperationAborted(signal);
-			guard.startTurn();
+			const turnDecision = convergence.beforeTurn();
+			if (turnDecision.stop) {
+				await emit({ type: "agent_end", messages: newMessages, terminationReason: turnDecision.reason });
+				return;
+			}
 			if (!firstTurn) {
 				await emit({ type: "turn_start" });
 			} else {
@@ -253,7 +288,6 @@ async function runLoop(
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
 			if (toolCalls.length > 0) {
-				guard.recordToolCalls(toolCalls);
 				// A "length" stop means the output was cut off by the token limit, so
 				// every tool call in the message may carry truncated arguments. Fail
 				// them all instead of executing potentially borked calls.
@@ -272,13 +306,30 @@ async function runLoop(
 
 			await emit({ type: "turn_end", message, toolResults });
 
+			const convergenceDecision = convergence.observe({
+				toolCalls: toolCalls.map((toolCall) => ({ name: toolCall.name, arguments: toolCall.arguments })),
+				progressToken: fingerprintAgentTurn(message, toolResults),
+				madeProgress: toolCalls.length === 0 || toolResults.some((result) => result.isError !== true),
+			});
+			if (convergenceDecision.stop) {
+				await emit({
+					type: "agent_end",
+					messages: newMessages,
+					terminationReason: convergenceDecision.reason,
+				});
+				return;
+			}
+
 			const nextTurnContext = {
 				message,
 				toolResults,
 				context: currentContext,
 				newMessages,
 			};
-			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
+			const nextTurnSnapshot = await raceWithAbortSignal(
+				Promise.resolve(config.prepareNextTurn?.(nextTurnContext)),
+				signal,
+			);
 			if (nextTurnSnapshot) {
 				currentContext = nextTurnSnapshot.context ?? currentContext;
 				config = {
@@ -294,24 +345,29 @@ async function runLoop(
 			}
 
 			if (
-				await config.shouldStopAfterTurn?.({
+				await raceWithAbortSignal(
+					Promise.resolve(
+						config.shouldStopAfterTurn?.({
 					message,
 					toolResults,
 					context: currentContext,
 					newMessages,
-				})
+						}),
+					),
+					signal,
+				)
 			) {
 				await emit({ type: "agent_end", messages: newMessages });
 				return;
 			}
 
-			pendingMessages = (await config.getSteeringMessages?.()) || [];
+			pendingMessages =
+				(await raceWithAbortSignal(Promise.resolve(config.getSteeringMessages?.()), signal)) || [];
 		}
 
 		// Agent would stop here. Check for follow-up messages.
-		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
+		const followUpMessages = (await raceWithAbortSignal(Promise.resolve(config.getFollowUpMessages?.()), signal)) || [];
 		if (followUpMessages.length > 0) {
-			guard.recordFollowUps(followUpMessages.length);
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;
@@ -324,9 +380,71 @@ async function runLoop(
 	await emit({ type: "agent_end", messages: newMessages });
 }
 
+class AttemptEventBuffer {
+	private readonly emit: AgentEventSink;
+	private pending: AgentEvent[] = [];
+	private assistantStarted = false;
+	public hasVisibleOutput = false;
+
+	constructor(emit: AgentEventSink) {
+		this.emit = emit;
+	}
+
+	async push(event: AgentEvent): Promise<void> {
+		if (event.type === "message_start" && event.message.role === "assistant") {
+			this.assistantStarted = true;
+		}
+		if (this.hasVisibleOutput) {
+			await this.emit(event);
+			return;
+		}
+		this.pending.push(event);
+		if (eventHasVisibleOutput(event)) {
+			this.hasVisibleOutput = true;
+			await this.flush();
+		}
+	}
+
+	async finishFailure(message: AssistantMessage): Promise<void> {
+		if (this.hasVisibleOutput || this.assistantStarted) {
+			await this.push({ type: "message_end", message });
+			return;
+		}
+		await this.push({ type: "message_start", message });
+		await this.push({ type: "message_end", message });
+	}
+
+	async flush(): Promise<void> {
+		const pending = this.pending;
+		this.pending = [];
+		for (const event of pending) await this.emit(event);
+	}
+
+	discard(): void {
+		this.pending = [];
+	}
+}
+
+function eventHasVisibleOutput(event: AgentEvent): boolean {
+	if (event.type === "message_update") return true;
+	if (event.type !== "message_start" && event.type !== "message_end") return false;
+	if (event.message.role !== "assistant") return false;
+	return event.message.content.some((content) => {
+		if (content.type === "text") return content.text.length > 0;
+		if (content.type === "thinking") return content.thinking.length > 0;
+		return true;
+	});
+}
+
+type StreamAssistantAttempt = {
+	message: AssistantMessage;
+	classification?: AgentLoopErrorClassification;
+	visibleOutput: boolean;
+};
+
 /**
- * Stream an assistant response from the LLM.
- * This is where AgentMessage[] gets transformed to Message[] for the LLM.
+ * Stream an assistant response from the LLM, retrying only before any output
+ * or other observable attempt side effect has been emitted.
  */
 async function streamAssistantResponse(
 	context: AgentContext,
@@ -335,95 +453,200 @@ async function streamAssistantResponse(
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
 ): Promise<AssistantMessage> {
-	throwIfAgentOperationAborted(signal);
-	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
+	const policy = config.retry;
+	let retriesUsed = 0;
+
+	for (;;) {
+		const attemptEvents = new AttemptEventBuffer(emit);
+		let attempt: StreamAssistantAttempt;
+		try {
+			attempt = await streamAssistantResponseAttempt(context, config, signal, streamFunction, attemptEvents);
+		} catch (error) {
+			const classification = classifyAgentLoopError(error, {
+				operation: "model",
+				phase: "request",
+				signal,
+				sideEffect: attemptEvents.hasVisibleOutput ? "unknown" : "none",
+			});
+			const message =
+				classification.category === "unknown"
+					? createFailureMessage(config, error, signal)
+					: createClassifiedFailureMessage(config, classification);
+			await attemptEvents.finishFailure(message);
+			attempt = { message, classification, visibleOutput: attemptEvents.hasVisibleOutput };
+		}
+
+		if (attempt.message.stopReason !== "error" && attempt.message.stopReason !== "aborted") {
+			await attemptEvents.flush();
+			if (retriesUsed > 0) await config.retryCallbacks?.onRetryFinished?.(true, retriesUsed);
+			context.messages.push(attempt.message);
+			return attempt.message;
+		}
+
+		const classification =
+			attempt.classification ??
+			classifyAgentLoopError(attempt.message, {
+				operation: "model",
+				phase: "request",
+				signal,
+				sideEffect: attempt.visibleOutput ? "unknown" : "none",
+			});
+		const decision = decideAgentLoopRetry(classification, {
+			policy,
+			retriesUsed,
+			signal,
+			sideEffect: attempt.visibleOutput ? "unknown" : "none",
+		});
+		if (!decision.retry) {
+			await attemptEvents.flush();
+			if (retriesUsed > 0) {
+				await config.retryCallbacks?.onRetryFinished?.(false, retriesUsed, classification.message);
+			}
+			context.messages.push(attempt.message);
+			return attempt.message;
+		}
+
+		retriesUsed += 1;
+		const delayMs = retryDelayMs(policy, retriesUsed);
+		await config.retryCallbacks?.onRetryScheduled?.(
+			retriesUsed,
+			policy?.maxRetries ?? retriesUsed,
+			delayMs,
+			classification.message,
+		);
+		attemptEvents.discard();
+		try {
+			await waitForRetry(delayMs, signal);
+		} catch (error) {
+			const abortedClassification = classifyAgentLoopError(error, { signal });
+			const abortedMessage = createClassifiedFailureMessage(config, abortedClassification);
+			const abortedEvents = new AttemptEventBuffer(emit);
+			await abortedEvents.finishFailure(abortedMessage);
+			await abortedEvents.flush();
+			await config.retryCallbacks?.onRetryFinished?.(false, retriesUsed, abortedClassification.message);
+			context.messages.push(abortedMessage);
+			return abortedMessage;
+		}
+		await config.retryCallbacks?.onRetryAttemptStart?.();
+	}
+}
+
+function retryDelayMs(policy: AgentLoopConfig["retry"], retryAttempt: number): number {
+	if (!policy) return 0;
+	const delay = policy.baseDelayMs * 2 ** (retryAttempt - 1);
+	return Number.isFinite(delay) ? Math.max(0, delay) : 0;
+}
+
+function waitForRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason ?? new Error("The Agent operation was aborted"));
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const onAbort = () => {
+			if (timer !== undefined) clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			reject(signal?.reason ?? new Error("The Agent operation was aborted"));
+		};
+		timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, delayMs);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+async function streamAssistantResponseAttempt(
+	context: AgentContext,
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	streamFunction: StreamFn,
+	events: AttemptEventBuffer,
+): Promise<StreamAssistantAttempt> {
 	let messages = context.messages;
 	if (config.transformContext) {
-		messages = await config.transformContext(messages, signal);
-		throwIfAgentOperationAborted(signal);
+		messages = await raceWithAbortSignal(config.transformContext(messages, signal), signal);
 	}
-
-	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await config.convertToLlm(messages);
-	throwIfAgentOperationAborted(signal);
-
-	// Build LLM context
+	const llmMessages = await raceWithAbortSignal(Promise.resolve(config.convertToLlm(messages)), signal);
 	const llmContext: Context = {
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages,
 		tools: context.tools,
 	};
-
-	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
-	throwIfAgentOperationAborted(signal);
-
-	const response = await streamFunction(config.model, llmContext, {
-		...config,
-		apiKey: resolvedApiKey,
+		(config.getApiKey ? await raceWithAbortSignal(Promise.resolve(config.getApiKey(config.model.provider)), signal) : undefined) ||
+		config.apiKey;
+	const response = await raceWithAbortSignal(
+		Promise.resolve(
+			streamFunction(config.model, llmContext, {
+				...config,
+				apiKey: resolvedApiKey,
+				signal,
+			}),
+		),
 		signal,
-	});
+	);
 
-	let partialMessage: AssistantMessage | null = null;
-	let addedPartial = false;
+	let partialMessage: AssistantMessage | undefined;
+	const finish = async (finalMessage: AssistantMessage): Promise<StreamAssistantAttempt> => {
+		const failed = finalMessage.stopReason === "error" || finalMessage.stopReason === "aborted";
+		if (!failed) {
+			if (!partialMessage) await events.push({ type: "message_start", message: { ...finalMessage } });
+			await events.push({ type: "message_end", message: finalMessage });
+			return { message: finalMessage, visibleOutput: events.hasVisibleOutput };
+		}
+		const classification = classifyAgentLoopError(finalMessage, {
+			operation: "model",
+			phase: "request",
+			signal,
+			sideEffect: events.hasVisibleOutput ? "unknown" : "none",
+		});
+		const safeMessage = createClassifiedFailureMessage(config, classification);
+		await events.finishFailure(safeMessage);
+		return { message: safeMessage, classification, visibleOutput: events.hasVisibleOutput };
+	};
 
-	for await (const event of response) {
-		throwIfAgentOperationAborted(signal);
-		switch (event.type) {
-			case "start":
-				partialMessage = event.partial;
-				context.messages.push(partialMessage);
-				addedPartial = true;
-				await emit({ type: "message_start", message: { ...partialMessage } });
-				break;
-
-			case "text_start":
-			case "text_delta":
-			case "text_end":
-			case "thinking_start":
-			case "thinking_delta":
-			case "thinking_end":
-			case "toolcall_start":
-			case "toolcall_delta":
-			case "toolcall_end":
-				if (partialMessage) {
+	const iterator = response[Symbol.asyncIterator]();
+	try {
+		while (true) {
+			const iteration = await raceWithAbortSignal(iterator.next(), signal);
+			if (iteration.done) break;
+			const event = iteration.value;
+			switch (event.type) {
+				case "start":
 					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
-					});
-				}
-				break;
-
-			case "done":
-			case "error": {
-				const finalMessage = await response.result();
-				if (addedPartial) {
-					context.messages[context.messages.length - 1] = finalMessage;
-				} else {
-					context.messages.push(finalMessage);
-				}
-				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
-				}
-				await emit({ type: "message_end", message: finalMessage });
-				return finalMessage;
+					await events.push({ type: "message_start", message: { ...partialMessage } });
+					break;
+				case "text_start":
+				case "text_delta":
+				case "text_end":
+				case "thinking_start":
+				case "thinking_delta":
+				case "thinking_end":
+				case "toolcall_start":
+				case "toolcall_delta":
+				case "toolcall_end":
+					if (partialMessage) {
+						partialMessage = event.partial;
+						await events.push({
+							type: "message_update",
+							assistantMessageEvent: event,
+							message: { ...partialMessage },
+						});
+					}
+					break;
+				case "done":
+				case "error":
+					return await finish(await raceWithAbortSignal(response.result(), signal));
 			}
 		}
+	} finally {
+		if (signal?.aborted && iterator.return) {
+			void Promise.resolve(iterator.return()).catch(() => undefined);
+		}
 	}
-
-	const finalMessage = await response.result();
-	if (addedPartial) {
-		context.messages[context.messages.length - 1] = finalMessage;
-	} else {
-		context.messages.push(finalMessage);
-		await emit({ type: "message_start", message: { ...finalMessage } });
-	}
-	await emit({ type: "message_end", message: finalMessage });
-	return finalMessage;
+	return await finish(await raceWithAbortSignal(response.result(), signal));
 }
 
 /**
@@ -672,13 +895,16 @@ async function prepareToolCall(
 		const preparedToolCall = prepareToolCallArguments(tool, toolCall);
 		const validatedArgs = validateToolArguments(tool, preparedToolCall);
 		if (config.beforeToolCall) {
-			const beforeResult = await config.beforeToolCall(
-				{
-					assistantMessage,
-					toolCall,
-					args: validatedArgs,
-					context: currentContext,
-				},
+			const beforeResult = await raceWithAbortSignal(
+				config.beforeToolCall(
+					{
+						assistantMessage,
+						toolCall,
+						args: validatedArgs,
+						context: currentContext,
+					},
+					signal,
+				),
 				signal,
 			);
 			if (signal?.aborted) {
@@ -716,7 +942,7 @@ async function prepareToolCall(
 	} catch (error) {
 		return {
 			kind: "immediate",
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createClassifiedToolErrorResult(error, toolCall.name, "before_request", signal),
 			isError: true,
 		};
 	}
@@ -731,24 +957,27 @@ async function executePreparedToolCall(
 	let acceptingUpdates = true;
 
 	try {
-		const result = await prepared.tool.execute(
-			prepared.toolCall.id,
-			prepared.args as never,
+		const result = await raceWithAbortSignal(
+			prepared.tool.execute(
+				prepared.toolCall.id,
+				prepared.args as never,
+				signal,
+				(partialResult) => {
+					if (!acceptingUpdates) return;
+					updateEvents.push(
+						Promise.resolve(
+							emit({
+								type: "tool_execution_update",
+								toolCallId: prepared.toolCall.id,
+								toolName: prepared.toolCall.name,
+								args: prepared.toolCall.arguments,
+								partialResult,
+							}),
+						),
+					);
+				},
+			),
 			signal,
-			(partialResult) => {
-				if (!acceptingUpdates) return;
-				updateEvents.push(
-					Promise.resolve(
-						emit({
-							type: "tool_execution_update",
-							toolCallId: prepared.toolCall.id,
-							toolName: prepared.toolCall.name,
-							args: prepared.toolCall.arguments,
-							partialResult,
-						}),
-					),
-				);
-			},
 		);
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
@@ -757,7 +986,7 @@ async function executePreparedToolCall(
 		acceptingUpdates = false;
 		await Promise.all(updateEvents);
 		return {
-			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			result: createClassifiedToolErrorResult(error, prepared.toolCall.name, "after_request", signal),
 			isError: true,
 		};
 	} finally {
@@ -776,17 +1005,20 @@ async function finalizeExecutedToolCall(
 	let result = executed.result;
 	let isError = executed.isError;
 
-	if (config.afterToolCall && !signal?.aborted) {
+	if (config.afterToolCall) {
 		try {
-			const afterResult = await config.afterToolCall(
-				{
-					assistantMessage,
-					toolCall: prepared.toolCall,
-					args: prepared.args,
-					result,
-					isError,
-					context: currentContext,
-				},
+			const afterResult = await raceWithAbortSignal(
+				config.afterToolCall(
+					{
+						assistantMessage,
+						toolCall: prepared.toolCall,
+						args: prepared.args,
+						result,
+						isError,
+						context: currentContext,
+					},
+					signal,
+				),
 				signal,
 			);
 			if (afterResult) {
@@ -800,7 +1032,7 @@ async function finalizeExecutedToolCall(
 				isError = afterResult.isError ?? isError;
 			}
 		} catch (error) {
-			result = createErrorToolResult(error instanceof Error ? error.message : String(error));
+			result = createClassifiedToolErrorResult(error, prepared.toolCall.name, "after_request", signal);
 			isError = true;
 		}
 	}
@@ -817,6 +1049,17 @@ function createErrorToolResult(message: string): AgentToolResult<any> {
 		content: [{ type: "text", text: message }],
 		details: {},
 	};
+}
+
+function createClassifiedToolErrorResult(
+	error: unknown,
+	toolName: string,
+	phase: "before_request" | "after_request",
+	signal: AbortSignal | undefined,
+): AgentToolResult<any> {
+	const operation = toolName.startsWith("mcp__") ? "mcp" : "tool";
+	const classification = classifyAgentLoopError(error, { operation, phase, signal });
+	return createErrorToolResult(getAgentLoopErrorMessage(classification));
 }
 
 async function emitToolExecutionEnd(finalized: FinalizedToolCallOutcome, emit: AgentEventSink): Promise<void> {

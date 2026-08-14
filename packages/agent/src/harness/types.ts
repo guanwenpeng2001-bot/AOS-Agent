@@ -1,4 +1,4 @@
-import type { SimpleStreamOptions, Transport } from "@aos-agent/ai";
+import type { RetryPolicy, SimpleStreamOptions, Transport } from "@aos-agent/ai";
 import type { Static, TSchema } from "typebox";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "../types.ts";
 
@@ -102,6 +102,10 @@ export type AgentHarnessToolContextSource<TContext extends object | undefined> =
 export interface AgentHarnessStreamOptions {
 	/** Preferred transport forwarded to the stream function. */
 	transport?: Transport;
+	/** Operation-scoped cancellation signal forwarded to the model callback. */
+	signal?: AbortSignal;
+	/** Absolute deadline forwarded alongside the cancellation signal. */
+	deadlineAt?: number;
 	/** Provider request timeout in milliseconds. */
 	timeoutMs?: number;
 	/** Maximum provider retry attempts. */
@@ -123,6 +127,378 @@ export interface AgentHarnessStreamOptionsPatch
 	headers?: Record<string, string | undefined>;
 	/** Metadata patch. `undefined` values delete keys; explicit `metadata: undefined` clears all metadata. */
 	metadata?: Record<string, unknown | undefined>;
+}
+
+/** Provider boundary that may be cancelled by the caller or by a deadline. */
+export type HarnessProviderKind = "model" | "tool" | "mcp" | "sandbox";
+
+/** Point at which a provider operation failed. */
+export type HarnessProviderPhase = "before_request" | "request" | "after_request";
+
+/** Side-effect state known at the time a provider operation failed. */
+export type HarnessSideEffectState = "none" | "idempotent" | "unknown";
+
+/** Stable categories used by the harness retry boundary. */
+export type HarnessProviderErrorCategory =
+	| "transient"
+	| "permission"
+	| "parameter"
+	| "side_effect_unknown"
+	| "cancelled"
+	| "deadline"
+	| "unknown";
+
+/** Context required to classify provider failures without guessing whether a retry is safe. */
+export interface HarnessProviderErrorOptions {
+	/** Provider-adjacent operation that failed. Defaults to a model request. */
+	operation?: HarnessProviderKind;
+	/** Whether the request was sent or its side effect may have committed. */
+	phase?: HarnessProviderPhase;
+	/** Explicit knowledge about side effects. */
+	sideEffect?: HarnessSideEffectState;
+	/** Caller cancellation signal, when one exists. */
+	signal?: AbortSignal;
+}
+
+/** Classified provider failure. The original thrown value is retained for diagnostics. */
+export interface HarnessProviderErrorClassification {
+	category: HarnessProviderErrorCategory;
+	message: string;
+	operation: HarnessProviderKind;
+	phase: HarnessProviderPhase;
+	status?: number;
+	code?: string;
+	/** True only when retrying cannot duplicate an unknown side effect. */
+	safeToRetry: boolean;
+	cause: unknown;
+}
+
+export type HarnessRetryDecisionReason =
+	| "retry"
+	| "disabled"
+	| "exhausted"
+	| "cancelled"
+	| "deadline"
+	| "permission"
+	| "parameter"
+	| "side_effect_unknown"
+	| "unsafe_side_effect"
+	| "not_transient";
+
+/** Explain why the current provider attempt may or may not be retried. */
+export interface HarnessRetryDecision {
+	retry: boolean;
+	reason: HarnessRetryDecisionReason;
+	classification: HarnessProviderErrorClassification;
+}
+
+/** Additional retry context for a provider callback. */
+export interface HarnessRetryOptions extends HarnessProviderErrorOptions {
+	policy?: RetryPolicy;
+	/** Number of retries already consumed for the current durable step. */
+	retriesUsed: number;
+	/** Tool/MCP/Sandbox replay capability. Model calls do not need this flag. */
+	replay?: "never" | "safe";
+}
+
+/** Durable operation identity carried to every provider-adjacent callback. */
+export interface HarnessOperationContext {
+	operationId: string;
+	operationKind: "run" | "compaction" | "navigation";
+	branchId: string | null;
+	checkpointId?: string;
+	attempt: number;
+}
+
+/** Provider callback context. A callback must use the same signal and deadline for the whole attempt. */
+export interface HarnessProviderContext extends HarnessOperationContext {
+	provider: HarnessProviderKind;
+	signal?: AbortSignal;
+	deadlineAt?: number;
+}
+
+/** Generic callback shape shared by model, tool, MCP, and Sandbox adapters. */
+export type HarnessProviderCallback<TInput, TResult> = (
+	input: TInput,
+	context: HarnessProviderContext,
+) => TResult | Promise<TResult>;
+
+/** Cancellation and deadline resources owned by one harness operation. */
+export interface HarnessCancellation {
+	signal?: AbortSignal;
+	deadlineAt?: number;
+	cleanup(): void;
+}
+
+/** Options for {@link createHarnessCancellation}. */
+export interface HarnessCancellationOptions {
+	signal?: AbortSignal;
+	/** Absolute Unix epoch deadline in milliseconds. */
+	deadlineAt?: number;
+	/** Relative deadline in milliseconds, evaluated using `now`. */
+	deadlineMs?: number;
+	now?: () => number;
+}
+
+/** Error used as the reason when a harness deadline expires. */
+export class HarnessDeadlineExceeded extends Error {
+	readonly deadlineAt: number;
+
+	constructor(deadlineAt: number) {
+		super(`Harness deadline exceeded at ${deadlineAt}`);
+		this.name = "HarnessDeadlineExceeded";
+		this.deadlineAt = deadlineAt;
+	}
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringProperty(value: unknown, key: string): string | undefined {
+	const property = asRecord(value)?.[key];
+	return typeof property === "string" && property.length > 0 ? property : undefined;
+}
+
+function numberProperty(value: unknown, key: string): number | undefined {
+	const property = asRecord(value)?.[key];
+	return typeof property === "number" && Number.isFinite(property) ? property : undefined;
+}
+
+function providerStatus(error: unknown): number | undefined {
+	const direct = numberProperty(error, "status") ?? numberProperty(error, "statusCode");
+	if (direct !== undefined) return direct;
+	const record = asRecord(error);
+	const response = record?.response;
+	const metadata = record?.$metadata;
+	const nested = record?.error;
+	return (
+		numberProperty(response, "status") ??
+		numberProperty(response, "statusCode") ??
+		numberProperty(metadata, "httpStatusCode") ??
+		numberProperty(nested, "status") ??
+		numberProperty(nested, "statusCode")
+	);
+}
+
+function providerCode(error: unknown): string | undefined {
+	const record = asRecord(error);
+	const nested = record?.error;
+	return (
+		stringProperty(error, "code") ??
+		stringProperty(error, "type") ??
+		stringProperty(error, "name") ??
+		stringProperty(nested, "code") ??
+		stringProperty(nested, "type")
+	);
+}
+
+function providerMessage(error: unknown): string {
+	if (error instanceof Error && error.message) return error.message;
+	const record = asRecord(error);
+	const nested = record?.error;
+	const message =
+		stringProperty(error, "message") ??
+		stringProperty(error, "errorMessage") ??
+		stringProperty(nested, "message") ??
+		stringProperty(nested, "errorMessage");
+	if (message) return message;
+	return toError(error).message;
+}
+
+function providerDiagnosticText(error: unknown): string {
+	const parts: string[] = [];
+	let current: unknown = error;
+	const seen = new Set<unknown>();
+	for (let depth = 0; depth < 4 && current !== undefined && !seen.has(current); depth++) {
+		seen.add(current);
+		const message = providerMessage(current);
+		const code = providerCode(current);
+		if (message) parts.push(message);
+		if (code && code !== message) parts.push(code);
+		const record = asRecord(current);
+		current = record?.cause ?? record?.error;
+	}
+	const status = providerStatus(error);
+	if (status !== undefined) parts.push(String(status));
+	return parts.join(" ").toLowerCase();
+}
+
+function isAbortLike(error: unknown, signal: AbortSignal | undefined, text: string): boolean {
+	if (signal?.aborted) return true;
+	const name = providerCode(error)?.toLowerCase();
+	return name === "aborterror" || name === "cancelled" || name === "canceled" || /\babort(?:ed|ing)?\b|cancelled|canceled/.test(text);
+}
+
+function isDeadlineLike(error: unknown, signal: AbortSignal | undefined, text: string): boolean {
+	const name = providerCode(error)?.toLowerCase();
+	if (name === "agentdeadlineexceeded" || name === "harnessdeadlineexceeded" || name === "deadline_exceeded" || name === "lease_expired") {
+		return true;
+	}
+	if (/deadline|lease.?expir/.test(text)) return true;
+	if (signal?.reason !== undefined && signal.reason !== error) {
+		return isDeadlineLike(signal.reason, undefined, providerDiagnosticText(signal.reason));
+	}
+	return false;
+}
+
+function isPermissionError(text: string, status: number | undefined): boolean {
+	return (
+		status === 401 ||
+		status === 403 ||
+		/permission|forbidden|unauthori[sz]ed|access denied|not allowed|policy denied|capability denied|eacces|eperm/.test(text)
+	);
+}
+
+function isParameterError(text: string, status: number | undefined): boolean {
+	return (
+		status === 400 ||
+		status === 422 ||
+		/invalid[\s_-]*(?:argument|parameter|request|tool|schema)|malformed|validation failed|unsupported parameter|bad request|tool argument/.test(
+			text,
+		)
+	);
+}
+
+function isTransientError(text: string, status: number | undefined): boolean {
+	return (
+		(status !== undefined && (status === 408 || status === 409 || status === 429 || status >= 500)) ||
+		/overloaded|rate.?limit|too many requests|service.?unavailable|server.?error|internal.?error|network.?error|connection.?(?:error|refused|lost)|fetch failed|getaddrinfo|eai_again|enotfound|timed? out|timeout|socket hang up|websocket.?closed|stream ended|try your request again|please retry|resourceexhausted/.test(
+			text,
+		)
+	);
+}
+
+/** Classify a provider failure before applying the existing bounded RetryPolicy. */
+export function classifyHarnessProviderError(
+	error: unknown,
+	options: HarnessProviderErrorOptions = {},
+): HarnessProviderErrorClassification {
+	const operation = options.operation ?? "model";
+	const phase = options.phase ?? "request";
+	const status = providerStatus(error);
+	const code = providerCode(error);
+	const message = providerMessage(error);
+	const text = providerDiagnosticText(error);
+	const sideEffectUnknown =
+		options.sideEffect === "unknown" ||
+		(operation !== "model" && phase === "after_request" && options.sideEffect === undefined);
+	let category: HarnessProviderErrorCategory = "unknown";
+	if (sideEffectUnknown) category = "side_effect_unknown";
+	else if (isDeadlineLike(error, options.signal, text)) category = "deadline";
+	else if (isAbortLike(error, options.signal, text)) category = "cancelled";
+	else if (isPermissionError(text, status)) category = "permission";
+	else if (isParameterError(text, status)) category = "parameter";
+	else if (isTransientError(text, status)) category = "transient";
+
+	const safeToRetry =
+		category === "transient" &&
+		(operation === "model" ||
+			options.sideEffect === "none" ||
+			options.sideEffect === "idempotent" ||
+			phase === "before_request");
+	return { category, message, operation, phase, ...(status !== undefined ? { status } : {}), ...(code ? { code } : {}), safeToRetry, cause: error };
+}
+
+/** Decide whether a classified provider failure may consume another bounded retry. */
+export function decideHarnessRetry(
+	error: unknown | HarnessProviderErrorClassification,
+	options: HarnessRetryOptions,
+): HarnessRetryDecision {
+	const classification =
+		"category" in (asRecord(error) ?? {})
+			? (error as HarnessProviderErrorClassification)
+			: classifyHarnessProviderError(error, options);
+	const policy = options.policy;
+	if (!policy?.enabled) return { retry: false, reason: "disabled", classification };
+	if (options.signal?.aborted || classification.category === "cancelled") {
+		return { retry: false, reason: "cancelled", classification };
+	}
+	if (options.retriesUsed >= policy.maxRetries) return { retry: false, reason: "exhausted", classification };
+	switch (classification.category) {
+		case "permission":
+			return { retry: false, reason: "permission", classification };
+		case "parameter":
+			return { retry: false, reason: "parameter", classification };
+		case "side_effect_unknown":
+			return { retry: false, reason: "side_effect_unknown", classification };
+		case "deadline":
+			return { retry: false, reason: "deadline", classification };
+		case "transient":
+			if (
+				classification.operation === "model" ||
+				options.replay === "safe" ||
+				((options.sideEffect === "none" || options.sideEffect === "idempotent") && classification.safeToRetry)
+			) {
+				return { retry: true, reason: "retry", classification };
+			}
+			return { retry: false, reason: "unsafe_side_effect", classification };
+		default:
+			return { retry: false, reason: "not_transient", classification };
+	}
+}
+
+/** Create one operation-scoped signal and deadline for every provider callback. */
+export function createHarnessCancellation(options: HarnessCancellationOptions = {}): HarnessCancellation {
+	const now = options.now ?? Date.now;
+	const computedDeadline = options.deadlineAt ?? (options.deadlineMs === undefined ? undefined : now() + options.deadlineMs);
+	if (computedDeadline !== undefined && !Number.isFinite(computedDeadline)) {
+		throw new RangeError("Harness deadline must be finite");
+	}
+	if (options.deadlineMs !== undefined && (!Number.isFinite(options.deadlineMs) || options.deadlineMs < 0)) {
+		throw new RangeError("Harness deadlineMs must be a non-negative finite number");
+	}
+	if (computedDeadline === undefined) return { signal: options.signal, cleanup: () => {} };
+
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let parentListener: (() => void) | undefined;
+	const abortForDeadline = () => controller.abort(new HarnessDeadlineExceeded(computedDeadline));
+	if (options.signal) {
+		if (options.signal.aborted) controller.abort(options.signal.reason);
+		else {
+			parentListener = () => controller.abort(options.signal?.reason);
+			options.signal.addEventListener("abort", parentListener, { once: true });
+		}
+	}
+	const delay = computedDeadline - now();
+	if (delay <= 0) abortForDeadline();
+	else timer = setTimeout(abortForDeadline, delay);
+
+	return {
+		signal: controller.signal,
+		deadlineAt: computedDeadline,
+		cleanup: () => {
+			if (timer !== undefined) clearTimeout(timer);
+			if (parentListener && options.signal) options.signal.removeEventListener("abort", parentListener);
+		},
+	};
+}
+
+/** Attach the operation identity and shared cancellation context to a provider callback. */
+export function createHarnessProviderContext(
+	operation: HarnessOperationContext,
+	cancellation: Pick<HarnessCancellation, "signal" | "deadlineAt"> = {},
+	provider: HarnessProviderKind = "model",
+): HarnessProviderContext {
+	return {
+		...operation,
+		provider,
+		...(cancellation.signal ? { signal: cancellation.signal } : {}),
+		...(cancellation.deadlineAt !== undefined ? { deadlineAt: cancellation.deadlineAt } : {}),
+	};
+}
+
+/** Invoke a provider-adjacent callback after honoring an already-aborted operation signal. */
+export async function invokeHarnessProvider<TInput, TResult>(
+	callback: HarnessProviderCallback<TInput, TResult>,
+	input: TInput,
+	context: HarnessProviderContext,
+): Promise<TResult> {
+	if (context.signal?.aborted) {
+		throw context.signal.reason ?? new HarnessDeadlineExceeded(context.deadlineAt ?? Date.now());
+	}
+	return callback(input, context);
 }
 
 /** Kind of filesystem object as addressed by a {@link FileSystem}. Symlinks are not followed automatically. */

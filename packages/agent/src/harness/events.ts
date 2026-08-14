@@ -2,6 +2,10 @@ export interface RunStartEvent {
 	type: "run_start";
 	lane: string;
 	runId: string;
+	operationId?: string;
+	branchId?: string | null;
+	checkpointId?: string;
+	attempt?: number;
 }
 
 export interface RunEndEvent {
@@ -10,6 +14,11 @@ export interface RunEndEvent {
 	runId: string;
 	outcome: "completed" | "aborted" | "failed";
 	leafId: string;
+	operationId?: string;
+	branchId?: string | null;
+	checkpointId?: string;
+	attempt?: number;
+	resumeBoundary?: "before_step" | "awaiting_checkpoint" | "awaiting_tool_results" | "deferred" | "terminal_failure" | "checkpointed" | "aborting";
 }
 
 export type HarnessEvent = RunStartEvent | RunEndEvent;

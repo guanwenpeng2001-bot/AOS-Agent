@@ -1,62 +1,144 @@
-/** Cancellation and deadline propagation for one Agent operation. */
+/** Error used as the abort reason when an Agent operation reaches its deadline. */
+export class AgentDeadlineExceeded extends Error {
+	readonly deadlineAt: number;
 
-export type AgentOperationErrorCode = "cancelled" | "deadline_exceeded";
+	constructor(deadlineAt: number) {
+		super(`Agent operation deadline exceeded at ${deadlineAt}`);
+		this.name = "AgentDeadlineExceeded";
+		this.deadlineAt = deadlineAt;
+	}
+}
 
+/** Stable cancellation reason shared with Automation Host deadline handling. */
 export class AgentOperationError extends Error {
-	readonly code: AgentOperationErrorCode;
+	readonly code: "cancelled" | "deadline_exceeded";
 
-	constructor(code: AgentOperationErrorCode) {
+	constructor(code: "cancelled" | "deadline_exceeded") {
 		super(code === "deadline_exceeded" ? "Operation deadline exceeded." : "Operation cancelled.");
 		this.name = "AgentOperationError";
 		this.code = code;
 	}
 }
 
+export interface AgentOperationSignalOptions {
+	parent?: AbortSignal;
+	deadlineAt?: number;
+	deadlineMs?: number;
+	now?: () => number;
+}
+
 export interface AgentOperationSignal {
+	readonly controller: AbortController;
 	readonly signal: AbortSignal;
 	readonly deadlineAt?: number;
 	abort(reason?: unknown): void;
 	dispose(): void;
+	cleanup(): void;
 }
 
-/** Create a child signal linked to a caller signal and an optional duration. */
-export function createAgentOperationSignal(parent?: AbortSignal, deadlineMs?: number): AgentOperationSignal {
+function validateDeadline(deadlineAt: number | undefined, deadlineMs: number | undefined): void {
+	if (deadlineAt !== undefined && !Number.isFinite(deadlineAt)) {
+		throw new RangeError("deadlineAt must be finite");
+	}
+	if (deadlineMs !== undefined && (!Number.isFinite(deadlineMs) || deadlineMs < 0)) {
+		throw new RangeError("deadlineMs must be a non-negative finite number");
+	}
+}
+
+/** Create one linked signal for a run and all provider/tool callbacks in it. */
+export function createAgentOperationSignal(options?: AgentOperationSignalOptions): AgentOperationSignal;
+export function createAgentOperationSignal(parent?: AbortSignal, deadlineMs?: number): AgentOperationSignal;
+export function createAgentOperationSignal(
+	optionsOrParent: AgentOperationSignalOptions | AbortSignal = {},
+	deadlineMs?: number,
+): AgentOperationSignal {
+	const options: AgentOperationSignalOptions =
+		optionsOrParent instanceof AbortSignal ? { parent: optionsOrParent, deadlineMs } : optionsOrParent;
+	validateDeadline(options.deadlineAt, options.deadlineMs);
+	const now = options.now ?? Date.now;
+	const deadlineAt = options.deadlineAt ?? (options.deadlineMs === undefined ? undefined : now() + options.deadlineMs);
 	const controller = new AbortController();
-	const normalizedDeadlineMs =
-		deadlineMs === undefined ? undefined : Number.isFinite(deadlineMs) ? Math.max(0, deadlineMs) : 0;
-	const deadlineAt = normalizedDeadlineMs === undefined ? undefined : Date.now() + normalizedDeadlineMs;
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const abortFromParent = (): void => {
-		if (!controller.signal.aborted) controller.abort(parent?.reason ?? new AgentOperationError("cancelled"));
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let parentListener: (() => void) | undefined;
+
+	const abortForDeadline = () => {
+		if (!controller.signal.aborted && deadlineAt !== undefined) {
+			controller.abort(new AgentDeadlineExceeded(deadlineAt));
+		}
 	};
-	if (parent?.aborted) {
-		abortFromParent();
-	} else {
-		parent?.addEventListener("abort", abortFromParent, { once: true });
+
+	if (options.parent) {
+		if (options.parent.aborted) controller.abort(options.parent.reason);
+		else {
+			parentListener = () => controller.abort(options.parent?.reason);
+			options.parent.addEventListener("abort", parentListener, { once: true });
+		}
 	}
+
 	if (deadlineAt !== undefined) {
-		const abortAtDeadline = (): void => {
-			if (!controller.signal.aborted) controller.abort(new AgentOperationError("deadline_exceeded"));
-		};
-		if (deadlineAt <= Date.now()) abortAtDeadline();
-		else timeout = setTimeout(abortAtDeadline, deadlineAt - Date.now());
+		const delay = deadlineAt - now();
+		if (delay <= 0) abortForDeadline();
+		else timer = setTimeout(abortForDeadline, delay);
 	}
+
 	return {
+		controller,
 		signal: controller.signal,
 		...(deadlineAt === undefined ? {} : { deadlineAt }),
 		abort(reason?: unknown): void {
 			controller.abort(reason ?? new AgentOperationError("cancelled"));
 		},
 		dispose(): void {
-			if (timeout !== undefined) clearTimeout(timeout);
-			parent?.removeEventListener("abort", abortFromParent);
+			if (timer !== undefined) clearTimeout(timer);
+			if (parentListener && options.parent) options.parent.removeEventListener("abort", parentListener);
+		},
+		cleanup: () => {
+			if (timer !== undefined) clearTimeout(timer);
+			if (parentListener && options.parent) options.parent.removeEventListener("abort", parentListener);
 		},
 	};
 }
 
-export function throwIfAgentOperationAborted(signal?: AbortSignal): void {
-	if (!signal?.aborted) return;
-	const reason = signal.reason;
-	if (reason instanceof AgentOperationError) throw reason;
-	throw new AgentOperationError("cancelled");
+function abortReason(signal: AbortSignal): unknown {
+	if (signal.reason !== undefined) return signal.reason;
+	const error = new Error("The Agent operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+/** Stop waiting at cancellation while observing the abandoned promise safely. */
+export function raceWithAbortSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (signal === undefined) return operation;
+	if (signal.aborted) {
+		void operation.catch(() => undefined);
+		return Promise.reject(abortReason(signal));
+	}
+
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal.removeEventListener("abort", onAbort);
+		const onAbort = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(abortReason(signal));
+		};
+
+		signal.addEventListener("abort", onAbort, { once: true });
+		void operation.then(
+			(value) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(value);
+			},
+			(error: unknown) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			},
+		);
+		if (signal.aborted) onAbort();
+	});
 }
