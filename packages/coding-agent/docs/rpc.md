@@ -44,8 +44,10 @@ replay, or resend commands.
 
 If the active TCP connection closes while a run is executing, the host requests
 cancellation through the existing `requestCancel()` / `session.abort()` path and
-lets the normal settlement persist the terminal `run.cancelled` receipt. The
-disconnected client cannot receive that terminal event. After reconnecting, send
+lets the normal settlement persist the terminal `run.cancelled` receipt when no
+earlier deadline intent has won. A deadline intent recorded first remains a
+`run.failed` terminal. The disconnected client cannot receive that terminal
+event. After reconnecting, send
 `initialize`, then use `run.get` to read the durable run record and receipt; use
 `audit.replay` when the event stream may have been interrupted or the process
 boundary is uncertain.
@@ -1601,6 +1603,21 @@ With images and an optional declared route or role:
 
 The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
+If `deadlineAt` is already expired during command preflight, the command fails
+with `run_deadline_exceeded`; no Run ID, accepted ledger entry, `run.started`,
+or terminal event is created. If the request is accepted, reaching the
+deadline is a Run terminal failure, not a caller cancellation: the host aborts
+the active operation, settles once, and emits `run.failed` with
+`receipt.status: "failed"` and `receipt.terminalError.code:
+"run_deadline_exceeded"`. The existing `deadlineAt` field is reused; no
+top-level reason field or fourth terminal status is added.
+
+Example with a future deadline:
+
+```json
+{"id": "run-1", "type": "run.start", "message": "Process the prepared task", "deadlineAt": "2026-08-15T12:00:10.000Z"}
+```
+
 Accepted response (emitted before any run event):
 ```json
 {
@@ -1613,6 +1630,7 @@ Accepted response (emitted before any run event):
     "sessionId": "abc123",
     "attempt": 1,
     "status": "accepted",
+    "deadlineAt": "2026-08-15T12:00:10.000Z",
     "external": {"namespace": "ci", "externalSessionId": "job-123", "externalRunId": "attempt-1"},
     "modelBindingId": "model-binding:...",
     "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
@@ -1632,6 +1650,8 @@ Capability, Policy, and Sandbox bindings used by the Run.
 Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
 - `start_rejected` when the host preflight rejects the input. In v1, inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
+- `run_deadline_invalid` when `deadlineAt` is not a canonical UTC timestamp
+- `run_deadline_exceeded` when the deadline has expired before the run is accepted, including while asynchronous preflight is still running
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
 - `audit_persistence_failed` when an optional external mapping cannot be durably appended. The host does not publish a successful accepted response or acknowledge the mapping.
 
@@ -1649,7 +1669,7 @@ Failures:
 }
 ```
 
-If preflight rejects the run, no Run ID is created, no `run.started` is emitted, and nothing is written to the ledger. A run that returns `status: "accepted"` is guaranteed to eventually emit exactly one `run.started` and exactly one terminal event.
+If preflight rejects the run, no Run ID is created, no `run.started` is emitted, and nothing is written to the ledger. A run that returns `status: "accepted"` is guaranteed to eventually emit exactly one `run.started` and exactly one terminal event. An accepted run whose deadline later expires settles through the deadline contract below as `run.failed`, not as a second `run.start` response failure.
 
 #### run.get
 
@@ -1692,11 +1712,25 @@ Response:
 - `receipt`: present once the run is terminal.
 - `recovery`: present only when the run was left open by a hard process exit; the value is `"interrupted"` (see [Persistence and recovery](#persistence-and-recovery)).
 
+For a deadline terminal, `run.get` returns the same durable facts as the live
+`run.failed` event: the Run has `status: "failed"`, the receipt has
+`status: "failed"` and the original `deadlineAt`, and
+`receipt.terminalError.code` is `"run_deadline_exceeded"`. A successful
+`run.get` after reconnect is therefore authoritative even when the live
+terminal event was sent on a different transport connection.
+
 If `runId` does not exist in the current session's ledger, the response fails with `run_not_found`.
 
 #### run.cancel
 
-Request cancellation of a run. `run.cancel` sets cancellation intent and routes through the existing abort path (`session.abort()`); it does not itself terminate the run. The run becomes `cancelled` only after the agent has fully settled and the session has finished persisting; the `run.cancelled` terminal event is the authoritative signal that the caller may release resources.
+Request cancellation of a run. `run.cancel` records the cancellation intent
+only if no earlier termination intent was recorded, then routes through the
+existing abort path (`session.abort()`). It does not itself terminate the run.
+The run becomes `cancelled` only after the agent has fully settled and the
+session has finished persisting; the `run.cancelled` terminal event is the
+authoritative signal that the caller may release resources. If a deadline
+intent was recorded first, the request remains idempotent and the Run settles
+as `run.failed` with `terminalError.code: "run_deadline_exceeded"`.
 
 Request:
 ```json
@@ -1751,7 +1785,8 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 
 `run.resume` accepts the same optional `external` reference and `deadlineAt`.
 The deadline participates in idempotency and is persisted on the successor
-attempt. The external reference is persisted as the successor attempt's
+attempt. Its preflight and accepted-run expiry rules are the same as
+`run.start`. The external reference is persisted as the successor attempt's
 mapping; omitting it does not create a new mapping.
 
 Failures:
@@ -1764,6 +1799,48 @@ Failures:
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
 - `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
 - `run_deadline_invalid` or `run_deadline_exceeded` when the requested deadline is malformed or already expired
+
+### Deadline semantics
+
+`deadlineAt` has two distinct expiry boundaries:
+
+| Stage | Result |
+|-------|--------|
+| Before acceptance or during preflight | `run.start`/`run.resume` fails with `run_deadline_invalid` or `run_deadline_exceeded`; no Run ID, accepted ledger fact, `run.started`, or terminal event is created. |
+| After acceptance | The accepted Run's host timer records deadline termination, aborts the existing operation path, and lets normal settlement emit exactly one `run.failed` with `receipt.status: "failed"` and `receipt.terminalError.code: "run_deadline_exceeded"`. |
+
+The accepted-run deadline is a Host failure, not caller cancellation. Its
+public terminal error is intentionally safe and stable:
+
+```json
+{
+  "code": "run_deadline_exceeded",
+  "message": "Run failed.",
+  "retryable": false
+}
+```
+
+The timer records the deadline termination intent, stores the existing
+structured error, and uses the existing `AbortSignal`/`session.abort()` path.
+It does not write the ledger or emit a terminal record directly. The shared
+settle/finalize gate writes the terminal ledger fact and event. Every terminal
+path—completion, ordinary failure, explicit cancellation, deadline failure,
+and persistence failure—clears the deadline timer and related in-memory run
+state. A late timer, event, or settle signal cannot create a second terminal
+event or receipt.
+
+Termination intent is first-recorded-wins:
+
+| Event order | Result |
+|-------------|--------|
+| `run.cancel` records first, then the deadline fires | `run.cancelled` |
+| Deadline records first, then `run.cancel` arrives | `run.failed` with `run_deadline_exceeded` |
+| Agent completion wins before the timer | `run.completed`; the late timer is ignored |
+| The Run is already terminal | The original receipt is unchanged |
+
+Callers should branch on `terminalError.code`, not on the human-readable
+message. TCP and stdio consume the same Host dispatch, so the public records
+are identical.
 
 ### Audit query, replay, and external mapping
 
@@ -1817,6 +1894,16 @@ with a raw exception. Warning codes are stable (`unknown_source`,
 `malformed_source`, `unsupported_schema`, `orphan_source`, `duplicate_source`,
 `source_unavailable`, `ambiguous_run_association`, and `mapping_conflict`);
 warnings contain only safe identifiers and never raw custom-entry data.
+
+An accepted Run that reaches its deadline is a normal terminal replay: the
+summary has `status: "failed"`, carries the existing `deadlineAt`, and keeps
+the safe terminal error `{code: "run_deadline_exceeded", retryable: false}`;
+the replay status is `"complete"` when the persisted terminal fact and
+relevant sources are intact; the normal `"incomplete"` status still applies
+when a source cannot be reconstructed safely.
+An accepted Run whose process ended before that terminal fact was persisted is
+instead `"interrupted"` (see [Persistence and recovery](#persistence-and-recovery));
+replay never fabricates a deadline failure from the requested timestamp.
 
 #### external.map
 
@@ -1878,6 +1965,8 @@ Error codes:
 | `source_run_not_resumable` | The source run cannot be the basis for a new attempt | no |
 | `session_switch_cancelled` | A session-switch extension cancelled the switch during `run.resume` | no |
 | `ledger_persistence_failed` | The run ledger could not be appended to the session | no |
+| `run_deadline_invalid` | The requested deadline is not a canonical UTC timestamp | no |
+| `run_deadline_exceeded` | Preflight deadline expired, or terminal-only deadline failure code on `run.failed` | no |
 | `audit_query_invalid` | The audit query or filter shape is invalid | no |
 | `audit_cursor_invalid` | The cursor is malformed or bound to a different query | no |
 | `audit_scope_unavailable` | The requested Session audit scope cannot be read safely | no |
@@ -1888,7 +1977,13 @@ Error codes:
 | `audit_persistence_failed` | The external mapping could not be durably appended | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
-`retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
+`retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
+
+`run_deadline_invalid` is the command-preflight error for a non-canonical
+timestamp. `run_deadline_exceeded` has two distinct stages: before acceptance
+it is a command-preflight error and no Run is created; after acceptance it is
+the stable `terminalError.code` on the single `run.failed` receipt. In both
+cases callers should branch on `code`, not on the human-readable message.
 
 ### Run events and ordering
 
@@ -1925,6 +2020,18 @@ Ordering contract. For every accepted `run.start` or `run.resume`, records are e
 
 Session events that occur between acceptance and the `run.started` emission (for example during asynchronous preflight) are buffered and replayed after `run.started`, so no run event can precede the `run.start` success response or `run.started`. A preflight rejection emits none of the above: only the `run.start` failure response.
 
+The ordering is transport-neutral. A deadline does not add a record or bypass
+the settle gate: an accepted deadline run still emits the accepted response,
+`run.started`, any already-observed `run.event` records, and exactly one
+`run.failed` terminal record. Its receipt carries `status: "failed"` and
+`terminalError.code: "run_deadline_exceeded"` on both stdio and TCP.
+
+If an explicit `run.cancel` and the deadline race, the first recorded
+termination intent wins. Cancellation recorded first produces only
+`run.cancelled`; a deadline recorded first produces only `run.failed` with
+`run_deadline_exceeded`. A late intent cannot rewrite the receipt or produce a
+second terminal event.
+
 Complete successful exchange:
 
 ```json
@@ -1943,11 +2050,16 @@ Complete successful exchange:
 
 Each run produces exactly one terminal event and exactly one receipt. The terminal event is the live delivery of the receipt: the host persists the receipt in the run's ledger record and emits the terminal event carrying it. There is no separate `run.receipt` record. A repeated `run.cancel`, a late tool update, or a second settled signal cannot produce a second terminal event or a second receipt.
 
-Terminal status is determined in a fixed order:
+Terminal status is selected once at the settle gate:
 
-1. If cancellation was requested, the run is `cancelled`;
-2. otherwise, if the final agent result was an error or produced no usable completion, the run is `failed`;
-3. otherwise, the run is `completed`.
+1. If the first recorded termination intent is `deadline`, the run is `failed` with `terminalError.code: "run_deadline_exceeded"`;
+2. otherwise, if the first recorded termination intent is `cancel`, the run is `cancelled`;
+3. otherwise, if the final agent result was an error or produced no usable completion, the run is `failed`;
+4. otherwise, the run is `completed`.
+
+The first-intent rule is about the recorded cause, not which abort or settle
+callback happens to run first. Once a receipt is persisted, later cancel,
+deadline, provider, or agent events are ignored for terminal classification.
 
 The receipt's `finalText` is the final assistant text observed during *this run*; it is never reused from the whole session's last message, which could belong to a previous run.
 
@@ -1972,16 +2084,39 @@ Receipt shape (`RunReceipt`):
     "sessionId": "abc123",
     "status": "failed",
     "usage": {"input": 800, "output": 200, "total": 1000},
-    "terminalError": {"code": "model_error", "message": "529 overloaded_error: Overloaded", "retryable": false}
+    "terminalError": {"code": "model_error", "message": "Run failed.", "retryable": false}
   }
 }
 ```
 
-### Cancellation semantics
+When the host deadline is the first termination intent, the terminal receipt
+has the same shape with the existing deadline metadata and stable code:
+
+```json
+{
+  "type": "run.failed",
+  "runId": "run_abc123",
+  "sessionId": "abc123",
+  "sequence": 4,
+  "timestamp": "2026-08-10T12:00:04.000Z",
+  "receipt": {
+    "runId": "run_abc123",
+    "sessionId": "abc123",
+    "status": "failed",
+    "deadlineAt": "2026-08-10T12:00:03.000Z",
+    "terminalError": {"code": "run_deadline_exceeded", "message": "Run failed.", "retryable": false}
+  }
+}
+```
+
+### Cancellation and deadline semantics
 
 - `run.cancel` is a cancellation *request*. It sets cancellation intent and invokes the existing abort path; it does not end the run itself.
 - The run becomes `cancelled` only after the agent settles and the session finishes persisting. The `run.cancelled` terminal event is the signal that resources can be released.
 - Repeated `run.cancel` calls are idempotent: they return the current state and never produce a second terminal event.
+- A deadline is a host termination request, not an explicit cancellation. It aborts the active operation and settles as `run.failed` with `status: "failed"` and `terminalError.code: "run_deadline_exceeded"`.
+- The first recorded termination intent wins. If `run.cancel` records first, the result is `run.cancelled` even if the deadline fires while abort is settling. If the deadline records first, the result is `run.failed` even if a later `run.cancel` arrives.
+- A deadline that fires after the run is already terminal has no effect; it cannot rewrite a receipt or emit another terminal event.
 
 ```json
 {"type": "run.cancel", "runId": "run_abc123"}
@@ -2022,7 +2157,15 @@ Ledger entry kinds (`schemaVersion: 1`):
 
 On session load (including after a process restart), the host scans `getEntries()` for `automation.run` custom entries and folds them, in file order, into a per-session run index. A malformed or unknown-version ledger entry does not prevent host startup: the entry is skipped and a diagnostic is written to stderr. `run.get` serves from this index, so a terminal run remains queryable in a fresh host process.
 
-If a process is killed before a terminal receipt is written, the ledger may hold only `accepted`/`running` records. The host never fabricates a `cancelled` or `completed` state. On the next open, `run.get` returns the original record with `recovery: "interrupted"`. `interrupted` is a read-time recovery marker, not a new persisted terminal state.
+If a process is killed before a terminal receipt is written, the ledger may hold only `accepted`/`running` records. The host never fabricates a `cancelled`, `failed`, or `completed` state from an abort, deadline, or requested outcome. On the next open, `run.get` returns the original record with `recovery: "interrupted"`. `interrupted` is a read-time recovery marker, not a new persisted terminal state.
+
+In particular, `deadlineAt` is not a persisted timer. If the process ends
+before the deadline terminal is durably appended, `run.get` reports
+`recovery: "interrupted"` and `audit.replay` reports `status: "interrupted"`;
+neither command invents `run.failed` or `run_deadline_exceeded`. If the
+`run.failed` receipt was persisted before the process ended, the same Run is
+read as `status: "failed"` and replay is `"complete"` with the stable deadline
+error code.
 
 `run.resume` may use either a terminal run or a run marked `interrupted` as its source, and creates a new attempt (`attempt + 1`) referencing the source run id. A session without a `sessionFile` (in-memory only) can still run, but `run.resume` fails with `session_not_persistent`.
 

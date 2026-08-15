@@ -259,6 +259,8 @@ export type RunStatus = "accepted" | "running" | "completed" | "failed" | "cance
 export type RunTerminalStatus = "completed" | "failed" | "cancelled";
 export type RunRecoveryState = "interrupted";
 
+type RunTerminationIntent = "cancel" | "deadline";
+
 export function isTerminalStatus(status: RunStatus): status is RunTerminalStatus {
 	return status === "completed" || status === "failed" || status === "cancelled";
 }
@@ -819,8 +821,10 @@ export interface RunHandle {
 	 * Returns the emitted event when running; undefined when buffered or terminal.
 	 */
 	captureSessionEvent(event: AgentSessionEvent): RunStreamEvent | undefined;
-	/** Record cancellation intent only; the terminal event is produced by settle(). */
+	/** Record the first cancellation intent only; the terminal event is produced by settle(). */
 	requestCancel(): void;
+	/** Record the first deadline intent only; settle() produces the failed terminal event. */
+	requestDeadlineExceeded(): void;
 	setUsageBaseline(baseline: RunUsageSnapshot): void;
 	computeUsageDelta(current: RunUsageSnapshot): RunUsage;
 	finalText(): string;
@@ -2479,7 +2483,7 @@ class RunHandleImpl implements RunHandle {
 	private readonly _bindingAssociation: RunBindingAssociation | undefined;
 	private _policySummary: PublicPolicySummary | undefined;
 	private _sequence = 0;
-	private _cancelled = false;
+	private _terminationIntent: RunTerminationIntent | undefined;
 	private _finalText = "";
 	private _usageBaseline: RunUsageSnapshot | undefined;
 	private readonly _buffered: AgentSessionEvent[] = [];
@@ -2573,7 +2577,7 @@ class RunHandleImpl implements RunHandle {
 	}
 
 	get cancelled(): boolean {
-		return this._cancelled;
+		return this._terminationIntent === "cancel";
 	}
 
 	get emitted(): readonly RunStreamEvent[] {
@@ -2620,7 +2624,11 @@ class RunHandleImpl implements RunHandle {
 	}
 
 	requestCancel(): void {
-		this._cancelled = true;
+		this.recordTerminationIntent("cancel");
+	}
+
+	requestDeadlineExceeded(): void {
+		this.recordTerminationIntent("deadline");
 	}
 
 	setUsageBaseline(baseline: RunUsageSnapshot): void {
@@ -2651,9 +2659,20 @@ class RunHandleImpl implements RunHandle {
 		// Store only a fixed public-safe terminal error. Run ledgers can be read
 		// after process restart, so retaining free text here could preserve local
 		// paths or source identities even when every live RPC serializer is safe.
+		const status: RunTerminalStatus =
+			this._terminationIntent === "deadline"
+				? "failed"
+				: this._terminationIntent === "cancel"
+					? "cancelled"
+					: input.outcome;
 		const terminalError =
-			input.terminalError !== undefined ? serializePublicAutomationError(input.terminalError) : undefined;
-		const status: RunTerminalStatus = this._cancelled ? "cancelled" : input.outcome;
+			this._terminationIntent === "deadline"
+				? serializePublicAutomationError(createAutomationError("run_deadline_exceeded", "Run failed.", false))
+				: this._terminationIntent === "cancel" && input.terminalError?.code === "run_deadline_exceeded"
+					? undefined
+					: input.terminalError !== undefined
+						? serializePublicAutomationError(input.terminalError)
+						: undefined;
 		const endedAt = this.coordinator.now();
 		const receipt: RunReceipt = {
 			runId: this.runId,
@@ -2818,6 +2837,12 @@ class RunHandleImpl implements RunHandle {
 			}
 		}
 	}
+
+	private recordTerminationIntent(intent: RunTerminationIntent): void {
+		if (this._receipt !== undefined || isTerminalStatus(this._record.status)) return;
+		if (this._terminationIntent !== undefined) return;
+		this._terminationIntent = intent;
+	}
 }
 
 /** Read-only handle returned when a retry key resolves to an existing Run. */
@@ -2870,6 +2895,10 @@ class ReplayedRunHandleImpl implements RunHandle {
 	}
 
 	requestCancel(): void {
+		// A retry must not mutate a recovered Run or append a second terminal fact.
+	}
+
+	requestDeadlineExceeded(): void {
 		// A retry must not mutate a recovered Run or append a second terminal fact.
 	}
 

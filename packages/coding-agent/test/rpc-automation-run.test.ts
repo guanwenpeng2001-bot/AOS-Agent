@@ -1535,7 +1535,183 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("propagates the Run deadline and binding association to the terminal receipt", async () => {
+	it("rejects a non-canonical deadline during preflight without creating a Run", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const invalidDeadlines = [
+				"2026-08-15T12:00:10Z",
+				"2026-08-15T12:00:10.000+00:00",
+				"2026-13-40T12:00:10.000Z",
+			];
+			for (const [index, deadlineAt] of invalidDeadlines.entries()) {
+				const id = `deadline-invalid-${index}`;
+				lineHandler(JSON.stringify({ id, type: "run.start", message: "Hello", deadlineAt }));
+				await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, id)).toHaveLength(1));
+				const response = responsesFor(rpcIo.outputLines, id)[0];
+				expect(response).toMatchObject({
+					success: false,
+					error: { code: "run_deadline_invalid", retryable: false },
+				});
+				expect("data" in response).toBe(false);
+			}
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+			expect(runEventsOfType(currentLines(), "run.started")).toHaveLength(0);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects an expired deadline during preflight without creating a Run", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() - 1).toISOString();
+			lineHandler(JSON.stringify({ id: "expired", type: "run.start", message: "Hello", deadlineAt }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "expired")).toHaveLength(1));
+			const response = responsesFor(rpcIo.outputLines, "expired")[0];
+			expect(response).toMatchObject({
+				success: false,
+				error: { code: "run_deadline_exceeded", retryable: false },
+			});
+			expect("data" in response).toBe(false);
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+			expect(runEventsOfType(currentLines(), "run.started")).toHaveLength(0);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("rejects when the Run deadline expires before prompt preflight acceptance", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+		const originalWhenCapabilitiesReady = runtimeHost.session.whenCapabilitiesReady.bind(runtimeHost.session);
+		let preflightSignal: AbortSignal | undefined;
+		const readinessSpy = vi
+			.spyOn(runtimeHost.session, "whenCapabilitiesReady")
+			.mockImplementation(async (runId, signal) => {
+				await originalWhenCapabilitiesReady(runId, signal);
+				if (signal !== undefined) {
+					preflightSignal = signal;
+					await sleep(120);
+				}
+			});
+		const abortSpy = vi.spyOn(runtimeHost.session, "abort");
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 40).toISOString();
+			const request = {
+				type: "run.start",
+				clientRequestId: "deadline-preflight-boundary-1",
+				message: "Hello",
+				deadlineAt,
+			};
+			lineHandler(JSON.stringify({ id: "expired-1", ...request }));
+			lineHandler(JSON.stringify({ id: "expired-2", ...request }));
+
+			await vi.waitFor(() => {
+				expect(responsesFor(rpcIo.outputLines, "expired-1")).toHaveLength(1);
+				expect(responsesFor(rpcIo.outputLines, "expired-2")).toHaveLength(1);
+			});
+			for (const id of ["expired-1", "expired-2"]) {
+				const response = responsesFor(rpcIo.outputLines, id)[0];
+				expect(response).toMatchObject({
+					success: false,
+					error: { code: "run_deadline_exceeded", retryable: false },
+				});
+				expect("data" in response).toBe(false);
+			}
+			expect(preflightSignal?.aborted).toBe(true);
+			expect(abortSpy).not.toHaveBeenCalled();
+			expect(
+				currentLines().some((record) => typeof record.type === "string" && record.type.startsWith("run.")),
+			).toBe(false);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
+
+			lineHandler(JSON.stringify({ id: "retry", type: "run.start", message: "Retry" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "retry")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
+		} finally {
+			readinessSpy.mockRestore();
+			abortSpy.mockRestore();
+			await cleanup();
+		}
+	});
+
+	it("cancels an active run before its deadline and treats duplicate cancel as idempotent", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 100 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 300).toISOString();
+			lineHandler(JSON.stringify({ id: "r2", type: "run.start", message: "Hello", deadlineAt }));
+
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r2");
+				expect(res).toHaveLength(1);
+				expect(res[0].success).toBe(true);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			expect(runId!).toBeTruthy();
+
+			lineHandler(JSON.stringify({ id: "c1", type: "run.cancel", runId: runId! }));
+
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c1")).toHaveLength(1));
+			const c1 = responsesFor(rpcIo.outputLines, "c1")[0];
+			expect(c1.success).toBe(true);
+			expect((c1.data as { status: string }).status).toBe("running");
+			const cancelResponseIndex = currentLines().findIndex(
+				(record) => record.id === "c1" && record.type === "response",
+			);
+
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect(terminalEvents(currentLines())[0].type).toBe("run.cancelled");
+			const terminalIndex = currentLines().findIndex((record) => record.type === "run.cancelled");
+			expect(cancelResponseIndex).toBeGreaterThanOrEqual(0);
+			expect(cancelResponseIndex).toBeLessThan(terminalIndex);
+
+			lineHandler(JSON.stringify({ id: "c2", type: "run.cancel", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c2")).toHaveLength(1));
+			const c2 = responsesFor(rpcIo.outputLines, "c2")[0];
+			expect(c2.success).toBe(true);
+			expect((c2.data as { status: string }).status).toBe("cancelled");
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+
+			await sleep(350);
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(runEventsOfType(currentLines(), "run.failed")).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("propagates the Run deadline, aborts the prompt, and fails the terminal receipt", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
 		const modelHandle = createBindingHandle({
 			domain: "model",
@@ -1544,6 +1720,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			relation: "run.model",
 		});
 		vi.spyOn(runtimeHost.session, "getActiveBindingHandles").mockReturnValue([modelHandle]);
+		const abortSpy = vi.spyOn(runtimeHost.session, "abort");
 
 		try {
 			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
@@ -1570,13 +1747,277 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
 			const terminal = terminalEvents(currentLines())[0];
-			expect(terminal.type).toBe("run.cancelled");
+			expect(terminal.type).toBe("run.failed");
 			expect(terminal.receipt).toMatchObject({
-				status: "cancelled",
+				status: "failed",
 				deadlineAt,
 				bindingAssociation: acceptedData!.bindingAssociation,
-				terminalError: { code: "run_deadline_exceeded" },
+				terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
 			});
+			expect(abortSpy).toHaveBeenCalledTimes(1);
+			expect(runEventsOfType(currentLines(), "run.cancelled")).toHaveLength(0);
+
+			lineHandler(JSON.stringify({ id: "deadline-get", type: "run.get", runId: acceptedData!.runId }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-get")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "deadline-get")[0]).toMatchObject({
+				success: true,
+				data: {
+					run: { id: acceptedData!.runId, status: "failed", deadlineAt },
+					receipt: {
+						status: "failed",
+						deadlineAt,
+						terminalError: { code: "run_deadline_exceeded", retryable: false },
+					},
+				},
+			});
+
+			lineHandler(
+				JSON.stringify({
+					id: "deadline-audit-query",
+					type: "audit.query",
+					scope: "current-session",
+					runId: acceptedData!.runId,
+					types: ["run.failed"],
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-audit-query")).toHaveLength(1));
+			const auditQuery = responsesFor(rpcIo.outputLines, "deadline-audit-query")[0];
+			expect(auditQuery).toMatchObject({ success: true });
+			expect((auditQuery.data as { events: Array<Record<string, unknown>> }).events).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "run.failed",
+						runId: acceptedData!.runId,
+						summary: expect.objectContaining({
+							status: "failed",
+							deadlineAt,
+							terminalError: { code: "run_deadline_exceeded", retryable: false },
+						}),
+					}),
+				]),
+			);
+
+			lineHandler(
+				JSON.stringify({
+					id: "deadline-audit-replay",
+					type: "audit.replay",
+					runId: acceptedData!.runId,
+					scope: "current-session",
+					types: ["run.failed"],
+				}),
+			);
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-audit-replay")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "deadline-audit-replay")[0]).toMatchObject({
+				success: true,
+				data: {
+					status: "incomplete",
+					run: {
+						status: "failed",
+						deadlineAt,
+						terminalError: { code: "run_deadline_exceeded", retryable: false },
+					},
+				},
+			});
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("keeps deadline failure when cancel arrives after the deadline intent", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 3000 });
+		const originalAbort = runtimeHost.session.abort.bind(runtimeHost.session);
+		let releaseAbort: () => void = () => {};
+		let markAbortStarted: () => void = () => {};
+		const abortStarted = new Promise<void>((resolve) => {
+			markAbortStarted = resolve;
+		});
+		const abortGate = new Promise<void>((resolve) => {
+			releaseAbort = resolve;
+		});
+		vi.spyOn(runtimeHost.session, "abort").mockImplementation(async () => {
+			markAbortStarted();
+			await abortGate;
+			await originalAbort();
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 500).toISOString();
+			lineHandler(JSON.stringify({ id: "deadline-race", type: "run.start", message: "Hello", deadlineAt }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const response = responsesFor(rpcIo.outputLines, "deadline-race")[0];
+				expect(response?.success).toBe(true);
+				runId = (response.data as { runId: string }).runId;
+			});
+
+			await abortStarted;
+			lineHandler(JSON.stringify({ id: "late-cancel", type: "run.cancel", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "late-cancel")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "late-cancel")[0]).toMatchObject({
+				success: true,
+				data: { runId: runId!, status: "running" },
+			});
+
+			releaseAbort();
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect(terminalEvents(currentLines())[0]).toMatchObject({
+				type: "run.failed",
+				runId: runId!,
+				receipt: {
+					status: "failed",
+					deadlineAt,
+					terminalError: { code: "run_deadline_exceeded", retryable: false },
+				},
+			});
+			expect(runEventsOfType(currentLines(), "run.cancelled")).toHaveLength(0);
+		} finally {
+			releaseAbort();
+			await cleanup();
+		}
+	});
+
+	it("clears the deadline timer after normal completion", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+		const originalSetTimeout = globalThis.setTimeout;
+		let deadlineTimerHandle: ReturnType<typeof setTimeout> | undefined;
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+			const timer = originalSetTimeout(handler, timeout, ...args);
+			if (typeof timeout === "number" && timeout > 800 && timeout < 2000) deadlineTimerHandle = timer;
+			return timer;
+		});
+		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+		try {
+			lineHandler(JSON.stringify({ id: "i-deadline-cleanup", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-deadline-cleanup")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 1000).toISOString();
+			lineHandler(JSON.stringify({ id: "deadline-cleanup-run", type: "run.start", message: "Hello", deadlineAt }));
+			await vi.waitFor(() => {
+				const response = responsesFor(rpcIo.outputLines, "deadline-cleanup-run")[0];
+				expect(response?.success).toBe(true);
+			});
+			const deadlineTimerCall = setTimeoutSpy.mock.calls.find(
+				([, delay]) => typeof delay === "number" && delay > 800 && delay < 2000,
+			);
+			expect(deadlineTimerCall).toBeDefined();
+			expect(deadlineTimerHandle).toBeDefined();
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
+			await vi.waitFor(
+				() => expect(clearTimeoutSpy.mock.calls.some(([timer]) => timer === deadlineTimerHandle)).toBe(true),
+				{ timeout: 500 },
+			);
+
+			await sleep(1100);
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(runEventsOfType(currentLines(), "run.failed")).toHaveLength(0);
+		} finally {
+			setTimeoutSpy.mockRestore();
+			clearTimeoutSpy.mockRestore();
+			await cleanup();
+		}
+	});
+
+	it("clears deadline state and releases the session after terminal persistence fails", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
+		const sessionManager = runtimeHost.session.sessionManager;
+		const appendCustomEntry = sessionManager.appendCustomEntry.bind(sessionManager);
+		const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
+			if (
+				customType === "automation.run" &&
+				typeof data === "object" &&
+				data !== null &&
+				"kind" in data &&
+				data.kind === "terminal"
+			) {
+				throw new Error("terminal ledger unavailable");
+			}
+			return appendCustomEntry(customType, data);
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "i-deadline-persist", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-deadline-persist")).toHaveLength(1));
+
+			lineHandler(
+				JSON.stringify({
+					id: "deadline-persist-run",
+					type: "run.start",
+					message: "Hello",
+					deadlineAt: new Date(Date.now() + 80).toISOString(),
+				}),
+			);
+			let runId: string | undefined;
+			await vi.waitFor(() => {
+				const response = responsesFor(rpcIo.outputLines, "deadline-persist-run")[0];
+				expect(response?.success).toBe(true);
+				runId = (response.data as { runId: string }).runId;
+			});
+			await vi.waitFor(
+				() =>
+					expect(
+						appendSpy.mock.calls.some(
+							([customType, data]) =>
+								customType === "automation.run" &&
+								typeof data === "object" &&
+								data !== null &&
+								"kind" in data &&
+								data.kind === "terminal",
+						),
+					).toBe(true),
+				{ timeout: 3000 },
+			);
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+
+			appendSpy.mockRestore();
+			lineHandler(JSON.stringify({ id: "deadline-persist-get", type: "run.get", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-persist-get")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "deadline-persist-get")[0]).toMatchObject({
+				success: true,
+				data: { run: { id: runId!, status: "running" }, recovery: "interrupted" },
+			});
+
+			lineHandler(JSON.stringify({ id: "deadline-persist-retry", type: "run.start", message: "Retry" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-persist-retry")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
+			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
+		} finally {
+			appendSpy.mockRestore();
+			await cleanup();
+		}
+	});
+
+	it("keeps a single terminal when completion wins a late timer and cancel", async () => {
+		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const deadlineAt = new Date(Date.now() + 100).toISOString();
+			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello", deadlineAt }));
+			let runId: string;
+			await vi.waitFor(() => {
+				const res = responsesFor(rpcIo.outputLines, "r1");
+				expect(res).toHaveLength(1);
+				runId = (res[0].data as { runId: string }).runId;
+			});
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
+			await sleep(150);
+
+			lineHandler(JSON.stringify({ id: "c1", type: "run.cancel", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c1")).toHaveLength(1));
+			const c1 = responsesFor(rpcIo.outputLines, "c1")[0];
+			expect(c1.success).toBe(true);
+			expect((c1.data as { status: string }).status).toBe("completed");
+			expect(terminalEvents(currentLines())).toHaveLength(1);
+			expect(runEventsOfType(currentLines(), "run.failed")).toHaveLength(0);
 		} finally {
 			await cleanup();
 		}
