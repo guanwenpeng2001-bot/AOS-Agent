@@ -1534,7 +1534,7 @@ loopback-only, so it is not a remotely exposed service.
 
 Automation Host is strictly opt-in. A client that never sends `initialize` sees exactly the legacy RPC behavior described above: `prompt`, bare session events, the string `error` field, the extension UI sub-protocol, and so on. No existing client has to migrate.
 
-All `run.*` and `task.gate.*` commands require a successful `initialize` first. If a client sends a `run.*` or `task.gate.*` command before initializing, the host replies with the structured error `host_not_initialized`.
+All `run.*`, `task.gate.*`, and `task.graph.*` commands require a successful `initialize` first. If a client sends a `run.*`, `task.gate.*`, or `task.graph.*` command before initializing, the host replies with the structured error `host_not_initialized`.
 
 `initialize` accepts exactly `protocolVersion: 1`. Any other version is rejected with `unsupported_protocol_version`; there is no silent downgrade and no fallback to an older contract.
 
@@ -1557,12 +1557,13 @@ Response:
     "sessionFile": "/path/to/session.jsonl",
     "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"],
     "auditCommands": ["audit.query", "audit.replay", "external.map"],
-    "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"]
+    "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"],
+    "taskGraphCommands": ["task.graph.create", "task.graph.get", "task.graph.list", "task.graph.node.attach", "task.graph.node.settle"]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, and task gate commands available on this host. `taskGateCommands` is optional and additive: legacy clients that ignore it keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, and task graph commands available on this host. `taskGateCommands` and `taskGraphCommands` are optional and additive: legacy clients that ignore them keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 Unsupported version:
 ```json
@@ -2151,6 +2152,258 @@ Each transition is persisted as a Session custom entry with `customType: "task.g
 
 `task.gate.*` commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot approve, reject, or cancel a Gate itself. The human entry point is the Automation Host control plane (`task.gate.approve` / `task.gate.reject` / `task.gate.cancel`); `actorId` is only a label until identity, role, and authorization are added in a separate security PR.
 
+### Task Graph commands (task.graph.*)
+
+Task Graph is the v1 control-plane contract for decomposing a large goal into an immutable DAG of ordinary Run nodes and exposing the shared task state that results. A Graph records which nodes exist, what each node depends on, whether a node's stage Gate is satisfied, and which accepted Run executes each node. It is not a second Run ledger, not an execution engine, and not a scheduler: nodes are executed through the existing `run.start` / `run.resume` flow, and the Graph only observes and associates those Runs.
+
+The commands are additive Automation Host capabilities advertised as `taskGraphCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
+
+```text
+task.graph.create
+task.graph.get
+task.graph.list
+task.graph.node.attach
+task.graph.node.settle
+```
+
+The intended consumption order is:
+
+```text
+task.graph.create → immutable DAG with pending nodes
+  → task.graph.get / task.graph.list exposes derived ready nodes
+  → caller submits an ordinary run.start / run.resume
+  → task.graph.node.attach links the accepted Run to the node
+  → run.started / run.event / terminal receipt
+  → task.graph.node.settle folds the terminal receipt into the node
+  → the next eligible nodes become visible through task.graph.get / list
+```
+
+#### Graph identity and immutable definition
+
+A Graph is identified by the business key:
+
+```text
+sessionId + taskId + graphRevision
+```
+
+`taskId` is an opaque external orchestration identifier; v1 does not create a Task object. `graphRevision` is a positive integer; changing the node set or dependencies requires a new revision, which creates a new immutable Graph. Old graphs stay read-only, and facts on old graphs are never migrated. The same business key can only ever describe one Graph.
+
+`task.graph.create` submits the complete node set once:
+
+```json
+{
+  "type": "task.graph.create",
+  "taskId": "task_42",
+  "graphRevision": 1,
+  "nodes": [
+    {"nodeId": "inspect", "dependsOn": []},
+    {"nodeId": "implement", "dependsOn": ["inspect"]},
+    {"nodeId": "review", "dependsOn": ["implement"], "gateRef": {"stageId": "stage_review", "stageRevision": 1}}
+  ],
+  "clientRequestId": "graph-create-001"
+}
+```
+
+Creation validates:
+
+- `taskId`, `nodeId`, and `stageId` pass the safe opaque identifier rules (bounded length, safe charset, no control characters), and `graphRevision` and `stageRevision` are positive safe integers;
+- node IDs are unique within the Graph; every `dependsOn` ID exists in the same Graph; a node cannot depend on itself; the Graph must be a DAG (a cycle returns `task_graph_dependency_cycle`);
+- the Graph contains at least one node, and node count, edge count, per-node dependency count, and total request size stay within server bounds (v1: 256 nodes, 1024 edges, 64 dependencies per node, 256-character task/node/stage IDs, 128-character `clientRequestId`);
+- no prompt, message, command, args, cwd, path, content, environment, credential, or free text is accepted as node data.
+
+A successful `create` appends one immutable definition entry and returns the Graph with every node `pending`, the derived availability, the aggregate summary, `createdAt`, and the idempotency flag:
+
+```json
+{
+  "type": "response",
+  "command": "task.graph.create",
+  "success": true,
+  "data": {
+    "graph": {
+      "schemaVersion": 1,
+      "sessionId": "session_abc",
+      "taskId": "task_42",
+      "graphRevision": 1,
+      "createdAt": "2026-08-16T12:00:00.000Z",
+      "nodes": [
+        {"nodeId": "inspect", "dependsOn": [], "status": "pending", "nodeRevision": 0, "availability": "ready", "blockingNodeIds": []},
+        {"nodeId": "implement", "dependsOn": ["inspect"], "status": "pending", "nodeRevision": 0, "availability": "waiting_dependencies", "blockingNodeIds": ["inspect"]},
+        {"nodeId": "review", "dependsOn": ["implement"], "gateRef": {"stageId": "stage_review", "stageRevision": 1}, "status": "pending", "nodeRevision": 0, "availability": "waiting_dependencies", "blockingNodeIds": ["implement"]}
+      ],
+      "summary": {"status": "active", "pending": 3, "running": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
+    },
+    "idempotent": false
+  }
+}
+```
+
+`create` never starts a Run, never creates or decides a Gate, and never executes a prompt.
+
+#### Node status and derived availability
+
+Persisted node status is one of `pending`, `running`, `succeeded`, `failed`, or `cancelled`. `nodeRevision` is the monotonic transition version: `0` pending, `1` running, `2` terminal. v1 never reopens, retries, or rewrites a terminal node.
+
+Node availability is a read-only value derived at read time from the node status, the dependency statuses, and the current Task Gate state. It is never persisted and never written back:
+
+| Node condition | availability |
+| --- | --- |
+| `pending`, all dependencies `succeeded`, no `gateRef` or referenced Gate `approved` | `ready` |
+| `pending`, at least one dependency not yet terminal | `waiting_dependencies` |
+| `pending`, dependencies satisfied, `gateRef` Gate missing or `pending` | `waiting_gate` |
+| `pending`, a dependency is `failed`/`cancelled`, or the `gateRef` Gate is `rejected`/`cancelled` | `blocked` |
+| `running` or any terminal status | `null` |
+
+Eligibility is computed for every `pending` node in this order: any `failed`/`cancelled` dependency blocks first; otherwise an unsucceeded dependency yields `waiting_dependencies`; otherwise a missing or `pending` Gate yields `waiting_gate`; otherwise the node is `ready`. `blockingNodeIds` lists the dependency or Gate reason for a non-ready node, and `gateStatus` reports the referenced Gate's current status or `missing`. The aggregate Graph `summary.status` is `active` until every node is terminal, then `succeeded` (all succeeded), `failed` (at least one failed), or `cancelled` (no failures, at least one cancelled); it is a derived filter for `task.graph.list`, not a separately writable state.
+
+#### Availability, Gate, and run.started
+
+`ready`, Gate `approved`, and `run.started` are three distinct facts:
+
+```text
+Gate approved ≠ ready        (dependencies may still be incomplete)
+ready         ≠ run.started  (execution has not begun)
+node running  ≠ run.started  (the attached Run may still be in preflight)
+```
+
+`run.started` remains the only signal that the accepted Run actually began executing. Deriving availability never appends a Session entry, and `task.graph.node.attach` never calls `run.start`, never waits for `run.started`, and never emits a run event.
+
+#### Run, Binding, Receipt, Gate, and Audit boundaries
+
+| Component | Task Graph does | Task Graph never does |
+| --- | --- | --- |
+| Task Gate | reads the Gate for `stageId + stageRevision` through a read-only lookup to compute eligibility | creates, approves, rejects, or cancels a Gate |
+| Run | stores a `runRef` (`sessionId` + `runId`) and reads the Run terminal for `settle` | starts, resumes, cancels, pauses, or re-settles a Run |
+| Binding | inherits the attached Run's frozen binding handles | copies or recomputes a Binding |
+| Receipt | maps the existing Run terminal receipt to a node terminal | creates a second TaskReceipt or rewrites the Run receipt |
+| Audit | writes safe `task.graph` summaries and correlates by `runId` | passes through raw Graph entries, prompts, or tool output |
+| Policy / Sandbox | nothing; the Run's normal preflight still applies | bypasses `session_busy`, Policy, Capability, or Sandbox because a node is `ready` |
+
+The node's `runRef` only links to a Run that already exists in the current Session. Clients read execution facts through the existing `run.get`, `audit.query`, and `audit.replay` commands.
+
+#### task.graph.get
+
+Read the current safe view of one Graph in the current Session:
+
+```json
+{"type": "task.graph.get", "taskId": "task_42", "graphRevision": 1}
+```
+
+The response returns the Graph record with node views (including derived `availability`, `blockingNodeIds`, and `gateStatus`) and the aggregate summary. `task.graph.get` is read-only: it never appends a Session entry, never auto-folds a completed Run into a node terminal (settle must be explicit), and never repairs state. An unknown Graph fails with `task_graph_not_found`.
+
+#### task.graph.list
+
+List Graphs in the current Session, optionally filtered by `taskId`, `graphRevision`, or the derived aggregate `status`:
+
+```json
+{"type": "task.graph.list", "taskId": "task_42", "status": "active", "limit": 50}
+```
+
+Success:
+
+```json
+{
+  "type": "response",
+  "command": "task.graph.list",
+  "success": true,
+  "data": {"graphs": [...], "truncated": false}
+}
+```
+
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.graph.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+
+#### task.graph.node.attach
+
+Associate an existing Run with a node. The node must be `pending` with availability `ready`, and the Run must be `accepted` or `running` in the current Session:
+
+```json
+{
+  "type": "task.graph.node.attach",
+  "taskId": "task_42",
+  "graphRevision": 1,
+  "nodeId": "inspect",
+  "runId": "run_abc123",
+  "clientRequestId": "graph-attach-inspect-001"
+}
+```
+
+Success returns the running node view:
+
+```json
+{
+  "type": "response",
+  "command": "task.graph.node.attach",
+  "success": true,
+  "data": {
+    "graph": {...},
+    "node": {"nodeId": "inspect", "status": "running", "nodeRevision": 1, "runRef": {"sessionId": "session_abc", "runId": "run_abc123"}, "availability": null},
+    "idempotent": false
+  }
+}
+```
+
+`attach` performs no execution: it does not call `run.start`, does not wait for `run.started`, does not modify the Run record, does not create a Binding, does not resolve a Policy ask, and does not send a model request. A node can never be attached to a second Run. Failures: `task_graph_node_not_eligible` (dependencies or Gate unsatisfied, or the node is not `pending`), `task_graph_node_conflict` (the node already has a `runRef` or is terminal), `task_graph_run_not_found` (no such Run in the current Session), `task_graph_idempotency_conflict`, and `task_graph_persistence_failed`.
+
+#### task.graph.node.settle
+
+Fold the attached Run's terminal receipt into the node. `settle` re-reads the current Run ledger and receipt at settle time and accepts no caller-supplied status, `finalText`, or terminal error:
+
+```json
+{
+  "type": "task.graph.node.settle",
+  "taskId": "task_42",
+  "graphRevision": 1,
+  "nodeId": "inspect",
+  "clientRequestId": "graph-settle-inspect-001"
+}
+```
+
+The mapping is fixed: Run `completed` → node `succeeded`, Run `failed` → node `failed`, Run `cancelled` → node `cancelled`. If the attached Run is still `accepted`/`running`, the command fails with `task_graph_run_not_terminal` and appends nothing. Inconsistent Run record/receipt facts fail with `task_graph_run_state_mismatch`. Success returns the updated Graph view with the terminal node and `idempotent: false` (or `true` for an idempotent replay). A terminal node cannot be reopened, rewritten, or settled again; a repeated `settle` replays the previous result or returns `task_graph_node_conflict`. `settle` never calls `run.cancel` and never rewrites the Run receipt.
+
+#### Idempotency and concurrency
+
+Every `task.graph.*` write command requires a caller-generated `clientRequestId`. The idempotency key is:
+
+```text
+sessionId + commandType + clientRequestId
+```
+
+The RPC top-level `id` only correlates the response; it is never an idempotency key. Rules:
+
+1. Retrying the same command with the same `clientRequestId` and the same canonical payload returns the previous result and marks `idempotent: true`; no second transition is appended. Node arrays are canonicalized by sorted `nodeId` before the fingerprint, so reordered input does not create a false conflict.
+2. The same `clientRequestId` with a different payload returns `task_graph_idempotency_conflict`.
+3. Mutations are serialized by the Session single writer; the first valid transition wins, and a node can never be attached to a second Run.
+4. A terminal node cannot be reopened; stale revisions return `task_graph_node_conflict`.
+5. Read commands (`task.graph.get`, `task.graph.list`) use no idempotency key and have no side effects.
+
+`task_graph_persistence_failed` is not retryable, and a client must not guess success from receiving a response. After such a failure, re-read with `task.graph.get`, `run.get`, or `audit.query` before retrying with a new `clientRequestId`.
+
+#### Session scope, persistence, and the session_busy boundary
+
+Graphs are scoped to the current Session. `task.graph.*` commands require an initialized Host with Session ownership, like the `run.*` commands. The `sessionId + taskId + graphRevision` business key is never reused across Sessions; session switch, fork, and clone never carry Graph state into the next Session, and the TaskGraphStore is rebuilt from the bound Session's entries.
+
+Each Graph mutation is persisted as a Session custom entry with `customType: "task.graph"` (schemaVersion 1): `create` writes the complete validated definition with all pending node snapshots, and each `node.attached` / `node.succeeded` / `node.failed` / `node.cancelled` transition writes the full node snapshot, `previousNodeRevision`, and `clientRequestId`. On session load the Host folds entries in file order and rejects a mismatched `sessionId`, an unsupported schema, unknown dependencies, dependency cycles, non-contiguous `nodeRevision`s, a second Run association for one node, or illegal status jumps; malformed entries never reach RPC, Audit, or model context, and `task.graph` custom entries never enter the LLM context.
+
+Task Graph v1 preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
+
+#### Audit summary
+
+Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay / External Mapping Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
+
+#### Non-goals
+
+Task Graph v1 deliberately does not implement:
+
+- a Worker scheduler, queue, preemption, leader election, distributed lock, or parallel Run scheduling; each Session still runs at most one active Run;
+- automatic `run.start`, `run.resume`, `run.cancel`, retry, skip, or rewrite of failed nodes;
+- Task Credentials, Lease, heartbeat, claim/ownership, or worker identity authentication;
+- a cross-agent message bus, shared prompts, free-text handoff, budget allocation, or a TaskReceipt ledger;
+- inline editing of a created Graph; structural changes require a new `graphRevision`;
+- Gate creation or decision; Graph only consumes Gate state;
+- an external Agent Adapter, MCP OAuth, resources/prompts, or remote Workers;
+- CLI/TUI commands, login/roles, TLS, WebSocket, a database, or a message queue.
+
+Graph commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot mutate Graph state itself.
+
 ### Structured errors
 
 Automation Host commands replace the legacy string `error` field with a structured error object. Every new-command failure carries:
@@ -2168,7 +2421,7 @@ Error codes:
 | Code | Meaning | Retryable |
 |------|---------|-----------|
 | `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
-| `host_not_initialized` | A `run.*` command was sent before a successful `initialize` | no |
+| `host_not_initialized` | A `run.*`, `task.gate.*`, or `task.graph.*` command was sent before a successful `initialize` | no |
 | `session_busy` | A run is already active in the session; only one run per session at a time | yes |
 | `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
 | `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
@@ -2195,6 +2448,18 @@ Error codes:
 | `task_gate_not_pending` | The Gate is not `pending`, so it cannot be approved, rejected, or cancelled | no |
 | `task_gate_stage_revision_mismatch` | The caller used a stale `stageRevision` (reserved for future Task Graph integration) | no |
 | `task_gate_persistence_failed` | The Gate transition could not be durably appended to the session | no |
+| `task_graph_invalid` | Task Graph input failed validation (IDs, revisions, payload bounds, or node definitions) | no |
+| `task_graph_dependency_cycle` | The Graph definition contains a dependency cycle | no |
+| `task_graph_not_found` | The requested Graph does not exist in the current session | no |
+| `task_graph_conflict` | The business key already has a different Graph | no |
+| `task_graph_idempotency_conflict` | The same `clientRequestId` was reused with a different payload | no |
+| `task_graph_node_not_found` | The `nodeId` does not belong to the target Graph | no |
+| `task_graph_node_not_eligible` | The node is not `pending` and `ready` (dependencies or Gate unsatisfied) | no |
+| `task_graph_node_conflict` | The node already has a Run association, is terminal, or has a revision conflict | no |
+| `task_graph_run_not_found` | The given `runId` does not exist in the current session | no |
+| `task_graph_run_not_terminal` | The attached Run is still `accepted`/`running`; settle cannot map a terminal yet | no |
+| `task_graph_run_state_mismatch` | The Run record and receipt facts are inconsistent at settle time | no |
+| `task_graph_persistence_failed` | The Graph transition could not be durably appended to the session | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
@@ -2405,7 +2670,7 @@ checkpoints; it never resends `run.start` or `run.resume`.
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
 - After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_context`, `get_entries`, `get_tree`, and `get_messages` remain available.
 - Terminal run receipts may include additive `contextSnapshotId` linking the run to a Context Engine snapshot (see [Context Engine](context.md)).
-- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`); `task.gate.get` and `task.gate.list` are read-only.
+- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` / `task.graph.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`, `task.graph.create`, `task.graph.node.attach`, `task.graph.node.settle`); `task.gate.get`, `task.gate.list`, `task.graph.get`, and `task.graph.list` are read-only.
 - While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
 - Clients that never `initialize` always see the bare session events, as before.
 - Extension UI requests/responses continue to use the existing sub-protocol and are not disguised as run events.
@@ -2461,6 +2726,7 @@ Source files:
 - [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
 - [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
 - [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
+- [`src/core/task-graph.ts`](../src/core/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
 
 ### Model
 

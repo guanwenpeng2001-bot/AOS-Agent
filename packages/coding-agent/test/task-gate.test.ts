@@ -333,6 +333,7 @@ describe("task gate store", () => {
 			const reloaded = SessionManager.open(sessionFile, dir);
 			const restored = new TaskGateStore(reloaded, { now: () => NOW, createGateId: () => "gate_001" });
 			expect(restored.get("gate_001")).toMatchObject({ status: "pending", revision: 0, taskId: "task_42" });
+			expect(restored.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({ gateId: "gate_001", status: "pending", revision: 0 });
 
 			const terminalStore = makeStore(reloaded);
 			const decision = terminalStore.approve(decide("gate_001", "app-1", { actorId: "operator_7" }));
@@ -345,6 +346,12 @@ describe("task gate store", () => {
 				revision: 1,
 				decidedAt: NOW,
 				actorId: "operator_7",
+			});
+			expect(terminalRestored.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({
+				gateId: "gate_001",
+				status: "approved",
+				revision: 1,
+				decidedAt: NOW,
 			});
 			expect(terminalRestored.warnings()).toEqual([]);
 		} finally {
@@ -507,6 +514,10 @@ describe("task gate store", () => {
 		expect(restarted.get("gate_gap")).toBeUndefined();
 		expect(restarted.get("gate_samekey")).toBeUndefined();
 		expect(restarted.get("gate_otherkey")).toBeUndefined();
+		expect(restarted.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({ gateId: "gate_001", status: "pending" });
+		expect(restarted.getByBusinessKey("task_42", "stage_review", 5)).toMatchObject({ gateId: "gate_dup", status: "rejected" });
+		expect(restarted.getByBusinessKey("task_99", "stage_review", 3)).toBeUndefined();
+		expect(restarted.getByBusinessKey("task_42", "stage_review", 4)).toBeUndefined();
 		// gate_dup's first request and first terminal are legal; the duplicate
 		// request and the second terminal are skipped.
 		expect(restarted.get("gate_dup")).toMatchObject({ status: "rejected", revision: 1 });
@@ -719,5 +730,126 @@ describe("task gate store", () => {
 			.filter((entry) => entry.type === "custom")
 			.map((entry) => entry.customType);
 		expect(customTypes).toEqual([POLICY_APPROVAL_CUSTOM_TYPE, TASK_GATE_CUSTOM_TYPE, TASK_GATE_CUSTOM_TYPE]);
+	});
+});
+
+describe("task gate store business key lookup", () => {
+	it("returns the current gate for a business key in every status", () => {
+		const pendingSession = makeSession();
+		const pendingStore = makeStore(pendingSession);
+		pendingStore.request(request({ runId: "run_abc123" }));
+		expect(pendingStore.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({
+			gateId: "gate_001",
+			status: "pending",
+			revision: 0,
+			runId: "run_abc123",
+		});
+
+		const approvedSession = makeSession();
+		const approvedStore = makeStore(approvedSession);
+		approvedStore.request(request());
+		approvedStore.approve(decide("gate_001", "app-1", { actorId: "operator_7" }));
+		expect(approvedStore.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({
+			gateId: "gate_001",
+			status: "approved",
+			revision: 1,
+			decidedAt: NOW,
+			actorId: "operator_7",
+		});
+
+		const rejectedSession = makeSession();
+		const rejectedStore = makeStore(rejectedSession);
+		rejectedStore.request(request());
+		rejectedStore.reject(decide("gate_001", "rej-1", { reasonCode: "quality_check_failed" }));
+		expect(rejectedStore.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({
+			gateId: "gate_001",
+			status: "rejected",
+			revision: 1,
+			reasonCode: "quality_check_failed",
+		});
+
+		const cancelledSession = makeSession();
+		const cancelledStore = makeStore(cancelledSession);
+		cancelledStore.request(request());
+		cancelledStore.cancel(decide("gate_001", "can-1"));
+		expect(cancelledStore.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({
+			gateId: "gate_001",
+			status: "cancelled",
+			revision: 1,
+			decidedAt: NOW,
+		});
+	});
+
+	it("returns undefined for missing business keys and distinguishes stage revisions", () => {
+		const session = makeSession();
+		const store = makeStore(session);
+		store.request(request());
+		store.request(request({ stageRevision: 4, clientRequestId: "req-2" }));
+		const entriesBefore = session.getEntries().length;
+
+		expect(store.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({ gateId: "gate_001", stageRevision: 3 });
+		expect(store.getByBusinessKey("task_42", "stage_review", 4)).toMatchObject({ gateId: "gate_002", stageRevision: 4 });
+		expect(store.getByBusinessKey("task_42", "stage_review", 5)).toBeUndefined();
+		expect(store.getByBusinessKey("task_43", "stage_review", 3)).toBeUndefined();
+		expect(store.getByBusinessKey("task_42", "stage_other", 3)).toBeUndefined();
+		expect(session.getEntries()).toHaveLength(entriesBefore);
+	});
+
+	it("scopes the business key to the current session", () => {
+		const sessionA = makeSession();
+		const storeA = makeStore(sessionA);
+		storeA.request(request());
+
+		const sessionB = makeSession();
+		const storeB = makeStore(sessionB);
+		storeB.request(request({ clientRequestId: "req-b" }));
+
+		const gateA = storeA.getByBusinessKey("task_42", "stage_review", 3);
+		const gateB = storeB.getByBusinessKey("task_42", "stage_review", 3);
+		expect(gateA?.sessionId).toBe(sessionA.getSessionId());
+		expect(gateB?.sessionId).toBe(sessionB.getSessionId());
+		expect(gateA?.gateId).toBe("gate_001");
+		expect(gateB?.gateId).toBe("gate_001");
+		expect(gateA?.sessionId).not.toBe(gateB?.sessionId);
+
+		// A store bound to a session with no gate for the same key never sees
+		// session A's or session B's gate.
+		const emptySession = makeSession();
+		const emptyStore = makeStore(emptySession);
+		expect(emptyStore.getByBusinessKey("task_42", "stage_review", 3)).toBeUndefined();
+		expect(sessionB.getEntries()).toHaveLength(1);
+		expect(emptySession.getEntries()).toHaveLength(0);
+	});
+
+	it("keeps business key lookups read-only and returns defensive copies", () => {
+		const session = makeSession();
+		const store = makeStore(session);
+		store.request(request());
+		store.approve(decide("gate_001", "app-1", { actorId: "operator_7" }));
+		const entriesBefore = session.getEntries().length;
+
+		const gate = store.getByBusinessKey("task_42", "stage_review", 3);
+		expect(gate).toMatchObject({ status: "approved", revision: 1, actorId: "operator_7" });
+		if (gate === undefined) throw new Error("expected gate");
+		expect(JSON.stringify(gate)).not.toContain("clientRequestId");
+		(gate as { status: string }).status = "pending";
+		(gate as { revision: number }).revision = 0;
+		expect(store.getByBusinessKey("task_42", "stage_review", 3)).toMatchObject({ status: "approved", revision: 1 });
+		expect(session.getEntries()).toHaveLength(entriesBefore);
+	});
+
+	it("rejects unsafe business key input without writing", () => {
+		const session = makeSession();
+		const store = makeStore(session);
+		store.request(request());
+
+		expectGateError(() => store.getByBusinessKey("a/b", "stage_review", 3), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("", "stage_review", 3), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("task_42", "../escape", 3), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", 0), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", -1), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", 1.5), "task_gate_invalid");
+		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", Number.NaN), "task_gate_invalid");
+		expect(session.getEntries()).toHaveLength(1);
 	});
 });

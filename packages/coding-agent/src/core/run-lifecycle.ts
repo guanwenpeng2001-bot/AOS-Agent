@@ -576,7 +576,21 @@ export type AutomationErrorCode =
 	| "task_gate_idempotency_conflict"
 	| "task_gate_not_pending"
 	| "task_gate_stage_revision_mismatch"
-	| "task_gate_persistence_failed";
+	| "task_gate_persistence_failed"
+	// Task Graph v1 control-plane errors. Keep in sync with
+	// TASK_GRAPH_ERROR_CODES in core/task-graph.ts.
+	| "task_graph_invalid"
+	| "task_graph_dependency_cycle"
+	| "task_graph_not_found"
+	| "task_graph_conflict"
+	| "task_graph_idempotency_conflict"
+	| "task_graph_node_not_found"
+	| "task_graph_node_not_eligible"
+	| "task_graph_node_conflict"
+	| "task_graph_run_not_found"
+	| "task_graph_run_not_terminal"
+	| "task_graph_run_state_mismatch"
+	| "task_graph_persistence_failed";
 
 export interface AutomationError {
 	code: AutomationErrorCode;
@@ -652,7 +666,19 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "task_gate_idempotency_conflict" ||
 		value === "task_gate_not_pending" ||
 		value === "task_gate_stage_revision_mismatch" ||
-		value === "task_gate_persistence_failed"
+		value === "task_gate_persistence_failed" ||
+		value === "task_graph_invalid" ||
+		value === "task_graph_dependency_cycle" ||
+		value === "task_graph_not_found" ||
+		value === "task_graph_conflict" ||
+		value === "task_graph_idempotency_conflict" ||
+		value === "task_graph_node_not_found" ||
+		value === "task_graph_node_not_eligible" ||
+		value === "task_graph_node_conflict" ||
+		value === "task_graph_run_not_found" ||
+		value === "task_graph_run_not_terminal" ||
+		value === "task_graph_run_state_mismatch" ||
+		value === "task_graph_persistence_failed"
 	);
 }
 

@@ -64,6 +64,21 @@ import {
 	type TaskGateRecord,
 	type TaskGateTransition,
 } from "./task-gate.ts";
+import {
+	canonicalTaskGraphAttachPayload,
+	canonicalTaskGraphCreatePayload,
+	canonicalTaskGraphSettlePayload,
+	isTaskGraphTransition,
+	serializeTaskGraphNode,
+	taskGraphCommandType,
+	taskGraphSchemaVersion,
+	TASK_GRAPH_CUSTOM_TYPE,
+	TASK_GRAPH_SCHEMA_VERSION,
+	type TaskGraphAction,
+	type TaskGraphNodeRecord,
+	type TaskGraphNodeStatus,
+	type TaskGraphTransition,
+} from "./task-graph.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -82,6 +97,7 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"external.mapping",
 	"remote.operation",
 	"task.gate",
+	"task.graph",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
@@ -105,6 +121,7 @@ export const AUDIT_EVENT_TYPES = [
 	"external.mapping",
 	"remote.operation",
 	"task.gate",
+	"task.graph",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -368,6 +385,29 @@ export interface AuditTaskGateSummary {
 	readonly reasonCode?: string;
 }
 
+/**
+ * Safe summary of one `task.graph` transition. Only validated opaque IDs,
+ * the stable action/status, and short outcome codes may appear; task text,
+ * tool payloads, paths, environment, credentials, and raw custom data never
+ * enter the audit view. `created` carries no node fields because the
+ * definition may hold many nodes; `nodeId`/`status`/`nodeRevision`/
+ * `dependsOn`/`gateRef`/`runId`/`outcomeCode` are node-transition fields
+ * and are omitted when absent. `recordedAt` lives on the event base, so it
+ * is not repeated here.
+ */
+export interface AuditTaskGraphSummary {
+	readonly taskId: string;
+	readonly graphRevision: number;
+	readonly nodeId?: string;
+	readonly action: TaskGraphAction;
+	readonly status?: TaskGraphNodeStatus;
+	readonly nodeRevision?: number;
+	readonly dependsOn?: ReadonlyArray<string>;
+	readonly gateRef?: { readonly stageId: string; readonly stageRevision: number };
+	readonly runId?: string;
+	readonly outcomeCode?: string;
+}
+
 export type AuditRemoteOperationSummary = RemoteOperationReceipt;
 
 export interface AuditEventBase {
@@ -445,6 +485,11 @@ export type AuditEvent =
 			readonly type: "task.gate";
 			readonly runId?: string;
 			readonly summary: AuditTaskGateSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "task.graph";
+			readonly runId?: string;
+			readonly summary: AuditTaskGraphSummary;
 	  });
 
 export interface AuditWarning {
@@ -1467,6 +1512,28 @@ function safeTaskGateSummary(value: TaskGateTransition): AuditTaskGateSummary {
 	return summary;
 }
 
+/** Build the allowlisted summary of one `task.graph` transition. */
+function safeTaskGraphSummary(value: TaskGraphTransition): AuditTaskGraphSummary {
+	const summary = {
+		taskId: value.taskId,
+		graphRevision: value.graphRevision,
+		action: value.action,
+	} as DeepMutable<AuditTaskGraphSummary>;
+	const node = value.node;
+	if (node !== undefined) {
+		summary.nodeId = node.nodeId;
+		summary.status = node.status;
+		summary.nodeRevision = node.nodeRevision;
+		if (node.dependsOn.length > 0) summary.dependsOn = [...node.dependsOn];
+		if (node.gateRef !== undefined) {
+			summary.gateRef = { stageId: node.gateRef.stageId, stageRevision: node.gateRef.stageRevision };
+		}
+		if (node.runRef !== undefined) summary.runId = node.runRef.runId;
+		if (node.outcomeCode !== undefined) summary.outcomeCode = node.outcomeCode;
+	}
+	return summary;
+}
+
 function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
 	const external = {
 		namespace: value.namespace,
@@ -1542,7 +1609,8 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "policy.violation"; readonly value: PolicyViolationLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
 	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
-	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition });
+	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition })
+	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -1553,7 +1621,8 @@ type Relation =
 	| { readonly kind: "context"; readonly runId?: string }
 	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string }
 	| { readonly kind: "remote-operation"; readonly runId?: string }
-	| { readonly kind: "task-gate"; readonly runId?: string };
+	| { readonly kind: "task-gate"; readonly runId?: string }
+	| { readonly kind: "task-graph"; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -1617,6 +1686,7 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "external.mapping") return "external.mapping";
 	if (customType === "remote.operation") return "remote.operation";
 	if (customType === "task.gate") return "task.gate";
+	if (customType === "task.graph") return "task.graph";
 	return undefined;
 }
 
@@ -1633,7 +1703,8 @@ function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): 
 		relation.kind === "context" ||
 		relation.kind === "external" ||
 		relation.kind === "remote-operation" ||
-		relation.kind === "task-gate"
+		relation.kind === "task-gate" ||
+		relation.kind === "task-graph"
 	) {
 		return relation.runId === undefined ? undefined : new Set([relation.runId]);
 	}
@@ -2038,6 +2109,217 @@ function parseTaskGateFact(
 	accept();
 }
 
+/** Append-order fold state for `task.graph` custom entries. */
+interface TaskGraphAuditFold {
+	/** Business key (`taskId\0graphRevision`) to the current node records of the accepted definition. */
+	readonly graphs: Map<string, Map<string, TaskGraphNodeRecord>>;
+	/** Idempotency key (`commandType\0clientRequestId`) to the canonical payload of the accepted transition. */
+	readonly byIdempotency: Map<string, string>;
+}
+
+function taskGraphBusinessKey(taskId: string, graphRevision: number): string {
+	return `${taskId}\u0000${graphRevision}`;
+}
+
+function taskGraphIdempotencyKey(action: TaskGraphAction, clientRequestId: string): string {
+	return `${taskGraphCommandType(action)}\u0000${clientRequestId}`;
+}
+
+/** Canonical payload of a persisted transition; mirrors the store fold's idempotency fingerprint. */
+function taskGraphTransitionPayload(transition: TaskGraphTransition): string {
+	if (transition.action === "created") {
+		const definition = transition.graph;
+		if (definition === undefined) return "";
+		return canonicalTaskGraphCreatePayload({
+			taskId: transition.taskId,
+			graphRevision: transition.graphRevision,
+			nodes: definition.nodes,
+			clientRequestId: transition.clientRequestId,
+		});
+	}
+	const node = transition.node;
+	if (node === undefined) return "";
+	if (transition.action === "node.attached") {
+		return canonicalTaskGraphAttachPayload({
+			taskId: transition.taskId,
+			graphRevision: transition.graphRevision,
+			nodeId: node.nodeId,
+			runId: node.runRef?.runId ?? "",
+			clientRequestId: transition.clientRequestId,
+		});
+	}
+	return canonicalTaskGraphSettlePayload({
+		taskId: transition.taskId,
+		graphRevision: transition.graphRevision,
+		nodeId: node.nodeId,
+		clientRequestId: transition.clientRequestId,
+	});
+}
+
+/** Two snapshots of the same node must agree on all immutable definition fields. */
+function sameTaskGraphNodeDefinition(left: TaskGraphNodeRecord, right: TaskGraphNodeRecord): boolean {
+	if (left.dependsOn.length !== right.dependsOn.length) return false;
+	for (let index = 0; index < left.dependsOn.length; index++) {
+		if (left.dependsOn[index] !== right.dependsOn[index]) return false;
+	}
+	if (left.gateRef === undefined || right.gateRef === undefined) return left.gateRef === right.gateRef;
+	return (
+		left.gateRef.stageId === right.gateRef.stageId && left.gateRef.stageRevision === right.gateRef.stageRevision
+	);
+}
+
+/**
+ * Fold one `task.graph` custom entry in append order into a safe audit event.
+ * Entries that fail schema, identifier, session, revision, transition,
+ * idempotency, business-key, or run-association rules are skipped with the
+ * existing warning semantics and never surface raw data. Graph warnings never
+ * carry a run association or uncertainty flag, so they cannot change any Run's
+ * replay status or completeness, and graph events never participate in Run
+ * terminal selection.
+ */
+function parseTaskGraphFact(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	fold: TaskGraphAuditFold,
+	internalWarnings: InternalWarning[],
+	candidates: SourceCandidate[],
+): void {
+	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.graph", taskGraphSchemaVersion(entry.data), undefined, false),
+		);
+		return;
+	}
+	const version = taskGraphSchemaVersion(entry.data);
+	if (version === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", undefined, undefined, false));
+		return;
+	}
+	if (version !== TASK_GRAPH_SCHEMA_VERSION) {
+		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, "task.graph", version, undefined, false));
+		return;
+	}
+	if (!isTaskGraphTransition(entry.data)) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+		return;
+	}
+	const transition = entry.data;
+	const idempotencyKey = taskGraphIdempotencyKey(transition.action, transition.clientRequestId);
+	const acceptedPayload = fold.byIdempotency.get(idempotencyKey);
+	if (acceptedPayload !== undefined) {
+		if (acceptedPayload !== taskGraphTransitionPayload(transition)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+		}
+		return;
+	}
+	const businessKey = taskGraphBusinessKey(transition.taskId, transition.graphRevision);
+	if (transition.action === "created") {
+		const definition = transition.graph;
+		if (definition === undefined) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (definition.sessionId !== sessionId) {
+			internalWarnings.push(warning(sessionId, "orphan_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (fold.graphs.has(businessKey)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		const nodes = new Map<string, TaskGraphNodeRecord>();
+		for (const node of definition.nodes) nodes.set(node.nodeId, serializeTaskGraphNode(node));
+		fold.graphs.set(businessKey, nodes);
+		fold.byIdempotency.set(idempotencyKey, taskGraphTransitionPayload(transition));
+		candidates.push({
+			eventType: "task.graph",
+			entry,
+			recordedAt: entry.timestamp,
+			value: transition,
+			relation: { kind: "task-graph" },
+		});
+		return;
+	}
+	const node = transition.node;
+	const nodes = fold.graphs.get(businessKey);
+	if (node === undefined || nodes === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+		return;
+	}
+	const current = nodes.get(node.nodeId);
+	if (current === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+		return;
+	}
+	if (node.runRef !== undefined && node.runRef.sessionId !== sessionId) {
+		internalWarnings.push(warning(sessionId, "orphan_source", entry, "task.graph", version, undefined, false));
+		return;
+	}
+	if (transition.action === "node.attached") {
+		if (current.nodeRevision !== 0) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (
+			transition.previousNodeRevision !== 0 ||
+			node.nodeRevision !== 1 ||
+			node.status !== "running" ||
+			node.runRef === undefined
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (!sameTaskGraphNodeDefinition(current, node)) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		for (const other of nodes.values()) {
+			if (other.runRef?.runId === node.runRef.runId) {
+				internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+				return;
+			}
+		}
+	} else {
+		const expectedStatus: TaskGraphNodeStatus =
+			transition.action === "node.succeeded"
+				? "succeeded"
+				: transition.action === "node.failed"
+					? "failed"
+					: "cancelled";
+		if (current.nodeRevision === 2) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (current.nodeRevision === 0) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (
+			transition.previousNodeRevision !== 1 ||
+			node.nodeRevision !== 2 ||
+			node.status !== expectedStatus ||
+			node.runRef === undefined ||
+			node.runRef.runId !== current.runRef?.runId
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+		if (!sameTaskGraphNodeDefinition(current, node)) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.graph", version, undefined, false));
+			return;
+		}
+	}
+	nodes.set(node.nodeId, serializeTaskGraphNode(node));
+	fold.byIdempotency.set(idempotencyKey, taskGraphTransitionPayload(transition));
+	candidates.push({
+		eventType: "task.graph",
+		entry,
+		recordedAt: entry.timestamp,
+		value: transition,
+		relation: { kind: "task-graph", runId: node.runRef?.runId },
+	});
+}
+
 function parseRunFact(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
@@ -2257,6 +2539,14 @@ function sourceEventForCandidate(
 			summary: safeTaskGateSummary(candidate.value),
 		};
 	}
+	if (candidate.eventType === "task.graph") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeTaskGraphSummary(candidate.value),
+		};
+	}
 	return {
 		...base,
 		type: candidate.eventType,
@@ -2306,6 +2596,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const states = new Map<string, RunState>();
 	const facts: RunFact[] = [];
 	const gateFold: TaskGateAuditFold = { byGateId: new Map(), byBusinessKey: new Map(), byIdempotency: new Map() };
+	const graphFold: TaskGraphAuditFold = { graphs: new Map(), byIdempotency: new Map() };
 	const seenEntryIds = new Set<string>();
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
@@ -2327,6 +2618,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		if (entry.customType === "automation.run") parseRunFact(sessionId, entry, states, facts, internalWarnings);
 		else if (entry.customType === TASK_GATE_CUSTOM_TYPE)
 			parseTaskGateFact(sessionId, entry, gateFold, internalWarnings, candidates);
+		else if (entry.customType === TASK_GRAPH_CUSTOM_TYPE)
+			parseTaskGraphFact(sessionId, entry, graphFold, internalWarnings, candidates);
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
@@ -2512,7 +2805,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				: candidate.relation?.kind === "context" ||
 						candidate.relation?.kind === "external" ||
 						candidate.relation?.kind === "remote-operation" ||
-						candidate.relation?.kind === "task-gate"
+						candidate.relation?.kind === "task-gate" ||
+						candidate.relation?.kind === "task-graph"
 					? candidate.relation.runId
 					: undefined;
 		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);

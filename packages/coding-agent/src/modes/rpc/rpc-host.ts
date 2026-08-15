@@ -36,6 +36,14 @@ import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError } from "../../core/execution-audit.ts";
 import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
 import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
+import {
+	createTaskGraphStore,
+	TaskGraphError,
+	type TaskGraphErrorCode,
+	type TaskGraphNodeView,
+	type TaskGraphRecord,
+	type TaskGraphStore,
+} from "../../core/task-graph.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type {
 	AutomationError,
@@ -95,6 +103,7 @@ import type {
 	RpcAutomationResponse,
 	RpcCommand,
 	RpcTaskGateCommandType,
+	RpcTaskGraphCommandType,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -104,6 +113,9 @@ import type {
 	RpcSourceInfo,
 	RunAcceptedData,
 	RunGetData,
+	TaskGraphGetData,
+	TaskGraphListData,
+	TaskGraphMutationData,
 } from "./rpc-types.ts";
 
 /** Public records emitted by the transport-neutral RPC controller. */
@@ -211,6 +223,7 @@ export type {
 	RpcRunCommandType,
 	RpcSessionState,
 	RpcTaskGateCommandType,
+	RpcTaskGraphCommandType,
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
@@ -220,6 +233,9 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	TaskGraphGetData,
+	TaskGraphListData,
+	TaskGraphMutationData,
 } from "./rpc-types.ts";
 
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
@@ -349,6 +365,7 @@ export class RpcHostController {
 		let hostInitialized = false;
 		let coordinator: RunLifecycleCoordinator | undefined;
 		let taskGateStore: TaskGateStore | undefined;
+		let taskGraphStore: TaskGraphStore | undefined;
 		let activeHandle: RunHandle | undefined;
 		/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
 		let activeReservation: RunReservation | undefined;
@@ -545,6 +562,124 @@ export class RpcHostController {
 				taskGateErrorMessage(err instanceof TaskGateError ? err.code : fallback),
 				false,
 			);
+
+		const taskGraphErrorMessage = (code: TaskGraphErrorCode): string => {
+			switch (code) {
+				case "task_graph_invalid":
+					return "The task graph request is invalid.";
+				case "task_graph_dependency_cycle":
+					return "The task graph definition contains a dependency cycle.";
+				case "task_graph_not_found":
+					return "The task graph was not found in the current session.";
+				case "task_graph_conflict":
+					return "The task graph business key is already in use.";
+				case "task_graph_idempotency_conflict":
+					return "The task graph clientRequestId was already used with a different payload.";
+				case "task_graph_node_not_found":
+					return "The task graph node was not found in this graph.";
+				case "task_graph_node_not_eligible":
+					return "The task graph node is not pending and ready.";
+				case "task_graph_node_conflict":
+					return "The task graph node already has a run association or is terminal.";
+				case "task_graph_run_not_found":
+					return "The task graph run was not found in the current session.";
+				case "task_graph_run_not_terminal":
+					return "The task graph run is not terminal yet.";
+				case "task_graph_run_state_mismatch":
+					return "The task graph run record and receipt facts are inconsistent.";
+				case "task_graph_persistence_failed":
+					return "The task graph transition could not be persisted.";
+			}
+		};
+
+		/**
+		 * Map a TaskGraphError to a stable, public-safe Automation Error. The code
+		 * stays on the wire unchanged; only the code-derived message is used. The
+		 * shared AutomationErrorCode union includes every TaskGraphErrorCode, so
+		 * no cast is needed and a graph code can never be hidden as a generic
+		 * fallback.
+		 */
+		const taskGraphCommandError = (err: unknown, fallback: TaskGraphErrorCode): AutomationError =>
+			createAutomationError(
+				err instanceof TaskGraphError ? err.code : fallback,
+				taskGraphErrorMessage(err instanceof TaskGraphError ? err.code : fallback),
+				false,
+			);
+
+		/**
+		 * Rebuild the Automation Host state stores for the current Session. The Run
+		 * lookup and Task Gate lookup are read-only adapters over the live
+		 * coordinator/gate store, so attach only sees current-Session accepted or
+		 * running Runs and settle only sees the current terminal receipt; the Task
+		 * Graph store never starts, cancels, or rewrites a Run and never creates,
+		 * approves, rejects, or cancels a Gate.
+		 */
+		const rebuildAutomationStores = (): void => {
+			coordinator = createRunLifecycleCoordinator(session.sessionManager);
+			taskGateStore = createTaskGateStore(session.sessionManager);
+			taskGraphStore = createTaskGraphStore(
+				session.sessionManager,
+				{
+					get: (runId) => {
+						const result = coordinator?.getRun(runId);
+						if (result === undefined) return undefined;
+						return {
+							sessionId: result.record.sessionId,
+							runId: result.record.id,
+							status: result.record.status,
+							...(result.receipt === undefined ? {} : { receiptStatus: result.receipt.status }),
+						};
+					},
+				},
+				{
+					getByBusinessKey: (taskId, stageId, stageRevision) =>
+						taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision),
+				},
+			);
+		};
+
+		/**
+		 * Only the documented keys may appear in a task.graph command. Free text,
+		 * tool payloads, paths, and credentials are rejected before they reach
+		 * the store.
+		 */
+		const TASK_GRAPH_COMMAND_KEYS: Readonly<Record<RpcTaskGraphCommandType, ReadonlySet<string>>> = {
+			"task.graph.create": new Set(["id", "type", "taskId", "graphRevision", "nodes", "clientRequestId"]),
+			"task.graph.get": new Set(["id", "type", "taskId", "graphRevision"]),
+			"task.graph.list": new Set(["id", "type", "taskId", "graphRevision", "status", "limit"]),
+			"task.graph.node.attach": new Set([
+				"id",
+				"type",
+				"taskId",
+				"graphRevision",
+				"nodeId",
+				"runId",
+				"clientRequestId",
+			]),
+			"task.graph.node.settle": new Set(["id", "type", "taskId", "graphRevision", "nodeId", "clientRequestId"]),
+		};
+
+		const isTaskGraphCommandShapeValid = (command: RpcCommand): boolean => {
+			const allowed = TASK_GRAPH_COMMAND_KEYS[command.type as RpcTaskGraphCommandType];
+			if (allowed === undefined) return false;
+			return Object.keys(command).every((key) => allowed.has(key));
+		};
+
+		const taskGraphMutationResponse = (
+			id: string | undefined,
+			command: "task.graph.create" | "task.graph.node.attach" | "task.graph.node.settle",
+			result: { graph: TaskGraphRecord; node?: TaskGraphNodeView; idempotent: boolean },
+		): RpcAutomationResponse => ({
+			id,
+			type: "response",
+			command,
+			success: true,
+			data: {
+				graph: result.graph,
+				...(result.node === undefined ? {} : { node: result.node }),
+				idempotent: result.idempotent,
+			} satisfies TaskGraphMutationData,
+		});
 
 		/**
 		 * Only the documented keys may appear in a task.gate command. Free text,
@@ -1900,8 +2035,7 @@ export class RpcHostController {
 			// host is initialized, a fresh coordinator folds the new session's
 			// automation.run custom entries so run.get and run.resume work after a switch.
 			if (hostInitialized) {
-				coordinator = createRunLifecycleCoordinator(session.sessionManager);
-				taskGateStore = createTaskGateStore(session.sessionManager);
+				rebuildAutomationStores();
 				activeHandle = undefined;
 				settledRunIds.clear();
 				runPromptPromises.clear();
@@ -2025,8 +2159,7 @@ export class RpcHostController {
 					// reservation/run is never lost.
 					if (!hostInitialized) {
 						hostInitialized = true;
-						coordinator = createRunLifecycleCoordinator(session.sessionManager);
-						taskGateStore = createTaskGateStore(session.sessionManager);
+						rebuildAutomationStores();
 					}
 					const initializeData: InitializeData = {
 						host: "automation-host",
@@ -2041,6 +2174,13 @@ export class RpcHostController {
 							"task.gate.approve",
 							"task.gate.reject",
 							"task.gate.cancel",
+						],
+						taskGraphCommands: [
+							"task.graph.create",
+							"task.graph.get",
+							"task.graph.list",
+							"task.graph.node.attach",
+							"task.graph.node.settle",
 						],
 					};
 					const initializeResponse: RpcAutomationResponse = {
@@ -2230,6 +2370,125 @@ export class RpcHostController {
 						};
 					} catch (err) {
 						return automationError(id, command.type, taskGateCommandError(err, "task_gate_invalid"));
+					}
+				}
+
+				case "task.graph.create": {
+					if (!hostInitialized || taskGraphStore === undefined) {
+						return automationError(id, "task.graph.create", hostNotInitializedError());
+					}
+					if (!isTaskGraphCommandShapeValid(command)) {
+						return automationError(id, "task.graph.create", taskGraphCommandError(undefined, "task_graph_invalid"));
+					}
+					try {
+						const result = taskGraphStore.create({
+							taskId: command.taskId,
+							graphRevision: command.graphRevision,
+							nodes: command.nodes,
+							clientRequestId: command.clientRequestId,
+						});
+						return taskGraphMutationResponse(id, "task.graph.create", result);
+					} catch (err) {
+						return automationError(id, "task.graph.create", taskGraphCommandError(err, "task_graph_invalid"));
+					}
+				}
+
+				case "task.graph.get": {
+					if (!hostInitialized || taskGraphStore === undefined) {
+						return automationError(id, "task.graph.get", hostNotInitializedError());
+					}
+					if (!isTaskGraphCommandShapeValid(command)) {
+						return automationError(id, "task.graph.get", taskGraphCommandError(undefined, "task_graph_invalid"));
+					}
+					try {
+						const graph = taskGraphStore.get(command.taskId, command.graphRevision);
+						if (graph === undefined) {
+							return automationError(id, "task.graph.get", taskGraphCommandError(undefined, "task_graph_not_found"));
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.graph.get",
+							success: true,
+							data: { graph } satisfies TaskGraphGetData,
+						};
+					} catch (err) {
+						return automationError(id, "task.graph.get", taskGraphCommandError(err, "task_graph_invalid"));
+					}
+				}
+
+				case "task.graph.list": {
+					if (!hostInitialized || taskGraphStore === undefined) {
+						return automationError(id, "task.graph.list", hostNotInitializedError());
+					}
+					if (!isTaskGraphCommandShapeValid(command)) {
+						return automationError(id, "task.graph.list", taskGraphCommandError(undefined, "task_graph_invalid"));
+					}
+					try {
+						const result = taskGraphStore.list({
+							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
+							...(command.graphRevision === undefined ? {} : { graphRevision: command.graphRevision }),
+							...(command.status === undefined ? {} : { status: command.status }),
+							...(command.limit === undefined ? {} : { limit: command.limit }),
+						});
+						return {
+							id,
+							type: "response",
+							command: "task.graph.list",
+							success: true,
+							data: { graphs: [...result.graphs], truncated: result.truncated } satisfies TaskGraphListData,
+						};
+					} catch (err) {
+						return automationError(id, "task.graph.list", taskGraphCommandError(err, "task_graph_invalid"));
+					}
+				}
+
+				case "task.graph.node.attach": {
+					if (!hostInitialized || taskGraphStore === undefined) {
+						return automationError(id, "task.graph.node.attach", hostNotInitializedError());
+					}
+					if (!isTaskGraphCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.graph.node.attach",
+							taskGraphCommandError(undefined, "task_graph_invalid"),
+						);
+					}
+					try {
+						const result = taskGraphStore.attach({
+							taskId: command.taskId,
+							graphRevision: command.graphRevision,
+							nodeId: command.nodeId,
+							runId: command.runId,
+							clientRequestId: command.clientRequestId,
+						});
+						return taskGraphMutationResponse(id, "task.graph.node.attach", result);
+					} catch (err) {
+						return automationError(id, "task.graph.node.attach", taskGraphCommandError(err, "task_graph_invalid"));
+					}
+				}
+
+				case "task.graph.node.settle": {
+					if (!hostInitialized || taskGraphStore === undefined) {
+						return automationError(id, "task.graph.node.settle", hostNotInitializedError());
+					}
+					if (!isTaskGraphCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.graph.node.settle",
+							taskGraphCommandError(undefined, "task_graph_invalid"),
+						);
+					}
+					try {
+						const result = taskGraphStore.settle({
+							taskId: command.taskId,
+							graphRevision: command.graphRevision,
+							nodeId: command.nodeId,
+							clientRequestId: command.clientRequestId,
+						});
+						return taskGraphMutationResponse(id, "task.graph.node.settle", result);
+					} catch (err) {
+						return automationError(id, "task.graph.node.settle", taskGraphCommandError(err, "task_graph_invalid"));
 					}
 				}
 
