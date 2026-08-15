@@ -452,8 +452,11 @@ export class PolicyError extends Error {
 	readonly code: PolicyErrorCode;
 	readonly retryable = false as const;
 
-	constructor(code: PolicyErrorCode, message = POLICY_ERROR_MESSAGES[code]) {
-		super(message);
+	constructor(code: PolicyErrorCode, _message = POLICY_ERROR_MESSAGES[code]) {
+		// Policy errors cross legacy RPC and tool-result boundaries as Error.message.
+		// Keep that channel code-derived so provider diagnostics, paths, commands,
+		// and credentials cannot escape through a caller-supplied message.
+		super(POLICY_ERROR_MESSAGES[code]);
 		this.name = "PolicyError";
 		this.code = code;
 	}
@@ -925,6 +928,15 @@ function hashText(value: string): string {
 		hash = Math.imul(hash, 16777619);
 	}
 	return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Derive the opaque workspace identity used by strict provider bindings.
+ * Callers must provide a canonical host path; the path itself never enters a
+ * binding, ledger entry, public summary, or RPC response.
+ */
+export function createWorkspaceIdentity(canonicalWorkspacePath: string): string {
+	return `workspace:${hashText(canonicalWorkspacePath)}`;
 }
 
 function arraySubset(requested: ReadonlyArray<string>, allowed: ReadonlyArray<string>): boolean {

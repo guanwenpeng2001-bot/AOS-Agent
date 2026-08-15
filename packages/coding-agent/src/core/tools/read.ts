@@ -244,7 +244,13 @@ export function createReadToolDefinition(
 
 					(async () => {
 						try {
-							const resolvedPath = await resolveReadPathAsync(path, cwd);
+							// Strict sandbox paths are policy coordinates. Resolving a
+							// candidate through the host filesystem can select a host-only
+							// filename variant before the sandbox receives the request.
+							const resolvedPath =
+								policy?.profile.enforcement === "sandbox"
+									? resolveToCwd(path, cwd)
+									: await resolveReadPathAsync(path, cwd);
 							const authorization =
 								policy === undefined
 									? { absolutePath: resolvedPath, realPath: resolvedPath }
@@ -356,7 +362,7 @@ export function createReadToolDefinition(
 							if (aborted) return;
 							signal?.removeEventListener("abort", onAbort);
 							resolve({ content, details });
-						} catch (error: any) {
+						} catch (error: unknown) {
 							signal?.removeEventListener("abort", onAbort);
 							if (!aborted) reject(error);
 						}

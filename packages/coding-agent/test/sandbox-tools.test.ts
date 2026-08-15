@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	LEGACY_PROFILE,
 	type ExecutionPolicyProfile,
 	resolveExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
@@ -69,12 +70,12 @@ async function tempRoot(): Promise<string> {
 	return mkdtemp(join(tmpdir(), "aos-sandbox-tools-"));
 }
 
-function binding(profile: ExecutionPolicyProfile, workspace: string, sandboxReady = false) {
+function binding(profile: ExecutionPolicyProfile, workspace: string, sandboxReady = false, runId = `run-${profile.id}`) {
 	const result = resolveExecutionPolicyProfile({
 		profiles: { [profile.id]: profile },
 		defaultProfile: profile.id,
 		workspaceIdentity: "workspace-test",
-		runId: `run-${profile.id}`,
+		runId,
 		createdAt: "2026-08-13T00:00:00.000Z",
 		sandbox: sandboxReady
 			? {
@@ -295,6 +296,41 @@ describe("sandbox host policy for built-in tools", () => {
 		}
 	});
 
+	it("keeps legacy defaults on host execution with inherited environment", async () => {
+		const workspace = await tempRoot();
+		const previous = process.env.AOS_ISOLATED_RUNNER_LEGACY;
+		process.env.AOS_ISOLATED_RUNNER_LEGACY = "legacy-value";
+		try {
+			const policy = createBuiltinToolPolicy({
+				profile: LEGACY_PROFILE,
+				binding: binding(LEGACY_PROFILE, workspace),
+				roots: { workspace },
+			});
+			let hostCalls = 0;
+			let capturedEnv: NodeJS.ProcessEnv | undefined;
+			const bash = createBashTool(workspace, {
+				policy,
+				exposeSessionEnvironment: false,
+				operations: {
+					exec: async (_command, _cwd, options) => {
+						hostCalls++;
+						capturedEnv = options.env;
+						return { exitCode: 0 };
+					},
+				},
+			});
+
+			const result = await bash.execute("legacy-host", { command: "echo legacy" });
+			expect(result.content[0]?.type).toBe("text");
+			expect(hostCalls).toBe(1);
+			expect(capturedEnv?.AOS_ISOLATED_RUNNER_LEGACY).toBe("legacy-value");
+		} finally {
+			if (previous === undefined) delete process.env.AOS_ISOLATED_RUNNER_LEGACY;
+			else process.env.AOS_ISOLATED_RUNNER_LEGACY = previous;
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it("does not fall back to host execution for strict sandbox process profiles", async () => {
 		const workspace = await tempRoot();
 		try {
@@ -318,6 +354,127 @@ describe("sandbox host policy for built-in tools", () => {
 				code: "sandbox_required",
 			});
 			expect(execStarted).toBe(false);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed without host fallback for every strict built-in operation", async () => {
+		const workspace = await tempRoot();
+		try {
+			const policy = createBuiltinToolPolicy({
+				profile: sandboxProfile,
+				binding: binding(sandboxProfile, workspace, true),
+				roots: { workspace },
+			});
+			const hostCalls: string[] = [];
+			const hostAccess = async (): Promise<void> => {
+				hostCalls.push("access");
+			};
+			const hostReadFile = async (): Promise<Buffer> => {
+				hostCalls.push("readFile");
+				return Buffer.from("host");
+			};
+			const hostWriteFile = async (): Promise<void> => {
+				hostCalls.push("writeFile");
+			};
+			const hostMkdir = async (): Promise<void> => {
+				hostCalls.push("mkdir");
+			};
+			const hostExec = async (): Promise<{ exitCode: number }> => {
+				hostCalls.push("exec");
+				return { exitCode: 0 };
+			};
+			const operations: Array<{ readonly name: string; readonly run: () => Promise<unknown> }> = [
+				{
+					name: "read",
+					run: () =>
+						createReadTool(workspace, {
+							policy,
+							operations: { access: hostAccess, readFile: hostReadFile },
+						}).execute("strict-read", { path: "missing.txt" }),
+				},
+				{
+					name: "write",
+					run: () =>
+						createWriteTool(workspace, {
+							policy,
+							operations: { mkdir: hostMkdir, writeFile: hostWriteFile },
+						}).execute("strict-write", { path: "write.txt", content: "host must not receive this" }),
+				},
+				{
+					name: "edit",
+					run: () =>
+						createEditTool(workspace, {
+							policy,
+							operations: { access: hostAccess, readFile: hostReadFile, writeFile: hostWriteFile },
+						}).execute("strict-edit", { path: "edit.txt", edits: [{ oldText: "old", newText: "new" }] }),
+				},
+				{
+					name: "ls",
+					run: () =>
+						createLsTool(workspace, {
+							policy,
+							operations: {
+								exists: () => {
+									hostCalls.push("exists");
+									return false;
+								},
+								stat: () => {
+									hostCalls.push("stat");
+									return { isDirectory: () => false };
+								},
+								readdir: () => {
+									hostCalls.push("readdir");
+									return [];
+								},
+							},
+						}).execute("strict-ls", { path: "." }),
+				},
+				{
+					name: "find",
+					run: () =>
+						createFindTool(workspace, {
+							policy,
+							operations: {
+								exists: () => {
+									hostCalls.push("find.exists");
+									return false;
+								},
+								glob: () => {
+									hostCalls.push("glob");
+									return [];
+								},
+							},
+						}).execute("strict-find", { path: ".", pattern: "*.ts" }),
+				},
+				{
+					name: "grep",
+					run: () =>
+						createGrepTool(workspace, {
+							policy,
+							operations: {
+								isDirectory: () => {
+									hostCalls.push("grep.isDirectory");
+									return false;
+								},
+								readFile: () => {
+									hostCalls.push("grep.readFile");
+									return "host";
+								},
+							},
+						}).execute("strict-grep", { path: ".", pattern: "needle" }),
+				},
+				{
+					name: "bash",
+					run: () => createBashTool(workspace, { policy, operations: { exec: hostExec } }).execute("strict-bash", { command: "echo no" }),
+				},
+			];
+
+			for (const operation of operations) {
+				await expect(operation.run(), operation.name).rejects.toMatchObject({ code: "sandbox_required" });
+			}
+			expect(hostCalls).toEqual([]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -405,6 +562,32 @@ describe("sandbox host policy for built-in tools", () => {
 				code: "sandbox_unavailable",
 			});
 			expect(hostStarted).toBe(false);
+		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("does not reuse a disposed handle across strict binding lifetimes", async () => {
+		const workspace = await tempRoot();
+		const fake = createFakeSandboxProvider();
+		try {
+			const firstSession = new SandboxSession(fake.provider, binding(sandboxProfile, workspace, true, "run-first"));
+			const firstHandle = await firstSession.prepare();
+			await firstSession.dispose();
+
+			const secondSession = new SandboxSession(
+				fake.provider,
+				binding(sandboxProfile, workspace, true, "run-second"),
+			);
+			const secondHandle = await secondSession.prepare();
+			expect(secondHandle.id).not.toBe(firstHandle.id);
+			expect(fake.state.disposedHandles).toEqual([firstHandle.id]);
+			await expect(
+				firstHandle.execute({ bindingId: "run-first", resource: "process.spawn", command: "must-not-run" }),
+			).rejects.toBeInstanceOf(SandboxHandleDisposedError);
+
+			await secondSession.dispose();
+			expect(fake.state.disposedHandles).toEqual([firstHandle.id, secondHandle.id]);
 		} finally {
 			rmSync(workspace, { recursive: true, force: true });
 		}
@@ -555,6 +738,45 @@ describe("sandbox host policy for built-in tools", () => {
 				"filesystem.grep",
 			]);
 		} finally {
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("does not resolve strict read paths through host-only filename variants", async () => {
+		const workspace = await tempRoot();
+		const requestedPath = join(workspace, "Capture 1 PM.txt");
+		const hostVariant = join(workspace, "Capture 1\u202fPM.txt");
+		writeFileSync(hostVariant, "host-only");
+		const fake = createFakeSandboxProvider({ onExecute: async () => ({ content: "sandbox-only" }) });
+		let sandbox: SandboxHandle | undefined;
+		try {
+			const policyBinding = binding(sandboxProfile, workspace, true, "run-strict-read");
+			sandbox = await fake.provider.prepare(policyBinding);
+			const policy = createBuiltinToolPolicy({
+				profile: sandboxProfile,
+				binding: policyBinding,
+				roots: { workspace },
+				sandbox,
+			});
+			let hostReadStarted = false;
+			const result = await createReadTool(workspace, {
+				policy,
+				operations: {
+					access: async () => {
+						hostReadStarted = true;
+					},
+					readFile: async () => {
+						hostReadStarted = true;
+						return Buffer.from("host");
+					},
+				},
+			}).execute("strict-read-variant", { path: requestedPath });
+
+			expect(result.content[0]?.type === "text" ? result.content[0].text : "").toBe("sandbox-only");
+			expect(hostReadStarted).toBe(false);
+			expect(fake.state.invocations[0]?.path).not.toContain("\u202f");
+		} finally {
+			if (sandbox !== undefined) await fake.provider.dispose(sandbox);
 			rmSync(workspace, { recursive: true, force: true });
 		}
 	});

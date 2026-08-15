@@ -32,6 +32,7 @@ import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import type { ExtensionFactory, LoadExtensionsResult, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { MCPEnvResolver, MCPServerConfig } from "../src/core/mcp-types.ts";
+import { createFakeSandboxProvider } from "./fixtures/fake-sandbox-provider.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
@@ -153,6 +154,7 @@ async function createControlledSession(opts: {
 }
 
 function executionPolicySettings(options?: {
+	profileId?: string;
 	process?: "allow" | "deny";
 	network?: "allow" | "deny";
 	networkApproval?: "allow" | "deny";
@@ -164,8 +166,9 @@ function executionPolicySettings(options?: {
 	credentialNames?: ReadonlyArray<string>;
 	environmentNames?: ReadonlyArray<string>;
 }) {
+	const profileId = options?.profileId ?? "locked";
 	const profile = {
-		id: "locked",
+		id: profileId,
 		enforcement: options?.enforcement ?? "host",
 		...(options?.sandboxProvider === undefined ? {} : { sandboxProvider: options.sandboxProvider }),
 		defaultAction: "allow",
@@ -203,8 +206,8 @@ function executionPolicySettings(options?: {
 				: [{ resource: "capability.invoke", source: "extension", action: options.extensionInvoke }],
 	};
 	return {
-		defaultProfile: "locked",
-		profiles: { locked: profile },
+		defaultProfile: profileId,
+		profiles: { [profileId]: profile },
 	};
 }
 
@@ -1708,8 +1711,67 @@ describe("AgentSession capability binding integration", () => {
 				});
 				expect(sandboxRequests[0]?.bindingId).toBeTruthy();
 				expect(sandboxRequests[0]?.env).toEqual({ EXT_ALLOWED: "yes" });
+				expect(JSON.stringify(session.getActiveExecutionPolicySummary())).not.toContain("EXT_SECRET");
 			} finally {
 				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("disposes the old strict handle before a policy rebind and never reuses it", async () => {
+			const firstSettings = executionPolicySettings({
+				profileId: "strict-first",
+				enforcement: "sandbox",
+				sandboxProvider: "fake-sandbox",
+			});
+			const secondSettings = executionPolicySettings({
+				profileId: "strict-second",
+				enforcement: "sandbox",
+				sandboxProvider: "fake-sandbox",
+			});
+			const fake = createFakeSandboxProvider({ onExecute: async () => ({ content: "sandboxed\n" }) });
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: {
+					defaultProfile: "strict-first",
+					profiles: { ...firstSettings.profiles, ...secondSettings.profiles },
+				},
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [fake.provider],
+			});
+			let hostCalls = 0;
+			const hostOperations = {
+				exec: async (): Promise<{ exitCode: number }> => {
+					hostCalls++;
+					return { exitCode: 0 };
+				},
+			};
+			try {
+				await session.executeBash("first", undefined, { operations: hostOperations });
+				expect(fake.state.handles).toHaveLength(1);
+				const firstHandleId = fake.state.handles[0]?.id;
+
+				await session.setExecutionPolicyProfile("strict-second");
+				expect(fake.state.disposedHandles).toEqual([firstHandleId]);
+
+				await session.executeBash("second", undefined, { operations: hostOperations });
+				expect(fake.state.handles).toHaveLength(2);
+				expect(fake.state.invocations).toHaveLength(2);
+				expect(fake.state.invocations[0]?.bindingId).not.toBe(fake.state.invocations[1]?.bindingId);
+				expect(hostCalls).toBe(0);
+			} finally {
+				session.dispose();
+				await session.waitForDispose();
+				expect(fake.state.disposedHandles).toEqual(fake.state.handles.map((handle) => handle.id));
+				expect(
+					JSON.stringify(
+						session.sessionManager
+							.getEntries()
+							.filter((entry) => entry.type === "custom" && entry.customType === "sandbox.lifecycle"),
+					),
+				).toContain('"status":"disposed"');
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
@@ -1911,6 +1973,59 @@ describe("AgentSession capability binding integration", () => {
 					sandboxProvider: "fake-sandbox",
 				}),
 				mcp: { servers: { docs: { transport: "stdio", command: "node" } } },
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader(),
+				settingsManager: sessionSettings,
+				sandboxProviders: [provider],
+				mcpTransportFactory: (async () => {
+					hostFactoryCalls++;
+					throw new Error("host transport must not be used");
+				}) as never,
+			});
+			try {
+				await expect(session.whenCapabilitiesReady()).rejects.toMatchObject({
+					code: "sandbox_capability_insufficient",
+				});
+				expect(hostFactoryCalls).toBe(0);
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("fails strict MCP network access closed before an injected host transport", async () => {
+			let hostFactoryCalls = 0;
+			const handle: SandboxHandle = {
+				id: "handle-no-network",
+				capabilities: { filesystem: true, process: true, network: false, credentialIsolation: true },
+				execute: async () => ({ exitCode: 0 }),
+			};
+			const provider: SandboxProvider = {
+				id: "fake-sandbox",
+				capabilities: handle.capabilities,
+				prepare: async () => handle,
+				dispose: async () => {},
+			};
+			const sessionSettings = SettingsManager.inMemory({
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_server" }, action: "allow" },
+								{ selector: { kind: "mcp_tool" }, action: "allow" },
+							],
+						},
+					},
+				},
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+					network: "allow",
+					networkApproval: "allow",
+				}),
+				mcp: { servers: { docs: { transport: "streamable-http", url: "https://mcp.example.invalid/mcp" } } },
 			});
 			const { session, dir } = await createControlledSession({
 				resourceLoader: createTestResourceLoader(),
