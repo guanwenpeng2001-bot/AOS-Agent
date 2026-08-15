@@ -219,6 +219,18 @@ describe("Gondolin guest path boundary", () => {
 		expect(await mapper.toGuestPath(path.join(workspace, "src", "new.ts"))).toBe("/workspace/src/new.ts");
 	});
 
+	it("maps POSIX absolute workspace paths without treating them as Windows roots", async () => {
+		const workspace = await createWorkspace();
+		const mapper = createGondolinPathMapper(workspace);
+		const posixWorkspace = workspace.split(path.sep).join("/");
+		const posixFile = `${posixWorkspace.replace(/\/$/, "")}/src/main.ts`;
+
+		expect(await mapper.toGuestPath(posixFile)).toBe("/workspace/src/main.ts");
+		expect(String(await mapper.toGuestPath(posixFile).catch((reason: unknown) => reason))).not.toContain(
+			"workspace_boundary_violation",
+		);
+	});
+
 	it("rejects outside, traversal, drive, and UNC paths without revealing host paths", async () => {
 		const workspace = await createWorkspace();
 		const mapper = createGondolinPathMapper(workspace);

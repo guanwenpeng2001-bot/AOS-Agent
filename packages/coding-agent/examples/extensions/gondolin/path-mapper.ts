@@ -148,11 +148,14 @@ export class GondolinPathMapper {
 		const trimmed = stripAtPrefix(inputPath);
 		if (!trimmed) return this.workspaceRoot;
 		ensureSafeHostInput(trimmed);
-		const windowsAbsolute = path.win32.isAbsolute(trimmed);
-		const absolute = path.isAbsolute(trimmed) || windowsAbsolute || path.posix.isAbsolute(trimmed);
-		const resolved = windowsAbsolute
+		// path.win32.isAbsolute("/") is true. On a POSIX host that would turn
+		// /tmp/... into a Windows path and reject a valid workspace file.
+		const windowsAbsolute =
+			DRIVE_PATH_PATTERN.test(trimmed) || (process.platform === "win32" && UNC_PATH_PATTERN.test(trimmed));
+		const posixAbsolute = trimmed.startsWith("/") && !trimmed.startsWith("//");
+		const resolved = windowsAbsolute && !posixAbsolute
 			? path.win32.normalize(path.win32.resolve(trimmed))
-			: absolute
+			: path.isAbsolute(trimmed) || posixAbsolute
 				? path.normalize(path.resolve(trimmed))
 				: path.resolve(this.workspaceRoot, trimmed);
 		return resolved;

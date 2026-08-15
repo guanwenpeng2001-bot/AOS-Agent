@@ -31,6 +31,7 @@
 
 ### Fixed
 
+- Gondolin path mapping no longer treats POSIX `/tmp/...` workspace paths as Windows roots, so Linux guest reads are not rejected as `workspace_boundary_violation`.
 - Accepted Automation Host runs that reach `deadlineAt` now settle as a single `run.failed` with `terminalError.code: "run_deadline_exceeded"` instead of `run.cancelled`. Explicit `run.cancel` is unchanged, and the first recorded termination intent wins a deadline/cancel race.
 - Made managed `fd` and `rg` downloads safe across concurrent processes by isolating temporary archives and extraction directories.
 - Defaulted package changelog links to the AOS Agent repository when no override is configured.
