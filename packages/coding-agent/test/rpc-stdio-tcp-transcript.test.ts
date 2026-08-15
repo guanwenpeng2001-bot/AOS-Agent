@@ -479,6 +479,198 @@ async function collectTranscript(
 	return adapter.records();
 }
 
+async function sendAutomationCommand(
+	adapter: TranscriptAdapter,
+	command: Record<string, unknown>,
+): Promise<ParsedRecord> {
+	await adapter.send(command);
+	return waitForRecord(adapter, (record) => record.type === "response" && record.id === command.id);
+}
+
+function responseById(records: ParsedRecord[], id: string): ParsedRecord {
+	const record = records.find((candidate) => candidate.id === id);
+	if (record === undefined) throw new Error(`missing response ${id}`);
+	return record;
+}
+
+function gateRecordOf(record: ParsedRecord): Record<string, unknown> {
+	if (!isRecord(record.data) || !isRecord(record.data.gate)) {
+		throw new Error("response did not include a gate");
+	}
+	return record.data.gate;
+}
+
+function gateIdOf(record: ParsedRecord): string {
+	const gate = gateRecordOf(record);
+	if (typeof gate.gateId !== "string") throw new Error("gate record did not include gateId");
+	return gate.gateId;
+}
+
+function listGateIds(record: ParsedRecord): string[] {
+	const data = isRecord(record.data) ? record.data : {};
+	if (!Array.isArray(data.gates)) throw new Error("list response did not include a gates array");
+	const gates = data.gates as unknown as ParsedRecord[];
+	return gates.map((gate) => {
+		if (typeof gate.gateId !== "string") throw new Error("list gate is malformed");
+		return gate.gateId;
+	});
+}
+
+/**
+ * Deterministic Task-level Human Gate control-plane sequence over one
+ * transport. Every command carries a fixed id, the write commands use fixed
+ * `clientRequestId` idempotency keys, and nothing starts a Run, so the two
+ * transports must produce identical public transcripts.
+ */
+async function collectTaskGateTranscript(adapter: TranscriptAdapter): Promise<ParsedRecord[]> {
+	const send = (command: Record<string, unknown>): Promise<ParsedRecord> => sendAutomationCommand(adapter, command);
+	// Audit orders Gate events by their millisecond entry timestamp; pacing the
+	// appending write commands keeps that ordering deterministic across runs.
+	const transitionPause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+	await send({ id: "initialize", type: "initialize", protocolVersion: 1 });
+
+	// Gate A: request with an optional run correlation, read-back, idempotent
+	// retry, then approve and the terminal-conflict error surface.
+	await transitionPause();
+	const gateARequest = await send({
+		id: "gate-a-request",
+		type: "task.gate.request",
+		taskId: "task_42",
+		stageId: "stage_review",
+		stageRevision: 3,
+		runId: "run_correlate",
+		clientRequestId: "gate-a-request-001",
+	});
+	const gateA = gateIdOf(gateARequest);
+	await send({ id: "gate-a-get", type: "task.gate.get", gateId: gateA });
+	await send({ id: "gate-a-list-pending", type: "task.gate.list", status: "pending" });
+	await send({
+		id: "gate-a-request-retry",
+		type: "task.gate.request",
+		taskId: "task_42",
+		stageId: "stage_review",
+		stageRevision: 3,
+		runId: "run_correlate",
+		clientRequestId: "gate-a-request-001",
+	});
+	await transitionPause();
+	await send({
+		id: "gate-a-approve",
+		type: "task.gate.approve",
+		gateId: gateA,
+		actorId: "operator_7",
+		clientRequestId: "gate-a-approve-001",
+	});
+	await send({
+		id: "gate-a-approve-retry",
+		type: "task.gate.approve",
+		gateId: gateA,
+		actorId: "operator_7",
+		clientRequestId: "gate-a-approve-001",
+	});
+	// Late opposite decision, repeated decision, idempotency key reuse with a
+	// different payload, and duplicate business key are all stable errors.
+	await send({
+		id: "gate-a-reject-late",
+		type: "task.gate.reject",
+		gateId: gateA,
+		actorId: "operator_7",
+		reasonCode: "quality_check_failed",
+		clientRequestId: "gate-a-reject-001",
+	});
+	await send({
+		id: "gate-a-approve-again",
+		type: "task.gate.approve",
+		gateId: gateA,
+		clientRequestId: "gate-a-approve-002",
+	});
+	await send({
+		id: "gate-a-idem-conflict",
+		type: "task.gate.approve",
+		gateId: "gate_unknown",
+		actorId: "operator_9",
+		clientRequestId: "gate-a-approve-001",
+	});
+	await send({
+		id: "gate-a-dup-request",
+		type: "task.gate.request",
+		taskId: "task_42",
+		stageId: "stage_review",
+		stageRevision: 3,
+		clientRequestId: "gate-a-request-002",
+	});
+	await send({
+		id: "gate-invalid-revision",
+		type: "task.gate.request",
+		taskId: "task_42",
+		stageId: "stage_bad",
+		stageRevision: 0,
+		clientRequestId: "gate-invalid-revision-001",
+	});
+	await send({ id: "gate-a-get-unknown", type: "task.gate.get", gateId: "gate_missing" });
+	await send({ id: "gate-a-list-bad-limit", type: "task.gate.list", limit: 0 });
+
+	// Gate B: reject with a stable reasonCode.
+	await transitionPause();
+	const gateBRequest = await send({
+		id: "gate-b-request",
+		type: "task.gate.request",
+		taskId: "task_43",
+		stageId: "stage_build",
+		stageRevision: 1,
+		clientRequestId: "gate-b-request-001",
+	});
+	const gateB = gateIdOf(gateBRequest);
+	await transitionPause();
+	await send({
+		id: "gate-b-reject",
+		type: "task.gate.reject",
+		gateId: gateB,
+		actorId: "operator_7",
+		reasonCode: "quality_check_failed",
+		clientRequestId: "gate-b-reject-001",
+	});
+
+	// Gate C: cancel.
+	await transitionPause();
+	const gateCRequest = await send({
+		id: "gate-c-request",
+		type: "task.gate.request",
+		taskId: "task_44",
+		stageId: "stage_test",
+		stageRevision: 2,
+		clientRequestId: "gate-c-request-001",
+	});
+	const gateC = gateIdOf(gateCRequest);
+	await transitionPause();
+	await send({
+		id: "gate-c-cancel",
+		type: "task.gate.cancel",
+		gateId: gateC,
+		actorId: "operator_7",
+		clientRequestId: "gate-c-cancel-001",
+	});
+
+	// Read-only listing with server-side status and task filters.
+	await send({ id: "gate-list-all", type: "task.gate.list" });
+	await send({ id: "gate-list-approved", type: "task.gate.list", status: "approved" });
+	await send({ id: "gate-list-rejected", type: "task.gate.list", status: "rejected" });
+	await send({ id: "gate-list-pending", type: "task.gate.list", status: "pending" });
+	await send({ id: "gate-list-task42", type: "task.gate.list", taskId: "task_42" });
+
+	// Audit exposes the Gate transitions as allowlisted summaries.
+	await send({
+		id: "audit-gates",
+		type: "audit.query",
+		scope: "current-session",
+		types: ["task.gate"],
+		limit: 200,
+	});
+
+	return adapter.records();
+}
+
 function publicRecordTypes(records: ParsedRecord[]): string[] {
 	return records.map((record) => {
 		if (record.type === "response") return `response:${String(record.command)}`;
@@ -568,6 +760,211 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 	expect(["complete", "incomplete"]).toContain(replayData.status);
 }
 
+function assertTaskGateTranscript(records: ParsedRecord[]): void {
+	// Gate operations are control-plane facts: the transcript contains only
+	// response records, no Run lifecycle events and no model-visible messages.
+	for (const record of records) expect(record.type).toBe("response");
+	expect(records.map((record) => record.command)).toEqual([
+		"initialize",
+		"task.gate.request",
+		"task.gate.get",
+		"task.gate.list",
+		"task.gate.request",
+		"task.gate.approve",
+		"task.gate.approve",
+		"task.gate.reject",
+		"task.gate.approve",
+		"task.gate.approve",
+		"task.gate.request",
+		"task.gate.request",
+		"task.gate.get",
+		"task.gate.list",
+		"task.gate.request",
+		"task.gate.reject",
+		"task.gate.request",
+		"task.gate.cancel",
+		"task.gate.list",
+		"task.gate.list",
+		"task.gate.list",
+		"task.gate.list",
+		"task.gate.list",
+		"audit.query",
+	]);
+
+	// initialize advertises the six additive Task Gate commands over protocolVersion 1.
+	expect(responseById(records, "initialize")).toMatchObject({
+		type: "response",
+		command: "initialize",
+		success: true,
+		data: {
+			host: "automation-host",
+			protocolVersion: 1,
+			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			taskGateCommands: [
+				"task.gate.request",
+				"task.gate.get",
+				"task.gate.list",
+				"task.gate.approve",
+				"task.gate.reject",
+				"task.gate.cancel",
+			],
+		},
+	});
+
+	// request creates one pending Gate for the task stage revision.
+	const gateARequest = responseById(records, "gate-a-request");
+	expect(gateARequest).toMatchObject({
+		type: "response",
+		command: "task.gate.request",
+		success: true,
+		data: { idempotent: false },
+	});
+	const gateA = gateRecordOf(gateARequest);
+	expect(gateA).toMatchObject({
+		schemaVersion: 1,
+		taskId: "task_42",
+		stageId: "stage_review",
+		stageRevision: 3,
+		status: "pending",
+		revision: 0,
+		runId: "run_correlate",
+	});
+	expect(gateA.decidedAt).toBeUndefined();
+	const gateAId = gateIdOf(gateARequest);
+
+	// get and list are read-only views of the same snapshot.
+	expect(gateRecordOf(responseById(records, "gate-a-get"))).toMatchObject({
+		gateId: gateAId,
+		taskId: "task_42",
+		stageId: "stage_review",
+		status: "pending",
+		revision: 0,
+	});
+	expect(responseById(records, "gate-a-list-pending")).toMatchObject({
+		success: true,
+		data: { gates: [expect.objectContaining({ gateId: gateAId, status: "pending" })], truncated: false },
+	});
+
+	// The identical idempotent request replays the durable result without a new transition.
+	expect(responseById(records, "gate-a-request-retry")).toMatchObject({ success: true, data: { idempotent: true } });
+	expect(gateRecordOf(responseById(records, "gate-a-request-retry"))).toMatchObject({
+		gateId: gateAId,
+		status: "pending",
+		revision: 0,
+	});
+
+	// approve is terminal: revision 1, decidedAt, actor label.
+	expect(responseById(records, "gate-a-approve")).toMatchObject({ success: true, data: { idempotent: false } });
+	expect(gateRecordOf(responseById(records, "gate-a-approve"))).toMatchObject({
+		gateId: gateAId,
+		status: "approved",
+		revision: 1,
+		actorId: "operator_7",
+	});
+	expect(typeof gateRecordOf(responseById(records, "gate-a-approve")).decidedAt).toBe("string");
+
+	// The approve replay with the same clientRequestId returns the terminal snapshot.
+	expect(responseById(records, "gate-a-approve-retry")).toMatchObject({ success: true, data: { idempotent: true } });
+	expect(gateRecordOf(responseById(records, "gate-a-approve-retry"))).toMatchObject({
+		gateId: gateAId,
+		status: "approved",
+		revision: 1,
+	});
+
+	// Late opposite decisions, repeats, and payload changes fail with stable codes.
+	expect(responseById(records, "gate-a-reject-late")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_conflict", retryable: false },
+	});
+	expect(responseById(records, "gate-a-approve-again")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_not_pending", retryable: false },
+	});
+	expect(responseById(records, "gate-a-idem-conflict")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_idempotency_conflict", retryable: false },
+	});
+	expect(responseById(records, "gate-a-dup-request")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_conflict", retryable: false },
+	});
+	expect(responseById(records, "gate-invalid-revision")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_invalid", retryable: false },
+	});
+	expect(responseById(records, "gate-a-get-unknown")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_not_found", retryable: false },
+	});
+	expect(responseById(records, "gate-a-list-bad-limit")).toMatchObject({
+		success: false,
+		error: { code: "task_gate_invalid", retryable: false },
+	});
+
+	// reject and cancel are independent terminal decisions with their own Gates.
+	const gateB = gateIdOf(responseById(records, "gate-b-request"));
+	expect(gateRecordOf(responseById(records, "gate-b-reject"))).toMatchObject({
+		gateId: gateB,
+		status: "rejected",
+		revision: 1,
+		actorId: "operator_7",
+		reasonCode: "quality_check_failed",
+	});
+	const gateC = gateIdOf(responseById(records, "gate-c-request"));
+	expect(gateRecordOf(responseById(records, "gate-c-cancel"))).toMatchObject({
+		gateId: gateC,
+		status: "cancelled",
+		revision: 1,
+		actorId: "operator_7",
+	});
+
+	// Listing is deterministic in append order and honors status/task filters.
+	expect(listGateIds(responseById(records, "gate-list-all"))).toEqual([gateAId, gateB, gateC]);
+	expect(listGateIds(responseById(records, "gate-list-approved"))).toEqual([gateAId]);
+	expect(listGateIds(responseById(records, "gate-list-rejected"))).toEqual([gateB]);
+	expect(listGateIds(responseById(records, "gate-list-pending"))).toEqual([]);
+	expect(listGateIds(responseById(records, "gate-list-task42"))).toEqual([gateAId]);
+	for (const id of [
+		"gate-list-all",
+		"gate-list-approved",
+		"gate-list-rejected",
+		"gate-list-pending",
+		"gate-list-task42",
+	]) {
+		expect(responseById(records, id)).toMatchObject({ success: true, data: { truncated: false } });
+	}
+
+	// Audit exposes only allowlisted Gate summaries; no Run event was created.
+	const auditGates = responseById(records, "audit-gates");
+	expect(auditGates).toMatchObject({ success: true, command: "audit.query" });
+	const auditData = isRecord(auditGates.data) ? auditGates.data : {};
+	if (!Array.isArray(auditData.events)) throw new Error("audit.query response did not include events");
+	const gateEvents = auditData.events as unknown as ParsedRecord[];
+	expect(gateEvents).toHaveLength(6);
+	expect(gateEvents.map((event) => isRecord(event.summary) ? event.summary.action : undefined)).toEqual([
+		"requested",
+		"approved",
+		"requested",
+		"rejected",
+		"requested",
+		"cancelled",
+	]);
+	for (const event of gateEvents) {
+		expect(event.type).toBe("task.gate");
+		const summary = isRecord(event.summary) ? event.summary : {};
+		for (const key of Object.keys(summary)) expect(ALLOWED_GATE_SUMMARY_KEYS).toContain(key);
+		expect(summary).toMatchObject({
+			gateId: expect.any(String),
+			taskId: expect.any(String),
+			stageId: expect.any(String),
+			stageRevision: expect.any(Number),
+			status: expect.any(String),
+			revision: expect.any(Number),
+		});
+	}
+}
+
 function automationResponseSignatures(records: ParsedRecord[]): unknown[] {
 	return records
 		.filter((record) => record.type === "response")
@@ -588,6 +985,7 @@ const DYNAMIC_ID_KEYS = new Set([
 	"capabilityBindingId",
 	"contextSnapshotId",
 	"eventId",
+	"gateId",
 	"modelBindingId",
 	"policyBindingId",
 	"previousBindingId",
@@ -602,6 +1000,22 @@ const DYNAMIC_ID_KEYS = new Set([
 function isTimestampKey(key: string): boolean {
 	return key === "timestamp" || key.endsWith("At") || key.endsWith("Timestamp");
 }
+
+/** Fields the Audit is allowed to expose for a `task.gate` event. */
+const ALLOWED_GATE_SUMMARY_KEYS = new Set([
+	"gateId",
+	"taskId",
+	"stageId",
+	"stageRevision",
+	"action",
+	"status",
+	"revision",
+	"requestedAt",
+	"decidedAt",
+	"runId",
+	"actorId",
+	"reasonCode",
+]);
 
 interface NormalizationState {
 	readonly ids: Map<string, string>;
@@ -721,6 +1135,35 @@ describe("RPC stdio/TCP public transcript parity", () => {
 			await tcp.cleanup();
 		}
 
+		expect(publicRecordTypes(stdioTranscript!)).toEqual(publicRecordTypes(tcpTranscript!));
+		expect(automationResponseSignatures(stdioTranscript!)).toEqual(automationResponseSignatures(tcpTranscript!));
+		expect(normalizePublicTranscript(stdioTranscript!)).toEqual(normalizePublicTranscript(tcpTranscript!));
+	});
+
+	it("emits the same Task Gate control-plane transcript over stdio and TCP", async () => {
+		const stdio = await startStdioRpcMode();
+		let stdioTranscript: ParsedRecord[];
+		try {
+			stdioTranscript = await collectTaskGateTranscript(stdio);
+			assertStrictJsonlLines(rpcIo.outputLines);
+		} finally {
+			await stdio.cleanup();
+		}
+
+		const tcp = await startTcpRpcMode();
+		let tcpTranscript: ParsedRecord[];
+		try {
+			tcpTranscript = await collectTaskGateTranscript(tcp);
+			// TCP diagnostics belong on stderr; no RPC JSONL record may reach stdout.
+			expect(rpcIo.outputLines).toEqual([]);
+		} finally {
+			await tcp.cleanup();
+		}
+
+		for (const transcript of [stdioTranscript!, tcpTranscript!]) {
+			assertAutomationResponseShape(transcript);
+			assertTaskGateTranscript(transcript);
+		}
 		expect(publicRecordTypes(stdioTranscript!)).toEqual(publicRecordTypes(tcpTranscript!));
 		expect(automationResponseSignatures(stdioTranscript!)).toEqual(automationResponseSignatures(tcpTranscript!));
 		expect(normalizePublicTranscript(stdioTranscript!)).toEqual(normalizePublicTranscript(tcpTranscript!));
