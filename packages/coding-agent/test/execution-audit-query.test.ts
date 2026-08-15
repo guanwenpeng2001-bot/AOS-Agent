@@ -311,3 +311,272 @@ describe("cross-session execution audit query", () => {
 		expect(replay.events.some((event: AuditEvent) => event.type === "task.gate")).toBe(false);
 	});
 });
+
+const GRAPH_CREATED_AT = "2026-08-13T00:00:04.000Z";
+const GRAPH_ATTACHED_AT = "2026-08-13T00:00:05.000Z";
+const GRAPH_SETTLED_AT = "2026-08-13T00:00:06.000Z";
+const GRAPH_TASK_ID = "task_graph_1";
+
+type GraphNodeStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+
+function graphNodeRecord(
+	nodeId: string,
+	options: {
+		readonly dependsOn?: ReadonlyArray<string>;
+		readonly status?: GraphNodeStatus;
+		readonly nodeRevision?: number;
+		readonly gateRef?: { readonly stageId: string; readonly stageRevision: number };
+		readonly runRef?: { readonly sessionId: string; readonly runId: string };
+		readonly outcomeCode?: string;
+	} = {},
+): Record<string, unknown> {
+	return {
+		schemaVersion: 1,
+		nodeId,
+		dependsOn: [...(options.dependsOn ?? [])],
+		status: options.status ?? "pending",
+		nodeRevision: options.nodeRevision ?? 0,
+		...(options.gateRef === undefined ? {} : { gateRef: options.gateRef }),
+		...(options.runRef === undefined ? {} : { runRef: options.runRef }),
+		...(options.outcomeCode === undefined ? {} : { outcomeCode: options.outcomeCode }),
+	};
+}
+
+function graphCreated(
+	entryId = "graph-created",
+	options: {
+		readonly taskId?: string;
+		readonly graphRevision?: number;
+		readonly sessionId?: string;
+		readonly clientRequestId?: string;
+	} = {},
+): SessionEntry {
+	const taskId = options.taskId ?? GRAPH_TASK_ID;
+	const graphRevision = options.graphRevision ?? 1;
+	return customEntry(entryId, GRAPH_CREATED_AT, "task.graph", {
+		schemaVersion: 1,
+		action: "created",
+		taskId,
+		graphRevision,
+		graph: {
+			schemaVersion: 1,
+			sessionId: options.sessionId ?? CURRENT_SESSION_ID,
+			taskId,
+			graphRevision,
+			createdAt: GRAPH_CREATED_AT,
+			nodes: [graphNodeRecord("inspect"), graphNodeRecord("implement", { dependsOn: ["inspect"] })],
+		},
+		clientRequestId: options.clientRequestId ?? "req-graph-create",
+	});
+}
+
+function graphAttached(
+	entryId = "graph-attached",
+	options: {
+		readonly taskId?: string;
+		readonly graphRevision?: number;
+		readonly nodeId?: string;
+		readonly dependsOn?: ReadonlyArray<string>;
+		readonly runId?: string;
+		readonly sessionId?: string;
+		readonly clientRequestId?: string;
+		readonly nodeRevision?: number;
+		readonly status?: GraphNodeStatus;
+	} = {},
+): SessionEntry {
+	return customEntry(entryId, GRAPH_ATTACHED_AT, "task.graph", {
+		schemaVersion: 1,
+		action: "node.attached",
+		taskId: options.taskId ?? GRAPH_TASK_ID,
+		graphRevision: options.graphRevision ?? 1,
+		node: graphNodeRecord(options.nodeId ?? "inspect", {
+			dependsOn: options.dependsOn,
+			status: options.status ?? "running",
+			nodeRevision: options.nodeRevision ?? 1,
+			runRef: {
+				sessionId: options.sessionId ?? CURRENT_SESSION_ID,
+				runId: options.runId ?? RUN_ID,
+			},
+		}),
+		previousNodeRevision: 0,
+		clientRequestId: options.clientRequestId ?? "req-graph-attach",
+	});
+}
+
+function graphSettled(
+	entryId: string,
+	action: "node.succeeded" | "node.failed" | "node.cancelled",
+	options: {
+		readonly taskId?: string;
+		readonly graphRevision?: number;
+		readonly nodeId?: string;
+		readonly runId?: string;
+		readonly sessionId?: string;
+		readonly clientRequestId?: string;
+		readonly outcomeCode?: string;
+	} = {},
+): SessionEntry {
+	const status: GraphNodeStatus =
+		action === "node.succeeded" ? "succeeded" : action === "node.failed" ? "failed" : "cancelled";
+	return customEntry(entryId, GRAPH_SETTLED_AT, "task.graph", {
+		schemaVersion: 1,
+		action,
+		taskId: options.taskId ?? GRAPH_TASK_ID,
+		graphRevision: options.graphRevision ?? 1,
+		node: graphNodeRecord(options.nodeId ?? "inspect", {
+			status,
+			nodeRevision: 2,
+			runRef: {
+				sessionId: options.sessionId ?? CURRENT_SESSION_ID,
+				runId: options.runId ?? RUN_ID,
+			},
+			...(options.outcomeCode === undefined ? {} : { outcomeCode: options.outcomeCode }),
+		}),
+		previousNodeRevision: 1,
+		clientRequestId: options.clientRequestId ?? `req-graph-${entryId}`,
+	});
+}
+
+describe("cross-session execution audit query task graph", () => {
+	it("folds task.graph entries into allowlisted events and filters them by type", () => {
+		const entries = [
+			acceptedEntry(),
+			terminalEntry(),
+			graphCreated(),
+			graphAttached(),
+			graphSettled("graph-settled", "node.succeeded", { outcomeCode: "ok" }),
+		];
+		const query = new ExecutionAuditQuery(source(CURRENT_SESSION_ID, entries, ""));
+
+		const result = query.query({ scope: "current-session", types: ["task.graph"], limit: 200 });
+		expect(result.events.map((event) => `${event.sourceEntryId}:${event.type}`)).toEqual([
+			"graph-created:task.graph",
+			"graph-attached:task.graph",
+			"graph-settled:task.graph",
+		]);
+		const created = result.events[0];
+		expect(created?.runId).toBeUndefined();
+		expect(created?.summary).toEqual({ taskId: GRAPH_TASK_ID, graphRevision: 1, action: "created" });
+		const attached = result.events[1];
+		expect(attached?.runId).toBe(RUN_ID);
+		expect(attached?.summary).toEqual({
+			taskId: GRAPH_TASK_ID,
+			graphRevision: 1,
+			nodeId: "inspect",
+			action: "node.attached",
+			status: "running",
+			nodeRevision: 1,
+			runId: RUN_ID,
+		});
+		const settled = result.events[2];
+		expect(settled?.summary).toMatchObject({
+			action: "node.succeeded",
+			status: "succeeded",
+			nodeRevision: 2,
+			runId: RUN_ID,
+			outcomeCode: "ok",
+		});
+		const encoded = JSON.stringify(result);
+		expect(encoded).not.toContain("req-graph-create");
+		expect(encoded).not.toContain("req-graph-attach");
+		expect(encoded).not.toContain("req-graph-graph-settled");
+		expect(encoded).not.toContain("clientRequestId");
+	});
+
+	it("correlates a graph into replay only by exact runId without changing terminal status", () => {
+		const entries = [
+			acceptedEntry(),
+			terminalEntry(),
+			graphCreated(),
+			graphAttached(),
+			graphSettled("graph-settled", "node.succeeded", { outcomeCode: "ok" }),
+			graphAttached("graph-attached-other", {
+				nodeId: "implement",
+				dependsOn: ["inspect"],
+				runId: "run-other",
+				clientRequestId: "req-graph-other",
+			}),
+		];
+		const query = new ExecutionAuditQuery(source(CURRENT_SESSION_ID, entries, ""));
+
+		const replay = query.replay(RUN_ID);
+		expect(replay.status).toBe("complete");
+		const graphEvents = replay.events.filter((event: AuditEvent) => event.type === "task.graph");
+		expect(graphEvents.map((event) => event.sourceEntryId)).toEqual(["graph-attached", "graph-settled"]);
+		// created has no runId and the implement node belongs to run-other;
+		// neither is guessed into this Run by taskId, nodeId, or dependencies.
+		expect(graphEvents.some((event) => event.sourceEntryId === "graph-created")).toBe(false);
+		expect(graphEvents.some((event) => event.sourceEntryId === "graph-attached-other")).toBe(false);
+	});
+
+	it("skips malformed, unsupported, session-mismatched, and duplicate graph entries with safe warnings", () => {
+		const entries: SessionEntry[] = [
+			acceptedEntry(),
+			terminalEntry(),
+			customEntry("graph-unsupported", GRAPH_CREATED_AT, "task.graph", { schemaVersion: 2, action: "created" }),
+			customEntry("graph-garbage", GRAPH_CREATED_AT, "task.graph", "raw graph secret"),
+			graphCreated(),
+			graphCreated("graph-second-create", { clientRequestId: "req-graph-create-2" }),
+			graphAttached("graph-foreign", {
+				sessionId: "other-session",
+				runId: "run-foreign",
+				clientRequestId: "req-graph-foreign",
+			}),
+			graphSettled("graph-gap", "node.succeeded", { clientRequestId: "req-graph-gap" }),
+			graphAttached("graph-jump", {
+				nodeId: "implement",
+				nodeRevision: 2,
+				status: "succeeded",
+				clientRequestId: "req-graph-jump",
+			}),
+			graphAttached(),
+			graphAttached("graph-attached-dup", { runId: "run-b", clientRequestId: "req-graph-dup" }),
+			graphSettled("graph-settled", "node.succeeded", { outcomeCode: "ok" }),
+		];
+		const query = new ExecutionAuditQuery(source(CURRENT_SESSION_ID, entries, ""));
+
+		const result = query.query({ scope: "current-session", types: ["task.graph"], limit: 200 });
+		expect(result.events.map((event) => event.sourceEntryId)).toEqual([
+			"graph-created",
+			"graph-attached",
+			"graph-settled",
+		]);
+		expect(result.warnings.map((warning) => warning.code)).toEqual(
+			expect.arrayContaining(["unsupported_schema", "malformed_source", "orphan_source", "duplicate_source"]),
+		);
+		const graphWarnings = (entryId: string) =>
+			result.warnings.filter(
+				(warning) => warning.eventType === "task.graph" && warning.sourceEntryId === entryId,
+			);
+		expect(graphWarnings("graph-second-create")).toEqual([
+			{ code: "duplicate_source", sessionId: CURRENT_SESSION_ID, sourceEntryId: "graph-second-create", eventType: "task.graph", schemaVersion: 1 },
+		]);
+		expect(graphWarnings("graph-foreign")).toEqual([
+			{ code: "orphan_source", sessionId: CURRENT_SESSION_ID, sourceEntryId: "graph-foreign", eventType: "task.graph", schemaVersion: 1 },
+		]);
+		expect(graphWarnings("graph-gap")).toEqual([
+			{ code: "malformed_source", sessionId: CURRENT_SESSION_ID, sourceEntryId: "graph-gap", eventType: "task.graph", schemaVersion: 1 },
+		]);
+		expect(graphWarnings("graph-attached-dup")).toEqual([
+			{ code: "duplicate_source", sessionId: CURRENT_SESSION_ID, sourceEntryId: "graph-attached-dup", eventType: "task.graph", schemaVersion: 1 },
+		]);
+		const encoded = JSON.stringify(result);
+		expect(encoded).not.toContain("raw graph secret");
+		expect(encoded).not.toContain("other-session");
+		expect(encoded).not.toContain("run-foreign");
+		expect(encoded).not.toContain("req-graph-create-2");
+		expect(encoded).not.toContain("req-graph-foreign");
+		expect(encoded).not.toContain("req-graph-dup");
+		expect(encoded).not.toContain("clientRequestId");
+		// Graph warnings never change the Run's replay completeness, and graph
+		// events never change the Run terminal status.
+		const replay = query.replay(RUN_ID);
+		expect(replay.status).toBe("complete");
+		expect(replay.events.map((event: AuditEvent) => event.sourceEntryId)).toEqual([
+			"accepted",
+			"terminal",
+			"graph-attached",
+			"graph-settled",
+		]);
+	});
+});

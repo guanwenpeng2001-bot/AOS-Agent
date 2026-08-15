@@ -733,6 +733,20 @@ export type {
 	TaskGateMutationData,
 	TaskGateRecord,
 	TaskGateStatus,
+	RpcTaskGraphCommandType,
+	TaskGraphErrorCode,
+	TaskGraphGateRef,
+	TaskGraphGetData,
+	TaskGraphListData,
+	TaskGraphMutationData,
+	TaskGraphNodeAvailability,
+	TaskGraphNodeDefinition,
+	TaskGraphNodeStatus,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphRunRef,
+	TaskGraphStatus,
+	TaskGraphSummary,
 } from "./modes/index.ts";
 // Run modes for programmatic SDK usage
 export {

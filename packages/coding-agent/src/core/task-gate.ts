@@ -449,8 +449,12 @@ function cloneTransition(value: TaskGateTransition): TaskGateTransition {
 	};
 }
 
+function businessKeyValue(sessionId: string, taskId: string, stageId: string, stageRevision: number): string {
+	return `${sessionId}\u0000${taskId}\u0000${stageId}\u0000${stageRevision}`;
+}
+
 function businessKey(record: TaskGateRecord): string {
-	return `${record.sessionId}\u0000${record.taskId}\u0000${record.stageId}\u0000${record.stageRevision}`;
+	return businessKeyValue(record.sessionId, record.taskId, record.stageId, record.stageRevision);
 }
 
 function idempotencyKey(action: TaskGateAction, clientRequestId: string): string {
@@ -726,8 +730,8 @@ export class TaskGateStore {
 			}
 			return { gate: serializeTaskGateRecord(existing), appended: false, idempotent: true };
 		}
-		const businessKeyValue = `${this.sessionId}\u0000${input.taskId}\u0000${input.stageId}\u0000${input.stageRevision}`;
-		if (this.fold.byBusinessKey.has(businessKeyValue)) {
+		const keyValue = businessKeyValue(this.sessionId, input.taskId, input.stageId, input.stageRevision);
+		if (this.fold.byBusinessKey.has(keyValue)) {
 			throw new TaskGateError("task_gate_conflict");
 		}
 		const gate: TaskGateRecord = {
@@ -756,7 +760,7 @@ export class TaskGateStore {
 			}
 			return { gate: serializeTaskGateRecord(freshExisting), appended: false, idempotent: true };
 		}
-		if (this.fold.byBusinessKey.has(businessKeyValue) || this.fold.byGateId.has(gate.gateId)) {
+		if (this.fold.byBusinessKey.has(keyValue) || this.fold.byGateId.has(gate.gateId)) {
 			throw new TaskGateError("task_gate_conflict");
 		}
 		return this.appendTransition({ schemaVersion: 1, action: "requested", gate, previousRevision: 0, clientRequestId: input.clientRequestId });
@@ -868,6 +872,23 @@ export class TaskGateStore {
 		this.refresh();
 		const record = this.fold.byGateId.get(gateId);
 		return record === undefined ? undefined : serializeTaskGateRecord(record);
+	}
+
+	/**
+	 * Read the current Gate of this Session by business key
+	 * (`taskId + stageId + stageRevision`). Read-only; never appends. The fold's
+	 * business-key projection resolves the Gate and the gate map returns its
+	 * current snapshot, so a terminal decision is visible here.
+	 */
+	getByBusinessKey(taskId: string, stageId: string, stageRevision: number): TaskGateRecord | undefined {
+		if (!isTaskGateIdentifier(taskId) || !isTaskGateIdentifier(stageId) || !isPositiveSafeInteger(stageRevision)) {
+			throw new TaskGateError("task_gate_invalid");
+		}
+		this.refresh();
+		const resolved = this.fold.byBusinessKey.get(businessKeyValue(this.sessionId, taskId, stageId, stageRevision));
+		if (resolved === undefined) return undefined;
+		const current = this.fold.byGateId.get(resolved.gateId);
+		return current === undefined ? undefined : serializeTaskGateRecord(current);
 	}
 
 	/** List Gates of the current Session with optional filters. Read-only; never appends. */

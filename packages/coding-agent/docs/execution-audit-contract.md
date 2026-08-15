@@ -30,8 +30,10 @@ only operation that may append a Session custom entry; a later additive
 `run.start`/`run.resume` integration may append its validated mapping as part
 of Run acceptance. Task Gate transitions append their own `task.gate` custom
 entries through the Automation Host control plane
-(`task.gate.request`/`approve`/`reject`/`cancel`); the audit adapter only
-reads them and never mutates Gate state.
+(`task.gate.request`/`approve`/`reject`/`cancel`); Task Graph transitions
+append their own `task.graph` custom entries through the Automation Host
+control plane (`task.graph.create`/`task.graph.node.attach`/`task.graph.node.settle`).
+The audit adapter only reads both and never mutates Gate or Graph state.
 
 The adapter folds existing Session custom entries into audit events. It does
 not create a second event ledger.
@@ -52,6 +54,7 @@ not create a second event ledger.
 | `external.mapping` | `external.mapping` | mapping `aosSessionId` and optional `aosRunId` |
 | `remote.operation` | `remote.operation` | receipt `sessionId` and optional `runId` |
 | `task.gate` | `task.gate` | `gateId`; optional `runId` for direct Run correlation |
+| `task.graph` | `task.graph` | node `runRef` `runId` when present; never guessed from `taskId`, `nodeId`, or dependencies |
 
 `context.memory` is deliberately not an audit source. It contains explicit
 user text and must not be made visible through an audit summary. Unknown
@@ -70,6 +73,7 @@ The source files that establish these facts are:
 - `src/core/sandbox.ts` for the side-effecting provider boundary;
 - `src/core/session-manager.ts` for Session entry identity and file scope;
 - `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
+- `src/core/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
@@ -96,7 +100,8 @@ type AuditEventType =
   | "policy.violation"
   | "external.mapping"
   | "remote.operation"
-  | "task.gate";
+  | "task.gate"
+  | "task.graph";
 ```
 
 Every event has this base shape:
@@ -133,7 +138,8 @@ type AuditEvent =
   | (AuditEventBase & { type: "policy.violation"; runId?: string; summary: AuditPolicyViolationSummary })
   | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping })
   | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt })
-  | (AuditEventBase & { type: "task.gate"; runId?: string; summary: AuditTaskGateSummary });
+  | (AuditEventBase & { type: "task.gate"; runId?: string; summary: AuditTaskGateSummary })
+  | (AuditEventBase & { type: "task.graph"; runId?: string; summary: AuditTaskGraphSummary });
 ```
 
 `sourceEntryId` is the outer SessionEntry `id`, not an inner ledger sequence
@@ -328,6 +334,45 @@ second terminal for the same `gateId` is rejected with the existing warnings
 (`malformed_source`, `unsupported_schema`, `duplicate_source`, or
 `orphan_source`) and never enters public Gate state or audit events. Replay
 and query never backfill a missing transition and never fabricate a decision.
+
+### Task Graph summary
+
+`task.graph` events are produced from `task.graph` Session custom entries. Each
+legal transition — `created`, `node.attached`, `node.succeeded`, `node.failed`,
+or `node.cancelled` — produces exactly one event; the `eventId` is the outer
+Session entry identity, never a random ID or an in-memory sequence.
+
+`AuditTaskGraphSummary` permits only:
+
+```text
+taskId, graphRevision, nodeId, action, status, nodeRevision,
+dependsOn, gateRef, runId, outcomeCode
+```
+
+`action` is `created`/`node.attached`/`node.succeeded`/`node.failed`/`node.cancelled`
+and `status` is `pending`/`running`/`succeeded`/`failed`/`cancelled`. `taskId`,
+`nodeId`, and `dependsOn` are validated opaque IDs, `gateRef` is
+`{ stageId, stageRevision }` with validated IDs, and `outcomeCode` is a stable
+short code. `runId` is present only when the node carries a `runRef`; it is the
+direct correlation to the node's Run. `clientRequestId` participates in the
+internal idempotency fold but never enters the public summary.
+
+Task Graph events never contain the task body, prompt, message, diff, command,
+arguments, working directory or path, file content, stdout/stderr, environment
+or header values, credentials, model output, provider errors, Run receipt
+`finalText` or `usage`, Binding data, or raw custom-entry `data`. `graphRevision`
+and `nodeRevision` are safe integers. Availability (`ready`/
+`waiting_dependencies`/`waiting_gate`/`blocked`) is derived at read time and is
+not an audit field; Graph `status` is never treated as a Run terminal.
+
+The fold applies the same malformed-entry rules as every other source: an
+entry whose `sessionId` does not match the Session, an unsupported schema, an
+unsafe identifier, an unknown dependency, a dependency cycle, a
+non-contiguous `nodeRevision`, an illegal status jump, a second `runRef` for
+the same `nodeId`, or a second definition for the same business key is
+rejected with the existing warnings and never enters public Graph state or
+audit events. Replay and query never backfill a missing transition, never
+fold a completed Run into a node terminal, and never fabricate an attachment.
 
 ### Forbidden keys
 
@@ -560,6 +605,20 @@ Task Gate replay association is by direct `runId` only:
 - Replaying or querying a Gate never approves, rejects, or cancels it, and
   never appends a transition.
 
+Task Graph replay association follows the same direct-`runId` rule:
+
+- A `task.graph` event whose summary `runId` equals the replayed Run's `runId`
+  is included as a non-terminal control-plane correlation event.
+- A `task.graph` event without `runId` is never associated to a Run by
+  `taskId`, `nodeId`, or dependency structure, and never by guessing which
+  node a Run belongs to.
+- Graph events are correlation facts only. They never participate in Run
+  terminal status selection and cannot change a replay's `complete`,
+  `interrupted`, or `incomplete` determination, which remains based on the
+  Run and other existing sources.
+- Replaying or querying a Graph never attaches a Run, settles a node, or
+  starts a Run.
+
 Warnings are safe records with only `code` and optional safe
 `sessionId`/`sourceEntryId`/`eventType`/`schemaVersion` fields. They contain no
 free-form detail.
@@ -610,13 +669,17 @@ not call:
 - `SessionManager.appendCustomEntry`, Session switching, Session forking, or
   context-memory writes;
 - TaskGateStore mutations (`task.gate.request`, `task.gate.approve`,
-  `task.gate.reject`, `task.gate.cancel`).
+  `task.gate.reject`, `task.gate.cancel`);
+- TaskGraphStore mutations (`task.graph.create`, `task.graph.node.attach`,
+  `task.graph.node.settle`).
 
 Replay of a historical `policy.approval` is an observation only. It never
 reopens or resolves the request. Reading a Sandbox lifecycle fact never
 prepares, executes, or disposes a Sandbox. Replay of a historical `task.gate`
 transition is an observation only; it never resolves, reopens, or rewrites
-the Gate.
+the Gate. Replay of a historical `task.graph` transition is an observation
+only; it never attaches a Run to a node, never settles a node, and never
+starts a Run.
 
 `external.map` is limited to validation, conflict checking, and appending the
 exact schema-versioned mapping entry. It does not execute a Run, model,
@@ -643,6 +706,10 @@ The reusable fixture freezes these cases:
 | Gate with matching `runId` in Run replay | included as non-terminal correlation event |
 | Gate without `runId` | never guessed into any Run |
 | Malformed `task.gate` entry | warning only; never in public state or audit events |
+| `task.graph` entries | safe `task.graph` events with allowlisted summaries |
+| Graph event with matching `runId` in Run replay | included as non-terminal correlation event |
+| Graph event without `runId` | never guessed into any Run |
+| Malformed `task.graph` entry | warning only; never in public state or audit events |
 | Mapping persistence failure | `audit_persistence_failed`; no success acknowledgement |
 | Query or replay | no model, tool, MCP, Extension, Policy, Sandbox, Session, or Run side effect |
 

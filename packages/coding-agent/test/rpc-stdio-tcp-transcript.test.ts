@@ -671,6 +671,393 @@ async function collectTaskGateTranscript(adapter: TranscriptAdapter): Promise<Pa
 	return adapter.records();
 }
 
+/**
+ * Deterministic Task Graph control-plane sequence over one transport. The
+ * write commands carry fixed `clientRequestId` idempotency keys, the run is
+ * started through the ordinary run.start flow, and the node attach/settle
+ * consume the same accepted Run facts, so the two transports must produce
+ * identical public transcripts.
+ */
+async function collectTaskGraphTranscript(adapter: TranscriptAdapter): Promise<ParsedRecord[]> {
+	const send = (command: Record<string, unknown>): Promise<ParsedRecord> => sendAutomationCommand(adapter, command);
+
+	await send({ id: "initialize", type: "initialize", protocolVersion: 1 });
+	const create = await send({
+		id: "graph-create",
+		type: "task.graph.create",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodes: [
+			{ nodeId: "inspect", dependsOn: [] },
+			{ nodeId: "implement", dependsOn: ["inspect"] },
+			{ nodeId: "review", dependsOn: ["implement"], gateRef: { stageId: "stage_review", stageRevision: 1 } },
+		],
+		clientRequestId: "graph-create-001",
+	});
+	const createJson = JSON.stringify(create);
+	expect(createJson).not.toContain("finalText");
+	expect(createJson).not.toContain("prompt");
+	await send({
+		id: "graph-create-retry",
+		type: "task.graph.create",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodes: [
+			{ nodeId: "inspect", dependsOn: [] },
+			{ nodeId: "implement", dependsOn: ["inspect"] },
+			{ nodeId: "review", dependsOn: ["implement"], gateRef: { stageId: "stage_review", stageRevision: 1 } },
+		],
+		clientRequestId: "graph-create-001",
+	});
+	await send({ id: "graph-get", type: "task.graph.get", taskId: "task_42", graphRevision: 1 });
+	await send({ id: "graph-list", type: "task.graph.list", status: "active" });
+
+	const runStart = await send({ id: "graph-run-start", type: "run.start", message: "hi" });
+	if (!isRecord(runStart.data) || typeof runStart.data.runId !== "string") {
+		throw new Error("run.start response did not include a runId");
+	}
+	const runId = runStart.data.runId;
+	// Attach while the Run is still accepted/running (stream delay keeps it live).
+	await send({
+		id: "graph-attach",
+		type: "task.graph.node.attach",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "inspect",
+		runId,
+		clientRequestId: "graph-attach-001",
+	});
+	// implement still waits on the running inspect node: not eligible, and the
+	// eligibility check runs before the Run lookup.
+	await send({
+		id: "graph-attach-implement",
+		type: "task.graph.node.attach",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "implement",
+		runId: "run_ghost",
+		clientRequestId: "graph-attach-002",
+	});
+	await waitForRecord(adapter, (record) => record.type === "run.completed", 8000);
+	await send({
+		id: "graph-settle",
+		type: "task.graph.node.settle",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "inspect",
+		clientRequestId: "graph-settle-001",
+	});
+	await send({ id: "graph-get-after", type: "task.graph.get", taskId: "task_42", graphRevision: 1 });
+
+	// Stable error surface: unknown graph/node, idempotency, business-key
+	// conflicts, dependency cycles, and strict payload shapes.
+	await send({ id: "graph-get-unknown", type: "task.graph.get", taskId: "task_missing", graphRevision: 1 });
+	await send({
+		id: "graph-attach-unknown-node",
+		type: "task.graph.node.attach",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "ghost",
+		runId: "run_ghost",
+		clientRequestId: "graph-attach-003",
+	});
+	await send({
+		id: "graph-attach-unknown-graph",
+		type: "task.graph.node.attach",
+		taskId: "task_missing",
+		graphRevision: 1,
+		nodeId: "inspect",
+		runId: "run_ghost",
+		clientRequestId: "graph-attach-004",
+	});
+	await send({
+		id: "graph-settle-pending",
+		type: "task.graph.node.settle",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "implement",
+		clientRequestId: "graph-settle-002",
+	});
+	await send({
+		id: "graph-settle-unknown-node",
+		type: "task.graph.node.settle",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "ghost",
+		clientRequestId: "graph-settle-003",
+	});
+	await send({
+		id: "graph-create-cycle",
+		type: "task.graph.create",
+		taskId: "task_cycle",
+		graphRevision: 1,
+		nodes: [
+			{ nodeId: "a", dependsOn: ["b"] },
+			{ nodeId: "b", dependsOn: ["a"] },
+		],
+		clientRequestId: "graph-create-cycle-001",
+	});
+	await send({
+		id: "graph-create-conflict",
+		type: "task.graph.create",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodes: [{ nodeId: "a", dependsOn: [] }],
+		clientRequestId: "graph-create-conflict-001",
+	});
+	await send({
+		id: "graph-create-idem-conflict",
+		type: "task.graph.create",
+		taskId: "task_43",
+		graphRevision: 1,
+		nodes: [{ nodeId: "a", dependsOn: [] }],
+		clientRequestId: "graph-create-001",
+	});
+	await send({ id: "graph-list-bad-limit", type: "task.graph.list", limit: 0 });
+	await send({
+		id: "graph-attach-extra-key",
+		type: "task.graph.node.attach",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "implement",
+		runId: "run_ghost",
+		clientRequestId: "graph-attach-005",
+		status: "running",
+	});
+	await send({
+		id: "graph-settle-caller-status",
+		type: "task.graph.node.settle",
+		taskId: "task_42",
+		graphRevision: 1,
+		nodeId: "implement",
+		clientRequestId: "graph-settle-004",
+		status: "completed",
+	});
+
+	return adapter.records();
+}
+
+function graphRecordOf(record: ParsedRecord): Record<string, unknown> {
+	if (!isRecord(record.data) || !isRecord(record.data.graph)) {
+		throw new Error("response did not include a graph");
+	}
+	return record.data.graph;
+}
+
+function graphNodeOf(graph: Record<string, unknown>, nodeId: string): Record<string, unknown> {
+	if (!Array.isArray(graph.nodes)) throw new Error("graph did not include nodes");
+	const node = (graph.nodes as unknown as ParsedRecord[]).find((candidate) => candidate.nodeId === nodeId);
+	if (node === undefined) throw new Error(`graph did not include node ${nodeId}`);
+	return node;
+}
+
+function assertTaskGraphTranscript(records: ParsedRecord[]): void {
+	const responseCommands = records
+		.filter((record) => record.type === "response")
+		.map((record) => String(record.command));
+	expect(responseCommands).toEqual([
+		"initialize",
+		"task.graph.create",
+		"task.graph.create",
+		"task.graph.get",
+		"task.graph.list",
+		"run.start",
+		"task.graph.node.attach",
+		"task.graph.node.attach",
+		"task.graph.node.settle",
+		"task.graph.get",
+		"task.graph.get",
+		"task.graph.node.attach",
+		"task.graph.node.attach",
+		"task.graph.node.settle",
+		"task.graph.node.settle",
+		"task.graph.create",
+		"task.graph.create",
+		"task.graph.create",
+		"task.graph.list",
+		"task.graph.node.attach",
+		"task.graph.node.settle",
+	]);
+
+	// initialize advertises the five additive Task Graph commands over protocolVersion 1.
+	expect(responseById(records, "initialize")).toMatchObject({
+		type: "response",
+		command: "initialize",
+		success: true,
+		data: {
+			host: "automation-host",
+			protocolVersion: 1,
+			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			taskGateCommands: [
+				"task.gate.request",
+				"task.gate.get",
+				"task.gate.list",
+				"task.gate.approve",
+				"task.gate.reject",
+				"task.gate.cancel",
+			],
+			taskGraphCommands: [
+				"task.graph.create",
+				"task.graph.get",
+				"task.graph.list",
+				"task.graph.node.attach",
+				"task.graph.node.settle",
+			],
+		},
+	});
+
+	// create persists the immutable DAG with pending nodes and derived availability.
+	const created = responseById(records, "graph-create");
+	expect(created).toMatchObject({
+		type: "response",
+		command: "task.graph.create",
+		success: true,
+		data: { idempotent: false },
+	});
+	const createdGraph = graphRecordOf(created);
+	expect(createdGraph).toMatchObject({
+		schemaVersion: 1,
+		taskId: "task_42",
+		graphRevision: 1,
+		summary: { status: "active", pending: 3, running: 0, succeeded: 0, failed: 0, cancelled: 0 },
+	});
+	expect(graphNodeOf(createdGraph, "inspect")).toMatchObject({
+		status: "pending",
+		nodeRevision: 0,
+		availability: "ready",
+		blockingNodeIds: [],
+	});
+	expect(graphNodeOf(createdGraph, "implement")).toMatchObject({
+		status: "pending",
+		nodeRevision: 0,
+		availability: "waiting_dependencies",
+		blockingNodeIds: ["inspect"],
+	});
+	expect(graphNodeOf(createdGraph, "review")).toMatchObject({
+		status: "pending",
+		nodeRevision: 0,
+		availability: "waiting_dependencies",
+		blockingNodeIds: ["implement"],
+		gateRef: { stageId: "stage_review", stageRevision: 1 },
+	});
+
+	// The identical create replays the durable graph without a second transition.
+	expect(responseById(records, "graph-create-retry")).toMatchObject({
+		success: true,
+		data: { idempotent: true },
+	});
+
+	// get and list are read-only views of the same snapshot.
+	expect(graphRecordOf(responseById(records, "graph-get"))).toMatchObject({
+		taskId: "task_42",
+		graphRevision: 1,
+	});
+	expect(responseById(records, "graph-list")).toMatchObject({
+		success: true,
+		data: { truncated: false, graphs: [expect.objectContaining({ taskId: "task_42" })] },
+	});
+
+	// attach links the accepted Run to the ready node without starting a Run.
+	const runStart = responseById(records, "graph-run-start");
+	const runData = isRecord(runStart.data) ? runStart.data : {};
+	if (typeof runData.runId !== "string") throw new Error("run.start response did not include a runId");
+	const runId = runData.runId;
+	const attach = responseById(records, "graph-attach");
+	expect(attach).toMatchObject({
+		success: true,
+		data: { idempotent: false },
+	});
+	const attachData = isRecord(attach.data) ? attach.data : {};
+	if (!isRecord(attachData.node)) throw new Error("attach response did not include a node");
+	expect(attachData.node).toMatchObject({
+		nodeId: "inspect",
+		status: "running",
+		nodeRevision: 1,
+		runRef: { runId },
+		availability: null,
+	});
+
+	// The run lifecycle is untouched: exactly one started and one completed event.
+	expect(records.filter((record) => record.type === "run.started")).toHaveLength(1);
+	expect(records.filter((record) => record.type === "run.completed")).toHaveLength(1);
+	expect(records.filter((record) => record.type === "run.failed" || record.type === "run.cancelled")).toHaveLength(0);
+	expect(records.filter((record) => record.type === "run.event").length).toBeGreaterThanOrEqual(1);
+	const completedIndex = records.findIndex((record) => record.type === "run.completed");
+	const settleIndex = records.findIndex((record) => record.id === "graph-settle");
+	expect(settleIndex).toBeGreaterThan(completedIndex);
+
+	// settle folds the terminal receipt into the node: completed -> succeeded.
+	expect(responseById(records, "graph-settle")).toMatchObject({
+		success: true,
+		data: { idempotent: false },
+	});
+	expect(graphNodeOf(graphRecordOf(responseById(records, "graph-settle")), "inspect")).toMatchObject({
+		status: "succeeded",
+		nodeRevision: 2,
+		availability: null,
+	});
+
+	// The derived view after settle exposes the next eligible node: implement is
+	// now ready because its only dependency succeeded.
+	const afterGraph = graphRecordOf(responseById(records, "graph-get-after"));
+	expect(graphNodeOf(afterGraph, "implement")).toMatchObject({
+		status: "pending",
+		availability: "ready",
+		blockingNodeIds: [],
+	});
+
+	// Stable error codes for the failure matrix.
+	expect(responseById(records, "graph-attach-implement")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_node_not_eligible", retryable: false },
+	});
+	expect(responseById(records, "graph-get-unknown")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_not_found", retryable: false },
+	});
+	expect(responseById(records, "graph-attach-unknown-node")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_node_not_found", retryable: false },
+	});
+	expect(responseById(records, "graph-attach-unknown-graph")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_not_found", retryable: false },
+	});
+	expect(responseById(records, "graph-settle-pending")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_node_conflict", retryable: false },
+	});
+	expect(responseById(records, "graph-settle-unknown-node")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_node_not_found", retryable: false },
+	});
+	expect(responseById(records, "graph-create-cycle")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_dependency_cycle", retryable: false },
+	});
+	expect(responseById(records, "graph-create-conflict")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_conflict", retryable: false },
+	});
+	expect(responseById(records, "graph-create-idem-conflict")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_idempotency_conflict", retryable: false },
+	});
+	expect(responseById(records, "graph-list-bad-limit")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_invalid", retryable: false },
+	});
+	expect(responseById(records, "graph-attach-extra-key")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_invalid", retryable: false },
+	});
+	expect(responseById(records, "graph-settle-caller-status")).toMatchObject({
+		success: false,
+		error: { code: "task_graph_invalid", retryable: false },
+	});
+}
+
 function publicRecordTypes(records: ParsedRecord[]): string[] {
 	return records.map((record) => {
 		if (record.type === "response") return `response:${String(record.command)}`;
@@ -1163,6 +1550,36 @@ describe("RPC stdio/TCP public transcript parity", () => {
 		for (const transcript of [stdioTranscript!, tcpTranscript!]) {
 			assertAutomationResponseShape(transcript);
 			assertTaskGateTranscript(transcript);
+		}
+		expect(publicRecordTypes(stdioTranscript!)).toEqual(publicRecordTypes(tcpTranscript!));
+		expect(automationResponseSignatures(stdioTranscript!)).toEqual(automationResponseSignatures(tcpTranscript!));
+		expect(normalizePublicTranscript(stdioTranscript!)).toEqual(normalizePublicTranscript(tcpTranscript!));
+	});
+
+	it("emits the same Task Graph control-plane transcript over stdio and TCP", async () => {
+		const runtimeOptions: RuntimeHostOptions = { streamDelayMs: 2000 };
+		const stdio = await startStdioRpcMode(runtimeOptions);
+		let stdioTranscript: ParsedRecord[];
+		try {
+			stdioTranscript = await collectTaskGraphTranscript(stdio);
+			assertStrictJsonlLines(rpcIo.outputLines);
+		} finally {
+			await stdio.cleanup();
+		}
+
+		const tcp = await startTcpRpcMode(runtimeOptions);
+		let tcpTranscript: ParsedRecord[];
+		try {
+			tcpTranscript = await collectTaskGraphTranscript(tcp);
+			// TCP diagnostics belong on stderr; no RPC JSONL record may reach stdout.
+			expect(rpcIo.outputLines).toEqual([]);
+		} finally {
+			await tcp.cleanup();
+		}
+
+		for (const transcript of [stdioTranscript!, tcpTranscript!]) {
+			assertAutomationResponseShape(transcript);
+			assertTaskGraphTranscript(transcript);
 		}
 		expect(publicRecordTypes(stdioTranscript!)).toEqual(publicRecordTypes(tcpTranscript!));
 		expect(automationResponseSignatures(stdioTranscript!)).toEqual(automationResponseSignatures(tcpTranscript!));

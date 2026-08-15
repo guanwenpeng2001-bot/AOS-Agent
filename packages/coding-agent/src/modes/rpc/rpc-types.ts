@@ -27,6 +27,12 @@ import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
 import type {
+	TaskGraphNodeDefinition,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphStatus,
+} from "../../core/task-graph.ts";
+import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
 	PublicContextSnapshot,
@@ -203,6 +209,41 @@ export type RpcCommand =
 			type: "task.gate.cancel";
 			gateId: string;
 			actorId?: string;
+			clientRequestId: string;
+	  }
+	// Task Graph control-plane commands (write commands require clientRequestId)
+	| {
+			id?: string;
+			type: "task.graph.create";
+			taskId: string;
+			graphRevision: number;
+			nodes: TaskGraphNodeDefinition[];
+			clientRequestId: string;
+	  }
+	| { id?: string; type: "task.graph.get"; taskId: string; graphRevision: number }
+	| {
+			id?: string;
+			type: "task.graph.list";
+			taskId?: string;
+			graphRevision?: number;
+			status?: TaskGraphStatus;
+			limit?: number;
+	  }
+	| {
+			id?: string;
+			type: "task.graph.node.attach";
+			taskId: string;
+			graphRevision: number;
+			nodeId: string;
+			runId: string;
+			clientRequestId: string;
+	  }
+	| {
+			id?: string;
+			type: "task.graph.node.settle";
+			taskId: string;
+			graphRevision: number;
+			nodeId: string;
 			clientRequestId: string;
 	  };
 
@@ -514,12 +555,21 @@ export type RpcTaskGateCommandType =
 	| "task.gate.reject"
 	| "task.gate.cancel";
 
+/** Task Graph v1 control-plane commands. Write commands require `clientRequestId`. */
+export type RpcTaskGraphCommandType =
+	| "task.graph.create"
+	| "task.graph.get"
+	| "task.graph.list"
+	| "task.graph.node.attach"
+	| "task.graph.node.settle";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
 	| RpcRunCommandType
 	| RpcAuditCommandType
-	| RpcTaskGateCommandType;
+	| RpcTaskGateCommandType
+	| RpcTaskGraphCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -531,6 +581,8 @@ export interface InitializeData {
 	auditCommands?: RpcAuditCommandType[];
 	/** Additive Task Gate control-plane command list. */
 	taskGateCommands?: RpcTaskGateCommandType[];
+	/** Additive Task Graph control-plane command list. */
+	taskGraphCommands?: RpcTaskGraphCommandType[];
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -599,6 +651,26 @@ export interface TaskGateListData {
 	truncated: boolean;
 }
 
+/** Data returned by a successful `task.graph.create` / `task.graph.node.attach` / `task.graph.node.settle`. */
+export interface TaskGraphMutationData {
+	graph: TaskGraphRecord;
+	/** The affected node view for node transitions; absent for create. */
+	node?: TaskGraphNodeView;
+	/** True when this response replays an already durable transition. */
+	idempotent: boolean;
+}
+
+/** Data returned by a successful `task.graph.get`. */
+export interface TaskGraphGetData {
+	graph: TaskGraphRecord;
+}
+
+/** Data returned by a successful `task.graph.list`. */
+export interface TaskGraphListData {
+	graphs: TaskGraphRecord[];
+	truncated: boolean;
+}
+
 /**
  * Automation Host v1 responses.
  *
@@ -621,6 +693,11 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.gate.approve"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.reject"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.cancel"; success: true; data: TaskGateMutationData }
+	| { id?: string; type: "response"; command: "task.graph.create"; success: true; data: TaskGraphMutationData }
+	| { id?: string; type: "response"; command: "task.graph.get"; success: true; data: TaskGraphGetData }
+	| { id?: string; type: "response"; command: "task.graph.list"; success: true; data: TaskGraphListData }
+	| { id?: string; type: "response"; command: "task.graph.node.attach"; success: true; data: TaskGraphMutationData }
+	| { id?: string; type: "response"; command: "task.graph.node.settle"; success: true; data: TaskGraphMutationData }
 	| {
 			id?: string;
 			type: "response";
@@ -655,6 +732,19 @@ export type {
 	TaskGateRecord,
 	TaskGateStatus,
 } from "../../core/task-gate.ts";
+// Re-export public Task Graph types.
+export type {
+	TaskGraphErrorCode,
+	TaskGraphGateRef,
+	TaskGraphNodeAvailability,
+	TaskGraphNodeDefinition,
+	TaskGraphNodeStatus,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphRunRef,
+	TaskGraphStatus,
+	TaskGraphSummary,
+} from "../../core/task-graph.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,
