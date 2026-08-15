@@ -1535,6 +1535,41 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("rejects a non-canonical deadline during preflight without creating a Run", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "i1", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
+
+			const invalidDeadlines = [
+				"2026-08-15T12:00:10Z",
+				"2026-08-15T12:00:10.000+00:00",
+				"2026-13-40T12:00:10.000Z",
+			];
+			for (const [index, deadlineAt] of invalidDeadlines.entries()) {
+				const id = `deadline-invalid-${index}`;
+				lineHandler(JSON.stringify({ id, type: "run.start", message: "Hello", deadlineAt }));
+				await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, id)).toHaveLength(1));
+				const response = responsesFor(rpcIo.outputLines, id)[0];
+				expect(response).toMatchObject({
+					success: false,
+					error: { code: "run_deadline_invalid", retryable: false },
+				});
+				expect("data" in response).toBe(false);
+			}
+			expect(terminalEvents(currentLines())).toHaveLength(0);
+			expect(runEventsOfType(currentLines(), "run.started")).toHaveLength(0);
+			expect(
+				runtimeHost.session.sessionManager
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
+		} finally {
+			await cleanup();
+		}
+	});
+
 	it("rejects an expired deadline during preflight without creating a Run", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
