@@ -10,6 +10,7 @@
 
 ### Added
 
+- Optional `gondolin-local` Isolated Runner: an explicitly registered Gondolin micro-VM `SandboxProvider` that consumes the existing Policy Binding / `prepare` / `execute` / `dispose` contract. Built-in filesystem and process tools stay on the guest `/workspace` mount, capabilities report `network: false` with no MCP transport, and cancel/deadline unknown side effects stay fail-closed. The adapter is an example package; default `legacy` installs do not gain a Gondolin or QEMU dependency.
 - Loopback TCP JSONL transport for Automation Host: `aos --mode rpc --rpc-listen tcp://127.0.0.1:<port>` binds `127.0.0.1` only, accepts one control connection, and reuses the existing RPC command, event, and receipt contract. `RpcClient` can connect with `{ transport: { type: "tcp", host: "127.0.0.1", port } }` without spawning a child process.
 - Remote-ready execution contracts: session-scoped idempotent run requests, durable lifecycle observations, reconnect-safe run event recovery, stable binding handles, serialized Session writes, and an in-process fake remote provider contract.
 - Context Engine v1: governed context sources (trust/scope/digest), input budget packing that includes provider tool schemas and formal extension contributions, metadata-only `context.snapshot` Session entries, optional explicit session/project memory (default off), compaction/branch-summary snapshot provenance, RPC `get_context` / `RpcClient.getContext()`, interactive `/context` and `/memory`, and additive `RunReceipt.contextSnapshotId`.
@@ -21,6 +22,7 @@
 
 ### Changed
 
+- Strict sandbox reads no longer resolve host-only filename variants before `SandboxHandle.execute`. Policy error `Error.message` now uses the stable code-derived text so provider diagnostics cannot escape through legacy RPC or tool-result channels. AgentSession serializes policy-boundary teardown against sandbox prepare and records `sandbox.lifecycle: disposed`.
 - Hardened capability revisions and binding identity, fail-closed static tool-name conflicts, extension parent governance, and MCP deselection cleanup; MCP discovery now starts only at explicit readiness or prompt/run preflight.
 - Preserved schema structure during secret-safe revision sanitization, re-enabled explicit MCP reconnect after terminal close, made failed profile transitions tear down prior MCP selection, exposed all extension-source tools for conflict detection, and added binding ledger/replay coverage.
 - Serialized overlapping capability-profile transitions so MCP close/reselect races settle with the latest invocation and a fresh ready transport.
@@ -29,6 +31,7 @@
 
 ### Fixed
 
+- Gondolin path mapping no longer treats POSIX `/tmp/...` workspace paths as Windows roots, so Linux guest reads are not rejected as `workspace_boundary_violation`.
 - Accepted Automation Host runs that reach `deadlineAt` now settle as a single `run.failed` with `terminalError.code: "run_deadline_exceeded"` instead of `run.cancelled`. Explicit `run.cancel` is unchanged, and the first recorded termination intent wins a deadline/cancel race.
 - Made managed `fd` and `rg` downloads safe across concurrent processes by isolating temporary archives and extraction directories.
 - Defaulted package changelog links to the AOS Agent repository when no override is configured.

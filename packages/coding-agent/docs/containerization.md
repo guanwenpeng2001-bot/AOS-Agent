@@ -15,13 +15,41 @@ Select a named registered policy profile with `--policy <profile>`, SDK `policyP
 
 Strict profiles use `enforcement: "sandbox"` and a registered provider. They fail closed before a side effect when the provider is missing (`sandbox_required`), unavailable (`sandbox_unavailable`), missing a required capability (`sandbox_capability_insufficient`), or cannot prepare (`sandbox_start_failed`). They never fall back to host or legacy execution. The `legacy-host` compatibility marker and `host-policy` local checks do not claim the strong boundary required for arbitrary Bash, network access, or untrusted child processes.
 
-An outer Docker, VM, or OpenShell boundary is independent of AOS Agent's policy binding. A host-routing extension may delegate built-in operations into a VM, but custom extension tools still run on the host unless they delegate too; the extension does not automatically register a Sandbox Provider or make every tool isolated. Only the provider bound to the run can satisfy strict policy enforcement.
+An outer Docker, VM, or OpenShell boundary is independent of AOS Agent's policy binding. A custom extension tool still runs on the host unless it delegates its own operation; loading an extension does not automatically register a Sandbox Provider or make every tool isolated. Only the provider bound to the run can satisfy strict policy enforcement.
+
+### Explicit provider registration
+
+Selecting a profile is not the same as loading a provider. `--policy` and
+`policyProfile` select a named profile; they do not install a package, execute a
+command, or load a provider from project settings. A trusted SDK or embedded host
+must construct and register the provider before selecting a strict profile:
+
+```ts
+import { createAgentSession } from "aos-agent";
+import { createGondolinSandboxProvider } from "./packages/coding-agent/examples/extensions/gondolin/register.ts";
+
+const cwd = process.cwd();
+const gondolinLocal = createGondolinSandboxProvider({ workspaceRoot: cwd });
+
+const { session } = await createAgentSession({
+  cwd,
+  policyProfile: "workspace-safe",
+  sandboxProviders: [gondolinLocal],
+});
+```
+
+The named `workspace-safe` profile must already be trusted, use
+`enforcement: "sandbox"`, and set `sandboxProvider: "gondolin-local"`.
+`sandboxProviders` accepts provider instances only; it does not load package
+names, module paths, URLs, commands, or project settings. Loading the example
+with `-e` alone does not register a provider. With no selected strict profile,
+the `legacy` profile remains the default and host behavior is unchanged.
 
 ## Choose a pattern
 
 | Pattern | What is isolated | Best for | Notes |
 | --- | --- | --- | --- |
-| Gondolin extension | Built-in tools and `!` commands | Local micro-VM isolation while keeping auth on host | See [`examples/extensions/gondolin/`](../examples/extensions/gondolin/). |
+| Gondolin provider example | Built-in tools and `!` commands | Local micro-VM isolation while keeping auth on host | Explicit SDK registration required; see [`examples/extensions/gondolin/`](../examples/extensions/gondolin/). |
 | Plain Docker | Whole `aos` process in a local container | Simple local isolation | Provider API keys enter the container. |
 | OpenShell | Whole `aos` process in a policy-controlled sandbox | Local or remote managed sandbox | Requires an OpenShell gateway. |
 
@@ -29,7 +57,12 @@ Extensions run wherever the `aos` process runs. If you run host `aos` with a too
 
 ## Gondolin
 
-[Gondolin](https://github.com/earendil-works/gondolin) is a local Linux micro-VM. Use the [example extension](../examples/extensions/gondolin) when you want `aos` on the host but built-in tools routed into the VM.
+[Gondolin](https://github.com/earendil-works/gondolin) is a local Linux micro-VM.
+The [example package](../examples/extensions/gondolin) exposes an optional
+`gondolin-local` provider and the shared guest-only filesystem/process
+adapters. Its extension entry point is intentionally side-effect free: it does
+not start a VM or override built-in tools. Use the explicit SDK registration
+above when strict policy should route built-in operations into the guest.
 
 Setup:
 
@@ -39,16 +72,76 @@ cd ~/.aos-agent/agent/extensions/gondolin
 npm install --ignore-scripts
 ```
 
-Run from the project you want mounted:
+The `-e` command only loads the no-op extension entry point; it does not
+register `gondolin-local`, select a policy, or start a VM. The strict SDK path
+prepares one provider handle for the immutable policy binding. Core built-in
+read, write, edit, grep, find, ls, bash, and `!` operations then use the
+provider's guest-only adapters. Custom extension tools and MCP are not made
+guest-side by this provider.
+
+The provider mounts only the host workspace root at `/workspace`. Reads and
+writes below that mount are write-through to the host. Parent traversal,
+outside paths, different Windows drives or UNC roots, and symlink/junction
+escapes are rejected before a guest operation. Host auth files, session files,
+the Agent directory, and credential roots are not mounted. A write-through
+mount is not a rollback or copy-on-write boundary.
+
+The strict `gondolin-local` binding reports `filesystem: true`, `process: true`,
+`credentialIsolation: true`, and `network: false`. These booleans describe
+enforceable boundaries, not best-effort checks. The provider keeps AOS
+control-plane authentication on the host: ModelRuntime credentials, the full
+parent environment, session files, and MCP header values are not copied into a
+guest tool process; only policy-filtered explicit environment names may be
+passed. This does not isolate model requests made by the host AOS process.
+
+The provider starts its VM with networking and WebSockets disabled. Guest
+network operations therefore fail with `sandbox_capability_insufficient`
+rather than using the host network. Strict MCP stdio or HTTP also remains
+unavailable when the provider has no controlled MCP transport: it fails closed
+with `sandbox_capability_insufficient` and never falls back to a host MCP
+connection.
+
+Cancellation and deadlines use the existing Run and operation contracts. An
+`AbortSignal` stops the guest operation before the provider handle is disposed;
+an explicit `run.cancel` settles as `run.cancelled`, while an accepted Run
+deadline settles as `run.failed` with `run_deadline_exceeded`. If cancellation,
+timeout, or VM close cannot prove whether a write or process side effect
+occurred, the operation is `side-effect-unknown` and is not automatically
+retried. Provider disposal is idempotent, and a disposed handle is never reused
+by resume, policy rebind, or a later session.
+
+Requirements: the example pins `@earendil-works/gondolin` to exactly `0.12.0`,
+requires Node.js >= 23.6.0, and requires a QEMU system binary on `PATH`.
+Install QEMU with your platform package manager; a working host AOS process
+alone does not prove that Gondolin or QEMU is available. The first VM start may
+also resolve Gondolin guest assets. The core `aos-agent` package has no
+Gondolin or QEMU dependency.
+
+### Optional Gondolin smoke test
+
+The example includes a real-VM smoke script. It is deliberately outside the
+normal package scripts and CI jobs. It exits successfully with a skip message
+unless `AOS_AGENT_GONDOLIN_SMOKE=1` is set, and it does not call a model, use an
+API key, or contact an external service. Run it only on a machine where the
+Node.js and QEMU prerequisites are installed:
 
 ```bash
-cd /path/to/project
-aos -e ~/.aos-agent/agent/extensions/gondolin
+cd packages/coding-agent/examples/extensions/gondolin
+AOS_AGENT_GONDOLIN_SMOKE=1 node smoke.mjs
 ```
 
-The extension mounts the host cwd at `/workspace` in the VM and overrides `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`. User `!` commands are routed into the VM, as well. File changes under `/workspace` write through to the host.
+PowerShell:
 
-Requirements: Node.js >= 23.6.0 for `@earendil-works/gondolin`, plus QEMU (requires installation through your package manager).
+```powershell
+Set-Item Env:AOS_AGENT_GONDOLIN_SMOKE 1
+node .\smoke.mjs
+Remove-Item Env:AOS_AGENT_GONDOLIN_SMOKE
+```
+
+The smoke checks VM startup, the `/workspace` write-through, a guest process
+abort, filtered environment behavior, networking disabled at VM creation, and
+clean disposal. Ordinary `npm run check`, tests, and CI do not invoke this
+script.
 
 ## Plain Docker
 

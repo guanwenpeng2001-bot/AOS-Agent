@@ -46,6 +46,19 @@ export interface BashResult {
 	fullOutputPath?: string;
 }
 
+function isUnknownSideEffectError(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as {
+		readonly category?: unknown;
+		readonly sideEffects?: unknown;
+		readonly sideEffectStatus?: unknown;
+	};
+	return (
+		candidate.category === "side-effect-unknown" &&
+		(candidate.sideEffects === "unknown" || candidate.sideEffectStatus === "unknown")
+	);
+}
+
 // ============================================================================
 // Implementation
 // ============================================================================
@@ -147,6 +160,10 @@ export async function executeBashWithOperations(
 			fullOutputPath: tempFilePath,
 		};
 	} catch (err) {
+		if (isUnknownSideEffectError(err)) {
+			if (tempFileStream) tempFileStream.end();
+			throw err;
+		}
 		// Check if it was an abort
 		if (options?.signal?.aborted) {
 			const fullOutput = outputChunks.join("");

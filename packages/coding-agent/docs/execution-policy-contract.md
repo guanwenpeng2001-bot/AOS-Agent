@@ -333,6 +333,57 @@ For `enforcement: "sandbox"`:
 The handle is bound to one PolicyBinding. After dispose, it is invalid and
 cannot be reused by a later Run.
 
+### Provider registration and optional capabilities
+
+Provider registration is trusted host composition, not project configuration.
+The SDK accepts a provider instance through `sandboxProviders`; a caller then
+selects a named profile with `policyProfile`:
+
+```ts
+import { createGondolinSandboxProvider } from "../examples/extensions/gondolin/register.ts";
+
+const gondolinLocal = createGondolinSandboxProvider({ workspaceRoot: cwd });
+await createAgentSession({
+  cwd,
+  policyProfile: "workspace-safe",
+  sandboxProviders: [gondolinLocal],
+});
+```
+
+The reference local provider ID is `gondolin-local`. A profile may select that
+ID only after the trusted host has registered the matching provider instance.
+Installing an extension or placing a provider package name, URL, command, or
+module path in project settings does not register a provider. A strict profile
+with no matching registration produces `sandbox_required`; a registered
+provider that cannot start produces `sandbox_unavailable` or
+`sandbox_start_failed`. Neither outcome uses host execution as fallback.
+
+Capability booleans are claims about enforceable boundaries. In particular,
+`network: false` means a strict network operation fails with
+`sandbox_capability_insufficient`; it is not permission to use the host
+network. If a strict Sandbox Handle does not implement `createMcpTransport`,
+selected MCP stdio or HTTP operations likewise fail with
+`sandbox_capability_insufficient` and never use the host MCP transport.
+
+### Cancellation, deadlines, and unknown side effects
+
+Provider operations observe the caller's `AbortSignal` and timeout/deadline
+inputs, then release guest processes before the bound Handle is disposed. The
+Provider does not write Run terminal records:
+
+- an explicit `run.cancel` remains `run.cancelled`;
+- an accepted Run deadline remains `run.failed` with
+  `run_deadline_exceeded`;
+- cancellation or deadline before a side effect is classified at the
+  operation boundary as `cancelled` or `deadline`;
+- if process termination, VM close, or a write cannot prove whether a side
+  effect occurred, the operation is `side-effect-unknown`, failed closed, and
+  not automatically retried.
+
+These operation classifications do not add a Run terminal or a Policy error
+code. They follow the [remote-neutral operation contract](remote-operation-contract.md)
+and must remain distinguishable from policy denial and sandbox unavailability.
+
 ## 7. Stable errors and ModelBroker boundary
 
 The complete v1 error-code set is:

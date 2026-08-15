@@ -302,7 +302,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 		expect(approved.sandbox.invocations).toHaveLength(0);
 		expect(approved.harness.session.getPendingExecutionPolicyApprovals()).toHaveLength(0);
 		expect(() => approved.harness.session.approveExecutionPolicyRequest(approveRequestId!)).toThrow(
-			"Cannot approve unknown policy request.",
+			"The operation was denied by execution policy.",
 		);
 
 		const approvedEntries = approved.harness.sessionManager.getEntries().filter(

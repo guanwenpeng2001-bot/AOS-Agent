@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
 	Agent,
@@ -122,6 +122,7 @@ import {
 } from "./execution-error.ts";
 import {
 	authorizePolicyOperation,
+	createWorkspaceIdentity,
 	type ExecutionPolicyProfile,
 	type PolicyApprovalOutcome,
 	type PolicyApprovalRequest,
@@ -203,6 +204,27 @@ import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts"
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+
+function isUnknownSandboxSideEffectError(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as {
+		readonly category?: unknown;
+		readonly sideEffects?: unknown;
+		readonly sideEffectStatus?: unknown;
+	};
+	return (
+		candidate.category === "side-effect-unknown" &&
+		(candidate.sideEffects === "unknown" || candidate.sideEffectStatus === "unknown")
+	);
+}
+
+function getActiveWorkspaceIdentity(cwd: string): string {
+	try {
+		return createWorkspaceIdentity(realpathSync(cwd));
+	} catch {
+		return createWorkspaceIdentity(cwd);
+	}
+}
 
 // ============================================================================
 // Skill Block Parsing
@@ -678,6 +700,8 @@ export class AgentSession {
 	private _pendingExecutionPolicyApprovals = new Map<string, PolicyApprovalRequest>();
 	private _activeSandboxSession: SandboxSession | undefined;
 	private _activeSandboxHandle: SandboxHandle | undefined;
+	/** Serializes policy binding teardown and sandbox preparation. */
+	private _executionPolicyPreparationTail: Promise<void> = Promise.resolve();
 	private _disposePolicyBoundaryPromise: Promise<void> | undefined;
 	private _currentBuiltinToolPolicy: BuiltinToolPolicy | undefined;
 	constructor(config: AgentSessionConfig) {
@@ -3509,17 +3533,19 @@ export class AgentSession {
 			policyProfile: profileName,
 			registeredProviderIds: ["legacy-host", "host-policy", ...this._sandboxProviders.keys()],
 		});
-		this._activeExecutionPolicyProfileSelection = policySettings.selectedProfileId;
-		this._activeExecutionPolicyProfile = undefined;
-		this._activeExecutionPolicyBinding = undefined;
-		this._nextPreviousExecutionPolicyBindingId = undefined;
-		this._executionPolicyPreviousBindingIdForRun = undefined;
-		this._currentBuiltinToolPolicy = undefined;
-		this._pendingExecutionPolicyApprovals.clear();
-		this._executionPolicyApprovedRequestIds = [];
-		this._executionPolicyRejectedRequestIds = [];
-		await this._closeMcpConnectionsForPolicyBoundary();
-		await this._disposeSandboxSession();
+		await this._enqueueExecutionPolicyTransition(async () => {
+			await this._closeMcpConnectionsForPolicyBoundary();
+			await this._disposeSandboxSession();
+			this._activeExecutionPolicyProfileSelection = policySettings.selectedProfileId;
+			this._activeExecutionPolicyProfile = undefined;
+			this._activeExecutionPolicyBinding = undefined;
+			this._nextPreviousExecutionPolicyBindingId = undefined;
+			this._executionPolicyPreviousBindingIdForRun = undefined;
+			this._currentBuiltinToolPolicy = undefined;
+			this._pendingExecutionPolicyApprovals.clear();
+			this._executionPolicyApprovedRequestIds = [];
+			this._executionPolicyRejectedRequestIds = [];
+		});
 	}
 
 	/** Redacted current Execution Policy binding, if one has been materialized. */
@@ -3543,7 +3569,10 @@ export class AgentSession {
 			projectTrusted: this.settingsManager.isProjectTrusted(),
 			capabilityBinding: this._policyCapabilityBindingInput(),
 			sandbox: this._createPolicySandboxPreflight(policySettings.selectedProfile),
-			workspaceIdentity: "workspace:active",
+			workspaceIdentity:
+				policySettings.selectedProfile.enforcement === "sandbox"
+					? getActiveWorkspaceIdentity(this._cwd)
+					: "workspace:active",
 			runId: this._activeContextRunId ?? "run:session",
 			createdAt: new Date().toISOString(),
 		});
@@ -5238,9 +5267,23 @@ export class AgentSession {
 		const session = this._activeSandboxSession;
 		this._activeSandboxSession = undefined;
 		this._activeSandboxHandle = undefined;
-		if (session !== undefined) {
-			await session.dispose().catch(() => undefined);
+		if (session === undefined) return;
+		let disposeError: unknown;
+		try {
+			await session.dispose();
+		} catch (error) {
+			disposeError = error;
 		}
+		this._policyLedger.appendSandboxLifecycle({
+			bindingId: session.binding.id,
+			status: "disposed",
+			timestamp: new Date().toISOString(),
+			providerId: session.provider.id,
+			capabilities: session.provider.capabilities,
+			...(disposeError === undefined
+				? {}
+				: { reasonCode: disposeError instanceof PolicyError ? disposeError.code : "sandbox_unavailable" }),
+		});
 	}
 
 	private async _closeMcpConnectionsForPolicyBoundary(): Promise<void> {
@@ -5249,8 +5292,20 @@ export class AgentSession {
 	}
 
 	private async _disposePolicyBoundaryResources(): Promise<void> {
+		// A session can be disposed while provider.prepare is still pending. Wait
+		// for the serialized transition to settle before closing the live boundary.
+		await this._executionPolicyPreparationTail;
 		await this._closeMcpConnectionsForPolicyBoundary();
 		await this._disposeSandboxSession();
+	}
+
+	private _enqueueExecutionPolicyTransition<T>(operation: () => Promise<T>): Promise<T> {
+		const next = this._executionPolicyPreparationTail.catch(() => undefined).then(operation);
+		this._executionPolicyPreparationTail = next.then(
+			() => undefined,
+			() => undefined,
+		);
+		return next;
 	}
 
 	private _recordPolicyDecision(decision: PolicyDecision): void {
@@ -5302,8 +5357,14 @@ export class AgentSession {
 			providerId,
 			capabilities: provider.capabilities,
 		});
+		const preparationSignal = signal ?? this.agent.signal;
 		try {
-			this._activeSandboxHandle = await session.prepare(signal ?? this.agent.signal);
+			const preparedHandle = await session.prepare(preparationSignal);
+			if (this._activeSandboxSession !== session || session.currentStatus !== "ready") {
+				await session.dispose();
+				throw new PolicyError("sandbox_unavailable");
+			}
+			this._activeSandboxHandle = preparedHandle;
 			this._policyLedger.appendSandboxLifecycle({
 				bindingId: binding.id,
 				status: "ready",
@@ -5312,7 +5373,7 @@ export class AgentSession {
 				capabilities: provider.capabilities,
 			});
 		} catch (error) {
-			if (signal?.aborted) {
+			if (preparationSignal?.aborted) {
 				await this._disposeSandboxSession();
 				throw error;
 			}
@@ -5464,6 +5525,7 @@ export class AgentSession {
 				killed: killed || result.killed === true || result.exitCode === null,
 			};
 		} catch (error) {
+			if (isUnknownSandboxSideEffectError(error)) throw error;
 			if (!killed) throw error;
 			return {
 				stdout: stdoutChunks.join(""),
@@ -5479,7 +5541,12 @@ export class AgentSession {
 		}
 	}
 
-	private async _ensureExecutionPolicyReady(runId?: string, signal?: AbortSignal): Promise<boolean> {
+	private _ensureExecutionPolicyReady(runId?: string, signal?: AbortSignal): Promise<boolean> {
+		if (signal?.aborted) return Promise.reject(new DOMException("Execution policy preparation aborted", "AbortError"));
+		return this._enqueueExecutionPolicyTransition(() => this._ensureExecutionPolicyReadyInternal(runId, signal));
+	}
+
+	private async _ensureExecutionPolicyReadyInternal(runId?: string, signal?: AbortSignal): Promise<boolean> {
 		if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
 		const requestedRunId = runId ?? this._activeContextRunId;
 		if (
@@ -5506,7 +5573,8 @@ export class AgentSession {
 			projectTrusted: this.settingsManager.isProjectTrusted(),
 			capabilityBinding: this._policyCapabilityBindingInput(),
 			sandbox: this._createPolicySandboxPreflight(selectedProfile),
-			workspaceIdentity: "workspace:active",
+			workspaceIdentity:
+				selectedProfile.enforcement === "sandbox" ? getActiveWorkspaceIdentity(this._cwd) : "workspace:active",
 			runId: runId ?? this._activeContextRunId ?? "run:session",
 			createdAt: new Date().toISOString(),
 			...(previousPolicyBindingId === undefined ? {} : { previousPolicyBindingId }),

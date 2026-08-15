@@ -65,6 +65,28 @@ const { session } = await createAgentSession({
 });
 ```
 
+`sandboxProviders` is an explicit host-composition option. It accepts provider
+instances only; it does not load a package, module path, URL, or command from
+project settings. `--policy` / `policyProfile` still only select a named
+profile. The optional `gondolin-local` adapter is constructed separately and
+passed in:
+
+```typescript
+import { createAgentSession } from "aos-agent";
+import { createGondolinSandboxProvider } from "./packages/coding-agent/examples/extensions/gondolin/register.ts";
+
+const cwd = process.cwd();
+const { session } = await createAgentSession({
+  cwd,
+  policyProfile: "workspace-safe",
+  sandboxProviders: [createGondolinSandboxProvider({ workspaceRoot: cwd })],
+});
+```
+
+The `workspace-safe` profile must already name `sandboxProvider: "gondolin-local"`.
+Installing or loading the example does not change the default `legacy` profile
+or register a provider. See [containerization.md](containerization.md).
+
 ### AgentSession
 
 The session manages agent lifecycle, message history, model state, compaction, and event streaming.
