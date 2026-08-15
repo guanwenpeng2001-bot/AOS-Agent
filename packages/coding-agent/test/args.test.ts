@@ -151,6 +151,42 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses and validates --rpc-listen", () => {
+			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "tcp://127.0.0.1:4123"]);
+			expect(result.rpcListen).toEqual({ transport: "tcp", host: "127.0.0.1", port: 4123 });
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("accepts --rpc-listen before --mode rpc", () => {
+			const result = parseArgs(["--rpc-listen", "tcp://127.0.0.1:4123", "--mode", "rpc"]);
+			expect(result.rpcListen).toEqual({ transport: "tcp", host: "127.0.0.1", port: 4123 });
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("requires --mode rpc for --rpc-listen", () => {
+			const result = parseArgs(["--rpc-listen", "tcp://127.0.0.1:4123"]);
+			expect(result.rpcListen).toBeUndefined();
+			expect(result.diagnostics).toEqual([{ type: "error", message: "--rpc-listen requires --mode rpc" }]);
+		});
+
+		test("rejects an invalid --rpc-listen address", () => {
+			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "tcp://0.0.0.0:4123"]);
+			expect(result.rpcListen).toBeUndefined();
+			expect(result.diagnostics).toEqual([
+				{
+					type: "error",
+					message:
+						"Invalid --rpc-listen address: TCP transport address must use the IPv4 loopback host 127.0.0.1.",
+				},
+			]);
+		});
+
+		test("requires a value for --rpc-listen", () => {
+			expect(parseArgs(["--mode", "rpc", "--rpc-listen"]).diagnostics).toEqual([
+				{ type: "error", message: "--rpc-listen requires a value" },
+			]);
+		});
+
 		test("parses --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.session).toBe("/path/to/session.jsonl");

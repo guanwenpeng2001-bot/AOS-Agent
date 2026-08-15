@@ -40,6 +40,7 @@ vi.mock("../src/modes/rpc/jsonl.js", () => ({
 		rpcIo.lineHandler = onLine;
 		return () => {};
 	}),
+	DEFAULT_MAX_JSONL_FRAME_BYTES: 1024 * 1024,
 	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
 }));
 

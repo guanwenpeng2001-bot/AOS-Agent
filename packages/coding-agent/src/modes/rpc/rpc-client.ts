@@ -5,6 +5,8 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { createConnection, type Socket } from "node:net";
+import type { Writable } from "node:stream";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { BashResult } from "../../core/bash-executor.ts";
@@ -12,29 +14,39 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
-import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import {
-	RunReplayRecovery,
-	type RpcRunStreamEvent,
-	type RunReplayReconnectResult,
-	type RunReplayRecoveryOptions,
-} from "./run-replay-recovery.ts";
+	attachJsonlLineReader,
+	createJsonlLineWriter,
+	DEFAULT_MAX_JSONL_FRAME_BYTES,
+	JsonlFrameError,
+	serializeJsonLine,
+	type JsonlLineWriter,
+} from "./jsonl.ts";
+import {
+	RPC_TRANSPORT_LOOPBACK_HOST,
+	validateRpcTransportAddress,
+	RpcTransportAddressError,
+} from "./rpc-transport-address.ts";
+import { RpcTransportError, type RpcTransportErrorCode, type RpcTransportErrorRecord } from "./rpc-transport.ts";
+
+export { RpcTransportError };
+export type { RpcTransportErrorCode, RpcTransportErrorRecord };
 import type {
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
 	AutomationError,
 	AutomationErrorCode,
+	ExternalExecutionRef,
+	ExternalMappingPersistenceResult,
+	ExternalMappingRequest,
 	GetCapabilitiesData,
 	GetContextData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationResponse,
-	AuditQuery,
-	AuditQueryResult,
-	AuditReplayQuery,
-	AuditReplayResult,
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
 	RpcCommand,
 	RpcResponse,
 	RpcSessionState,
@@ -44,6 +56,12 @@ import type {
 	RunCancelData,
 	RunGetData,
 } from "./rpc-types.ts";
+import {
+	type RpcRunStreamEvent,
+	type RunReplayReconnectResult,
+	RunReplayRecovery,
+	type RunReplayRecoveryOptions,
+} from "./run-replay-recovery.ts";
 
 // ============================================================================
 // Types
@@ -54,6 +72,28 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 
 /** RpcCommand without the id field (for internal send) */
 type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
+
+const DEFAULT_RPC_CLIENT_CONNECT_TIMEOUT_MS = 10_000;
+const MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS = 2_147_483_647;
+
+/** Explicit TCP connection settings for an RpcClient. */
+export interface RpcClientTcpOptions {
+	/** Optional discriminator. When present, it must be `tcp`. */
+	type?: "tcp";
+	/** Address discriminator used by the transport address parser. */
+	transport?: "tcp";
+	/** Alternate discriminator accepted for transport-oriented callers. */
+	kind?: "tcp";
+	/** The only host accepted by the RPC client. Defaults to 127.0.0.1. */
+	host?: string;
+	/** TCP port of the Automation Host listener. */
+	port: number;
+	/** Maximum time to wait for the TCP connection to open. */
+	connectTimeoutMs?: number;
+}
+
+/** RpcClient transport selection. Stdio remains the default when omitted. */
+export type RpcClientTransportOptions = "stdio" | "tcp" | RpcClientTcpOptions;
 
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
@@ -68,6 +108,13 @@ export interface RpcClientOptions {
 	model?: string;
 	/** Additional CLI arguments */
 	args?: string[];
+	/**
+	 * Transport selection. An object selects TCP and may include its connection
+	 * timeout; omitted or `stdio` keeps the existing child-process transport.
+	 */
+	transport?: RpcClientTransportOptions;
+	/** Convenience form for `transport: "tcp"`. */
+	tcp?: RpcClientTcpOptions;
 }
 
 export interface ModelInfo {
@@ -79,14 +126,15 @@ export interface ModelInfo {
 
 export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
 
+export type { RpcRunStreamEvent } from "./run-replay-recovery.ts";
 export {
-	RunReplayRecovery,
 	createRunReplayRecovery,
 	type RunReplayEventDisposition,
 	type RunReplayEventResult,
 	type RunReplayGap,
 	type RunReplayPageResult,
 	type RunReplayReconnectResult,
+	RunReplayRecovery,
 	type RunReplayRecoveryOptions,
 	type RunReplayRecoverySource,
 	type RunReplayRecoveryState,
@@ -95,7 +143,6 @@ export {
 	type RunReplayTerminalConflict,
 	type RunReplayTerminalStatus,
 } from "./run-replay-recovery.ts";
-export type { RpcRunStreamEvent } from "./run-replay-recovery.ts";
 
 export type RpcRunEventListener = (event: RpcRunStreamEvent) => void;
 
@@ -109,6 +156,32 @@ function isRpcRunStreamEvent(value: unknown): value is RpcRunStreamEvent {
 		type === "run.failed" ||
 		type === "run.cancelled"
 	);
+}
+
+function isRpcTransportErrorCode(value: unknown): value is RpcTransportErrorCode {
+	return (
+		value === "rpc_transport_address_invalid" ||
+		value === "rpc_transport_not_loopback" ||
+		value === "rpc_transport_bind_failed" ||
+		value === "rpc_transport_connection_busy" ||
+		value === "rpc_transport_frame_too_large" ||
+		value === "rpc_transport_closed" ||
+		value === "rpc_transport_write_failed" ||
+		value === "rpc_transport_invalid_json" ||
+		value === "rpc_transport_invalid_command" ||
+		value === "rpc_transport_dispatch_failed" ||
+		value === "rpc_transport_connection_failed" ||
+		value === "rpc_transport_listener_failed" ||
+		value === "rpc_transport_close_failed"
+	);
+}
+
+function isRpcTransportErrorRecord(value: unknown): value is RpcTransportErrorRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as { type?: unknown; error?: unknown };
+	if (record.type !== "error" || typeof record.error !== "object" || record.error === null) return false;
+	const error = record.error as { code?: unknown; message?: unknown };
+	return isRpcTransportErrorCode(error.code) && typeof error.message === "string";
 }
 
 /** Structured error thrown when an Automation Host v1 command fails. */
@@ -130,7 +203,15 @@ export class AutomationRpcError extends Error {
 
 export class RpcClient {
 	private process: ChildProcess | null = null;
+	private socket: Socket | null = null;
+	private inputStream: Writable | null = null;
+	private tcpWriter: JsonlLineWriter | null = null;
 	private stopReadingStdout: (() => void) | null = null;
+	private tcpSocketEvents: {
+		socket: Socket;
+		onError: (error: Error) => void;
+		onClose: () => void;
+	} | null = null;
 	private eventListeners: RpcEventListener[] = [];
 	private runEventListeners: RpcRunEventListener[] = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
@@ -144,16 +225,22 @@ export class RpcClient {
 		this.options = options;
 	}
 
-	/**
-	 * Start the RPC agent process.
-	 */
+	/** Start the configured RPC transport. */
 	async start(): Promise<void> {
-		if (this.process) {
+		if (this.process || this.socket) {
 			throw new Error("Client already started");
 		}
 
 		this.exitError = null;
+		const tcpOptions = this.resolveTcpOptions();
+		if (tcpOptions) {
+			await this.startTcp(tcpOptions);
+			return;
+		}
+		await this.startStdio();
+	}
 
+	private async startStdio(): Promise<void> {
 		const cliPath = this.options.cliPath ?? "dist/cli.js";
 		const args = ["--mode", "rpc"];
 
@@ -173,6 +260,7 @@ export class RpcClient {
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		this.process = childProcess;
+		this.inputStream = childProcess.stdin;
 
 		// Collect stderr for debugging
 		childProcess.stderr?.on("data", (data) => {
@@ -215,14 +303,60 @@ export class RpcClient {
 		}
 	}
 
-	/**
-	 * Stop the RPC agent process.
-	 */
+	private async startTcp(options: NormalizedRpcClientTcpOptions): Promise<void> {
+		const socket = createConnection({ host: options.host, port: options.port });
+		this.socket = socket;
+		this.inputStream = socket;
+		this.tcpWriter = createJsonlLineWriter(socket, {
+			maxFrameBytes: DEFAULT_MAX_JSONL_FRAME_BYTES,
+			onError: (error) =>
+				this.handleTcpSocketError(socket, toRpcTransportError(error, "rpc_transport_write_failed")),
+		});
+		this.attachTcpSocketEvents(socket);
+		this.stopReadingStdout = attachJsonlLineReader(
+			socket,
+			(line) => {
+				this.handleLine(line);
+			},
+			{
+				maxFrameBytes: DEFAULT_MAX_JSONL_FRAME_BYTES,
+				onError: (error) =>
+					this.handleTcpSocketError(socket, toRpcTransportError(error, "rpc_transport_connection_failed")),
+			},
+		);
+
+		try {
+			await this.waitForTcpConnection(socket, options.connectTimeoutMs);
+		} catch (error: unknown) {
+			const connectionError = this.exitError ?? toRpcTransportError(error, "rpc_transport_connection_failed");
+			this.exitError = connectionError;
+			this.rejectPendingRequests(connectionError);
+			this.stopReadingStdout?.();
+			this.stopReadingStdout = null;
+			await this.destroyTcpSocket(socket);
+			if (this.socket === socket) {
+				this.detachTcpSocketEvents(socket);
+				this.socket = null;
+				this.inputStream = null;
+				this.tcpWriter?.detach();
+				this.tcpWriter = null;
+			}
+			throw connectionError;
+		}
+	}
+
+	/** Stop and close the configured RPC transport. */
 	async stop(): Promise<void> {
+		if (this.socket) {
+			await this.stopTcp(this.socket);
+			return;
+		}
 		if (!this.process) return;
 
+		this.rejectPendingRequests(new Error("RPC client stopped"));
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
+		this.inputStream = null;
 		this.process.kill("SIGTERM");
 
 		// Wait for process to exit
@@ -239,7 +373,11 @@ export class RpcClient {
 		});
 
 		this.process = null;
-		this.pendingRequests.clear();
+	}
+
+	/** Close the active RPC transport. This is an alias for stop(). */
+	async close(): Promise<void> {
+		await this.stop();
 	}
 
 	/**
@@ -820,12 +958,33 @@ export class RpcClient {
 
 	private handleLine(line: string): void {
 		try {
-			const data = JSON.parse(line);
+			const data: unknown = JSON.parse(line);
+			const record =
+				typeof data === "object" && data !== null ? (data as { type?: unknown; id?: unknown }) : undefined;
+
+			// Transport errors are connection-level failures, not legacy session
+			// events. Reject every request waiting on this connection and stop here so
+			// the record cannot be delivered to either event listener collection.
+			if (isRpcTransportErrorRecord(data)) {
+				const transportError = new RpcTransportError(data.error.code, data.error.message);
+				if (this.socket !== null) this.handleTcpSocketError(this.socket, transportError);
+				else this.rejectPendingRequests(transportError);
+				return;
+			}
+			if (typeof data === "object" && data !== null && (data as { type?: unknown }).type === "error") {
+				const transportError = new RpcTransportError(
+					"rpc_transport_connection_failed",
+					"RPC transport returned an invalid error record",
+				);
+				if (this.socket !== null) this.handleTcpSocketError(this.socket, transportError);
+				else this.rejectPendingRequests(transportError);
+				return;
+			}
 
 			// Check if it's a response to a pending request
-			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
-				const pending = this.pendingRequests.get(data.id)!;
-				this.pendingRequests.delete(data.id);
+			if (record?.type === "response" && typeof record.id === "string" && this.pendingRequests.has(record.id)) {
+				const pending = this.pendingRequests.get(record.id)!;
+				this.pendingRequests.delete(record.id);
 				pending.resolve(data as RpcResponse);
 				return;
 			}
@@ -844,13 +1003,149 @@ export class RpcClient {
 			for (const listener of this.eventListeners) {
 				listener(data as JsonAgentSessionEvent);
 			}
-		} catch {
-			// Ignore non-JSON lines
+		} catch (error: unknown) {
+			// Preserve stdio's historical tolerance for incidental non-JSON output.
+			if (this.socket !== null) {
+				this.handleTcpSocketError(this.socket, toRpcTransportError(error, "rpc_transport_connection_failed"));
+			}
 		}
 	}
 
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+	}
+
+	private resolveTcpOptions(): NormalizedRpcClientTcpOptions | null {
+		const configuredTransport = this.options.transport;
+		if (configuredTransport === undefined) {
+			if (this.options.tcp === undefined) return null;
+			return normalizeTcpOptions(this.options.tcp);
+		}
+		if (configuredTransport === "stdio") return null;
+
+		if (configuredTransport === "tcp") {
+			if (this.options.tcp === undefined) {
+				throw new RpcTransportAddressError(
+					"rpc_transport_address_invalid",
+					'TCP transport requires a "tcp" option object with a port',
+				);
+			}
+			return normalizeTcpOptions(this.options.tcp);
+		}
+
+		return normalizeTcpOptions(configuredTransport);
+	}
+
+	private attachTcpSocketEvents(socket: Socket): void {
+		const onError = (error: Error): void => {
+			this.handleTcpSocketError(socket, error);
+		};
+		const onClose = (): void => {
+			this.handleTcpSocketClose(socket);
+		};
+		this.tcpSocketEvents = { socket, onError, onClose };
+		socket.on("error", onError);
+		socket.once("close", onClose);
+	}
+
+	private detachTcpSocketEvents(socket: Socket): void {
+		const events = this.tcpSocketEvents;
+		if (!events || events.socket !== socket) return;
+		socket.off("error", events.onError);
+		socket.off("close", events.onClose);
+		this.tcpSocketEvents = null;
+	}
+
+	private handleTcpSocketError(socket: Socket, error: Error): void {
+		if (this.socket !== socket) return;
+		const transportError = toRpcTransportError(error, "rpc_transport_connection_failed");
+		this.exitError ??= transportError;
+		this.rejectPendingRequests(this.exitError);
+		this.stopReadingStdout?.();
+		this.stopReadingStdout = null;
+		if (!socket.destroyed) socket.destroy();
+	}
+
+	private handleTcpSocketClose(socket: Socket): void {
+		if (this.socket !== socket) return;
+		this.exitError ??= new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed");
+		this.rejectPendingRequests(this.exitError);
+		this.stopReadingStdout?.();
+		this.stopReadingStdout = null;
+		this.detachTcpSocketEvents(socket);
+		this.tcpWriter?.detach();
+		this.tcpWriter = null;
+		this.socket = null;
+		this.inputStream = null;
+	}
+
+	private async stopTcp(socket: Socket): Promise<void> {
+		this.rejectPendingRequests(new Error("RPC client stopped"));
+		this.stopReadingStdout?.();
+		this.stopReadingStdout = null;
+		this.tcpWriter?.detach();
+		this.tcpWriter = null;
+		await this.destroyTcpSocket(socket);
+		if (this.socket === socket) {
+			this.detachTcpSocketEvents(socket);
+			this.socket = null;
+			this.inputStream = null;
+		}
+	}
+
+	private async destroyTcpSocket(socket: Socket): Promise<void> {
+		if (socket.destroyed) {
+			this.detachTcpSocketEvents(socket);
+			return;
+		}
+		await new Promise<void>((resolve) => {
+			let settled = false;
+			let timeout: NodeJS.Timeout;
+			const finish = (): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				this.detachTcpSocketEvents(socket);
+				resolve();
+			};
+			timeout = setTimeout(finish, 1000);
+			socket.once("close", finish);
+			socket.destroy();
+			if (socket.destroyed) finish();
+		});
+	}
+
+	private waitForTcpConnection(socket: Socket, timeoutMs: number): Promise<void> {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const finish = (error?: Error): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				socket.off("connect", onConnect);
+				socket.off("error", onError);
+				socket.off("close", onClose);
+				if (error) reject(error);
+				else resolve();
+			};
+			const onConnect = (): void => finish();
+			const onError = (error: Error): void => finish(error);
+			const onClose = (): void =>
+				finish(new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed"));
+			const timeout = setTimeout(
+				() =>
+					finish(
+						new RpcTransportError(
+							"rpc_transport_connection_failed",
+							`Timed out connecting to RPC TCP transport after ${timeoutMs}ms`,
+						),
+					),
+				timeoutMs,
+			);
+			socket.once("connect", onConnect);
+			socket.once("error", onError);
+			socket.once("close", onClose);
+		});
 	}
 
 	private rejectPendingRequests(error: Error): void {
@@ -862,19 +1157,28 @@ export class RpcClient {
 
 	private async send(command: RpcCommandBody): Promise<RpcResponse> {
 		const childProcess = this.process;
-		const stdin = childProcess?.stdin;
-		if (!childProcess || !stdin) {
-			throw new Error("Client not started");
-		}
 		if (this.exitError) {
 			throw this.exitError;
 		}
-		if (childProcess.exitCode !== null) {
+		const socket = this.socket;
+		const stdin = this.inputStream;
+		if ((!childProcess && !socket) || !stdin) {
+			throw new Error("Client not started");
+		}
+		if (childProcess && childProcess.exitCode !== null) {
 			const error = this.createProcessExitError(childProcess.exitCode, childProcess.signalCode);
 			this.exitError = error;
 			throw error;
 		}
-		if (stdin.destroyed || !stdin.writable) {
+		if (socket && (socket.destroyed || !socket.writable)) {
+			const error = new RpcTransportError(
+				socket.destroyed ? "rpc_transport_closed" : "rpc_transport_write_failed",
+				socket.destroyed ? "RPC transport connection is closed" : "RPC transport write failed",
+			);
+			this.handleTcpSocketError(socket, error);
+			throw error;
+		}
+		if (childProcess && (stdin.destroyed || !stdin.writable)) {
 			const error = new Error(`Agent process stdin is not writable. Stderr: ${this.stderr}`);
 			this.exitError = error;
 			throw error;
@@ -900,14 +1204,29 @@ export class RpcClient {
 				},
 			});
 
-			try {
-				stdin.write(serializeJsonLine(fullCommand));
-			} catch (error: unknown) {
-				const writeError = error instanceof Error ? error : new Error(String(error));
+			const writePromise = socket
+				? this.tcpWriter?.write(fullCommand)
+				: writeStdioLine(stdin, serializeJsonLine(fullCommand));
+			if (writePromise === undefined) {
+				const writeError = new RpcTransportError("rpc_transport_write_failed", "RPC transport write failed");
+				this.pendingRequests.delete(id);
+				reject(writeError);
+				return;
+			}
+			void writePromise.catch((error: unknown) => {
+				const writeError = socket
+					? toRpcTransportError(
+							error,
+							error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
+						)
+					: error instanceof Error
+						? error
+						: new Error(String(error));
 				const pending = this.pendingRequests.get(id);
 				this.pendingRequests.delete(id);
 				pending?.reject(writeError);
-			}
+				if (socket) this.handleTcpSocketError(socket, writeError);
+			});
 		});
 	}
 
@@ -935,4 +1254,55 @@ export class RpcClient {
 		const successResponse = response as Extract<RpcAutomationResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}
+}
+
+interface NormalizedRpcClientTcpOptions {
+	host: typeof RPC_TRANSPORT_LOOPBACK_HOST;
+	port: number;
+	connectTimeoutMs: number;
+}
+
+function normalizeTcpOptions(options: RpcClientTcpOptions): NormalizedRpcClientTcpOptions {
+	for (const discriminator of [options.type, options.kind, options.transport]) {
+		if (discriminator !== undefined && discriminator !== "tcp") {
+			throw new RpcTransportAddressError(
+				"rpc_transport_address_invalid",
+				'TCP transport must use the "tcp" discriminator',
+			);
+		}
+	}
+	const address = validateRpcTransportAddress({
+		transport: "tcp",
+		host: options.host ?? RPC_TRANSPORT_LOOPBACK_HOST,
+		port: options.port,
+	});
+	const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_RPC_CLIENT_CONNECT_TIMEOUT_MS;
+	if (
+		!Number.isSafeInteger(connectTimeoutMs) ||
+		connectTimeoutMs <= 0 ||
+		connectTimeoutMs > MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS
+	) {
+		throw new Error(
+			`RpcClient TCP connectTimeoutMs must be an integer between 1 and ${MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS}`,
+		);
+	}
+	return { host: address.host, port: address.port, connectTimeoutMs };
+}
+
+function writeStdioLine(stream: Writable, line: string): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		try {
+			stream.write(line, "utf8", (error?: Error | null) => (error ? reject(error) : resolve()));
+		} catch (error: unknown) {
+			reject(error instanceof Error ? error : new Error(String(error)));
+		}
+	});
+}
+
+function toRpcTransportError(error: unknown, fallbackCode: RpcTransportErrorCode): RpcTransportError {
+	if (error instanceof RpcTransportError) return error;
+	if (error instanceof JsonlFrameError) {
+		return new RpcTransportError("rpc_transport_frame_too_large", error.message, error);
+	}
+	return new RpcTransportError(fallbackCode, "RPC transport operation failed", error);
 }

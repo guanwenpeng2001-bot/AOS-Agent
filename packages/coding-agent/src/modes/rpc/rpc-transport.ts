@@ -1,0 +1,562 @@
+import { createServer, type Server, type Socket } from "node:net";
+import {
+	attachJsonlLineReader,
+	createJsonlLineWriter,
+	DEFAULT_MAX_JSONL_FRAME_BYTES,
+	JsonlFrameError,
+	type JsonlLineWriter,
+} from "./jsonl.ts";
+import {
+	RPC_TRANSPORT_LOOPBACK_HOST,
+	validateRpcTransportAddress,
+	type RpcTransportAddress,
+} from "./rpc-transport-address.ts";
+
+export const DEFAULT_RPC_TRANSPORT_MAX_FRAME_BYTES = DEFAULT_MAX_JSONL_FRAME_BYTES;
+
+export type RpcTransportErrorCode =
+	| "rpc_transport_address_invalid"
+	| "rpc_transport_not_loopback"
+	| "rpc_transport_bind_failed"
+	| "rpc_transport_connection_busy"
+	| "rpc_transport_frame_too_large"
+	| "rpc_transport_closed"
+	| "rpc_transport_write_failed"
+	| "rpc_transport_invalid_json"
+	| "rpc_transport_invalid_command"
+	| "rpc_transport_dispatch_failed"
+	| "rpc_transport_connection_failed"
+	| "rpc_transport_listener_failed"
+	| "rpc_transport_close_failed";
+
+const RPC_TRANSPORT_ERROR_MESSAGES: Readonly<Record<RpcTransportErrorCode, string>> = {
+	rpc_transport_address_invalid: "TCP transport address is invalid",
+	rpc_transport_not_loopback: "TCP transport address must use the loopback host 127.0.0.1",
+	rpc_transport_bind_failed: "RPC TCP listener failed to bind",
+	rpc_transport_connection_busy: "Another control connection is active",
+	rpc_transport_frame_too_large: "RPC JSONL frame exceeds the configured maximum",
+	rpc_transport_closed: "RPC transport connection is closed",
+	rpc_transport_write_failed: "RPC transport write failed",
+	rpc_transport_invalid_json: "RPC transport received invalid JSON",
+	rpc_transport_invalid_command: "RPC transport received an invalid command",
+	rpc_transport_dispatch_failed: "RPC command dispatch failed",
+	rpc_transport_connection_failed: "RPC transport connection failed",
+	rpc_transport_listener_failed: "RPC TCP listener failed",
+	rpc_transport_close_failed: "RPC transport close failed",
+};
+
+/** An error produced by the JSONL transport boundary rather than by a command. */
+export class RpcTransportError extends Error {
+	readonly code: RpcTransportErrorCode;
+
+	constructor(code: RpcTransportErrorCode, message: string, cause?: unknown) {
+		super(message || RPC_TRANSPORT_ERROR_MESSAGES[code], cause === undefined ? undefined : { cause });
+		this.name = "RpcTransportError";
+		this.code = code;
+	}
+}
+
+export interface RpcTransportErrorRecord {
+	readonly type: "error";
+	readonly error: {
+		readonly code: RpcTransportErrorCode;
+		readonly message: string;
+	};
+}
+
+export interface RpcTransportSink<TOutput> {
+	readonly closed: boolean;
+	send(output: TOutput): Promise<void>;
+	write(output: TOutput): Promise<void>;
+	close(): Promise<void>;
+	release(): Promise<void>;
+	onClose(listener: () => void): () => void;
+	onError(listener: (error: RpcTransportError) => void): () => void;
+}
+
+export type RpcTransportDispatcher<TCommand, TOutput> = (
+	command: TCommand,
+	sink: RpcTransportSink<TOutput>,
+) => void | Promise<void>;
+
+export interface RpcTransportOptions<TCommand, TOutput> {
+	/** The parser accepts only the typed command values the dispatcher understands. */
+	readonly address: RpcTransportAddress;
+	readonly dispatch: RpcTransportDispatcher<TCommand, TOutput>;
+	readonly parseCommand?: (value: unknown) => TCommand;
+	/** Defaults to one MiB for network transports. */
+	readonly maxFrameBytes?: number;
+	/** Compatibility spelling used by length-prefixed transports. */
+	readonly maxFrameLength?: number;
+	readonly onError?: (error: RpcTransportError) => void;
+	readonly onConnection?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
+	readonly onConnectionClose?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
+	readonly onConnectionError?: (error: RpcTransportError) => void;
+}
+
+export interface RpcTransportConnection<_TCommand, TOutput> extends RpcTransportSink<TOutput> {
+	readonly id: number;
+}
+
+interface ConnectionCallbacks<TCommand, TOutput> {
+	readonly dispatch: RpcTransportDispatcher<TCommand, TOutput>;
+	readonly parseCommand: ((value: unknown) => TCommand) | undefined;
+	readonly maxFrameBytes: number;
+	readonly reportError: (error: RpcTransportError) => void;
+	readonly onReleased: (connection: RpcTransportConnectionImpl<TCommand, TOutput>) => void;
+	readonly onConnectionError: ((error: RpcTransportError) => void) | undefined;
+}
+
+class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConnection<TCommand, TOutput> {
+	readonly id: number;
+	private readonly socket: Socket;
+	private readonly writer: JsonlLineWriter;
+	private readonly callbacks: ConnectionCallbacks<TCommand, TOutput>;
+	private readonly closeListeners = new Set<() => void>();
+	private readonly errorListeners = new Set<(error: RpcTransportError) => void>();
+	private detachReader?: () => void;
+	private closePromise?: Promise<void>;
+	private resolveClosed?: () => void;
+	private closedValue = false;
+	private closing = false;
+
+	constructor(id: number, socket: Socket, callbacks: ConnectionCallbacks<TCommand, TOutput>) {
+		this.id = id;
+		this.socket = socket;
+		this.callbacks = callbacks;
+		this.writer = createJsonlLineWriter(socket, { maxFrameBytes: callbacks.maxFrameBytes });
+	}
+
+	get closed(): boolean {
+		return this.closedValue || this.socket.destroyed;
+	}
+
+	start(): void {
+		this.socket.on("error", this.onSocketError);
+		this.socket.once("close", this.onSocketClose);
+		this.detachReader = attachJsonlLineReader(this.socket, (line) => this.receiveLine(line), {
+			maxFrameBytes: this.callbacks.maxFrameBytes,
+			onError: (error) => this.onReaderError(error),
+		});
+	}
+
+	send(output: TOutput): Promise<void> {
+		if (this.closed || this.closing) {
+			return Promise.reject(createTransportError("rpc_transport_closed"));
+		}
+		const pending = this.writer.write(output);
+		return pending.catch((error: unknown) => {
+			const transportError = toTransportError(error, "rpc_transport_write_failed");
+			this.reportError(transportError);
+			this.abort();
+			throw transportError;
+		});
+	}
+
+	write(output: TOutput): Promise<void> {
+		return this.send(output);
+	}
+
+	close(): Promise<void> {
+		if (this.closePromise) return this.closePromise;
+		if (this.closed) {
+			this.markClosed();
+			return Promise.resolve();
+		}
+		this.closing = true;
+		this.detachReader?.();
+		this.detachReader = undefined;
+		this.closePromise = new Promise<void>((resolve) => {
+			this.resolveClosed = resolve;
+			void this.writer.close().catch((error: unknown) => {
+				this.reportError(toTransportError(error, "rpc_transport_write_failed"));
+				this.abort();
+			});
+		});
+		return this.closePromise;
+	}
+
+	release(): Promise<void> {
+		return this.close();
+	}
+
+	onClose(listener: () => void): () => void {
+		if (this.closedValue) {
+			listener();
+			return () => {};
+		}
+		this.closeListeners.add(listener);
+		return () => this.closeListeners.delete(listener);
+	}
+
+	onError(listener: (error: RpcTransportError) => void): () => void {
+		if (this.closedValue) return () => {};
+		this.errorListeners.add(listener);
+		return () => this.errorListeners.delete(listener);
+	}
+
+	/** Abruptly tears down the socket when the listener itself is closing. */
+	abort(): void {
+		this.closing = true;
+		this.detachReader?.();
+		this.detachReader = undefined;
+		if (this.socket.destroyed) {
+			this.markClosed();
+			return;
+		}
+		this.socket.destroy();
+	}
+
+	private receiveLine(line: string): void {
+		if (this.closed || this.closing) return;
+		let value: unknown;
+		try {
+			value = JSON.parse(line) as unknown;
+		} catch (error) {
+			const transportError = createTransportError("rpc_transport_invalid_json", error);
+			this.reportError(transportError);
+			void this.sendError(transportError);
+			return;
+		}
+
+		let command: TCommand;
+		try {
+			command = this.callbacks.parseCommand ? this.callbacks.parseCommand(value) : (value as TCommand);
+		} catch (error) {
+			const transportError = createTransportError("rpc_transport_invalid_command", error);
+			this.reportError(transportError);
+			void this.sendError(transportError);
+			return;
+		}
+
+		try {
+			const dispatched = this.callbacks.dispatch(command, this);
+			if (dispatched !== undefined) {
+				void dispatched.catch((error: unknown) => {
+					const transportError = createTransportError("rpc_transport_dispatch_failed", error);
+					this.reportError(transportError);
+					void this.sendError(transportError);
+				});
+			}
+		} catch (error) {
+			const transportError = createTransportError("rpc_transport_dispatch_failed", error);
+			this.reportError(transportError);
+			void this.sendError(transportError);
+		}
+	}
+
+	private onReaderError(error: Error): void {
+		if (this.closed || this.closing) return;
+		if (error instanceof JsonlFrameError) {
+			const transportError = createTransportError("rpc_transport_frame_too_large", error);
+			this.reportError(transportError);
+			void this.sendErrorAndClose(transportError);
+			return;
+		}
+		const transportError = createTransportError("rpc_transport_connection_failed", error);
+		this.reportError(transportError);
+		this.abort();
+	}
+
+	private readonly onSocketError = (error: Error): void => {
+		if (this.closedValue) return;
+		const transportError = createTransportError("rpc_transport_connection_failed", error);
+		this.reportError(transportError);
+		this.abort();
+	};
+
+	private readonly onSocketClose = (): void => {
+		this.markClosed();
+	};
+
+	private reportError(error: RpcTransportError): void {
+		this.callbacks.reportError(error);
+		try {
+			this.callbacks.onConnectionError?.(error);
+		} catch {
+			// Error observers cannot affect connection state.
+		}
+		for (const listener of this.errorListeners) {
+			try {
+				listener(error);
+			} catch {
+				// Error observers cannot affect connection state.
+			}
+		}
+	}
+
+	private sendError(error: RpcTransportError): Promise<void> {
+		if (this.closed || this.closing) return Promise.resolve();
+		return this.send(toTransportErrorRecord(error) as TOutput).catch(() => {});
+	}
+
+	private async sendErrorAndClose(error: RpcTransportError): Promise<void> {
+		if (this.closed) return;
+		this.closing = true;
+		this.detachReader?.();
+		this.detachReader = undefined;
+		try {
+			await this.writer.write(toTransportErrorRecord(error));
+			await this.close();
+		} catch (writeError: unknown) {
+			this.reportError(toTransportError(writeError, "rpc_transport_write_failed"));
+			this.abort();
+		}
+	}
+
+	private markClosed(): void {
+		if (this.closedValue) return;
+		this.closedValue = true;
+		this.closing = true;
+		this.detachReader?.();
+		this.detachReader = undefined;
+		this.socket.off("error", this.onSocketError);
+		this.socket.off("close", this.onSocketClose);
+		this.writer.detach();
+		this.resolveClosed?.();
+		this.resolveClosed = undefined;
+		for (const listener of this.closeListeners) {
+			try {
+				listener();
+			} catch {
+				// Close observers cannot affect transport state.
+			}
+		}
+		this.closeListeners.clear();
+		this.errorListeners.clear();
+		this.callbacks.onReleased(this);
+	}
+}
+
+export class RpcTransport<TCommand, TOutput> {
+	private readonly options: RpcTransportOptions<TCommand, TOutput>;
+	private readonly maxFrameBytes: number;
+	private readonly configuredAddress: RpcTransportAddress;
+	private server?: Server;
+	private boundAddress?: RpcTransportAddress;
+	private activeConnectionValue?: RpcTransportConnectionImpl<TCommand, TOutput>;
+	private connectionSequence = 0;
+	private startPromise?: Promise<this>;
+	private closePromise?: Promise<void>;
+	private started = false;
+	private closing = false;
+
+	constructor(options: RpcTransportOptions<TCommand, TOutput>) {
+		this.options = options;
+		this.configuredAddress = validateRpcTransportAddress(options.address);
+		this.maxFrameBytes = resolveMaxFrameBytes(options.maxFrameBytes ?? options.maxFrameLength);
+	}
+
+	get address(): RpcTransportAddress | undefined {
+		return this.boundAddress;
+	}
+
+	get listening(): boolean {
+		return this.started && !this.closing;
+	}
+
+	get activeConnection(): RpcTransportConnection<TCommand, TOutput> | undefined {
+		return this.activeConnectionValue;
+	}
+
+	start(): Promise<this> {
+		if (this.started) return Promise.reject(new Error("RPC transport is already started"));
+		if (this.startPromise) return Promise.reject(new Error("RPC transport is already starting"));
+		if (this.closing) return Promise.reject(new Error("RPC transport is closing or closed"));
+		const promise = this.startInternal();
+		this.startPromise = promise;
+		return promise;
+	}
+
+	async close(): Promise<void> {
+		if (this.closePromise) return this.closePromise;
+		this.closing = true;
+		this.closePromise = this.closeInternal();
+		return this.closePromise;
+	}
+
+	private async startInternal(): Promise<this> {
+		const server = createServer({ allowHalfOpen: false }, (socket) => this.accept(socket));
+		this.server = server;
+		try {
+			await listenServer(server, this.configuredAddress);
+			if (this.closing) {
+				await closeServer(server);
+				throw createTransportError("rpc_transport_closed");
+			}
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				throw createTransportError("rpc_transport_bind_failed");
+			}
+			this.boundAddress = { transport: "tcp", host: RPC_TRANSPORT_LOOPBACK_HOST, port: address.port };
+			server.on("error", this.onServerError);
+			this.started = true;
+			return this;
+		} catch (error) {
+			this.closing = true;
+			try {
+				await closeServer(server);
+			} catch (closeError: unknown) {
+				this.reportError(createTransportError("rpc_transport_close_failed", closeError));
+			}
+			this.server = undefined;
+			const transportError =
+				error instanceof RpcTransportError ? error : createTransportError("rpc_transport_bind_failed", error);
+			this.reportError(transportError);
+			throw transportError;
+		} finally {
+			this.startPromise = undefined;
+		}
+	}
+
+	private accept(socket: Socket): void {
+		if (this.closing) {
+			socket.destroy();
+			return;
+		}
+		const active = this.activeConnectionValue;
+		if (active && !active.closed) {
+			void this.rejectBusy(socket);
+			return;
+		}
+
+		const connection = new RpcTransportConnectionImpl(++this.connectionSequence, socket, {
+			dispatch: this.options.dispatch,
+			parseCommand: this.options.parseCommand,
+			maxFrameBytes: this.maxFrameBytes,
+			reportError: (error) => this.reportError(error),
+			onReleased: (released) => this.releaseConnection(released),
+			onConnectionError: this.options.onConnectionError,
+		});
+		this.activeConnectionValue = connection;
+		connection.start();
+		try {
+			this.options.onConnection?.(connection);
+		} catch (error) {
+			const transportError = createTransportError("rpc_transport_connection_failed", error);
+			this.reportConnectionError(transportError);
+			void connection.release();
+		}
+	}
+
+	private async rejectBusy(socket: Socket): Promise<void> {
+		const writer = createJsonlLineWriter(socket, { maxFrameBytes: this.maxFrameBytes });
+		const busyError = createTransportError("rpc_transport_connection_busy");
+		this.reportConnectionError(busyError);
+		try {
+			await writer.write(toTransportErrorRecord(busyError));
+			await writer.close();
+			if (!socket.destroyed) socket.destroy();
+		} catch (error: unknown) {
+			this.reportConnectionError(toTransportError(error, "rpc_transport_write_failed"));
+			socket.destroy();
+		} finally {
+			writer.detach();
+		}
+	}
+
+	private releaseConnection(connection: RpcTransportConnectionImpl<TCommand, TOutput>): void {
+		if (this.activeConnectionValue !== connection) return;
+		this.activeConnectionValue = undefined;
+		try {
+			this.options.onConnectionClose?.(connection);
+		} catch {
+			// Close observers cannot affect transport state.
+		}
+	}
+
+	private readonly onServerError = (error: Error): void => {
+		if (this.closing || !this.started) return;
+		this.reportError(createTransportError("rpc_transport_listener_failed", error));
+	};
+
+	private reportError(error: RpcTransportError): void {
+		try {
+			this.options.onError?.(error);
+		} catch {
+			// Error observers cannot affect transport state.
+		}
+	}
+
+	private reportConnectionError(error: RpcTransportError): void {
+		this.reportError(error);
+		try {
+			this.options.onConnectionError?.(error);
+		} catch {
+			// Error observers cannot affect transport state.
+		}
+	}
+
+	private async closeInternal(): Promise<void> {
+		const starting = this.startPromise;
+		if (starting) await starting.catch(() => {});
+		const server = this.server;
+		const active = this.activeConnectionValue;
+		active?.abort();
+		try {
+			await Promise.all([server ? closeServer(server) : Promise.resolve(), active?.close() ?? Promise.resolve()]);
+		} catch (error: unknown) {
+			this.reportError(createTransportError("rpc_transport_close_failed", error));
+		}
+		this.activeConnectionValue = undefined;
+		this.boundAddress = undefined;
+		this.started = false;
+		this.server = undefined;
+	}
+}
+
+export function createRpcTransport<TCommand, TOutput>(
+	options: RpcTransportOptions<TCommand, TOutput>,
+): RpcTransport<TCommand, TOutput> {
+	return new RpcTransport(options);
+}
+
+export const createTcpRpcTransport = createRpcTransport;
+
+function toTransportErrorRecord(error: RpcTransportError): RpcTransportErrorRecord {
+	return { type: "error", error: { code: error.code, message: error.message } };
+}
+
+function createTransportError(code: RpcTransportErrorCode, cause?: unknown): RpcTransportError {
+	return new RpcTransportError(code, RPC_TRANSPORT_ERROR_MESSAGES[code], cause);
+}
+
+function toTransportError(error: unknown, fallbackCode: RpcTransportErrorCode): RpcTransportError {
+	if (error instanceof RpcTransportError) return error;
+	if (error instanceof JsonlFrameError) {
+		return createTransportError("rpc_transport_frame_too_large", error);
+	}
+	return createTransportError(fallbackCode, error);
+}
+
+function resolveMaxFrameBytes(value: number | undefined): number {
+	const resolved = value ?? DEFAULT_RPC_TRANSPORT_MAX_FRAME_BYTES;
+	if (!Number.isSafeInteger(resolved) || resolved <= 0 || resolved > 0xffff_ffff) {
+		throw new RangeError(`maxFrameBytes must be an integer between 1 and ${0xffff_ffff}`);
+	}
+	return resolved;
+}
+
+function listenServer(server: Server, address: RpcTransportAddress): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const onError = (error: Error): void => {
+			server.off("listening", onListening);
+			server.off("error", onError);
+			reject(createTransportError("rpc_transport_bind_failed", error));
+		};
+		const onListening = (): void => {
+			server.off("error", onError);
+			resolve();
+		};
+		server.once("error", onError);
+		server.once("listening", onListening);
+		server.listen({ host: address.host, port: address.port });
+	});
+}
+
+function closeServer(server: Server): Promise<void> {
+	if (!server.listening) return Promise.resolve();
+	return new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()));
+	});
+}

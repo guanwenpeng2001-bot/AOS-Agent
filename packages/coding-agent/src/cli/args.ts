@@ -7,6 +7,7 @@ import chalk from "chalk";
 import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import type { TuiMode } from "../core/settings-manager.ts";
+import { parseRpcTransportAddress, type RpcTransportAddress } from "../modes/rpc/rpc-transport-address.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -25,6 +26,7 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	rpcListen?: RpcTransportAddress;
 	name?: string;
 	noSession?: boolean;
 	session?: string;
@@ -84,6 +86,21 @@ export function parseArgs(args: string[]): Args {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc") {
 				result.mode = mode;
+			}
+		} else if (arg === "--rpc-listen") {
+			if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--rpc-listen requires a value" });
+			} else {
+				const value = args[++i]!;
+				const parsedAddress = parseRpcTransportAddress(value);
+				if ("address" in parsedAddress) {
+					result.rpcListen = parsedAddress.address;
+				} else {
+					result.diagnostics.push({
+						type: "error",
+						message: `Invalid --rpc-listen address: ${parsedAddress.error.message}`,
+					});
+				}
 			}
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
@@ -246,6 +263,10 @@ export function parseArgs(args: string[]): Args {
 	if (result.modelRoute !== undefined && result.modelRole !== undefined) {
 		result.diagnostics.push({ type: "error", message: "--model-route and --model-role are mutually exclusive" });
 	}
+	if (result.rpcListen !== undefined && result.mode !== "rpc") {
+		result.diagnostics.push({ type: "error", message: "--rpc-listen requires --mode rpc" });
+		result.rpcListen = undefined;
+	}
 
 	return result;
 }
@@ -286,6 +307,7 @@ ${chalk.bold("Options:")}
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
+  --rpc-listen <address>         RPC TCP listener (tcp://127.0.0.1:<port>); requires --mode rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume

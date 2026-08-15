@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { once } from "node:events";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,12 +13,21 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createBindingHandle } from "../src/core/binding-handles.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ToolDefinition } from "../src/core/extensions/index.ts";
+import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
+import {
+	createRpcTransport,
+	type RpcTransportConnection,
+	type RpcTransport,
+} from "../src/modes/rpc/rpc-transport.ts";
+import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
+import type { RpcCommand, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.ts";
+import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
@@ -23,6 +35,71 @@ const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
 	lineHandler: undefined as ((line: string) => void) | undefined,
 }));
+
+const TestJsonlFrameError = vi.hoisted(() => {
+	class HoistedTestJsonlFrameError extends Error {
+		readonly frameBytes = 0;
+		readonly maxFrameBytes = 0;
+	}
+	return HoistedTestJsonlFrameError;
+});
+
+interface TestJsonlWriter {
+	write(value: unknown): Promise<void>;
+	close(): Promise<void>;
+	detach(): void;
+}
+
+function attachTestJsonlLineReader(
+	stream: NodeJS.ReadableStream,
+	onLine: (line: string) => void,
+): () => void {
+	if (stream === process.stdin) {
+		rpcIo.lineHandler = onLine;
+		return () => {};
+	}
+	let buffer = "";
+	let detached = false;
+	const onData = (chunk: string | Buffer): void => {
+		if (detached) return;
+		buffer += chunk.toString();
+		let newlineIndex = buffer.indexOf("\n");
+		while (newlineIndex !== -1) {
+			const line = buffer.slice(0, newlineIndex);
+			buffer = buffer.slice(newlineIndex + 1);
+			onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+			newlineIndex = buffer.indexOf("\n");
+		}
+	};
+	stream.on("data", onData);
+	return () => {
+		if (detached) return;
+		detached = true;
+		stream.off("data", onData);
+	};
+}
+
+function createTestJsonlLineWriter(stream: NodeJS.ReadableStream): TestJsonlWriter {
+	const writable = stream as unknown as Writable;
+	let ending = false;
+	return {
+		write(value: unknown): Promise<void> {
+			if (ending || writable.destroyed) return Promise.reject(new Error("JSONL writer is closed"));
+			return new Promise<void>((resolve, reject) => {
+				writable.write(`${JSON.stringify(value)}\n`, "utf8", (error?: Error | null) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			});
+		},
+		close(): Promise<void> {
+			if (ending || writable.destroyed) return Promise.resolve();
+			ending = true;
+			return new Promise<void>((resolve) => writable.end(resolve));
+		},
+		detach(): void {},
+	};
+}
 
 vi.mock("../src/core/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
@@ -36,10 +113,10 @@ vi.mock("../src/core/output-guard.js", () => ({
 vi.mock("../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
 
 vi.mock("../src/modes/rpc/jsonl.js", () => ({
-	attachJsonlLineReader: vi.fn((_stream: NodeJS.ReadableStream, onLine: (line: string) => void) => {
-		rpcIo.lineHandler = onLine;
-		return () => {};
-	}),
+	attachJsonlLineReader: vi.fn(attachTestJsonlLineReader),
+	createJsonlLineWriter: createTestJsonlLineWriter,
+	DEFAULT_MAX_JSONL_FRAME_BYTES: 1024 * 1024,
+	JsonlFrameError: TestJsonlFrameError,
 	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
 }));
 
@@ -140,6 +217,28 @@ const APPROVAL_BINDING: CapabilityBinding = {
 	decisionSummary: { allowed: 1, awaitingApproval: 1, denied: 0 },
 };
 
+const PENDING_EDITOR_EXTENSION: Extension = {
+	path: "<test:pending-editor>",
+	resolvedPath: "<test:pending-editor>",
+	sourceInfo: createSyntheticSourceInfo("<test:pending-editor>", { source: "test" }),
+	handlers: new Map([
+		[
+			"agent_start",
+			[
+				async (...args: unknown[]): Promise<void> => {
+					const context = args[1] as ExtensionContext;
+					await context.ui.editor("Unanswered editor request");
+				},
+			],
+		],
+	]),
+	tools: new Map(),
+	messageRenderers: new Map(),
+	commands: new Map(),
+	flags: new Map(),
+	shortcuts: new Map(),
+};
+
 /** Minimal ResourceLoader with no compat/generated-catalog imports. */
 function testResourceLoader(): ResourceLoader {
 	return {
@@ -160,6 +259,11 @@ function testResourceLoader(): ResourceLoader {
 }
 
 type ParsedOutputLine = Record<string, unknown>;
+
+interface ConsoleErrorSpy {
+	readonly mock: { readonly calls: readonly unknown[][] };
+	mockRestore(): void;
+}
 
 function parseOutputLines(outputLines: string[]): ParsedOutputLine[] {
 	return outputLines
@@ -339,6 +443,190 @@ async function startRpcMode(options: {
 	};
 }
 
+async function startInMemoryController(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<"anthropic-messages">;
+	streamErrorMessage?: string;
+	customTools?: ToolDefinition[];
+	resourceLoader?: ResourceLoader;
+}, outputSink?: RpcHostOutputSink): Promise<{
+	controller: RpcHostController;
+	runtimeHost: AgentSessionRuntime;
+	records: RpcHostOutputRecord[];
+	cleanup: () => Promise<void>;
+}> {
+	const { runtimeHost, cleanup } = await createRuntimeHost(options);
+	const records: RpcHostOutputRecord[] = [];
+	const controller = new RpcHostController(runtimeHost, {
+		output: outputSink ?? { publish: (record) => records.push(record) },
+	});
+	await controller.start();
+	return { controller, runtimeHost, records, cleanup };
+}
+
+async function startTcpRpcMode(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<"anthropic-messages">;
+	resourceLoader?: ResourceLoader;
+}): Promise<{ port: number; diagnostics: ConsoleErrorSpy; cleanup: () => Promise<void> }> {
+	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
+	const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
+	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost(options);
+	const port = await getAvailablePort();
+	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+	let exitCode: number | undefined;
+	const exit = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+		exitCode = typeof code === "number" ? code : 0;
+		return undefined as never;
+	}) as typeof process.exit);
+
+	void runRpcMode(runtimeHost, { listen: { transport: "tcp", host: "127.0.0.1", port } });
+	await vi.waitFor(() => {
+		expect(diagnostics.mock.calls.flat().join("\n")).toContain(`RPC TCP listening on tcp://127.0.0.1:${port}`);
+	});
+
+	return {
+		port,
+		diagnostics,
+		cleanup: async () => {
+			process.emit("SIGTERM");
+			await vi.waitFor(() => expect(exitCode).toBeDefined());
+			exit.mockRestore();
+			diagnostics.mockRestore();
+			for (const [signal, listenersBefore] of signalListenersBefore) {
+				for (const listener of process.listeners(signal)) {
+					if (!listenersBefore.has(listener)) process.off(signal, listener as (...args: unknown[]) => void);
+				}
+			}
+			await cleanupRuntime();
+		},
+	};
+}
+
+type TcpRpcTestCommand = RpcCommand | RpcExtensionUIResponse;
+
+interface TcpPeer {
+	readonly socket: Socket;
+	readonly records: ParsedOutputLine[];
+	readonly nextRecord: () => Promise<ParsedOutputLine>;
+}
+
+async function connectTcpPeer(address: TcpRpcAddress): Promise<TcpPeer> {
+	const socket = createConnection({ host: address.host, port: address.port });
+	await once(socket, "connect");
+	const records: ParsedOutputLine[] = [];
+	const waiters: Array<(record: ParsedOutputLine) => void> = [];
+	attachJsonlLineReader(socket, (line) => {
+		const record = JSON.parse(line) as ParsedOutputLine;
+		const waiter = waiters.shift();
+		if (waiter === undefined) records.push(record);
+		else waiter(record);
+	});
+	return {
+		socket,
+		records,
+		nextRecord: () => {
+			const record = records.shift();
+			if (record !== undefined) return Promise.resolve(record);
+			return new Promise((resolve) => waiters.push(resolve));
+		},
+	};
+}
+
+function writeTcpRecord(socket: Socket, value: unknown): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		try {
+			socket.write(`${JSON.stringify(value)}\n`, (error) => (error ? reject(error) : resolve()));
+		} catch (error) {
+			reject(error instanceof Error ? error : new Error(String(error)));
+		}
+	});
+}
+
+async function startTcpController(options: {
+	withAuth: boolean;
+	responseDelayMs: number;
+	model?: Model<"anthropic-messages">;
+	resourceLoader?: ResourceLoader;
+}): Promise<{
+	controller: RpcHostController;
+	runtimeHost: AgentSessionRuntime;
+	transport: RpcTransport<TcpRpcTestCommand, RpcHostOutputRecord>;
+	address: TcpRpcAddress;
+	cleanup: () => Promise<void>;
+}> {
+	let activeConnection: RpcTransportConnection<TcpRpcTestCommand, RpcHostOutputRecord> | undefined;
+	let detachPromise = Promise.resolve();
+	const pendingWrites = new Set<Promise<void>>();
+	const output = {
+		publish(record: RpcHostOutputRecord): void {
+			const connection = activeConnection;
+			if (connection === undefined || connection.closed) return;
+			const pending = connection.send(record).catch(() => {});
+			pendingWrites.add(pending);
+			void pending.finally(() => pendingWrites.delete(pending));
+		},
+		async waitForBackpressure(): Promise<void> {
+			await Promise.all([...pendingWrites]);
+		},
+	};
+	const { controller, runtimeHost, cleanup: cleanupRuntime } = await startInMemoryController(options, output);
+	const port = await getAvailablePort();
+	const transport = createRpcTransport<TcpRpcTestCommand, RpcHostOutputRecord>({
+		address: { transport: "tcp", host: "127.0.0.1", port },
+		parseCommand: (value) => {
+			if (typeof value !== "object" || value === null || typeof (value as { type?: unknown }).type !== "string") {
+				throw new TypeError("RPC command must include a string type");
+			}
+			return value as TcpRpcTestCommand;
+		},
+		dispatch: async (command) => {
+			await detachPromise;
+			if (command.type === "extension_ui_response") {
+				controller.handleExtensionUIResponse(command);
+				return;
+			}
+			await controller.handleCommand(command);
+		},
+		onConnection: (connection) => {
+			void detachPromise.then(() => {
+				if (!connection.closed) activeConnection = connection;
+			});
+		},
+		onConnectionClose: (connection) => {
+			if (activeConnection === connection) activeConnection = undefined;
+			detachPromise = controller.detachTransport();
+		},
+	});
+	await transport.start();
+	return {
+		controller,
+		runtimeHost,
+		transport,
+		address: transport.address!,
+		cleanup: async () => {
+			await transport.close();
+			await controller.detachTransport();
+			await controller.shutdown();
+			await cleanupRuntime();
+		},
+	};
+}
+
+async function getAvailablePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen({ host: "127.0.0.1", port: 0 }, () => resolve());
+	});
+	const address = server.address();
+	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
+	await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	return address.port;
+}
+
 /**
  * Automation Host v1 run lifecycle over RPC mode.
  *
@@ -369,6 +657,25 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("dispatches commands and run records through an in-memory output sink", async () => {
+		const { controller, records, cleanup } = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			await controller.handleCommand({ id: "i-memory", type: "initialize", protocolVersion: 1 });
+			const initialize = records.find((record) => record.type === "response" && record.id === "i-memory");
+			expect(initialize).toMatchObject({ command: "initialize", success: true });
+
+			await controller.handleCommand({ id: "r-memory", type: "run.start", message: "Hello" });
+			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true));
+			expect(records.some((record) => record.type === "run.started")).toBe(true);
+			expect(records.some((record) => record.type === "run.event")).toBe(true);
+			expect(records.every((record) => typeof record === "object")).toBe(true);
+		} finally {
+			await controller.shutdown();
+			await cleanup();
+		}
+	});
+
 	it("advertises the v1 host contract on initialize", async () => {
 		const { lineHandler, cleanup } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
@@ -395,6 +702,229 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(data.runCommands).toEqual(["run.start", "run.get", "run.cancel", "run.resume"]);
 		} finally {
 			await cleanup();
+		}
+	});
+
+	it("keeps TCP RPC records off stdout and listener diagnostics on stderr", async () => {
+		rpcIo.outputLines = [];
+		const { port, diagnostics, cleanup } = await startTcpRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			expect(rpcIo.outputLines).toEqual([]);
+			expect(diagnostics.mock.calls.flat().join("\n")).toContain(`RPC TCP listening on tcp://127.0.0.1:${port}`);
+			expect(diagnostics.mock.calls.flat().join("\n")).not.toContain('"type":"response"');
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("serves automation commands over TCP and reconnects without replaying live events", async () => {
+		const harness = await startTcpController({ withAuth: true, responseDelayMs: 100 });
+		let first: TcpPeer | undefined;
+		let second: TcpPeer | undefined;
+		try {
+			first = await connectTcpPeer(harness.address);
+			await writeTcpRecord(first.socket, { id: "tcp-init", type: "initialize", protocolVersion: 1 });
+			const initialize = await first.nextRecord();
+			expect(initialize).toMatchObject({ id: "tcp-init", command: "initialize", success: true });
+			const sessionId = (initialize.data as { sessionId: string }).sessionId;
+
+			const external = { namespace: "ci", externalSessionId: "tcp-job", externalRunId: "tcp-attempt" };
+			await writeTcpRecord(first.socket, { id: "tcp-run", type: "run.start", message: "Hello", external });
+			const accepted = await first.nextRecord();
+			expect(accepted).toMatchObject({ id: "tcp-run", command: "run.start", success: true });
+			const runId = (accepted.data as { runId: string }).runId;
+
+			first.socket.destroy();
+			await vi.waitFor(() => expect(harness.transport.activeConnection).toBeUndefined());
+
+			second = await connectTcpPeer(harness.address);
+			expect(second.records).toEqual([]);
+			await writeTcpRecord(second.socket, { id: "tcp-reinit", type: "initialize", protocolVersion: 1 });
+			expect(await second.nextRecord()).toMatchObject({ id: "tcp-reinit", command: "initialize", success: true });
+
+			await writeTcpRecord(second.socket, { id: "tcp-get", type: "run.get", runId });
+			const runGet = await second.nextRecord();
+			expect(runGet).toMatchObject({ id: "tcp-get", command: "run.get", success: true });
+			expect((runGet.data as { run: { status: string } }).run.status).toBe("cancelled");
+
+			await writeTcpRecord(second.socket, {
+				id: "tcp-audit",
+				type: "audit.query",
+				scope: "current-session",
+				types: ["run.cancelled"],
+			});
+			const audit = await second.nextRecord();
+			expect(audit).toMatchObject({ id: "tcp-audit", command: "audit.query", success: true });
+			expect((audit.data as { events: Array<{ type: string }> }).events).toEqual(
+				expect.arrayContaining([expect.objectContaining({ type: "run.cancelled" })]),
+			);
+
+			await writeTcpRecord(second.socket, {
+				id: "tcp-replay",
+				type: "audit.replay",
+				runId,
+				scope: "current-session",
+			});
+			const replay = await second.nextRecord();
+			expect(replay.data).toMatchObject({ status: "incomplete" });
+
+			await writeTcpRecord(second.socket, {
+				id: "tcp-map",
+				type: "external.map",
+				external,
+				aosSessionId: sessionId,
+				aosRunId: runId,
+			});
+			expect(await second.nextRecord()).toMatchObject({ id: "tcp-map", command: "external.map", success: true });
+		} finally {
+			first?.socket.destroy();
+			second?.socket.destroy();
+			await harness.cleanup();
+		}
+	});
+
+	it("settles a pending editor before TCP detach and preserves one authoritative terminal", async () => {
+		const resourceLoader: ResourceLoader = {
+			...testResourceLoader(),
+			getExtensions: () => ({
+				extensions: [PENDING_EDITOR_EXTENSION],
+				errors: [],
+				runtime: createExtensionRuntime(),
+			}),
+		};
+		const harness = await startTcpController({ withAuth: true, responseDelayMs: 100, resourceLoader });
+		let first: TcpPeer | undefined;
+		let second: TcpPeer | undefined;
+		try {
+			first = await connectTcpPeer(harness.address);
+			await writeTcpRecord(first.socket, { id: "pending-editor-init", type: "initialize", protocolVersion: 1 });
+			expect(await first.nextRecord()).toMatchObject({ id: "pending-editor-init", success: true });
+
+			await writeTcpRecord(first.socket, { id: "pending-editor-run", type: "run.start", message: "Hello" });
+			const accepted = await first.nextRecord();
+			expect(accepted).toMatchObject({ id: "pending-editor-run", command: "run.start", success: true });
+			const runId = (accepted.data as { runId: string }).runId;
+			expect(await first.nextRecord()).toMatchObject({ type: "run.started", runId });
+			const editorRequest = await first.nextRecord();
+			expect(editorRequest).toMatchObject({ type: "extension_ui_request", method: "editor" });
+
+			first.socket.destroy();
+			await vi.waitFor(() => expect(harness.transport.activeConnection).toBeUndefined());
+
+			second = await connectTcpPeer(harness.address);
+			await writeTcpRecord(second.socket, { id: "pending-editor-reinit", type: "initialize", protocolVersion: 1 });
+			expect(await second.nextRecord()).toMatchObject({ id: "pending-editor-reinit", success: true });
+
+			await writeTcpRecord(second.socket, { id: "pending-editor-get", type: "run.get", runId });
+			const runGet = await second.nextRecord();
+			expect(runGet).toMatchObject({
+				id: "pending-editor-get",
+				command: "run.get",
+				success: true,
+				data: { run: { id: runId, status: "cancelled" }, receipt: { runId, status: "cancelled" } },
+			});
+
+			const ledgerEntries = harness.runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+			const terminalEntries = ledgerEntries.filter(
+				(entry) => entry.type === "custom" && (entry.data as { kind?: string }).kind === "terminal",
+			);
+			expect(ledgerEntries).toHaveLength(3);
+			expect(terminalEntries).toHaveLength(1);
+			expect(terminalEntries[0]).toMatchObject({ data: { kind: "terminal", receipt: { runId, status: "cancelled" } } });
+		} finally {
+			first?.socket.destroy();
+			second?.socket.destroy();
+			await harness.cleanup();
+		}
+	});
+
+	it("does not accept a resume after TCP disconnect during session switching", async () => {
+		const harness = await startTcpController({ withAuth: true, responseDelayMs: 0 });
+		let first: TcpPeer | undefined;
+		let second: TcpPeer | undefined;
+		let releaseSwitch = (): void => {};
+		let restoreSwitch: (() => void) | undefined;
+		try {
+			first = await connectTcpPeer(harness.address);
+			await writeTcpRecord(first.socket, { id: "resume-race-init", type: "initialize", protocolVersion: 1 });
+			expect(await first.nextRecord()).toMatchObject({ id: "resume-race-init", success: true });
+
+			await writeTcpRecord(first.socket, { id: "resume-race-seed", type: "run.start", message: "Seed" });
+			const seedAccepted = await first.nextRecord();
+			const sourceRunId = (seedAccepted.data as { runId: string }).runId;
+			await vi.waitFor(() =>
+				expect(
+					first!.records.some(
+						(record) =>
+							record.type === "run.completed" ||
+							record.type === "run.failed" ||
+							record.type === "run.cancelled",
+					),
+				).toBe(true),
+			);
+			const seedRunLedgerCount = harness.runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			let resolveSwitchStarted!: () => void;
+			const switchStarted = new Promise<void>((resolve) => {
+				resolveSwitchStarted = resolve;
+			});
+			let resolveSwitchFinished!: () => void;
+			const switchFinished = new Promise<void>((resolve) => {
+				resolveSwitchFinished = resolve;
+			});
+			const switchGate = new Promise<void>((resolve) => {
+				releaseSwitch = resolve;
+			});
+			const originalSwitchSession = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitchSession).toBeDefined();
+			const switchSpy = vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				resolveSwitchStarted();
+				await switchGate;
+				try {
+					return await originalSwitchSession!(path, options);
+				} finally {
+					resolveSwitchFinished();
+				}
+			});
+			restoreSwitch = () => switchSpy.mockRestore();
+
+			await writeTcpRecord(first.socket, {
+				id: "resume-race",
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message: "Continue",
+			});
+			await switchStarted;
+
+			first.socket.destroy();
+			await vi.waitFor(() => expect(harness.transport.activeConnection).toBeUndefined());
+			releaseSwitch();
+			await switchFinished;
+
+			const runLedgerEntries = harness.runtimeHost.session.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+			expect(runLedgerEntries).toHaveLength(seedRunLedgerCount);
+
+			second = await connectTcpPeer(harness.address);
+			await writeTcpRecord(second.socket, { id: "resume-race-reinit", type: "initialize", protocolVersion: 1 });
+			expect(await second.nextRecord()).toMatchObject({ id: "resume-race-reinit", success: true });
+			await writeTcpRecord(second.socket, { id: "resume-race-get", type: "run.get", runId: sourceRunId });
+			expect(await second.nextRecord()).toMatchObject({ id: "resume-race-get", success: true });
+		} finally {
+			releaseSwitch();
+			restoreSwitch?.();
+			first?.socket.destroy();
+			second?.socket.destroy();
+			await harness.cleanup();
 		}
 	});
 

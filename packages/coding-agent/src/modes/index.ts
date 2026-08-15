@@ -15,11 +15,45 @@ export {
 	type ModelInfo,
 	RpcClient,
 	type RpcClientOptions,
+	type RpcClientTcpOptions,
+	type RpcClientTransportOptions,
 	type RpcEventListener,
 	type RpcRunEventListener,
 	type RpcRunStreamEvent,
 } from "./rpc/rpc-client.ts";
-export { runRpcMode } from "./rpc/rpc-mode.ts";
+export {
+	RPC_TRANSPORT_LOOPBACK_HOST,
+	RPC_TRANSPORT_PORT_MAX,
+	RPC_TRANSPORT_PORT_MIN,
+	RpcTransportAddressError,
+	formatRpcTransportAddress,
+	parseRpcTransportAddress,
+	validateRpcTransportAddress,
+	type RpcTransportAddress,
+	type RpcTransportAddressErrorCode,
+	type RpcTransportAddressParseResult,
+	type TcpRpcAddress,
+} from "./rpc/rpc-transport-address.ts";
+export {
+	RpcTransport,
+	RpcTransportError,
+	createRpcTransport,
+	createTcpRpcTransport,
+	type RpcTransportConnection,
+	type RpcTransportDispatcher,
+	type RpcTransportErrorCode,
+	type RpcTransportErrorRecord,
+	type RpcTransportOptions,
+	type RpcTransportSink,
+} from "./rpc/rpc-transport.ts";
+export { runRpcMode, type RpcModeOptions } from "./rpc/rpc-mode.ts";
+export {
+	createRpcHostController,
+	RpcHostController,
+	type RpcHostControllerOptions,
+	type RpcHostOutputRecord,
+	type RpcHostOutputSink,
+} from "./rpc/rpc-host.ts";
 export type {
 	AuditEvent,
 	AuditEventType,

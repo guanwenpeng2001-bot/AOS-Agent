@@ -943,7 +943,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	if (appMode === "rpc") {
 		printTimings();
-		await runRpcMode(runtime);
+		await runRpcMode(runtime, parsed.rpcListen === undefined ? undefined : { listen: parsed.rpcListen });
 	} else if (appMode === "interactive") {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
