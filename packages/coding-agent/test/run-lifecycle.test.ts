@@ -205,7 +205,7 @@ function isAutomationRunEntry(entry: SessionEntry): entry is Extract<SessionEntr
 	return entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE;
 }
 
-function ledgerKinds(session: SessionManager): string[] {
+function ledgerKinds(session: RunLedgerSession): string[] {
 	return session
 		.getEntries()
 		.filter(isAutomationRunEntry)
@@ -234,6 +234,26 @@ function failingSession(after: number): RunLedgerSession {
 		appendCustomEntry: (customType: string, data?: unknown) => {
 			calls += 1;
 			if (calls > after) throw new Error("disk full");
+			return inner.appendCustomEntry(customType, data);
+		},
+		getEntries: () => inner.getEntries(),
+	};
+}
+
+/** A real in-memory session whose next append after `after` successful calls fails once. */
+function failingSessionOnce(after: number): RunLedgerSession {
+	const inner = makeSession();
+	let calls = 0;
+	let failed = false;
+	return {
+		getSessionId: () => inner.getSessionId(),
+		getSessionFile: () => inner.getSessionFile(),
+		appendCustomEntry: (customType: string, data?: unknown) => {
+			calls += 1;
+			if (!failed && calls > after) {
+				failed = true;
+				throw new Error("disk full");
+			}
 			return inner.appendCustomEntry(customType, data);
 		},
 		getEntries: () => inner.getEntries(),
@@ -312,11 +332,77 @@ describe("state machine", () => {
 		const coordinator = makeCoordinator();
 		const run = accept(coordinator.reserve(), "r1");
 		run.requestCancel();
+		run.requestCancel();
+		run.requestDeadlineExceeded();
 		expect(run.cancelled).toBe(true);
 		run.start();
 		const terminal = run.settle({ outcome: "completed" });
 		expect(terminal).toMatchObject({ type: "run.cancelled", receipt: { status: "cancelled" } });
 		expect(run.receipt()?.status).toBe("cancelled");
+	});
+
+	it("records deadline intent as a failed terminal with a stable error code", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = accept(coordinator.reserve(), "deadline-run");
+		run.start();
+		run.requestDeadlineExceeded();
+
+		const terminal = run.settle({ outcome: "completed" });
+		expect(terminal).toMatchObject({
+			type: "run.failed",
+			receipt: {
+				status: "failed",
+				terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
+			},
+		});
+		expect(run.record.status).toBe("failed");
+		expect(run.cancelled).toBe(false);
+		expect(run.receipt()?.terminalError?.code).toBe("run_deadline_exceeded");
+		expect(run.settle({ outcome: "failed" })).toBeUndefined();
+		expect(ledgerKinds(session).filter((kind) => kind === "terminal")).toHaveLength(1);
+
+		const replayed = makeCoordinator(session).getRun("deadline-run");
+		expect(replayed?.record.status).toBe("failed");
+		expect(replayed?.receipt?.terminalError).toEqual({
+			code: "run_deadline_exceeded",
+			message: "Run failed.",
+			retryable: false,
+		});
+	});
+
+	it("lets the first cancellation intent beat a late deadline intent", () => {
+		const coordinator = makeCoordinator();
+		const run = accept(coordinator.reserve(), "cancel-first");
+		run.start();
+		run.requestCancel();
+		run.requestDeadlineExceeded();
+
+		const terminal = run.settle({
+			outcome: "failed",
+			terminalError: createAutomationError("run_deadline_exceeded", "The deadline expired.", false),
+		});
+		expect(terminal).toMatchObject({ type: "run.cancelled", receipt: { status: "cancelled" } });
+		expect(run.cancelled).toBe(true);
+		expect(run.receipt()?.terminalError).toBeUndefined();
+	});
+
+	it("lets the first deadline intent beat a late cancellation intent", () => {
+		const coordinator = makeCoordinator();
+		const run = accept(coordinator.reserve(), "deadline-first");
+		run.start();
+		run.requestDeadlineExceeded();
+		run.requestCancel();
+
+		const terminal = run.settle({ outcome: "completed" });
+		expect(terminal).toMatchObject({
+			type: "run.failed",
+			receipt: {
+				status: "failed",
+				terminalError: { code: "run_deadline_exceeded" },
+			},
+		});
+		expect(run.cancelled).toBe(false);
 	});
 
 		it("settles a failed run with a structured public-safe terminal error", () => {
@@ -858,6 +944,7 @@ describe("duplicate terminal / late events / cancellation", () => {
 		run.start();
 		run.settle({ outcome: "completed" });
 		run.requestCancel();
+		run.requestDeadlineExceeded();
 		expect(run.receipt()?.status).toBe("completed");
 		expect(run.terminal?.type).toBe("run.completed");
 	});
@@ -1085,6 +1172,31 @@ describe("persistence failures", () => {
 		expect(replayed?.result.record.status).toBe("running");
 		expect(replayed?.result.recovery).toBe("interrupted");
 		expect(replayed?.result.receipt).toBeUndefined();
+	});
+
+	it("retains the deadline intent when terminal persistence fails and settles once on retry", () => {
+		const session = failingSessionOnce(2);
+		const coordinator = makeCoordinator(session);
+		const run = accept(coordinator.reserve(), "deadline-persistence");
+		run.start();
+		run.requestDeadlineExceeded();
+
+		let error: AutomationError | undefined;
+		try {
+			run.settle({ outcome: "completed" });
+		} catch (caught) {
+			error = caught as AutomationError;
+		}
+		expect(error?.code).toBe("ledger_persistence_failed");
+		expect(run.receipt()).toBeUndefined();
+		expect(run.record.status).toBe("running");
+
+		const terminal = run.settle({ outcome: "completed" });
+		expect(terminal).toMatchObject({
+			type: "run.failed",
+			receipt: { status: "failed", terminalError: { code: "run_deadline_exceeded" } },
+		});
+		expect(ledgerKinds(session).filter((kind) => kind === "terminal")).toHaveLength(1);
 	});
 
 	it("consumes and releases the reservation when persisting the accepted fact fails", () => {

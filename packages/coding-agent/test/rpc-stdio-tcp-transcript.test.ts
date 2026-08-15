@@ -158,6 +158,10 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
+interface RuntimeHostOptions {
+	readonly streamDelayMs?: number;
+}
+
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
@@ -189,7 +193,9 @@ function testResourceLoader(): ResourceLoader {
 	};
 }
 
-async function createRuntimeHost(): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
+async function createRuntimeHost(
+	options: RuntimeHostOptions = {},
+): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
 	const tempDir = join(tmpdir(), `aos-rpc-transcript-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
@@ -206,7 +212,7 @@ async function createRuntimeHost(): Promise<{ runtimeHost: AgentSessionRuntime; 
 				stream.push({ type: "start", partial: createAssistantMessage("") });
 				setTimeout(() => {
 					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
-				}, 0);
+				}, options.streamDelayMs ?? 0);
 			});
 			return stream;
 		},
@@ -287,13 +293,13 @@ interface TranscriptAdapter {
 	cleanup(): Promise<void>;
 }
 
-async function startStdioRpcMode(): Promise<TranscriptAdapter> {
+async function startStdioRpcMode(options: RuntimeHostOptions = {}): Promise<TranscriptAdapter> {
 	rpcIo.outputLines = [];
 	rpcIo.lineHandler = undefined;
 	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
 	const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
 	const stdinEndListenersBefore = new Set(process.stdin.listeners("end"));
-	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost();
+	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost(options);
 	void runRpcMode(runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
@@ -351,11 +357,11 @@ function writeTcpRecord(socket: Socket, value: unknown): Promise<void> {
 	});
 }
 
-async function startTcpRpcMode(): Promise<TranscriptAdapter> {
+async function startTcpRpcMode(options: RuntimeHostOptions = {}): Promise<TranscriptAdapter> {
 	rpcIo.outputLines = [];
 	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
 	const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
-	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost();
+	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost(options);
 	const port = await getAvailablePort();
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
 	let exitCode: number | undefined;
@@ -396,20 +402,42 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-async function waitForRecord(adapter: TranscriptAdapter, predicate: (record: ParsedRecord) => boolean): Promise<ParsedRecord> {
+async function waitForRecord(
+	adapter: TranscriptAdapter,
+	predicate: (record: ParsedRecord) => boolean,
+	timeout = 1000,
+): Promise<ParsedRecord> {
 	let match: ParsedRecord | undefined;
-	await vi.waitFor(() => {
-		match = adapter.records().find(predicate);
-		expect(match).toBeDefined();
-	});
+	await vi.waitFor(
+		() => {
+			match = adapter.records().find(predicate);
+			expect(match).toBeDefined();
+		},
+		{ timeout },
+	);
 	return match!;
 }
 
-async function collectTranscript(adapter: TranscriptAdapter): Promise<ParsedRecord[]> {
+type TerminalEventType = "run.completed" | "run.failed" | "run.cancelled";
+
+interface TranscriptRunOptions {
+	readonly deadlineAt?: string;
+	readonly terminalType?: TerminalEventType;
+}
+
+async function collectTranscript(
+	adapter: TranscriptAdapter,
+	options: TranscriptRunOptions = {},
+): Promise<ParsedRecord[]> {
 	await adapter.send({ id: "initialize", type: "initialize", protocolVersion: 1 });
 	await waitForRecord(adapter, (record) => record.type === "response" && record.id === "initialize");
 
-	await adapter.send({ id: "run-start", type: "run.start", message: "hi" });
+	await adapter.send({
+		id: "run-start",
+		type: "run.start",
+		message: "hi",
+		...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+	});
 	const accepted = await waitForRecord(
 		adapter,
 		(record) => record.type === "response" && record.id === "run-start",
@@ -418,9 +446,15 @@ async function collectTranscript(adapter: TranscriptAdapter): Promise<ParsedReco
 		throw new Error("run.start response did not include a runId");
 	}
 	const runId = accepted.data.runId;
-	await waitForRecord(adapter, (record) =>
-		record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled",
+	const terminalType = options.terminalType ?? "run.completed";
+	await waitForRecord(
+		adapter,
+		(record) => record.type === terminalType,
+		options.deadlineAt === undefined ? 1000 : 3000,
 	);
+	await vi.waitFor(() => expect(terminalEvents(adapter.records())).toHaveLength(1), {
+		timeout: options.deadlineAt === undefined ? 1000 : 3000,
+	});
 
 	await adapter.send({ id: "run-get", type: "run.get", runId });
 	await waitForRecord(adapter, (record) => record.type === "response" && record.id === "run-get");
@@ -428,7 +462,7 @@ async function collectTranscript(adapter: TranscriptAdapter): Promise<ParsedReco
 		id: "audit-query",
 		type: "audit.query",
 		scope: "current-session",
-		types: ["run.completed"],
+		types: [terminalType],
 		limit: 200,
 	});
 	await waitForRecord(adapter, (record) => record.type === "response" && record.id === "audit-query");
@@ -437,7 +471,7 @@ async function collectTranscript(adapter: TranscriptAdapter): Promise<ParsedReco
 		type: "audit.replay",
 		runId,
 		scope: "current-session",
-		types: ["run.completed"],
+		types: [terminalType],
 		limit: 200,
 	});
 	await waitForRecord(adapter, (record) => record.type === "response" && record.id === "audit-replay");
@@ -463,6 +497,75 @@ function assertAutomationResponseShape(records: ParsedRecord[]): void {
 			retryable: expect.any(Boolean),
 		});
 	}
+}
+
+function assertStrictJsonlLines(lines: string[]): void {
+	expect(lines.length).toBeGreaterThan(0);
+	for (const line of lines) {
+		expect(line.endsWith("\n")).toBe(true);
+		const payload = line.slice(0, -1);
+		expect(payload).not.toContain("\n");
+		expect(payload).not.toContain("\r");
+		expect(() => JSON.parse(payload)).not.toThrow();
+	}
+}
+
+function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): void {
+	const terminals = terminalEvents(records);
+	expect(terminals).toHaveLength(1);
+	expect(terminals[0]).toMatchObject({
+		type: "run.failed",
+		receipt: {
+			status: "failed",
+			deadlineAt,
+			terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
+		},
+	});
+	expect(records.some((record) => record.type === "run.cancelled")).toBe(false);
+
+	const startResponseIndex = records.findIndex(
+		(record) => record.type === "response" && record.command === "run.start" && record.success === true,
+	);
+	const startedIndex = records.findIndex((record) => record.type === "run.started");
+	const terminalIndex = records.findIndex((record) => record.type === "run.failed");
+	expect(startResponseIndex).toBeGreaterThanOrEqual(0);
+	expect(startedIndex).toBeGreaterThan(startResponseIndex);
+	expect(terminalIndex).toBeGreaterThan(startedIndex);
+	for (const [index, record] of records.entries()) {
+		if (record.type === "run.event") {
+			expect(index).toBeGreaterThan(startedIndex);
+			expect(index).toBeLessThan(terminalIndex);
+		}
+	}
+
+	const runGet = records.find((record) => record.type === "response" && record.command === "run.get");
+	expect(runGet).toMatchObject({
+		success: true,
+		data: {
+			run: { status: "failed", deadlineAt },
+			receipt: {
+				status: "failed",
+				deadlineAt,
+				terminalError: { code: "run_deadline_exceeded" },
+			},
+		},
+	});
+
+	const auditQuery = records.find((record) => record.type === "response" && record.command === "audit.query");
+	expect(auditQuery).toMatchObject({
+		success: true,
+		data: { events: expect.arrayContaining([expect.objectContaining({ type: "run.failed" })]) },
+	});
+	const auditReplay = records.find((record) => record.type === "response" && record.command === "audit.replay");
+	expect(auditReplay).toMatchObject({
+		success: true,
+		data: {
+			run: { status: "failed", deadlineAt },
+			events: expect.arrayContaining([expect.objectContaining({ type: "run.failed" })]),
+		},
+	});
+	const replayData = isRecord(auditReplay?.data) ? auditReplay.data : {};
+	expect(["complete", "incomplete"]).toContain(replayData.status);
 }
 
 function automationResponseSignatures(records: ParsedRecord[]): unknown[] {
@@ -591,5 +694,35 @@ describe("RPC stdio/TCP public transcript parity", () => {
 			expect(transcript.filter((record) => record.type === "run.event").length).toBeGreaterThanOrEqual(1);
 		}
 		expect(terminalEvents(stdioTranscript!)[0].type).toBe(terminalEvents(tcpTranscript!)[0].type);
+	});
+
+	it("emits the same failed deadline transcript over stdio and TCP", async () => {
+		const runtimeOptions: RuntimeHostOptions = { streamDelayMs: 2000 };
+		const stdio = await startStdioRpcMode(runtimeOptions);
+		const stdioDeadlineAt = new Date(Date.now() + 1000).toISOString();
+		let stdioTranscript: ParsedRecord[];
+		try {
+			stdioTranscript = await collectTranscript(stdio, { deadlineAt: stdioDeadlineAt, terminalType: "run.failed" });
+			assertStrictJsonlLines(rpcIo.outputLines);
+			assertDeadlineTranscript(stdioTranscript, stdioDeadlineAt);
+		} finally {
+			await stdio.cleanup();
+		}
+
+		const tcp = await startTcpRpcMode(runtimeOptions);
+		const tcpDeadlineAt = new Date(Date.now() + 1000).toISOString();
+		let tcpTranscript: ParsedRecord[];
+		try {
+			tcpTranscript = await collectTranscript(tcp, { deadlineAt: tcpDeadlineAt, terminalType: "run.failed" });
+			// TCP diagnostics belong on stderr; no RPC JSONL record may reach stdout.
+			expect(rpcIo.outputLines).toEqual([]);
+			assertDeadlineTranscript(tcpTranscript, tcpDeadlineAt);
+		} finally {
+			await tcp.cleanup();
+		}
+
+		expect(publicRecordTypes(stdioTranscript!)).toEqual(publicRecordTypes(tcpTranscript!));
+		expect(automationResponseSignatures(stdioTranscript!)).toEqual(automationResponseSignatures(tcpTranscript!));
+		expect(normalizePublicTranscript(stdioTranscript!)).toEqual(normalizePublicTranscript(tcpTranscript!));
 	});
 });

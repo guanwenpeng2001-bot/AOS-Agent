@@ -1447,7 +1447,7 @@ export class RpcHostController {
 						terminalErrorByRun.set(proposedRunId, deadlineError);
 						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
 						if (activeHandle?.runId === proposedRunId) {
-							activeHandle.requestCancel();
+							activeHandle.requestDeadlineExceeded();
 							void session.abort().catch(() => {
 								// The normal Run settlement path owns the terminal transition.
 							});
@@ -1502,6 +1502,15 @@ export class RpcHostController {
 						if (!didSucceed) {
 							rejectStart(new Error("Preflight rejected the run input"));
 							return;
+						}
+						if (
+							deadlineController.signal.aborted ||
+							(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
+						) {
+							const deadlineError = new AgentOperationError("deadline_exceeded");
+							if (!deadlineController.signal.aborted) deadlineController.abort(deadlineError);
+							rejectStart(deadlineError);
+							throw deadlineError;
 						}
 						if (activeReservation !== reservation) return;
 						let handle: RunHandle | undefined;
