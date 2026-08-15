@@ -1,6 +1,6 @@
 # RPC Mode
 
-RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
+RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout by default or a local TCP socket when `--rpc-listen` is used. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
 **Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `aos-agent` instead of spawning a subprocess. See [`src/core/agent-session.ts`](../src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
 
@@ -17,11 +17,68 @@ Common options:
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
 
+### TCP listener (`--rpc-listen`)
+
+RPC mode uses stdin/stdout by default. To serve the same protocol from a local
+TCP socket, start it with:
+
+```bash
+aos --mode rpc --rpc-listen tcp://127.0.0.1:4123 [options]
+```
+
+`--rpc-listen` accepts only `tcp://127.0.0.1:<port>`, where `<port>` is `1` to
+`65535`. It requires `--mode rpc`; host names, wildcard addresses, IPv6
+addresses, credentials, paths, queries, and fragments are rejected. The
+listener binds the IPv4 loopback interface only.
+
+The TCP listener has no authentication or encryption. Any process that can
+connect to the local loopback interface can issue RPC commands, so do not
+expose or forward this port outside the local machine. Stdio remains the
+default when the stronger process-pipe boundary is appropriate.
+
+Only one control connection is active at a time. A second connection receives
+one JSON error record with `error.code: "rpc_transport_connection_busy"` and is then closed. A new
+connection can take ownership after the active connection closes. The client
+must reconnect explicitly: the TCP transport does not automatically retry,
+replay, or resend commands.
+
+If the active TCP connection closes while a run is executing, the host requests
+cancellation through the existing `requestCancel()` / `session.abort()` path and
+lets the normal settlement persist the terminal `run.cancelled` receipt. The
+disconnected client cannot receive that terminal event. After reconnecting, send
+`initialize`, then use `run.get` to read the durable run record and receipt; use
+`audit.replay` when the event stream may have been interrupted or the process
+boundary is uncertain.
+
+Live run events are scoped to the connection that owns the session. A
+replacement connection receives no buffered or stale `run.started`, `run.event`,
+or terminal records from the previous connection, including a terminal record
+that was emitted after the previous client disconnected. Reconcile through the
+durable `run.get` and `audit.replay` commands instead.
+
+`RpcClient` selects this transport with the public `"tcp"` discriminator:
+
+```ts
+const client = new RpcClient({
+  transport: { type: "tcp", host: "127.0.0.1", port: 4123 },
+});
+```
+
+The `host` is optional in this configuration but, when supplied, must be the
+IPv4 loopback literal `127.0.0.1`. `port` is required and must be an integer
+from `1` through `65535`; `connectTimeoutMs` is optional and defaults to
+`10000`. Omit `transport` (or set it to `"stdio"`) to keep the child-process
+transport.
+
+Stdio and TCP use the same public command, response, and event records. The
+transport-specific differences are the TCP frame limit, connection ownership,
+disconnect cancellation, and diagnostics described below.
+
 ## Protocol Overview
 
-- **Commands**: JSON objects sent to stdin, one per line
+- **Commands**: JSON objects sent to stdin (stdio) or the TCP socket, one per line
 - **Responses**: JSON objects with `type: "response"` indicating command success/failure
-- **Events**: Agent events streamed to stdout as JSON lines
+- **Events**: Agent events streamed to stdout (stdio) or the TCP socket as JSON lines
 
 All commands support an optional `id` field for request/response correlation. If provided, the corresponding response will include the same `id`. `bash_execution_update` events also include the `id` of their originating `bash` command.
 
@@ -29,7 +86,8 @@ All commands support an optional `id` field for request/response correlation. If
 
 ### Framing
 
-RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter.
+RPC mode uses strict JSONL semantics with LF (`\n`) as the only record delimiter
+on both stdio and TCP.
 
 This matters for clients:
 - Split records on `\n` only
@@ -37,6 +95,52 @@ This matters for clients:
 - Do not use generic line readers that treat Unicode separators as newlines
 
 In particular, Node `readline` is not protocol-compliant for RPC mode because it also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
+
+TCP input and output records are limited to 1 MiB (1,048,576 UTF-8 bytes,
+including the terminating LF). An oversized input record is rejected with a
+transport error record (`error.code: "rpc_transport_frame_too_large"`) and the connection is
+closed without dispatching that record. Stdio has no RPC-level frame bound.
+
+An output record that exceeds the TCP bound is rejected by the JSONL writer and
+invalidates the connection; a client must not treat the affected request as
+delivered. The bound is measured in UTF-8 bytes, not JavaScript string length.
+
+Writes are serialized in call order. A write is not considered complete until
+the underlying stream accepts the record and drains when backpressure is
+reported. The Automation Host waits for transport backpressure at command and
+agent-event boundaries, and `RpcClient` queues its TCP writes in the same order;
+clients should continue reading the socket while a run is active so streamed
+events do not fill the output buffer.
+
+### TCP transport errors
+
+Transport errors are distinct from command responses. When the transport can
+report an error before closing, it emits a record without a request id:
+
+```json
+{
+  "type": "error",
+  "error": {"code": "rpc_transport_frame_too_large", "message": "..."}
+}
+```
+
+The stable transport error vocabulary is `rpc_transport_address_invalid`,
+`rpc_transport_not_loopback`, `rpc_transport_bind_failed`,
+`rpc_transport_connection_busy`, `rpc_transport_frame_too_large`,
+`rpc_transport_closed`, and `rpc_transport_write_failed`. The generic
+transport adapter may also report `rpc_transport_invalid_json`,
+`rpc_transport_invalid_command`, or `rpc_transport_dispatch_failed` when it
+cannot construct a Host response. A busy connection is rejected before
+dispatch; an oversized record is rejected without dispatch and then the
+connection is closed. Socket, listener, and close failures can terminate the
+connection without a final error record and are also reported through stderr
+or transport observers.
+
+When `RpcClient` receives a recognized transport error record, it rejects all
+pending requests, invalidates the active socket, and does not route the record
+to `onEvent()` or `onRunEvent()`. A disconnected or transport-failed request
+therefore has unknown delivery state and must be reconciled before retrying a
+side effect.
 
 ## Commands
 
@@ -1417,7 +1521,12 @@ Parse errors:
 
 Automation Host v1 is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
 
-The Automation Host reuses the existing agent loop, `AgentSession`, session persistence, and the strict JSONL stdin/stdout transport. It is not a second agent loop and not a network service; v1 introduces no HTTP, WebSocket, database, or remote-agent layer.
+The Automation Host reuses the existing agent loop, `AgentSession`, session
+persistence, and the strict JSONL transport. It is available over either the
+default stdio transport or the local TCP listener described above; it is not a
+second agent loop and v1 introduces no HTTP, WebSocket, database, or
+remote-agent layer. The TCP listener remains deliberately unauthenticated and
+loopback-only, so it is not a remotely exposed service.
 
 ### Opt-in handshake
 
@@ -1919,6 +2028,15 @@ If a process is killed before a terminal receipt is written, the ledger may hold
 
 On a handled termination signal, the host stops accepting new runs, attempts the existing abort path, and waits for the session to settle. If the process is force-killed or exceeds the graceful exit window, the last successfully written ledger state is authoritative; clients must not expect live terminal events during process termination.
 
+Transport clients must treat a disconnected request as having an unknown
+delivery state. The TCP `RpcClient` rejects pending requests and does not
+automatically reconnect or resend them. After an explicit reconnect, the new
+connection receives no stale live run events from the old connection; use
+`run.get` and `audit.replay` to reconcile a run before issuing a new side
+effect. `RpcClient.reconnectRun()` performs that read-only durable recovery
+sequence, maintaining independent live-event sequence and audit-cursor
+checkpoints; it never resends `run.start` or `run.resume`.
+
 ### Legacy RPC compatibility
 
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
@@ -1931,7 +2049,19 @@ On a handled termination signal, the host stops accepting new runs, attempts the
 
 ### stdout and stderr
 
-The protocol writes only JSONL records to stdout. Diagnostics — errors, corrupted-ledger warnings, and debug output — go to stderr only, so a client can parse stdout line by line without interference.
+In stdio mode, stdout contains only JSONL protocol records. In TCP mode, JSONL
+records are written to the accepted loopback socket; stdout is not a protocol
+channel. In both modes, diagnostics — startup and connection ownership
+messages, listener errors, frame-limit failures, corrupted-ledger warnings,
+disconnect-cancellation failures, and debug output — go to stderr only. Never
+merge stderr into the protocol stream.
+
+TCP startup and connection diagnostics are intentionally human-readable, for
+example `RPC TCP listening on tcp://127.0.0.1:4123`,
+`[rpc] connection 1 accepted`, and
+`[rpc] rpc_transport_frame_too_large: ...`; they are not JSONL records and are
+not part of the public RPC contract. A TCP client must read protocol records
+from its socket, not from the host process's stdout or stderr.
 
 ### Run record
 
@@ -2119,6 +2249,62 @@ for event in read_events():
     if event.get("type") == "agent_end":
         print()
         break
+```
+
+## Example: RpcClient TCP Client (TypeScript)
+
+Start the loopback listener in one terminal:
+
+```bash
+aos --mode rpc --rpc-listen tcp://127.0.0.1:4123
+```
+
+Run this client from a project that depends on `aos-agent` (for example with
+`npx tsx rpc-client-tcp.ts`):
+
+```ts
+import { RpcClient } from "aos-agent";
+
+async function main(): Promise<void> {
+  const client = new RpcClient({
+    transport: {
+      type: "tcp",
+      host: "127.0.0.1",
+      port: 4123,
+    },
+  });
+
+  let finishRun!: () => void;
+  const terminal = new Promise<void>((resolve) => {
+    finishRun = resolve;
+  });
+  const unsubscribe = client.onRunEvent((event) => {
+    if (event.type === "run.event" && event.event.type === "message_update") {
+      const delta = event.event.assistantMessageEvent;
+      if (delta.type === "text_delta") process.stdout.write(delta.delta);
+    }
+    if (
+      event.type === "run.completed" ||
+      event.type === "run.failed" ||
+      event.type === "run.cancelled"
+    ) {
+      finishRun();
+    }
+  });
+
+  try {
+    await client.start();
+    await client.initializeAutomationHost();
+    const accepted = await client.startRun("Say exactly: hello");
+    console.error(`Run ${accepted.runId} accepted`);
+    await terminal;
+  } finally {
+    unsubscribe();
+    await client.close();
+  }
+}
+
+await main();
 ```
 
 ## Example: Interactive Client (Node.js)

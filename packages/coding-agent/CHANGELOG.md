@@ -10,6 +10,7 @@
 
 ### Added
 
+- Loopback TCP JSONL transport for Automation Host: `aos --mode rpc --rpc-listen tcp://127.0.0.1:<port>` binds `127.0.0.1` only, accepts one control connection, and reuses the existing RPC command, event, and receipt contract. `RpcClient` can connect with `{ transport: { type: "tcp", host: "127.0.0.1", port } }` without spawning a child process.
 - Remote-ready execution contracts: session-scoped idempotent run requests, durable lifecycle observations, reconnect-safe run event recovery, stable binding handles, serialized Session writes, and an in-process fake remote provider contract.
 - Context Engine v1: governed context sources (trust/scope/digest), input budget packing that includes provider tool schemas and formal extension contributions, metadata-only `context.snapshot` Session entries, optional explicit session/project memory (default off), compaction/branch-summary snapshot provenance, RPC `get_context` / `RpcClient.getContext()`, interactive `/context` and `/memory`, and additive `RunReceipt.contextSnapshotId`.
 - Capability Registry/MCP v1: stable capability descriptors and frozen bindings for built-in, extension, SDK, skill, and MCP capabilities; trust-aware `allow`/`ask`/`deny` profiles; stdio and Streamable HTTP MCP lifecycle with explicit environment/header references; namespaced MCP tools; redacted inspection and run/Context Engine binding audit metadata; interactive approval and RPC `get_capabilities` support.
