@@ -104,8 +104,8 @@ import type {
 	RunGetData,
 } from "./rpc-types.ts";
 
-/** A public record emitted by the transport-neutral RPC controller. */
-export type RpcHostOutputRecord =
+/** Public records emitted by the transport-neutral RPC controller. */
+export type RpcWireRecord =
 	| RpcResponse
 	| RpcAutomationResponse
 	| RpcExtensionUIRequest
@@ -119,16 +119,58 @@ export type RpcHostRunStreamEvent = Omit<Extract<PublicRunStreamEvent, { type: "
 	event: JsonAgentSessionEvent;
 };
 
-/** Sink used by a transport to receive already serialized-safe RPC records. */
+/** Compatibility name for the controller's wire record union. */
+export type RpcHostOutputRecord = RpcWireRecord;
+
+/** Output sink used by new transport adapters. */
+export interface RpcOutputSink {
+	send(record: RpcWireRecord): Promise<void>;
+	close(): Promise<void>;
+}
+
+/** Legacy sink shape retained for existing stdio and in-memory callers. */
 export interface RpcHostOutputSink {
 	publish(record: RpcHostOutputRecord): void;
 	waitForBackpressure?: () => Promise<void>;
 }
 
 export interface RpcHostControllerOptions {
-	output: RpcHostOutputSink;
+	/** Legacy constructor sink; new callers should use attach(). */
+	output?: RpcHostOutputSink | RpcOutputSink;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
+}
+
+type RpcOutputSinkLike = RpcHostOutputSink | RpcOutputSink;
+
+/**
+ * Adapt the current publish/backpressure sink to the new promise-based output
+ * contract. The adapter keeps send calls ordered by the transport's own writer
+ * and makes dispatch wait for all records queued by a command.
+ */
+function adaptOutputSink(sink: RpcOutputSinkLike): RpcHostOutputSink {
+	if ("send" in sink) {
+		const pending = new Set<Promise<void>>();
+		return {
+			publish(record: RpcHostOutputRecord): void {
+				let write: Promise<void>;
+				try {
+					write = sink.send(record);
+				} catch (error: unknown) {
+					write = Promise.reject(error);
+				}
+				pending.add(write);
+				void write.then(
+					() => pending.delete(write),
+					() => pending.delete(write),
+				);
+			},
+			async waitForBackpressure(): Promise<void> {
+				await Promise.all([...pending]);
+			},
+		};
+	}
+	return sink;
 }
 
 // Re-export types for consumers
@@ -237,18 +279,59 @@ function hashResumeTargetPath(sessionPath: string): string {
  */
 export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
-	private readonly outputSink: RpcHostOutputSink;
+	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
-	private commandHandler?: (command: RpcCommand) => Promise<void>;
+	private commandHandler?: (command: RpcCommand) => Promise<RpcResponse | RpcAutomationResponse | undefined>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
 	private detachTransportHandler?: () => Promise<void>;
+	private transportDetachPromise?: Promise<void>;
+	private outputAttachment?: { readonly id: number; readonly sink: RpcHostOutputSink };
+	private nextOutputAttachmentId = 0;
 	private shuttingDown = false;
 
-	constructor(runtimeHost: AgentSessionRuntime, options: RpcHostControllerOptions) {
+	constructor(runtimeHost: AgentSessionRuntime, options: RpcHostControllerOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		this.outputSink = options.output;
+		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
+	}
+
+	/**
+	 * Attach a live output sink. Records emitted after a previous attachment is
+	 * detached are dropped until the new attachment is active; no live records
+	 * are replayed to the new sink.
+	 */
+	attach(sink: RpcOutputSink): () => void;
+	attach(sink: RpcHostOutputSink): () => void;
+	attach(sink: RpcOutputSinkLike): () => void {
+		return this.attachSink(sink);
+	}
+
+	private attachSink(sink: RpcOutputSinkLike): () => void {
+		const attachment = { id: ++this.nextOutputAttachmentId, sink: adaptOutputSink(sink) };
+		this.outputAttachment = attachment;
+		const detachInProgress = this.transportDetachPromise;
+		if (detachInProgress === undefined) {
+			this.outputSink = attachment.sink;
+		} else {
+			this.outputSink = undefined;
+			const activate = (): void => {
+				if (this.outputAttachment === attachment) this.outputSink = attachment.sink;
+			};
+			void detachInProgress.then(activate, activate);
+		}
+
+		let detached = false;
+		return (): void => {
+			if (detached) return;
+			detached = true;
+			if (this.outputAttachment !== attachment) return;
+			this.outputAttachment = undefined;
+			this.outputSink = undefined;
+			void this.detachTransport().catch(() => {
+				// The transport owns reporting detach failures; the unbind callback is synchronous.
+			});
+		};
 	}
 
 	/** Bind the current session and make the controller ready for commands. */
@@ -291,9 +374,11 @@ export class RpcHostController {
 			| { kind: "response"; response: RpcAutomationResponse };
 		const pendingRunRequests = new Map<string, PendingRunRequest>();
 
-		const waitForOutput = this.outputSink.waitForBackpressure ?? (() => Promise.resolve());
+		const waitForOutput = async (): Promise<void> => {
+			await this.outputSink?.waitForBackpressure?.();
+		};
 		const output = (record: RpcHostOutputRecord): void => {
-			this.outputSink.publish(record);
+			this.outputSink?.publish(record);
 		};
 
 		const success = <T extends RpcCommand["type"]>(
@@ -2766,7 +2851,9 @@ export class RpcHostController {
 			await shutdown();
 		}
 
-		this.commandHandler = async (command: RpcCommand): Promise<void> => {
+		this.commandHandler = async (
+			command: RpcCommand,
+		): Promise<RpcResponse | RpcAutomationResponse | undefined> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
 				const response = await handleCommand(command);
@@ -2775,15 +2862,16 @@ export class RpcHostController {
 					await waitForOutput();
 				}
 				await checkShutdownRequested();
+				return response;
 			} catch (commandError: unknown) {
-				output(
-					error(
-						command.id,
-						command.type,
-						commandError instanceof Error ? commandError.message : String(commandError),
-					),
+				const response = error(
+					command.id,
+					command.type,
+					commandError instanceof Error ? commandError.message : String(commandError),
 				);
+				output(response);
 				await waitForOutput();
+				return response;
 			}
 		};
 
@@ -2798,12 +2886,17 @@ export class RpcHostController {
 		this.detachTransportHandler = detachTransport;
 	}
 
-	/** Dispatch a typed command and publish its response or error record. */
-	async handleCommand(command: RpcCommand): Promise<void> {
+	/** Dispatch a typed command, publish its response or error record, and return it. */
+	async dispatch(command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | undefined> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");
 		}
-		await this.commandHandler(command);
+		return this.commandHandler(command);
+	}
+
+	/** Compatibility wrapper for callers that only need published output. */
+	async handleCommand(command: RpcCommand): Promise<void> {
+		await this.dispatch(command);
 	}
 
 	/** Resolve a pending extension UI request using a transport response. */
@@ -2823,7 +2916,21 @@ export class RpcHostController {
 	 */
 	async detachTransport(): Promise<void> {
 		if (this.detachTransportHandler === undefined) return;
-		await this.detachTransportHandler();
+		if (this.transportDetachPromise !== undefined) {
+			await this.transportDetachPromise;
+			return;
+		}
+		const detachPromise = this.detachTransportHandler();
+		this.transportDetachPromise = detachPromise;
+		void detachPromise.then(
+			() => {
+				if (this.transportDetachPromise === detachPromise) this.transportDetachPromise = undefined;
+			},
+			() => {
+				if (this.transportDetachPromise === detachPromise) this.transportDetachPromise = undefined;
+			},
+		);
+		await detachPromise;
 	}
 
 	get isShuttingDown(): boolean {
@@ -2834,7 +2941,7 @@ export class RpcHostController {
 /** Construct a transport-neutral RPC host controller. */
 export function createRpcHostController(
 	runtimeHost: AgentSessionRuntime,
-	options: RpcHostControllerOptions,
+	options: RpcHostControllerOptions = {},
 ): RpcHostController {
 	return new RpcHostController(runtimeHost, options);
 }

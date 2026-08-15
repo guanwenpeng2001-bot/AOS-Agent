@@ -12,7 +12,7 @@ import {
 } from "../../core/output-guard.ts";
 import { redactErrorText } from "../../core/run-lifecycle.ts";
 import { formatRpcTransportAddress, type RpcTransportAddress } from "./rpc-transport-address.ts";
-import { createRpcTransport, RpcTransportError, type RpcTransportConnection } from "./rpc-transport.ts";
+import { createRpcTransport, RpcTransportError } from "./rpc-transport.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import { createRpcHostController, type RpcHostOutputRecord } from "./rpc-host.ts";
 import type { RpcCommand, RpcExtensionUIResponse } from "./rpc-types.ts";
@@ -23,44 +23,6 @@ export interface RpcModeOptions {
 }
 
 type TcpRpcCommand = RpcCommand | RpcExtensionUIResponse;
-
-/**
- * Bridges the controller's synchronous output sink to the currently attached
- * TCP connection. Records produced after a disconnect are dropped; the host
- * remains alive and can be attached to a later connection.
- */
-class TcpRpcOutputSink {
-	private connection?: RpcTransportConnection<TcpRpcCommand, RpcHostOutputRecord>;
-	private readonly pendingWrites = new Set<Promise<void>>();
-
-	attach(connection: RpcTransportConnection<TcpRpcCommand, RpcHostOutputRecord>): void {
-		this.connection = connection;
-	}
-
-	async attachWhenReady(
-		connection: RpcTransportConnection<TcpRpcCommand, RpcHostOutputRecord>,
-		ready: Promise<void>,
-	): Promise<void> {
-		await ready;
-		if (!connection.closed) this.attach(connection);
-	}
-
-	detach(connection: RpcTransportConnection<TcpRpcCommand, RpcHostOutputRecord>): void {
-		if (this.connection === connection) this.connection = undefined;
-	}
-
-	publish(record: RpcHostOutputRecord): void {
-		const connection = this.connection;
-		if (connection === undefined || connection.closed) return;
-		const pending = connection.send(record).catch(() => {});
-		this.pendingWrites.add(pending);
-		void pending.finally(() => this.pendingWrites.delete(pending));
-	}
-
-	async waitForBackpressure(): Promise<void> {
-		await Promise.all([...this.pendingWrites]);
-	}
-}
 
 /** Run the selected RPC transport. Stdio remains the default for compatibility. */
 export async function runRpcMode(runtimeHost: AgentSessionRuntime, options?: RpcModeOptions): Promise<never> {
@@ -171,12 +133,11 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 
 /** Run the RPC host over one-at-a-time loopback TCP JSONL connections. */
 async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTransportAddress): Promise<never> {
-	const outputSink = new TcpRpcOutputSink();
 	let requestProcessShutdown = (): void => {};
 	let detachPromise = Promise.resolve();
+	let detachConnection = (): void => {};
 
 	const controller = createRpcHostController(runtimeHost, {
-		output: outputSink,
 		onShutdown: () => requestProcessShutdown(),
 	});
 	await controller.start();
@@ -194,14 +155,18 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 				controller.handleExtensionUIResponse(command);
 				return;
 			}
-			await controller.handleCommand(command);
+			await controller.dispatch(command);
 		},
 		onConnection: (connection) => {
-			void outputSink.attachWhenReady(connection, detachPromise);
+			void detachPromise.then(() => {
+				if (!connection.closed) detachConnection = controller.attach(connection);
+			});
 			reportDiagnostic(`connection ${connection.id} accepted`);
 		},
 		onConnectionClose: (connection) => {
-			outputSink.detach(connection);
+			const detach = detachConnection;
+			detachConnection = () => {};
+			detach();
 			reportDiagnostic(`connection ${connection.id} closed`);
 			detachPromise = controller.detachTransport().catch((error: unknown) => {
 				reportDiagnostic(`connection ${connection.id} cleanup failed: ${toError(error).message}`);
@@ -223,6 +188,7 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 		for (const cleanup of signalCleanupHandlers) cleanup();
 		if (signal !== undefined) killTrackedDetachedChildren();
 		await transport.close();
+		detachConnection();
 		await controller.detachTransport();
 		await controller.shutdown();
 		process.exit(exitCode);

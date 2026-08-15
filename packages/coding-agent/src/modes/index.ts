@@ -51,6 +51,8 @@ export {
 	createRpcHostController,
 	RpcHostController,
 	type RpcHostControllerOptions,
+	type RpcOutputSink,
+	type RpcWireRecord,
 	type RpcHostOutputRecord,
 	type RpcHostOutputSink,
 } from "./rpc/rpc-host.ts";

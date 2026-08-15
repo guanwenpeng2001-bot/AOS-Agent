@@ -753,6 +753,8 @@ export {
 	createRpcHostController,
 	RpcHostController,
 	type RpcHostControllerOptions,
+	type RpcOutputSink,
+	type RpcWireRecord,
 	type RpcHostOutputRecord,
 	type RpcHostOutputSink,
 	type RpcCommand,
