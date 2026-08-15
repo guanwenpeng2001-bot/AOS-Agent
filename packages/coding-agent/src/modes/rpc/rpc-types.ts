@@ -25,6 +25,7 @@ import type {
 } from "../../core/external-session-mapping.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -160,7 +161,50 @@ export type RpcCommand =
 	  }
 	| RpcAuditQueryCommand
 	| RpcAuditReplayCommand
-	| RpcExternalMapCommand;
+	| RpcExternalMapCommand
+	// Task Gate control-plane commands (write commands require clientRequestId)
+	| {
+			id?: string;
+			type: "task.gate.request";
+			taskId: string;
+			stageId: string;
+			stageRevision: number;
+			runId?: string;
+			clientRequestId: string;
+	  }
+	| { id?: string; type: "task.gate.get"; gateId: string }
+	| {
+			id?: string;
+			type: "task.gate.list";
+			taskId?: string;
+			stageId?: string;
+			status?: TaskGateStatus;
+			limit?: number;
+	  }
+	| {
+			id?: string;
+			type: "task.gate.approve";
+			gateId: string;
+			/** Unauthenticated operator label supplied by the trusted Host. */
+			actorId?: string;
+			clientRequestId: string;
+	  }
+	| {
+			id?: string;
+			type: "task.gate.reject";
+			gateId: string;
+			actorId?: string;
+			/** Reject-only stable short code; never free text, path, or payload. */
+			reasonCode?: string;
+			clientRequestId: string;
+	  }
+	| {
+			id?: string;
+			type: "task.gate.cancel";
+			gateId: string;
+			actorId?: string;
+			clientRequestId: string;
+	  };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -461,8 +505,21 @@ export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.re
 /** Automation Host v1 audit and external mapping commands. */
 export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
 
+/** Task Gate v1 control-plane commands. Write commands require `clientRequestId`. */
+export type RpcTaskGateCommandType =
+	| "task.gate.request"
+	| "task.gate.get"
+	| "task.gate.list"
+	| "task.gate.approve"
+	| "task.gate.reject"
+	| "task.gate.cancel";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
-export type RpcAutomationCommandType = "initialize" | RpcRunCommandType | RpcAuditCommandType;
+export type RpcAutomationCommandType =
+	| "initialize"
+	| RpcRunCommandType
+	| RpcAuditCommandType
+	| RpcTaskGateCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -472,6 +529,8 @@ export interface InitializeData {
 	runCommands: RpcRunCommandType[];
 	/** Additive audit and external mapping command list. */
 	auditCommands?: RpcAuditCommandType[];
+	/** Additive Task Gate control-plane command list. */
+	taskGateCommands?: RpcTaskGateCommandType[];
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -522,6 +581,24 @@ export type AuditReplayData = AuditReplayResult;
 /** Data returned by a successful `external.map`. */
 export type ExternalMapData = ExternalMappingPersistenceResult;
 
+/** Data returned by a successful `task.gate.request` / approve / reject / cancel. */
+export interface TaskGateMutationData {
+	gate: TaskGateRecord;
+	/** True when this response replays an already durable transition. */
+	idempotent: boolean;
+}
+
+/** Data returned by a successful `task.gate.get`. */
+export interface TaskGateGetData {
+	gate: TaskGateRecord;
+}
+
+/** Data returned by a successful `task.gate.list`. */
+export interface TaskGateListData {
+	gates: TaskGateRecord[];
+	truncated: boolean;
+}
+
 /**
  * Automation Host v1 responses.
  *
@@ -538,6 +615,12 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
 	| { id?: string; type: "response"; command: "external.map"; success: true; data: ExternalMapData }
+	| { id?: string; type: "response"; command: "task.gate.request"; success: true; data: TaskGateMutationData }
+	| { id?: string; type: "response"; command: "task.gate.get"; success: true; data: TaskGateGetData }
+	| { id?: string; type: "response"; command: "task.gate.list"; success: true; data: TaskGateListData }
+	| { id?: string; type: "response"; command: "task.gate.approve"; success: true; data: TaskGateMutationData }
+	| { id?: string; type: "response"; command: "task.gate.reject"; success: true; data: TaskGateMutationData }
+	| { id?: string; type: "response"; command: "task.gate.cancel"; success: true; data: TaskGateMutationData }
 	| {
 			id?: string;
 			type: "response";
@@ -566,6 +649,12 @@ export type {
 	ExternalMappingPersistenceResult,
 	ExternalMappingRequest,
 } from "../../core/external-session-mapping.ts";
+// Re-export public Task Gate types.
+export type {
+	TaskGateErrorCode,
+	TaskGateRecord,
+	TaskGateStatus,
+} from "../../core/task-gate.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,

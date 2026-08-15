@@ -41,6 +41,7 @@ describe("execution audit T0 contract", () => {
 			"sandbox.lifecycle",
 			"policy.violation",
 			"external.mapping",
+			"task.gate",
 		]);
 		expect(AUDIT_EXCLUDED_CUSTOM_TYPES).toEqual(["context.memory"]);
 		expect(AUDIT_EVENT_TYPES).toEqual([
@@ -60,6 +61,7 @@ describe("execution audit T0 contract", () => {
 			"sandbox.lifecycle",
 			"policy.violation",
 			"external.mapping",
+			"task.gate",
 		]);
 	});
 
@@ -184,6 +186,20 @@ describe("execution audit T0 contract", () => {
 			"requestId",
 			"timestamp",
 		]);
+		expect(AUDIT_PUBLIC_SUMMARY_KEYS.taskGate).toEqual([
+			"gateId",
+			"taskId",
+			"stageId",
+			"stageRevision",
+			"status",
+			"action",
+			"revision",
+			"requestedAt",
+			"decidedAt",
+			"runId",
+			"actorId",
+			"reasonCode",
+		]);
 		expect(AUDIT_PUBLIC_SUMMARY_KEYS.externalMapping).toBe(EXTERNAL_MAPPING_KEYS);
 	});
 
@@ -198,6 +214,7 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("Policy authorize/approve/reject");
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("SandboxProvider.prepare/execute/dispose");
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("Context memory write");
+		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("TaskGateStore mutation (task.gate.request/approve/reject/cancel)");
 		for (const testCase of AUDIT_CONTRACT_CASES) expect(testCase.sideEffects, testCase.id).toEqual([]);
 	});
 

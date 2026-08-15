@@ -1534,7 +1534,7 @@ loopback-only, so it is not a remotely exposed service.
 
 Automation Host is strictly opt-in. A client that never sends `initialize` sees exactly the legacy RPC behavior described above: `prompt`, bare session events, the string `error` field, the extension UI sub-protocol, and so on. No existing client has to migrate.
 
-All `run.*` commands require a successful `initialize` first. If a client sends a `run.*` command before initializing, the host replies with the structured error `host_not_initialized`.
+All `run.*` and `task.gate.*` commands require a successful `initialize` first. If a client sends a `run.*` or `task.gate.*` command before initializing, the host replies with the structured error `host_not_initialized`.
 
 `initialize` accepts exactly `protocolVersion: 1`. Any other version is rejected with `unsupported_protocol_version`; there is no silent downgrade and no fallback to an older contract.
 
@@ -1556,12 +1556,13 @@ Response:
     "sessionId": "abc123",
     "sessionFile": "/path/to/session.jsonl",
     "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"],
-    "auditCommands": ["audit.query", "audit.replay", "external.map"]
+    "auditCommands": ["audit.query", "audit.replay", "external.map"],
+    "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run and audit commands available on this host. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, and task gate commands available on this host. `taskGateCommands` is optional and additive: legacy clients that ignore it keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 Unsupported version:
 ```json
@@ -1938,6 +1939,218 @@ commands, environment/header values, credentials, provider errors, stacks, and
 other free-form diagnostics. Public error messages are generic; clients should
 branch on stable `error.code`, not message text.
 
+### Task Gate commands (task.gate.*)
+
+Task Gate is the v1 control-plane contract for human decisions about task stages. A Gate records whether a task stage may proceed; it is not an execution permission, a Policy approval, or a Run. The commands are additive Automation Host capabilities advertised as `taskGateCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch.
+
+A Gate is identified by `gateId` and belongs to exactly one business key:
+
+```text
+sessionId + taskId + stageId + stageRevision
+```
+
+A business key has at most one Gate. `taskId` and `stageId` are opaque external orchestration identifiers; v1 does not create Task or Stage objects. `stageRevision` is a positive integer that increments whenever the stage content or inputs change; a Gate is bound to one revision, and an old approval never migrates to a new revision. `runId` is optional and is only a correlation link to a stage's Run; it grants no permission to modify that Run.
+
+A Gate transitions:
+
+```text
+task.gate.request → pending → approved  (task.gate.approve)
+                           → rejected  (task.gate.reject)
+                           → cancelled (task.gate.cancel)
+```
+
+`pending`, `approved`, `rejected`, and `cancelled` are the only statuses. `approved`, `rejected`, and `cancelled` are terminal: v1 never reopens a terminal Gate and has no `running`, `failed`, or `interrupted` Gate status.
+
+A Gate is a control-plane fact, not a Run terminal:
+
+```text
+Gate approved  ≠ run.started
+Gate rejected  ≠ run.failed
+Gate cancelled ≠ run.cancelled
+```
+
+Approving a Gate never creates or starts a Run, never emits `run.started`, and never changes a Run receipt. Rejecting or cancelling a Gate never cancels or fails a Run. Gate decisions are not Policy operations: they do not satisfy, bypass, or change a Policy `ask`, Capability, Sandbox, or ModelBroker binding, and a future Task Graph must still run normal Run preflight after consuming an approved Gate.
+
+#### TaskGateRecord
+
+Every successful write response and every `task.gate.get` / `task.gate.list` result returns the current safe Gate snapshot:
+
+```ts
+interface TaskGateRecord {
+  schemaVersion: 1;
+  sessionId: string;
+  gateId: string;
+  taskId: string;
+  stageId: string;
+  stageRevision: number;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  revision: number;
+  requestedAt: string;
+  decidedAt?: string;
+  runId?: string;
+  actorId?: string;
+  reasonCode?: string;
+}
+```
+
+Field rules:
+
+- `sessionId`, `gateId`, `taskId`, `stageId`, `runId`, `actorId`, and `reasonCode` must pass the existing safe opaque identifier rules (bounded length, safe charset, no control characters); they are identifiers, not URLs, paths, commands, or payload containers.
+- `stageRevision` and `revision` are positive safe integers. `stageRevision` is immutable after the Gate is created.
+- `decidedAt` is present only for terminal statuses.
+- `actorId` is a trusted-Host-supplied operator label only; v1 performs no authentication, role check, or authorization of the actor.
+- `reasonCode` is a stable short code only. Free text, prompts, URLs, paths, commands, diffs, credentials, and model output are never Gate data.
+- v1 has no `expiresAt`; stale stages are invalidated by a new `stageRevision` or an explicit `cancel`.
+
+#### task.gate.request
+
+Create a pending Gate for the current Session's business key:
+
+```json
+{
+  "type": "task.gate.request",
+  "taskId": "task_42",
+  "stageId": "stage_review",
+  "stageRevision": 3,
+  "runId": "run_abc123",
+  "clientRequestId": "gate-request-001"
+}
+```
+
+Success:
+
+```json
+{
+  "type": "response",
+  "command": "task.gate.request",
+  "success": true,
+  "data": {
+    "gate": {
+      "schemaVersion": 1,
+      "sessionId": "session_abc",
+      "gateId": "gate_001",
+      "taskId": "task_42",
+      "stageId": "stage_review",
+      "stageRevision": 3,
+      "status": "pending",
+      "revision": 0,
+      "requestedAt": "2026-08-15T12:00:00.000Z",
+      "runId": "run_abc123"
+    },
+    "idempotent": false
+  }
+}
+```
+
+`request` writes one `task.gate` custom entry and returns the pending Gate. It does not start a Run or change the current active Run. Failures: `task_gate_invalid` (invalid IDs, `stageRevision`, or payload bounds), `task_gate_conflict` (the business key already has a Gate), `task_gate_idempotency_conflict` (same `clientRequestId`, different payload), and `task_gate_persistence_failed`.
+
+#### task.gate.get
+
+Read the current record of one Gate in the current Session:
+
+```json
+{"type": "task.gate.get", "gateId": "gate_001"}
+```
+
+Success returns the safe Gate record:
+
+```json
+{
+  "type": "response",
+  "command": "task.gate.get",
+  "success": true,
+  "data": {"gate": {...}}
+}
+```
+
+`task.gate.get` is read-only: it never appends a Session entry and never changes Gate state. An unknown `gateId` fails with `task_gate_not_found`.
+
+#### task.gate.list
+
+List Gates in the current Session, optionally filtered by `taskId`, `stageId`, or `status`:
+
+```json
+{"type": "task.gate.list", "taskId": "task_42", "status": "pending", "limit": 50}
+```
+
+Success:
+
+```json
+{
+  "type": "response",
+  "command": "task.gate.list",
+  "success": true,
+  "data": {"gates": [...], "truncated": false}
+}
+```
+
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.gate.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+
+#### task.gate.approve / task.gate.reject / task.gate.cancel
+
+Decide a pending Gate. The three commands share this shape:
+
+```json
+{
+  "type": "task.gate.approve",
+  "gateId": "gate_001",
+  "actorId": "operator_7",
+  "clientRequestId": "gate-approve-001"
+}
+```
+
+`task.gate.reject` may additionally carry a stable reason code:
+
+```json
+{
+  "type": "task.gate.reject",
+  "gateId": "gate_001",
+  "actorId": "operator_7",
+  "reasonCode": "quality_check_failed",
+  "clientRequestId": "gate-reject-001"
+}
+```
+
+`reasonCode` is not accepted on `task.gate.approve`, and v1 defines no reason code for `task.gate.cancel`. A decision succeeds only when the Gate belongs to the current Session, is `pending`, and the transition appends successfully. Success returns the terminal Gate snapshot with `decidedAt` set and `idempotent: false` (or `true` for an idempotent replay).
+
+Failures:
+
+- `task_gate_not_found`: no Gate with this `gateId` in the current Session
+- `task_gate_not_pending`: the Gate is already terminal
+- `task_gate_conflict`: the Gate was already terminated by an opposite decision; the persisted terminal is never overwritten
+- `task_gate_idempotency_conflict`: same `clientRequestId`, different payload
+- `task_gate_persistence_failed`: the transition could not be durably appended
+
+No decision command emits a Run event or touches the Run ledger. `approve` only marks the stage eligible; the caller must still start the next Run through `run.start`/`run.resume` and satisfy normal Policy preflight. Approving a Gate never resolves a pending Policy `ask` (`get_execution_policy.pendingApprovals` stays pending and `policy.approve` is still required). Rejecting or cancelling a Gate around an existing Run never emits `run.failed` / `run.cancelled` and never rewrites that Run's receipt.
+
+#### Idempotency and concurrency
+
+Every write command requires a caller-generated `clientRequestId`. The idempotency key is:
+
+```text
+sessionId + commandType + clientRequestId
+```
+
+The RPC top-level `id` only correlates the response; it is never an idempotency key. Rules:
+
+1. Retrying the same command with the same `clientRequestId` and the same canonical payload returns the previous result and marks `idempotent: true`; no second transition is appended.
+2. The same `clientRequestId` with a different payload returns `task_gate_idempotency_conflict`.
+3. Concurrent approve/reject/cancel on the same pending Gate are serialized by the Session single writer; the first valid terminal transition wins (first-terminal-writer-wins).
+4. A late opposite decision returns `task_gate_conflict` and never overwrites the persisted terminal.
+5. Read commands (`task.gate.get`, `task.gate.list`) use no idempotency key and have no side effects.
+
+`task_gate_persistence_failed` is not retryable, and a client must not guess success from receiving a response. After such a failure, re-read the state with `task.gate.get` or `audit.query` before retrying with a new `clientRequestId`.
+
+#### Session scope and persistence
+
+Gates are scoped to the current Session. `task.gate.request` requires an initialized Host with Session ownership, like the `run.*` commands. The `sessionId + taskId + stageId + stageRevision` business key is never reused across Sessions; session switch, fork, and clone never carry Gate state into the next Session, and the TaskGateStore is rebuilt together with the bound Session.
+
+Each transition is persisted as a Session custom entry with `customType: "task.gate"` (schemaVersion 1) containing the transition action, the full safe Gate snapshot, the `clientRequestId`, and the previous/next `revision`. Every transition writes the complete snapshot, so recovery only folds `requested` (revision 0 → `pending`) and one terminal transition (revision 1 → `approved`/`rejected`/`cancelled`). On session load the Host rejects entries with a mismatched `sessionId`, an unsupported schema, unsafe identifiers, non-contiguous revisions, or illegal status jumps; malformed entries never reach RPC, Audit, or model context, and `task.gate` custom entries never enter the LLM context. Recovery never infers `rejected`/`cancelled` from a process exit and never auto-replays a decision; new decisions must use the original `gateId` and a fresh `clientRequestId`.
+
+#### Model boundary
+
+`task.gate.*` commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot approve, reject, or cancel a Gate itself. The human entry point is the Automation Host control plane (`task.gate.approve` / `task.gate.reject` / `task.gate.cancel`); `actorId` is only a label until identity, role, and authorization are added in a separate security PR.
+
 ### Structured errors
 
 Automation Host commands replace the legacy string `error` field with a structured error object. Every new-command failure carries:
@@ -1975,6 +2188,13 @@ Error codes:
 | `external_mapping_invalid` | External mapping identifiers or metadata are invalid | no |
 | `external_mapping_conflict` | Mapping history already binds a key to another target | no |
 | `audit_persistence_failed` | The external mapping could not be durably appended | no |
+| `task_gate_invalid` | Task Gate input failed validation (IDs, `stageRevision`, `reasonCode`, or payload bounds) | no |
+| `task_gate_not_found` | The given `gateId` does not exist in the current session | no |
+| `task_gate_conflict` | The business key already has a Gate, or the Gate was already terminated by an opposite decision | no |
+| `task_gate_idempotency_conflict` | The same `clientRequestId` was reused with a different payload | no |
+| `task_gate_not_pending` | The Gate is not `pending`, so it cannot be approved, rejected, or cancelled | no |
+| `task_gate_stage_revision_mismatch` | The caller used a stale `stageRevision` (reserved for future Task Graph integration) | no |
+| `task_gate_persistence_failed` | The Gate transition could not be durably appended to the session | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
@@ -2185,7 +2405,7 @@ checkpoints; it never resends `run.start` or `run.resume`.
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
 - After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_context`, `get_entries`, `get_tree`, and `get_messages` remain available.
 - Terminal run receipts may include additive `contextSnapshotId` linking the run to a Context Engine snapshot (see [Context Engine](context.md)).
-- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel` and `run.resume`.
+- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`); `task.gate.get` and `task.gate.list` are read-only.
 - While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
 - Clients that never `initialize` always see the bare session events, as before.
 - Extension UI requests/responses continue to use the existing sub-protocol and are not disguised as run events.
@@ -2240,6 +2460,7 @@ Source files:
 - [`src/modes/json-event.ts`](../src/modes/json-event.ts) - `JsonAgentSessionEvent`
 - [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
 - [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
+- [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
 
 ### Model
 

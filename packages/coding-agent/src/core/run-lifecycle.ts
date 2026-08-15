@@ -568,7 +568,15 @@ export type AutomationErrorCode =
 	| "sandbox_capability_insufficient"
 	| "policy_ledger_persistence_failed"
 	// Terminal run.failed receipt code; not a command-level error.
-	| "model_error";
+	| "model_error"
+	// Task-level Human Gate control-plane errors.
+	| "task_gate_invalid"
+	| "task_gate_not_found"
+	| "task_gate_conflict"
+	| "task_gate_idempotency_conflict"
+	| "task_gate_not_pending"
+	| "task_gate_stage_revision_mismatch"
+	| "task_gate_persistence_failed";
 
 export interface AutomationError {
 	code: AutomationErrorCode;
@@ -637,7 +645,14 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "sandbox_start_failed" ||
 		value === "sandbox_capability_insufficient" ||
 		value === "policy_ledger_persistence_failed" ||
-		value === "model_error"
+		value === "model_error" ||
+		value === "task_gate_invalid" ||
+		value === "task_gate_not_found" ||
+		value === "task_gate_conflict" ||
+		value === "task_gate_idempotency_conflict" ||
+		value === "task_gate_not_pending" ||
+		value === "task_gate_stage_revision_mismatch" ||
+		value === "task_gate_persistence_failed"
 	);
 }
 

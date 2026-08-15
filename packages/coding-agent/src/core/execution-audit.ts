@@ -54,6 +54,16 @@ import type {
 } from "./execution-policy.ts";
 import type { SessionEntry } from "./session-manager.ts";
 import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "./remote-operation.ts";
+import {
+	isTaskGateTransition,
+	taskGateCommandType,
+	taskGateSchemaVersion,
+	TASK_GATE_CUSTOM_TYPE,
+	TASK_GATE_SCHEMA_VERSION,
+	type TaskGateAction,
+	type TaskGateRecord,
+	type TaskGateTransition,
+} from "./task-gate.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -71,6 +81,7 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"policy.violation",
 	"external.mapping",
 	"remote.operation",
+	"task.gate",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
@@ -93,6 +104,7 @@ export const AUDIT_EVENT_TYPES = [
 	"policy.violation",
 	"external.mapping",
 	"remote.operation",
+	"task.gate",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -341,6 +353,21 @@ export interface AuditPolicyViolationSummary {
 	readonly requestId?: string;
 }
 
+export interface AuditTaskGateSummary {
+	readonly gateId: string;
+	readonly taskId: string;
+	readonly stageId: string;
+	readonly stageRevision: number;
+	readonly action: "requested" | "approved" | "rejected" | "cancelled";
+	readonly status: "pending" | "approved" | "rejected" | "cancelled";
+	readonly revision: number;
+	readonly requestedAt: string;
+	readonly decidedAt?: string;
+	readonly runId?: string;
+	readonly actorId?: string;
+	readonly reasonCode?: string;
+}
+
 export type AuditRemoteOperationSummary = RemoteOperationReceipt;
 
 export interface AuditEventBase {
@@ -413,6 +440,11 @@ export type AuditEvent =
 			readonly type: "remote.operation";
 			readonly runId?: string;
 			readonly summary: AuditRemoteOperationSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "task.gate";
+			readonly runId?: string;
+			readonly summary: AuditTaskGateSummary;
 	  });
 
 export interface AuditWarning {
@@ -1416,6 +1448,25 @@ function safeExternalMapping(value: ExternalExecutionMapping): ExternalExecution
 	return mapping;
 }
 
+function safeTaskGateSummary(value: TaskGateTransition): AuditTaskGateSummary {
+	const gate = value.gate;
+	const summary = {
+		gateId: gate.gateId,
+		taskId: gate.taskId,
+		stageId: gate.stageId,
+		stageRevision: gate.stageRevision,
+		action: value.action,
+		status: gate.status,
+		revision: gate.revision,
+		requestedAt: gate.requestedAt,
+	} as DeepMutable<AuditTaskGateSummary>;
+	if (gate.decidedAt !== undefined) summary.decidedAt = gate.decidedAt;
+	if (gate.runId !== undefined) summary.runId = gate.runId;
+	if (gate.actorId !== undefined) summary.actorId = gate.actorId;
+	if (gate.reasonCode !== undefined) summary.reasonCode = gate.reasonCode;
+	return summary;
+}
+
 function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
 	const external = {
 		namespace: value.namespace,
@@ -1458,6 +1509,16 @@ interface RunState {
 		| undefined;
 }
 
+/** Append-order fold state for `task.gate` custom entries. */
+interface TaskGateAuditFold {
+	/** Current accepted record per Gate, in append order of the first accepted transition. */
+	readonly byGateId: Map<string, TaskGateRecord>;
+	/** Business uniqueness key (`sessionId\0taskId\0stageId\0stageRevision`) to gateId. */
+	readonly byBusinessKey: Map<string, string>;
+	/** Idempotency key (`commandType\0clientRequestId`) to the canonical payload of the accepted transition. */
+	readonly byIdempotency: Map<string, string>;
+}
+
 interface SourceCandidateBase {
 	readonly eventType: Exclude<
 		AuditEventType,
@@ -1480,7 +1541,8 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "sandbox.lifecycle"; readonly value: SandboxLifecycleLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "policy.violation"; readonly value: PolicyViolationLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
-	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt });
+	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
+	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -1490,7 +1552,8 @@ type Relation =
 	| { readonly kind: "policy"; readonly bindingId: string }
 	| { readonly kind: "context"; readonly runId?: string }
 	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string }
-	| { readonly kind: "remote-operation"; readonly runId?: string };
+	| { readonly kind: "remote-operation"; readonly runId?: string }
+	| { readonly kind: "task-gate"; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -1553,6 +1616,7 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "policy.violation") return "policy.violation";
 	if (customType === "external.mapping") return "external.mapping";
 	if (customType === "remote.operation") return "remote.operation";
+	if (customType === "task.gate") return "task.gate";
 	return undefined;
 }
 
@@ -1565,7 +1629,12 @@ function addMapSet(map: Map<string, Set<string>>, key: string, value: string): v
 function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): ReadonlySet<string> | undefined {
 	if (relation === undefined) return undefined;
 	if (relation.kind === "policy-binding") return new Set([relation.runId]);
-	if (relation.kind === "context" || relation.kind === "external" || relation.kind === "remote-operation") {
+	if (
+		relation.kind === "context" ||
+		relation.kind === "external" ||
+		relation.kind === "remote-operation" ||
+		relation.kind === "task-gate"
+	) {
 		return relation.runId === undefined ? undefined : new Set([relation.runId]);
 	}
 	const map =
@@ -1834,6 +1903,141 @@ function parseSourceCandidate(
 	candidates.push(candidate);
 }
 
+function taskGateBusinessKey(record: TaskGateRecord): string {
+	return `${record.sessionId}\u0000${record.taskId}\u0000${record.stageId}\u0000${record.stageRevision}`;
+}
+
+function taskGateIdempotencyKey(action: TaskGateAction, clientRequestId: string): string {
+	return `${taskGateCommandType(action)}\u0000${clientRequestId}`;
+}
+
+/** Canonical payload of a transition; mirrors the store's idempotency payload. */
+function taskGateTransitionPayload(action: TaskGateAction, gate: TaskGateRecord): string {
+	if (action === "requested") {
+		return JSON.stringify({
+			taskId: gate.taskId,
+			stageId: gate.stageId,
+			stageRevision: gate.stageRevision,
+			runId: gate.runId ?? null,
+		});
+	}
+	return JSON.stringify({
+		gateId: gate.gateId,
+		actorId: gate.actorId ?? null,
+		reasonCode: gate.reasonCode ?? null,
+	});
+}
+
+/** Two snapshots of the same Gate must agree on all immutable fields. */
+function sameTaskGateIdentity(left: TaskGateRecord, right: TaskGateRecord): boolean {
+	return (
+		left.gateId === right.gateId &&
+		left.sessionId === right.sessionId &&
+		left.taskId === right.taskId &&
+		left.stageId === right.stageId &&
+		left.stageRevision === right.stageRevision &&
+		left.requestedAt === right.requestedAt &&
+		(left.runId ?? undefined) === (right.runId ?? undefined)
+	);
+}
+
+/**
+ * Fold one `task.gate` custom entry in append order into a safe audit event.
+ * Entries that fail schema, identifier, session, revision, or transition
+ * rules are skipped with the existing warning semantics and never surface
+ * raw data. Gate warnings never carry a run association or uncertainty flag,
+ * so they cannot change any Run's replay status or completeness.
+ */
+function parseTaskGateFact(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	fold: TaskGateAuditFold,
+	internalWarnings: InternalWarning[],
+	candidates: SourceCandidate[],
+): void {
+	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.gate", taskGateSchemaVersion(entry.data), undefined, false),
+		);
+		return;
+	}
+	const version = taskGateSchemaVersion(entry.data);
+	if (version === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.gate", undefined, undefined, false));
+		return;
+	}
+	if (version !== TASK_GATE_SCHEMA_VERSION) {
+		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	if (!isTaskGateTransition(entry.data)) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	const transition = entry.data;
+	const gate = transition.gate;
+	if (gate.sessionId !== sessionId) {
+		internalWarnings.push(warning(sessionId, "orphan_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	const key = taskGateIdempotencyKey(transition.action, transition.clientRequestId);
+	const acceptedPayload = fold.byIdempotency.get(key);
+	if (acceptedPayload !== undefined) {
+		if (acceptedPayload !== taskGateTransitionPayload(transition.action, gate)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.gate", version, undefined, false));
+		}
+		return;
+	}
+	const accept = (): void => {
+		fold.byGateId.set(gate.gateId, gate);
+		fold.byBusinessKey.set(taskGateBusinessKey(gate), gate.gateId);
+		fold.byIdempotency.set(key, taskGateTransitionPayload(transition.action, gate));
+		candidates.push({
+			eventType: "task.gate",
+			entry,
+			recordedAt: entry.timestamp,
+			value: transition,
+			relation: { kind: "task-gate", runId: gate.runId },
+		});
+	};
+	if (transition.action === "requested") {
+		if (fold.byGateId.has(gate.gateId)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.gate", version, undefined, false));
+			return;
+		}
+		if (transition.previousRevision !== 0 || gate.revision !== 0 || gate.status !== "pending") {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.gate", version, undefined, false));
+			return;
+		}
+		const businessKeyValue = taskGateBusinessKey(gate);
+		const existingBusinessGateId = fold.byBusinessKey.get(businessKeyValue);
+		if (existingBusinessGateId !== undefined && existingBusinessGateId !== gate.gateId) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.gate", version, undefined, false));
+			return;
+		}
+		accept();
+		return;
+	}
+	const current = fold.byGateId.get(gate.gateId);
+	if (current === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	if (current.status !== "pending") {
+		internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	if (transition.previousRevision !== current.revision || gate.revision !== current.revision + 1) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	if (!sameTaskGateIdentity(current, gate)) {
+		internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.gate", version, undefined, false));
+		return;
+	}
+	accept();
+}
+
 function parseRunFact(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
@@ -2045,6 +2249,14 @@ function sourceEventForCandidate(
 			summary: candidate.value,
 		};
 	}
+	if (candidate.eventType === "task.gate") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeTaskGateSummary(candidate.value),
+		};
+	}
 	return {
 		...base,
 		type: candidate.eventType,
@@ -2093,6 +2305,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const candidates: SourceCandidate[] = [];
 	const states = new Map<string, RunState>();
 	const facts: RunFact[] = [];
+	const gateFold: TaskGateAuditFold = { byGateId: new Map(), byBusinessKey: new Map(), byIdempotency: new Map() };
 	const seenEntryIds = new Set<string>();
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
@@ -2112,6 +2325,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		}
 		seenEntryIds.add(entry.id);
 		if (entry.customType === "automation.run") parseRunFact(sessionId, entry, states, facts, internalWarnings);
+		else if (entry.customType === TASK_GATE_CUSTOM_TYPE)
+			parseTaskGateFact(sessionId, entry, gateFold, internalWarnings, candidates);
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
@@ -2296,7 +2511,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				? [...ids][0]
 				: candidate.relation?.kind === "context" ||
 						candidate.relation?.kind === "external" ||
-						candidate.relation?.kind === "remote-operation"
+						candidate.relation?.kind === "remote-operation" ||
+						candidate.relation?.kind === "task-gate"
 					? candidate.relation.runId
 					: undefined;
 		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);

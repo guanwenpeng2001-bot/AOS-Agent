@@ -35,6 +35,7 @@ import {
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError } from "../../core/execution-audit.ts";
 import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
+import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type {
 	AutomationError,
@@ -93,6 +94,7 @@ import type {
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
 	RpcCommand,
+	RpcTaskGateCommandType,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -208,6 +210,7 @@ export type {
 	RpcExternalMapCommand,
 	RpcRunCommandType,
 	RpcSessionState,
+	RpcTaskGateCommandType,
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
@@ -345,6 +348,7 @@ export class RpcHostController {
 		// Automation Host v1 state
 		let hostInitialized = false;
 		let coordinator: RunLifecycleCoordinator | undefined;
+		let taskGateStore: TaskGateStore | undefined;
 		let activeHandle: RunHandle | undefined;
 		/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
 		let activeReservation: RunReservation | undefined;
@@ -514,6 +518,53 @@ export class RpcHostController {
 				"Automation Host is not initialized. Send initialize with protocolVersion 1 first.",
 				false,
 			);
+
+		const taskGateErrorMessage = (code: TaskGateError["code"]): string => {
+			switch (code) {
+				case "task_gate_invalid":
+					return "The task gate request is invalid.";
+				case "task_gate_not_found":
+					return "The task gate was not found in the current session.";
+				case "task_gate_conflict":
+					return "The task gate business key is already decided or in use.";
+				case "task_gate_idempotency_conflict":
+					return "The task gate clientRequestId was already used with a different payload.";
+				case "task_gate_not_pending":
+					return "The task gate is not pending.";
+				case "task_gate_stage_revision_mismatch":
+					return "The task gate stage revision is stale.";
+				case "task_gate_persistence_failed":
+					return "The task gate transition could not be persisted.";
+			}
+		};
+
+		/** Map a TaskGateError to a stable, public-safe Automation Error. */
+		const taskGateCommandError = (err: unknown, fallback: TaskGateError["code"]): AutomationError =>
+			createAutomationError(
+				err instanceof TaskGateError ? err.code : fallback,
+				taskGateErrorMessage(err instanceof TaskGateError ? err.code : fallback),
+				false,
+			);
+
+		/**
+		 * Only the documented keys may appear in a task.gate command. Free text,
+		 * tool payloads, paths, and credentials are rejected before they reach
+		 * the store.
+		 */
+		const TASK_GATE_COMMAND_KEYS: Readonly<Record<RpcTaskGateCommandType, ReadonlySet<string>>> = {
+			"task.gate.request": new Set(["id", "type", "taskId", "stageId", "stageRevision", "runId", "clientRequestId"]),
+			"task.gate.get": new Set(["id", "type", "gateId"]),
+			"task.gate.list": new Set(["id", "type", "taskId", "stageId", "status", "limit"]),
+			"task.gate.approve": new Set(["id", "type", "gateId", "actorId", "clientRequestId"]),
+			"task.gate.reject": new Set(["id", "type", "gateId", "actorId", "reasonCode", "clientRequestId"]),
+			"task.gate.cancel": new Set(["id", "type", "gateId", "actorId", "clientRequestId"]),
+		};
+
+		const isTaskGateCommandShapeValid = (command: RpcCommand): boolean => {
+			const allowed = TASK_GATE_COMMAND_KEYS[command.type as RpcTaskGateCommandType];
+			if (allowed === undefined) return false;
+			return Object.keys(command).every((key) => allowed.has(key));
+		};
 
 		const slashRunInputError = (
 			id: string | undefined,
@@ -1850,6 +1901,7 @@ export class RpcHostController {
 			// automation.run custom entries so run.get and run.resume work after a switch.
 			if (hostInitialized) {
 				coordinator = createRunLifecycleCoordinator(session.sessionManager);
+				taskGateStore = createTaskGateStore(session.sessionManager);
 				activeHandle = undefined;
 				settledRunIds.clear();
 				runPromptPromises.clear();
@@ -1974,6 +2026,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						hostInitialized = true;
 						coordinator = createRunLifecycleCoordinator(session.sessionManager);
+						taskGateStore = createTaskGateStore(session.sessionManager);
 					}
 					const initializeData: InitializeData = {
 						host: "automation-host",
@@ -1981,6 +2034,14 @@ export class RpcHostController {
 						sessionId: session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
 						auditCommands: ["audit.query", "audit.replay", "external.map"],
+						taskGateCommands: [
+							"task.gate.request",
+							"task.gate.get",
+							"task.gate.list",
+							"task.gate.approve",
+							"task.gate.reject",
+							"task.gate.cancel",
+						],
 					};
 					const initializeResponse: RpcAutomationResponse = {
 						id,
@@ -2057,6 +2118,118 @@ export class RpcHostController {
 						return { id, type: "response", command: "external.map", success: true, data };
 					} catch (err) {
 						return automationError(id, "external.map", auditCommandError(err, "audit_persistence_failed"));
+					}
+				}
+
+				case "task.gate.request": {
+					if (!hostInitialized || taskGateStore === undefined) {
+						return automationError(id, "task.gate.request", hostNotInitializedError());
+					}
+					if (!isTaskGateCommandShapeValid(command)) {
+						return automationError(id, "task.gate.request", taskGateCommandError(undefined, "task_gate_invalid"));
+					}
+					try {
+						const result = taskGateStore.request({
+							taskId: command.taskId,
+							stageId: command.stageId,
+							stageRevision: command.stageRevision,
+							clientRequestId: command.clientRequestId,
+							...(command.runId === undefined ? {} : { runId: command.runId }),
+						});
+						return {
+							id,
+							type: "response",
+							command: "task.gate.request",
+							success: true,
+							data: { gate: result.gate, idempotent: result.idempotent },
+						};
+					} catch (err) {
+						return automationError(id, "task.gate.request", taskGateCommandError(err, "task_gate_invalid"));
+					}
+				}
+
+				case "task.gate.get": {
+					if (!hostInitialized || taskGateStore === undefined) {
+						return automationError(id, "task.gate.get", hostNotInitializedError());
+					}
+					if (!isTaskGateCommandShapeValid(command)) {
+						return automationError(id, "task.gate.get", taskGateCommandError(undefined, "task_gate_invalid"));
+					}
+					try {
+						const gate = taskGateStore.get(command.gateId);
+						if (gate === undefined) {
+							return automationError(id, "task.gate.get", taskGateCommandError(undefined, "task_gate_not_found"));
+						}
+						return { id, type: "response", command: "task.gate.get", success: true, data: { gate } };
+					} catch (err) {
+						return automationError(id, "task.gate.get", taskGateCommandError(err, "task_gate_invalid"));
+					}
+				}
+
+				case "task.gate.list": {
+					if (!hostInitialized || taskGateStore === undefined) {
+						return automationError(id, "task.gate.list", hostNotInitializedError());
+					}
+					if (!isTaskGateCommandShapeValid(command)) {
+						return automationError(id, "task.gate.list", taskGateCommandError(undefined, "task_gate_invalid"));
+					}
+					try {
+						const result = taskGateStore.list({
+							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
+							...(command.stageId === undefined ? {} : { stageId: command.stageId }),
+							...(command.status === undefined ? {} : { status: command.status }),
+							...(command.limit === undefined ? {} : { limit: command.limit }),
+						});
+						return {
+							id,
+							type: "response",
+							command: "task.gate.list",
+							success: true,
+							data: { gates: [...result.gates], truncated: result.truncated },
+						};
+					} catch (err) {
+						return automationError(id, "task.gate.list", taskGateCommandError(err, "task_gate_invalid"));
+					}
+				}
+
+				case "task.gate.approve":
+				case "task.gate.reject":
+				case "task.gate.cancel": {
+					if (!hostInitialized || taskGateStore === undefined) {
+						return automationError(id, command.type, hostNotInitializedError());
+					}
+					if (!isTaskGateCommandShapeValid(command)) {
+						return automationError(id, command.type, taskGateCommandError(undefined, "task_gate_invalid"));
+					}
+					try {
+						const decision: {
+							gateId: string;
+							clientRequestId: string;
+							actorId?: string;
+							reasonCode?: string;
+						} = {
+							gateId: command.gateId,
+							clientRequestId: command.clientRequestId,
+							...(command.actorId === undefined ? {} : { actorId: command.actorId }),
+							...(command.type === "task.gate.reject" && command.reasonCode !== undefined
+								? { reasonCode: command.reasonCode }
+								: {}),
+						};
+						const result =
+							command.type === "task.gate.approve"
+								? taskGateStore.approve(decision)
+								: command.type === "task.gate.reject"
+									? taskGateStore.reject(decision)
+									: taskGateStore.cancel(decision);
+						return {
+							id,
+							type: "response",
+							command: command.type,
+							success: true,
+							data: { gate: result.gate, idempotent: result.idempotent },
+						};
+					} catch (err) {
+						return automationError(id, command.type, taskGateCommandError(err, "task_gate_invalid"));
 					}
 				}
 

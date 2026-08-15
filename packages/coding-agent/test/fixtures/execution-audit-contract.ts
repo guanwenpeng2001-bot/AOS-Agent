@@ -21,13 +21,14 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"sandbox.lifecycle",
 	"policy.violation",
 	"external.mapping",
+	"task.gate",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 
 /** `context.memory` is intentionally not an audit source because it contains user text. */
 export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
 
-export const AUDIT_EVENT_TYPES = [
+	export const AUDIT_EVENT_TYPES = [
 	"run.accepted",
 	"run.started",
 	"run.completed",
@@ -44,6 +45,7 @@ export const AUDIT_EVENT_TYPES = [
 	"sandbox.lifecycle",
 	"policy.violation",
 	"external.mapping",
+	"task.gate",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -320,6 +322,21 @@ export interface AuditPolicyViolationSummary {
 	readonly requestId?: string;
 }
 
+export interface AuditTaskGateSummary {
+	readonly gateId: string;
+	readonly taskId: string;
+	readonly stageId: string;
+	readonly stageRevision: number;
+	readonly action: "requested" | "approved" | "rejected" | "cancelled";
+	readonly status: "pending" | "approved" | "rejected" | "cancelled";
+	readonly revision: number;
+	readonly requestedAt: string;
+	readonly decidedAt?: string;
+	readonly runId?: string;
+	readonly actorId?: string;
+	readonly reasonCode?: string;
+}
+
 export interface AuditEventBase {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
@@ -345,6 +362,7 @@ export type AuditEvent =
 	| (AuditEventBase & { readonly type: "policy.approval"; readonly runId?: string; readonly summary: AuditPolicyApprovalSummary })
 	| (AuditEventBase & { readonly type: "sandbox.lifecycle"; readonly runId?: string; readonly summary: AuditSandboxLifecycleSummary })
 	| (AuditEventBase & { readonly type: "policy.violation"; readonly runId?: string; readonly summary: AuditPolicyViolationSummary })
+	| (AuditEventBase & { readonly type: "task.gate"; readonly runId?: string; readonly summary: AuditTaskGateSummary })
 	| (AuditEventBase & { readonly type: "external.mapping"; readonly runId?: string; readonly summary: ExternalExecutionMapping });
 
 export interface AuditWarning {
@@ -457,6 +475,20 @@ export const AUDIT_PUBLIC_SUMMARY_KEYS = {
 	policyApprovalScope: ["resource", "workspaceScopes", "environmentCount", "destinationCount", "credentialCount"],
 	sandboxLifecycle: ["bindingId", "status", "timestamp", "providerId", "capabilities", "reasonCode"],
 	policyViolation: ["bindingId", "timestamp", "reasonCode", "resource", "requestId"],
+	taskGate: [
+		"gateId",
+		"taskId",
+		"stageId",
+		"stageRevision",
+		"status",
+		"action",
+		"revision",
+		"requestedAt",
+		"decidedAt",
+		"runId",
+		"actorId",
+		"reasonCode",
+	],
 	externalMapping: EXTERNAL_MAPPING_KEYS,
 } as const;
 
@@ -499,6 +531,7 @@ export const AUDIT_FORBIDDEN_KEYS = [
 	"serverInstructions",
 	"agentSelfReport",
 	"details",
+	"clientRequestId",
 ] as const;
 
 export const AUDIT_NO_SIDE_EFFECT_OPERATIONS = [
@@ -518,6 +551,7 @@ export const AUDIT_NO_SIDE_EFFECT_OPERATIONS = [
 	"SessionManager.appendCustomEntry",
 	"Session switch or fork",
 	"Context memory write",
+	"TaskGateStore mutation (task.gate.request/approve/reject/cancel)",
 ] as const;
 
 export interface AuditContractCase {
@@ -535,6 +569,11 @@ export const AUDIT_CONTRACT_CASES = [
 	{ id: "unknown-source-is-warning-only-for-query", expectedWarning: "unknown_source", sideEffects: [] },
 	{ id: "missing-run-is-an-error", expectedError: "audit_run_not_found", sideEffects: [] },
 	{ id: "bad-cursor-is-an-error", expectedError: "audit_cursor_invalid", sideEffects: [] },
+	{ id: "task-gate-events-are-safe-correlation-facts", sideEffects: [] },
+	{ id: "task-gate-with-runid-is-non-terminal-correlation", sideEffects: [] },
+	{ id: "task-gate-without-runid-is-not-guessed-into-a-run", sideEffects: [] },
+	{ id: "malformed-task-gate-is-warning-only", expectedWarning: "malformed_source", sideEffects: [] },
+	{ id: "session-mismatched-task-gate-is-orphan-warning", expectedWarning: "orphan_source", sideEffects: [] },
 	{ id: "mapping-conflict-is-an-error", expectedError: "external_mapping_conflict", sideEffects: [] },
 	{ id: "contradictory-mapping-is-a-warning", expectedWarning: "mapping_conflict", sideEffects: [] },
 	{ id: "mapping-persistence-failure-is-an-error", expectedError: "audit_persistence_failed", sideEffects: [] },

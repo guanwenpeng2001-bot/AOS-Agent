@@ -28,7 +28,10 @@ The existing `get_entries`, `get_execution_policy`, `policy.approve`,
 and replay are read-only. Within the audit commands, `external.map` is the
 only operation that may append a Session custom entry; a later additive
 `run.start`/`run.resume` integration may append its validated mapping as part
-of Run acceptance.
+of Run acceptance. Task Gate transitions append their own `task.gate` custom
+entries through the Automation Host control plane
+(`task.gate.request`/`approve`/`reject`/`cancel`); the audit adapter only
+reads them and never mutates Gate state.
 
 The adapter folds existing Session custom entries into audit events. It does
 not create a second event ledger.
@@ -48,6 +51,7 @@ not create a second event ledger.
 | `policy.violation` | `policy.violation` | `bindingId` through policy binding |
 | `external.mapping` | `external.mapping` | mapping `aosSessionId` and optional `aosRunId` |
 | `remote.operation` | `remote.operation` | receipt `sessionId` and optional `runId` |
+| `task.gate` | `task.gate` | `gateId`; optional `runId` for direct Run correlation |
 
 `context.memory` is deliberately not an audit source. It contains explicit
 user text and must not be made visible through an audit summary. Unknown
@@ -65,6 +69,7 @@ The source files that establish these facts are:
   for policy and Sandbox facts;
 - `src/core/sandbox.ts` for the side-effecting provider boundary;
 - `src/core/session-manager.ts` for Session entry identity and file scope;
+- `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
@@ -90,7 +95,8 @@ type AuditEventType =
   | "sandbox.lifecycle"
   | "policy.violation"
   | "external.mapping"
-  | "remote.operation";
+  | "remote.operation"
+  | "task.gate";
 ```
 
 Every event has this base shape:
@@ -126,7 +132,8 @@ type AuditEvent =
   | (AuditEventBase & { type: "sandbox.lifecycle"; runId?: string; summary: AuditSandboxLifecycleSummary })
   | (AuditEventBase & { type: "policy.violation"; runId?: string; summary: AuditPolicyViolationSummary })
   | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping })
-  | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt });
+  | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt })
+  | (AuditEventBase & { type: "task.gate"; runId?: string; summary: AuditTaskGateSummary });
 ```
 
 `sourceEntryId` is the outer SessionEntry `id`, not an inner ledger sequence
@@ -287,6 +294,40 @@ an orchestrator can join the operation to the Run's ModelBroker, Capability,
 Policy, and Sandbox facts. The optional Session ledger sink writes this fact
 through the existing append-only Session custom-entry API; it does not create
 a second execution ledger.
+
+### Task Gate summary
+
+`task.gate` events are produced from `task.gate` Session custom entries. Each
+legal transition — `requested`, `approved`, `rejected`, or `cancelled` —
+produces exactly one event; the `eventId` is the outer Session entry
+identity, never a random ID or an in-memory sequence.
+
+`AuditTaskGateSummary` permits only:
+
+```text
+gateId, taskId, stageId, stageRevision, action, status, revision,
+requestedAt, decidedAt, runId, actorId, reasonCode
+```
+
+`action` is `requested`/`approved`/`rejected`/`cancelled` and `status` is
+`pending`/`approved`/`rejected`/`cancelled`. `decidedAt` and `reasonCode` are
+present only when defined by the transition. `runId` is the optional direct
+correlation to the stage's Run. `clientRequestId` participates in the
+internal idempotency fold but never enters the public summary.
+
+Task Gate events never contain the task body, stage description, prompt,
+diff, command, arguments, working directory or path, file content,
+stdout/stderr, environment or header values, credentials, model output,
+provider errors, approval free text, or raw custom-entry `data`. `actorId` is
+an operator label, not an authentication claim.
+
+The fold applies the same malformed-entry rules as every other source: an
+entry whose `sessionId` does not match the Session, an unsupported schema, an
+unsafe identifier, a non-contiguous `revision`, an illegal status jump, or a
+second terminal for the same `gateId` is rejected with the existing warnings
+(`malformed_source`, `unsupported_schema`, `duplicate_source`, or
+`orphan_source`) and never enters public Gate state or audit events. Replay
+and query never backfill a missing transition and never fabricate a decision.
 
 ### Forbidden keys
 
@@ -506,6 +547,19 @@ Warning semantics are:
 - `ambiguous_run_association`: a binding or source could map to multiple Runs;
 - `mapping_conflict`: append-only mapping facts contradict each other.
 
+Task Gate replay association is by direct `runId` only:
+
+- A `task.gate` event whose summary `runId` equals the replayed Run's `runId`
+  is included as a control-plane correlation event.
+- A `task.gate` event without `runId` is never associated to a Run by
+  `taskId` or by any other guess.
+- Gate events are correlation facts only. They do not participate in Run
+  terminal status selection and cannot change a replay's `complete`,
+  `interrupted`, or `incomplete` determination, which remains based on the
+  Run and other existing sources.
+- Replaying or querying a Gate never approves, rejects, or cancels it, and
+  never appends a transition.
+
 Warnings are safe records with only `code` and optional safe
 `sessionId`/`sourceEntryId`/`eventType`/`schemaVersion` fields. They contain no
 free-form detail.
@@ -554,11 +608,15 @@ not call:
 - Policy authorization, approval, rejection, or profile mutation;
 - `SandboxProvider.prepare`, `execute`, or `dispose`;
 - `SessionManager.appendCustomEntry`, Session switching, Session forking, or
-  context-memory writes.
+  context-memory writes;
+- TaskGateStore mutations (`task.gate.request`, `task.gate.approve`,
+  `task.gate.reject`, `task.gate.cancel`).
 
 Replay of a historical `policy.approval` is an observation only. It never
 reopens or resolves the request. Reading a Sandbox lifecycle fact never
-prepares, executes, or disposes a Sandbox.
+prepares, executes, or disposes a Sandbox. Replay of a historical `task.gate`
+transition is an observation only; it never resolves, reopens, or rewrites
+the Gate.
 
 `external.map` is limited to validation, conflict checking, and appending the
 exact schema-versioned mapping entry. It does not execute a Run, model,
@@ -581,6 +639,10 @@ The reusable fixture freezes these cases:
 | Invalid or mismatched cursor | `audit_cursor_invalid` |
 | Conflicting external mapping request | `external_mapping_conflict` |
 | Contradictory append-only mappings | `mapping_conflict` warning; no winner selected |
+| `task.gate` entries | safe `task.gate` events with allowlisted summaries |
+| Gate with matching `runId` in Run replay | included as non-terminal correlation event |
+| Gate without `runId` | never guessed into any Run |
+| Malformed `task.gate` entry | warning only; never in public state or audit events |
 | Mapping persistence failure | `audit_persistence_failed`; no success acknowledgement |
 | Query or replay | no model, tool, MCP, Extension, Policy, Sandbox, Session, or Run side effect |
 

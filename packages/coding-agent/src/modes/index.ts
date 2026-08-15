@@ -88,6 +88,7 @@ export type {
 	RpcResponse,
 	RpcRunCommandType,
 	RpcSessionState,
+	RpcTaskGateCommandType,
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
@@ -97,4 +98,10 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	TaskGateErrorCode,
+	TaskGateGetData,
+	TaskGateListData,
+	TaskGateMutationData,
+	TaskGateRecord,
+	TaskGateStatus,
 } from "./rpc/rpc-types.ts";

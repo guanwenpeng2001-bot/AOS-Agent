@@ -717,6 +717,7 @@ export type {
 	RpcTransportSink,
 	TcpRpcAddress,
 	RpcRunCommandType,
+	RpcTaskGateCommandType,
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
@@ -726,6 +727,12 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	TaskGateErrorCode,
+	TaskGateGetData,
+	TaskGateListData,
+	TaskGateMutationData,
+	TaskGateRecord,
+	TaskGateStatus,
 } from "./modes/index.ts";
 // Run modes for programmatic SDK usage
 export {
