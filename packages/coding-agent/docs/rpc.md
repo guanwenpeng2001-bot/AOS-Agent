@@ -2121,7 +2121,7 @@ Failures:
 - `task_gate_idempotency_conflict`: same `clientRequestId`, different payload
 - `task_gate_persistence_failed`: the transition could not be durably appended
 
-No decision command emits a Run event or touches the Run ledger. `approve` only marks the stage eligible; the caller must still start the next Run through `run.start`/`run.resume` and satisfy normal Policy preflight.
+No decision command emits a Run event or touches the Run ledger. `approve` only marks the stage eligible; the caller must still start the next Run through `run.start`/`run.resume` and satisfy normal Policy preflight. Approving a Gate never resolves a pending Policy `ask` (`get_execution_policy.pendingApprovals` stays pending and `policy.approve` is still required). Rejecting or cancelling a Gate around an existing Run never emits `run.failed` / `run.cancelled` and never rewrites that Run's receipt.
 
 #### Idempotency and concurrency
 

@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { appendPolicyApprovalEntry, POLICY_APPROVAL_CUSTOM_TYPE } from "../src/core/execution-policy-ledger.ts";
+import type { PolicyApprovalRequest } from "../src/core/execution-policy.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	TASK_GATE_CUSTOM_TYPE,
@@ -683,11 +685,39 @@ describe("task gate store", () => {
 
 	it("keeps gate state independent from run and policy ledgers", () => {
 		const session = makeSession();
+		const pendingAsk: PolicyApprovalRequest = {
+			id: "policy-request:pending-1",
+			bindingId: "policy-binding-1",
+			resource: "process.spawn",
+			source: "user_bash",
+			scope: { resource: "process.spawn" },
+			reasonCode: "policy_approval_required",
+			reason: "Policy approval is required before this operation.",
+			createdAt: NOW,
+		};
+		appendPolicyApprovalEntry(session, pendingAsk);
+		const policyBefore = session
+			.getEntries()
+			.filter((entry) => entry.type === "custom" && entry.customType === POLICY_APPROVAL_CUSTOM_TYPE)
+			.map((entry) => JSON.stringify((entry as { data?: unknown }).data));
+
 		const store = makeStore(session);
 		store.request(request());
 		store.approve(decide("gate_001", "app-1"));
 
-		expect(session.getEntries().every((entry) => entry.type === "custom" && entry.customType === TASK_GATE_CUSTOM_TYPE)).toBe(true);
-		expect(session.getEntries()).toHaveLength(2);
+		const policyAfter = session
+			.getEntries()
+			.filter((entry) => entry.type === "custom" && entry.customType === POLICY_APPROVAL_CUSTOM_TYPE)
+			.map((entry) => JSON.stringify((entry as { data?: unknown }).data));
+		expect(policyAfter).toEqual(policyBefore);
+		expect(policyAfter).toHaveLength(1);
+		expect(policyAfter[0]).toContain("policy-request:pending-1");
+		expect(policyAfter[0]).not.toContain("\"outcome\"");
+
+		const customTypes = session
+			.getEntries()
+			.filter((entry) => entry.type === "custom")
+			.map((entry) => entry.customType);
+		expect(customTypes).toEqual([POLICY_APPROVAL_CUSTOM_TYPE, TASK_GATE_CUSTOM_TYPE, TASK_GATE_CUSTOM_TYPE]);
 	});
 });

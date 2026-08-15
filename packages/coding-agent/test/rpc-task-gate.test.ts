@@ -9,10 +9,13 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import { appendPolicyApprovalEntry, POLICY_APPROVAL_CUSTOM_TYPE } from "../src/core/execution-policy-ledger.ts";
+import type { PolicyApprovalRequest } from "../src/core/execution-policy.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import type {
+	GetExecutionPolicyData,
 	RpcAutomationResponse,
 	RpcCommand,
 	RpcResponse,
@@ -270,6 +273,32 @@ function expectAutomationError(
 	expect(record.error.retryable).toBe(false);
 	expect(typeof record.error.message).toBe("string");
 	expect(record.error.message.length).toBeGreaterThan(0);
+}
+
+const PENDING_POLICY_ASK: PolicyApprovalRequest = {
+	id: "policy-request:pending-ask",
+	bindingId: "policy-binding-1",
+	resource: "process.spawn",
+	source: "user_bash",
+	scope: { resource: "process.spawn" },
+	reasonCode: "policy_approval_required",
+	reason: "Policy approval is required before this operation.",
+	createdAt: "2026-08-15T12:00:00.000Z",
+};
+
+function seedPendingPolicyAsk(session: AgentSession, approval: PolicyApprovalRequest = PENDING_POLICY_ASK): void {
+	appendPolicyApprovalEntry(session.sessionManager, approval);
+	const internals = session as unknown as {
+		_pendingExecutionPolicyApprovals: Map<string, PolicyApprovalRequest>;
+	};
+	internals._pendingExecutionPolicyApprovals.set(approval.id, approval);
+}
+
+function policyApprovalEntries(session: AgentSession): unknown[] {
+	return session.sessionManager
+		.getEntries()
+		.filter((entry) => entry.type === "custom" && entry.customType === POLICY_APPROVAL_CUSTOM_TYPE)
+		.map((entry) => (entry as { data?: unknown }).data);
 }
 
 function expectGateResponse(
@@ -988,7 +1017,7 @@ describe("task gate automation host rpc", () => {
 		}
 	});
 
-	it("does not start, cancel, or reclassify a Run, and does not satisfy Policy ask", async () => {
+	it("does not start a Run or emit run events when no Run exists", async () => {
 		const { controller, runtimeHost, records, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 1,
@@ -1067,6 +1096,157 @@ describe("task gate automation host rpc", () => {
 				.map((entry) => (entry as { customType?: string }).customType);
 			expect(customTypes).toEqual(["task.gate", "task.gate", "task.gate", "task.gate", "task.gate", "task.gate"]);
 			expect(customTypes.some((type) => type?.startsWith("policy.") || type?.startsWith("automation.run"))).toBe(false);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("does not satisfy or change a pending Policy ask", async () => {
+		const { controller, runtimeHost, cleanup } = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 1,
+		});
+		try {
+			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
+			seedPendingPolicyAsk(runtimeHost.session);
+			const approveSpy = vi.spyOn(runtimeHost.session, "approveExecutionPolicyRequest");
+			const rejectSpy = vi.spyOn(runtimeHost.session, "rejectExecutionPolicyRequest");
+
+			const before = await dispatchCommand(controller, { id: "pol-1", type: "get_execution_policy" });
+			expect(before).toMatchObject({ type: "response", command: "get_execution_policy", success: true });
+			const beforeData = (before as { data: GetExecutionPolicyData }).data;
+			expect(beforeData.pendingApprovals.map((approval) => approval.id)).toEqual([PENDING_POLICY_ASK.id]);
+			const policyBefore = JSON.stringify(policyApprovalEntries(runtimeHost.session));
+
+			const request = await dispatchCommand(controller, {
+				id: "req-1",
+				type: "task.gate.request",
+				taskId: "task_42",
+				stageId: "stage_review",
+				stageRevision: 3,
+				clientRequestId: "gate-request-001",
+			});
+			const gateId = expectGateResponse(request, "task.gate.request").gate.gateId;
+			const approve = await dispatchCommand(controller, {
+				id: "app-1",
+				type: "task.gate.approve",
+				gateId,
+				actorId: "operator_7",
+				clientRequestId: "gate-approve-001",
+			});
+			expect(expectGateResponse(approve, "task.gate.approve").gate.status).toBe("approved");
+
+			const after = await dispatchCommand(controller, { id: "pol-2", type: "get_execution_policy" });
+			const afterData = (after as { data: GetExecutionPolicyData }).data;
+			expect(afterData.pendingApprovals.map((approval) => approval.id)).toEqual([PENDING_POLICY_ASK.id]);
+			expect(afterData.pendingApprovals[0]?.reasonCode).toBe("policy_approval_required");
+			expect(JSON.stringify(policyApprovalEntries(runtimeHost.session))).toBe(policyBefore);
+			expect(approveSpy).not.toHaveBeenCalled();
+			expect(rejectSpy).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("does not change an existing Run receipt when a Gate is approved, rejected, or cancelled", async () => {
+		const { controller, records, cleanup } = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 40,
+		});
+		try {
+			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
+
+			const start = dispatchCommand(controller, { id: "run-1", type: "run.start", message: "hello" });
+			await vi.waitFor(() => expect(records.some((record) => record.type === "run.started")).toBe(true));
+			const started = records.find((record) => record.type === "run.started") as { runId?: string };
+			const runId = String(started.runId ?? "");
+			expect(runId).not.toBe("");
+
+			const during = await dispatchCommand(controller, {
+				id: "req-live",
+				type: "task.gate.request",
+				taskId: "task_live",
+				stageId: "stage_review",
+				stageRevision: 1,
+				runId,
+				clientRequestId: "gate-live-001",
+			});
+			const liveGateId = expectGateResponse(during, "task.gate.request").gate.gateId;
+			const rejectLive = await dispatchCommand(controller, {
+				id: "rj-live",
+				type: "task.gate.reject",
+				gateId: liveGateId,
+				reasonCode: "quality_check_failed",
+				clientRequestId: "gate-live-reject",
+			});
+			expect(expectGateResponse(rejectLive, "task.gate.reject").gate.status).toBe("rejected");
+
+			await start;
+			await vi.waitFor(() =>
+				expect(records.some((record) => record.type === "run.completed" || record.type === "run.failed")).toBe(
+					true,
+				),
+			);
+
+			const afterComplete = await dispatchCommand(controller, { id: "get-run-1", type: "run.get", runId });
+			expect(afterComplete).toMatchObject({
+				type: "response",
+				command: "run.get",
+				success: true,
+				data: { run: { status: "completed" }, receipt: { status: "completed", runId } },
+			});
+			const receiptBefore = JSON.stringify((afterComplete as { data: { receipt: unknown } }).data.receipt);
+
+			const request = await dispatchCommand(controller, {
+				id: "req-done",
+				type: "task.gate.request",
+				taskId: "task_done",
+				stageId: "stage_review",
+				stageRevision: 1,
+				runId,
+				clientRequestId: "gate-done-001",
+			});
+			const gateId = expectGateResponse(request, "task.gate.request").gate.gateId;
+			expect(expectGateResponse(
+				await dispatchCommand(controller, {
+					id: "app-done",
+					type: "task.gate.approve",
+					gateId,
+					clientRequestId: "gate-done-approve",
+				}),
+				"task.gate.approve",
+			).gate.status).toBe("approved");
+
+			const cancelRequest = await dispatchCommand(controller, {
+				id: "req-cancel",
+				type: "task.gate.request",
+				taskId: "task_cancel",
+				stageId: "stage_review",
+				stageRevision: 1,
+				clientRequestId: "gate-cancel-001",
+			});
+			const cancelGateId = expectGateResponse(cancelRequest, "task.gate.request").gate.gateId;
+			expect(expectGateResponse(
+				await dispatchCommand(controller, {
+					id: "cn-done",
+					type: "task.gate.cancel",
+					gateId: cancelGateId,
+					clientRequestId: "gate-done-cancel",
+				}),
+				"task.gate.cancel",
+			).gate.status).toBe("cancelled");
+
+			const afterGates = await dispatchCommand(controller, { id: "get-run-2", type: "run.get", runId });
+			expect(afterGates).toMatchObject({
+				type: "response",
+				command: "run.get",
+				success: true,
+				data: { run: { status: "completed" }, receipt: { status: "completed", runId } },
+			});
+			expect(JSON.stringify((afterGates as { data: { receipt: unknown } }).data.receipt)).toBe(receiptBefore);
+			expect(records.filter((record) => record.type === "run.started")).toHaveLength(1);
+			expect(records.filter((record) => record.type === "run.completed")).toHaveLength(1);
+			expect(records.some((record) => record.type === "run.failed" || record.type === "run.cancelled")).toBe(false);
 		} finally {
 			await cleanup();
 		}
