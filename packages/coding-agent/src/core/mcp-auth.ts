@@ -782,9 +782,12 @@ export class MCPAuthSession {
 		if (params.state !== expectedState) {
 			throw new MCPAuthError("mcp_auth_state_mismatch", this.serverId);
 		}
+		if (code.trim().length === 0) {
+			throw new MCPAuthError("mcp_auth_invalid", this.serverId);
+		}
 		if (
 			params.redirectUri !== undefined &&
-			canonicalUrlString(params.redirectUri) !== canonicalUrlString(this.options.redirectUrl)
+			!this.redirectMatches(params.redirectUri)
 		) {
 			throw new MCPAuthError("mcp_auth_state_mismatch", this.serverId);
 		}
@@ -1107,6 +1110,14 @@ export class MCPAuthSession {
 		if (this.tokens !== undefined) {
 			return this.tokens;
 		}
+		// A fresh session has no issuer/resource binding until protected-resource
+		// discovery has completed. Hydrate only after establishing that binding;
+		// otherwise a direct getAccessToken/refresh call silently misses the
+		// persisted record.
+		if (this.discovery === undefined) {
+			await this.ensureDiscovery();
+		}
+		this.resolveCanonicalResource();
 		const binding = this.binding();
 		if (binding === undefined || this.store === undefined) {
 			return undefined;
@@ -1157,6 +1168,7 @@ export class MCPAuthSession {
 
 	/** SDK `invalidateCredentials`: clears the requested scope, memory first. */
 	async invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): Promise<void> {
+		const binding = scope === "all" || scope === "tokens" ? this.binding() : undefined;
 		switch (scope) {
 			case "all":
 				this.tokens = undefined;
@@ -1182,10 +1194,17 @@ export class MCPAuthSession {
 				break;
 		}
 		if (scope === "all" || scope === "tokens") {
-			const binding = this.binding();
 			if (binding !== undefined) {
 				await this.store?.delete(binding).catch(() => undefined);
 			}
+		}
+	}
+
+	private redirectMatches(redirectUri: string): boolean {
+		try {
+			return canonicalUrlString(redirectUri) === canonicalUrlString(this.options.redirectUrl);
+		} catch {
+			return false;
 		}
 	}
 

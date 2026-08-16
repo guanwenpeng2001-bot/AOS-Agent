@@ -1065,6 +1065,32 @@ describe("credential store injection", () => {
 		expect(fake.tokenRequests.filter((entry) => entry.grant === "refresh_token")).toHaveLength(0);
 	});
 
+	it("hydrates a persisted token for direct access-token reads after discovery", async () => {
+		const fake = new FakeAuthServer();
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		await runInteractiveFlow(provider, ctx, flowOptions(fake), makeInteraction());
+
+		const provider2 = new MCPAuthProvider({ store });
+		const token = await provider2.getAccessToken(ctx, flowOptions(fake));
+		expect(token).toBe("at-1");
+		expect(store.reads).toBeGreaterThan(1);
+	});
+
+	it("deletes the persisted record when SDK token invalidation clears credentials", async () => {
+		const fake = new FakeAuthServer();
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		const options = flowOptions(fake);
+		await runInteractiveFlow(provider, ctx, options, makeInteraction());
+		const session = provider.session(ctx, options);
+
+		await session.invalidateCredentials("all");
+		expect(store.records.size).toBe(0);
+	});
+
 	it("clears the record on logout and cancels a pending flow", async () => {
 		const fake = new FakeAuthServer();
 		const store = new FakeAuthStore();
