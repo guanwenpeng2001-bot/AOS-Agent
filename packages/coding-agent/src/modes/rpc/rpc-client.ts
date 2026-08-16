@@ -47,7 +47,14 @@ import type {
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
+	McpAuthStartData,
+	MCPGetPromptResult,
+	MCPPageResult,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceView,
 	RpcAutomationResponse,
+	RpcMcpAttachmentReceipt,
 	RpcCommand,
 	RpcResponse,
 	RpcSessionState,
@@ -76,6 +83,9 @@ type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 const DEFAULT_RPC_CLIENT_CONNECT_TIMEOUT_MS = 10_000;
 const MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS = 2_147_483_647;
+
+/** Default wait for one mcp.auth.start flow (discovery + user interaction). */
+const DEFAULT_MCP_AUTH_TIMEOUT_MS = 300_000;
 
 /** Explicit TCP connection settings for an RpcClient. */
 export interface RpcClientTcpOptions {
@@ -844,6 +854,142 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	// =========================================================================
+	// MCP public surface (resources/prompts/auth)
+	//
+	// All commands forward to the Session's governed MCP methods: list/read/get
+	// never start a Run or a model, and attach is the only explicit path that
+	// registers remote content into the session (policy/approval/headless
+	// contract enforced by the Session). Failures carry structured Automation
+	// Errors (AutomationRpcError) with stable codes and fixed, redacted
+	// messages.
+	// =========================================================================
+
+	/**
+	 * List one page of the resources catalog of a selected, trusted server.
+	 * Pass the previous page's `nextCursor` as `cursor` to fetch the next page.
+	 * Never starts a Run or a model.
+	 */
+	async listMcpResources(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPResourceView>> {
+		const response = await this.sendAutomation(
+			{
+				type: "mcp.list_resources",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getAutomationData<MCPPageResult<MCPResourceView>>(response);
+	}
+
+	/**
+	 * Read one resource of a selected, trusted server. Returns the normalized,
+	 * capped, redacted Session result (untrusted marker, bounded text/image
+	 * blocks kept under the content limits). Never starts a Run or a model.
+	 */
+	async readMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+		const response = await this.sendAutomation({ type: "mcp.read_resource", serverId, uri }, signal);
+		return this.getAutomationData<MCPReadResourceResult>(response);
+	}
+
+	/**
+	 * Explicitly read a resource and register the normalized result as a
+	 * structured external attachment in the Session. The response is a
+	 * metadata/digest receipt; the raw URI and remote text never cross the
+	 * wire. Never starts a Run or a model.
+	 */
+	async attachMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<RpcMcpAttachmentReceipt> {
+		const response = await this.sendAutomation({ type: "mcp.attach_resource", serverId, uri }, signal);
+		return this.getAutomationData<RpcMcpAttachmentReceipt>(response);
+	}
+
+	/**
+	 * List one page of the prompts catalog of a selected, trusted server.
+	 * Pass the previous page's `nextCursor` as `cursor` to fetch the next page.
+	 * Never starts a Run or a model.
+	 */
+	async listMcpPrompts(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPPromptView>> {
+		const response = await this.sendAutomation(
+			{
+				type: "mcp.list_prompts",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getAutomationData<MCPPageResult<MCPPromptView>>(response);
+	}
+
+	/**
+	 * Get one prompt of a selected, trusted server. Returns the normalized,
+	 * capped, redacted Session result; the prompt name and argument values are
+	 * never echoed. Never starts a Run or a model.
+	 */
+	async getMcpPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<MCPGetPromptResult> {
+		const response = await this.sendAutomation({ type: "mcp.get_prompt", serverId, name, args }, signal);
+		return this.getAutomationData<MCPGetPromptResult>(response);
+	}
+
+	/**
+	 * Explicitly get a prompt and register the normalized result as a
+	 * structured external attachment in the Session. The response is a
+	 * metadata/digest receipt; the prompt name, argument values, and remote
+	 * text never cross the wire. Never starts a Run or a model.
+	 */
+	async attachMcpPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<RpcMcpAttachmentReceipt> {
+		const response = await this.sendAutomation({ type: "mcp.attach_prompt", serverId, name, args }, signal);
+		return this.getAutomationData<RpcMcpAttachmentReceipt>(response);
+	}
+
+	/**
+	 * Start (or join) the OAuth authorization flow for one selected, trusted
+	 * streamable-http server. Headless start returns immediately: the response
+	 * carries the sanitized one-shot outcome/status, and the authorization URL,
+	 * when the flow surfaces one, is delivered at most once as an explicit
+	 * interactive `mcp.auth.url` event on the record stream — never through the
+	 * returned status.
+	 *
+	 * `signal` and `timeoutMs` bound the local command wait only: aborting
+	 * rejects the pending request (the command response is discarded) but does
+	 * not cancel the host-side flow, which stays pending in the Session until
+	 * its own authorization timeout.
+	 */
+	async startMcpAuth(
+		serverId: string,
+		signal?: AbortSignal,
+		timeoutMs: number = DEFAULT_MCP_AUTH_TIMEOUT_MS,
+	): Promise<McpAuthStartData> {
+		const response = await this.sendAutomation({ type: "mcp.auth.start", serverId }, signal, timeoutMs);
+		return this.getAutomationData<McpAuthStartData>(response);
+	}
+
+	/**
+	 * Clear the session-managed OAuth state of one server: local credential
+	 * cleanup plus best-effort remote revocation. Never starts a Run or a
+	 * model.
+	 */
+	async logoutMcpServer(serverId: string, signal?: AbortSignal): Promise<void> {
+		await this.sendAutomation({ type: "mcp.auth.logout", serverId }, signal);
+	}
+
 	/** Read a safe, filtered execution-audit page. */
 	async auditQuery(query: AuditQuery): Promise<AuditQueryResult> {
 		const response = await this.sendAutomation({ type: "audit.query", ...query });
@@ -1170,10 +1316,14 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
-	private async send(command: RpcCommandBody): Promise<RpcResponse> {
+	private async send(command: RpcCommandBody, signal?: AbortSignal, timeoutMs = 30000): Promise<RpcResponse> {
 		const childProcess = this.process;
 		if (this.exitError) {
 			throw this.exitError;
+		}
+		if (signal?.aborted) {
+			const reason = signal.reason;
+			throw reason instanceof Error ? reason : new Error("Request aborted");
 		}
 		const socket = this.socket;
 		const stdin = this.inputStream;
@@ -1203,18 +1353,30 @@ export class RpcClient {
 		const fullCommand = { ...command, id } as RpcCommand;
 
 		return new Promise((resolve, reject) => {
+			const onAbort = (): void => {
+				if (!this.pendingRequests.has(id)) return;
+				this.pendingRequests.delete(id);
+				clearTimeout(timeout);
+				const reason = signal?.reason;
+				reject(reason instanceof Error ? reason : new Error("Request aborted"));
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
+				signal?.removeEventListener("abort", onAbort);
 				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
 					clearTimeout(timeout);
+					signal?.removeEventListener("abort", onAbort);
 					resolve(response);
 				},
 				reject: (error) => {
 					clearTimeout(timeout);
+					signal?.removeEventListener("abort", onAbort);
 					reject(error);
 				},
 			});
@@ -1256,8 +1418,12 @@ export class RpcClient {
 		return successResponse.data as T;
 	}
 
-	private async sendAutomation(command: RpcCommandBody): Promise<RpcAutomationResponse> {
-		const response = await this.send(command);
+	private async sendAutomation(
+		command: RpcCommandBody,
+		signal?: AbortSignal,
+		timeoutMs?: number,
+	): Promise<RpcAutomationResponse> {
+		const response = await this.send(command, signal, timeoutMs);
 		return response as unknown as RpcAutomationResponse;
 	}
 

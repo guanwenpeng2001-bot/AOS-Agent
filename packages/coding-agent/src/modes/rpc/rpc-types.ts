@@ -7,7 +7,15 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { SessionStats } from "../../core/agent-session.ts";
+import type { McpAttachmentResult, McpAuthStatusView, SessionStats } from "../../core/agent-session.ts";
+import type {
+	MCPGetPromptResult,
+	MCPPageResult,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceView,
+} from "../../core/mcp-content-types.ts";
+import type { MCPAuthOutcome } from "../../core/mcp-auth.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -121,6 +129,18 @@ export type RpcCommand =
 
 	// Context Engine (read-only inspection; never returns raw source bodies)
 	| { id?: string; type: "get_context"; snapshotId?: string }
+
+	// MCP public surface (resources/prompts/auth). Raw URIs, prompt names, and
+	// prompt argument values live only in the request; responses, events,
+	// receipts, and errors never echo them, remote text, or tokens.
+	| { id?: string; type: "mcp.list_resources"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.read_resource"; serverId: string; uri: string }
+	| { id?: string; type: "mcp.attach_resource"; serverId: string; uri: string }
+	| { id?: string; type: "mcp.list_prompts"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.get_prompt"; serverId: string; name: string; args?: Record<string, string> }
+	| { id?: string; type: "mcp.attach_prompt"; serverId: string; name: string; args?: Record<string, string> }
+	| { id?: string; type: "mcp.auth.start"; serverId: string }
+	| { id?: string; type: "mcp.auth.logout"; serverId: string }
 
 	// Capability inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_capabilities"; bindingId?: string }
@@ -434,6 +454,56 @@ export type RpcResponse =
 			data: GetContextData;
 	  }
 
+	// MCP public surface. Lists carry the normalized catalog page, read/get
+	// carry normalized bounded content, attach carries a metadata/digest receipt
+	// only, and auth carries the sanitized status. The one-shot authorization
+	// URL is never part of any response: it is delivered at most once per
+	// `mcp.auth.start` as an explicit interactive `mcp.auth.url` event.
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.list_resources";
+			success: true;
+			data: MCPPageResult<MCPResourceView>;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.read_resource";
+			success: true;
+			data: MCPReadResourceResult;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.attach_resource";
+			success: true;
+			data: RpcMcpAttachmentReceipt;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.list_prompts";
+			success: true;
+			data: MCPPageResult<MCPPromptView>;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.get_prompt";
+			success: true;
+			data: MCPGetPromptResult;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.attach_prompt";
+			success: true;
+			data: RpcMcpAttachmentReceipt;
+	  }
+	| { id?: string; type: "response"; command: "mcp.auth.start"; success: true; data: McpAuthStartData }
+	| { id?: string; type: "response"; command: "mcp.auth.logout"; success: true }
+
 	// Capability inspection
 	| {
 			id?: string;
@@ -483,6 +553,51 @@ export interface GetExecutionPolicyData {
 
 /** Public, metadata-only model route catalog returned by get_model_routes. */
 export type GetModelRoutesData = PublicModelSummary;
+
+// ============================================================================
+// MCP public wire views (metadata/digest only)
+// ============================================================================
+
+/**
+ * Redacted receipt of a successful `mcp.attach_resource` / `mcp.attach_prompt`.
+ * The attachment is registered in the Session (the only way remote content
+ * enters the session); the wire carries the receipt fields only, never the raw
+ * URI, prompt name, argument values, or remote text.
+ */
+export type RpcMcpAttachmentReceipt = McpAttachmentResult;
+
+/**
+ * Sanitized OAuth + credential status view of one MCP server. Never includes
+ * token material, raw OAuth metadata, or the authorization URL (delivered at
+ * most once per `mcp.auth.start` as an explicit interactive `mcp.auth.url`
+ * event, never through status).
+ */
+export type RpcMcpAuthStatus = McpAuthStatusView;
+
+/** Data returned by a successful `mcp.auth.start`. */
+export interface McpAuthStartData {
+	serverId: string;
+	/**
+	 * One-shot outcome of the headless flow start. `interaction_required`
+	 * means the authorization URL was delivered once as the interactive
+	 * `mcp.auth.url` event and the flow is pending; `authorized` means the
+	 * server is already authenticated. Never carries the auth URL.
+	 */
+	outcome: MCPAuthOutcome;
+	/** Sanitized status: never carries the auth URL or any token material. */
+	status: RpcMcpAuthStatus;
+}
+
+/**
+ * Explicit, one-time interactive response of an in-flight `mcp.auth.start`:
+ * the authorization URL is published exactly once per flow and never appears
+ * in status, receipts, or any other event.
+ */
+export type RpcMcpAuthUrlEvent = {
+	type: "mcp.auth.url";
+	serverId: string;
+	url: string;
+};
 
 // ============================================================================
 // Extension UI Events (stdout)
@@ -549,6 +664,17 @@ export type RpcCommandType = RpcCommand["type"];
 /** Commands introduced by the Automation Host v1 protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
+/** MCP public surface commands (resources/prompts/auth). */
+export type RpcMcpCommandType =
+	| "mcp.list_resources"
+	| "mcp.read_resource"
+	| "mcp.attach_resource"
+	| "mcp.list_prompts"
+	| "mcp.get_prompt"
+	| "mcp.attach_prompt"
+	| "mcp.auth.start"
+	| "mcp.auth.logout";
+
 /** Automation Host v1 audit and external mapping commands. */
 export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
 
@@ -575,7 +701,8 @@ export type RpcAutomationCommandType =
 	| RpcRunCommandType
 	| RpcAuditCommandType
 	| RpcTaskGateCommandType
-	| RpcTaskGraphCommandType;
+	| RpcTaskGraphCommandType
+	| RpcMcpCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -589,6 +716,8 @@ export interface InitializeData {
 	taskGateCommands?: RpcTaskGateCommandType[];
 	/** Additive Task Graph control-plane command list. */
 	taskGraphCommands?: RpcTaskGraphCommandType[];
+	/** Additive MCP public surface command list. */
+	mcpCommands?: RpcMcpCommandType[];
 	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
 	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
 }
@@ -706,6 +835,14 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.graph.list"; success: true; data: TaskGraphListData }
 	| { id?: string; type: "response"; command: "task.graph.node.attach"; success: true; data: TaskGraphMutationData }
 	| { id?: string; type: "response"; command: "task.graph.node.settle"; success: true; data: TaskGraphMutationData }
+	| { id?: string; type: "response"; command: "mcp.list_resources"; success: true; data: MCPPageResult<MCPResourceView> }
+	| { id?: string; type: "response"; command: "mcp.read_resource"; success: true; data: MCPReadResourceResult }
+	| { id?: string; type: "response"; command: "mcp.attach_resource"; success: true; data: RpcMcpAttachmentReceipt }
+	| { id?: string; type: "response"; command: "mcp.list_prompts"; success: true; data: MCPPageResult<MCPPromptView> }
+	| { id?: string; type: "response"; command: "mcp.get_prompt"; success: true; data: MCPGetPromptResult }
+	| { id?: string; type: "response"; command: "mcp.attach_prompt"; success: true; data: RpcMcpAttachmentReceipt }
+	| { id?: string; type: "response"; command: "mcp.auth.start"; success: true; data: McpAuthStartData }
+	| { id?: string; type: "response"; command: "mcp.auth.logout"; success: true }
 	| {
 			id?: string;
 			type: "response";
@@ -716,6 +853,22 @@ export type RpcAutomationResponse =
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
+// Re-export the normalized MCP content results consumed by the wire surface.
+export type {
+	MCPContentLimits,
+	MCPGetPromptResult,
+	MCPNormalizedContent,
+	MCPNormalizedContentBlock,
+	MCPPageResult,
+	MCPPromptMessageView,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceTemplateView,
+	MCPResourceView,
+} from "../../core/mcp-content-types.ts";
+// Re-export the secret-free MCP auth/status views consumed by the wire surface.
+export type { McpAuthStatusView, McpAttachmentResult } from "../../core/agent-session.ts";
+export type { MCPAuthOutcome, MCPAuthStatus } from "../../core/mcp-auth.ts";
 // Re-export public audit query/replay types.
 export type {
 	AuditEvent,

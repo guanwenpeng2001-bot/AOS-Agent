@@ -40,6 +40,7 @@ export {
 	type MCPCredentialScope,
 } from "./core/mcp-auth-storage.ts";
 export type {
+	MCPContentLimits,
 	MCPGetPromptResult,
 	MCPNormalizedContent,
 	MCPNormalizedContentBlock,
@@ -50,6 +51,7 @@ export type {
 	MCPResourceTemplateView,
 	MCPResourceView,
 } from "./core/mcp-content-types.ts";
+export { DEFAULT_MCP_CONTENT_LIMITS } from "./core/mcp-content-types.ts";
 export {
 	type MCPConnectionStatus,
 	type MCPConnectionState,
@@ -836,11 +838,16 @@ export type {
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
+	McpAuthStartData,
 	RpcAuditCommandType,
 	RpcAuditQueryCommand,
 	RpcAuditReplayCommand,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcMcpAttachmentReceipt,
+	RpcMcpAuthStatus,
+	RpcMcpAuthUrlEvent,
+	RpcMcpCommandType,
 	RpcTransportAddress,
 	RpcTransportAddressErrorCode,
 	RpcTransportAddressParseResult,
