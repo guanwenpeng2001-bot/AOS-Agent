@@ -28,7 +28,11 @@ export class RuntimeCredentials implements CredentialStore {
 	}
 
 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
-		const entries = new Map((await this.store.list(options)).map((entry) => [entry.providerId, entry]));
+		const entries = new Map(
+			(await this.store.list(options))
+				.filter((entry) => !entry.providerId.startsWith("mcp:"))
+				.map((entry) => [entry.providerId, entry]),
+		);
 		options?.signal?.throwIfAborted();
 		for (const providerId of this.overrides.keys()) {
 			entries.set(providerId, { providerId, type: "api_key" });

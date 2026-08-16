@@ -169,7 +169,8 @@ export type MCPAuthErrorKind =
 	| "mcp_auth_cancelled"
 	| "mcp_auth_timeout"
 	| "mcp_auth_unavailable"
-	| "mcp_auth_invalid_redirect";
+	| "mcp_auth_invalid_redirect"
+	| "mcp_auth_unsupported";
 
 /** Redacted, serializable view of an MCP OAuth failure. */
 export interface MCPAuthErrorView {
@@ -200,6 +201,8 @@ function mcpAuthErrorMessage(kind: MCPAuthErrorKind, serverId: string): string {
 			return `MCP server "${serverId}" OAuth authorization server is unavailable`;
 		case "mcp_auth_invalid_redirect":
 			return `MCP server "${serverId}" OAuth redirect URL must use https or an http loopback address`;
+		case "mcp_auth_unsupported":
+			return `MCP server "${serverId}" does not support OAuth on this transport`;
 	}
 }
 
@@ -239,6 +242,10 @@ export interface MCPAuthRecordBinding {
 	canonicalResource: string;
 	/** Authorization server URL the tokens were issued by. */
 	issuer: string;
+	/** Static client id, when the host configuration pins one. */
+	clientId?: string;
+	/** Requested OAuth scope, when the host configuration pins one. */
+	scope?: string;
 }
 
 /**
@@ -339,6 +346,14 @@ function canonicalUrlString(url: string | URL): string {
 	parsed.search = "";
 	parsed.hash = "";
 	return parsed.toString();
+}
+
+function normalizeOAuthScope(scope: string | undefined): string {
+	return (scope ?? "")
+		.split(/\s+/u)
+		.filter((value) => value.length > 0)
+		.sort()
+		.join(" ");
 }
 
 /** Internal error signaling that a request exceeded its time bound. */
@@ -538,7 +553,7 @@ export class MCPAuthProvider {
 	}
 
 	private sessionKey(context: MCPAuthContext): string {
-		return `${context.sessionId}\u0000${context.serverId}`;
+		return `${context.sessionId}\u0000${context.serverId}\u0000${context.serverIdentity}`;
 	}
 
 	/** Returns the session for the context, creating it on first use. */
@@ -602,6 +617,13 @@ export class MCPAuthProvider {
 			this.sessions.delete(this.sessionKey(context));
 			await session.close();
 		}
+	}
+
+	/** Cancels pending flows and releases every session held by this provider. */
+	async closeAll(): Promise<void> {
+		const sessions = [...this.sessions.values()];
+		this.sessions.clear();
+		await Promise.all(sessions.map((session) => session.close().catch(() => undefined)));
 	}
 }
 
@@ -819,14 +841,25 @@ export class MCPAuthSession {
 	}
 
 	/**
-	 * Clears the in-memory credentials and the stored record. Best effort:
-	 * storage or revocation failures never block local cleanup.
+	 * Best-effort RFC 7009 token revocation, then local cleanup.
+	 *
+	 * Revocation is attempted only when the discovered authorization server
+	 * metadata exposes a `revocation_endpoint` and a refresh token exists. A
+	 * revocation failure never blocks local cleanup: memory is cleared and the
+	 * stored record is removed with the binding it was written under.
 	 */
 	async logout(): Promise<void> {
 		this.settleCallback({ kind: "cancelled" });
-		// Capture the binding before clearing it: the stored record must be
-		// removed with the binding it was written under.
 		const binding = this.binding();
+		const tokens = this.tokens;
+		const metadata = this.discovery?.authorizationServerMetadata;
+		const revocationEndpoint =
+			metadata !== undefined && typeof metadata === "object" && "revocation_endpoint" in metadata
+				? (metadata as { revocation_endpoint?: URL }).revocation_endpoint
+				: undefined;
+		if (tokens?.refresh_token !== undefined && revocationEndpoint !== undefined) {
+			await this.revokeToken(revocationEndpoint, tokens.refresh_token).catch(() => undefined);
+		}
 		this.tokens = undefined;
 		this.expiresAt = undefined;
 		this.clientInfo = undefined;
@@ -837,6 +870,26 @@ export class MCPAuthSession {
 		this.state = "unauthenticated";
 		if (binding !== undefined) {
 			await this.store?.delete(binding).catch(() => undefined);
+		}
+	}
+
+	/**
+	 * Best-effort RFC 7009 revocation request. Never throws: every failure
+	 * (network, timeout, abort, non-2xx) is swallowed so logout always proceeds
+	 * with local cleanup.
+	 */
+	private async revokeToken(endpoint: URL, refreshToken: string): Promise<void> {
+		const body = new URLSearchParams({ token: refreshToken, token_type_hint: "refresh_token" });
+		const response = await this.boundedFetch()(endpoint, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body,
+		});
+		if (!response.ok) {
+			const stream = response.body;
+			if (stream !== undefined && stream !== null) {
+				await stream.cancel().catch(() => undefined);
+			}
 		}
 	}
 
@@ -1302,6 +1355,10 @@ export class MCPAuthSession {
 			serverId: this.serverId,
 			canonicalResource: canonical,
 			issuer,
+			...(this.options.clientId === undefined ? {} : { clientId: this.options.clientId }),
+			...(this.options.scope === undefined || this.options.scope.trim() === ""
+				? {}
+				: { scope: this.options.scope }),
 		};
 	}
 
@@ -1314,7 +1371,9 @@ export class MCPAuthSession {
 			record.serverIdentity === binding.serverIdentity &&
 			record.serverId === binding.serverId &&
 			canonicalUrlString(record.canonicalResource) === canonicalUrlString(binding.canonicalResource) &&
-			canonicalUrlString(record.issuer) === canonicalUrlString(binding.issuer)
+			canonicalUrlString(record.issuer) === canonicalUrlString(binding.issuer) &&
+			(binding.clientId === undefined || record.clientId === binding.clientId) &&
+			(binding.scope === undefined || normalizeOAuthScope(record.scope) === normalizeOAuthScope(binding.scope))
 		);
 	}
 

@@ -7,6 +7,7 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import type { MCPTransportFactory } from "./mcp-types.ts";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport";
 import type { ModelBroker } from "./model-broker.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import {
@@ -53,6 +54,8 @@ export interface CreateAgentSessionServicesOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override (tests inject in-memory transports). */
 	mcpTransportFactory?: MCPTransportFactory;
+	/** Base fetch for MCP OAuth HTTP requests; defaults to the global fetch. */
+	mcpAuthFetch?: FetchLike;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 }
@@ -96,6 +99,7 @@ export interface AgentSessionServices {
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
 	mcpTransportFactory?: MCPTransportFactory;
+	mcpAuthFetch?: FetchLike;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
@@ -231,6 +235,7 @@ export async function createAgentSessionServices(
 		capabilityRegistry:
 			options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir)),
 		mcpTransportFactory: options.mcpTransportFactory,
+		mcpAuthFetch: options.mcpAuthFetch,
 		sandboxProviders: options.sandboxProviders,
 		diagnostics,
 	};
@@ -256,6 +261,7 @@ export async function createAgentSessionFromServices(
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
 		mcpTransportFactory: options.services.mcpTransportFactory,
+		mcpAuthFetch: options.services.mcpAuthFetch,
 		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
 		sessionManager: options.sessionManager,
 		model: options.model,

@@ -13,7 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -28,6 +28,7 @@ import type {
 } from "@aos-agent/agent-core";
 import {
 	type ThinkingLevel as AiThinkingLevel,
+	type AuthInteraction,
 	contentText,
 	createAssistantMessageEventStream,
 	type Tool,
@@ -58,6 +59,7 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport";
 import type { ExternalAgentEvent } from "./external-agent-adapter.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { getShellEnv } from "../utils/shell.ts";
@@ -75,12 +77,17 @@ import {
 	CapabilityNameConflictError,
 	CapabilityProfileNotFoundError,
 	CapabilityRegistry,
+	getCapabilityLocalName,
 	matchesCapabilityDescriptorId,
 	type ResolveBindingInput,
 	resolveCapabilityBinding,
 	toCapabilityBindingHandle,
 } from "./capability-registry.ts";
-import { type CapabilitySettings, createMcpServerCapabilityCandidate } from "./capability-settings.ts";
+import {
+	type CapabilitySettings,
+	createMcpServerCapabilityCandidate,
+	type McpServerDiagnostic,
+} from "./capability-settings.ts";
 import type { BranchSummaryDetails } from "./compaction/branch-summarization.ts";
 import type { CompactionDetails } from "./compaction/compaction.ts";
 import {
@@ -132,6 +139,7 @@ import {
 	type PolicyBinding,
 	type PolicyDecision,
 	PolicyError,
+	type PolicyOperationRequest,
 	type PolicyOperationSource,
 	type PublicPolicySummary,
 	resolveExecutionPolicyProfile,
@@ -170,9 +178,33 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { createMCPDefaultTransportFactory, MCPLifecycleManager } from "./mcp-lifecycle.ts";
+import {
+	MCPAuthError,
+	MCPAuthProvider,
+	type MCPAuthContext,
+	type MCPAuthOptions,
+	type MCPAuthResult,
+	type MCPAuthStatus,
+	type MCPAuthStore,
+} from "./mcp-auth.ts";
+import {
+	MCPCredentialNamespace,
+	type MCPCredentialBinding,
+	type MCPCredentialScope,
+	type MCPCredentialStatusView,
+} from "./mcp-auth-storage.ts";
+import type {
+	MCPGetPromptResult,
+	MCPNormalizedContentBlock,
+	MCPPageResult,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceTemplateView,
+	MCPResourceView,
+} from "./mcp-content-types.ts";
+import { createMCPDefaultTransportFactory, MCPLifecycleManager, type MCPServerAuthHooks } from "./mcp-lifecycle.ts";
 import { type MCPToolDefinitionResult, mapMCPToolsToDefinitions } from "./mcp-tool-adapter.ts";
-import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
+import { MCPError, type MCPServerConfig, type MCPTransportFactory, type MCPTransportFactoryOptions } from "./mcp-types.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelBroker, ModelBrokerError, type ModelResolution, type NormalizedModelReference } from "./model-broker.ts";
 import {
@@ -406,6 +438,36 @@ function createSyntheticModelError(
 	};
 }
 
+/** Secret-free last-listed content of one MCP server. Never holds raw bodies. */
+export interface McpContentCatalog {
+	resources: ReadonlyArray<MCPResourceView>;
+	resourceTemplates: ReadonlyArray<MCPResourceTemplateView>;
+	prompts: ReadonlyArray<MCPPromptView>;
+}
+
+/** Result of an explicit MCP content attachment. */
+export interface McpAttachmentResult {
+	/** Stable context source id of the pending attachment. */
+	attachmentId: string;
+	/** Server id the content was attached from. */
+	serverId: string;
+	/** Normalized character count of the attached text content. */
+	contentLength: number;
+	/** True when the attached payload was truncated or had blocks dropped by normalization. */
+	truncated: boolean;
+}
+
+/** Combined MCP OAuth + credential status of one server. Secret-free. */
+export interface McpAuthStatusView {
+	serverId: string;
+	/** True only for streamable-http servers; stdio servers never authenticate. */
+	authSupported: boolean;
+	/** OAuth flow state of the session+server. */
+	auth: MCPAuthStatus;
+	/** Namespace credential slot status. */
+	credential: MCPCredentialStatusView;
+}
+
 export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -446,6 +508,11 @@ export interface AgentSessionConfig {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Base fetch for MCP OAuth HTTP requests; defaults to the global fetch.
+	 * Every OAuth request is execution-policy gated before this fetch runs.
+	 */
+	mcpAuthFetch?: FetchLike;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Optional named Execution Policy profile selector for this session. */
@@ -663,6 +730,7 @@ export class AgentSession {
 	private _activeCapabilityProfile: string | undefined;
 	private _noTools?: "all" | "builtin";
 	private _mcpTransportFactory?: MCPTransportFactory;
+	private _mcpAuthBaseFetch?: FetchLike;
 	private _mcpLifecycleManager!: MCPLifecycleManager;
 	private _mcpRegisteredServerIds = new Set<string>();
 	private _mcpAuthorizedTransportValues = new Map<
@@ -673,6 +741,17 @@ export class AgentSession {
 	private _activeCapabilityCatalog: CapabilityCatalog | undefined;
 	private _activeMcpTools: MCPToolDefinitionResult[] = [];
 	private _activeMcpToolCandidates: CapabilityCandidate[] = [];
+	/** Content capability candidates (mcp_resource / mcp_resource_template / mcp_prompt). */
+	private _activeMcpContentCandidates: CapabilityCandidate[] = [];
+	/** Last listed secret-free content per server, used for digest descriptor derivation. */
+	private readonly _mcpContentCatalogs = new Map<string, McpContentCatalog>();
+	/** Explicitly attached MCP content, pending as untrusted context sources for the next turn. */
+	private _pendingMcpAttachments: ContextSourceInput[] = [];
+	/** MCP OAuth provider: one flow per (session, server), credentials in the MCP namespace. */
+	private readonly _mcpAuthProvider: MCPAuthProvider;
+	private readonly _mcpCredentialNamespace: MCPCredentialNamespace;
+	/** Cancels pending MCP OAuth flows when the session is disposed. */
+	private readonly _mcpAuthAbortController = new AbortController();
 	/** Redacted capability error codes per MCP server that failed discovery. */
 	private _mcpDiscoveryErrors = new Map<string, string>();
 	/** Resolves when MCP capability discovery for the current runtime settles. */
@@ -743,6 +822,9 @@ export class AgentSession {
 		this._activeExecutionPolicyProfileSelection = config.policyProfile;
 		this._noTools = config.noTools;
 		this._mcpTransportFactory = config.mcpTransportFactory;
+	this._mcpAuthBaseFetch = config.mcpAuthFetch;
+	this._mcpCredentialNamespace = new MCPCredentialNamespace(this._modelRuntime.getCredentialStore());
+	this._mcpAuthProvider = new MCPAuthProvider({ store: this._createMcpAuthStoreAdapter() });
 		this._externalAgentRegistry = config.externalAgentRegistry;
 		const sandboxProviders = config.sandboxProviders;
 		this._sandboxProviders =
@@ -1173,7 +1255,10 @@ export class AgentSession {
 				let prepareContext: (model: Model<any>, parentSnapshotId?: string) => Promise<Context>;
 				if (this.settingsManager.getContextSettings().enabled) {
 					this._assertContextPayloadHooksSupported();
-					const extensionSources = this._pendingExtensionContextSources;
+					const extensionSources = [
+						...this._pendingExtensionContextSources,
+						...this._currentMcpAttachmentSources(),
+					];
 					prepareContext = async (nextModel, parentSnapshotId) => {
 						const sources = await this._collectAgentTurnContextSources(
 							originalMessages,
@@ -2671,7 +2756,7 @@ export class AgentSession {
 		const sessionMessages = this.agent.state.messages;
 		const sources = await this._collectAgentTurnContextSources(
 			[...sessionMessages, ...turnMessages],
-			this._pendingExtensionContextSources,
+			[...this._pendingExtensionContextSources, ...this._currentMcpAttachmentSources()],
 			this.agent.state.tools,
 		);
 		const contextSettings = this.settingsManager.getContextSettings();
@@ -2862,6 +2947,7 @@ export class AgentSession {
 		this._systemPromptOverride = undefined;
 		this._activeContextRunId = undefined;
 		this._pendingExtensionContextSources = [];
+		this._pendingMcpAttachments = [];
 		this._pendingContextError = undefined;
 		this._pendingProviderFailure = undefined;
 		this._flushPendingBashMessages();
@@ -3090,6 +3176,7 @@ export class AgentSession {
 			this._systemPromptOverride = undefined;
 			this._activeContextRunId = undefined;
 			this._pendingExtensionContextSources = [];
+			this._pendingMcpAttachments = [];
 			this._releaseAgentRunPreflightReservation(reservedRunActive);
 			preflightResult?.(false);
 			throw error;
@@ -3125,6 +3212,7 @@ export class AgentSession {
 				this._systemPromptOverride = undefined;
 				this._activeContextRunId = undefined;
 				this._pendingExtensionContextSources = [];
+				this._pendingMcpAttachments = [];
 				this._releaseAgentRunPreflightReservation(reservedRunActive);
 			}
 			throw error;
@@ -3420,6 +3508,249 @@ export class AgentSession {
 	/** Redacted MCP connection status for a configured server id. */
 	getMcpConnectionStatus(serverId: string) {
 		return this._mcpLifecycleManager?.getStatus(serverId);
+	}
+
+	// =========================================================================
+	// Explicit MCP OAuth + content surface
+	//
+	// Everything here is explicit: auth starts only when requested, listing
+	// registers secret-free content descriptors, reading returns normalized
+	// bounded content, and attaching stages normalized content as an untrusted
+	// turn-scoped context source. Nothing is read, attached, run, injected, or
+	// approved automatically.
+	// =========================================================================
+
+	/**
+	 * Combined OAuth flow + credential status of one configured MCP server.
+	 * stdio servers report `authSupported: false` and never authenticate.
+	 */
+	async getMcpAuthStatus(serverId: string): Promise<McpAuthStatusView> {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		if (diagnostic.server.transport !== "streamable-http" || diagnostic.server.oauth === undefined) {
+			return {
+				serverId,
+				authSupported: false,
+				auth: { serverId, state: "unauthenticated" },
+				credential: {
+					serverId,
+					hasCredential: false,
+					status: "none",
+					expiresAt: 0,
+					scopes: [],
+					revision: 0,
+				},
+			};
+		}
+		const { context, options } = this._mcpAuthBinding(serverId);
+		const [auth, credential] = await Promise.all([
+			this._mcpAuthProvider.getStatus(context, options),
+			this._mcpCredentialNamespace.status(this._mcpCredentialScope(serverId)),
+		]);
+		return { serverId, authSupported: true, auth, credential };
+	}
+
+	/**
+	 * Starts (or joins) the interactive OAuth flow for a streamable-http server.
+	 * Gated by `mcp.auth`; never runs without an explicit call.
+	 */
+	async startMcpAuth(serverId: string, interaction?: AuthInteraction): Promise<MCPAuthResult> {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		this._assertMcpAuthSupported(diagnostic, serverId);
+		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
+		const { context, options } = this._mcpAuthBinding(serverId);
+		return this._mcpAuthProvider.startInteractive(context, options, interaction);
+	}
+
+	/** Validates and delivers the OAuth callback code for a pending flow. Gated by `mcp.auth`. */
+	async completeMcpAuth(
+		serverId: string,
+		code: string,
+		params: { state?: string; redirectUri?: string },
+	): Promise<void> {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		this._assertMcpAuthSupported(diagnostic, serverId);
+		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
+		const { context, options } = this._mcpAuthBinding(serverId);
+		return this._mcpAuthProvider.completeAuthorization(context, options, code, params);
+	}
+
+	/** Awaits the outcome of a headless OAuth flow. Gated by `mcp.auth`. */
+	async waitForMcpAuth(serverId: string, signal?: AbortSignal): Promise<MCPAuthResult> {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		this._assertMcpAuthSupported(diagnostic, serverId);
+		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
+		const { context, options } = this._mcpAuthBinding(serverId);
+		return awaitWithOperationSignal(this._mcpAuthProvider.waitForAuthorization(context, options), signal);
+	}
+
+	/**
+	 * Logs out of one MCP server: local credential cleanup plus best-effort
+	 * remote revocation. Gated by `mcp.auth`; revocation failures never block
+	 * the local deletion.
+	 */
+	async logoutMcpAuth(serverId: string, signal?: AbortSignal): Promise<void> {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		this._assertMcpAuthSupported(diagnostic, serverId);
+		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
+		const { context, options } = this._mcpAuthBinding(serverId);
+		await awaitWithOperationSignal(this._mcpAuthProvider.logout(context, options), signal);
+	}
+
+	/**
+	 * Lists one page of resources of a selected, connected server. Gated by
+	 * `mcp.content.list`. The listing registers secret-free content capability
+	 * descriptors (parented to the mcp_server) into the frozen binding; it never
+	 * reads, attaches, or injects anything.
+	 */
+	async listMcpResources(
+		serverId: string,
+		cursor?: string,
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPResourceView>> {
+		await this._ensureMcpContentIdle();
+		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
+		await this._ensureMcpServerConnected(serverId, signal);
+		const page = await this._mcpLifecycleManager.listResources(serverId, cursor, signal);
+		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, resources: page.items }));
+		await this._refreshMcpContentBinding(serverId, signal);
+		return page;
+	}
+
+	/** Lists one page of resource templates. Gated by `mcp.content.list`. */
+	async listMcpResourceTemplates(
+		serverId: string,
+		cursor?: string,
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPResourceTemplateView>> {
+		await this._ensureMcpContentIdle();
+		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
+		await this._ensureMcpServerConnected(serverId, signal);
+		const page = await this._mcpLifecycleManager.listResourceTemplates(serverId, cursor, signal);
+		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, resourceTemplates: page.items }));
+		await this._refreshMcpContentBinding(serverId, signal);
+		return page;
+	}
+
+	/** Lists one page of prompts. Gated by `mcp.content.list`. */
+	async listMcpPrompts(
+		serverId: string,
+		cursor?: string,
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPPromptView>> {
+		await this._ensureMcpContentIdle();
+		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
+		await this._ensureMcpServerConnected(serverId, signal);
+		const page = await this._mcpLifecycleManager.listPrompts(serverId, cursor, signal);
+		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, prompts: page.items }));
+		await this._refreshMcpContentBinding(serverId, signal);
+		return page;
+	}
+
+	/**
+	 * Reads a listed resource and returns its normalized bounded content. Gated
+	 * by `mcp.content.read` with the exact descriptor revision the binding
+	 * froze; a resource that was never listed, or whose descriptor is absent or
+	 * stale, is denied.
+	 */
+	async readMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+		await this._ensureMcpContentIdle();
+		const capability = this._requireContentCapability(serverId, uri);
+		await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
+		await this._ensureMcpServerConnected(serverId, signal);
+		return this._mcpLifecycleManager.readResource(serverId, uri, signal);
+	}
+
+	/**
+	 * Fetches a listed prompt and returns its normalized bounded messages. Gated
+	 * by `mcp.content.read` with the exact descriptor revision the binding
+	 * froze.
+	 */
+	async getMcpPrompt(
+		serverId: string,
+		promptName: string,
+		args?: Readonly<Record<string, string>>,
+		signal?: AbortSignal,
+	): Promise<MCPGetPromptResult> {
+		await this._ensureMcpContentIdle();
+		const capability = this._requirePromptCapability(serverId, promptName);
+		await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
+		await this._ensureMcpServerConnected(serverId, signal);
+		return this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
+	}
+
+	/**
+	 * Reads a listed resource and stages its normalized bounded text as an
+	 * untrusted, turn-scoped user context source for the next agent turn. Gated
+	 * by `mcp.content.attach`; the read itself never happens without the
+	 * explicit attach.
+	 */
+	async attachMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<McpAttachmentResult> {
+		await this._ensureMcpContentIdle();
+		const capability = this._requireContentCapability(serverId, uri);
+		await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
+		await this._ensureMcpServerConnected(serverId, signal);
+		const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
+		const content = mcpAttachmentText(result.content.blocks);
+		const source = this._buildMcpAttachmentSource(
+			serverId,
+			"resource",
+			capability,
+			content,
+			result.content.truncated,
+		);
+		this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
+		return {
+			attachmentId: source.sourceId,
+			serverId,
+			contentLength: content.length,
+			truncated: result.content.truncated,
+		};
+	}
+
+	/**
+	 * Fetches a listed prompt and stages its normalized bounded text as an
+	 * untrusted, turn-scoped user context source for the next agent turn. Gated
+	 * by `mcp.content.attach`.
+	 */
+	async attachMcpPrompt(
+		serverId: string,
+		promptName: string,
+		args?: Readonly<Record<string, string>>,
+		signal?: AbortSignal,
+	): Promise<McpAttachmentResult> {
+		await this._ensureMcpContentIdle();
+		const capability = this._requirePromptCapability(serverId, promptName);
+		await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
+		await this._ensureMcpServerConnected(serverId, signal);
+		const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
+		const content = result.messages
+			.map((message) => mcpAttachmentText(message.content.blocks))
+			.filter((text) => text.length > 0)
+			.join("\n\n");
+		const source = this._buildMcpAttachmentSource(
+			serverId,
+			"prompt",
+			capability,
+			content,
+			result.messages.some((message) => message.content.truncated),
+		);
+		this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
+		return {
+			attachmentId: source.sourceId,
+			serverId,
+			contentLength: content.length,
+			truncated: result.messages.some((message) => message.content.truncated),
+		};
+	}
+
+	/**
+	 * Secret-free last-listed content catalog of one server. Raw bodies, URIs,
+	 * arguments, and secrets are never retained; only the normalized views used
+	 * for descriptor derivation are kept.
+	 */
+	getMcpContentCatalog(serverId: string): McpContentCatalog | undefined {
+		const catalog = this._mcpContentCatalogs.get(serverId);
+		return catalog === undefined ? undefined : { ...catalog };
 	}
 
 	/**
@@ -4879,6 +5210,8 @@ export class AgentSession {
 		// binding is still being preflighted.
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
+		this._activeMcpContentCandidates = [];
+		this._pendingMcpAttachments = [];
 		this._mcpAuthorizedTransportValues.clear();
 		this._capabilityDiscoveryError = undefined;
 		this._capabilityDiscoveryStarted = false;
@@ -5009,6 +5342,9 @@ export class AgentSession {
 			candidates.push(createMcpServerCapabilityCandidate(diagnostic));
 		}
 		for (const candidate of this._activeMcpToolCandidates) {
+			candidates.push(candidate);
+		}
+		for (const candidate of this._activeMcpContentCandidates) {
 			candidates.push(candidate);
 		}
 		return candidates;
@@ -5268,7 +5604,7 @@ export class AgentSession {
 
 	private _policyCapabilityBindingInput(): {
 		id?: string;
-		descriptors?: ReadonlyArray<{ readonly id: string }>;
+		descriptors?: ReadonlyArray<{ readonly id: string; readonly revision?: string }>;
 		allowedCapabilityIds?: ReadonlyArray<string>;
 	} {
 		const binding = this._activeCapabilityBinding;
@@ -5276,7 +5612,12 @@ export class AgentSession {
 		const allowedCapabilityIds = binding.descriptors.map((descriptor) => descriptor.id);
 		return {
 			id: binding.id,
-			descriptors: binding.descriptors.map((descriptor) => ({ id: descriptor.id })),
+			// The frozen binding's descriptor revisions travel with the ids so MCP
+			// operation gates (mcp.auth / mcp.content.*) can reject stale callers.
+			descriptors: binding.descriptors.map((descriptor) => ({
+				id: descriptor.id,
+				...(descriptor.revision === undefined ? {} : { revision: descriptor.revision }),
+			})),
 			allowedCapabilityIds,
 		};
 	}
@@ -5335,6 +5676,9 @@ export class AgentSession {
 		await this._executionPolicyPreparationTail;
 		await this._closeMcpConnectionsForPolicyBoundary();
 		await this._disposeSandboxSession();
+		// Cancel pending MCP OAuth flows; credentials stay in the namespace store.
+		this._mcpAuthAbortController.abort();
+		await this._mcpAuthProvider.closeAll().catch(() => undefined);
 	}
 
 	private _enqueueExecutionPolicyTransition<T>(operation: () => Promise<T>): Promise<T> {
@@ -5780,9 +6124,505 @@ export class AgentSession {
 		}
 	}
 
+	// ---- MCP auth + content private helpers -----------------------------------
+
+	private _requireMcpDiagnostic(serverId: string): McpServerDiagnostic {
+		const diagnostic = this.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((candidate) => candidate.id === serverId);
+		if (diagnostic === undefined) {
+			throw new MCPError("invalid_config", serverId, `No configuration registered for MCP server "${serverId}"`);
+		}
+		return diagnostic;
+	}
+
+	private _assertMcpAuthSupported(diagnostic: McpServerDiagnostic, serverId: string): void {
+		if (diagnostic.server.transport !== "streamable-http" || diagnostic.server.oauth === undefined) {
+			throw new MCPAuthError("mcp_auth_unsupported", serverId);
+		}
+	}
+
+	/** Namespace scope for one server: per source scope + server id. */
+	private _mcpCredentialScope(serverId: string): MCPCredentialScope {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		return {
+			sourceId: diagnostic.scope,
+			serverId,
+			serverIdentity: diagnostic.source.source,
+		};
+	}
+
+	/** OAuth binding for one streamable-http server: per session + server flow. */
+	private _mcpAuthBinding(serverId: string): { context: MCPAuthContext; options: MCPAuthOptions } {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		this._assertMcpAuthSupported(diagnostic, serverId);
+		const server = diagnostic.server;
+		if (server.transport !== "streamable-http" || server.oauth === undefined) {
+			throw new MCPAuthError("mcp_auth_unsupported", serverId);
+		}
+		const oauth = server.oauth;
+		const context: MCPAuthContext = {
+			serverId,
+			serverIdentity: diagnostic.source.source,
+			sessionId: this.sessionId,
+			signal: this._mcpAuthAbortController.signal,
+		};
+		const options: MCPAuthOptions = {
+			serverUrl: server.url,
+			redirectUrl: oauth.redirectUrl,
+			...(oauth.canonicalResource === undefined ? {} : { canonicalResource: oauth.canonicalResource }),
+			...(oauth.clientId === undefined ? {} : { clientId: oauth.clientId }),
+			...(oauth.scope === undefined ? {} : { scope: oauth.scope }),
+			...(oauth.clientName === undefined ? {} : { clientName: oauth.clientName }),
+			fetchFn: this._createMcpAuthFetch(),
+		};
+		return { context, options };
+	}
+
+	/**
+	 * MCPAuthStore adapter over the MCP credential namespace. Records are scoped
+	 * per source + server and bound to issuer + canonical resource + scopes, so
+	 * one server's credentials can never satisfy another server's binding.
+	 */
+	private _createMcpAuthStoreAdapter(): MCPAuthStore {
+		const namespace = this._mcpCredentialNamespace;
+		const scopeFor = (serverId: string): MCPCredentialScope => this._mcpCredentialScope(serverId);
+		const bindingFor = (binding: {
+			issuer: string;
+			canonicalResource: string;
+			clientId?: string;
+			scope?: string;
+		}): MCPCredentialBinding => ({
+			issuer: binding.issuer,
+			resource: binding.canonicalResource,
+			scopes:
+				binding.scope === undefined
+					? []
+					: binding.scope.split(/\s+/u).filter((scope) => scope.length > 0),
+			...(binding.clientId === undefined ? {} : { clientId: binding.clientId }),
+		});
+		return {
+			read: async (binding) => {
+				const record = await namespace.read(scopeFor(binding.serverId), bindingFor(binding));
+				if (record === undefined) return undefined;
+				return {
+					serverIdentity: record.serverIdentity,
+					serverId: binding.serverId,
+					canonicalResource: record.resource,
+					issuer: record.issuer,
+					...(record.clientId === undefined ? {} : { clientId: record.clientId }),
+					...(record.scopes.length > 0 ? { scope: record.scopes.join(" ") } : {}),
+					tokenType: "Bearer",
+					accessToken: record.access,
+					...(record.refresh === "" ? {} : { refreshToken: record.refresh }),
+					...(record.expires > 0 ? { expiresAt: record.expires } : {}),
+					updatedAt: 0,
+				};
+			},
+			save: async (record) => {
+				await namespace.save(
+					scopeFor(record.serverId),
+					{
+						issuer: record.issuer,
+						resource: record.canonicalResource,
+						scopes:
+							record.scope === undefined
+								? []
+								: record.scope.split(" ").filter((scope) => scope !== ""),
+						...(record.clientId === undefined ? {} : { clientId: record.clientId }),
+					},
+					{
+						access: record.accessToken,
+						...(record.refreshToken === undefined ? {} : { refresh: record.refreshToken }),
+						...(record.expiresAt === undefined ? {} : { expires: record.expiresAt }),
+					},
+				);
+			},
+			delete: async (binding) => {
+				await namespace
+					.logout(scopeFor(binding.serverId), bindingFor(binding))
+					.catch(() => undefined);
+			},
+		};
+	}
+
+	/**
+	 * OAuth hooks attached to the lifecycle manager: the SDK provider for the
+	 * Streamable HTTP transport plus a single-flight refresh for the exactly-one
+	 * 401 refresh/retry contract. stdio servers never get hooks.
+	 */
+	private _mcpAuthHooksFor(serverId: string): MCPServerAuthHooks | undefined {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		if (diagnostic.server.transport !== "streamable-http" || diagnostic.server.oauth === undefined) {
+			return undefined;
+		}
+		const { context, options } = this._mcpAuthBinding(serverId);
+		const session = this._mcpAuthProvider.session(context, options);
+		return {
+			authProvider: session.createOAuthClientProvider(),
+			refresh: () => this._mcpAuthProvider.refresh(context, options).then((result) => result.outcome),
+		};
+	}
+
+	/**
+	 * Policy-aware fetch for OAuth HTTP requests: every request origin is gated
+	 * by `network.connect` and recorded in the policy ledger, so OAuth
+	 * discovery/token/revocation traffic cannot bypass the execution policy.
+	 */
+	private _createMcpAuthFetch(): FetchLike {
+		return (url, init) => {
+			let origin: string;
+			let port: number | undefined;
+			try {
+				const parsed = new URL(url);
+				origin = parsed.origin;
+				port = parsed.port === "" ? undefined : Number(parsed.port);
+			} catch {
+				throw new PolicyError("policy_denied", "MCP OAuth request URL is invalid");
+			}
+			const profile = this._requireExecutionPolicyProfile();
+			const binding = this._requireExecutionPolicyBinding();
+			const originId = createHash("sha256").update(origin).digest("hex").slice(0, 16);
+			const decision = authorizePolicyOperation({
+				profile,
+				binding,
+				operation: {
+					resource: "network.connect",
+					source: "mcp",
+					id: `mcp-oauth-${originId}`,
+					destination: origin,
+					...(port === undefined ? {} : { port }),
+				},
+				capabilityBinding: this._policyCapabilityBindingInput(),
+			});
+			this._recordPolicyDecision(decision);
+			this._assertPolicyDecisionAllowed(decision);
+			return (this._mcpAuthBaseFetch ?? fetch)(url, init);
+		};
+	}
+
+	/**
+	 * The mcp_server capability (id + revision) from the active catalog. The
+	 * binding is resolved on demand so a freshly built runtime can gate before
+	 * any connection attempt; a server absent from the catalog fails closed.
+	 */
+	private _requireMcpServerCapability(serverId: string): { id: string; revision: string } {
+		let catalog: CapabilityCatalog | undefined = this._activeCapabilityCatalog;
+		if (catalog === undefined) {
+			this._resolveCapabilityBinding();
+			catalog = this._activeCapabilityCatalog;
+		}
+		if (catalog === undefined) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not available in the capability catalog`,
+			);
+		}
+		const descriptor = catalog.descriptors.find(
+			(candidate) => candidate.kind === "mcp_server" && candidate.mcpServerId === serverId,
+		);
+		if (descriptor === undefined) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not available in the capability catalog`,
+			);
+		}
+		return { id: descriptor.id, revision: descriptor.revision };
+	}
+
+	/**
+	 * Policy gate for MCP operations. `capability` is the mcp_server descriptor
+	 * for `mcp.auth`/`mcp.content.list`, or the content item descriptor (with
+	 * `parentId`) for `mcp.content.read`/`mcp.content.attach`. The frozen
+	 * binding must contain the exact descriptor revision and, for content items,
+	 * the parent mcp_server; anything else is denied.
+	 */
+	private async _authorizeMcpOperation(
+		resource: "mcp.auth" | "mcp.content.list" | "mcp.content.read" | "mcp.content.attach",
+		serverId: string,
+		capability: { id: string; revision: string; parentId?: string; sourceId?: string },
+	): Promise<void> {
+		await this._ensureExecutionPolicyReady();
+		const profile = this._requireExecutionPolicyProfile();
+		const binding = this._requireExecutionPolicyBinding();
+		const operation: PolicyOperationRequest = {
+			resource,
+			source: "mcp",
+			id: `mcp-${resource}:${serverId}`,
+			serverId,
+			capabilityId: capability.id,
+			revision: capability.revision,
+			...(capability.parentId === undefined ? {} : { parentId: capability.parentId }),
+			...(capability.sourceId === undefined ? {} : { sourceId: capability.sourceId }),
+		};
+		const decision = authorizePolicyOperation({
+			profile,
+			binding,
+			operation,
+			capabilityBinding: this._policyCapabilityBindingInput(),
+		});
+		this._recordPolicyDecision(decision);
+		this._assertPolicyDecisionAllowed(decision);
+	}
+
+	/** Content operations wait for an active agent run to settle first. */
+	private _ensureMcpContentIdle(): Promise<void> {
+		return this._isAgentRunActive ? this.waitForIdle() : Promise.resolve();
+	}
+
+	/**
+	 * Ensures MCP capability discovery settled and the server is connected. The
+	 * server must be binding-selected; an unselected or failed server is
+	 * unavailable.
+	 */
+	private async _ensureMcpServerConnected(serverId: string, signal?: AbortSignal): Promise<void> {
+		await this.whenCapabilitiesReady(undefined, signal);
+		const status = this._mcpLifecycleManager?.getStatus(serverId);
+		if (status === undefined || status.state !== "ready") {
+			throw new MCPError("unavailable", serverId, `MCP server "${serverId}" is unavailable`);
+		}
+	}
+
+	/** Stable secret-free digest identity for one listed content item. */
+	private _mcpContentDigest(...parts: ReadonlyArray<string | undefined>): string {
+		const hash = createHash("sha256");
+		for (const part of parts) {
+			hash.update(part ?? "");
+			hash.update("\u0000");
+		}
+		return `mcp-content-${hash.digest("hex").slice(0, 16)}`;
+	}
+
+	private _updateMcpContentCatalog(
+		serverId: string,
+		update: (catalog: McpContentCatalog) => McpContentCatalog,
+	): void {
+		const current = this._mcpContentCatalogs.get(serverId) ?? {
+			resources: [],
+			resourceTemplates: [],
+			prompts: [],
+		};
+		this._mcpContentCatalogs.set(serverId, update(current));
+	}
+
+	/**
+	 * Registers secret-free content capability descriptors parented to the
+	 * mcp_server and re-resolves the frozen binding so allowed content enters it
+	 * with stable revisions. Content descriptors carry no exposed tool name, so
+	 * the model-visible tool set is unaffected.
+	 */
+	private _registerMcpContentDescriptors(serverId: string): void {
+		const diagnostic = this._requireMcpDiagnostic(serverId);
+		const catalog = this._mcpContentCatalogs.get(serverId);
+		const server = this._requireMcpServerCapability(serverId);
+		if (catalog === undefined) return;
+		const sourceIdentity = `${diagnostic.source.source}:${diagnostic.id}`;
+		const candidates: CapabilityCandidate[] = [];
+		for (const resource of catalog.resources) {
+			candidates.push({
+				kind: "mcp_resource",
+				name: resource.name,
+				localName: this._mcpContentDigest(
+					resource.uri,
+					resource.name,
+					resource.mimeType,
+					resource.description,
+				),
+				sourceIdentity,
+				source: diagnostic.source,
+				parentId: server.id,
+				mcpServerId: serverId,
+				trusted: diagnostic.trusted,
+				revisionInput: {
+					uri: resource.uri,
+					name: resource.name,
+					...(resource.mimeType === undefined ? {} : { mimeType: resource.mimeType }),
+					...(resource.description === undefined ? {} : { description: resource.description }),
+					...(resource.size === undefined ? {} : { size: resource.size }),
+				},
+			});
+		}
+		for (const template of catalog.resourceTemplates) {
+			candidates.push({
+				kind: "mcp_resource_template",
+				name: template.name,
+				localName: this._mcpContentDigest(
+					template.uriTemplate,
+					template.name,
+					template.mimeType,
+					template.description,
+				),
+				sourceIdentity,
+				source: diagnostic.source,
+				parentId: server.id,
+				mcpServerId: serverId,
+				trusted: diagnostic.trusted,
+				revisionInput: {
+					uriTemplate: template.uriTemplate,
+					name: template.name,
+					...(template.mimeType === undefined ? {} : { mimeType: template.mimeType }),
+					...(template.description === undefined ? {} : { description: template.description }),
+				},
+			});
+		}
+		for (const prompt of catalog.prompts) {
+			candidates.push({
+				kind: "mcp_prompt",
+				name: prompt.name,
+				localName: this._mcpContentDigest(prompt.name, prompt.description),
+				sourceIdentity,
+				source: diagnostic.source,
+				parentId: server.id,
+				mcpServerId: serverId,
+				trusted: diagnostic.trusted,
+				revisionInput: {
+					name: prompt.name,
+					...(prompt.description === undefined ? {} : { description: prompt.description }),
+					arguments: prompt.arguments,
+				},
+			});
+		}
+		this._activeMcpContentCandidates = candidates;
+		this._resolveCapabilityBinding();
+	}
+
+	/**
+	 * Listing changes the capability binding by adding metadata descriptors. A
+	 * policy binding is immutable, so materialize the new capability binding and
+	 * reconnect the selected servers before the next explicit content operation.
+	 */
+	private async _refreshMcpContentBinding(serverId: string, signal?: AbortSignal): Promise<void> {
+		this._registerMcpContentDescriptors(serverId);
+		const bindingChanged = await this._ensureExecutionPolicyReady(undefined, signal);
+		if (bindingChanged) {
+			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
+		}
+	}
+
+	/** Content item capability for a listed resource URI; never-listed items are denied. */
+	private _requireContentCapability(
+		serverId: string,
+		uri: string,
+	): { id: string; revision: string; parentId: string; sourceId: string } {
+		const resource = this._mcpContentCatalogs.get(serverId)?.resources.find((entry) => entry.uri === uri);
+		if (resource === undefined) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP resource is not available in the selected capability binding for server "${serverId}"`,
+			);
+		}
+		return this._requireContentCapabilityByLocalName(
+			serverId,
+			"mcp_resource",
+			this._mcpContentDigest(resource.uri, resource.name, resource.mimeType, resource.description),
+		);
+	}
+
+	/** Content item capability for a listed prompt; never-listed prompts are denied. */
+	private _requirePromptCapability(
+		serverId: string,
+		promptName: string,
+	): { id: string; revision: string; parentId: string; sourceId: string } {
+		const prompt = this._mcpContentCatalogs.get(serverId)?.prompts.find((entry) => entry.name === promptName);
+		if (prompt === undefined) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP prompt is not available in the selected capability binding for server "${serverId}"`,
+			);
+		}
+		return this._requireContentCapabilityByLocalName(
+			serverId,
+			"mcp_prompt",
+			this._mcpContentDigest(prompt.name, prompt.description),
+		);
+	}
+
+	private _requireContentCapabilityByLocalName(
+		serverId: string,
+		kind: "mcp_resource" | "mcp_prompt",
+		localName: string,
+	): { id: string; revision: string; parentId: string; sourceId: string } {
+		const server = this._requireMcpServerCapability(serverId);
+		const descriptor = this._activeCapabilityCatalog?.descriptors.find(
+			(candidate) =>
+				candidate.kind === kind &&
+				candidate.mcpServerId === serverId &&
+				getCapabilityLocalName(candidate) === localName,
+		);
+		if (descriptor === undefined) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP ${kind === "mcp_prompt" ? "prompt" : "resource"} for server "${serverId}" is not in the capability catalog`,
+			);
+		}
+		return { id: descriptor.id, revision: descriptor.revision, parentId: server.id, sourceId: localName };
+	}
+
+	/**
+	 * Pending attachments whose capability descriptor is still selected at the
+	 * frozen binding's revision. Attachments staged against a superseded binding
+	 * (server deselected or revision changed) are dropped safely; they are
+	 * turn-scoped and never injected through a stale or degraded connection.
+	 */
+	private _currentMcpAttachmentSources(): ContextSourceInput[] {
+		const binding = this._activeCapabilityBinding;
+		if (binding === undefined || this._pendingMcpAttachments.length === 0) {
+			return this._pendingMcpAttachments;
+		}
+		const selected = new Map(binding.descriptors.map((ref) => [ref.id, ref.revision]));
+		return this._pendingMcpAttachments.filter((source) => {
+			if (source.capabilityId === undefined || source.capabilityRevision === undefined) {
+				return true;
+			}
+			return selected.get(source.capabilityId) === source.capabilityRevision;
+		});
+	}
+
+	/**
+	 * Builds the untrusted context source for one attachment. The content is
+	 * normalized and bounded by the read; it reaches the model as a user-role
+	 * message (never system/developer/assistant) and only the metadata receipt
+	 * (digest, labels without raw URIs, capability refs) is ever persisted.
+	 */
+	private _buildMcpAttachmentSource(
+		serverId: string,
+		kind: "resource" | "prompt",
+		capability: { id: string; revision: string; sourceId: string },
+		content: string,
+		truncated: boolean,
+	): ContextSourceInput {
+		const sourceId = `mcp:attach:${kind}:${serverId}:${capability.sourceId}`;
+		const label = `MCP ${kind} from server "${serverId}" (external, user-attached)`;
+		const body = truncated
+			? `${content}\n\n[truncated: attached MCP content was cut by normalization limits]`
+			: content;
+		const text = `<mcp_attachment server="${serverId}" kind="${kind}" truncated="${String(
+			truncated,
+		)}">\n${body}\n</mcp_attachment>`;
+		return {
+			sourceId,
+			kind: "mcp_content",
+			scope: "turn",
+			trust: "user_owned",
+			label,
+			content: text,
+			required: true,
+			refId: capability.sourceId,
+			capabilityId: capability.id,
+			capabilityRevision: capability.revision,
+			capabilityBindingId: this._activeCapabilityBinding?.id,
+			placement: "message",
+			message: {
+				role: "user",
+				content: [{ type: "text", text }],
+				timestamp: Date.now(),
+			},
+		};
+	}
+
 	private _createPolicyAwareMcpTransportFactory(): MCPTransportFactory {
 		const defaultFactory = createMCPDefaultTransportFactory();
-		return async (config, env) => {
+		return async (config, env, options?: MCPTransportFactoryOptions) => {
 			const profile = this._requireExecutionPolicyProfile();
 			const authorized = this._mcpAuthorizedTransportValues.get(config.id) ?? {
 				environment: {},
@@ -5819,7 +6659,7 @@ export class AgentSession {
 				return profile.enforcement === "legacy"
 					? (authorized.headers[header.name] ?? env(name))
 					: authorized.headers[header.name];
-			});
+			}, options);
 		};
 	}
 
@@ -5898,11 +6738,15 @@ export class AgentSession {
 		}
 		this._mcpLifecycleManager = new MCPLifecycleManager({
 			transportFactory: this._createPolicyAwareMcpTransportFactory(),
+			authFor: (serverId) => this._mcpAuthHooksFor(serverId),
 		});
 		this._mcpRegisteredServerIds = new Set();
 		this._mcpAuthorizedTransportValues = new Map();
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
+		this._activeMcpContentCandidates = [];
+		this._pendingMcpAttachments = [];
+		this._mcpContentCatalogs.clear();
 		this._activeCapabilityBinding = undefined;
 		this._activeCapabilityCatalog = undefined;
 		this._mcpDiscoveryErrors = new Map();
@@ -6744,4 +7588,17 @@ export class AgentSession {
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
 	}
+}
+
+/**
+ * Joins normalized text blocks into attachable context text. Image and other
+ * non-text blocks are not representable as context source text and are dropped
+ * here; the read itself is already normalized and bounded by the content
+ * limits, so attachments never carry unbounded remote content.
+ */
+function mcpAttachmentText(blocks: ReadonlyArray<MCPNormalizedContentBlock>): string {
+	return blocks
+		.filter((block): block is { type: "text"; text: string } => block.type === "text")
+		.map((block) => block.text)
+		.join("\n\n");
 }
