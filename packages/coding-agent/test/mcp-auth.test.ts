@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
 import type { AuthEvent, AuthInteraction } from "@aos-agent/ai";
@@ -1112,6 +1112,36 @@ describe("credential store injection", () => {
 		await provider.logout(ctx, flowOptions(fake, ));
 		const result = await promise;
 		expect(result.outcome).toBe("cancelled");
+	});
+
+	it("cleans memory and store before best-effort revocation, even when revocation fails or aborts", async () => {
+		const fake = new FakeAuthServer();
+		// The revocation endpoint exists from the start (loopback so metadata
+		// validation passes) so the flow caches it and logout attempts revoke.
+		fake.asMetadata = { ...DEFAULT_AS_METADATA, revocation_endpoint: "http://127.0.0.1:9999/revoke" };
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		const options = flowOptions(fake);
+		await runInteractiveFlow(provider, ctx, options, makeInteraction());
+		expect(store.records.size).toBe(1);
+
+		const session = provider.session(ctx, options);
+		const revokeSpy = vi
+			.spyOn(session as unknown as { revokeToken: (e: URL, t: string) => Promise<void> }, "revokeToken")
+			.mockRejectedValueOnce(new Error("revoke network failure"));
+
+		// Abort the session signal mid-logout: local cleanup still completes and
+		// the revoke failure is swallowed (memory-first contract).
+		const aborted = new AbortController();
+		ctx.signal = aborted.signal;
+		const logoutPromise = provider.logout(ctx, options);
+		aborted.abort(new Error("session teardown"));
+		await expect(logoutPromise).resolves.toBeUndefined();
+		revokeSpy.mockRestore();
+
+		expect(store.records.size).toBe(0);
+		expect(session.getStatus().state).toBe("unauthenticated");
 	});
 });
 

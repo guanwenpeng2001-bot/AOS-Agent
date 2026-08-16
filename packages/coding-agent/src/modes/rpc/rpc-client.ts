@@ -52,6 +52,7 @@ import type {
 	MCPPageResult,
 	MCPPromptView,
 	MCPReadResourceResult,
+	MCPResourceTemplateView,
 	MCPResourceView,
 	RpcAutomationResponse,
 	RpcMcpAttachmentReceipt,
@@ -887,12 +888,33 @@ export class RpcClient {
 	}
 
 	/**
+	 * List one page of the resource-template catalog of a selected, trusted
+	 * server. Pass the previous page's `nextCursor` as `cursor` to fetch the
+	 * next page. Never starts a Run or a model.
+	 */
+	async listMcpResourceTemplates(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPageResult<MCPResourceTemplateView>> {
+		const response = await this.sendAutomation(
+			{
+				type: "mcp.list_resource_templates",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getAutomationData<MCPPageResult<MCPResourceTemplateView>>(response);
+	}
+
+	/**
 	 * Read one resource of a selected, trusted server. Returns the normalized,
 	 * capped, redacted Session result (untrusted marker, bounded text/image
 	 * blocks kept under the content limits). Never starts a Run or a model.
 	 */
-	async readMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
-		const response = await this.sendAutomation({ type: "mcp.read_resource", serverId, uri }, signal);
+	async readMcpResource(serverId: string, resourceId: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+		const response = await this.sendAutomation({ type: "mcp.read_resource", serverId, resourceId }, signal);
 		return this.getAutomationData<MCPReadResourceResult>(response);
 	}
 
@@ -902,8 +924,8 @@ export class RpcClient {
 	 * metadata/digest receipt; the raw URI and remote text never cross the
 	 * wire. Never starts a Run or a model.
 	 */
-	async attachMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<RpcMcpAttachmentReceipt> {
-		const response = await this.sendAutomation({ type: "mcp.attach_resource", serverId, uri }, signal);
+	async attachMcpResource(serverId: string, resourceId: string, signal?: AbortSignal): Promise<RpcMcpAttachmentReceipt> {
+		const response = await this.sendAutomation({ type: "mcp.attach_resource", serverId, resourceId }, signal);
 		return this.getAutomationData<RpcMcpAttachmentReceipt>(response);
 	}
 
@@ -935,11 +957,11 @@ export class RpcClient {
 	 */
 	async getMcpPrompt(
 		serverId: string,
-		name: string,
+		promptId: string,
 		args?: Record<string, string>,
 		signal?: AbortSignal,
 	): Promise<MCPGetPromptResult> {
-		const response = await this.sendAutomation({ type: "mcp.get_prompt", serverId, name, args }, signal);
+		const response = await this.sendAutomation({ type: "mcp.get_prompt", serverId, promptId, args }, signal);
 		return this.getAutomationData<MCPGetPromptResult>(response);
 	}
 
@@ -951,11 +973,11 @@ export class RpcClient {
 	 */
 	async attachMcpPrompt(
 		serverId: string,
-		name: string,
+		promptId: string,
 		args?: Record<string, string>,
 		signal?: AbortSignal,
 	): Promise<RpcMcpAttachmentReceipt> {
-		const response = await this.sendAutomation({ type: "mcp.attach_prompt", serverId, name, args }, signal);
+		const response = await this.sendAutomation({ type: "mcp.attach_prompt", serverId, promptId, args }, signal);
 		return this.getAutomationData<RpcMcpAttachmentReceipt>(response);
 	}
 

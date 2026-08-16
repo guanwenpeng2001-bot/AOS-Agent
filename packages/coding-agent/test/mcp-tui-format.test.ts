@@ -30,9 +30,9 @@ describe("interactive /mcp formatting", () => {
 		expect(usage).toContain("/mcp auth <serverId>");
 		expect(usage).toContain("/mcp logout <serverId>");
 		expect(usage).toContain("/mcp resources [serverId]");
-		expect(usage).toContain("/mcp resource [serverId] <uri>");
+		expect(usage).toContain("/mcp resource [serverId] <resourceId>");
 		expect(usage).toContain("/mcp prompts [serverId]");
-		expect(usage).toContain("/mcp prompt [serverId] <name> [key=value ...]");
+		expect(usage).toContain("/mcp prompt [serverId] <promptId> [key=value ...]");
 	});
 
 	it("formats the server list without leaking config details", () => {
@@ -91,30 +91,56 @@ describe("interactive /mcp formatting", () => {
 	it("lists resources with metadata and a read hint", () => {
 		const page = {
 			items: [
-				{ uri: "docs://spec.md", name: "spec", description: "The spec", mimeType: "text/markdown", size: 42 },
+				{
+					serverId: "docs",
+					resourceId: "mcp-res-1111111111111111",
+					name: "spec",
+					description: "The spec",
+					mimeType: "text/markdown",
+					size: 42,
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
 			],
 			truncated: false,
 		};
-		const templates = { items: [{ uriTemplate: "docs://item/{id}", name: "item" }], truncated: false };
+		const templates = {
+			items: [
+				{
+					serverId: "docs",
+					templateId: "mcp-tpl-1111111111111111",
+					name: "item",
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
+			],
+			truncated: false,
+		};
 		const out = stripAnsi(formatMcpResources("docs", page, templates));
 		expect(out).toContain("MCP resources: docs");
 		expect(out).toContain("spec");
-		expect(out).toContain("docs://spec.md");
-		expect(out).toContain("docs://item/{id}");
-		expect(out).toContain("/mcp resource [serverId] <uri>");
+		expect(out).toContain("mcp-res-1111111111111111");
+		expect(out).toContain("mcp-tpl-1111111111111111");
+		expect(out).toContain("/mcp resource [serverId] <resourceId>");
 	});
 
 	it("previews resources behind the untrusted banner and caps the text", () => {
 		const longText = "x".repeat(5_000);
 		const result = {
 			serverId: "docs",
-			uri: "docs://spec.md",
+			resourceId: "mcp-res-1111111111111111",
 			content: {
 				blocks: [{ type: "text" as const, text: longText }],
 				truncated: true,
+				unsafe: false,
 				droppedBlocks: 1,
 				droppedBytes: 0,
+				byteCount: longText.length,
 			},
+			byteCount: longText.length,
+			truncated: true,
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		};
 		const out = stripAnsi(formatMcpResourcePreview("docs", result));
 		expect(out).toContain("UNTRUSTED EXTERNAL MCP CONTENT");
@@ -128,9 +154,13 @@ describe("interactive /mcp formatting", () => {
 		const page = {
 			items: [
 				{
+					serverId: "docs",
+					promptId: "mcp-prompt-1111111111111111",
 					name: "summarize",
 					description: "Summarize a resource",
 					arguments: [{ name: "uri", required: true }],
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
 				},
 			],
 			truncated: false,
@@ -139,18 +169,20 @@ describe("interactive /mcp formatting", () => {
 		expect(out).toContain("MCP prompts: docs");
 		expect(out).toContain("summarize");
 		expect(out).toContain("arguments: uri*");
-		expect(out).toContain("/mcp prompt [serverId] <name>");
+		expect(out).toContain("/mcp prompt [serverId] <promptId>");
 	});
 
 	it("previews prompt messages preserving roles and the untrusted banner", () => {
 		const result = {
 			serverId: "docs",
-			promptName: "summarize",
+			promptId: "mcp-prompt-1111111111111111",
 			description: "Summarize a resource",
 			messages: [
-				{ role: "user" as const, content: { blocks: [{ type: "text" as const, text: "Summarize this" }], truncated: false, droppedBlocks: 0, droppedBytes: 0 } },
-				{ role: "assistant" as const, content: { blocks: [{ type: "text" as const, text: "Here is the summary" }], truncated: false, droppedBlocks: 0, droppedBytes: 0 } },
+				{ role: "user" as const, content: { blocks: [{ type: "text" as const, text: "Summarize this" }], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 14 } },
+				{ role: "assistant" as const, content: { blocks: [{ type: "text" as const, text: "Here is the summary" }], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 19 } },
 			],
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		};
 		const out = stripAnsi(formatMcpPromptPreview("docs", result));
 		expect(out).toContain(stripAnsi(formatMcpUntrustedBanner()));

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { CapabilityError } from "../src/core/capability-registry.ts";
+import { PolicyError } from "../src/core/execution-policy.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { MCPAuthError } from "../src/core/mcp-auth.ts";
 import { MCPError } from "../src/core/mcp-types.ts";
@@ -7,10 +9,14 @@ import { RpcHostController, type RpcHostOutputRecord } from "../src/modes/rpc/rp
 import type { RpcAutomationResponse, RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 
 const AUTH_URL = "https://auth.example.test/authorize?client_id=abc&code_challenge=xyz";
+const RESOURCE_ID = "mcp-res-1111111111111111";
+const PROMPT_ID = "mcp-prompt-1111111111111111";
+const TEMPLATE_ID = "mcp-tpl-1111111111111111";
 
 /** Canonical MCP public surface command set advertised by initialize. */
 const MCP_COMMANDS = [
 	"mcp.list_resources",
+	"mcp.list_resource_templates",
 	"mcp.read_resource",
 	"mcp.attach_resource",
 	"mcp.list_prompts",
@@ -32,6 +38,7 @@ interface FakeSession {
 		getEntries: ReturnType<typeof vi.fn>;
 	};
 	listMcpResources: ReturnType<typeof vi.fn>;
+	listMcpResourceTemplates: ReturnType<typeof vi.fn>;
 	readMcpResource: ReturnType<typeof vi.fn>;
 	attachMcpResource: ReturnType<typeof vi.fn>;
 	listMcpPrompts: ReturnType<typeof vi.fn>;
@@ -59,18 +66,46 @@ function createFakeSession(): FakeSession {
 			getEntries: vi.fn(() => []),
 		},
 		listMcpResources: vi.fn(async () => ({
-			items: [{ uri: "file:///guide.md", name: "Guide", mimeType: "text/markdown" }],
+			items: [
+				{
+					serverId: "docs",
+					resourceId: RESOURCE_ID,
+					name: "Guide",
+					mimeType: "text/markdown",
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
+			],
+			truncated: false,
+		})),
+		listMcpResourceTemplates: vi.fn(async () => ({
+			items: [
+				{
+					serverId: "docs",
+					templateId: TEMPLATE_ID,
+					name: "note template",
+					mimeType: "text/plain",
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
+			],
 			truncated: false,
 		})),
 		readMcpResource: vi.fn(async () => ({
 			serverId: "docs",
-			uri: "file:///guide.md",
+			resourceId: RESOURCE_ID,
 			content: {
 				blocks: [{ type: "text", text: "guide text" }],
 				truncated: false,
+				unsafe: false,
 				droppedBlocks: 0,
 				droppedBytes: 0,
+				byteCount: 10,
 			},
+			byteCount: 10,
+			truncated: false,
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		})),
 		attachMcpResource: vi.fn(async () => ({
 			attachmentId: "source-resource",
@@ -81,27 +116,35 @@ function createFakeSession(): FakeSession {
 		listMcpPrompts: vi.fn(async () => ({
 			items: [
 				{
+					serverId: "docs",
+					promptId: PROMPT_ID,
 					name: "summarize",
 					description: "Summarize a topic",
 					arguments: [{ name: "threadId", required: true }],
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
 				},
 			],
 			truncated: false,
 		})),
 		getMcpPrompt: vi.fn(async () => ({
 			serverId: "docs",
-			promptName: "summarize",
+			promptId: PROMPT_ID,
 			messages: [
 				{
 					role: "user",
 					content: {
 						blocks: [{ type: "text", text: "please summarize" }],
 						truncated: false,
+						unsafe: false,
 						droppedBlocks: 0,
 						droppedBytes: 0,
+						byteCount: 16,
 					},
 				},
 			],
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		})),
 		attachMcpPrompt: vi.fn(async () => ({
 			attachmentId: "source-prompt",
@@ -200,24 +243,39 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 			expect(list).toMatchObject({ truncated: false });
 			expect(session.listMcpResources).toHaveBeenCalledWith("docs", undefined);
 
+			const templates = successData(
+				await controller.dispatch({ type: "mcp.list_resource_templates", serverId: "docs" }),
+				"mcp.list_resource_templates",
+			);
+			expect(templates).toMatchObject({ truncated: false });
+			expect(session.listMcpResourceTemplates).toHaveBeenCalledWith("docs", undefined);
+
+			const templatesCursor = await controller.dispatch({
+				type: "mcp.list_resource_templates",
+				serverId: "docs",
+				cursor: "tpl-2",
+			});
+			expect(session.listMcpResourceTemplates).toHaveBeenLastCalledWith("docs", "tpl-2");
+			expect(templatesCursor).toMatchObject({ success: true });
+
 			const listCursor = await controller.dispatch({ type: "mcp.list_resources", serverId: "docs", cursor: "page-2" });
 			expect(session.listMcpResources).toHaveBeenLastCalledWith("docs", "page-2");
 			expect(listCursor).toMatchObject({ success: true });
 
-			const read = successData(await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" }), "mcp.read_resource");
-			expect(read).toMatchObject({ serverId: "docs", uri: "file:///guide.md" });
-			expect(session.readMcpResource).toHaveBeenCalledWith("docs", "file:///guide.md");
+			const read = successData(await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID }), "mcp.read_resource");
+			expect(read).toMatchObject({ serverId: "docs", resourceId: RESOURCE_ID });
+			expect(session.readMcpResource).toHaveBeenCalledWith("docs", RESOURCE_ID);
 
 			const promptList = successData(await controller.dispatch({ type: "mcp.list_prompts", serverId: "docs" }), "mcp.list_prompts");
 			expect(promptList).toMatchObject({ truncated: false });
 			expect(session.listMcpPrompts).toHaveBeenCalledWith("docs", undefined);
 
 			const get = successData(
-				await controller.dispatch({ type: "mcp.get_prompt", serverId: "docs", name: "summarize", args: { threadId: "t1" } }),
+				await controller.dispatch({ type: "mcp.get_prompt", serverId: "docs", promptId: PROMPT_ID, args: { threadId: "t1" } }),
 				"mcp.get_prompt",
 			);
-			expect(get).toMatchObject({ serverId: "docs", promptName: "summarize" });
-			expect(session.getMcpPrompt).toHaveBeenCalledWith("docs", "summarize", { threadId: "t1" });
+			expect(get).toMatchObject({ serverId: "docs", promptId: PROMPT_ID });
+			expect(session.getMcpPrompt).toHaveBeenCalledWith("docs", PROMPT_ID, { threadId: "t1" });
 
 			// None of the MCP commands touched the model loop or the run machinery.
 			expect(session.prompt).not.toHaveBeenCalled();
@@ -232,19 +290,19 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 		const { controller, session, cleanup } = await createHarness();
 		try {
 			const attachResource = successData(
-				await controller.dispatch({ type: "mcp.attach_resource", serverId: "docs", uri: "file:///guide.md" }),
+				await controller.dispatch({ type: "mcp.attach_resource", serverId: "docs", resourceId: RESOURCE_ID }),
 				"mcp.attach_resource",
 			);
-			expect(session.attachMcpResource).toHaveBeenCalledWith("docs", "file:///guide.md");
+			expect(session.attachMcpResource).toHaveBeenCalledWith("docs", RESOURCE_ID);
 			expect(attachResource).toMatchObject({ attachmentId: "source-resource", serverId: "docs", contentLength: 10 });
 			expect(JSON.stringify(attachResource)).not.toContain("guide text");
 			expect(JSON.stringify(attachResource)).not.toContain("file:///guide.md");
 
 			const attachPrompt = successData(
-				await controller.dispatch({ type: "mcp.attach_prompt", serverId: "docs", name: "summarize", args: { threadId: "t1" } }),
+				await controller.dispatch({ type: "mcp.attach_prompt", serverId: "docs", promptId: PROMPT_ID, args: { threadId: "t1" } }),
 				"mcp.attach_prompt",
 			);
-			expect(session.attachMcpPrompt).toHaveBeenCalledWith("docs", "summarize", { threadId: "t1" });
+			expect(session.attachMcpPrompt).toHaveBeenCalledWith("docs", PROMPT_ID, { threadId: "t1" });
 			expect(attachPrompt).toMatchObject({ attachmentId: "source-prompt", serverId: "docs", contentLength: 15 });
 			expect(JSON.stringify(attachPrompt)).not.toContain("please summarize");
 
@@ -260,13 +318,13 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 			const init = await controller.dispatch({ type: "initialize", protocolVersion: 1 });
 			expect(init).toMatchObject({ type: "response", command: "initialize", success: true });
 
-			const attach = await controller.dispatch({ type: "mcp.attach_resource", serverId: "docs", uri: "file:///guide.md" });
+			const attach = await controller.dispatch({ type: "mcp.attach_resource", serverId: "docs", resourceId: RESOURCE_ID });
 			expect(attach).toMatchObject({ type: "response", command: "mcp.attach_resource", success: false });
 			expect((attach as { error: string }).error).toContain("not available while the Automation Host is initialized");
 			expect(session.attachMcpResource).not.toHaveBeenCalled();
 
 			// Read-only MCP commands stay available while the host is initialized.
-			const read = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" });
+			const read = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
 			expect(read).toMatchObject({ success: true });
 		} finally {
 			await cleanup();
@@ -277,7 +335,7 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 		const { controller, session, cleanup } = await createHarness();
 		try {
 			session.readMcpResource.mockRejectedValueOnce(new MCPError("not_selected", "docs", `MCP server "docs" is not selected for this binding`));
-			const denied = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" });
+			const denied = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
 			expect(denied).toMatchObject({
 				type: "response",
 				command: "mcp.read_resource",
@@ -286,20 +344,81 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 			});
 
 			session.readMcpResource.mockRejectedValueOnce(new MCPError("connect_failed", "docs", `Failed to connect to MCP server "docs"`));
-			const connect = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" });
+			const connect = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
 			expect(connect).toMatchObject({ success: false, error: { code: "capability_mcp_connect_failed" } });
 
 			session.getMcpPrompt.mockRejectedValueOnce(new MCPError("unavailable", "docs", `MCP server "docs" is unavailable`));
-			const unavailable = await controller.dispatch({ type: "mcp.get_prompt", serverId: "docs", name: "summarize" });
+			const unavailable = await controller.dispatch({ type: "mcp.get_prompt", serverId: "docs", promptId: PROMPT_ID });
 			expect(unavailable).toMatchObject({ success: false, error: { code: "capability_mcp_unavailable" } });
 
 			// Unknown errors degrade to the fallback code and a fixed message;
 			// raw error text (and any embedded secret) never reaches the wire.
 			session.readMcpResource.mockRejectedValueOnce(new Error("raw remote failure with token=super-secret"));
-			const fallback = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" });
+			const fallback = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
 			const fallbackError = (fallback as { error: { code: string; message: string } }).error;
 			expect(fallbackError.code).toBe("capability_mcp_unavailable");
 			expect(JSON.stringify(fallback)).not.toContain("super-secret");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("never lets crafted CapabilityError / PolicyError / MCPError messages reach the wire", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			// A CapabilityError carrying a crafted message with a token, raw URI,
+			// capability id, and policy source must classify to its code and never
+			// leak the crafted text: the public boundary always serializes the
+			// fixed generic message.
+			session.readMcpResource.mockRejectedValueOnce(
+				new CapabilityError(
+					"capability_denied",
+					`raw capability message token=cap-secret uri=file:///leak.md capId=cap:global:leak policy=my.policy`,
+				),
+			);
+			const denied = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
+			const deniedError = (denied as { error: { code: string; message: string } }).error;
+			expect(deniedError.code).toBe("capability_denied");
+			expect(deniedError.message).toBe("Automation request failed.");
+			const deniedJson = JSON.stringify(denied);
+			expect(deniedJson).not.toContain("cap-secret");
+			expect(deniedJson).not.toContain("leak.md");
+			expect(deniedJson).not.toContain("cap:global:leak");
+			expect(deniedJson).not.toContain("my.policy");
+			expect(deniedJson).not.toContain("raw capability message");
+
+			// A PolicyError message is code-derived by construction; the wire
+			// message must be the fixed public boundary text, never the caller-
+			// supplied text.
+			session.getMcpPrompt.mockRejectedValueOnce(
+				new PolicyError("policy_denied", "crafted policy text with token=policy-secret"),
+			);
+			const policyDenied = await controller.dispatch({ type: "mcp.get_prompt", serverId: "docs", promptId: PROMPT_ID });
+			const policyError = (policyDenied as { error: { code: string; message: string } }).error;
+			expect(policyError.code).toBe("policy_denied");
+			expect(policyError.message).toBe("Automation request failed.");
+			expect(JSON.stringify(policyDenied)).not.toContain("policy-secret");
+
+			// An MCPError message is fixed by construction; the wire message must
+			// be the fixed public boundary text, never the error's own text.
+			session.readMcpResource.mockRejectedValueOnce(
+				new MCPError("unavailable", "docs", `crafted mcp text token=mcp-secret url=${AUTH_URL}`),
+			);
+			const mcpFailed = await controller.dispatch({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID });
+			const mcpError = (mcpFailed as { error: { code: string; message: string } }).error;
+			expect(mcpError.code).toBe("capability_mcp_unavailable");
+			expect(mcpError.message).toBe("Automation request failed.");
+			const mcpJson = JSON.stringify(mcpFailed);
+			expect(mcpJson).not.toContain("mcp-secret");
+			expect(mcpJson).not.toContain(AUTH_URL);
+
+			// A sandbox PolicyError classifies to its stable code.
+			session.attachMcpResource.mockRejectedValueOnce(new PolicyError("sandbox_required"));
+			const sandbox = await controller.dispatch({ type: "mcp.attach_resource", serverId: "docs", resourceId: RESOURCE_ID });
+			const sandboxError = (sandbox as { error: { code: string; message: string } }).error;
+			expect(sandboxError.code).toBe("sandbox_required");
+			expect(sandboxError.message).toBe("Automation request failed.");
+			expect(JSON.stringify(sandbox)).not.toContain("sandbox provider");
 		} finally {
 			await cleanup();
 		}
@@ -418,7 +537,18 @@ describe("RpcClient MCP public surface", () => {
 		type: "response",
 		command: "mcp.list_resources",
 		success: true,
-		data: { items: [{ uri: "file:///guide.md", name: "Guide" }], truncated: false },
+		data: {
+			items: [
+				{
+					serverId: "docs",
+					resourceId: RESOURCE_ID,
+					name: "Guide",
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
+			],
+			truncated: false,
+		},
 	};
 
 	it("forwards canonical MCP commands with typed results", async () => {
@@ -434,10 +564,18 @@ describe("RpcClient MCP public surface", () => {
 			type: "response",
 			command: "mcp.read_resource",
 			success: true,
-			data: { serverId: "docs", uri: "file:///guide.md", content: { blocks: [], truncated: false } },
+			data: {
+				serverId: "docs",
+				resourceId: RESOURCE_ID,
+				content: { blocks: [], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 0 },
+				byteCount: 0,
+				truncated: false,
+				provenanceId: "mcp-content-1111111111111111",
+				revision: "rev:1111111111111111",
+			},
 		});
-		await client.readMcpResource("docs", "file:///guide.md");
-		expect(send).toHaveBeenLastCalledWith({ type: "mcp.read_resource", serverId: "docs", uri: "file:///guide.md" }, undefined, undefined);
+		await client.readMcpResource("docs", RESOURCE_ID);
+		expect(send).toHaveBeenLastCalledWith({ type: "mcp.read_resource", serverId: "docs", resourceId: RESOURCE_ID }, undefined, undefined);
 
 		send.mockResolvedValueOnce({
 			type: "response",
@@ -445,15 +583,26 @@ describe("RpcClient MCP public surface", () => {
 			success: true,
 			data: { attachmentId: "source-resource", serverId: "docs", contentLength: 10, truncated: false },
 		});
-		const receipt = await client.attachMcpResource("docs", "file:///guide.md");
+		const receipt = await client.attachMcpResource("docs", RESOURCE_ID);
 		expect(receipt).toMatchObject({ attachmentId: "source-resource" });
-		expect(send).toHaveBeenLastCalledWith({ type: "mcp.attach_resource", serverId: "docs", uri: "file:///guide.md" }, undefined, undefined);
+		expect(send).toHaveBeenLastCalledWith({ type: "mcp.attach_resource", serverId: "docs", resourceId: RESOURCE_ID }, undefined, undefined);
 
 		send.mockResolvedValueOnce({
 			type: "response",
 			command: "mcp.list_prompts",
 			success: true,
-			data: { items: [{ name: "summarize" }], truncated: false },
+			data: {
+			items: [
+				{
+					serverId: "docs",
+					promptId: PROMPT_ID,
+					name: "summarize",
+					provenanceId: "mcp-content-1111111111111111",
+					revision: "rev:1111111111111111",
+				},
+			],
+			truncated: false,
+		},
 		});
 		await client.listMcpPrompts("docs");
 		expect(send).toHaveBeenLastCalledWith({ type: "mcp.list_prompts", serverId: "docs" }, undefined, undefined);
@@ -462,11 +611,17 @@ describe("RpcClient MCP public surface", () => {
 			type: "response",
 			command: "mcp.get_prompt",
 			success: true,
-			data: { serverId: "docs", promptName: "summarize", messages: [] },
+			data: {
+				serverId: "docs",
+				promptId: PROMPT_ID,
+				messages: [],
+				provenanceId: "mcp-content-1111111111111111",
+				revision: "rev:1111111111111111",
+			},
 		});
-		await client.getMcpPrompt("docs", "summarize", { threadId: "t1" });
+		await client.getMcpPrompt("docs", PROMPT_ID, { threadId: "t1" });
 		expect(send).toHaveBeenLastCalledWith(
-			{ type: "mcp.get_prompt", serverId: "docs", name: "summarize", args: { threadId: "t1" } },
+			{ type: "mcp.get_prompt", serverId: "docs", promptId: PROMPT_ID, args: { threadId: "t1" } },
 			undefined,
 			undefined,
 		);
@@ -477,9 +632,9 @@ describe("RpcClient MCP public surface", () => {
 			success: true,
 			data: { attachmentId: "source-prompt", serverId: "docs", contentLength: 15, truncated: false },
 		});
-		await client.attachMcpPrompt("docs", "summarize", { threadId: "t1" });
+		await client.attachMcpPrompt("docs", PROMPT_ID, { threadId: "t1" });
 		expect(send).toHaveBeenLastCalledWith(
-			{ type: "mcp.attach_prompt", serverId: "docs", name: "summarize", args: { threadId: "t1" } },
+			{ type: "mcp.attach_prompt", serverId: "docs", promptId: PROMPT_ID, args: { threadId: "t1" } },
 			undefined,
 			undefined,
 		);

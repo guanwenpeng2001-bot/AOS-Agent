@@ -193,14 +193,17 @@ import {
 	type MCPCredentialScope,
 	type MCPCredentialStatusView,
 } from "./mcp-auth-storage.ts";
-import type {
-	MCPGetPromptResult,
-	MCPNormalizedContentBlock,
-	MCPPageResult,
-	MCPPromptView,
-	MCPReadResourceResult,
-	MCPResourceTemplateView,
-	MCPResourceView,
+import {
+	DEFAULT_MCP_CONTENT_LIMITS,
+	type MCPGetPromptResult,
+	type MCPNormalizedContentBlock,
+	type MCPPageResult,
+	type MCPPromptView,
+	type MCPReadResourceResult,
+	type MCPResourceTemplateView,
+	type MCPResourceView,
+	utf8ByteLength,
+	validateMcpPromptArguments,
 } from "./mcp-content-types.ts";
 import { createMCPDefaultTransportFactory, MCPLifecycleManager, type MCPServerAuthHooks } from "./mcp-lifecycle.ts";
 import { type MCPToolDefinitionResult, mapMCPToolsToDefinitions } from "./mcp-tool-adapter.ts";
@@ -924,10 +927,10 @@ export class AgentSession {
 	async runExternalAgentPreflight(runId?: string, signal?: AbortSignal): Promise<void> {
 		await this.whenCapabilitiesReady(runId, signal);
 		this._applyPromptPreflightToolRegistryRefresh();
-		const policyBindingChanged = await this._ensureExecutionPolicyReady(runId, signal);
-		if (policyBindingChanged) {
-			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
-		}
+		// deferMcpReconnect makes the policy transition self-contained: the
+		// binding change closes every MCP transport and immediately reconnects
+		// the selected servers under the new binding.
+		await this._ensureExecutionPolicyReady(runId, signal, { deferMcpReconnect: true });
 	}
 
 	/**
@@ -2903,10 +2906,7 @@ export class AgentSession {
 		this._assertContextPayloadHooksSupported();
 		await this.whenCapabilitiesReady(this._activeContextRunId, signal);
 		this._applyPromptPreflightToolRegistryRefresh();
-		const policyBindingChanged = await this._ensureExecutionPolicyReady(this._activeContextRunId, signal);
-		if (policyBindingChanged) {
-			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
-		}
+		await this._ensureExecutionPolicyReady(this._activeContextRunId, signal, { deferMcpReconnect: true });
 	}
 
 	private async _runAgentPrompt(
@@ -3556,9 +3556,26 @@ export class AgentSession {
 	async startMcpAuth(serverId: string, interaction?: AuthInteraction): Promise<MCPAuthResult> {
 		const diagnostic = this._requireMcpDiagnostic(serverId);
 		this._assertMcpAuthSupported(diagnostic, serverId);
-		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
-		const { context, options } = this._mcpAuthBinding(serverId);
-		return this._mcpAuthProvider.startInteractive(context, options, interaction);
+		return this._runMcpAudited(
+			serverId,
+			"auth",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.auth", serverId, capability);
+				return capability;
+			},
+			async () => {
+				const { context, options } = this._mcpAuthBinding(serverId);
+				const result = await this._mcpAuthProvider.startInteractive(context, options, interaction);
+				return { result };
+			},
+			(result) =>
+				result.outcome === "authorized" || result.outcome === "interaction_required"
+					? { outcome: "success" }
+					: result.outcome === "cancelled"
+						? { outcome: "cancelled" }
+						: { outcome: "failed", reasonCode: "mcp_auth_timeout" },
+		);
 	}
 
 	/** Validates and delivers the OAuth callback code for a pending flow. Gated by `mcp.auth`. */
@@ -3569,18 +3586,49 @@ export class AgentSession {
 	): Promise<void> {
 		const diagnostic = this._requireMcpDiagnostic(serverId);
 		this._assertMcpAuthSupported(diagnostic, serverId);
-		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
-		const { context, options } = this._mcpAuthBinding(serverId);
-		return this._mcpAuthProvider.completeAuthorization(context, options, code, params);
+		return this._runMcpAudited(
+			serverId,
+			"auth",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.auth", serverId, capability);
+				return capability;
+			},
+			async () => {
+				const { context, options } = this._mcpAuthBinding(serverId);
+				await this._mcpAuthProvider.completeAuthorization(context, options, code, params);
+				return { result: undefined };
+			},
+		);
 	}
 
 	/** Awaits the outcome of a headless OAuth flow. Gated by `mcp.auth`. */
 	async waitForMcpAuth(serverId: string, signal?: AbortSignal): Promise<MCPAuthResult> {
 		const diagnostic = this._requireMcpDiagnostic(serverId);
 		this._assertMcpAuthSupported(diagnostic, serverId);
-		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
-		const { context, options } = this._mcpAuthBinding(serverId);
-		return awaitWithOperationSignal(this._mcpAuthProvider.waitForAuthorization(context, options), signal);
+		return this._runMcpAudited(
+			serverId,
+			"auth",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.auth", serverId, capability);
+				return capability;
+			},
+			async () => {
+				const { context, options } = this._mcpAuthBinding(serverId);
+				const result = await awaitWithOperationSignal(
+					this._mcpAuthProvider.waitForAuthorization(context, options),
+					signal,
+				);
+				return { result };
+			},
+			(result) =>
+				result.outcome === "authorized" || result.outcome === "interaction_required"
+					? { outcome: "success" }
+					: result.outcome === "cancelled"
+						? { outcome: "cancelled" }
+						: { outcome: "failed", reasonCode: "mcp_auth_timeout" },
+		);
 	}
 
 	/**
@@ -3591,9 +3639,20 @@ export class AgentSession {
 	async logoutMcpAuth(serverId: string, signal?: AbortSignal): Promise<void> {
 		const diagnostic = this._requireMcpDiagnostic(serverId);
 		this._assertMcpAuthSupported(diagnostic, serverId);
-		await this._authorizeMcpOperation("mcp.auth", serverId, this._requireMcpServerCapability(serverId));
-		const { context, options } = this._mcpAuthBinding(serverId);
-		await awaitWithOperationSignal(this._mcpAuthProvider.logout(context, options), signal);
+		return this._runMcpAudited(
+			serverId,
+			"auth",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.auth", serverId, capability);
+				return capability;
+			},
+			async () => {
+				const { context, options } = this._mcpAuthBinding(serverId);
+				await awaitWithOperationSignal(this._mcpAuthProvider.logout(context, options), signal);
+				return { result: undefined };
+			},
+		);
 	}
 
 	/**
@@ -3608,12 +3667,31 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<MCPPageResult<MCPResourceView>> {
 		await this._ensureMcpContentIdle();
-		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
-		await this._ensureMcpServerConnected(serverId, signal);
-		const page = await this._mcpLifecycleManager.listResources(serverId, cursor, signal);
-		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, resources: page.items }));
-		await this._refreshMcpContentBinding(serverId, signal);
-		return page;
+		return this._runMcpAudited(
+			serverId,
+			"resource.list",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.content.list", serverId, capability);
+				return capability;
+			},
+			async () => {
+				await this._ensureMcpServerConnected(serverId, signal);
+				const page = await this._mcpLifecycleManager.listResources(serverId, cursor, signal);
+				// A fresh list (no cursor) starts a new catalog generation: entries a
+				// server no longer returns lose their descriptors. Cursor pages merge
+				// into the current generation so earlier pages stay readable.
+				this._updateMcpContentCatalog(serverId, (catalog) => ({
+					...catalog,
+					resources:
+						cursor === undefined
+							? [...page.items]
+							: mergeMcpCatalogItems(catalog.resources, page.items, (item) => item.resourceId),
+				}));
+				await this._refreshMcpContentBinding(serverId, signal);
+				return { result: page };
+			},
+		);
 	}
 
 	/** Lists one page of resource templates. Gated by `mcp.content.list`. */
@@ -3623,12 +3701,32 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<MCPPageResult<MCPResourceTemplateView>> {
 		await this._ensureMcpContentIdle();
-		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
-		await this._ensureMcpServerConnected(serverId, signal);
-		const page = await this._mcpLifecycleManager.listResourceTemplates(serverId, cursor, signal);
-		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, resourceTemplates: page.items }));
-		await this._refreshMcpContentBinding(serverId, signal);
-		return page;
+		return this._runMcpAudited(
+			serverId,
+			"resource.list",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.content.list", serverId, capability);
+				return capability;
+			},
+			async () => {
+				await this._ensureMcpServerConnected(serverId, signal);
+				const page = await this._mcpLifecycleManager.listResourceTemplates(serverId, cursor, signal);
+				this._updateMcpContentCatalog(serverId, (catalog) => ({
+					...catalog,
+					resourceTemplates:
+						cursor === undefined
+							? [...page.items]
+							: mergeMcpCatalogItems(
+									catalog.resourceTemplates,
+									page.items,
+									(item) => item.templateId,
+								),
+				}));
+				await this._refreshMcpContentBinding(serverId, signal);
+				return { result: page };
+			},
+		);
 	}
 
 	/** Lists one page of prompts. Gated by `mcp.content.list`. */
@@ -3638,12 +3736,28 @@ export class AgentSession {
 		signal?: AbortSignal,
 	): Promise<MCPPageResult<MCPPromptView>> {
 		await this._ensureMcpContentIdle();
-		await this._authorizeMcpOperation("mcp.content.list", serverId, this._requireMcpServerCapability(serverId));
-		await this._ensureMcpServerConnected(serverId, signal);
-		const page = await this._mcpLifecycleManager.listPrompts(serverId, cursor, signal);
-		this._updateMcpContentCatalog(serverId, (catalog) => ({ ...catalog, prompts: page.items }));
-		await this._refreshMcpContentBinding(serverId, signal);
-		return page;
+		return this._runMcpAudited(
+			serverId,
+			"prompt.list",
+			async () => {
+				const capability = this._requireMcpServerCapability(serverId);
+				await this._authorizeMcpOperation("mcp.content.list", serverId, capability);
+				return capability;
+			},
+			async () => {
+				await this._ensureMcpServerConnected(serverId, signal);
+				const page = await this._mcpLifecycleManager.listPrompts(serverId, cursor, signal);
+				this._updateMcpContentCatalog(serverId, (catalog) => ({
+					...catalog,
+					prompts:
+						cursor === undefined
+							? [...page.items]
+							: mergeMcpCatalogItems(catalog.prompts, page.items, (item) => item.promptId),
+				}));
+				await this._refreshMcpContentBinding(serverId, signal);
+				return { result: page };
+			},
+		);
 	}
 
 	/**
@@ -3652,30 +3766,62 @@ export class AgentSession {
 	 * froze; a resource that was never listed, or whose descriptor is absent or
 	 * stale, is denied.
 	 */
-	async readMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+	async readMcpResource(serverId: string, resourceId: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
 		await this._ensureMcpContentIdle();
-		const capability = this._requireContentCapability(serverId, uri);
-		await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
-		await this._ensureMcpServerConnected(serverId, signal);
-		return this._mcpLifecycleManager.readResource(serverId, uri, signal);
+		return this._runMcpAudited(
+			serverId,
+			"resource.read",
+			async () => {
+				const capability = this._requireContentCapability(serverId, resourceId);
+				await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
+				return capability;
+			},
+			async (capability) => {
+				const uri = this._requireMcpResourceUri(serverId, resourceId);
+				await this._ensureMcpServerConnected(serverId, signal);
+				const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
+				return {
+					result,
+					byteCount: result.content.byteCount,
+					blockCount: result.content.blocks.length,
+				};
+			},
+		);
 	}
 
 	/**
 	 * Fetches a listed prompt and returns its normalized bounded messages. Gated
 	 * by `mcp.content.read` with the exact descriptor revision the binding
-	 * froze.
+	 * froze. Argument sets are validated against the declared prompt arguments
+	 * (required present, no unknown keys, bounded sizes) before any server call.
 	 */
 	async getMcpPrompt(
 		serverId: string,
-		promptName: string,
+		promptId: string,
 		args?: Readonly<Record<string, string>>,
 		signal?: AbortSignal,
 	): Promise<MCPGetPromptResult> {
 		await this._ensureMcpContentIdle();
-		const capability = this._requirePromptCapability(serverId, promptName);
-		await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
-		await this._ensureMcpServerConnected(serverId, signal);
-		return this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
+		return this._runMcpAudited(
+			serverId,
+			"prompt.get",
+			async () => {
+				const capability = this._requirePromptCapability(serverId, promptId);
+				await this._authorizeMcpOperation("mcp.content.read", serverId, capability);
+				return capability;
+			},
+			async (capability) => {
+				this._validateMcpPromptArguments(serverId, promptId, args);
+				const promptName = this._requireMcpPromptName(serverId, promptId);
+				await this._ensureMcpServerConnected(serverId, signal);
+				const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
+				return {
+					result,
+					byteCount: result.messages.reduce((sum, message) => sum + message.content.byteCount, 0),
+					blockCount: result.messages.reduce((sum, message) => sum + message.content.blocks.length, 0),
+				};
+			},
+		);
 	}
 
 	/**
@@ -3683,64 +3829,149 @@ export class AgentSession {
 	 * untrusted, turn-scoped user context source for the next agent turn. Gated
 	 * by `mcp.content.attach`; the read itself never happens without the
 	 * explicit attach.
+	 *
+	 * Fail-closed truncation: when normalization cut the payload short and the
+	 * caller did not explicitly request the visible truncated result
+	 * (`options.allowTruncated`), the attach is rejected with
+	 * `content_limit_exceeded` instead of staging silently truncated content.
+	 * Interactive surfaces that already showed the capped preview and received
+	 * explicit confirmation pass `allowTruncated: true`.
 	 */
-	async attachMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<McpAttachmentResult> {
+	async attachMcpResource(
+		serverId: string,
+		resourceId: string,
+		signal?: AbortSignal,
+		options?: { allowTruncated?: boolean },
+	): Promise<McpAttachmentResult> {
 		await this._ensureMcpContentIdle();
-		const capability = this._requireContentCapability(serverId, uri);
-		await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
-		await this._ensureMcpServerConnected(serverId, signal);
-		const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
-		const content = mcpAttachmentText(result.content.blocks);
-		const source = this._buildMcpAttachmentSource(
+		return this._runMcpAudited(
 			serverId,
-			"resource",
-			capability,
-			content,
-			result.content.truncated,
+			"context.attach",
+			async () => {
+				const capability = this._requireContentCapability(serverId, resourceId);
+				await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
+				return capability;
+			},
+			async (capability) => {
+				const uri = this._requireMcpResourceUri(serverId, resourceId);
+				await this._ensureMcpServerConnected(serverId, signal);
+				const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
+				if (result.content.truncated && options?.allowTruncated !== true) {
+					throw new MCPError(
+						"content_limit_exceeded",
+						serverId,
+						mcpContentFailureMessage("content_limit_exceeded", serverId),
+					);
+				}
+				if (result.content.unsafe) {
+					// Unknown/dangerous MIME or non-representable blocks never
+					// stage: reads may return bounded metadata, attach fails closed.
+					throw new MCPError(
+						"content_invalid",
+						serverId,
+						mcpContentFailureMessage("content_invalid", serverId),
+					);
+				}
+				const content = mcpAttachmentText(result.content.blocks);
+				this._assertMcpAttachmentBudget(serverId, utf8ByteLength(content));
+				const source = this._buildMcpAttachmentSource(
+					serverId,
+					"resource",
+					capability,
+					content,
+					result.content.truncated,
+					this._mcpContentCatalogs
+						.get(serverId)
+						?.resources.find((entry) => entry.resourceId === resourceId)?.mimeType,
+				);
+				this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
+				return {
+					result: {
+						attachmentId: source.sourceId,
+						serverId,
+						contentLength: content.length,
+						truncated: result.content.truncated,
+					},
+					contentDigest: mcpContentDigest(content),
+					byteCount: result.content.byteCount,
+					blockCount: result.content.blocks.length,
+				};
+			},
 		);
-		this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
-		return {
-			attachmentId: source.sourceId,
-			serverId,
-			contentLength: content.length,
-			truncated: result.content.truncated,
-		};
 	}
 
 	/**
 	 * Fetches a listed prompt and stages its normalized bounded text as an
 	 * untrusted, turn-scoped user context source for the next agent turn. Gated
-	 * by `mcp.content.attach`.
+	 * by `mcp.content.attach`. Fail-closed truncation: when normalization cut
+	 * any message short and the caller did not explicitly request the visible
+	 * truncated result (`options.allowTruncated`), the attach is rejected with
+	 * `content_limit_exceeded`.
 	 */
 	async attachMcpPrompt(
 		serverId: string,
-		promptName: string,
+		promptId: string,
 		args?: Readonly<Record<string, string>>,
 		signal?: AbortSignal,
+		options?: { allowTruncated?: boolean },
 	): Promise<McpAttachmentResult> {
 		await this._ensureMcpContentIdle();
-		const capability = this._requirePromptCapability(serverId, promptName);
-		await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
-		await this._ensureMcpServerConnected(serverId, signal);
-		const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
-		const content = result.messages
-			.map((message) => mcpAttachmentText(message.content.blocks))
-			.filter((text) => text.length > 0)
-			.join("\n\n");
-		const source = this._buildMcpAttachmentSource(
+		return this._runMcpAudited(
 			serverId,
-			"prompt",
-			capability,
-			content,
-			result.messages.some((message) => message.content.truncated),
+			"context.attach",
+			async () => {
+				const capability = this._requirePromptCapability(serverId, promptId);
+				await this._authorizeMcpOperation("mcp.content.attach", serverId, capability);
+				return capability;
+			},
+			async (capability) => {
+				this._validateMcpPromptArguments(serverId, promptId, args);
+				const promptName = this._requireMcpPromptName(serverId, promptId);
+				await this._ensureMcpServerConnected(serverId, signal);
+				const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
+				const truncated = result.messages.some((message) => message.content.truncated);
+				if (truncated && options?.allowTruncated !== true) {
+					throw new MCPError(
+						"content_limit_exceeded",
+						serverId,
+						mcpContentFailureMessage("content_limit_exceeded", serverId),
+					);
+				}
+				if (result.messages.some((message) => message.content.unsafe)) {
+					// Unknown/dangerous MIME or non-representable blocks never
+					// stage: reads may return bounded metadata, attach fails closed.
+					throw new MCPError(
+						"content_invalid",
+						serverId,
+						mcpContentFailureMessage("content_invalid", serverId),
+					);
+				}
+				const content = result.messages
+					.map((message) => mcpAttachmentText(message.content.blocks))
+					.filter((text) => text.length > 0)
+					.join("\n\n");
+				this._assertMcpAttachmentBudget(serverId, utf8ByteLength(content));
+				const source = this._buildMcpAttachmentSource(
+					serverId,
+					"prompt",
+					capability,
+					content,
+					truncated,
+				);
+				this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
+				return {
+					result: {
+						attachmentId: source.sourceId,
+						serverId,
+						contentLength: content.length,
+						truncated,
+					},
+					contentDigest: mcpContentDigest(content),
+					byteCount: result.messages.reduce((sum, message) => sum + message.content.byteCount, 0),
+					blockCount: result.messages.reduce((sum, message) => sum + message.content.blocks.length, 0),
+				};
+			},
 		);
-		this._pendingMcpAttachments = [...this._pendingMcpAttachments, source];
-		return {
-			attachmentId: source.sourceId,
-			serverId,
-			contentLength: content.length,
-			truncated: result.messages.some((message) => message.content.truncated),
-		};
 	}
 
 	/**
@@ -5475,7 +5706,7 @@ export class AgentSession {
 				);
 			}
 			try {
-				await this._ensureExecutionPolicyReady(policyRunId, signal);
+				await this._ensureExecutionPolicyReady(policyRunId, signal, { deferMcpReconnect: true });
 				await this._authorizeMcpStartup(diagnostic.server, serverId);
 				await this._mcpLifecycleManager.connect(serverId, signal);
 				const tools = await this._mcpLifecycleManager.listTools(serverId, signal);
@@ -5542,8 +5773,7 @@ export class AgentSession {
 				// Discovered tools change the Capability Binding. Rebind the policy
 				// before reconnecting so the live MCP transport belongs to the final
 				// binding, not the discovery-only binding.
-				await this._ensureExecutionPolicyReady(policyRunId, signal);
-				await this._reconnectSelectedMcpServersForPolicyBinding(signal);
+				await this._ensureExecutionPolicyReady(policyRunId, signal, { deferMcpReconnect: true });
 			} else {
 				// Discovery completed mid-run: the active run stays bound to the
 				// frozen binding; re-resolve the registry only after the run settles.
@@ -5923,12 +6153,20 @@ export class AgentSession {
 		}
 	}
 
-	private _ensureExecutionPolicyReady(runId?: string, signal?: AbortSignal): Promise<boolean> {
+	private _ensureExecutionPolicyReady(
+		runId?: string,
+		signal?: AbortSignal,
+		options?: { deferMcpReconnect?: boolean },
+	): Promise<boolean> {
 		if (signal?.aborted) return Promise.reject(new DOMException("Execution policy preparation aborted", "AbortError"));
-		return this._enqueueExecutionPolicyTransition(() => this._ensureExecutionPolicyReadyInternal(runId, signal));
+		return this._enqueueExecutionPolicyTransition(() => this._ensureExecutionPolicyReadyInternal(runId, signal, options));
 	}
 
-	private async _ensureExecutionPolicyReadyInternal(runId?: string, signal?: AbortSignal): Promise<boolean> {
+	private async _ensureExecutionPolicyReadyInternal(
+		runId?: string,
+		signal?: AbortSignal,
+		options?: { deferMcpReconnect?: boolean },
+	): Promise<boolean> {
 		if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
 		const requestedRunId = runId ?? this._activeContextRunId;
 		if (
@@ -5965,6 +6203,20 @@ export class AgentSession {
 		const previousBindingId = this._activeExecutionPolicyBinding?.id;
 		const bindingChanged = previousBindingId !== result.binding.id;
 		if (bindingChanged) {
+			// MCP transports never survive a policy binding change. Callers that
+			// need the listed catalog identities (resourceId -> URI, promptId ->
+			// name) after the change pass deferMcpReconnect: the identities are
+			// snapshotted before the close and restored after the immediate
+			// reconnect, so no MCP operation ever runs on a stale transport or
+			// with stale identities.
+			const identities = options?.deferMcpReconnect
+				? new Map(
+						[...this._mcpLifecycleManager.getSelectedServerIds()].map((serverId) => [
+							serverId,
+							this._mcpLifecycleManager.snapshotCatalogIdentities(serverId),
+						] as const),
+					)
+				: undefined;
 			await this._closeMcpConnectionsForPolicyBoundary();
 			await this._disposeSandboxSession();
 			if (signal?.aborted) throw new DOMException("Execution policy preparation aborted", "AbortError");
@@ -5980,6 +6232,16 @@ export class AgentSession {
 				this._persistedPolicyBindingIds.add(result.binding.id);
 			}
 			await this._prepareSandboxForBinding(result.profile, result.binding, signal);
+			if (options?.deferMcpReconnect) {
+				await this._reconnectSelectedMcpServersForPolicyBinding(signal);
+				if (identities !== undefined) {
+					for (const [serverId, snapshot] of identities) {
+						if (snapshot !== undefined) {
+							this._mcpLifecycleManager.restoreCatalogIdentities(serverId, snapshot);
+						}
+					}
+				}
+			}
 		}
 		this._nextPreviousExecutionPolicyBindingId = undefined;
 		return bindingChanged;
@@ -6109,7 +6371,10 @@ export class AgentSession {
 			}
 			if (signal?.aborted) throw new DOMException("MCP policy binding reconnect aborted", "AbortError");
 			await this._authorizeMcpStartup(diagnostic.server, serverId);
-			await this._mcpLifecycleManager.connect(serverId, signal);
+			// reconnect (not connect) preserves the listed catalog identities
+			// (resourceId -> URI, promptId -> name) across the policy-boundary
+			// teardown so explicit content operations keep resolving.
+			await this._mcpLifecycleManager.reconnect(serverId, signal);
 		}
 	}
 
@@ -6342,7 +6607,13 @@ export class AgentSession {
 		serverId: string,
 		capability: { id: string; revision: string; parentId?: string; sourceId?: string },
 	): Promise<void> {
-		await this._ensureExecutionPolicyReady();
+		// mcp.auth gates never reconnect: the server may not be authorized yet, so
+		// a policy-boundary reconnect would 401 before the OAuth flow exists.
+		// Content operations defer the reconnect so transports are (re)created
+		// under the new binding before any list/read/attach transport use.
+		await this._ensureExecutionPolicyReady(undefined, undefined, {
+			deferMcpReconnect: resource !== "mcp.auth",
+		});
 		const profile = this._requireExecutionPolicyProfile();
 		const binding = this._requireExecutionPolicyBinding();
 		const operation: PolicyOperationRequest = {
@@ -6384,13 +6655,203 @@ export class AgentSession {
 	}
 
 	/** Stable secret-free digest identity for one listed content item. */
-	private _mcpContentDigest(...parts: ReadonlyArray<string | undefined>): string {
-		const hash = createHash("sha256");
-		for (const part of parts) {
-			hash.update(part ?? "");
-			hash.update("\u0000");
+	/**
+	 * Validates an explicit prompt argument set against the prompt declared in
+	 * the catalog: missing required arguments, unknown keys, oversized values,
+	 * and an oversized total fail closed with a fixed message that never echoes
+	 * argument names or values.
+	 */
+	private _validateMcpPromptArguments(
+		serverId: string,
+		promptId: string,
+		args?: Readonly<Record<string, string>>,
+	): void {
+		const prompt = this._mcpContentCatalogs.get(serverId)?.prompts.find((entry) => entry.promptId === promptId);
+		const problem = validateMcpPromptArguments(prompt?.arguments, args, DEFAULT_MCP_CONTENT_LIMITS);
+		if (problem === undefined) {
+			return;
 		}
-		return `mcp-content-${hash.digest("hex").slice(0, 16)}`;
+		const kind =
+			problem.kind === "argument_too_long" || problem.kind === "arguments_too_large"
+				? "content_limit_exceeded"
+				: "content_invalid";
+		throw new MCPError(kind, serverId, mcpContentFailureMessage(kind, serverId));
+	}
+
+	/**
+	 * Best-effort session audit entry for one explicit MCP operation. Allowlist
+	 * only: serverId, capability/policy refs, operation, outcome, a fixed
+	 * reasonCode (never error text), content digest/bytes/blocks, timestamp.
+	 * Persistence failures never change the operation outcome.
+	 */
+	private _recordMcpAuditEntry(entry: {
+		serverId: string;
+		operation: "auth" | "resource.list" | "prompt.list" | "resource.read" | "prompt.get" | "context.attach";
+		outcome: "success" | "failed" | "cancelled";
+		reasonCode?: string;
+		capabilityId?: string;
+		revision?: string;
+		provenanceId?: string;
+		capabilityBindingId?: string;
+		policyBindingId?: string;
+		contentDigest?: string;
+		byteCount?: number;
+		blockCount?: number;
+	}): void {
+		try {
+			this.sessionManager.appendCustomEntry("mcp.content.audit", {
+				serverId: entry.serverId,
+				operation: entry.operation,
+				outcome: entry.outcome,
+				...(entry.reasonCode === undefined ? {} : { reasonCode: entry.reasonCode }),
+				...(entry.capabilityId === undefined ? {} : { capabilityId: entry.capabilityId }),
+				...(entry.revision === undefined ? {} : { revision: entry.revision }),
+				...(entry.provenanceId === undefined ? {} : { provenanceId: entry.provenanceId }),
+				...(entry.capabilityBindingId === undefined
+					? {}
+					: { capabilityBindingId: entry.capabilityBindingId }),
+				...(entry.policyBindingId === undefined ? {} : { policyBindingId: entry.policyBindingId }),
+				...(entry.contentDigest === undefined ? {} : { contentDigest: entry.contentDigest }),
+				...(entry.byteCount === undefined ? {} : { byteCount: entry.byteCount }),
+				...(entry.blockCount === undefined ? {} : { blockCount: entry.blockCount }),
+				timestamp: new Date().toISOString(),
+			});
+		} catch {
+			// Audit persistence is best-effort and never affects the operation.
+		}
+	}
+
+	/** Fixed reason code for an MCP operation failure; never derived from error text. */
+	private _mcpAuditReasonCode(error: unknown): string | undefined {
+		if (error instanceof MCPError) {
+			return error.kind;
+		}
+		if (error instanceof MCPAuthError) {
+			return error.kind;
+		}
+		if (error instanceof CapabilityError || error instanceof PolicyError) {
+			return error.code;
+		}
+		return undefined;
+	}
+
+	private _isMcpAbortError(error: unknown): boolean {
+		return error instanceof Error && error.name === "AbortError";
+	}
+
+	/**
+	 * Runs one explicit MCP operation under the audit contract: the capability
+	 * gate (lookup + policy authorization) and the operation body both produce
+	 * allowlist audit entries — denials included — and audit persistence never
+	 * changes the operation outcome. `classify` maps a successful result to its
+	 * audit outcome (default: success).
+	 */
+	private async _runMcpAudited<T>(
+		serverId: string,
+		operation: "auth" | "resource.list" | "prompt.list" | "resource.read" | "prompt.get" | "context.attach",
+		gate: () => Promise<{ id: string; revision: string; sourceId?: string }>,
+		run: (capability: { id: string; revision: string; sourceId?: string }) => Promise<{
+			result: T;
+			contentDigest?: string;
+			byteCount?: number;
+			blockCount?: number;
+		}>,
+		classify?: (result: T) => { outcome: "success" | "failed" | "cancelled"; reasonCode?: string },
+	): Promise<T> {
+		let capability: { id: string; revision: string; sourceId?: string };
+		try {
+			capability = await gate();
+		} catch (error) {
+			const reasonCode = this._mcpAuditReasonCode(error);
+			this._recordMcpAuditEntry({
+				serverId,
+				operation,
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				...(reasonCode === undefined ? {} : { reasonCode }),
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+			});
+			throw error;
+		}
+		let policyBindingId: string | undefined;
+		try {
+			policyBindingId = this._requireExecutionPolicyBinding().id;
+		} catch {
+			// Best-effort metadata; the operation gate already ran.
+		}
+		const base = {
+			capabilityId: capability.id,
+			revision: capability.revision,
+			...(capability.sourceId === undefined ? {} : { provenanceId: capability.sourceId }),
+			capabilityBindingId: this._activeCapabilityBinding?.id,
+			...(policyBindingId === undefined ? {} : { policyBindingId }),
+		};
+		try {
+			const outcome = await run(capability);
+			const classification = classify?.(outcome.result) ?? { outcome: "success" as const };
+			this._recordMcpAuditEntry({
+				serverId,
+				operation,
+				outcome: classification.outcome,
+				...(classification.reasonCode === undefined ? {} : { reasonCode: classification.reasonCode }),
+				...base,
+				...(outcome.contentDigest === undefined ? {} : { contentDigest: outcome.contentDigest }),
+				...(outcome.byteCount === undefined ? {} : { byteCount: outcome.byteCount }),
+				...(outcome.blockCount === undefined ? {} : { blockCount: outcome.blockCount }),
+			});
+			return outcome.result;
+		} catch (error) {
+			const reasonCode = this._mcpAuditReasonCode(error);
+			this._recordMcpAuditEntry({
+				serverId,
+				operation,
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				...(reasonCode === undefined ? {} : { reasonCode }),
+				...base,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Resolves the raw URI of a listed resource by its opaque id. Fail-closed:
+	 * an id that was never listed (or whose listing predates the current
+	 * connection) is rejected with a fixed content error; the raw URI never
+	 * leaves this resolution.
+	 */
+	private _requireMcpResourceUri(serverId: string, resourceId: string): string {
+		const uri = this._mcpLifecycleManager?.getResourceUri(serverId, resourceId);
+		if (uri === undefined) {
+			throw new MCPError("content_invalid", serverId, mcpContentFailureMessage("content_invalid", serverId));
+		}
+		return uri;
+	}
+
+	/** Resolves the server-facing prompt name of a listed prompt by its opaque id. */
+	private _requireMcpPromptName(serverId: string, promptId: string): string {
+		const name = this._mcpLifecycleManager?.getPromptName(serverId, promptId);
+		if (name === undefined) {
+			throw new MCPError("content_invalid", serverId, mcpContentFailureMessage("content_invalid", serverId));
+		}
+		return name;
+	}
+
+	/**
+	 * Rejects staging another attachment when the combined pending attachments
+	 * would exceed the run-level budget. Fail-closed: no silent truncation at
+	 * attach time — the caller must attach less or attach after a read preview.
+	 */
+	private _assertMcpAttachmentBudget(serverId: string, contentBytes: number): void {
+		const pendingBytes = this._pendingMcpAttachments.reduce(
+			(sum, source) => sum + utf8ByteLength(source.content ?? ""),
+			0,
+		);
+		if (pendingBytes + contentBytes > DEFAULT_MCP_CONTENT_LIMITS.maxRunAttachmentBytes) {
+			throw new MCPError(
+				"content_limit_exceeded",
+				serverId,
+				mcpContentFailureMessage("content_limit_exceeded", serverId),
+			);
+		}
 	}
 
 	private _updateMcpContentCatalog(
@@ -6419,22 +6880,23 @@ export class AgentSession {
 		const sourceIdentity = `${diagnostic.source.source}:${diagnostic.id}`;
 		const candidates: CapabilityCandidate[] = [];
 		for (const resource of catalog.resources) {
+			// The raw URI stays in the lifecycle; only the server-scoped opaque
+			// identity and the provenance digest enter descriptor derivation.
+			const uri = this._mcpLifecycleManager?.getResourceUri(serverId, resource.resourceId);
+			if (uri === undefined) {
+				continue;
+			}
 			candidates.push({
 				kind: "mcp_resource",
 				name: resource.name,
-				localName: this._mcpContentDigest(
-					resource.uri,
-					resource.name,
-					resource.mimeType,
-					resource.description,
-				),
+				localName: resource.provenanceId,
 				sourceIdentity,
 				source: diagnostic.source,
 				parentId: server.id,
 				mcpServerId: serverId,
 				trusted: diagnostic.trusted,
 				revisionInput: {
-					uri: resource.uri,
+					uri,
 					name: resource.name,
 					...(resource.mimeType === undefined ? {} : { mimeType: resource.mimeType }),
 					...(resource.description === undefined ? {} : { description: resource.description }),
@@ -6443,22 +6905,21 @@ export class AgentSession {
 			});
 		}
 		for (const template of catalog.resourceTemplates) {
+			const uriTemplate = this._mcpLifecycleManager?.getResourceUriTemplate(serverId, template.templateId);
+			if (uriTemplate === undefined) {
+				continue;
+			}
 			candidates.push({
 				kind: "mcp_resource_template",
 				name: template.name,
-				localName: this._mcpContentDigest(
-					template.uriTemplate,
-					template.name,
-					template.mimeType,
-					template.description,
-				),
+				localName: template.provenanceId,
 				sourceIdentity,
 				source: diagnostic.source,
 				parentId: server.id,
 				mcpServerId: serverId,
 				trusted: diagnostic.trusted,
 				revisionInput: {
-					uriTemplate: template.uriTemplate,
+					uriTemplate,
 					name: template.name,
 					...(template.mimeType === undefined ? {} : { mimeType: template.mimeType }),
 					...(template.description === undefined ? {} : { description: template.description }),
@@ -6469,7 +6930,7 @@ export class AgentSession {
 			candidates.push({
 				kind: "mcp_prompt",
 				name: prompt.name,
-				localName: this._mcpContentDigest(prompt.name, prompt.description),
+				localName: prompt.provenanceId,
 				sourceIdentity,
 				source: diagnostic.source,
 				parentId: server.id,
@@ -6493,48 +6954,41 @@ export class AgentSession {
 	 */
 	private async _refreshMcpContentBinding(serverId: string, signal?: AbortSignal): Promise<void> {
 		this._registerMcpContentDescriptors(serverId);
-		const bindingChanged = await this._ensureExecutionPolicyReady(undefined, signal);
-		if (bindingChanged) {
-			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
-		}
+		// deferMcpReconnect keeps the policy-boundary close (transports never
+		// survive a binding change) while restoring the listed catalog
+		// identities (resourceId -> URI, promptId -> name) after the immediate
+		// reconnect, so already-listed content keeps resolving.
+		await this._ensureExecutionPolicyReady(undefined, signal, { deferMcpReconnect: true });
 	}
 
 	/** Content item capability for a listed resource URI; never-listed items are denied. */
 	private _requireContentCapability(
 		serverId: string,
-		uri: string,
+		resourceId: string,
 	): { id: string; revision: string; parentId: string; sourceId: string } {
-		const resource = this._mcpContentCatalogs.get(serverId)?.resources.find((entry) => entry.uri === uri);
+		const resource = this._mcpContentCatalogs.get(serverId)?.resources.find((entry) => entry.resourceId === resourceId);
 		if (resource === undefined) {
 			throw new CapabilityError(
 				"capability_denied",
 				`MCP resource is not available in the selected capability binding for server "${serverId}"`,
 			);
 		}
-		return this._requireContentCapabilityByLocalName(
-			serverId,
-			"mcp_resource",
-			this._mcpContentDigest(resource.uri, resource.name, resource.mimeType, resource.description),
-		);
+		return this._requireContentCapabilityByLocalName(serverId, "mcp_resource", resource.provenanceId);
 	}
 
 	/** Content item capability for a listed prompt; never-listed prompts are denied. */
 	private _requirePromptCapability(
 		serverId: string,
-		promptName: string,
+		promptId: string,
 	): { id: string; revision: string; parentId: string; sourceId: string } {
-		const prompt = this._mcpContentCatalogs.get(serverId)?.prompts.find((entry) => entry.name === promptName);
+		const prompt = this._mcpContentCatalogs.get(serverId)?.prompts.find((entry) => entry.promptId === promptId);
 		if (prompt === undefined) {
 			throw new CapabilityError(
 				"capability_denied",
 				`MCP prompt is not available in the selected capability binding for server "${serverId}"`,
 			);
 		}
-		return this._requireContentCapabilityByLocalName(
-			serverId,
-			"mcp_prompt",
-			this._mcpContentDigest(prompt.name, prompt.description),
-		);
+		return this._requireContentCapabilityByLocalName(serverId, "mcp_prompt", prompt.provenanceId);
 	}
 
 	private _requireContentCapabilityByLocalName(
@@ -6587,9 +7041,10 @@ export class AgentSession {
 	private _buildMcpAttachmentSource(
 		serverId: string,
 		kind: "resource" | "prompt",
-		capability: { id: string; revision: string; sourceId: string },
+		capability: { id: string; revision: string; sourceId?: string },
 		content: string,
 		truncated: boolean,
+		mimeType?: string,
 	): ContextSourceInput {
 		const sourceId = `mcp:attach:${kind}:${serverId}:${capability.sourceId}`;
 		const label = `MCP ${kind} from server "${serverId}" (external, user-attached)`;
@@ -6603,7 +7058,7 @@ export class AgentSession {
 			sourceId,
 			kind: "mcp_content",
 			scope: "turn",
-			trust: "user_owned",
+			trust: "external_untrusted",
 			label,
 			content: text,
 			required: true,
@@ -6611,6 +7066,11 @@ export class AgentSession {
 			capabilityId: capability.id,
 			capabilityRevision: capability.revision,
 			capabilityBindingId: this._activeCapabilityBinding?.id,
+			// Allowlist receipt metadata only: provenance/digest/bytes/mime; the
+			// wrapper text itself is never persisted on snapshots.
+			provenanceId: capability.sourceId,
+			byteCount: utf8ByteLength(content),
+			...(mimeType === undefined ? {} : { mimeType }),
 			placement: "message",
 			message: {
 				role: "user",
@@ -7588,6 +8048,40 @@ export class AgentSession {
 	get extensionRunner(): ExtensionRunner {
 		return this._extensionRunner;
 	}
+}
+
+/**
+ * Merges a new listing page into the existing catalog, deduplicated by the
+ * item identity key (uri / uriTemplate / name). A later page never drops items
+ * listed by an earlier page, so cursor pagination accumulates the full
+ * catalog instead of replacing it page by page; the newest view of a repeated
+ * item wins.
+ */
+function mergeMcpCatalogItems<T>(
+	existing: ReadonlyArray<T>,
+	page: ReadonlyArray<T>,
+	keyOf: (item: T) => string,
+): T[] {
+	const byKey = new Map<string, T>();
+	for (const item of existing) {
+		byKey.set(keyOf(item), item);
+	}
+	for (const item of page) {
+		byKey.set(keyOf(item), item);
+	}
+	return [...byKey.values()];
+}
+
+/** Fixed fail-closed message for content validation failures; never embeds values. */
+/** Secret-free digest of staged attachment content; the only content-derived audit field. */
+function mcpContentDigest(content: string): string {
+	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function mcpContentFailureMessage(kind: "content_invalid" | "content_limit_exceeded", serverId: string): string {
+	return kind === "content_invalid"
+		? `MCP server "${serverId}" returned or accepted invalid content`
+		: `MCP server "${serverId}" content exceeded the configured limits`;
 }
 
 /**

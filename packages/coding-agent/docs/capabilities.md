@@ -138,9 +138,9 @@ Interactive mode provides:
 - `/mcp auth <serverId>` — show the redacted OAuth/credential status and, after confirmation, run the interactive Authorization Code + PKCE flow. The one-time authorization URL is displayed only inside the transient auth dialog (Esc cancels) and never written to the transcript, status, receipts, or logs.
 - `/mcp logout <serverId>` — delete the stored OAuth credential for the server after confirmation. Revocation is best effort; local cleanup always completes.
 - `/mcp resources [serverId]` — list the redacted resource and resource-template catalog of one server (the sole configured server is used when the id is omitted).
-- `/mcp resource [serverId] <uri>` — read a listed resource, show a capped preview, and attach it as untrusted context for the next turn only after explicit confirmation.
+- `/mcp resource [serverId] <resourceId>` — read a listed resource (by its stable opaque id; raw URIs never appear in listings or output), show a capped preview, and attach it as untrusted context for the next turn only after explicit confirmation.
 - `/mcp prompts [serverId]` — list the prompt catalog of one server.
-- `/mcp prompt [serverId] <name> [key=value ...]` — fetch a listed prompt (missing required arguments are prompted for), preview its messages, and attach them as untrusted context only after explicit confirmation.
+- `/mcp prompt [serverId] <promptId> [key=value ...]` — fetch a listed prompt (missing required arguments are prompted for), preview its messages, and attach them as untrusted context only after explicit confirmation. Prompts are referenced by their stable opaque id; the server-facing name is display-only.
 
 Every command calls the public `AgentSession` MCP surface directly (`getMcpAuthStatus`, `startMcpAuth`, `logoutMcpAuth`, `listMcpResources`, `listMcpResourceTemplates`, `listMcpPrompts`, `readMcpResource`, `getMcpPrompt`, `attachMcpResource`, `attachMcpPrompt`). List/read/get never start a model run, never inject into system or developer prompts, and never auto-approve anything; attach is the only path that stages remote content, and it requires the explicit preview confirmation above.
 

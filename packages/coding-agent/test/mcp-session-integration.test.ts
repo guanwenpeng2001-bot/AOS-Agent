@@ -23,6 +23,7 @@ import {
 } from "@aos-agent/ai/compat";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
+import { mcpResourceId, mcpPromptId } from "../src/core/mcp-content-types.ts";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory";
 import { Server } from "@modelcontextprotocol/sdk/server";
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport";
@@ -920,6 +921,8 @@ function createInMemoryContentServer(opts: {
 }
 
 const RESOURCE_A: ContentResource = { uri: "docs://guide", name: "Guide", text: "guide body" };
+const RESOURCE_ID = mcpResourceId("docs", "docs://guide");
+const PROMPT_ID = mcpPromptId("docs", "summarize");
 
 const PROMPT_A: ContentPrompt = {
 	name: "summarize",
@@ -949,7 +952,7 @@ describe("AgentSession MCP content surface", () => {
 			await session.whenCapabilitiesReady();
 
 			const resources = await session.listMcpResources("docs");
-			expect(resources.items.map((item) => item.uri)).toEqual(["docs://guide"]);
+			expect(resources.items.map((item) => item.resourceId)).toEqual([mcpResourceId("docs", "docs://guide")]);
 			await session.listMcpPrompts("docs");
 
 			// Listing only registered descriptors; nothing was read.
@@ -999,10 +1002,10 @@ describe("AgentSession MCP content surface", () => {
 			await session.listMcpResources("docs");
 			await session.listMcpPrompts("docs");
 
-			const read = await session.readMcpResource("docs", "docs://guide");
+			const read = await session.readMcpResource("docs", RESOURCE_ID);
 			expect(read.content.blocks).toContainEqual({ type: "text", text: "guide body" });
 			expect(mock.reads).toEqual(["docs://guide"]);
-			const prompt = await session.getMcpPrompt("docs", "summarize");
+			const prompt = await session.getMcpPrompt("docs", PROMPT_ID);
 			expect(prompt.messages[0]?.content.blocks).toContainEqual({ type: "text", text: "summarize body" });
 			expect(mock.getPromptCalls).toEqual(["summarize"]);
 		} finally {
@@ -1022,8 +1025,8 @@ describe("AgentSession MCP content surface", () => {
 				mcpTransportFactory: mock.transportFactory as never,
 			});
 			await session.whenCapabilitiesReady();
-			await expect(session.readMcpResource("docs", "docs://guide")).rejects.toBeInstanceOf(CapabilityError);
-			await expect(session.attachMcpResource("docs", "docs://guide")).rejects.toBeInstanceOf(CapabilityError);
+			await expect(session.readMcpResource("docs", RESOURCE_ID)).rejects.toBeInstanceOf(CapabilityError);
+			await expect(session.attachMcpResource("docs", RESOURCE_ID)).rejects.toBeInstanceOf(CapabilityError);
 			expect(mock.reads).toEqual([]);
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
@@ -1064,8 +1067,8 @@ describe("AgentSession MCP content surface", () => {
 			});
 			await session.whenCapabilitiesReady();
 			await session.listMcpResources("docs");
-			await expect(session.readMcpResource("docs", "docs://guide")).rejects.toBeInstanceOf(PolicyError);
-			await expect(session.attachMcpResource("docs", "docs://guide")).rejects.toBeInstanceOf(PolicyError);
+			await expect(session.readMcpResource("docs", RESOURCE_ID)).rejects.toBeInstanceOf(PolicyError);
+			await expect(session.attachMcpResource("docs", RESOURCE_ID)).rejects.toBeInstanceOf(PolicyError);
 			expect(mock.reads).toEqual([]);
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
@@ -1110,10 +1113,10 @@ describe("AgentSession MCP content surface", () => {
 			await session.listMcpResources("docs");
 			await session.listMcpPrompts("docs");
 
-			const attached = await session.attachMcpResource("docs", "docs://guide");
+			const attached = await session.attachMcpResource("docs", RESOURCE_ID);
 			expect(attached.contentLength).toBe("guide body".length);
 			expect(attached.truncated).toBe(false);
-			await session.attachMcpPrompt("docs", "summarize");
+			await session.attachMcpPrompt("docs", PROMPT_ID);
 			expect(mock.reads).toEqual(["docs://guide"]);
 
 			await session.prompt("hello");
@@ -1125,7 +1128,7 @@ describe("AgentSession MCP content surface", () => {
 			for (const source of contentSources) {
 				// Untrusted provenance: user-attached external content, never
 				// builtin/trusted-project, with capability + digest refs.
-				expect(source.trust).toBe("user_owned");
+				expect(source.trust).toBe("external_untrusted");
 				expect(source.scope).toBe("turn");
 				expect(source.disposition).toBe("included");
 				expect(source.reason).toBe("within_budget");
@@ -1144,7 +1147,7 @@ describe("AgentSession MCP content surface", () => {
 			expect(preview.snapshot.sources.some((source) => source.kind === "mcp_content")).toBe(false);
 
 			// A second turn attaches once more and sees exactly one source.
-			await session.attachMcpResource("docs", "docs://guide");
+			await session.attachMcpResource("docs", RESOURCE_ID);
 			await session.prompt("again");
 			const secondSnapshotId = session.getLastContextSnapshotId();
 			expect(secondSnapshotId).not.toBe(snapshotId);
@@ -1173,15 +1176,15 @@ describe("AgentSession MCP content surface", () => {
 
 			const aborted = new AbortController();
 			aborted.abort();
-			await expect(session.readMcpResource("docs", "docs://guide", aborted.signal)).rejects.toMatchObject({
+			await expect(session.readMcpResource("docs", RESOURCE_ID, aborted.signal)).rejects.toMatchObject({
 				name: "AbortError",
 			});
-			await expect(session.attachMcpResource("docs", "docs://guide", aborted.signal)).rejects.toMatchObject({
+			await expect(session.attachMcpResource("docs", RESOURCE_ID, aborted.signal)).rejects.toMatchObject({
 				name: "AbortError",
 			});
 
 			// The aborted attach staged nothing; a later attach is the only one.
-			await session.attachMcpResource("docs", "docs://guide");
+			await session.attachMcpResource("docs", RESOURCE_ID);
 			await session.prompt("hello");
 			const snapshotId = session.getLastContextSnapshotId();
 			const { snapshot } = await session.inspectContext({ snapshotId });

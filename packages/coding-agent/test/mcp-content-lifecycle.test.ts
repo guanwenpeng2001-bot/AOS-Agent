@@ -26,8 +26,14 @@ import {
 	mapPromptToView,
 	mapResourceTemplateToView,
 	mapResourceToView,
+	mcpContentProvenanceId,
+	mcpContentRevision,
+	mcpPromptId,
+	mcpResourceId,
+	mcpTemplateId,
 	normalizeContentBlocks,
 	normalizeResourceContents,
+	validateMcpPromptArguments,
 	type MCPContentBlockInput,
 	type MCPContentLimits,
 	type MCPPageLimits,
@@ -239,7 +245,17 @@ function managerWith(
 	return manager;
 }
 
-const TINY_LIMITS: MCPContentLimits = { maxBlocks: 4, maxTextLength: 10, maxMediaBytes: 6 };
+const TINY_LIMITS: MCPContentLimits = {
+	maxBlocks: 4,
+	maxTextLength: 10,
+	maxMediaBytes: 6,
+	maxPayloadBytes: 1000,
+	maxPromptArgumentBytes: 100,
+	maxPromptArgumentsBytes: 1000,
+	maxFieldLength: 100,
+	maxResourceUriLength: 100,
+	maxRunAttachmentBytes: 1000,
+};
 const TINY_PAGE: MCPPageLimits = { maxItemsPerPage: 1 };
 
 describe("content normalizer", () => {
@@ -257,8 +273,10 @@ describe("content normalizer", () => {
 				{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
 			],
 			truncated: false,
+			unsafe: false,
 			droppedBlocks: 0,
 			droppedBytes: 0,
+			byteCount: 13,
 		});
 	});
 
@@ -366,9 +384,80 @@ describe("content normalizer", () => {
 		expect(normalizeContentBlocks([], DEFAULT_MCP_CONTENT_LIMITS)).toEqual({
 			blocks: [],
 			truncated: false,
+			unsafe: false,
 			droppedBlocks: 0,
 			droppedBytes: 0,
+			byteCount: 0,
 		});
+	});
+
+	it("drops svg and unknown image MIME types fail closed", () => {
+		const content = normalizeContentBlocks(
+			[
+				{ type: "image", data: "PHN2Zz48L3N2Zz4=", mimeType: "image/svg+xml" },
+				{ type: "image", data: "AAAA", mimeType: "application/x-executable" },
+				{ type: "image", data: "AAAA", mimeType: "IMAGE/PNG" },
+				{ type: "image", data: "AAAA", mimeType: "image/png\u0000x" },
+			],
+			DEFAULT_MCP_CONTENT_LIMITS,
+		);
+		// svg, non-image, and control-character MIME values never surface as
+		// content; the safe raster (case-insensitive) image passes. The dropped
+		// dangerous blocks mark the payload unsafe so attaches fail closed.
+		expect(content.blocks).toEqual([{ type: "image", data: "AAAA", mimeType: "IMAGE/PNG" }]);
+		expect(content.droppedBlocks).toBe(3);
+		expect(content.unsafe).toBe(true);
+	});
+
+	it("enforces the aggregate payload budget across blocks", () => {
+		const tight: MCPContentLimits = {
+			...DEFAULT_MCP_CONTENT_LIMITS,
+			maxPayloadBytes: 10,
+			maxBlocks: 100,
+		};
+		const content = normalizeContentBlocks(
+			[
+				{ type: "text", text: "12345" },
+				{ type: "text", text: "12345" },
+				{ type: "text", text: "12345" },
+			],
+			tight,
+		);
+		// The third block exceeds the 10-byte aggregate budget and is dropped.
+		expect(content.blocks).toEqual([
+			{ type: "text", text: "12345" },
+			{ type: "text", text: "12345" },
+		]);
+		expect(content.truncated).toBe(true);
+		expect(content.droppedBlocks).toBe(1);
+		expect(content.byteCount).toBe(10);
+	});
+
+	it("validates prompt argument sets against the declared arguments", () => {
+		const declared = [
+			{ name: "uri", required: true },
+			{ name: "language" },
+		];
+		expect(validateMcpPromptArguments(declared, { uri: "x", language: "en" }, DEFAULT_MCP_CONTENT_LIMITS)).toBeUndefined();
+		expect(validateMcpPromptArguments(declared, undefined, DEFAULT_MCP_CONTENT_LIMITS)).toEqual({
+			kind: "missing_required",
+		});
+		expect(validateMcpPromptArguments(declared, { language: "en" }, DEFAULT_MCP_CONTENT_LIMITS)).toEqual({
+			kind: "missing_required",
+		});
+		expect(validateMcpPromptArguments(declared, { uri: "x", unknown: "y" }, DEFAULT_MCP_CONTENT_LIMITS)).toEqual({
+			kind: "unknown_argument",
+		});
+		expect(
+			validateMcpPromptArguments(declared, { uri: "x", language: "y".repeat(8_001) }, DEFAULT_MCP_CONTENT_LIMITS),
+		).toEqual({ kind: "argument_too_long" });
+		expect(
+			validateMcpPromptArguments(
+				declared,
+				{ uri: "x".repeat(10), language: "y" },
+				{ ...DEFAULT_MCP_CONTENT_LIMITS, maxPromptArgumentsBytes: 10 },
+			),
+		).toEqual({ kind: "arguments_too_large" });
 	});
 
 	it("applies the page cap and drops the cursor of an over-limit page", () => {
@@ -378,32 +467,129 @@ describe("content normalizer", () => {
 	});
 
 	it("maps resources, templates, and prompts to secret-free views", () => {
-		expect(mapResourceToView(RESOURCES[0])).toEqual({
-			uri: "file:///README.md",
+		expect(mapResourceToView(RESOURCES[0], DEFAULT_MCP_CONTENT_LIMITS, "docs")).toEqual({
+			serverId: "docs",
+			resourceId: mcpResourceId("docs", "file:///README.md"),
 			name: "readme",
 			description: "project readme",
 			mimeType: "text/markdown",
 			size: 1024,
+			provenanceId: mcpContentProvenanceId("file:///README.md", "readme", "text/markdown", "project readme"),
+			revision: expect.stringMatching(/^rev:/),
 		});
-		expect(mapResourceToView(RESOURCES[1])).toEqual({ uri: "file:///logo.png", name: "logo", mimeType: "image/png" });
-		expect(mapResourceTemplateToView(TEMPLATES[0])).toEqual({
-			uriTemplate: "file:///notes/{id}",
+		expect(mapResourceToView(RESOURCES[1], DEFAULT_MCP_CONTENT_LIMITS, "docs")).toEqual({
+			serverId: "docs",
+			resourceId: mcpResourceId("docs", "file:///logo.png"),
+			name: "logo",
+			mimeType: "image/png",
+			provenanceId: mcpContentProvenanceId("file:///logo.png", "logo", "image/png", undefined),
+			revision: expect.stringMatching(/^rev:/),
+		});
+		expect(mapResourceTemplateToView(TEMPLATES[0], DEFAULT_MCP_CONTENT_LIMITS, "docs")).toEqual({
+			serverId: "docs",
+			templateId: mcpTemplateId("docs", "file:///notes/{id}"),
 			name: "note template",
 			description: "a note",
 			mimeType: "text/plain",
+			provenanceId: mcpContentProvenanceId("file:///notes/{id}", "note template", "text/plain", "a note"),
+			revision: expect.stringMatching(/^rev:/),
 		});
-		expect(mapPromptToView(PROMPTS[0])).toEqual({
+		expect(mapPromptToView(PROMPTS[0], DEFAULT_MCP_CONTENT_LIMITS, "docs")).toEqual({
+			serverId: "docs",
+			promptId: mcpPromptId("docs", "summarize"),
 			name: "summarize",
 			description: "summarize a resource",
 			arguments: [
 				{ name: "uri", description: "resource uri", required: true },
 				{ name: "language", description: "output language" },
 			],
+			provenanceId: mcpContentProvenanceId("summarize", "summarize a resource"),
+			revision: expect.stringMatching(/^rev:/),
 		});
+	});
+
+	it("drops catalog items whose identity fields are unbounded or malformed", () => {
+		// URIs and templates with whitespace, control characters, or excessive
+		// length fail closed: the item is dropped, never truncated into an
+		// identity that could not be read back.
+		expect(
+			mapResourceToView({ uri: "file:///has space", name: "bad" }, DEFAULT_MCP_CONTENT_LIMITS, "docs"),
+		).toBeUndefined();
+		expect(
+			mapResourceToView({ uri: "file:///ctrl\u0000", name: "bad" }, DEFAULT_MCP_CONTENT_LIMITS, "docs"),
+		).toBeUndefined();
+		expect(
+			mapResourceToView(
+				{ uri: `file:///x${"y".repeat(DEFAULT_MCP_CONTENT_LIMITS.maxResourceUriLength)}`, name: "long" },
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
+		expect(
+			mapResourceTemplateToView(
+				{ uriTemplate: "file:///notes/{id} has space", name: "bad" },
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
+		// Prompt names must be valid namespace segments; invalid ones are dropped.
+		expect(mapPromptToView({ name: "a b" }, DEFAULT_MCP_CONTENT_LIMITS, "docs")).toBeUndefined();
+		expect(mapPromptToView({ name: "a:b" }, DEFAULT_MCP_CONTENT_LIMITS, "docs")).toBeUndefined();
+		expect(
+			mapPromptToView(
+				{ name: `x${"y".repeat(DEFAULT_MCP_CONTENT_LIMITS.maxFieldLength)}` },
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
+		// A declared argument with an empty, overlong, or control-character name
+		// fails the whole prompt closed instead of exposing a sliced key.
+		expect(
+			mapPromptToView(
+				{ name: "summarize", arguments: [{ name: "" }] },
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
+		expect(
+			mapPromptToView(
+				{
+					name: "summarize",
+					arguments: [{ name: `k${"y".repeat(DEFAULT_MCP_CONTENT_LIMITS.maxFieldLength)}` }],
+				},
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
+		expect(
+			mapPromptToView(
+				{ name: "summarize", arguments: [{ name: "bad\u0000key" }] },
+				DEFAULT_MCP_CONTENT_LIMITS,
+				"docs",
+			),
+		).toBeUndefined();
 	});
 });
 
 describe("MCP resource lifecycle", () => {
+	it("drops malformed resource identities from listings without contacting read", async () => {
+		const setup = createContentServerFactory({
+			resources: [
+				{ uri: "file:///good.md", name: "good" },
+				{ uri: "file:///bad space", name: "bad" },
+				{ uri: "file:///ctrl\u0000", name: "ctrl" },
+			],
+		});
+		const lifecycle = lifecycleWith({ transportFactory: setup.transportFactory });
+		await lifecycle.connect();
+
+		const page = await lifecycle.listResources();
+		// Only the bounded identity surfaces; the malformed items never become
+		// catalog entries or descriptors.
+		expect(page.items.map((item) => item.resourceId)).toEqual([mcpResourceId("docs", "file:///good.md")]);
+		expect(page.truncated).toBe(false);
+	});
+
 	it("lists resources, forwards the cursor, and reports the page count", async () => {
 		const setup = createContentServerFactory({
 			listResourcesHandler: (cursor) =>
@@ -418,11 +604,14 @@ describe("MCP resource lifecycle", () => {
 		expect(page1).toEqual({
 			items: [
 				{
-					uri: "file:///README.md",
+					serverId: "docs",
+					resourceId: mcpResourceId("docs", "file:///README.md"),
 					name: "readme",
 					description: "project readme",
 					mimeType: "text/markdown",
 					size: 1024,
+					provenanceId: mcpContentProvenanceId("file:///README.md", "readme", "text/markdown", "project readme"),
+					revision: expect.stringMatching(/^rev:/),
 				},
 			],
 			nextCursor: "page-2",
@@ -431,7 +620,16 @@ describe("MCP resource lifecycle", () => {
 		expect(lifecycle.getStatus().resourceCount).toBe(1);
 
 		const page2 = await lifecycle.listResources("page-2");
-		expect(page2.items).toEqual([{ uri: "file:///logo.png", name: "logo", mimeType: "image/png" }]);
+		expect(page2.items).toEqual([
+			{
+				serverId: "docs",
+				resourceId: mcpResourceId("docs", "file:///logo.png"),
+				name: "logo",
+				mimeType: "image/png",
+				provenanceId: mcpContentProvenanceId("file:///logo.png", "logo", "image/png", undefined),
+				revision: expect.stringMatching(/^rev:/),
+			},
+		]);
 		expect(page2.nextCursor).toBeUndefined();
 
 		expect(setup.requests.map((request) => request.params)).toEqual([{}, { cursor: "page-2" }]);
@@ -449,7 +647,16 @@ describe("MCP resource lifecycle", () => {
 
 		const page = await lifecycle.listResources();
 		expect(page.items).toEqual([
-			{ uri: "file:///README.md", name: "readme", description: "project readme", mimeType: "text/markdown", size: 1024 },
+			{
+				serverId: "docs",
+				resourceId: mcpResourceId("docs", "file:///README.md"),
+				name: "readme",
+				description: "project readme",
+				mimeType: "text/markdown",
+				size: 1024,
+				provenanceId: mcpContentProvenanceId("file:///README.md", "readme", "text/markdown", "project readme"),
+				revision: expect.stringMatching(/^rev:/),
+			},
 		]);
 		expect(page.nextCursor).toBeUndefined();
 		expect(page.truncated).toBe(true);
@@ -466,10 +673,13 @@ describe("MCP resource lifecycle", () => {
 		expect(result).toEqual({
 			items: [
 				{
-					uriTemplate: "file:///notes/{id}",
+					serverId: "docs",
+					templateId: mcpTemplateId("docs", "file:///notes/{id}"),
 					name: "note template",
 					description: "a note",
 					mimeType: "text/plain",
+					provenanceId: mcpContentProvenanceId("file:///notes/{id}", "note template", "text/plain", "a note"),
+					revision: expect.stringMatching(/^rev:/),
 				},
 			],
 			truncated: false,
@@ -487,23 +697,39 @@ describe("MCP resource lifecycle", () => {
 		});
 		const lifecycle = lifecycleWith({
 			transportFactory: setup.transportFactory,
-			contentLimits: { maxBlocks: 4, maxTextLength: 10, maxMediaBytes: 100 },
+			contentLimits: {
+			maxBlocks: 4,
+			maxTextLength: 10,
+			maxMediaBytes: 100,
+			maxPayloadBytes: 1000,
+			maxPromptArgumentBytes: 100,
+			maxPromptArgumentsBytes: 1000,
+			maxFieldLength: 100,
+			maxResourceUriLength: 100,
+			maxRunAttachmentBytes: 1000,
+		},
 		});
 		await lifecycle.connect();
 
 		const result = await lifecycle.readResource("file:///note");
 		expect(result).toEqual({
 			serverId: "docs",
-			uri: "file:///note",
+			resourceId: mcpResourceId("docs", "file:///note"),
 			content: {
 				blocks: [
 					{ type: "text", text: "0123456789" },
 					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
 				],
 				truncated: true,
+				unsafe: false,
 				droppedBlocks: 0,
 				droppedBytes: 0,
+				byteCount: 18,
 			},
+			byteCount: 18,
+			truncated: true,
+			provenanceId: mcpContentProvenanceId("file:///note"),
+			revision: mcpContentRevision("docs", "file:///note"),
 		});
 		expect(setup.requests[0].params).toEqual({ uri: "file:///note" });
 	});
@@ -549,12 +775,16 @@ describe("MCP prompt lifecycle", () => {
 		const result = await lifecycle.listPrompts();
 		expect(result.items).toEqual([
 			{
+				serverId: "docs",
+				promptId: mcpPromptId("docs", "summarize"),
 				name: "summarize",
 				description: "summarize a resource",
 				arguments: [
 					{ name: "uri", description: "resource uri", required: true },
 					{ name: "language", description: "output language" },
 				],
+				provenanceId: mcpContentProvenanceId("summarize", "summarize a resource"),
+				revision: expect.stringMatching(/^rev:/),
 			},
 		]);
 		expect(result.truncated).toBe(false);
@@ -577,7 +807,7 @@ describe("MCP prompt lifecycle", () => {
 
 		const result = await lifecycle.getPrompt("summarize", { uri: "file:///note", language: "en" });
 		expect(result.serverId).toBe("docs");
-		expect(result.promptName).toBe("summarize");
+		expect(result.promptId).toBe(mcpPromptId("docs", "summarize"));
 		expect(result.description).toBe("prompt summarize");
 		expect(result.messages).toEqual([
 			{
@@ -585,13 +815,22 @@ describe("MCP prompt lifecycle", () => {
 				content: {
 					blocks: [{ type: "text", text: "0123456789" }],
 					truncated: true,
+					unsafe: false,
 					droppedBlocks: 0,
 					droppedBytes: 0,
+					byteCount: 10,
 				},
 			},
 			{
 				role: "assistant",
-				content: { blocks: [{ type: "text", text: "ok" }], truncated: false, droppedBlocks: 0, droppedBytes: 0 },
+				content: {
+					blocks: [{ type: "text", text: "ok" }],
+					truncated: false,
+					unsafe: false,
+					droppedBlocks: 0,
+					droppedBytes: 0,
+					byteCount: 2,
+				},
 			},
 		]);
 		expect(setup.requests[0].params).toEqual({
@@ -790,7 +1029,7 @@ describe("cancellation, teardown, and stale/degraded handling", () => {
 		expect(lifecycle.state).toBe("ready");
 
 		const result = await lifecycle.readResource("file:///fresh");
-		expect(result.uri).toBe("file:///fresh");
+		expect(result.resourceId).toBe(mcpResourceId("docs", "file:///fresh"));
 		expect(result.content.blocks).toEqual([{ type: "text", text: "content of file:///fresh" }]);
 
 		first.releaseGate();
@@ -851,12 +1090,18 @@ describe("selected binding gates for content operations", () => {
 		await expect(manager.listResourceTemplates("docs")).resolves.toMatchObject({ truncated: false });
 		await expect(manager.readResource("docs", "file:///x")).resolves.toMatchObject({
 			serverId: "docs",
-			uri: "file:///x",
+			resourceId: mcpResourceId("docs", "file:///x"),
+			byteCount: expect.any(Number),
+			truncated: false,
+			provenanceId: expect.stringContaining("mcp-content-"),
+			revision: expect.stringMatching(/^rev:/),
 		});
 		await expect(manager.listPrompts("docs")).resolves.toMatchObject({ truncated: false });
 		await expect(manager.getPrompt("docs", "summarize")).resolves.toMatchObject({
 			serverId: "docs",
-			promptName: "summarize",
+			promptId: mcpPromptId("docs", "summarize"),
+			provenanceId: expect.stringContaining("mcp-content-"),
+			revision: expect.stringMatching(/^rev:/),
 		});
 	});
 

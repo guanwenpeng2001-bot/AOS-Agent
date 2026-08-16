@@ -15,8 +15,13 @@ import {
 	mapPromptToView,
 	mapResourceTemplateToView,
 	mapResourceToView,
+	mcpContentProvenanceId,
+	mcpContentRevision,
+	mcpPromptId,
+	mcpResourceId,
 	normalizeContentBlocks,
 	normalizeResourceContents,
+	utf8ByteLength,
 	type MCPContentLimits,
 	type MCPGetPromptResult,
 	type MCPPageLimits,
@@ -90,6 +95,10 @@ function mcpFailureMessage(kind: MCPErrorKind, serverId: string): string {
 			return `MCP server "${serverId}" is unavailable`;
 		case "call_failed":
 			return `MCP server "${serverId}" failed to execute a tool call`;
+		case "content_invalid":
+			return `MCP server "${serverId}" returned or accepted invalid content`;
+		case "content_limit_exceeded":
+			return `MCP server "${serverId}" content exceeded the configured limits`;
 	}
 }
 
@@ -193,6 +202,15 @@ export interface MCPServerAuthHooks {
 
 const DEFAULT_ENV_RESOLVER: MCPEnvResolver = (name) => process.env[name];
 
+/** Snapshot of the listed catalog identities of one connection. */
+export interface McpCatalogIdentitySnapshot {
+	resourceUris: ReadonlyMap<string, string>;
+	templatePatterns: ReadonlyMap<string, string>;
+	promptNames: ReadonlyMap<string, string>;
+	resourceMetadata: ReadonlyMap<string, { provenanceId: string; revision: string }>;
+	promptMetadata: ReadonlyMap<string, { provenanceId: string; revision: string }>;
+}
+
 /**
  * Lifecycle controller for a single MCP server connection.
  *
@@ -221,6 +239,16 @@ export class MCPServerLifecycle {
 	private toolCount: number | undefined;
 	private resourceCount: number | undefined;
 	private promptCount: number | undefined;
+	/** Opaque resource id -> raw URI of the last listed catalog page. Never surfaced. */
+	private readonly resourceUris = new Map<string, string>();
+	/** Opaque template id -> raw uri template of the last listed catalog page. Never surfaced. */
+	private readonly templatePatterns = new Map<string, string>();
+	/** Opaque prompt id -> server-facing prompt name of the last listed catalog page. */
+	private readonly promptNames = new Map<string, string>();
+	/** Opaque resource id -> provenance/revision of the last listed catalog page. */
+	private readonly resourceMetadata = new Map<string, { provenanceId: string; revision: string }>();
+	/** Opaque prompt id -> provenance/revision of the last listed catalog page. */
+	private readonly promptMetadata = new Map<string, { provenanceId: string; revision: string }>();
 	/** Incremented on every successful (re)connect; results from a superseded connection are stale. */
 	private connectionEpoch = 0;
 
@@ -245,6 +273,19 @@ export class MCPServerLifecycle {
 
 	getConfigView(): MCPServerConfigView {
 		return createMCPServerConfigView(this.config);
+	}
+
+	/** Opaque-id resolution for listed catalog items; the raw values never surface publicly. */
+	resolveResourceUri(resourceId: string): string | undefined {
+		return this.resourceUris.get(resourceId);
+	}
+
+	resolveResourceUriTemplate(templateId: string): string | undefined {
+		return this.templatePatterns.get(templateId);
+	}
+
+	resolvePromptName(promptId: string): string | undefined {
+		return this.promptNames.get(promptId);
 	}
 
 	getStatus(): MCPConnectionStatus {
@@ -380,6 +421,13 @@ export class MCPServerLifecycle {
 			this.client = pendingClient;
 			this.chainTransportHandlers(transport);
 			this.connectionEpoch += 1;
+			// A new connection owns a fresh catalog generation: raw identities
+			// and metadata of a superseded connection must never resolve.
+			this.resourceUris.clear();
+			this.templatePatterns.clear();
+			this.promptNames.clear();
+			this.resourceMetadata.clear();
+			this.promptMetadata.clear();
 			this.setState("ready");
 			this.connectedAt = new Date().toISOString();
 			this.lastError = undefined;
@@ -507,11 +555,21 @@ export class MCPServerLifecycle {
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
 				this.resourceCount = result.resources.length;
-				return applyPageLimit(
-					result.resources.map((resource) => mapResourceToView(resource)),
-					result.nextCursor,
-					this.pageLimits,
-				);
+				const views: MCPResourceView[] = [];
+				for (const resource of result.resources) {
+					const view = mapResourceToView(resource, this.contentLimits, this.config.id);
+					if (view !== undefined) {
+						// Keep the raw URI only for the in-memory resolution of
+						// later reads; it never leaves the lifecycle.
+						this.resourceUris.set(view.resourceId, resource.uri);
+						this.resourceMetadata.set(view.resourceId, {
+							provenanceId: view.provenanceId,
+							revision: view.revision,
+						});
+						views.push(view);
+					}
+				}
+				return applyPageLimit(views, result.nextCursor, this.pageLimits);
 			},
 			"MCP resource listing was aborted",
 			signal,
@@ -530,11 +588,15 @@ export class MCPServerLifecycle {
 					{ ...(cursor !== undefined ? { cursor } : {}) },
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
-				return applyPageLimit(
-					result.resourceTemplates.map((template) => mapResourceTemplateToView(template)),
-					result.nextCursor,
-					this.pageLimits,
-				);
+				const templateViews: MCPResourceTemplateView[] = [];
+				for (const template of result.resourceTemplates) {
+					const view = mapResourceTemplateToView(template, this.contentLimits, this.config.id);
+					if (view !== undefined) {
+						this.templatePatterns.set(view.templateId, template.uriTemplate);
+						templateViews.push(view);
+					}
+				}
+				return applyPageLimit(templateViews, result.nextCursor, this.pageLimits);
 			},
 			"MCP resource template listing was aborted",
 			signal,
@@ -543,6 +605,8 @@ export class MCPServerLifecycle {
 
 	/**
 	 * Reads a resource and normalizes its contents under the configured limits.
+	 * The URI must be non-empty, free of whitespace and control characters, and
+	 * bounded in length; anything else fails closed without a server round trip.
 	 * A transport-level failure marks the server degraded; cancelling the
 	 * caller signal rejects with an AbortError without degrading the server.
 	 */
@@ -554,14 +618,24 @@ export class MCPServerLifecycle {
 				`MCP server "${this.config.id}" does not accept an empty resource uri`,
 			);
 		}
+		if (uri.length > this.contentLimits.maxResourceUriLength || /[\u0000-\u001f\u007f\s]/u.test(uri)) {
+			throw new MCPLifecycleError("content_invalid", this.config.id, mcpFailureMessage("content_invalid", this.config.id));
+		}
 		return this.guardedRequest(
 			async (client, innerSignal) => {
 				this.assertAdvertisedCapability(client, "resources");
 				const result = await client.readResource({ uri }, { timeout: this.requestTimeoutMs, signal: innerSignal });
+				const resourceId = mcpResourceId(this.config.id, uri);
+				const metadata = this.resourceMetadata.get(resourceId);
+				const content = normalizeResourceContents(result.contents, this.contentLimits);
 				return {
 					serverId: this.config.id,
-					uri,
-					content: normalizeResourceContents(result.contents, this.contentLimits),
+					resourceId,
+					content,
+					byteCount: content.byteCount,
+					truncated: content.truncated,
+					provenanceId: metadata?.provenanceId ?? mcpContentProvenanceId(uri),
+					revision: metadata?.revision ?? mcpContentRevision(this.config.id, uri),
 				};
 			},
 			"MCP resource read was aborted",
@@ -582,11 +656,19 @@ export class MCPServerLifecycle {
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
 				this.promptCount = result.prompts.length;
-				return applyPageLimit(
-					result.prompts.map((prompt) => mapPromptToView(prompt)),
-					result.nextCursor,
-					this.pageLimits,
-				);
+				const promptViews: MCPPromptView[] = [];
+				for (const prompt of result.prompts) {
+					const view = mapPromptToView(prompt, this.contentLimits, this.config.id);
+					if (view !== undefined) {
+						this.promptNames.set(view.promptId, prompt.name);
+						this.promptMetadata.set(view.promptId, {
+							provenanceId: view.provenanceId,
+							revision: view.revision,
+						});
+						promptViews.push(view);
+					}
+				}
+				return applyPageLimit(promptViews, result.nextCursor, this.pageLimits);
 			},
 			"MCP prompt listing was aborted",
 			signal,
@@ -595,8 +677,9 @@ export class MCPServerLifecycle {
 
 	/**
 	 * Fetches a prompt and normalizes every message's content under the
-	 * configured limits. The prompt name must be a valid namespace segment;
-	 * argument values are passed through to the server only.
+	 * configured limits. The prompt name must be a valid, bounded namespace
+	 * segment; argument values are bounded per value and in total and are
+	 * otherwise passed through to the server only.
 	 */
 	async getPrompt(
 		promptName: string,
@@ -604,12 +687,33 @@ export class MCPServerLifecycle {
 		signal?: AbortSignal,
 	): Promise<MCPGetPromptResult> {
 		const nameError = mcpNamespaceSegmentError(promptName);
-		if (nameError !== undefined) {
+		if (nameError !== undefined || promptName.length > this.contentLimits.maxFieldLength) {
 			throw new MCPLifecycleError(
 				"invalid_config",
 				this.config.id,
-				`MCP prompt name "${promptName}" ${nameError}`,
+				`MCP prompt name "${promptName}" ${nameError ?? "exceeds the maximum length"}`,
 			);
+		}
+		if (args !== undefined) {
+			let totalBytes = 0;
+			for (const value of Object.values(args)) {
+				const valueBytes = utf8ByteLength(value);
+				if (valueBytes > this.contentLimits.maxPromptArgumentBytes) {
+					throw new MCPLifecycleError(
+						"content_limit_exceeded",
+						this.config.id,
+						mcpFailureMessage("content_limit_exceeded", this.config.id),
+					);
+				}
+				totalBytes += valueBytes;
+			}
+			if (totalBytes > this.contentLimits.maxPromptArgumentsBytes) {
+				throw new MCPLifecycleError(
+					"content_limit_exceeded",
+					this.config.id,
+					mcpFailureMessage("content_limit_exceeded", this.config.id),
+				);
+			}
 		}
 		return this.guardedRequest(
 			async (client, innerSignal) => {
@@ -618,19 +722,76 @@ export class MCPServerLifecycle {
 					{ name: promptName, ...(args !== undefined ? { arguments: { ...args } } : {}) },
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
+				const promptId = mcpPromptId(this.config.id, promptName);
+				const metadata = this.promptMetadata.get(promptId);
 				return {
 					serverId: this.config.id,
-					promptName,
-					...(result.description !== undefined ? { description: result.description } : {}),
+					promptId,
+					...(result.description !== undefined
+						? { description: result.description.slice(0, this.contentLimits.maxFieldLength) }
+						: {}),
 					messages: result.messages.map((message) => ({
 						role: message.role,
 						content: normalizeContentBlocks([message.content], this.contentLimits),
 					})),
+					provenanceId: metadata?.provenanceId ?? mcpContentProvenanceId(promptName),
+					revision: metadata?.revision ?? mcpContentRevision(this.config.id, promptName),
 				};
 			},
 			`MCP prompt "${promptName}" was aborted`,
 			signal,
 		);
+	}
+
+	/**
+	 * Snapshots the listed catalog identities (raw URIs, template patterns,
+	 * prompt names, item metadata) so a policy-boundary close+reconnect can
+	 * restore them. A true {@link close} or a failed reconnect invalidates them,
+	 * so stale catalog ids can never read through a fresh connection.
+	 */
+	snapshotCatalogIdentities(): McpCatalogIdentitySnapshot {
+		return {
+			resourceUris: new Map(this.resourceUris),
+			templatePatterns: new Map(this.templatePatterns),
+			promptNames: new Map(this.promptNames),
+			resourceMetadata: new Map(this.resourceMetadata),
+			promptMetadata: new Map(this.promptMetadata),
+		};
+	}
+
+	/** Restores a previously snapshotted catalog identity set. */
+	restoreCatalogIdentities(snapshot: McpCatalogIdentitySnapshot): void {
+		this.resourceUris.clear();
+		for (const [key, value] of snapshot.resourceUris) {
+			this.resourceUris.set(key, value);
+		}
+		this.templatePatterns.clear();
+		for (const [key, value] of snapshot.templatePatterns) {
+			this.templatePatterns.set(key, value);
+		}
+		this.promptNames.clear();
+		for (const [key, value] of snapshot.promptNames) {
+			this.promptNames.set(key, value);
+		}
+		this.resourceMetadata.clear();
+		for (const [key, value] of snapshot.resourceMetadata) {
+			this.resourceMetadata.set(key, value);
+		}
+		this.promptMetadata.clear();
+		for (const [key, value] of snapshot.promptMetadata) {
+			this.promptMetadata.set(key, value);
+		}
+	}
+
+	/**
+	 * Reconnects the connection for a policy-binding change. Catalog identity
+	 * preservation is the caller's job through {@link snapshotCatalogIdentities}
+	 * / {@link restoreCatalogIdentities}; a plain close or failed reconnect
+	 * invalidates them.
+	 */
+	async reconnect(signal?: AbortSignal): Promise<void> {
+		await this.close();
+		await this.connect(signal);
 	}
 
 	/** Gracefully closes the connection and releases the child process / transport. */
@@ -654,6 +815,11 @@ export class MCPServerLifecycle {
 		// Drop the transport reference so a late close notification from the just-
 		// closed transport cannot revive into a subsequent reconnected connection.
 		this.transport = undefined;
+		this.resourceUris.clear();
+		this.templatePatterns.clear();
+		this.promptNames.clear();
+		this.resourceMetadata.clear();
+		this.promptMetadata.clear();
 		this.setState("closed");
 	}
 
@@ -970,6 +1136,49 @@ export class MCPLifecycleManager {
 
 	getStatus(serverId: string): MCPConnectionStatus | undefined {
 		return this.lifecycles.get(serverId)?.getStatus();
+	}
+
+	/**
+	 * Resolves the raw URI of a listed resource by its opaque id. Returns
+	 * undefined when the id is unknown (never listed, or listed before the
+	 * current connection). The URI is never exposed through public views.
+	 */
+	getResourceUri(serverId: string, resourceId: string): string | undefined {
+		return this.lifecycles.get(serverId)?.resolveResourceUri(resourceId);
+	}
+
+	/** Resolves the raw uri template of a listed resource template by its opaque id. */
+	getResourceUriTemplate(serverId: string, templateId: string): string | undefined {
+		return this.lifecycles.get(serverId)?.resolveResourceUriTemplate(templateId);
+	}
+
+	/** Resolves the server-facing prompt name of a listed prompt by its opaque id. */
+	getPromptName(serverId: string, promptId: string): string | undefined {
+		return this.lifecycles.get(serverId)?.resolvePromptName(promptId);
+	}
+
+	/**
+	 * Reconnects a selected server for a policy-binding change. Catalog identity
+	 * preservation is the caller's job through {@link snapshotCatalogIdentities}
+	 * / {@link restoreCatalogIdentities}; a plain close or failed reconnect
+	 * invalidates them.
+	 */
+	async reconnect(serverId: string, signal?: AbortSignal): Promise<void> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		await lifecycle.reconnect(signal);
+	}
+
+	/** Snapshots the listed catalog identities of one registered server. */
+	snapshotCatalogIdentities(serverId: string): unknown {
+		return this.lifecycles.get(serverId)?.snapshotCatalogIdentities();
+	}
+
+	/** Restores a previously snapshotted catalog identity set of one server. */
+	restoreCatalogIdentities(serverId: string, snapshot: unknown): void {
+		this.lifecycles
+			.get(serverId)
+			?.restoreCatalogIdentities(snapshot as Parameters<MCPServerLifecycle["restoreCatalogIdentities"]>[0]);
 	}
 
 	/** Connects a server only when it is registered and selected by the binding. */

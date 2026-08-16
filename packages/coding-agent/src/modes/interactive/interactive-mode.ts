@@ -6524,10 +6524,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Finds the server whose cached catalog contains the given resource uri or
-	 * prompt name. Returns undefined when absent or ambiguous.
+	 * Finds the server whose cached catalog contains the given resource id or
+	 * prompt id. Returns undefined when absent or ambiguous.
 	 */
-	private findMcpContentServer(kind: "resource" | "prompt", localName: string): string | undefined {
+	private findMcpContentServer(kind: "resource" | "prompt", localId: string): string | undefined {
 		let found: string | undefined;
 		for (const serverId of this.mcpServerIds()) {
 			const catalog = this.session.getMcpContentCatalog(serverId);
@@ -6536,8 +6536,8 @@ export class InteractiveMode {
 			}
 			const matches =
 				kind === "resource"
-					? catalog.resources.some((resource) => resource.uri === localName)
-					: catalog.prompts.some((prompt) => prompt.name === localName);
+					? catalog.resources.some((resource) => resource.resourceId === localId)
+					: catalog.prompts.some((prompt) => prompt.promptId === localId);
 			if (!matches) {
 				continue;
 			}
@@ -6677,31 +6677,31 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/mcp resource [serverId] <uri>`: reads a listed resource, previews it
-	 * behind the untrusted banner, and only attaches after explicit
+	 * `/mcp resource [serverId] <resourceId>`: reads a listed resource, previews
+	 * it behind the untrusted banner, and only attaches after explicit
 	 * confirmation. Reading or attaching never starts a model run.
 	 */
 	private async handleMcpResourceCommand(parts: string[]): Promise<void> {
 		if (parts.length === 0) {
-			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp resource [serverId] <uri>`);
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp resource [serverId] <resourceId>`);
 			return;
 		}
 		const serverId = parts.length >= 2 ? parts[0]! : "";
-		const uri = parts.length >= 2 ? parts.slice(1).join(" ") : parts[0]!;
+		const resourceId = parts.length >= 2 ? parts.slice(1).join(" ") : parts[0]!;
 		try {
 			const resolved = serverId
 				? await this.resolveMcpServerId(serverId)
-				: this.findMcpContentServer("resource", uri);
+				: this.findMcpContentServer("resource", resourceId);
 			if (resolved === undefined) {
 				if (!serverId) {
 					this.showMcpOutput(
-						`${theme.fg("error", `Resource not listed for any server: ${uri}`)}\n` +
-							`${theme.fg("dim", "List a server first with /mcp resources [serverId], or pass the server explicitly: /mcp resource <serverId> <uri>.")}`,
+						`${theme.fg("error", `Resource not listed for any server: ${resourceId}`)}\n` +
+							`${theme.fg("dim", "List a server first with /mcp resources [serverId], or pass the server explicitly: /mcp resource <serverId> <resourceId>.")}`,
 					);
 				}
 				return;
 			}
-			const preview = await this.session.readMcpResource(resolved, uri);
+			const preview = await this.session.readMcpResource(resolved, resourceId);
 			const confirmed = await this.showExtensionConfirm(
 				"Attach this MCP resource for the next turn?",
 				formatMcpResourcePreview(resolved, preview),
@@ -6710,7 +6710,12 @@ export class InteractiveMode {
 				this.showMcpOutput(theme.fg("warning", "MCP resource not attached."));
 				return;
 			}
-			const attached = await this.session.attachMcpResource(resolved, uri);
+			// The capped preview was shown above and the user confirmed, so the
+			// attach may stage the visible truncated result; without this the
+			// session rejects truncated content fail-closed.
+			const attached = await this.session.attachMcpResource(resolved, resourceId, undefined, {
+				allowTruncated: true,
+			});
 			this.showMcpOutput(formatMcpAttachment(attached));
 		} catch (error) {
 			this.showMcpOutput(formatMcpError(error));
@@ -6732,34 +6737,35 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * `/mcp prompt [serverId] <name> [key=value ...]`: fetches a listed prompt,
-	 * collects missing required arguments, previews the messages behind the
-	 * untrusted banner, and only attaches after explicit confirmation. Prompt
-	 * roles are preserved but never become system/developer instructions.
+	 * `/mcp prompt [serverId] <promptId> [key=value ...]`: fetches a listed
+	 * prompt, collects missing required arguments, previews the messages behind
+	 * the untrusted banner, and only attaches after explicit confirmation.
+	 * Prompt roles are preserved but never become system/developer
+	 * instructions.
 	 */
 	private async handleMcpPromptCommand(parts: string[]): Promise<void> {
 		if (parts.length === 0) {
-			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <name> [key=value ...]`);
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <promptId> [key=value ...]`);
 			return;
 		}
 		try {
 			// Split a leading serverId (when it matches a configured server) from
-			// the prompt name and its key=value arguments.
+			// the prompt id and its key=value arguments.
 			const serverIds = this.mcpServerIds();
 			const hasServer = serverIds.includes(parts[0]!);
-			const name = hasServer ? parts[1] : parts[0];
+			const promptId = hasServer ? parts[1] : parts[0];
 			const inlineArgs = hasServer ? parts.slice(2) : parts.slice(1);
-			if (!name) {
-				this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <name> [key=value ...]`);
+			if (!promptId) {
+				this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <promptId> [key=value ...]`);
 				return;
 			}
-			const serverId = hasServer ? parts[0]! : this.findMcpContentServer("prompt", name);
+			const serverId = hasServer ? parts[0]! : this.findMcpContentServer("prompt", promptId);
 			const resolved = serverId ? await this.resolveMcpServerId(serverId) : undefined;
 			if (resolved === undefined) {
 				if (!hasServer) {
 					this.showMcpOutput(
-						`${theme.fg("error", `Prompt not listed for any server: ${name}`)}\n` +
-							`${theme.fg("dim", "List a server first with /mcp prompts [serverId], or pass the server explicitly: /mcp prompt <serverId> <name>.")}`,
+						`${theme.fg("error", `Prompt not listed for any server: ${promptId}`)}\n` +
+							`${theme.fg("dim", "List a server first with /mcp prompts [serverId], or pass the server explicitly: /mcp prompt <serverId> <promptId>.")}`,
 					);
 				}
 				return;
@@ -6770,7 +6776,7 @@ export class InteractiveMode {
 				return;
 			}
 			const catalog = this.session.getMcpContentCatalog(resolved);
-			const declared = catalog?.prompts.find((prompt) => prompt.name === name);
+			const declared = catalog?.prompts.find((prompt) => prompt.promptId === promptId);
 			for (const argument of declared?.arguments ?? []) {
 				if (argument.required && !(argument.name in args.values)) {
 					const value = await this.showExtensionInput(`Value for ${argument.name}`, argument.description);
@@ -6781,7 +6787,7 @@ export class InteractiveMode {
 					args.values[argument.name] = value;
 				}
 			}
-			const preview = await this.session.getMcpPrompt(resolved, name, args.values);
+			const preview = await this.session.getMcpPrompt(resolved, promptId, args.values);
 			const confirmed = await this.showExtensionConfirm(
 				"Attach this MCP prompt result for the next turn?",
 				formatMcpPromptPreview(resolved, preview),
@@ -6790,7 +6796,12 @@ export class InteractiveMode {
 				this.showMcpOutput(theme.fg("warning", "MCP prompt not attached."));
 				return;
 			}
-			const attached = await this.session.attachMcpPrompt(resolved, name, args.values);
+			// The capped preview was shown above and the user confirmed, so the
+			// attach may stage the visible truncated result; without this the
+			// session rejects truncated content fail-closed.
+			const attached = await this.session.attachMcpPrompt(resolved, promptId, args.values, undefined, {
+				allowTruncated: true,
+			});
 			this.showMcpOutput(formatMcpAttachment(attached));
 		} catch (error) {
 			this.showMcpOutput(formatMcpError(error));

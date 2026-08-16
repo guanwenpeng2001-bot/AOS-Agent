@@ -34,7 +34,18 @@ export type ContextSourceKind =
 	| "extension"
 	| "mcp_content";
 
-export type ContextTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project";
+export type ContextTrust =
+	| "builtin"
+	| "user_owned"
+	| "trusted_project"
+	| "untrusted_project"
+	/**
+	 * Remotely returned content staged only through an explicit user/RPC attach
+	 * (MCP resources/prompts). Never composed into the system prompt and never
+	 * trusted as project or user instructions; it only ever reaches the model as
+	 * a marked user-role message.
+	 */
+	| "external_untrusted";
 
 export type ContextScope = "global" | "project" | "directory" | "session" | "turn";
 
@@ -123,6 +134,12 @@ export interface ContextSourceInput {
 	capabilityRevision?: string;
 	/** Capability binding id that selected this source. */
 	capabilityBindingId?: string;
+	/** UTF-8 byte count of the staged content (allowlist receipt metadata). */
+	byteCount?: number;
+	/** Provenance identity of an externally attached source (MCP content). */
+	provenanceId?: string;
+	/** MIME type of an externally attached source, when known. */
+	mimeType?: string;
 	/**
 	 * Where the already-resolved source is injected. System is the default.
 	 * Message sources must supply the exact message that is appended to the
@@ -185,6 +202,12 @@ export interface ContextSourceReceipt {
 	capabilityRevision?: string;
 	/** Capability binding id that selected this source. */
 	capabilityBindingId?: string;
+	/** UTF-8 byte count of the staged content (allowlist receipt metadata). */
+	byteCount?: number;
+	/** Provenance identity of an externally attached source (MCP content). */
+	provenanceId?: string;
+	/** MIME type of an externally attached source, when known. */
+	mimeType?: string;
 }
 
 export interface ContextBudget {
@@ -545,6 +568,15 @@ function buildReceipt(
 	if (source.capabilityBindingId !== undefined) {
 		receipt.capabilityBindingId = source.capabilityBindingId;
 	}
+	if (source.byteCount !== undefined) {
+		receipt.byteCount = source.byteCount;
+	}
+	if (source.provenanceId !== undefined) {
+		receipt.provenanceId = source.provenanceId;
+	}
+	if (source.mimeType !== undefined) {
+		receipt.mimeType = source.mimeType;
+	}
 	return receipt;
 }
 
@@ -576,7 +608,15 @@ function composeSystemPrompt(sources: readonly ContextSourceInput[], receipts: r
 		if (!includedIds.has(source.sourceId)) {
 			continue;
 		}
-		const content = source.kind === "extension" ? (source.systemPromptAppend ?? "") : source.placement === "message" ? "" : source.content;
+		// external_untrusted content (explicit MCP attachments) can never be
+		// composed into the system prompt, regardless of placement: it only reaches
+		// the model as a marked user-role message.
+		const content =
+			source.kind === "extension"
+				? (source.systemPromptAppend ?? "")
+				: source.trust === "external_untrusted" || source.placement === "message"
+					? ""
+					: source.content;
 		if (content.length > 0) {
 			parts.push(content);
 		}

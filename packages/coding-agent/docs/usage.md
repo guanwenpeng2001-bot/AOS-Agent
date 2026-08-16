@@ -92,9 +92,9 @@ Interactive MCP management is available through the `/mcp` command family; every
 | `/mcp auth <serverId>` | Show the redacted OAuth/credential status, then run the interactive OAuth flow after confirmation. The authorization URL is shown once inside the auth dialog (Esc cancels) and never stored or echoed |
 | `/mcp logout <serverId>` | Delete the stored OAuth credential after confirmation |
 | `/mcp resources [serverId]` | List the resource and resource-template catalog of a server (sole configured server when omitted) |
-| `/mcp resource [serverId] <uri>` | Read a listed resource, preview it, and attach it as untrusted context after confirmation |
+| `/mcp resource [serverId] <resourceId>` | Read a listed resource by its stable opaque id (raw URIs never surface), preview it, and attach it as untrusted context after confirmation |
 | `/mcp prompts [serverId]` | List the prompt catalog of a server |
-| `/mcp prompt [serverId] <name> [key=value ...]` | Fetch a listed prompt (prompting for missing required arguments), preview it, and attach it as untrusted context after confirmation |
+| `/mcp prompt [serverId] <promptId> [key=value ...]` | Fetch a listed prompt by its stable opaque id (prompting for missing required arguments), preview it, and attach it as untrusted context after confirmation |
 
 Only Streamable HTTP servers support `/mcp auth` and `/mcp logout`; stdio servers authenticate through explicit environment variables and never trigger OAuth. List/read/get never start a model run and never inject content into system or developer prompts; attach is the only path that stages remote content, and it always requires the preview confirmation. All remote content is displayed behind an **UNTRUSTED EXTERNAL MCP CONTENT** banner, is capped, and never becomes instructions. Output is redacted: tokens, authorization URLs outside the transient dialog, raw remote errors, and unnecessary URIs or parameters never appear, and failures show only stable codes with fixed redacted text. See [Capabilities and MCP](capabilities.md) for configuration and security details.
 

@@ -137,7 +137,9 @@ export type MCPErrorKind =
 	| "connect_failed"
 	| "auth_required"
 	| "unavailable"
-	| "call_failed";
+	| "call_failed"
+	| "content_invalid"
+	| "content_limit_exceeded";
 
 /** A redacted, serializable view of an MCP lifecycle failure. */
 export interface MCPErrorView {
@@ -160,6 +162,8 @@ export function mcpErrorKindToCapabilityCode(kind: MCPErrorKind): CapabilityErro
 			return "capability_mcp_auth_required";
 		case "unavailable":
 		case "call_failed":
+		case "content_invalid":
+		case "content_limit_exceeded":
 			return "capability_mcp_unavailable";
 	}
 }
