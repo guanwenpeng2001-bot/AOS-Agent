@@ -34,7 +34,13 @@ export type PolicyResource =
 	| "process.spawn"
 	| "network.connect"
 	| "credential.expose"
-	| "sandbox.prepare";
+	| "sandbox.prepare"
+	| "mcp.auth"
+	| "resource.list"
+	| "resource.read"
+	| "prompt.list"
+	| "prompt.get"
+	| "context.attach";
 export type PolicyResourceCategory = PolicyResource;
 export type PolicyOperation = PolicyResource;
 export type PolicyDecisionOutcome = PolicyAction | "sandbox_required";
@@ -83,6 +89,12 @@ export const POLICY_RESOURCE_CATEGORIES = Object.freeze([
 	"network.connect",
 	"credential.expose",
 	"sandbox.prepare",
+	"mcp.auth",
+	"resource.list",
+	"resource.read",
+	"prompt.list",
+	"prompt.get",
+	"context.attach",
 ] as const);
 export const POLICY_OPERATION_CATEGORIES = POLICY_RESOURCE_CATEGORIES;
 export const POLICY_RESOURCES = POLICY_RESOURCE_CATEGORIES;
@@ -209,6 +221,14 @@ export interface ApprovalPolicy {
 	readonly filesystemWrite?: PolicyAction;
 	readonly credentials?: PolicyAction;
 	readonly sandbox?: PolicyAction;
+	/** MCP auth operations (mcp.auth), e.g. OAuth start/logout. */
+	readonly mcp?: PolicyAction;
+	/** MCP resource catalog/content operations (resource.list, resource.read). */
+	readonly resource?: PolicyAction;
+	/** MCP prompt catalog/content operations (prompt.list, prompt.get). */
+	readonly prompt?: PolicyAction;
+	/** Context attachment operations (context.attach). */
+	readonly context?: PolicyAction;
 }
 
 /** A rule is evaluated in declaration order; the last matching rule wins. */
@@ -646,7 +666,7 @@ function parseRules(value: unknown): PolicyRule[] | undefined {
 
 function parseApprovals(value: unknown, partial: boolean): ApprovalPolicy | Partial<ApprovalPolicy> | undefined {
 	if (!isRecord(value)) return undefined;
-	const keys = ["writeOutsideWorkspace", "network", "process", "filesystemRead", "filesystemWrite", "credentials", "sandbox"];
+	const keys = ["writeOutsideWorkspace", "network", "process", "filesystemRead", "filesystemWrite", "credentials", "sandbox", "mcp", "resource", "prompt", "context"];
 	if (Object.keys(value).some((key) => !keys.includes(key))) return undefined;
 	const result: Record<string, PolicyAction> = {};
 	for (const key of keys) {
@@ -982,6 +1002,10 @@ function mergeNarrowing(
 			[base.approvals.filesystemWrite ?? "allow", narrowing.approvals.filesystemWrite],
 			[base.approvals.credentials ?? "allow", narrowing.approvals.credentials],
 			[base.approvals.sandbox ?? "allow", narrowing.approvals.sandbox],
+			[base.approvals.mcp ?? "allow", narrowing.approvals.mcp],
+			[base.approvals.resource ?? "allow", narrowing.approvals.resource],
+			[base.approvals.prompt ?? "allow", narrowing.approvals.prompt],
+			[base.approvals.context ?? "allow", narrowing.approvals.context],
 		];
 		if (approvalPairs.some(([baseAction, requestedAction]) => requestedAction !== undefined && ACTION_RANK[requestedAction] < ACTION_RANK[baseAction])) {
 			return { ok: false, error: policyError("policy_profile_untrusted") };
@@ -1088,6 +1112,18 @@ function mergeNarrowing(
 			: {}),
 		...(baseApprovals.sandbox !== undefined || requestedApprovals.sandbox !== undefined
 			? { sandbox: strictest(baseApprovals.sandbox ?? "allow", requestedApprovals.sandbox ?? baseApprovals.sandbox ?? "allow") }
+			: {}),
+		...(baseApprovals.mcp !== undefined || requestedApprovals.mcp !== undefined
+			? { mcp: strictest(baseApprovals.mcp ?? "allow", requestedApprovals.mcp ?? baseApprovals.mcp ?? "allow") }
+			: {}),
+		...(baseApprovals.resource !== undefined || requestedApprovals.resource !== undefined
+			? { resource: strictest(baseApprovals.resource ?? "allow", requestedApprovals.resource ?? baseApprovals.resource ?? "allow") }
+			: {}),
+		...(baseApprovals.prompt !== undefined || requestedApprovals.prompt !== undefined
+			? { prompt: strictest(baseApprovals.prompt ?? "allow", requestedApprovals.prompt ?? baseApprovals.prompt ?? "allow") }
+			: {}),
+		...(baseApprovals.context !== undefined || requestedApprovals.context !== undefined
+			? { context: strictest(baseApprovals.context ?? "allow", requestedApprovals.context ?? baseApprovals.context ?? "allow") }
 			: {}),
 	};
 	return {
@@ -1313,6 +1349,16 @@ function approvalAction(profile: ExecutionPolicyProfile, operation: PolicyOperat
 			return profile.approvals.credentials;
 		case "sandbox.prepare":
 			return profile.approvals.sandbox;
+		case "mcp.auth":
+			return profile.approvals.mcp;
+		case "resource.list":
+		case "resource.read":
+			return profile.approvals.resource;
+		case "prompt.list":
+		case "prompt.get":
+			return profile.approvals.prompt;
+		case "context.attach":
+			return profile.approvals.context;
 		default:
 			return undefined;
 	}
@@ -1362,6 +1408,14 @@ function requiredSandboxCapability(resource: PolicyResource): keyof SandboxCapab
 			return "credentialIsolation";
 		case "capability.invoke":
 		case "sandbox.prepare":
+		case "mcp.auth":
+		case "resource.list":
+		case "resource.read":
+		case "prompt.list":
+		case "prompt.get":
+		case "context.attach":
+			// MCP auth and content operations execute in the host client, not inside
+			// the sandbox, so no sandbox capability is required for them.
 			return undefined;
 	}
 }

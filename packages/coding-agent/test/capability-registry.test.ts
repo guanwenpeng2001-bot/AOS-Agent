@@ -78,6 +78,7 @@ function cand(
 		...(overrides.mcpServerId !== undefined ? { mcpServerId: overrides.mcpServerId } : {}),
 		...(overrides.trusted !== undefined ? { trusted: overrides.trusted } : {}),
 		...(overrides.availability !== undefined ? { availability: overrides.availability } : {}),
+		...(overrides.provenance !== undefined ? { provenance: overrides.provenance } : {}),
 		...(overrides.revisionInput !== undefined ? { revisionInput: overrides.revisionInput } : {}),
 	};
 }
@@ -635,6 +636,189 @@ describe("generic parent inheritance for extension tools", () => {
 		const p = profile(rule({ kind: "extension_tool" }, "allow"));
 		const binding = bind(catalog, { profiles: { default: p } });
 		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 1 });
+	});
+});
+
+describe("MCP resource and prompt content capabilities", () => {
+	const server = () => cand({ kind: "mcp_server", name: "docs", mcpServerId: "docs", sourceIdentity: "mcp" });
+	const resource = () =>
+		cand({
+			kind: "mcp_resource",
+			name: "README",
+			localName: "MCPResourceDigestDocsReadme",
+			mcpServerId: "docs",
+			parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+			sourceIdentity: "mcp",
+			provenance: "prov-resource-1",
+			revisionInput: {
+				resourceId: "MCPResourceDigestDocsReadme",
+				name: "README",
+				title: "README",
+				description: "Docs readme",
+				mimeType: "text/markdown",
+				provenanceId: "prov-resource-1",
+				revision: "rev-summary-1",
+			},
+		});
+	const prompt = () =>
+		cand({
+			kind: "mcp_prompt",
+			name: "summarize",
+			localName: "MCPPromptDigestSummarize",
+			mcpServerId: "docs",
+			parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+			sourceIdentity: "mcp",
+			provenance: "prov-prompt-1",
+			revisionInput: {
+				promptId: "MCPPromptDigestSummarize",
+				name: "summarize",
+				arguments: [{ name: "topic" }],
+				provenanceId: "prov-prompt-1",
+				revision: "rev-summary-2",
+			},
+		});
+	const tool = () =>
+		cand({
+			kind: "mcp_tool",
+			name: "list",
+			mcpServerId: "docs",
+			parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+			sourceIdentity: "mcp",
+		});
+
+	it("denies MCP content capabilities by default like their servers", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), resource(), prompt()] });
+		const binding = bind(catalog);
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 3 });
+	});
+
+	it("cascades a server deny to content children even when content rules allow", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), resource(), prompt()] });
+		const p = profile(
+			rule({ kind: "mcp_server" }, "deny"),
+			rule({ kind: "mcp_resource" }, "allow"),
+			rule({ kind: "mcp_prompt" }, "allow"),
+		);
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 3 });
+		expect(binding.descriptors).toHaveLength(0);
+	});
+
+	it("caps content children at the parent server's ask decision", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), resource(), prompt()] });
+		const p = profile(
+			rule({ kind: "mcp_server" }, "ask"),
+			rule({ kind: "mcp_resource" }, "allow"),
+			rule({ kind: "mcp_prompt" }, "allow"),
+		);
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 3, denied: 0 });
+		// Approving only the content child never selects it while the parent is ask-unapproved.
+		const approved = bind(catalog, {
+			profiles: { default: p },
+			approved: [createCapabilityId("mcp_resource", "mcp", "MCPResourceDigestDocsReadme")],
+		});
+		expect(approved.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 3, denied: 0 });
+	});
+
+	it("denies a content capability with no known parent server", () => {
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				cand({
+					kind: "mcp_resource",
+					name: "ghost",
+					localName: "MCPResourceDigestGhost",
+					mcpServerId: "nope",
+					sourceIdentity: "mcp",
+				}),
+			],
+		});
+		const p = profile(rule({ kind: "mcp_resource" }, "allow"));
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 1 });
+	});
+
+	it("selects content capabilities by kind and mcpServerId parent matching", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), resource(), prompt(), tool()] });
+		const p = profile(
+			rule({ kind: "mcp_server" }, "allow"),
+			rule({ mcpServerId: "docs" }, "allow"),
+		);
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary).toEqual({ allowed: 4, awaitingApproval: 0, denied: 0 });
+		expect(binding.descriptors.map((descriptor) => descriptor.id).sort()).toEqual(
+			[
+				createCapabilityId("mcp_server", "mcp", "docs"),
+				createCapabilityId("mcp_tool", "mcp", "list"),
+				createCapabilityId("mcp_resource", "mcp", "MCPResourceDigestDocsReadme"),
+				createCapabilityId("mcp_prompt", "mcp", "MCPPromptDigestSummarize"),
+			].sort(),
+		);
+	});
+
+	it("never adds resources or prompts to the model tool allowlist", () => {
+		const catalog = buildCapabilityCatalog({ candidates: [server(), resource(), prompt(), tool()] });
+		const p = profile(
+			rule({ kind: "mcp_server" }, "allow"),
+			rule({ kind: "mcp_tool" }, "allow"),
+			rule({ kind: "mcp_resource" }, "allow"),
+			rule({ kind: "mcp_prompt" }, "allow"),
+		);
+		const binding = bind(catalog, { profiles: { default: p } });
+		expect(binding.decisionSummary.allowed).toBe(4);
+		// Only the tool is model-visible; resource/prompt descriptors stay in the
+		// binding for governance but never surface as tool names.
+		expect(binding.toolAllowlist).toEqual(["mcp__docs__list"]);
+	});
+
+	it("keeps content revisions and provenance secret-free in catalog views", () => {
+		const secretSummary = {
+			resourceId: "MCPResourceDigestDocsReadme",
+			name: "README",
+			title: "README",
+			description: "Docs readme",
+			mimeType: "text/markdown",
+			provenanceId: "prov-resource-1",
+			revision: "rev-summary-1",
+			token: "sk-audit-secret-token",
+			env: { DOCS_TOKEN: "audit-env-value" },
+		};
+		const withoutToken: Record<string, unknown> = {
+			resourceId: "MCPResourceDigestDocsReadme",
+			name: "README",
+			title: "README",
+			description: "Docs readme",
+			mimeType: "text/markdown",
+			provenanceId: "prov-resource-1",
+			revision: "rev-summary-1",
+			env: { DOCS_TOKEN: "audit-env-value" },
+		};
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				server(),
+				cand({
+					kind: "mcp_resource",
+					name: "README",
+					localName: "MCPResourceDigestDocsReadme",
+					mcpServerId: "docs",
+					parentId: createCapabilityId("mcp_server", "mcp", "docs"),
+					sourceIdentity: "mcp",
+					provenance: "prov-resource-1",
+					revisionInput: secretSummary,
+				}),
+			],
+		});
+		const view = createCapabilityCatalogView(catalog);
+		const descriptorView = view.descriptors.find((descriptor) => descriptor.kind === "mcp_resource");
+		expect(descriptorView).toBeDefined();
+		expect(descriptorView?.provenance).toBe("prov-resource-1");
+		expect(descriptorView?.revision).toMatch(/^rev:[A-Za-z0-9_-]{43}$/);
+		const serialized = JSON.stringify(view);
+		expect(serialized).not.toContain("sk-audit-secret-token");
+		expect(serialized).not.toContain("audit-env-value");
+		// Secret rotation never bumps the content capability revision.
+		const withSecret = catalog.descriptors.find((descriptor) => descriptor.kind === "mcp_resource");
+		expect(withSecret?.revision).toBe(createCapabilityRevision(withoutToken));
 	});
 });
 

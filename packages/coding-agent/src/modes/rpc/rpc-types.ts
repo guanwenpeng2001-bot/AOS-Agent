@@ -27,6 +27,13 @@ import type {
 } from "../../core/external-session-mapping.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
+import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
+import type { MCPContentPublicErrorCode } from "../../core/mcp-error-codes.ts";
+import type {
+	MCPPromptListResult,
+	MCPResourceListResult,
+	MCPResourceTemplateListResult,
+} from "../../core/mcp-types.ts";
 import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
 import type {
 	TaskGraphNodeDefinition,
@@ -121,6 +128,45 @@ export type RpcCommand =
 
 	// Context Engine (read-only inspection; never returns raw source bodies)
 	| { id?: string; type: "get_context"; snapshotId?: string }
+
+	// MCP content (resource/prompt/template): raw URIs, template patterns, and
+	// prompt args are used once and never echoed by responses, audit records,
+	// or errors
+	| { id?: string; type: "mcp.resource.list"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.resource.templates.list"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.resource.read"; serverId: string; uri: string }
+	| { id?: string; type: "mcp.resource.attach"; serverId: string; uri: string }
+	| { id?: string; type: "mcp.prompt.list"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.prompt.get"; serverId: string; name: string; args?: Record<string, string> }
+	| { id?: string; type: "mcp.prompt.attach"; serverId: string; name: string; args?: Record<string, string> }
+
+	// MCP OAuth (auth): credential status and lifecycle. `mcp.auth.start` is
+	// headless by default and fails closed immediately with the fixed
+	// `mcp_auth_interaction_required` error; declaring `interactive: true`
+	// opts into the extension-UI interaction bridge, whose confirm / manual
+	// code dialogs and one-shot `auth_url` delivery the client drives through
+	// `extension_ui_request` / `extension_ui_response` records. `serverUrl`
+	// lives only in the request and is never echoed; responses never carry
+	// tokens, URLs, issuer/resource, or raw URIs.
+	| {
+			id?: string;
+			type: "mcp.auth.start";
+			serverId: string;
+			serverUrl: string;
+			/** Declares that the caller drives the extension-UI interaction bridge. */
+			interactive?: boolean;
+			/** Fixed callback shape; defaults to `loopback`. */
+			callbackMode?: "loopback" | "https";
+			/** Fixed HTTPS redirect URI; required when `callbackMode` is `https`. */
+			httpsCallbackUrl?: string;
+			/** Bounded deadline for the interactive callback capture. */
+			timeoutMs?: number;
+			/** Per-HTTP-request deadline for discovery/token calls. */
+			requestTimeoutMs?: number;
+	  }
+	| { id?: string; type: "mcp.auth.status"; serverId: string; serverUrl: string }
+	| { id?: string; type: "mcp.auth.list" }
+	| { id?: string; type: "mcp.auth.logout"; serverId: string; serverUrl?: string }
 
 	// Capability inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_capabilities"; bindingId?: string }
@@ -434,6 +480,23 @@ export type RpcResponse =
 			data: GetContextData;
 	  }
 
+	// MCP content (resource/prompt/template): metadata/digest receipts only;
+	// remote text, raw URIs, template patterns, and prompt argument values
+	// never cross the wire
+	| { id?: string; type: "response"; command: "mcp.resource.list"; success: true; data: MCPResourceListResult }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.resource.templates.list";
+			success: true;
+			data: MCPResourceTemplateListResult;
+	  }
+	| { id?: string; type: "response"; command: "mcp.resource.read"; success: true; data: RpcMcpReadResourceReceipt }
+	| { id?: string; type: "response"; command: "mcp.resource.attach"; success: true; data: RpcMcpAttachmentReceipt }
+	| { id?: string; type: "response"; command: "mcp.prompt.list"; success: true; data: MCPPromptListResult }
+	| { id?: string; type: "response"; command: "mcp.prompt.get"; success: true; data: RpcMcpGetPromptReceipt }
+	| { id?: string; type: "response"; command: "mcp.prompt.attach"; success: true; data: RpcMcpAttachmentReceipt }
+
 	// Capability inspection
 	| {
 			id?: string;
@@ -485,6 +548,243 @@ export interface GetExecutionPolicyData {
 export type GetModelRoutesData = PublicModelSummary;
 
 // ============================================================================
+// MCP content wire views (metadata/digest only)
+// ============================================================================
+
+/**
+ * Redacted summary of one normalized content block. Text and image payloads
+ * never cross the RPC wire; only digest, byte count, and bounded metadata are
+ * returned, so remote original text is never echoed by a response.
+ */
+export interface RpcMcpContentBlockSummary {
+	kind: "text" | "image" | "unattached";
+	/** Normalized UTF-8 byte count of the block payload. */
+	bytes: number;
+	/** SHA-256 hex digest over the normalized block payload. */
+	digest: string;
+	/** Normalized MIME type; present for image and some unattached blocks. */
+	mimeType?: string;
+	/** Server-reported size in bytes; present for some unattached blocks. */
+	size?: number;
+	/** Unattached-block classification reason. */
+	reason?: "blob" | "audio" | "resource_link" | "embedded_blob";
+}
+
+/** Redacted summary of one normalized prompt message; block payloads omitted. */
+export interface RpcMcpPromptMessageSummary {
+	role: "user" | "assistant";
+	blocks: ReadonlyArray<RpcMcpContentBlockSummary>;
+	/** SHA-256 hex digest over the message's normalized blocks. */
+	digest: string;
+}
+
+/**
+ * Redacted receipt of a successful `mcp.resource.read`. Carries only the
+ * deterministic resource id, block digests/counts, and untrusted provenance;
+ * the raw URI and remote text are never retained or echoed.
+ */
+export interface RpcMcpReadResourceReceipt {
+	serverId: string;
+	/** Deterministic digest id of the resource; never the raw URI. */
+	resourceId: string;
+	blocks: ReadonlyArray<RpcMcpContentBlockSummary>;
+	provenance: MCPContentProvenance;
+}
+
+/**
+ * Redacted receipt of a successful `mcp.prompt.get`. Carries only the
+ * deterministic prompt id, per-message digests, and untrusted provenance;
+ * the prompt name, argument values, and remote text are never echoed.
+ */
+export interface RpcMcpGetPromptReceipt {
+	serverId: string;
+	/** Deterministic digest id of the prompt; never the raw name. */
+	promptId: string;
+	messages: ReadonlyArray<RpcMcpPromptMessageSummary>;
+	provenance: MCPContentProvenance;
+}
+
+/**
+ * Redacted receipt of a successful `mcp.resource.attach` / `mcp.prompt.attach`.
+ * The attachment is registered in the Session (the only way remote content
+ * enters the session); the wire carries metadata, digests, and the opaque
+ * binding ids only, never the raw URI, prompt name, argument values, or
+ * remote text.
+ */
+export interface RpcMcpAttachmentReceipt {
+	/** Deterministic digest id of the registered attachment. */
+	id: string;
+	kind: "resource" | "prompt";
+	serverId: string;
+	/** Digest id of the source resource or prompt; never the raw URI or name. */
+	sourceId: string;
+	provenance: MCPContentProvenance;
+	/** SHA-256 hex digest over all normalized blocks of the read/get result. */
+	contentDigest: string;
+	/** Total normalized byte count of the read/get result. */
+	byteCount: number;
+	/** Total normalized block count of the read/get result. */
+	blockCount: number;
+	/** Count of allowlisted attachable text/image blocks. */
+	attachableBlockCount: number;
+	/** Opaque capability binding id that authorized the attach. */
+	capabilityBindingId: string;
+	/** Opaque execution policy binding id that authorized the attach. */
+	policyBindingId: string;
+	createdAt: string;
+}
+
+// ============================================================================
+// MCP content wire errors (mcp.resource.* / mcp.prompt.*)
+// ============================================================================
+
+/** Commands of the MCP content surface. */
+export type RpcMcpContentCommandType =
+	| "mcp.resource.list"
+	| "mcp.resource.templates.list"
+	| "mcp.resource.read"
+	| "mcp.resource.attach"
+	| "mcp.prompt.list"
+	| "mcp.prompt.get"
+	| "mcp.prompt.attach";
+
+/**
+ * Stable, fixed-message error codes of the `mcp.resource.*` / `mcp.prompt.*`
+ * commands. Content-safety failures surface the PR error-contract codes
+ * (`mcp_content_invalid`, `mcp_content_limit_exceeded`) mapped by the host
+ * from the fine-grained core {@link MCPContentErrorCode} (which stays
+ * reachable for SDK consumers); capability denials surface the
+ * operation-specific `mcp_resource_denied` / `mcp_prompt_denied`; lifecycle,
+ * policy, and abort failures map to fixed codes below. Raw remote text,
+ * URIs, template patterns, prompt arguments, auth URLs, issuer/resource, and
+ * tokens never appear in messages.
+ */
+export type RpcMcpContentErrorCode =
+	| MCPContentErrorCode
+	| MCPContentPublicErrorCode
+	| "mcp_resource_denied"
+	| "mcp_prompt_denied"
+	| "mcp_not_selected"
+	| "mcp_invalid_config"
+	| "mcp_connect_failed"
+	| "mcp_auth_required"
+	| "mcp_unavailable"
+	| "mcp_capability_denied"
+	| "mcp_policy_denied"
+	| "mcp_aborted";
+
+/** Structured, fixed-message error of the MCP content commands. */
+export interface RpcMcpContentError {
+	code: RpcMcpContentErrorCode;
+	message: string;
+}
+
+/**
+ * Responses of the MCP content commands.
+ *
+ * Every failure carries a structured {@link RpcMcpContentError} with a stable
+ * `code` and a fixed template `message`; raw URIs, template patterns, prompt
+ * arguments, remote text, tokens, and generic catch text never cross the wire.
+ */
+export type RpcMcpContentResponse =
+	| Extract<RpcResponse, { command: RpcMcpContentCommandType }>
+	| { id?: string; type: "response"; command: RpcMcpContentCommandType; success: false; error: RpcMcpContentError };
+
+// ============================================================================
+// MCP OAuth wire contract (mcp.auth.*)
+// ============================================================================
+
+/** Commands of the MCP OAuth credential surface. */
+export type RpcMcpAuthCommandType = "mcp.auth.start" | "mcp.auth.status" | "mcp.auth.list" | "mcp.auth.logout";
+
+/** Fixed status vocabulary of a successful `mcp.auth.start`. */
+export type RpcMcpAuthStartStatus = "authorized" | "already_authorized" | "not_required";
+
+/** Fixed status vocabulary of `mcp.auth.status`. */
+export type RpcMcpAuthStatusValue = "authorized" | "required";
+
+/**
+ * Masked credential status of one MCP server. Token values, the server URL,
+ * issuer/resource, and raw URIs never cross the wire; only the opaque server
+ * identity and non-secret metadata are returned.
+ */
+export interface RpcMcpMaskedCredential {
+	/** Opaque server identity (one-way derivation of the canonical server URL). */
+	serverIdentity: string;
+	/** Granted scope, when the authorization server reported one. */
+	scope?: string;
+	/** Epoch milliseconds, when the server reported an expiry. */
+	expiresAt?: number;
+	hasRefreshToken: boolean;
+}
+
+/**
+ * Data returned by a successful `mcp.auth.start`.
+ *
+ * Only the terminal status crosses the wire in the response. The one-shot
+ * authorization URL is delivered exclusively through the dedicated
+ * `extension_ui_request` `auth_url` record; it never appears in the
+ * response, session events, catalog, status, receipt, audit, errors, or logs,
+ * and no token or raw URI is ever carried.
+ */
+export interface RpcMcpAuthStartData {
+	status: RpcMcpAuthStartStatus;
+}
+
+/** Data returned by a successful `mcp.auth.status`. */
+export interface RpcMcpAuthStatusData {
+	status: RpcMcpAuthStatusValue;
+	credential?: RpcMcpMaskedCredential;
+}
+
+/** Data returned by a successful `mcp.auth.list`. */
+export interface RpcMcpAuthListData {
+	credentials: ReadonlyArray<RpcMcpMaskedCredential>;
+}
+
+/** Stable, fixed-message error codes of the `mcp.auth.*` commands (PR error contract section 8). */
+export type RpcMcpAuthErrorCode =
+	| "mcp_auth_interaction_required"
+	| "mcp_auth_not_configured"
+	| "mcp_auth_stdio_not_applicable"
+	| "mcp_auth_invalid_request"
+	| "mcp_auth_metadata_invalid"
+	| "mcp_auth_resource_mismatch"
+	| "mcp_auth_state_mismatch"
+	| "mcp_auth_invalid"
+	| "mcp_auth_cancelled"
+	| "mcp_auth_storage_invalid_server_url"
+	| "mcp_auth_storage_invalid_tokens"
+	| "mcp_auth_storage_invalid_scope"
+	| "mcp_auth_storage_binding_mismatch"
+	| "mcp_auth_storage_namespace_collision"
+	| "mcp_auth_capability_denied"
+	| "mcp_auth_not_selected"
+	| "mcp_auth_invalid_config"
+	| "mcp_auth_policy_denied"
+	| "mcp_auth_aborted";
+
+/** Structured, fixed-message error of the `mcp.auth.*` commands. */
+export interface RpcMcpAuthError {
+	code: RpcMcpAuthErrorCode;
+	message: string;
+}
+
+/**
+ * Responses of the `mcp.auth.*` commands.
+ *
+ * Every failure carries a structured {@link RpcMcpAuthError} with a stable
+ * `code` and a fixed template `message`; raw tokens, URLs, remote error text,
+ * and generic catch text never cross the wire.
+ */
+export type RpcMcpAuthResponse =
+	| { id?: string; type: "response"; command: "mcp.auth.start"; success: true; data: RpcMcpAuthStartData }
+	| { id?: string; type: "response"; command: "mcp.auth.status"; success: true; data: RpcMcpAuthStatusData }
+	| { id?: string; type: "response"; command: "mcp.auth.list"; success: true; data: RpcMcpAuthListData }
+	| { id?: string; type: "response"; command: "mcp.auth.logout"; success: true }
+	| { id?: string; type: "response"; command: RpcMcpAuthCommandType; success: false; error: RpcMcpAuthError };
+
+// ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
 
@@ -524,7 +824,14 @@ export type RpcExtensionUIRequest =
 			widgetPlacement?: "aboveEditor" | "belowEditor";
 	  }
 	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
-	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
+	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }
+	// One-shot, dedicated delivery of the MCP OAuth authorization URL to the
+	// interactive client that declared `interactive: true` on `mcp.auth.start`.
+	// Fire-and-forget (no response); emitted at most once per flow. The URL is
+	// never placed in command responses, session events, capability catalogs,
+	// status/list/logout output, receipts, audit entries, errors, or logs, and
+	// never carries a token or raw URI.
+	| { type: "extension_ui_request"; id: string; method: "auth_url"; url: string; instructions?: string };
 
 // ============================================================================
 // Extension UI Commands (stdin)
@@ -716,6 +1023,19 @@ export type RpcAutomationResponse =
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
+// Re-export the safe MCP content catalog/result types consumed by the wire.
+export type {
+	MCPContentProvenance,
+	MCPNormalizedContentBlock,
+	MCPNormalizedPromptMessage,
+} from "../../core/mcp-content.ts";
+export type {
+	MCPPromptArgumentSummary,
+	MCPPromptListResult,
+	MCPPromptSummary,
+	MCPResourceListResult,
+	MCPResourceSummary,
+} from "../../core/mcp-types.ts";
 // Re-export public audit query/replay types.
 export type {
 	AuditEvent,

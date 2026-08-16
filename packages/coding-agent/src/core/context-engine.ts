@@ -31,7 +31,8 @@ export type ContextSourceKind =
 	| "session_summary"
 	| "session_message"
 	| "memory"
-	| "extension";
+	| "extension"
+	| "attachment";
 
 export type ContextTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project";
 
@@ -122,6 +123,8 @@ export interface ContextSourceInput {
 	capabilityRevision?: string;
 	/** Capability binding id that selected this source. */
 	capabilityBindingId?: string;
+	/** Execution policy binding id that authorized this source. */
+	policyBindingId?: string;
 	/**
 	 * Where the already-resolved source is injected. System is the default.
 	 * Message sources must supply the exact message that is appended to the
@@ -131,6 +134,22 @@ export interface ContextSourceInput {
 	message?: AgentMessage;
 	/** Multiple model messages contributed by one labeled extension source. */
 	messages?: readonly AgentMessage[];
+	/**
+	 * External content byte count recorded on the receipt without body text
+	 * (e.g. the normalized byte count of an MCP attachment).
+	 */
+	byteCount?: number;
+	/**
+	 * External content block count recorded on the receipt without body text
+	 * (e.g. the normalized block count of an MCP attachment).
+	 */
+	blockCount?: number;
+	/**
+	 * Distinct normalized MIME types of the external content, when the source
+	 * carries them (e.g. image blocks of an MCP attachment). MIME types are
+	 * bounded, validated tokens; never body text.
+	 */
+	mimeTypes?: ReadonlyArray<string>;
 	/** System-prompt append contributed by one labeled extension source. */
 	systemPromptAppend?: string;
 	/** Exact caller-supplied estimate when one source maps to multiple model inputs. */
@@ -184,6 +203,14 @@ export interface ContextSourceReceipt {
 	capabilityRevision?: string;
 	/** Capability binding id that selected this source. */
 	capabilityBindingId?: string;
+	/** Execution policy binding id that authorized this source. */
+	policyBindingId?: string;
+	/** External content byte count; safe numeric metadata, never body text. */
+	byteCount?: number;
+	/** External content block count; safe numeric metadata, never body text. */
+	blockCount?: number;
+	/** Distinct normalized MIME types of the external content; never body text. */
+	mimeTypes?: ReadonlyArray<string>;
 }
 
 export interface ContextBudget {
@@ -454,6 +481,11 @@ function sourcePriority(source: ContextSourceInput): number {
 			return 1;
 		case "extension":
 			return source.required ? 2 : 7;
+		case "attachment":
+			// Explicitly attached external content belongs with the current turn:
+			// required attachments pack with required extensions/turn messages and
+			// optional ones must not displace retained session context or memory.
+			return source.required ? 2 : 7;
 		case "session_summary":
 			return 3;
 		case "session_message":
@@ -538,6 +570,18 @@ function buildReceipt(
 	}
 	if (source.capabilityBindingId !== undefined) {
 		receipt.capabilityBindingId = source.capabilityBindingId;
+	}
+	if (source.policyBindingId !== undefined) {
+		receipt.policyBindingId = source.policyBindingId;
+	}
+	if (source.byteCount !== undefined) {
+		receipt.byteCount = source.byteCount;
+	}
+	if (source.blockCount !== undefined) {
+		receipt.blockCount = source.blockCount;
+	}
+	if (source.mimeTypes !== undefined) {
+		receipt.mimeTypes = [...source.mimeTypes];
 	}
 	return receipt;
 }

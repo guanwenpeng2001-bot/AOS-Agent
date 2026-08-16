@@ -6,6 +6,11 @@ import type {
 	CapabilityProfileRule,
 	CapabilitySelector,
 } from "./capability-registry.ts";
+import type {
+	MCPPromptSummary,
+	MCPResourceSummary,
+	MCPResourceTemplateSummary,
+} from "./mcp-types.ts";
 import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "./source-info.ts";
 
 /**
@@ -129,6 +134,9 @@ const VALID_KINDS: ReadonlySet<string> = new Set<CapabilityKind>([
 	"extension",
 	"mcp_server",
 	"mcp_tool",
+	"mcp_resource",
+	"mcp_resource_template",
+	"mcp_prompt",
 ]);
 const VALID_SCOPES: ReadonlySet<string> = new Set<SourceScope>(["user", "project", "temporary"]);
 const SELECTOR_KEYS: ReadonlySet<string> = new Set(["id", "kind", "sourceId", "scope", "mcpServerId", "parentId"]);
@@ -671,6 +679,55 @@ export function createMcpServerCapabilityCandidate(diagnostic: McpServerDiagnost
 		source: diagnostic.source,
 		trusted: diagnostic.trusted,
 		revisionInput: diagnostic.server,
+	};
+}
+
+/** MCP content capability kinds governed as children of an mcp_server. */
+export type McpContentCapabilityKind = "mcp_resource" | "mcp_resource_template" | "mcp_prompt";
+
+/** A discovered MCP content entry (resource, resource template, or prompt). */
+export type McpContentSummary = MCPResourceSummary | MCPResourceTemplateSummary | MCPPromptSummary;
+
+export function contentSummaryId(kind: McpContentCapabilityKind, summary: McpContentSummary): string {
+	switch (kind) {
+		case "mcp_resource":
+			return (summary as MCPResourceSummary).resourceId;
+		case "mcp_resource_template":
+			return (summary as MCPResourceTemplateSummary).templateId;
+		case "mcp_prompt":
+			return (summary as MCPPromptSummary).promptId;
+	}
+}
+
+/**
+ * Build the Registry candidate for a discovered MCP resource, resource
+ * template, or prompt summary from D's content normalizer.
+ *
+ * The candidate stays secret-free: the local name is the summary's opaque
+ * digest id (the raw URI, template, or prompt name never enters the registry),
+ * the revision input is the already-sanitized summary, and the provenance is
+ * the summary's opaque provenance id. The parent is the owning mcp_server
+ * descriptor, so server deny/ask cascades to the content child and a child can
+ * only further restrict the server decision. Content capabilities never expose
+ * a tool name, so they can never enter the model tool schema.
+ */
+export function createMcpContentCapabilityCandidate(input: {
+	kind: McpContentCapabilityKind;
+	server: McpServerDiagnostic;
+	summary: McpContentSummary;
+}): CapabilityCandidate {
+	const { kind, server, summary } = input;
+	return {
+		kind,
+		name: summary.name,
+		localName: contentSummaryId(kind, summary),
+		sourceIdentity: server.source.source,
+		source: server.source,
+		mcpServerId: server.id,
+		parentId: `mcp_server:${server.source.source}:${server.id}`,
+		trusted: server.trusted,
+		provenance: summary.provenanceId,
+		revisionInput: summary,
 	};
 }
 

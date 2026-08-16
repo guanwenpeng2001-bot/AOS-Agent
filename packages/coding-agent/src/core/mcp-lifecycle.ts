@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
 	getDefaultEnvironment,
 	StdioClientTransport,
@@ -7,17 +8,23 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
-import type { Tool } from "@modelcontextprotocol/sdk/types";
+import { McpError, type Tool } from "@modelcontextprotocol/sdk/types";
 import {
 	createMCPServerConfigView,
+	DEFAULT_MCP_CONTENT_LIMITS,
+	type MCPAuthProviderResolver,
 	type MCPCallResult,
 	type MCPConnectionState,
 	type MCPConnectionStatus,
+	type MCPContentLimits,
 	type MCPEnvResolver,
 	type MCPError,
 	type MCPErrorKind,
 	type MCPErrorView,
 	MCPError as MCPLifecycleError,
+	type MCPPromptListResult,
+	type MCPResourceListResult,
+	type MCPResourceTemplateListResult,
 	type MCPServerConfig,
 	type MCPServerConfigView,
 	type MCPStdioServerConfig,
@@ -27,6 +34,20 @@ import {
 	mcpStateToAvailability,
 	validateMCPServerConfig,
 } from "./mcp-types.ts";
+import {
+	MCPContentError,
+	type MCPGetPromptResult,
+	type MCPReadResourceResult,
+	mcpResourceId,
+	normalizeMCPPromptGet,
+	normalizeMCPPromptSummaries,
+	normalizeMCPResourceRead,
+	normalizeMCPResourceSummaries,
+	normalizeMCPResourceTemplateSummaries,
+	validateMCPPromptArguments,
+	validateMCPPromptName,
+	validateMCPResourceUri,
+} from "./mcp-content.ts";
 
 const MCP_CLIENT_NAME = "aos-agent-mcp-client";
 const MCP_CLIENT_VERSION = "1.0.0";
@@ -52,6 +73,17 @@ async function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Pr
 	} finally {
 		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
 	}
+}
+
+/**
+ * True when the SDK classified the failure as a JSON-RPC method-not-found
+ * (the server advertises a top-level capability but does not implement the
+ * concrete method, e.g. resources without resources/templates/list). This is
+ * a server capability fact, not a transport failure: the caller surfaces the
+ * fixed unavailable code and the server must NOT be marked degraded.
+ */
+function isMCPMethodNotSupported(error: unknown): boolean {
+	return error instanceof McpError && error.code === -32601;
 }
 
 /** Fail-closed message templates; never embed remote error text or secrets. */
@@ -102,6 +134,7 @@ export function createMCPStdioTransport(config: MCPStdioServerConfig, env: MCPEn
 export function createMCPHttpTransport(
 	config: MCPStreamableHttpServerConfig,
 	env: MCPEnvResolver,
+	authProvider?: MCPAuthProviderResolver,
 ): StreamableHTTPClientTransport {
 	const headers: Record<string, string> = {};
 	for (const ref of config.headersFromEnv ?? []) {
@@ -110,19 +143,26 @@ export function createMCPHttpTransport(
 			headers[ref.name] = value;
 		}
 	}
+	const resolvedProvider =
+		authProvider === undefined
+			? undefined
+			: typeof authProvider === "function"
+				? authProvider(config)
+				: authProvider;
 	return new StreamableHTTPClientTransport(new URL(config.url), {
 		...(Object.keys(headers).length > 0 ? { requestInit: { headers } } : {}),
+		...(resolvedProvider !== undefined ? { authProvider: resolvedProvider } : {}),
 	});
 }
 
 /** Default transport factory used in production. Tests inject an in-memory factory. */
 export function createMCPDefaultTransportFactory(): MCPTransportFactory {
-	return (config: MCPServerConfig, env: MCPEnvResolver): Transport => {
+	return (config: MCPServerConfig, env: MCPEnvResolver, authProvider?: MCPAuthProviderResolver): Transport => {
 		switch (config.transport) {
 			case "stdio":
 				return createMCPStdioTransport(config, env);
 			case "streamable-http":
-				return createMCPHttpTransport(config, env);
+				return createMCPHttpTransport(config, env, authProvider);
 		}
 	};
 }
@@ -135,6 +175,14 @@ export interface MCPServerLifecycleOptions {
 	transportFactory?: MCPTransportFactory;
 	/** Timeout in milliseconds for connect/listTools; defaults to 60s. */
 	requestTimeoutMs?: number;
+	/**
+	 * Per-session OAuth client provider for streamable-http servers. One
+	 * provider instance never crosses sessions: every session builds its own
+	 * lifecycle with its own provider. stdio servers never receive it.
+	 */
+	authProvider?: MCPAuthProviderResolver;
+	/** Content safety limits for resources/prompts; defaults to {@link DEFAULT_MCP_CONTENT_LIMITS}. */
+	contentLimits?: MCPContentLimits;
 }
 
 const DEFAULT_ENV_RESOLVER: MCPEnvResolver = (name) => process.env[name];
@@ -151,6 +199,8 @@ export class MCPServerLifecycle {
 	private readonly env: MCPEnvResolver;
 	private readonly transportFactory: MCPTransportFactory;
 	private readonly requestTimeoutMs: number;
+	private readonly authProvider: MCPAuthProviderResolver | undefined;
+	private readonly contentLimits: MCPContentLimits;
 	private client: Client | undefined;
 	/** Client created for a connect that has not settled; close must not orphan it. */
 	private pendingClient: Client | undefined;
@@ -159,15 +209,25 @@ export class MCPServerLifecycle {
 	private connectionState: MCPConnectionState;
 	private connectPromise: Promise<void> | undefined;
 	private readonly inflightCalls = new Set<AbortController>();
+	/** In-flight list/read/get operations; close() and forceClose() abort them. */
+	private readonly inflightOps = new Set<AbortController>();
 	private connectedAt: string | undefined;
 	private lastError: MCPErrorView | undefined;
 	private toolCount: number | undefined;
+	/** Set by resources/prompts list-changed notifications; cleared on a successful list. */
+	private catalogStale = false;
+	/** In-memory resourceId -> raw URI map. URIs never leave this lifecycle. */
+	private readonly resourceUris = new Map<string, string>();
+	/** In-memory promptId -> sanitized prompt name map. */
+	private readonly promptNames = new Map<string, string>();
 
 	constructor(config: MCPServerConfig, options: MCPServerLifecycleOptions = {}) {
 		this.config = config;
 		this.env = options.env ?? DEFAULT_ENV_RESOLVER;
 		this.transportFactory = options.transportFactory ?? createMCPDefaultTransportFactory();
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+		this.authProvider = options.authProvider;
+		this.contentLimits = options.contentLimits ?? DEFAULT_MCP_CONTENT_LIMITS;
 		this.connectionState = "configured";
 	}
 
@@ -191,6 +251,7 @@ export class MCPServerLifecycle {
 			...(this.connectedAt !== undefined ? { connectedAt: this.connectedAt } : {}),
 			...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
 			...(this.toolCount !== undefined ? { toolCount: this.toolCount } : {}),
+			...(this.catalogStale ? { catalogStale: true } : {}),
 		};
 	}
 
@@ -248,7 +309,11 @@ export class MCPServerLifecycle {
 		this.setState("connecting");
 		let pendingClient: Client | undefined;
 		try {
-			const transport = await this.transportFactory(this.config, this.env);
+			const transport = await this.transportFactory(
+				this.config,
+				this.env,
+				this.resolveAuthProvider(),
+			);
 			if (signal?.aborted) {
 				await transport.close?.().catch(() => undefined);
 				throw abortError(signal);
@@ -257,7 +322,29 @@ export class MCPServerLifecycle {
 				await transport.close?.().catch(() => undefined);
 				throw this.failure("unavailable");
 			}
-			pendingClient = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
+			pendingClient = new Client(
+				{ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION },
+				{
+					// List-changed notifications only set the stale flag; they never
+					// auto-refresh a catalog or mutate a frozen binding. Handlers are
+					// installed by the SDK only when the server advertises the
+					// corresponding listChanged capability.
+					listChanged: {
+						resources: {
+							autoRefresh: false,
+							onChanged: () => {
+								this.catalogStale = true;
+							},
+						},
+						prompts: {
+							autoRefresh: false,
+							onChanged: () => {
+								this.catalogStale = true;
+							},
+						},
+					},
+				},
+			);
 			this.pendingClient = pendingClient;
 			await pendingClient.connect(transport, { timeout: this.requestTimeoutMs, signal });
 			if (signal?.aborted) {
@@ -364,12 +451,239 @@ export class MCPServerLifecycle {
 		}
 	}
 
+	/**
+	 * Lists one page of the resources catalog. Cursor pagination is explicit:
+	 * pass the previous page's `nextCursor` to fetch the next page. The raw URI
+	 * never enters status or errors; summaries carry digest ids only.
+	 *
+	 * A server without the `resources` capability throws a fixed
+	 * `mcp_resource_unavailable` error without calling an undeclared SDK API.
+	 * Transport/content failures mark the server degraded. Cancellation rejects
+	 * with an AbortError without degrading. Never starts a model.
+	 */
+	async listResources(
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceListResult> {
+		const client = this.requireReady();
+		if (client.getServerCapabilities()?.resources === undefined) {
+			throw new MCPContentError("mcp_resource_unavailable", this.config.id);
+		}
+		return this.runCatalogOp(async (controller) => {
+			const result = await client.listResources(params, {
+				timeout: this.requestTimeoutMs,
+				signal: controller.signal,
+			});
+			const resources = normalizeMCPResourceSummaries(
+				this.config.id,
+				result.resources as unknown as ReadonlyArray<unknown>,
+				this.contentLimits,
+			);
+			for (const entry of result.resources as unknown as ReadonlyArray<{ uri?: unknown }>) {
+				if (typeof entry.uri === "string") {
+					this.resourceUris.set(mcpResourceId(this.config.id, entry.uri), entry.uri);
+				}
+			}
+			this.catalogStale = false;
+			return { serverId: this.config.id, resources, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}) };
+		}, signal, "mcp_resource_unavailable");
+	}
+
+	/**
+	 * Lists one page of the resource templates catalog. Follows the same
+	 * contract as {@link listResources}. Never starts a model.
+	 */
+	async listResourceTemplates(
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceTemplateListResult> {
+		const client = this.requireReady();
+		if (client.getServerCapabilities()?.resources === undefined) {
+			throw new MCPContentError("mcp_resource_unavailable", this.config.id);
+		}
+		return this.runCatalogOp(async (controller) => {
+			const result = await client.listResourceTemplates(params, {
+				timeout: this.requestTimeoutMs,
+				signal: controller.signal,
+			});
+			const resourceTemplates = normalizeMCPResourceTemplateSummaries(
+				this.config.id,
+				result.resourceTemplates as unknown as ReadonlyArray<unknown>,
+				this.contentLimits,
+			);
+			this.catalogStale = false;
+			return {
+				serverId: this.config.id,
+				resourceTemplates,
+				...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+			};
+		}, signal, "mcp_resource_unavailable");
+	}
+
+	/**
+	 * Resolves a listed catalog resourceId to the raw URI held only in this
+	 * lifecycle. Undefined when the id was never listed in this connection.
+	 */
+	getResourceUri(resourceId: string): string | undefined {
+		return this.resourceUris.get(resourceId);
+	}
+
+	/**
+	 * Resolves a listed catalog promptId to the sanitized prompt name.
+	 * Undefined when the id was never listed in this connection.
+	 */
+	getPromptName(promptId: string): string | undefined {
+		return this.promptNames.get(promptId);
+	}
+
+	/**
+	 * Reads one resource by its URI. The URI is validated, used once for the
+	 * request, and never retained: the result carries a digest resourceId and
+	 * untrusted provenance only. Never starts a model.
+	 */
+	async readResource(uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+		const client = this.requireReady();
+		const resolvedUri = this.resourceUris.get(uri) ?? uri;
+		const safeUri = validateMCPResourceUri(resolvedUri, this.config.id);
+		if (client.getServerCapabilities()?.resources === undefined) {
+			throw new MCPContentError("mcp_resource_unavailable", this.config.id);
+		}
+		return this.runCatalogOp(async (controller) => {
+			const result = await client.readResource(
+				{ uri: safeUri },
+				{ timeout: this.requestTimeoutMs, signal: controller.signal },
+			);
+			return normalizeMCPResourceRead(
+				this.config.id,
+				safeUri,
+				result.contents as unknown as ReadonlyArray<unknown>,
+				this.contentLimits,
+			);
+		}, signal, "mcp_resource_unavailable");
+	}
+
+	/**
+	 * Lists one page of the prompts catalog. Follows the same contract as
+	 * {@link listResources}. Never starts a model.
+	 */
+	async listPrompts(
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPromptListResult> {
+		const client = this.requireReady();
+		if (client.getServerCapabilities()?.prompts === undefined) {
+			throw new MCPContentError("mcp_prompt_unavailable", this.config.id);
+		}
+		return this.runCatalogOp(async (controller) => {
+			const result = await client.listPrompts(params, {
+				timeout: this.requestTimeoutMs,
+				signal: controller.signal,
+			});
+			const prompts = normalizeMCPPromptSummaries(
+				this.config.id,
+				result.prompts as unknown as ReadonlyArray<unknown>,
+				this.contentLimits,
+			);
+			for (const prompt of prompts) {
+				this.promptNames.set(prompt.promptId, prompt.name);
+			}
+			this.catalogStale = false;
+			return { serverId: this.config.id, prompts, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}) };
+		}, signal, "mcp_prompt_unavailable");
+	}
+
+	/**
+	 * Gets one prompt with its argument values. The name and argument values
+	 * are validated, used once for the request, and never retained; the result
+	 * carries a digest promptId and untrusted provenance. Never starts a model.
+	 */
+	async getPrompt(
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<MCPGetPromptResult> {
+		const client = this.requireReady();
+		const resolvedName = this.promptNames.get(name) ?? name;
+		const safeName = validateMCPPromptName(resolvedName, this.config.id);
+		const safeArgs = validateMCPPromptArguments(args, this.contentLimits, this.config.id);
+		if (client.getServerCapabilities()?.prompts === undefined) {
+			throw new MCPContentError("mcp_prompt_unavailable", this.config.id);
+		}
+		return this.runCatalogOp(async (controller) => {
+			const result = await client.getPrompt(
+				{ name: safeName, arguments: safeArgs },
+				{ timeout: this.requestTimeoutMs, signal: controller.signal },
+			);
+			return normalizeMCPPromptGet(
+				this.config.id,
+				safeName,
+				result.messages as unknown as ReadonlyArray<unknown>,
+				this.contentLimits,
+			);
+		}, signal, "mcp_prompt_unavailable");
+	}
+
+	/**
+	 * Runs a catalog operation (list/read/get) under abort and timeout control.
+	 * Caller cancellation rejects with AbortError without degrading; a server
+	 * that advertises the top-level capability but does not implement the method
+	 * surfaces the fixed unavailable code without degrading (other resources and
+	 * prompts keep working); any other failure (transport or content) marks the
+	 * server degraded and throws the fixed error or capability_mcp_unavailable.
+	 */
+	private async runCatalogOp<T>(
+		operation: (controller: AbortController) => Promise<T>,
+		signal: AbortSignal | undefined,
+		unsupportedCode: "mcp_resource_unavailable" | "mcp_prompt_unavailable",
+	): Promise<T> {
+		if (signal?.aborted) throw abortError(signal);
+		const controller = new AbortController();
+		this.inflightOps.add(controller);
+		const onAbort = (): void => {
+			controller.abort(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			const result = await raceWithAbort(operation(controller), signal);
+			if (signal?.aborted) throw abortError(signal);
+			return result;
+		} catch (error) {
+			if (signal?.aborted) {
+				throw error instanceof DOMException && error.name === "AbortError" ? error : abortError(signal);
+			}
+			if (this.state === "closing" || this.state === "closed") {
+				throw this.failure("unavailable");
+			}
+			if (error instanceof MCPContentError) {
+				this.markDegraded();
+				throw error;
+			}
+			if (isMCPMethodNotSupported(error)) {
+				// Method-not-found is a capability fact: the fixed unavailable code
+				// is returned and the server is NOT degraded, so its supported
+				// resources/prompts remain usable.
+				throw new MCPContentError(unsupportedCode, this.config.id);
+			}
+			this.markDegraded();
+			throw this.failure("unavailable");
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+			this.inflightOps.delete(controller);
+		}
+	}
+
 	/** Gracefully closes the connection and releases the child process / transport. */
 	async close(): Promise<void> {
 		if (this.state === "closing" || this.state === "closed") {
 			return;
 		}
 		this.setState("closing");
+		// Pending catalog operations are cancelled so close never waits on a
+		// remote list/read/get; the close proceeds immediately.
+		for (const controller of this.inflightOps) {
+			controller.abort(new Error("MCP server connection closing"));
+		}
+		this.inflightOps.clear();
 		const clients = [this.client, this.pendingClient].filter(
 			(client, index, all): client is Client => client !== undefined && all.indexOf(client) === index,
 		);
@@ -385,6 +699,8 @@ export class MCPServerLifecycle {
 		// Drop the transport reference so a late close notification from the just-
 		// closed transport cannot revive into a subsequent reconnected connection.
 		this.transport = undefined;
+		this.resourceUris.clear();
+		this.promptNames.clear();
 		this.setState("closed");
 	}
 
@@ -397,7 +713,18 @@ export class MCPServerLifecycle {
 			controller.abort(new Error("MCP server connection force-closed"));
 		}
 		this.inflightCalls.clear();
+		for (const controller of this.inflightOps) {
+			controller.abort(new Error("MCP server connection force-closed"));
+		}
+		this.inflightOps.clear();
 		await this.close();
+	}
+
+	private resolveAuthProvider(): OAuthClientProvider | undefined {
+		if (this.authProvider === undefined) {
+			return undefined;
+		}
+		return typeof this.authProvider === "function" ? this.authProvider(this.config) : this.authProvider;
 	}
 
 	private requireReady(): Client {
@@ -598,6 +925,74 @@ export class MCPLifecycleManager {
 		const lifecycle = this.requireServer(serverId);
 		this.assertSelected(serverId);
 		return lifecycle.callTool(toolName, args, signal);
+	}
+
+	/** Lists one page of the resources catalog of a selected server. */
+	async listResources(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceListResult> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		return lifecycle.listResources(params, signal);
+	}
+
+	/** Lists one page of the resource templates catalog of a selected server. */
+	async listResourceTemplates(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceTemplateListResult> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		return lifecycle.listResourceTemplates(params, signal);
+	}
+
+	/**
+	 * Resolves a listed catalog resourceId to the raw URI held only in the
+	 * selected server's lifecycle. Undefined when the id was never listed.
+	 */
+	getResourceUri(serverId: string, resourceId: string): string | undefined {
+		return this.lifecycles.get(serverId)?.getResourceUri(resourceId);
+	}
+
+	/**
+	 * Resolves a listed catalog promptId to the sanitized prompt name.
+	 * Undefined when the id was never listed.
+	 */
+	getPromptName(serverId: string, promptId: string): string | undefined {
+		return this.lifecycles.get(serverId)?.getPromptName(promptId);
+	}
+
+	/** Reads one resource of a selected server; the URI is never retained. */
+	async readResource(serverId: string, uri: string, signal?: AbortSignal): Promise<MCPReadResourceResult> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		return lifecycle.readResource(uri, signal);
+	}
+
+	/** Lists one page of the prompts catalog of a selected server. */
+	async listPrompts(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPromptListResult> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		return lifecycle.listPrompts(params, signal);
+	}
+
+	/** Gets one prompt of a selected server; name and argument values are never retained. */
+	async getPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<MCPGetPromptResult> {
+		const lifecycle = this.requireServer(serverId);
+		this.assertSelected(serverId);
+		return lifecycle.getPrompt(name, args, signal);
 	}
 
 	async close(serverId: string): Promise<void> {

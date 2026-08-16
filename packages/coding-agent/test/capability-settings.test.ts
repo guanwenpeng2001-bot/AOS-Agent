@@ -6,6 +6,7 @@ import {
 	type CapabilitySettingsErrorCode,
 	type CapabilitySettingsInput,
 	createCapabilitySettingsView,
+	createMcpContentCapabilityCandidate,
 	createMcpServerCapabilityCandidate,
 } from "../src/core/capability-settings.ts";
 import {
@@ -901,5 +902,141 @@ describe("Registry denial integration", () => {
 			profiles: { default: { rules: [] } },
 		});
 		expect(binding.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 2 });
+	});
+});
+
+describe("MCP content capability candidates", () => {
+	const RESOURCE_SUMMARY = {
+		resourceId: "MCPResourceDigestDocsReadme",
+		serverId: "docs",
+		name: "README",
+		title: "README",
+		description: "Docs readme",
+		mimeType: "text/markdown",
+		provenanceId: "prov-resource-1",
+		revision: "rev-summary-1",
+	};
+	const PROMPT_SUMMARY = {
+		promptId: "MCPPromptDigestSummarize",
+		serverId: "docs",
+		name: "summarize",
+		arguments: [{ name: "topic" }],
+		provenanceId: "prov-prompt-1",
+		revision: "rev-summary-2",
+	};
+	const TEMPLATE_SUMMARY = {
+		templateId: "MCPTemplateDigestDocsIssue",
+		serverId: "docs",
+		name: "issue",
+		displayPattern: "issue://docs",
+		uriTemplateDigest: "uri-template-digest",
+		provenanceId: "prov-template-1",
+		revision: "rev-summary-3",
+	};
+
+	it("accepts the new content kinds in profile selectors", () => {
+		const settings = build({
+			global: {
+				capabilities: {
+					defaultProfile: "default",
+					profiles: {
+						default: {
+							rules: [
+								{ selector: { kind: "mcp_resource" }, action: "ask" },
+								{ selector: { kind: "mcp_resource_template" }, action: "ask" },
+								{ selector: { kind: "mcp_prompt" }, action: "ask" },
+							],
+						},
+					},
+				},
+			},
+		});
+		expect(settings.profiles.default.rules.map((rule) => rule.action)).toEqual(["ask", "ask", "ask"]);
+		expect(settings.profiles.default.rules.map((rule) => rule.selector.kind)).toEqual([
+			"mcp_resource",
+			"mcp_resource_template",
+			"mcp_prompt",
+		]);
+	});
+
+	it("rejects unknown kinds in selectors as before", () => {
+		expect(
+			errorCode(() =>
+				build({
+					global: {
+						capabilities: {
+							profiles: { default: { rules: [{ selector: { kind: "mcp_unknown" }, action: "allow" }] } },
+						},
+					},
+				}),
+			),
+		).toBe("capability_settings_invalid_selector");
+	});
+
+	it("builds secret-free content candidates bound to their parent server", () => {
+		const settings = build({ global: { mcp: { servers: { docs: HTTP_SERVER } } } });
+		const server = settings.mcpServers[0];
+		const resourceCandidate = createMcpContentCapabilityCandidate({
+			kind: "mcp_resource",
+			server,
+			summary: RESOURCE_SUMMARY,
+		});
+		expect(resourceCandidate.kind).toBe("mcp_resource");
+		expect(resourceCandidate.localName).toBe("MCPResourceDigestDocsReadme");
+		expect(resourceCandidate.name).toBe("README");
+		expect(resourceCandidate.mcpServerId).toBe("docs");
+		expect(resourceCandidate.parentId).toBe(`mcp_server:${server.source.source}:docs`);
+		expect(resourceCandidate.provenance).toBe("prov-resource-1");
+		expect(resourceCandidate.trusted).toBe(true);
+		expect(resourceCandidate.sourceIdentity).toBe(server.source.source);
+		expect(resourceCandidate.revisionInput).toEqual(RESOURCE_SUMMARY);
+		expect(resourceCandidate.exposedToolName).toBeUndefined();
+
+		const templateCandidate = createMcpContentCapabilityCandidate({
+			kind: "mcp_resource_template",
+			server,
+			summary: TEMPLATE_SUMMARY,
+		});
+		expect(templateCandidate.kind).toBe("mcp_resource_template");
+		expect(templateCandidate.localName).toBe("MCPTemplateDigestDocsIssue");
+		expect(templateCandidate.provenance).toBe("prov-template-1");
+
+		const promptCandidate = createMcpContentCapabilityCandidate({
+			kind: "mcp_prompt",
+			server,
+			summary: PROMPT_SUMMARY,
+		});
+		expect(promptCandidate.kind).toBe("mcp_prompt");
+		expect(promptCandidate.localName).toBe("MCPPromptDigestSummarize");
+		expect(promptCandidate.provenance).toBe("prov-prompt-1");
+		// The raw endpoint and template pattern never reach the registry layer.
+		expect(JSON.stringify([resourceCandidate, templateCandidate, promptCandidate])).not.toContain("https://");
+	});
+
+	it("governs built content candidates under the parent server in the registry", () => {
+		const settings = build({ global: { mcp: { servers: { docs: HTTP_SERVER } } } });
+		const server = settings.mcpServers[0];
+		const catalog = buildCapabilityCatalog({
+			candidates: [
+				createMcpServerCapabilityCandidate(server),
+				createMcpContentCapabilityCandidate({ kind: "mcp_resource", server, summary: RESOURCE_SUMMARY }),
+				createMcpContentCapabilityCandidate({ kind: "mcp_prompt", server, summary: PROMPT_SUMMARY }),
+			],
+		});
+		const binding = resolveCapabilityBinding({
+			catalog,
+			profile: "default",
+			profiles: { default: { rules: [{ selector: { mcpServerId: "docs" }, action: "allow" }] } },
+		});
+		expect(binding.decisionSummary).toEqual({ allowed: 3, awaitingApproval: 0, denied: 0 });
+		// Content capabilities never become model-visible tools.
+		expect(binding.toolAllowlist).toEqual([]);
+
+		const denied = resolveCapabilityBinding({
+			catalog,
+			profile: "default",
+			profiles: { default: { rules: [{ selector: { kind: "mcp_server" }, action: "deny" }] } },
+		});
+		expect(denied.decisionSummary).toEqual({ allowed: 0, awaitingApproval: 0, denied: 3 });
 	});
 });

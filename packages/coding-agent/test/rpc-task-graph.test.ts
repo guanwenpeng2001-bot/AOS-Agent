@@ -15,6 +15,8 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import type {
 	RpcAutomationResponse,
+	RpcMcpAuthResponse,
+	RpcMcpContentResponse,
 	RpcCommand,
 	RpcResponse,
 	TaskGraphNodeView,
@@ -245,7 +247,7 @@ function automationRecords(records: readonly RpcHostOutputRecord[]): RpcAutomati
 function dispatchCommand(
 	controller: RpcHostController,
 	command: RpcCommand,
-): Promise<RpcResponse | RpcAutomationResponse | undefined> {
+): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> {
 	return controller.dispatch(command);
 }
 
@@ -260,7 +262,7 @@ function graphEntries(session: AgentSession): Array<{ id: string; data: unknown 
 }
 
 function expectAutomationError(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: string,
 	code: string,
 ): void {
@@ -276,7 +278,7 @@ function expectAutomationError(
 }
 
 function expectGraphMutationResponse(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: "task.graph.create" | "task.graph.node.attach" | "task.graph.node.settle",
 ): { graph: TaskGraphRecord; node?: TaskGraphNodeView; idempotent: boolean } {
 	expect(response).toBeDefined();
@@ -297,7 +299,7 @@ function expectGraphMutationResponse(
 }
 
 function expectGraphGetResponse(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: string,
 ): TaskGraphRecord {
 	expect(response).toBeDefined();
@@ -309,7 +311,7 @@ function expectGraphGetResponse(
 }
 
 function expectGraphListResponse(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: string,
 ): { graphs: TaskGraphRecord[]; truncated: boolean } {
 	expect(response).toBeDefined();

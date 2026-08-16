@@ -9,7 +9,11 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import type { MCPTransportFactory } from "./mcp-types.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
+import {
+	createDefaultMCPAuthManagerOptions,
+	type MCPAuthManagerOptions,
+} from "./mcp-auth-manager.ts";
 import { convertToLlm } from "./messages.ts";
 import {
 	type ModelBroker,
@@ -105,6 +109,20 @@ export interface CreateAgentSessionOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Per-session OAuth client provider for streamable-http servers (B/C
+	 * contract). stdio servers never receive it.
+	 */
+	mcpAuthProvider?: MCPAuthProviderResolver;
+	/**
+	 * Session-scoped MCP OAuth manager options (credential namespace store and
+	 * installation). Defaults to the shared agent auth namespace
+	 * (`agentDir/auth.json` {@link AuthStorage}) with the agentDir's
+	 * per-install namespace identity, so sessions get a working manager out of
+	 * the box. The session builds its own manager, wires it as the
+	 * streamable-http auth provider resolver, and disposes it on teardown.
+	 */
+	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Trusted External Agent Adapter registry composed by the Host. */
@@ -137,6 +155,44 @@ export type {
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type { Tool } from "./tools/index.ts";
+// MCP OAuth types of the Session's explicit interactive auth methods (SDK
+// contract surface; tokens, authorization URLs, and raw URIs are never part
+// of these records).
+export type { MCPAuthCallbackMode } from "./mcp-auth.ts";
+export type { MCPAuthStartOptions, MCPAuthStartResult } from "./mcp-auth-manager.ts";
+
+// MCP content types of the Session's resource/prompt methods (SDK wire
+// contract surface; raw URIs, prompt args, and remote text are never retained
+// by any of these records).
+export type {
+	McpAttachment,
+	McpAttachmentKind,
+} from "./mcp-attachment.ts";
+export {
+	MCPContentError,
+} from "./mcp-content.ts";
+export type {
+	MCPContentErrorCode,
+	MCPContentErrorView,
+	MCPContentProvenance,
+	MCPGetPromptResult,
+	MCPNormalizedContentBlock,
+	MCPNormalizedPromptMessage,
+	MCPReadResourceResult,
+} from "./mcp-content.ts";
+export { MCPError } from "./mcp-types.ts";
+export type {
+	MCPConnectionStatus,
+	MCPErrorKind,
+	MCPErrorView,
+	MCPPromptArgumentSummary,
+	MCPPromptListResult,
+	MCPPromptSummary,
+	MCPResourceListResult,
+	MCPResourceSummary,
+	MCPResourceTemplateListResult,
+	MCPResourceTemplateSummary,
+} from "./mcp-types.ts";
 
 export {
 	withFileMutationQueue,
@@ -238,6 +294,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		})),
 	});
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
+	const mcpAuthManagerOptions =
+		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -455,6 +513,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		capabilityRegistry,
 		mcpTransportFactory: options.mcpTransportFactory,
+		mcpAuthProvider: options.mcpAuthProvider,
+		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
 		policyProfile: options.policyProfile,
 		externalAgentRegistry: options.externalAgentRegistry,

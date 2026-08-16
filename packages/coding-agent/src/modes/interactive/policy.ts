@@ -17,6 +17,12 @@ const POLICY_RESOURCES: ReadonlySet<PolicyResource> = new Set([
 	"network.connect",
 	"credential.expose",
 	"sandbox.prepare",
+	"mcp.auth",
+	"resource.list",
+	"resource.read",
+	"prompt.list",
+	"prompt.get",
+	"context.attach",
 ]);
 
 const POLICY_SOURCES: ReadonlySet<PolicyOperationSource> = new Set([

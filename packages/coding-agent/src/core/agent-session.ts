@@ -71,6 +71,7 @@ import {
 	type CapabilityCandidate,
 	type CapabilityCatalog,
 	type CapabilityCatalogView,
+	type CapabilityDescriptor,
 	CapabilityError,
 	CapabilityNameConflictError,
 	CapabilityProfileNotFoundError,
@@ -80,7 +81,15 @@ import {
 	resolveCapabilityBinding,
 	toCapabilityBindingHandle,
 } from "./capability-registry.ts";
-import { type CapabilitySettings, createMcpServerCapabilityCandidate } from "./capability-settings.ts";
+import {
+	type CapabilitySettings,
+	contentSummaryId,
+	createMcpContentCapabilityCandidate,
+	createMcpServerCapabilityCandidate,
+	type McpContentCapabilityKind,
+	type McpContentSummary,
+	type McpServerDiagnostic,
+} from "./capability-settings.ts";
 import type { BranchSummaryDetails } from "./compaction/branch-summarization.ts";
 import type { CompactionDetails } from "./compaction/compaction.ts";
 import {
@@ -171,8 +180,44 @@ import {
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { createMCPDefaultTransportFactory, MCPLifecycleManager } from "./mcp-lifecycle.ts";
+import { MCPAuthError } from "./mcp-auth.ts";
+import {
+	MCPAuthManager,
+	type MCPAuthManagerOptions,
+	type MCPAuthStartOptions,
+	type MCPAuthStartResult,
+} from "./mcp-auth-manager.ts";
+import {
+	canonicalizeMCPServerUrl,
+	getMCPAuthInstallationId,
+	type MCPCredentialStatus,
+} from "./mcp-auth-storage.ts";
+import {
+	McpAttachmentRegistry,
+	type McpAttachment,
+	type McpAttachmentBindingRefs,
+	createMcpAttachmentContextSourceInput,
+	wrapMcpPromptAttachment,
+	wrapMcpResourceAttachment,
+} from "./mcp-attachment.ts";
+import {
+	type MCPGetPromptResult,
+	MCPContentError,
+	type MCPReadResourceResult,
+	mcpPromptId,
+	mcpResourceId,
+} from "./mcp-content.ts";
 import { type MCPToolDefinitionResult, mapMCPToolsToDefinitions } from "./mcp-tool-adapter.ts";
-import { MCPError, type MCPServerConfig, type MCPTransportFactory } from "./mcp-types.ts";
+import {
+	MCPError,
+	type MCPAuthProviderResolver,
+	type MCPServerConfig,
+	type MCPServerConfigView,
+	type MCPPromptListResult,
+	type MCPResourceListResult,
+	type MCPResourceTemplateListResult,
+	type MCPTransportFactory,
+} from "./mcp-types.ts";
 import { type BashExecutionMessage, type CustomMessage, convertToLlm } from "./messages.ts";
 import { ModelBroker, ModelBrokerError, type ModelResolution, type NormalizedModelReference } from "./model-broker.ts";
 import {
@@ -446,6 +491,20 @@ export interface AgentSessionConfig {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Per-session OAuth client provider for streamable-http servers (B/C
+	 * contract). One provider instance never crosses sessions; each session
+	 * builds its own lifecycle with its own provider. stdio servers never
+	 * receive it.
+	 */
+	mcpAuthProvider?: MCPAuthProviderResolver;
+	/**
+	 * Session-scoped MCP OAuth manager options. When provided, the session
+	 * builds its own {@link MCPAuthManager} (never shared across sessions),
+	 * uses it as the streamable-http auth provider resolver, and disposes it
+	 * with the session. stdio servers never receive an OAuth provider.
+	 */
+	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Optional named Execution Policy profile selector for this session. */
@@ -663,8 +722,14 @@ export class AgentSession {
 	private _activeCapabilityProfile: string | undefined;
 	private _noTools?: "all" | "builtin";
 	private _mcpTransportFactory?: MCPTransportFactory;
+	private _mcpAuthProvider: MCPAuthProviderResolver | undefined;
+	private _mcpAuthManager: MCPAuthManager | undefined;
 	private _mcpLifecycleManager!: MCPLifecycleManager;
 	private _mcpRegisteredServerIds = new Set<string>();
+	/** Structured external attachments registered via attachMcpResource/attachMcpPrompt. */
+	private readonly _mcpAttachmentRegistry = new McpAttachmentRegistry();
+	/** In-flight session MCP list/read/get operations; cancel/close aborts them. */
+	private readonly _inflightMcpContentOps = new Set<AbortController>();
 	private _mcpAuthorizedTransportValues = new Map<
 		string,
 		{ readonly environment: Readonly<Record<string, string>>; readonly headers: Readonly<Record<string, string>> }
@@ -673,6 +738,19 @@ export class AgentSession {
 	private _activeCapabilityCatalog: CapabilityCatalog | undefined;
 	private _activeMcpTools: MCPToolDefinitionResult[] = [];
 	private _activeMcpToolCandidates: CapabilityCandidate[] = [];
+	/**
+	 * Discovered MCP content (resource/resource-template/prompt) capability
+	 * candidates of the current runtime. Content capabilities are governed by
+	 * the Capability Registry like tools, but never enter the model tool
+	 * schema: only the registry selects which resources/prompts a session may
+	 * list/read/get/attach, and a read/get URI must resolve to a
+	 * binding-selected descriptor (the raw URI is never an approval).
+	 *
+	 * Explicitly listed catalog pages are appended here too: when idle the
+	 * binding re-resolves immediately, and mid-run the entries are pending
+	 * metadata for the next binding only (the current run stays frozen).
+	 */
+	private _activeMcpContentCandidates: CapabilityCandidate[] = [];
 	/** Redacted capability error codes per MCP server that failed discovery. */
 	private _mcpDiscoveryErrors = new Map<string, string>();
 	/** Resolves when MCP capability discovery for the current runtime settles. */
@@ -743,6 +821,17 @@ export class AgentSession {
 		this._activeExecutionPolicyProfileSelection = config.policyProfile;
 		this._noTools = config.noTools;
 		this._mcpTransportFactory = config.mcpTransportFactory;
+		this._mcpAuthProvider = config.mcpAuthProvider;
+		this._mcpAuthManager =
+			config.mcpAuthManagerOptions === undefined
+				? undefined
+				: new MCPAuthManager({
+						store: config.mcpAuthManagerOptions.store,
+						installationId:
+							config.mcpAuthManagerOptions.installationId ?? getMCPAuthInstallationId(this._agentDir),
+						fetch: config.mcpAuthManagerOptions.fetch,
+						signal: config.mcpAuthManagerOptions.signal,
+					});
 		this._externalAgentRegistry = config.externalAgentRegistry;
 		const sandboxProviders = config.sandboxProviders;
 		this._sandboxProviders =
@@ -2118,6 +2207,7 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		try {
+			this.cancelMcpContentOperations();
 			this.abortRetry();
 			this.abortCompaction();
 			this.abortBranchSummary();
@@ -2131,6 +2221,7 @@ export class AgentSession {
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured agent or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 		);
+		this._mcpAuthManager?.dispose();
 		this._disconnectFromAgent();
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
@@ -2641,6 +2732,15 @@ export class AgentSession {
 
 		for (const source of await this._collectMemorySources()) {
 			sources.push(this._formatMemorySource(source));
+		}
+
+		// Explicitly attached MCP content enters the plan as message-placed
+		// sources (never system/developer instructions). Nothing auto-reads or
+		// auto-gets here: only content the caller explicitly attached via
+		// attachMcpResource/attachMcpPrompt reaches the engine.
+		const attachments = this._mcpAttachmentRegistry.list();
+		if (attachments.length > 0) {
+			sources.push(...attachments.map(createMcpAttachmentContextSourceInput));
 		}
 
 		sources.push(
@@ -3423,6 +3523,873 @@ export class AgentSession {
 	}
 
 	/**
+	 * Public, redacted view of one configured MCP server's config, or
+	 * undefined when the server id is not registered. The view carries the
+	 * transport type and safe metadata only (executable name for stdio,
+	 * redacted endpoint URL for streamable-http); env/header values, command
+	 * args, and raw URLs are never exposed.
+	 */
+	getMcpServerConfigView(serverId: string): MCPServerConfigView | undefined {
+		return this._mcpLifecycleManager?.getConfigView(serverId);
+	}
+
+	/** The session-scoped MCP OAuth manager, when one was configured. */
+	getMcpAuthManager(): MCPAuthManager | undefined {
+		return this._mcpAuthManager;
+	}
+
+	/**
+	 * Explicit interactive MCP OAuth authorization for one streamable-http
+	 * server. Confirmation happens through the supplied `AuthInteraction`;
+	 * nothing opens a browser or approves automatically, and no model or run
+	 * is started. Tokens are persisted only in the MCP credential namespace.
+	 *
+	 * Governed like every other MCP surface: the server must be configured,
+	 * streamable-http, and trusted; the server's capability descriptor must be
+	 * selected by the capability binding; the caller-supplied endpoint must
+	 * canonically match the configured endpoint; and the execution policy
+	 * must allow the `mcp.auth` operation (see
+	 * {@link _preflightMcpAuthStart}). The outcome is recorded as an
+	 * allowlist-only session audit entry (`operation: "auth"`), never the
+	 * URL, tokens, issuer, or resource.
+	 */
+	async startMcpAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult> {
+		try {
+			await this._preflightMcpAuthStart(serverId, serverUrl, options.interaction.signal);
+			const result = await this.requireMcpAuthManager().start(serverId, serverUrl, options);
+			this._recordMcpOperationAuditEntry({
+				serverId,
+				operation: "auth",
+				outcome: "success",
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+			return result;
+		} catch (error) {
+			this._recordMcpOperationAuditEntry({
+				serverId,
+				operation: "auth",
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				reasonCode: this._mcpAuditReasonCode(error),
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Logout for one MCP server: best-effort revocation, local deletion of the
+	 * namespaced credential, and invalidation of this session's flow state.
+	 * `serverUrl` (the canonical streamable-http URL) is required to delete a
+	 * previously stored credential when this session never resolved a
+	 * provider or ran a flow for the server. Tokens never enter session
+	 * state, runs, audit, context, errors, or logs.
+	 *
+	 * Logout stays cleanup-compatible: unlike {@link startMcpAuth} it does not
+	 * require the server to be configured, selected, or trusted, so a removed
+	 * or unconfigured server's credential can still be deleted. It does reuse
+	 * the execution policy `mcp.auth` operation (deny blocks the deletion)
+	 * and records an allowlist-only session audit entry
+	 * (`operation: "auth"`).
+	 */
+	async logoutMcpAuth(serverId: string, serverUrl?: string | URL): Promise<void> {
+		try {
+			// The policy binding settles synchronously from settings without
+			// connecting any MCP server, so a fresh session can still log out a
+			// previously stored credential of a removed server.
+			await this._ensureExecutionPolicyReady(undefined, undefined);
+			this._authorizeMcpAuthPolicy(serverId, "auth-logout");
+			await this.requireMcpAuthManager().logout(serverId, serverUrl);
+			this._recordMcpOperationAuditEntry({
+				serverId,
+				operation: "auth",
+				outcome: "success",
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+		} catch (error) {
+			this._recordMcpOperationAuditEntry({
+				serverId,
+				operation: "auth",
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				reasonCode: this._mcpAuditReasonCode(error),
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Masked MCP OAuth status for one streamable-http server identity, or
+	 * undefined when nothing is stored. Resolves from the canonical server URL
+	 * even when this session never touched the server. Token values are never
+	 * surfaced.
+	 */
+	async getMcpAuthStatus(serverId: string, serverUrl: string | URL): Promise<MCPCredentialStatus | undefined> {
+		return this.requireMcpAuthManager().getStatus(serverUrl);
+	}
+
+	/** Masked status of every MCP credential in this session's namespace; never token values. */
+	async listMcpCredentialStatuses(): Promise<readonly MCPCredentialStatus[]> {
+		return this.requireMcpAuthManager().listStatuses();
+	}
+
+	private requireMcpAuthManager(): MCPAuthManager {
+		if (this._mcpAuthManager === undefined) {
+			throw new Error("MCP OAuth is not configured for this session");
+		}
+		return this._mcpAuthManager;
+	}
+
+	// =========================================================================
+	// MCP resources/prompts: explicit list/read/get and attachments
+	// =========================================================================
+
+	/**
+	 * Lists one page of the resources catalog of a selected, trusted server.
+	 * Runs the capability/policy/trust/selected-server preflight first; never
+	 * reads a resource, never starts a model, and never mutates the system or
+	 * developer instructions.
+	 */
+	async listMcpResources(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceListResult> {
+		await this._preflightMcpContentOperation(
+			serverId,
+			"resource.list",
+			"resource-list",
+			signal,
+			"mcp_resource",
+		);
+		return this._runMcpContentOp(async (opSignal) => {
+			const result = await this._mcpLifecycleManager.listResources(serverId, params, opSignal);
+			// Every explicitly listed page joins the content candidates; the
+			// binding re-resolves when idle so listed entries become selectable
+			// descriptors, and stays pending mid-run for the next binding only.
+			// The operation signal aborts a pending rebind after the remote page
+			// returned, so a cancelled list never refreshes the binding.
+			await this._mergeMcpContentCandidates("mcp_resource", serverId, result.resources, opSignal);
+			return result;
+		}, signal);
+	}
+
+	/** Lists one page of the resource templates catalog of a selected, trusted server. */
+	async listMcpResourceTemplates(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceTemplateListResult> {
+		await this._preflightMcpContentOperation(
+			serverId,
+			"resource.list",
+			"resource-template-list",
+			signal,
+			"mcp_resource_template",
+		);
+		return this._runMcpContentOp(async (opSignal) => {
+			const result = await this._mcpLifecycleManager.listResourceTemplates(serverId, params, opSignal);
+			await this._mergeMcpContentCandidates("mcp_resource_template", serverId, result.resourceTemplates, opSignal);
+			return result;
+		}, signal);
+	}
+
+	/** Lists one page of the prompts catalog of a selected, trusted server. */
+	async listMcpPrompts(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPromptListResult> {
+		await this._preflightMcpContentOperation(serverId, "prompt.list", "prompt-list", signal, "mcp_prompt");
+		return this._runMcpContentOp(async (opSignal) => {
+			const result = await this._mcpLifecycleManager.listPrompts(serverId, params, opSignal);
+			await this._mergeMcpContentCandidates("mcp_prompt", serverId, result.prompts, opSignal);
+			return result;
+		}, signal);
+	}
+
+	/**
+	 * Reads one resource of a selected, trusted server. `uri` may be a listed
+	 * catalog `resourceId` or an explicit template URI. The raw URI is used
+	 * once and never retained; the result carries a digest resourceId and
+	 * untrusted provenance. Never starts a model.
+	 */
+	async readMcpResource(
+		serverId: string,
+		uri: string,
+		signal?: AbortSignal,
+	): Promise<MCPReadResourceResult> {
+		await this._preflightMcpContentOperation(
+			serverId,
+			"resource.read",
+			"resource-read",
+			signal,
+			"mcp_resource",
+			mcpResourceId(serverId, uri),
+		);
+		return this._runMcpContentOp(
+			(opSignal) => this._mcpLifecycleManager.readResource(serverId, uri, opSignal),
+			signal,
+		);
+	}
+
+	/**
+	 * Gets one prompt of a selected, trusted server. `name` may be a listed
+	 * catalog `promptId` or an explicit prompt name. The name and argument
+	 * values are used once and never retained; the result carries a digest
+	 * promptId and untrusted provenance. Never starts a model.
+	 */
+	async getMcpPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<MCPGetPromptResult> {
+		await this._preflightMcpContentOperation(
+			serverId,
+			"prompt.get",
+			"prompt-get",
+			signal,
+			"mcp_prompt",
+			mcpPromptId(serverId, name),
+		);
+		return this._runMcpContentOp(
+			(opSignal) => this._mcpLifecycleManager.getPrompt(serverId, name, args, opSignal),
+			signal,
+		);
+	}
+
+	/**
+	 * Explicitly reads a resource and registers the normalized result as a
+	 * structured external attachment in this session. The attachment is
+	 * untrusted by construction (provenance wrapper), carries digest/size
+	 * metadata, and keeps only allowlisted text/image blocks. The opaque ids
+	 * of the frozen capability and policy bindings that authorized the attach
+	 * are recorded on the attachment for Run receipt / Audit correlation.
+	 * This is the only way remote content enters the session: nothing
+	 * auto-reads resources. Re-attaching the same content is idempotent.
+	 * Never starts a model and never changes system or developer instructions.
+	 * @throws MCPContentError when the read result has no attachable blocks
+	 */
+	async attachMcpResource(input: {
+		serverId: string;
+		uri: string;
+		signal?: AbortSignal;
+	}): Promise<McpAttachment> {
+		try {
+			const result = await this.readMcpResource(input.serverId, input.uri, input.signal);
+			this._authorizeMcpContentPolicy(input.serverId, "context.attach", "resource-attach");
+			const attachment = wrapMcpResourceAttachment(
+				result,
+				this._requireMcpAttachmentBindingRefs("mcp_resource", input.serverId, result.resourceId),
+			);
+			if (attachment.attachableBlocks.length === 0) {
+				throw new MCPContentError("mcp_content_unsupported", input.serverId);
+			}
+			const registered = this._mcpAttachmentRegistry.attach(attachment);
+			this._recordMcpOperationAuditEntry({
+				serverId: input.serverId,
+				operation: "context.attach",
+				outcome: "success",
+				descriptorId: registered.descriptorId,
+				revision: registered.descriptorRevision,
+				provenanceId: registered.sourceId,
+				capabilityBindingId: registered.capabilityBindingId,
+				policyBindingId: registered.policyBindingId,
+				contentDigest: registered.contentDigest,
+				byteCount: registered.byteCount,
+				blockCount: registered.blockCount,
+				mimeTypes: registered.mimeTypes,
+			});
+			return registered;
+		} catch (error) {
+			this._recordMcpOperationAuditEntry({
+				serverId: input.serverId,
+				operation: "context.attach",
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				reasonCode: this._mcpAuditReasonCode(error),
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Explicitly gets a prompt and registers the normalized result as a
+	 * structured external attachment in this session. Same wrapper, digest/size
+	 * metadata, binding ids, and block allowlist contract as
+	 * {@link attachMcpResource}.
+	 * @throws MCPContentError when the get result has no attachable blocks
+	 */
+	async attachMcpPrompt(input: {
+		serverId: string;
+		name: string;
+		args?: Record<string, string>;
+		signal?: AbortSignal;
+	}): Promise<McpAttachment> {
+		try {
+			const result = await this.getMcpPrompt(input.serverId, input.name, input.args, input.signal);
+			this._authorizeMcpContentPolicy(input.serverId, "context.attach", "prompt-attach");
+			const attachment = wrapMcpPromptAttachment(
+				result,
+				this._requireMcpAttachmentBindingRefs("mcp_prompt", input.serverId, result.promptId),
+			);
+			if (attachment.attachableBlocks.length === 0) {
+				throw new MCPContentError("mcp_content_unsupported", input.serverId);
+			}
+			const registered = this._mcpAttachmentRegistry.attach(attachment);
+			this._recordMcpOperationAuditEntry({
+				serverId: input.serverId,
+				operation: "context.attach",
+				outcome: "success",
+				descriptorId: registered.descriptorId,
+				revision: registered.descriptorRevision,
+				provenanceId: registered.sourceId,
+				capabilityBindingId: registered.capabilityBindingId,
+				policyBindingId: registered.policyBindingId,
+				contentDigest: registered.contentDigest,
+				byteCount: registered.byteCount,
+				blockCount: registered.blockCount,
+				mimeTypes: registered.mimeTypes,
+			});
+			return registered;
+		} catch (error) {
+			this._recordMcpOperationAuditEntry({
+				serverId: input.serverId,
+				operation: "context.attach",
+				outcome: this._isMcpAbortError(error) ? "cancelled" : "failed",
+				reasonCode: this._mcpAuditReasonCode(error),
+				capabilityBindingId: this._activeCapabilityBinding?.id,
+				policyBindingId: this._activeExecutionPolicyBinding?.id,
+			});
+			throw error;
+		}
+	}
+
+	/**
+	 * Opaque binding ids of the frozen capability and execution policy
+	 * bindings that authorize this session's content operations, plus the
+	 * capability descriptor id/revision of the binding-selected source that
+	 * authorized the attach. Both bindings are required: the capability
+	 * preflight and the policy authorization already ran before an attach, so
+	 * their bindings are settled here. The descriptor is resolved from the
+	 * frozen catalog by its digest-derived id; when it cannot be resolved the
+	 * descriptor metadata is omitted (the attach still carries the binding ids).
+	 */
+	private _requireMcpAttachmentBindingRefs(
+		kind: "mcp_resource" | "mcp_prompt",
+		serverId: string,
+		sourceId: string,
+	): McpAttachmentBindingRefs {
+		const capabilityBindingId = this._activeCapabilityBinding?.id;
+		const policyBindingId = this._requireExecutionPolicyBinding().id;
+		if (capabilityBindingId === undefined || policyBindingId === undefined) {
+			throw new CapabilityError(
+				"capability_binding_unavailable",
+				"MCP content attach requires a settled capability and policy binding",
+			);
+		}
+		const diagnostic = this.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		const catalog = this._activeCapabilityCatalog;
+		if (diagnostic === undefined || catalog === undefined) {
+			return { capabilityBindingId, policyBindingId };
+		}
+		const descriptorId = this._capabilityRegistry.createCapabilityId(
+			kind,
+			diagnostic.source.source,
+			sourceId,
+		);
+		const descriptor = catalog.descriptors.find((candidate) => candidate.id === descriptorId);
+		if (descriptor === undefined) {
+			return { capabilityBindingId, policyBindingId };
+		}
+		return { capabilityBindingId, policyBindingId, descriptorId, descriptorRevision: descriptor.revision };
+	}
+
+	/** Snapshot of all registered MCP attachments in insertion order. */
+	listMcpAttachments(): ReadonlyArray<McpAttachment> {
+		return this._mcpAttachmentRegistry.list();
+	}
+
+	getMcpAttachment(attachmentId: string): McpAttachment | undefined {
+		return this._mcpAttachmentRegistry.get(attachmentId);
+	}
+
+	/** Removes one attachment; resolves false when it was not registered. */
+	detachMcpAttachment(attachmentId: string): boolean {
+		return this._mcpAttachmentRegistry.detach(attachmentId);
+	}
+
+	clearMcpAttachments(): void {
+		this._mcpAttachmentRegistry.clear();
+	}
+
+	/**
+	 * Aborts every in-flight session MCP list/read/get operation. Called by
+	 * run cancel/close (abort) and dispose so a cancelled run never leaves a
+	 * remote read or get pending.
+	 */
+	cancelMcpContentOperations(): void {
+		for (const controller of this._inflightMcpContentOps) {
+			controller.abort(new Error("MCP content operation cancelled"));
+		}
+		this._inflightMcpContentOps.clear();
+	}
+
+	/**
+	 * Best-effort Session audit entry for one explicit MCP operation (auth or
+	 * content attach). Allowlist only, mirroring the frozen Audit/Session
+	 * custom entry contract: serverId, operation (auth | context.attach),
+	 * outcome, a fixed reasonCode (never error text), the capability
+	 * descriptor id/revision, the source digest id, the capability and policy
+	 * binding ids, content digest/byte/block/MIME summaries, and the
+	 * timestamp. Raw URIs, prompt names, argument values, tokens, auth URLs,
+	 * issuer/resource, headers, remote text, and complete remote errors never
+	 * enter the entry. Persistence failures never change the operation
+	 * outcome.
+	 */
+	private _recordMcpOperationAuditEntry(entry: {
+		serverId: string;
+		operation: "auth" | "context.attach";
+		outcome: "success" | "failed" | "cancelled";
+		reasonCode?: string;
+		descriptorId?: string;
+		revision?: string;
+		provenanceId?: string;
+		capabilityBindingId?: string;
+		policyBindingId?: string;
+		contentDigest?: string;
+		byteCount?: number;
+		blockCount?: number;
+		mimeTypes?: ReadonlyArray<string>;
+	}): void {
+		try {
+			this.sessionManager.appendCustomEntry("mcp.content.audit", {
+				serverId: entry.serverId,
+				operation: entry.operation,
+				outcome: entry.outcome,
+				...(entry.reasonCode === undefined ? {} : { reasonCode: entry.reasonCode }),
+				...(entry.descriptorId === undefined ? {} : { descriptorId: entry.descriptorId }),
+				...(entry.revision === undefined ? {} : { revision: entry.revision }),
+				...(entry.provenanceId === undefined ? {} : { provenanceId: entry.provenanceId }),
+				...(entry.capabilityBindingId === undefined
+					? {}
+					: { capabilityBindingId: entry.capabilityBindingId }),
+				...(entry.policyBindingId === undefined ? {} : { policyBindingId: entry.policyBindingId }),
+				...(entry.contentDigest === undefined ? {} : { contentDigest: entry.contentDigest }),
+				...(entry.byteCount === undefined ? {} : { byteCount: entry.byteCount }),
+				...(entry.blockCount === undefined ? {} : { blockCount: entry.blockCount }),
+				...(entry.mimeTypes === undefined || entry.mimeTypes.length === 0
+					? {}
+					: { mimeTypes: [...entry.mimeTypes] }),
+				timestamp: new Date().toISOString(),
+			});
+		} catch {
+			// Audit persistence is best-effort and never affects the operation.
+		}
+	}
+
+	/** Fixed reason code for an MCP operation failure; never derived from error text. */
+	private _mcpAuditReasonCode(error: unknown): string | undefined {
+		if (error instanceof MCPContentError) {
+			return error.code;
+		}
+		if (error instanceof MCPError) {
+			return error.kind;
+		}
+		if (error instanceof CapabilityError || error instanceof PolicyError) {
+			return error.code;
+		}
+		return undefined;
+	}
+
+	private _isMcpAbortError(error: unknown): boolean {
+		return error instanceof Error && error.name === "AbortError";
+	}
+
+	/**
+	 * Capability/policy/trust/selected-server/approval preflight for every MCP
+	 * content operation: capability readiness (discovery + frozen binding),
+	 * the execution policy binding, the registered/selected server gate, the
+	 * trust gate, the policy decision for the operation, the binding
+	 * membership gate (an ask capability that was never approved is not
+	 * selected and fails closed), and the content capability gate (the
+	 * Capability Registry is the only selection entry for
+	 * resources/templates/prompts).
+	 */
+	private async _preflightMcpContentOperation(
+		serverId: string,
+		resource: "resource.list" | "resource.read" | "prompt.list" | "prompt.get",
+		opName: string,
+		signal?: AbortSignal,
+		contentKind?: "mcp_resource" | "mcp_resource_template" | "mcp_prompt",
+		descriptorLocalName?: string,
+	): Promise<void> {
+		if (signal?.aborted) throw operationAbortReason(signal);
+		// Readiness: capability discovery and the frozen binding settle first.
+		await this.whenCapabilitiesReady(this._activeContextRunId, signal);
+		await this._ensureExecutionPolicyReady(this._activeContextRunId, signal);
+		const manager = this._mcpLifecycleManager;
+		if (!manager.getServerIds().includes(serverId)) {
+			throw new MCPError(
+				"invalid_config",
+				serverId,
+				`No configuration registered for MCP server "${serverId}"`,
+			);
+		}
+		// Selected-server gate.
+		if (!manager.isSelected(serverId)) {
+			throw new MCPError(
+				"not_selected",
+				serverId,
+				`MCP server "${serverId}" is not selected for this binding`,
+			);
+		}
+		// Trust gate: only trusted servers may be listed/read/gotten.
+		const diagnostic = this.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		if (diagnostic === undefined || !diagnostic.trusted) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not trusted for this capability binding`,
+			);
+		}
+		// Approval/capability gate: the mcp_server descriptor must be selected
+		// in the frozen binding. An ask capability that was never approved is
+		// not selected and fails closed here.
+		const binding = this._activeCapabilityBinding;
+		const serverDescriptor = this._activeCapabilityCatalog?.descriptors.find(
+			(candidate) => candidate.kind === "mcp_server" && candidate.mcpServerId === serverId,
+		);
+		const selected = binding?.descriptors.some((ref) => ref.id === serverDescriptor?.id) ?? false;
+		if (!selected) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not selected by the capability binding`,
+			);
+		}
+		// Content capability gate: the Capability Registry is the only
+		// selection entry for resources/templates/prompts. A read/get must
+		// resolve to the binding-selected descriptor of the target digest id;
+		// a list requires at least one selected child of its kind when the
+		// catalog registered children. The caller-supplied raw URI or prompt
+		// name is never an approval.
+		if (contentKind !== undefined) {
+			this._assertMcpContentCapabilitySelected(serverId, contentKind, descriptorLocalName);
+		}
+		this._authorizeMcpContentPolicy(serverId, resource, opName);
+	}
+
+	/**
+	 * Capability Registry gate for one MCP content operation.
+	 *
+	 * Content kinds default to deny and cascade from the server decision
+	 * (server deny -> child deny, child ask/deny only further restricts). A
+	 * list operation requires at least one binding-selected child descriptor
+	 * of its kind when the catalog registered children; an empty catalog
+	 * falls back to the server-level decision the caller already enforced. A
+	 * read/get with a known digest id requires the specific descriptor to be
+	 * catalogued, trusted, available, binding-selected, and at the binding's
+	 * revision; an entry outside the readiness catalog is allowed only when
+	 * the session's explicit selection scope recorded it (it was returned by
+	 * an explicit list page) and the kind-level binding gate passes. The
+	 * caller-supplied raw URI or prompt name is never an approval.
+	 */
+	private _assertMcpContentCapabilitySelected(
+		serverId: string,
+		kind: "mcp_resource" | "mcp_resource_template" | "mcp_prompt",
+		descriptorLocalName?: string,
+	): void {
+		const catalog = this._activeCapabilityCatalog;
+		const binding = this._activeCapabilityBinding;
+		const children =
+			catalog?.descriptors.filter((candidate) => candidate.kind === kind && candidate.mcpServerId === serverId) ??
+			[];
+		if (descriptorLocalName !== undefined) {
+			const diagnostic = this.settingsManager
+				.getCapabilitySettings()
+				.mcpServers.find((server) => server.id === serverId);
+			const expectedId =
+				diagnostic === undefined
+					? undefined
+					: this._capabilityRegistry.createCapabilityId(
+							kind,
+							diagnostic.source.source,
+							descriptorLocalName,
+						);
+			const descriptor = children.find((candidate) => candidate.id === expectedId);
+			if (descriptor !== undefined) {
+				if (!descriptor.trusted || descriptor.availability !== "available") {
+					throw new CapabilityError(
+						"capability_denied",
+						`MCP ${kind} "${descriptorLocalName}" is untrusted or unavailable`,
+					);
+				}
+				const ref = binding?.descriptors.find((entry) => entry.id === descriptor.id);
+				if (ref === undefined) {
+					throw new CapabilityError(
+						"capability_denied",
+						`MCP ${kind} "${descriptorLocalName}" is not selected by the capability binding`,
+					);
+				}
+				if (ref.revision !== descriptor.revision) {
+					throw new CapabilityError(
+						"capability_denied",
+						`MCP ${kind} "${descriptorLocalName}" revision changed; re-list the catalog`,
+					);
+				}
+				return;
+			}
+			// No registry bypass: an entry outside the current binding's catalog
+			// is denied even when an earlier explicit list returned it. Explicit
+			// list pages join the content candidates and re-resolve the binding
+			// when idle; mid-run they are pending metadata for the next binding
+			// only, and the current run's frozen binding never reads them.
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP ${kind} "${descriptorLocalName}" is not in the capability catalog for server "${serverId}"`,
+			);
+		}
+		// List operation: require at least one selected child when the catalog
+		// registered children; an empty catalog falls back to the server gate.
+		this._assertMcpContentKindSelected(serverId, kind, children, binding);
+	}
+
+	/**
+	 * Kind-level content gate shared by list operations: when the catalog
+	 * registered children of the kind for the server, at least one must be
+	 * binding-selected (a child deny or an unapproved ask restricts the server
+	 * allow and fails closed); an empty catalog falls back to the parent
+	 * server gate the caller already enforced.
+	 */
+	private _assertMcpContentKindSelected(
+		serverId: string,
+		kind: "mcp_resource" | "mcp_resource_template" | "mcp_prompt",
+		children: ReadonlyArray<CapabilityDescriptor>,
+		binding: CapabilityBinding | undefined,
+	): void {
+		if (children.length === 0) {
+			return;
+		}
+		const anySelected =
+			binding?.descriptors.some((ref) => children.some((child) => child.id === ref.id)) ?? false;
+		if (!anySelected) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP ${kind} capabilities of server "${serverId}" are not selected by the capability binding`,
+			);
+		}
+	}
+
+	/**
+	 * Adds the digest-id summaries of one explicit catalog page to the
+	 * session's content candidates, then re-resolves the binding when idle
+	 * (mirroring discovery): refresh the tool registry, re-ensure the policy
+	 * binding, and reconnect the selected servers against the final binding.
+	 * Mid-run the candidates are pending metadata for the next binding only
+	 * and the current frozen binding is never mutated. The Capability
+	 * Registry stays the single selection entry: a read/get only ever passes
+	 * when the CURRENT binding holds the child ref at the matching revision.
+	 * The raw URI, template, or prompt name never enters the candidates
+	 * (digest local names only).
+	 */
+	private async _mergeMcpContentCandidates(
+		kind: McpContentCapabilityKind,
+		serverId: string,
+		summaries: ReadonlyArray<McpContentSummary>,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (summaries.length === 0) {
+			return;
+		}
+		const diagnostic = this.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		if (diagnostic === undefined) {
+			return;
+		}
+		const existing = new Set(
+			this._activeMcpContentCandidates.map(
+				(candidate) => `${candidate.kind}\u0000${candidate.sourceIdentity}\u0000${candidate.localName ?? ""}`,
+			),
+		);
+		let added = false;
+		for (const summary of summaries) {
+			const localName = contentSummaryId(kind, summary);
+			const identity = `${kind}\u0000${diagnostic.source.source}\u0000${localName}`;
+			if (existing.has(identity)) {
+				continue;
+			}
+			this._activeMcpContentCandidates.push(
+				createMcpContentCapabilityCandidate({ kind, server: diagnostic, summary }),
+			);
+			existing.add(identity);
+			added = true;
+		}
+		if (!added) {
+			return;
+		}
+		if (this.isIdle) {
+			if (signal?.aborted) {
+				throw new DOMException("MCP content candidate merge aborted", "AbortError");
+			}
+			this._refreshToolRegistry({ includeAllExtensionTools: true });
+			// Newly selected content capabilities change the Capability Binding.
+			// Await the selection sync (deselected servers close in the
+			// background), then rebind the policy before reconnecting so the
+			// live MCP transport belongs to the final binding, not the
+			// discovery-only binding. A read that follows this list therefore
+			// never races a half-applied selection.
+			await this._serverSelectionSyncPromise;
+			await this._ensureExecutionPolicyReady(undefined, signal);
+			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
+		} else {
+			// Mid-run: the active run stays bound to the frozen binding; the
+			// merged candidates are pending for the next binding only.
+			this._pendingToolRegistryRefresh = true;
+		}
+	}
+
+	/** Execution policy authorization for an MCP content operation. */
+	private _authorizeMcpContentPolicy(
+		serverId: string,
+		resource: "resource.list" | "resource.read" | "prompt.list" | "prompt.get" | "context.attach",
+		opName: string,
+	): void {
+		const decision = authorizePolicyOperation({
+			profile: this._requireExecutionPolicyProfile(),
+			binding: this._requireExecutionPolicyBinding(),
+			operation: { resource, source: "mcp", id: `mcp-${opName}:${serverId}` },
+			capabilityBinding: this._policyCapabilityBindingInput(),
+		});
+		this._recordPolicyDecision(decision);
+		this._assertPolicyDecisionAllowed(decision);
+	}
+
+	/**
+	 * Governed preflight for an explicit MCP OAuth start. The registered MCP
+	 * server config is the source of truth: the server must be configured,
+	 * streamable-http, and trusted; its mcp_server descriptor must be
+	 * selected by the capability binding (the Capability Registry is the
+	 * only entry); the caller-supplied endpoint must canonically match the
+	 * configured endpoint (a serverId can never authorize a different URL);
+	 * and the execution policy must allow the `mcp.auth` operation. The
+	 * binding settles synchronously from settings without connecting any
+	 * MCP server — an auth-required server cannot connect until it is
+	 * authorized, so a discovery-gated preflight would deadlock the first
+	 * authorization, while the selection gate still ensures OAuth discovery
+	 * and the authorization flow only run for binding-selected servers.
+	 * Errors are fixed templates; the raw URL never surfaces.
+	 */
+	private async _preflightMcpAuthStart(
+		serverId: string,
+		serverUrl: string | URL,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (signal?.aborted) throw operationAbortReason(signal);
+		const diagnostic = this.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		if (diagnostic === undefined) {
+			throw new MCPError(
+				"invalid_config",
+				serverId,
+				`No configuration registered for MCP server "${serverId}"`,
+			);
+		}
+		if (diagnostic.server.transport !== "streamable-http") {
+			throw new MCPError(
+				"invalid_config",
+				serverId,
+				`MCP server "${serverId}" uses stdio and does not support OAuth`,
+			);
+		}
+		if (!diagnostic.trusted) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not trusted for this capability binding`,
+			);
+		}
+		// Settle the execution policy binding (which synchronously resolves the
+		// capability binding from settings when missing) WITHOUT connecting any
+		// MCP server: an auth-required server cannot connect until it is
+		// authorized, so a discovery-gated preflight would deadlock the first
+		// authorization. The mcp_server descriptor is a static settings
+		// candidate, so the selection gate below always sees the current
+		// profile decision (allow or approved ask).
+		await this._ensureExecutionPolicyReady(undefined, signal);
+		// Selection gate: the Capability Registry is the only entry. The
+		// mcp_server descriptor of the target server must be selected by the
+		// frozen capability binding; an unapproved ask or a deny (including
+		// the default deny for unruled MCP servers) fails closed here. OAuth
+		// discovery and the authorization flow only run for selected servers.
+		const binding = this._activeCapabilityBinding;
+		const serverDescriptor = this._activeCapabilityCatalog?.descriptors.find(
+			(candidate) => candidate.kind === "mcp_server" && candidate.mcpServerId === serverId,
+		);
+		const selected = binding?.descriptors.some((ref) => ref.id === serverDescriptor?.id) ?? false;
+		if (!selected) {
+			throw new CapabilityError(
+				"capability_denied",
+				`MCP server "${serverId}" is not selected by the capability binding`,
+			);
+		}
+		const configured = canonicalizeMCPServerUrl(diagnostic.server.url);
+		let requested: string;
+		try {
+			requested = canonicalizeMCPServerUrl(String(serverUrl));
+		} catch {
+			throw new MCPAuthError("invalid_server_url", serverId);
+		}
+		if (configured !== requested) {
+			throw new MCPAuthError("resource_mismatch", serverId);
+		}
+		this._authorizeMcpAuthPolicy(serverId, "auth-start");
+	}
+
+	/** Execution policy authorization for an explicit MCP OAuth start. */
+	private _authorizeMcpAuthPolicy(serverId: string, opName: string): void {
+		const decision = authorizePolicyOperation({
+			profile: this._requireExecutionPolicyProfile(),
+			binding: this._requireExecutionPolicyBinding(),
+			operation: { resource: "mcp.auth", source: "mcp", id: `mcp-${opName}:${serverId}` },
+			capabilityBinding: this._policyCapabilityBindingInput(),
+		});
+		this._recordPolicyDecision(decision);
+		this._assertPolicyDecisionAllowed(decision);
+	}
+
+	/**
+	 * Runs an MCP content operation under caller cancellation; the operation
+	 * joins the in-flight set that cancel/close (abort, dispose) aborts.
+	 */
+	private async _runMcpContentOp<T>(
+		operation: (signal: AbortSignal) => Promise<T>,
+		signal?: AbortSignal,
+	): Promise<T> {
+		if (signal?.aborted) throw operationAbortReason(signal);
+		const controller = new AbortController();
+		this._inflightMcpContentOps.add(controller);
+		const onAbort = (): void => {
+			controller.abort(signal?.reason);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			return await operation(controller.signal);
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+			this._inflightMcpContentOps.delete(controller);
+		}
+	}
+
+	/**
 	 * Resolves once MCP capability discovery for the current runtime has settled
 	 * (connect + listTools + binding re-resolution). Discovery is lazy: this
 	 * call is what starts it for a freshly built runtime, so a session never
@@ -3670,6 +4637,9 @@ export class AgentSession {
 	 * Abort current operation and wait for agent to become idle.
 	 */
 	async abort(): Promise<void> {
+		// Run cancel/close cancels the agent flow (agent.abort) and any in-flight
+		// MCP list/read/get operations; waiters settle via waitForIdle below.
+		this.cancelMcpContentOperations();
 		this.abortRetry();
 		this.agent.abort();
 		await this.waitForIdle();
@@ -4879,6 +5849,11 @@ export class AgentSession {
 		// binding is still being preflighted.
 		this._activeMcpTools = [];
 		this._activeMcpToolCandidates = [];
+		// Content candidates are intentionally preserved across a profile
+		// transition: entries the user explicitly listed (including later
+		// pages) stay part of the session's selection scope and are re-governed
+		// under the new profile by the registry, so the next binding never
+		// silently drops them.
 		this._mcpAuthorizedTransportValues.clear();
 		this._capabilityDiscoveryError = undefined;
 		this._capabilityDiscoveryStarted = false;
@@ -5011,6 +5986,9 @@ export class AgentSession {
 		for (const candidate of this._activeMcpToolCandidates) {
 			candidates.push(candidate);
 		}
+		for (const candidate of this._activeMcpContentCandidates) {
+			candidates.push(candidate);
+		}
 		return candidates;
 	}
 
@@ -5118,6 +6096,7 @@ export class AgentSession {
 
 		const mcpResults: MCPToolDefinitionResult[] = [];
 		const mcpCandidates: CapabilityCandidate[] = [];
+		const mcpContentCandidates: CapabilityCandidate[] = [];
 		for (const serverId of [...selectedServerIds]) {
 			if (signal?.aborted) throw new DOMException("MCP capability discovery aborted", "AbortError");
 			const diagnostic = diagnosticByServerId.get(serverId);
@@ -5172,6 +6151,18 @@ export class AgentSession {
 						revisionInput: result.mapping.revisionInput,
 					});
 				}
+				// Content catalogs are metadata-only discovery: bounded page-1
+				// summaries become secret-free registry candidates so the Capability
+				// Registry is the single selection entry for resources/templates/
+				// prompts. A server that does not advertise a catalog capability is
+				// skipped (its list/read/get then surface the fixed unavailable
+				// errors); content is never read and no model is started here.
+				const contentCandidates = await this._discoverMcpContentCandidatesForServer(
+					diagnostic,
+					serverId,
+					signal,
+				);
+				mcpContentCandidates.push(...contentCandidates);
 			} catch (error) {
 				if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
 					throw error;
@@ -5197,15 +6188,27 @@ export class AgentSession {
 		}
 		this._activeMcpTools = mcpResults;
 		this._activeMcpToolCandidates = mcpCandidates;
-		if (mcpResults.length > 0) {
+		// Merge the fresh readiness snapshot with explicit-list-page candidates:
+		// the fresh snapshot wins for the same entry, while entries the user
+		// explicitly listed on later pages survive into the next binding instead
+		// of being dropped by the page-1 overwrite.
+		this._activeMcpContentCandidates = this._mergeMcpContentCandidateSets(mcpContentCandidates);
+		// The rebind condition covers the FINAL active content candidate set:
+		// a fresh page-1 that is empty must not skip the rebind when preserved
+		// explicit-list-page candidates still need to reach the next binding
+		// (e.g. a mid-run discovery whose pending refresh has not flushed yet).
+		if (mcpResults.length > 0 || this._activeMcpContentCandidates.length > 0) {
 			if (this.isIdle) {
 				if (signal?.aborted) {
 					throw new DOMException("MCP capability discovery aborted", "AbortError");
 				}
 				this._refreshToolRegistry({ includeAllExtensionTools: true });
-				// Discovered tools change the Capability Binding. Rebind the policy
-				// before reconnecting so the live MCP transport belongs to the final
-				// binding, not the discovery-only binding.
+				// Discovered tools and/or content capabilities change the
+				// Capability Binding. Rebind the policy before reconnecting so
+				// the live MCP transport belongs to the final binding, not the
+				// discovery-only binding. A content-only server (resources or
+				// prompts without tools) must also refresh the binding so its
+				// child descriptors are selected by the registry.
 				await this._ensureExecutionPolicyReady(policyRunId, signal);
 				await this._reconnectSelectedMcpServersForPolicyBinding(signal);
 			} else {
@@ -5214,6 +6217,86 @@ export class AgentSession {
 				this._pendingToolRegistryRefresh = true;
 			}
 		}
+	}
+
+	/**
+	 * Unions the fresh discovery content snapshot with the session's existing
+	 * content candidates (explicit list pages). The fresh snapshot replaces
+	 * same-entry revisions; explicit later-page entries are retained so the
+	 * next binding does not lose them.
+	 */
+	private _mergeMcpContentCandidateSets(fresh: ReadonlyArray<CapabilityCandidate>): CapabilityCandidate[] {
+		const byIdentity = new Map<string, CapabilityCandidate>();
+		const identity = (candidate: CapabilityCandidate): string =>
+			`${candidate.kind}\u0000${candidate.sourceIdentity}\u0000${candidate.localName ?? ""}`;
+		for (const candidate of this._activeMcpContentCandidates) {
+			byIdentity.set(identity(candidate), candidate);
+		}
+		for (const candidate of fresh) {
+			byIdentity.set(identity(candidate), candidate);
+		}
+		return [...byIdentity.values()];
+	}
+
+	/**
+	 * Discovers the bounded page-1 content catalogs (resources, resource
+	 * templates, prompts) of one selected trusted server and builds
+	 * secret-free registry candidates (digest local names, sanitized
+	 * summaries as revision input, provenance ids). Metadata only: content is
+	 * never read and no model is started. A server that does not advertise a
+	 * catalog capability is skipped; any other discovery failure propagates
+	 * and fails the binding like a tool discovery failure.
+	 */
+	private async _discoverMcpContentCandidatesForServer(
+		diagnostic: McpServerDiagnostic,
+		serverId: string,
+		signal?: AbortSignal,
+	): Promise<CapabilityCandidate[]> {
+		const candidates: CapabilityCandidate[] = [];
+		try {
+			const resources = await this._mcpLifecycleManager.listResources(serverId, undefined, signal);
+			for (const summary of resources.resources) {
+				candidates.push(
+					createMcpContentCapabilityCandidate({ kind: "mcp_resource", server: diagnostic, summary }),
+				);
+			}
+		} catch (error) {
+			if (!(error instanceof MCPContentError) || error.code !== "mcp_resource_unavailable") {
+				throw error;
+			}
+		}
+		if (signal?.aborted) throw new DOMException("MCP capability discovery aborted", "AbortError");
+		try {
+			const templates = await this._mcpLifecycleManager.listResourceTemplates(serverId, undefined, signal);
+			for (const summary of templates.resourceTemplates) {
+				candidates.push(
+					createMcpContentCapabilityCandidate({
+						kind: "mcp_resource_template",
+						server: diagnostic,
+						summary,
+					}),
+				);
+			}
+		} catch (error) {
+			if (!(error instanceof MCPContentError) || error.code !== "mcp_resource_unavailable") {
+				throw error;
+			}
+		}
+		if (signal?.aborted) throw new DOMException("MCP capability discovery aborted", "AbortError");
+		try {
+			const prompts = await this._mcpLifecycleManager.listPrompts(serverId, undefined, signal);
+			for (const summary of prompts.prompts) {
+				candidates.push(
+					createMcpContentCapabilityCandidate({ kind: "mcp_prompt", server: diagnostic, summary }),
+				);
+			}
+		} catch (error) {
+			if (!(error instanceof MCPContentError) || error.code !== "mcp_prompt_unavailable") {
+				throw error;
+			}
+		}
+		if (signal?.aborted) throw new DOMException("MCP capability discovery aborted", "AbortError");
+		return candidates;
 	}
 
 	private _recordMcpDiscoveryError(serverId: string, error: unknown): void {
@@ -5896,8 +6979,12 @@ export class AgentSession {
 		if (previousMcpManager) {
 			void previousMcpManager.closeAll().catch(() => undefined);
 		}
+		const mcpAuthManager = this._mcpAuthManager;
+		const mcpAuthProvider: MCPAuthProviderResolver | undefined =
+			mcpAuthManager !== undefined ? (config) => mcpAuthManager.getProvider(config) : this._mcpAuthProvider;
 		this._mcpLifecycleManager = new MCPLifecycleManager({
 			transportFactory: this._createPolicyAwareMcpTransportFactory(),
+			...(mcpAuthProvider === undefined ? {} : { authProvider: mcpAuthProvider }),
 		});
 		this._mcpRegisteredServerIds = new Set();
 		this._mcpAuthorizedTransportValues = new Map();

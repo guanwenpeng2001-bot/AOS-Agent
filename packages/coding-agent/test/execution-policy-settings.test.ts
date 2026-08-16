@@ -190,4 +190,35 @@ describe("execution policy settings", () => {
 		expect(manager.getExecutionPolicySettings(providerOptions).projectTrusted).toBe(true);
 		expect(manager.getExecutionPolicySettings(providerOptions).selectedProfile.process.action).toBe("deny");
 	});
+
+	it("parses profiles with MCP auth and content approval keys", () => {
+		const result = buildExecutionPolicySettings({
+			global: {
+				executionPolicy: {
+					defaultProfile: "content-safe",
+					profiles: {
+						"content-safe": {
+							...hostProfile,
+							id: "content-safe",
+							approvals: {
+								...hostProfile.approvals,
+								mcp: "ask",
+								resource: "ask",
+								prompt: "ask",
+								context: "deny",
+							},
+						},
+					},
+				},
+			},
+		});
+		expect(result.selectedProfile.approvals).toMatchObject({
+			mcp: "ask",
+			resource: "ask",
+			prompt: "ask",
+			context: "deny",
+		});
+		// Unset optional approval keys stay absent in the frozen profile.
+		expect(result.selectedProfile.approvals).not.toHaveProperty("sandbox");
+	});
 });

@@ -10,6 +10,7 @@ import {
 	CallToolRequestSchema,
 	type CallToolResult,
 	type JSONRPCMessage,
+	ListResourcesRequestSchema,
 	ListToolsRequestSchema,
 	type Tool,
 } from "@modelcontextprotocol/sdk/types";
@@ -835,6 +836,82 @@ describe.each(["stdio", "streamable-http"] as const)(
 		});
 	},
 );
+
+describe("MCP catalog method support (resources/prompts)", () => {
+	it("returns the fixed unavailable code for an unimplemented templates/list without degrading the server", async () => {
+		// The server advertises the resources capability but implements only
+		// resources/list, not resources/templates/list (JSON-RPC method-not-found).
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		const server = new Server(
+			{ name: "mock-server", version: "1.0.0" },
+			{ capabilities: { tools: {}, resources: {} } },
+		);
+		server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+		server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+			resources: [{ uri: "file:///guide.md", name: "Guide", mimeType: "text/markdown" }],
+		}));
+		const serverReady = server.connect(serverTransport);
+		serverReady.catch(() => undefined);
+		serverCleanups.push(async () => {
+			await server.close().catch(() => undefined);
+			await clientTransport.close().catch(() => undefined);
+		});
+		const lifecycle = new MCPServerLifecycle(
+			{ id: "docs", transport: "streamable-http", url: "https://mcp.invalid/mcp" },
+			{ transportFactory: async () => clientTransport },
+		);
+		await lifecycle.connect();
+		expect(lifecycle.getStatus().state).toBe("ready");
+
+		// Unimplemented templates/list: fixed unavailable code, NOT degraded,
+		// and the raw "Method not found" remote text never surfaces.
+		await expect(lifecycle.listResourceTemplates()).rejects.toMatchObject({
+			name: "MCPContentError",
+			code: "mcp_resource_unavailable",
+		});
+		expect(lifecycle.getStatus().state).toBe("ready");
+		expect(lifecycle.getStatus().availability).toBe("available");
+
+		// The supported resources/list keeps working after the method-not-found.
+		const resources = await lifecycle.listResources();
+		expect(resources.resources.map((resource) => resource.name)).toEqual(["Guide"]);
+		expect(lifecycle.getStatus().state).toBe("ready");
+		await lifecycle.close();
+	});
+
+	it("still degrades on a transport-level catalog failure", async () => {
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		const server = new Server(
+			{ name: "mock-server", version: "1.0.0" },
+			{ capabilities: { tools: {}, resources: {}, prompts: {} } },
+		);
+		server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+		server.setRequestHandler(ListResourcesRequestSchema, async () => {
+			throw new Error("remote transport failure");
+		});
+		const serverReady = server.connect(serverTransport);
+		serverReady.catch(() => undefined);
+		serverCleanups.push(async () => {
+			await server.close().catch(() => undefined);
+			await clientTransport.close().catch(() => undefined);
+		});
+		const lifecycle = new MCPServerLifecycle(
+			{ id: "docs", transport: "streamable-http", url: "https://mcp.invalid/mcp" },
+			{ transportFactory: async () => clientTransport },
+		);
+		await lifecycle.connect();
+
+		// A real failure (not method-not-found) still degrades and maps to
+		// capability_mcp_unavailable without leaking the remote error text.
+		await expect(lifecycle.listResources()).rejects.toMatchObject({
+			kind: "unavailable",
+			code: "capability_mcp_unavailable",
+		});
+		expect(lifecycle.getStatus().state).toBe("degraded");
+		expect(JSON.stringify(lifecycle.getStatus())).not.toContain("remote transport failure");
+		await lifecycle.close();
+	});
+});
 
 class FailingTransport implements Transport {
 	onclose?: Transport["onclose"];

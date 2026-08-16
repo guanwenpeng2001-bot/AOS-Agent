@@ -49,6 +49,7 @@ import {
 	type RunModelBudgetSummary,
 	type RunModelReference,
 	type RunReceipt,
+	type RunAttachmentSummary,
 	type RunRecord,
 	type RunReservation,
 	type RunResult,
@@ -2324,5 +2325,65 @@ describe("public-safe serializers preserve internal replay semantics", () => {
 		expect(publicReceipt.capabilityBindingId).toBeUndefined();
 		expectNoPublicMarkers(publicRecord);
 		expectNoPublicMarkers(publicReceipt);
+	});
+});
+
+describe("run receipts record public-safe MCP attachment summaries", () => {
+	const DIGEST_ID = "A".repeat(43);
+	const CONTENT_DIGEST = "a".repeat(64);
+	const ATTACHMENT = {
+		sourceId: DIGEST_ID,
+		kind: "resource" as const,
+		descriptorId: `mcp_resource:source:${DIGEST_ID}:${DIGEST_ID}`,
+		revision: `rev:${DIGEST_ID}`,
+		capabilityBindingId: `binding:${DIGEST_ID}`,
+		policyBindingId: "policy:binding:pb-1",
+		contentDigest: CONTENT_DIGEST,
+		byteCount: 125,
+		blockCount: 3,
+		mimeTypes: ["image/png"],
+	};
+	const PROMPT_ATTACHMENT = { ...ATTACHMENT, sourceId: "B".repeat(43), kind: "prompt" as const };
+
+	it("settles, persists, replays, and public-serializes attachment summaries without raw values", () => {
+		const session = makeSession();
+		const coordinator = makeCoordinator(session);
+		const run = accept(coordinator.reserve(), "r-attach");
+		run.start();
+		run.settle({ outcome: "completed", attachments: [ATTACHMENT, PROMPT_ATTACHMENT] });
+
+		const receipt = run.receipt();
+		expect(receipt?.attachments).toEqual([ATTACHMENT, PROMPT_ATTACHMENT]);
+
+		// The terminal fact is persisted in the Session ledger and replays.
+		const replayed = createRunLifecycleCoordinator(session);
+		const result = replayed.getRun("r-attach");
+		expect(result?.receipt?.attachments).toEqual([ATTACHMENT, PROMPT_ATTACHMENT]);
+
+		// Public serialization keeps the allowlisted summary and nothing else.
+		const publicReceipt = serializePublicRunReceipt(result?.receipt ?? receipt!);
+		expect(publicReceipt.attachments).toEqual([ATTACHMENT, PROMPT_ATTACHMENT]);
+		const serialized = JSON.stringify(publicReceipt);
+		expect(serialized).not.toContain("file://");
+		expect(serialized).not.toContain("secret");
+		expect(serialized).not.toContain("Attached guide text");
+	});
+
+	it("fails closed and drops the whole attachment field when any summary is invalid", () => {
+		const coordinator = makeCoordinator();
+		const run = accept(coordinator.reserve(), "r-invalid");
+		run.start();
+		run.settle({
+			 outcome: "completed",
+			 attachments: [
+				ATTACHMENT,
+				// Invalid summaries are dropped fail-closed (whole field omitted).
+				{ ...ATTACHMENT, sourceId: "file:///raw-uri" } as unknown as RunAttachmentSummary,
+				{ ...ATTACHMENT, contentDigest: "not-hex" } as unknown as RunAttachmentSummary,
+				{ ...ATTACHMENT, kind: "tool" } as unknown as RunAttachmentSummary,
+			],
+		});
+		// No invalid or partial summary is ever persisted.
+		expect(run.receipt()?.attachments).toBeUndefined();
 	});
 });

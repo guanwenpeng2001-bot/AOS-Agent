@@ -3,6 +3,8 @@ import {
 	EXECUTION_POLICY_SCHEMA_VERSION,
 	POLICY_DEFAULT_PROFILE,
 	PolicyError,
+	freezePolicyProfile,
+	type ApprovalPolicy,
 	type ExecutionPolicyProfile,
 	resolveExecutionPolicy,
 } from "../src/core/execution-policy.ts";
@@ -274,5 +276,128 @@ describe("execution policy resolver", () => {
 			message: "The operation was denied by execution policy.",
 			retryable: false,
 		});
+	});
+});
+
+describe("MCP auth and content operation policy", () => {
+	const MCP_OPERATIONS = ["mcp.auth", "resource.list", "resource.read", "prompt.list", "prompt.get", "context.attach"] as const;
+
+	it("resolves the new operations through the default action and rules", () => {
+		const denied = resolve(hostProfile, { resource: "resource.read", source: "mcp" });
+		expect(denied.ok).toBe(true);
+		if (denied.ok) {
+			expect(denied.decision).toMatchObject({ resource: "resource.read", outcome: "deny", reasonCode: "policy_denied" });
+		}
+
+		const profile: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "content-rules",
+			rules: MCP_OPERATIONS.map((resource) => ({ resource, action: "allow" })),
+		};
+		for (const resource of MCP_OPERATIONS) {
+			const result = resolve(profile, { resource, source: "mcp" });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.decision).toMatchObject({ resource, outcome: "allow" });
+			}
+		}
+	});
+
+	it("creates safe approval requests for ask decisions on the new operations", () => {
+		const profile: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "content-ask",
+			rules: MCP_OPERATIONS.map((resource) => ({ resource, action: "ask" })),
+		};
+		for (const resource of MCP_OPERATIONS) {
+			const result = resolve(profile, { resource, source: "mcp" });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.decision).toMatchObject({
+					resource,
+				action: "ask",
+				outcome: "ask",
+				reasonCode: "policy_approval_required",
+				hardDeny: false,
+			});
+				expect(result.approval).toMatchObject({ resource });
+			}
+		}
+	});
+
+	it("maps the new approval policy keys to their operation groups", () => {
+		const profile: ExecutionPolicyProfile = {
+			...legacy,
+			id: "content-approvals",
+			approvals: {
+				...legacy.approvals,
+				mcp: "ask",
+				resource: "ask",
+				prompt: "ask",
+				context: "ask",
+			},
+		};
+		const cases: ReadonlyArray<[string, keyof ApprovalPolicy]> = [
+			["mcp.auth", "mcp"],
+			["resource.list", "resource"],
+			["resource.read", "resource"],
+			["prompt.list", "prompt"],
+			["prompt.get", "prompt"],
+			["context.attach", "context"],
+		];
+		for (const [resource, key] of cases) {
+			const result = resolve(profile, { resource, source: "mcp" });
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				// The ask decision comes from the matching approval key, not from a rule.
+				expect(profile.approvals[key]).toBe("ask");
+				expect(result.decision).toMatchObject({ resource, action: "ask", outcome: "ask" });
+			}
+		}
+	});
+
+	it("freezes profiles that carry the new approval keys", () => {
+		const profile: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "content-freeze",
+			approvals: {
+				...hostProfile.approvals,
+				mcp: "deny",
+				resource: "ask",
+				prompt: "ask",
+				context: "deny",
+			},
+		};
+		const frozen = freezePolicyProfile(profile);
+		expect(frozen.approvals).toMatchObject({ mcp: "deny", resource: "ask", prompt: "ask", context: "deny" });
+		expect(Object.isFrozen(frozen)).toBe(true);
+	});
+
+	it("rejects a project narrowing that widens the new approval keys", () => {
+		const base: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "content-base",
+			approvals: { ...hostProfile.approvals, resource: "ask" },
+		};
+		const widened = resolveExecutionPolicy({
+			profiles: { "content-base": base },
+			defaultProfile: "content-base",
+			projectTrusted: false,
+			projectProfile: { approvals: { resource: "allow" } },
+			operation: { resource: "resource.read", source: "mcp" },
+		});
+		expect(widened).toMatchObject({ ok: false, error: { code: "policy_profile_untrusted" } });
+
+		const narrowed = resolveExecutionPolicy({
+			profiles: { "content-base": base },
+			defaultProfile: "content-base",
+			projectTrusted: false,
+			projectProfile: { approvals: { resource: "deny" } },
+			operation: { resource: "resource.read", source: "mcp" },
+		});
+		expect(narrowed.ok).toBe(true);
+		if (narrowed.ok) {
+			expect(narrowed.decision).toMatchObject({ outcome: "deny", reasonCode: "policy_denied" });
+		}
 	});
 });
