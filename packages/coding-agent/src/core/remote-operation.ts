@@ -15,6 +15,11 @@ import {
 	serializePublicRunBindingAssociation,
 	type RunBindingAssociation,
 } from "./binding-handles.ts";
+import {
+	isExternalAdapterIdentity,
+	serializeExternalAdapterIdentity,
+	type ExternalAdapterIdentity,
+} from "./external-session-mapping.ts";
 import type { RunId, RunStatus, RunTerminalStatus, SessionId } from "./run-lifecycle.ts";
 
 export const REMOTE_OPERATION_SCHEMA_VERSION = 1 as const;
@@ -55,6 +60,7 @@ const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SAFE_ARTIFACT_DIGEST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
+const SAFE_RECEIPT_INPUT_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 /** A portable reference; it contains no local path, URL, payload, or secret. */
 export interface RemoteArtifactReference {
@@ -102,6 +108,8 @@ export interface RemoteOperationRequest extends RemoteOperationBindingRefs {
 	readonly lease?: RemoteOperationLease;
 	/** Input artifacts are references only; bytes are exchanged by a provider-specific mechanism. */
 	readonly artifactRefs?: ReadonlyArray<RemoteArtifactReference>;
+	/** Optional adapter identity that produced this operation; validated exactly. */
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface RemoteOperationResult {
@@ -127,6 +135,8 @@ export interface RemoteOperationReceipt extends RemoteOperationBindingRefs {
 	readonly error?: RemoteOperationErrorInfo;
 	readonly lease?: RemoteOperationLease;
 	readonly heartbeatSequence?: number;
+	/** Optional adapter identity that produced this operation; validated exactly. */
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface RemoteOperationLedgerSession {
@@ -249,6 +259,9 @@ function isSafeArtifactReference(value: unknown): value is RemoteArtifactReferen
 		(key) => key === "id" || key === "kind" || key === "digest" || key === "sizeBytes" || key === "mediaType",
 	);
 }
+
+/** Public guard for the portable artifact reference allowlist. */
+export const isRemoteArtifactReference = isSafeArtifactReference;
 
 function isSafeArtifactReferenceList(value: unknown): value is ReadonlyArray<RemoteArtifactReference> {
 	return Array.isArray(value) && value.every(isSafeArtifactReference);
@@ -394,6 +407,7 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 	if (value.deadlineAt !== undefined && !isCanonicalTimestamp(value.deadlineAt)) return false;
 	if (value.lease !== undefined && !validateLease(value.lease)) return false;
 	if (value.artifactRefs !== undefined && !isSafeArtifactReferenceList(value.artifactRefs)) return false;
+	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
 		(key) =>
 			key === "operationId" ||
@@ -405,7 +419,8 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 			key === "bindingAssociation" ||
 			key === "deadlineAt" ||
 			key === "lease" ||
-			key === "artifactRefs",
+			key === "artifactRefs" ||
+			key === "adapter",
 	);
 }
 
@@ -427,6 +442,9 @@ function cloneRequest(request: RemoteOperationRequest): RemoteOperationRequest {
 		...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
 		...(request.lease === undefined ? {} : { lease: cloneLease(request.lease) }),
 		...(request.artifactRefs === undefined ? {} : { artifactRefs: request.artifactRefs.map(cloneArtifactReference) }),
+		...(request.adapter === undefined
+			? {}
+			: { adapter: serializeExternalAdapterIdentity(request.adapter) as ExternalAdapterIdentity }),
 	};
 }
 
@@ -457,6 +475,7 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
 	if (value.bindingAssociation !== undefined && !isBindingAssociationForRun(value.bindingAssociation, value.runId))
 		return false;
+	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
 		(key) =>
 			key === "schemaVersion" ||
@@ -474,7 +493,8 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 			key === "sideEffects" ||
 			key === "error" ||
 			key === "lease" ||
-			key === "heartbeatSequence",
+			key === "heartbeatSequence" ||
+			key === "adapter",
 	);
 }
 
@@ -594,6 +614,9 @@ export function startRemoteOperation(
 			operationId,
 			status: finalStatus,
 			...safeBindingRefs(request),
+			...(isRecord(request) && isExternalAdapterIdentity(request.adapter)
+				? { adapter: serializeExternalAdapterIdentity(request.adapter) as ExternalAdapterIdentity }
+				: {}),
 			...(startedAt === undefined ? {} : { startedAt }),
 			endedAt: safeNow(options.now),
 			artifactRefs: [...artifacts.values()],
@@ -739,6 +762,9 @@ export function createSessionRemoteOperationLedger(session: RemoteOperationLedge
 				...receipt,
 				sessionId,
 				artifactRefs: receipt.artifactRefs.map(cloneArtifactReference),
+				...(receipt.adapter === undefined
+					? {}
+					: { adapter: serializeExternalAdapterIdentity(receipt.adapter) as ExternalAdapterIdentity }),
 				...(receipt.bindingAssociation === undefined
 					? {}
 					: {
@@ -761,6 +787,118 @@ export function toRemoteOperationErrorInfo(
 	operationSideEffects: RemoteOperationSideEffectState = "unknown",
 ): RemoteOperationErrorInfo {
 	return errorInfoFromUnknown(error, operationSideEffects);
+}
+
+/**
+ * Bounded external terminal facts that may be mapped into the safe Remote
+ * Operation receipt contract. Only the terminal status, canonical endedAt,
+ * safe artifact references, the Remote Operation side-effect vocabulary, a
+ * bounded stable error code, safe binding refs, and an optional adapter
+ * identity are accepted. Prompts, transcripts, credentials, paths, URLs,
+ * headers, and raw protocol objects are rejected by the exact-shape guard.
+ */
+export interface RemoteOperationReceiptInput {
+	readonly operationId: RemoteOperationId;
+	readonly status: "completed" | "failed" | "cancelled";
+	readonly endedAt: string;
+	readonly artifactRefs: ReadonlyArray<RemoteArtifactReference>;
+	readonly sideEffects: RemoteOperationSideEffectState;
+	readonly error?: {
+		readonly code: string;
+		readonly retryable: boolean;
+		readonly sideEffects: RemoteOperationSideEffectState;
+	};
+	readonly runId?: RunId;
+	readonly sessionId?: SessionId;
+	readonly capabilityBindingId?: string;
+	readonly modelBindingId?: string;
+	readonly policyBindingId?: string;
+	readonly bindingAssociation?: RunBindingAssociation;
+	readonly adapter?: ExternalAdapterIdentity;
+}
+
+const REMOTE_OPERATION_RECEIPT_INPUT_KEYS = new Set([
+	"operationId",
+	"status",
+	"endedAt",
+	"artifactRefs",
+	"sideEffects",
+	"error",
+	"runId",
+	"sessionId",
+	"capabilityBindingId",
+	"modelBindingId",
+	"policyBindingId",
+	"bindingAssociation",
+	"adapter",
+]);
+const REMOTE_OPERATION_RECEIPT_INPUT_ERROR_KEYS = new Set(["code", "retryable", "sideEffects"]);
+
+function isRemoteOperationReceiptInputError(value: unknown): boolean {
+	if (!isRecord(value) || Object.keys(value).some((key) => !REMOTE_OPERATION_RECEIPT_INPUT_ERROR_KEYS.has(key)))
+		return false;
+	return (
+		typeof value.code === "string" &&
+		SAFE_RECEIPT_INPUT_ERROR_CODE_PATTERN.test(value.code) &&
+		typeof value.retryable === "boolean" &&
+		REMOTE_OPERATION_SIDE_EFFECT_STATES.includes(value.sideEffects as RemoteOperationSideEffectState)
+	);
+}
+
+/** Exact-shape guard for bounded external terminal facts entering the receipt contract. */
+export function isRemoteOperationReceiptInput(value: unknown): value is RemoteOperationReceiptInput {
+	if (!isRecord(value) || Object.keys(value).some((key) => !REMOTE_OPERATION_RECEIPT_INPUT_KEYS.has(key)))
+		return false;
+	if (!isSafeIdentifier(value.operationId)) return false;
+	if (!REMOTE_OPERATION_TERMINAL_STATUSES.includes(value.status as RemoteOperationTerminalStatus)) return false;
+	if (!isCanonicalTimestamp(value.endedAt) || !isSafeArtifactReferenceList(value.artifactRefs)) return false;
+	if (!REMOTE_OPERATION_SIDE_EFFECT_STATES.includes(value.sideEffects as RemoteOperationSideEffectState))
+		return false;
+	if (value.error !== undefined && !isRemoteOperationReceiptInputError(value.error)) return false;
+	if (value.runId !== undefined && !isSafeIdentifier(value.runId)) return false;
+	if (value.sessionId !== undefined && !isSafeIdentifier(value.sessionId)) return false;
+	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
+	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
+	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
+	if (value.bindingAssociation !== undefined && !isBindingAssociationForRun(value.bindingAssociation, value.runId))
+		return false;
+	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
+	return true;
+}
+
+/**
+ * Map bounded external terminal facts into a safe Remote Operation receipt.
+ *
+ * The mapping fails closed exactly like the operation machinery: unknown side
+ * effects, and cancelled receipts that may carry side effects, become a
+ * failed side-effect-unknown receipt that can never be retried. A reported
+ * failure maps to the stable `invalid` category; the external stable error
+ * code is not representable in the receipt error category and is never
+ * copied. Error detail is dropped from completed and cancelled projections.
+ * Returns undefined for malformed or identity-unsafe input.
+ */
+export function toRemoteOperationReceipt(value: unknown): RemoteOperationReceipt | undefined {
+	if (!isRemoteOperationReceiptInput(value)) return undefined;
+	const sideEffects = mergeSideEffectState(value.sideEffects, value.error?.sideEffects);
+	const failClosed = sideEffects === "unknown" || (value.status === "cancelled" && sideEffects !== "none");
+	const receipt: RemoteOperationReceipt = {
+		schemaVersion: REMOTE_OPERATION_SCHEMA_VERSION,
+		operationId: value.operationId,
+		status: failClosed ? "failed" : value.status,
+		...safeBindingRefs(value),
+		endedAt: value.endedAt,
+		artifactRefs: value.artifactRefs.map(cloneArtifactReference),
+		sideEffects: failClosed ? "unknown" : sideEffects,
+		...(failClosed
+			? { error: errorInfo("side-effect-unknown", "unknown") }
+			: value.status === "failed"
+				? { error: { category: "invalid", code: "invalid", retryable: false, sideEffects } }
+				: {}),
+		...(value.adapter === undefined
+			? {}
+			: { adapter: serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity }),
+	};
+	return isRemoteOperationReceipt(receipt) ? receipt : undefined;
 }
 
 /** Keep Run status vocabulary visible to consumers without creating a second status union. */

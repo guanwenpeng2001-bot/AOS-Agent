@@ -58,6 +58,8 @@ import {
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { resolvePath } from "../utils/paths.ts";
+import type { ExternalAgentEvent } from "./external-agent-adapter.ts";
+import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { getShellEnv } from "../utils/shell.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
@@ -296,7 +298,12 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| {
+			/** Bounded External Agent Adapter observation, validated by the host driver. */
+			type: "external_agent_event";
+			event: ExternalAgentEvent;
+	  };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -443,6 +450,8 @@ export interface AgentSessionConfig {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Optional named Execution Policy profile selector for this session. */
 	policyProfile?: string;
+	/** Trusted External Agent Adapter registry composed by the Host. */
+	externalAgentRegistry?: ExternalAgentAdapterRegistry;
 	/** Session-local approvals for ask capabilities. Never overrides a deny. */
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	/** `noTools` suppression mode from createAgentSession: only narrows the binding. */
@@ -704,6 +713,7 @@ export class AgentSession {
 	private _executionPolicyPreparationTail: Promise<void> = Promise.resolve();
 	private _disposePolicyBoundaryPromise: Promise<void> | undefined;
 	private _currentBuiltinToolPolicy: BuiltinToolPolicy | undefined;
+	private _externalAgentRegistry: ExternalAgentAdapterRegistry | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._agentStreamFunction = config.agent.streamFunction;
@@ -733,6 +743,7 @@ export class AgentSession {
 		this._activeExecutionPolicyProfileSelection = config.policyProfile;
 		this._noTools = config.noTools;
 		this._mcpTransportFactory = config.mcpTransportFactory;
+		this._externalAgentRegistry = config.externalAgentRegistry;
 		const sandboxProviders = config.sandboxProviders;
 		this._sandboxProviders =
 			sandboxProviders === undefined
@@ -808,6 +819,33 @@ export class AgentSession {
 			}
 		}
 		return handles;
+	}
+
+	/**
+	 * Return the trusted External Agent Adapter registry composed by the Host,
+	 * or undefined when no external agent support is wired into this session.
+	 * The registry never exposes endpoints, commands, credentials, protocol
+	 * names, or raw probe data; only safe descriptors and adapter instances.
+	 */
+	getExternalAgentRegistry(): ExternalAgentAdapterRegistry | undefined {
+		return this._externalAgentRegistry;
+	}
+
+	/**
+	 * Run the capability, policy, and sandbox preflight for an external agent
+	 * run without entering the model loop. This mirrors the preflight half of
+	 * {@link prompt}: capability discovery settlement, the prompt-preflight tool
+	 * registry refresh, Execution Policy binding and sandbox preparation, and
+	 * MCP transport reconnection for the settled policy binding. The caller
+	 * still owns the Run reservation/accept/start/terminal lifecycle.
+	 */
+	async runExternalAgentPreflight(runId?: string, signal?: AbortSignal): Promise<void> {
+		await this.whenCapabilitiesReady(runId, signal);
+		this._applyPromptPreflightToolRegistryRefresh();
+		const policyBindingChanged = await this._ensureExecutionPolicyReady(runId, signal);
+		if (policyBindingChanged) {
+			await this._reconnectSelectedMcpServersForPolicyBinding(signal);
+		}
 	}
 
 	/**

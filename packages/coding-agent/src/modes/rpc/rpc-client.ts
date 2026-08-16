@@ -38,6 +38,7 @@ import type {
 	AuditReplayResult,
 	AutomationError,
 	AutomationErrorCode,
+	ExternalAgentSelection,
 	ExternalExecutionRef,
 	ExternalMappingPersistenceResult,
 	ExternalMappingRequest,
@@ -704,6 +705,11 @@ export class RpcClient {
 	 * session's configured default profile. The Automation Host fails the run when
 	 * the profile is unknown or would require an ask approval.
 	 * @param policyProfile - Optional named Execution Policy profile selector.
+	 * @param externalAgent - Optional explicit trusted External Agent Adapter
+	 * selection. When present the Run is executed by the trusted adapter instead
+	 * of the local model loop; the adapter is probed and its capabilities gated
+	 * before any start. Safe identifiers only; no URL/command/header/credential
+	 * data ever crosses the RPC boundary.
 	 */
 	async startRun(
 		message: string,
@@ -715,6 +721,7 @@ export class RpcClient {
 		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
+		externalAgent?: ExternalAgentSelection,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
@@ -725,6 +732,7 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(external !== undefined ? { external } : {}),
+			...(externalAgent !== undefined ? { externalAgent } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
@@ -755,6 +763,11 @@ export class RpcClient {
 	 * attempt's successor binding; defaults to the session's default profile.
 	 * @param policyProfile - Optional named Execution Policy profile selector for
 	 * the new attempt's successor binding.
+	 * @param externalAgent - Optional explicit trusted External Agent Adapter
+	 * selection. The v1 adapter contract has start() only, so run.resume with an
+	 * externalAgent selection is always rejected with
+	 * external_agent_resume_unsupported instead of silently starting a fresh
+	 * execution.
 	 */
 	async resumeRun(
 		sessionPath: string,
@@ -768,6 +781,7 @@ export class RpcClient {
 		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
+		externalAgent?: ExternalAgentSelection,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -780,6 +794,7 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(external !== undefined ? { external } : {}),
+			...(externalAgent !== undefined ? { externalAgent } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});

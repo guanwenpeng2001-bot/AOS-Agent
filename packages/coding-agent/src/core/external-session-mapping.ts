@@ -5,6 +5,13 @@
  * participate in Session context construction, so this module never puts an
  * external payload in the model context. The module owns validation and the
  * two key indexes; callers only receive the small, safe identifier summary.
+ *
+ * The module also owns the adapter identity vocabulary that associates an
+ * external execution with the trusted adapter, protocol, binding, and
+ * operation that produced it: exact-shape guards for adapterId/targetId/
+ * protocol/binding/operation/external refs, an identity-drift check, and a
+ * stable association key. Adapter identity is optional mapping metadata; it
+ * is never a path, URL, command, header, prompt, or credential.
  */
 
 import type { SessionEntry } from "./session-manager.ts";
@@ -23,12 +30,46 @@ export interface ExternalExecutionRef {
 	readonly externalRunId?: string;
 }
 
+/** Verified adapter protocol reference; no endpoint, header, or payload data. */
+export interface ExternalAdapterProtocolRef {
+	readonly name: string;
+	readonly version: string;
+}
+
+/** Explicit selection of a trusted adapter for one target. */
+export interface ExternalAdapterSelectionRef {
+	readonly adapterId: string;
+	readonly targetId: string;
+}
+
+/**
+ * Immutable adapter identity for one external execution: selection plus the
+ * verified protocol name and version. Identity fields never carry paths,
+ * URLs, commands, headers, prompts, or credentials.
+ */
+export interface ExternalAdapterIdentity extends ExternalAdapterSelectionRef {
+	readonly protocol: ExternalAdapterProtocolRef;
+}
+
+/**
+ * Association ref binding the adapter identity to a prepared binding, an
+ * operation, and one external execution. Used to associate terminal receipts
+ * and bounded events with the exact adapter execution that produced them.
+ */
+export interface ExternalAdapterExecutionRef extends ExternalAdapterIdentity {
+	readonly bindingFingerprint?: string;
+	readonly operationId?: string;
+	readonly external: ExternalExecutionRef;
+}
+
 export interface ExternalExecutionMapping extends ExternalExecutionRef {
 	readonly aosSessionId: string;
 	readonly aosRunId?: string;
 	readonly createdAt: string;
 	readonly source?: string;
 	readonly correlationId?: string;
+	/** Optional adapter identity that created this mapping; validated exactly. */
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 /** Safe public alias for mapping summaries returned by the Automation Host. */
@@ -45,6 +86,7 @@ export interface ExternalMappingRequest {
 	readonly aosRunId?: string;
 	readonly source?: string;
 	readonly correlationId?: string;
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface ExternalMappingSession {
@@ -102,6 +144,17 @@ export { ExternalMappingError as ExternalSessionMappingError };
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
+const EXTERNAL_ADAPTER_PROTOCOL_KEYS = new Set(["name", "version"]);
+const EXTERNAL_ADAPTER_SELECTION_KEYS = new Set(["adapterId", "targetId"]);
+const EXTERNAL_ADAPTER_IDENTITY_KEYS = new Set(["adapterId", "targetId", "protocol"]);
+const EXTERNAL_ADAPTER_EXECUTION_KEYS = new Set([
+	"adapterId",
+	"targetId",
+	"protocol",
+	"bindingFingerprint",
+	"operationId",
+	"external",
+]);
 const EXTERNAL_MAPPING_KEYS = new Set([
 	"namespace",
 	"externalSessionId",
@@ -111,6 +164,7 @@ const EXTERNAL_MAPPING_KEYS = new Set([
 	"createdAt",
 	"source",
 	"correlationId",
+	"adapter",
 ]);
 const EXTERNAL_MAPPING_REQUEST_KEYS = new Set([
 	"external",
@@ -118,6 +172,7 @@ const EXTERNAL_MAPPING_REQUEST_KEYS = new Set([
 	"aosRunId",
 	"source",
 	"correlationId",
+	"adapter",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -169,6 +224,9 @@ function validateMappingRequest(request: ExternalMappingRequest): void {
 	if (!isOptionalIdentifier(request.source) || !isOptionalIdentifier(request.correlationId)) {
 		throw new ExternalMappingError("external_mapping_invalid", "External mapping metadata is invalid.");
 	}
+	if (request.adapter !== undefined && !isExternalAdapterIdentity(request.adapter)) {
+		throw new ExternalMappingError("external_mapping_invalid", "External mapping adapter identity is invalid.");
+	}
 }
 
 /** Validate a ref and reject unknown keys so payloads cannot be smuggled in. */
@@ -181,6 +239,114 @@ export function isExternalExecutionRef(value: unknown): value is ExternalExecuti
 	);
 }
 
+/** Exact-shape guard for a verified protocol ref; raw protocol objects are rejected. */
+export function isExternalAdapterProtocolRef(value: unknown): value is ExternalAdapterProtocolRef {
+	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_ADAPTER_PROTOCOL_KEYS)) return false;
+	return isExternalMappingIdentifier(value.name) && isExternalMappingIdentifier(value.version);
+}
+
+/** Exact-shape guard for an adapter selection; no endpoint or descriptor data. */
+export function isExternalAdapterSelectionRef(value: unknown): value is ExternalAdapterSelectionRef {
+	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_ADAPTER_SELECTION_KEYS)) return false;
+	return isExternalMappingIdentifier(value.adapterId) && isExternalMappingIdentifier(value.targetId);
+}
+
+/** Exact-shape guard for the immutable adapter identity; raw adapter self-reports are rejected. */
+export function isExternalAdapterIdentity(value: unknown): value is ExternalAdapterIdentity {
+	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_ADAPTER_IDENTITY_KEYS)) return false;
+	return (
+		isExternalMappingIdentifier(value.adapterId) &&
+		isExternalMappingIdentifier(value.targetId) &&
+		isExternalAdapterProtocolRef(value.protocol)
+	);
+}
+
+/**
+ * Exact-shape guard for the adapter execution association ref: identity plus
+ * an optional binding fingerprint, operation id, and external execution ref.
+ */
+export function isExternalAdapterExecutionRef(value: unknown): value is ExternalAdapterExecutionRef {
+	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_ADAPTER_EXECUTION_KEYS)) return false;
+	return (
+		isExternalMappingIdentifier(value.adapterId) &&
+		isExternalMappingIdentifier(value.targetId) &&
+		isExternalAdapterProtocolRef(value.protocol) &&
+		isOptionalIdentifier(value.bindingFingerprint) &&
+		isOptionalIdentifier(value.operationId) &&
+		isExternalExecutionRef(value.external)
+	);
+}
+
+/** Safe clone of an adapter identity; returns undefined for unsafe input. */
+export function serializeExternalAdapterIdentity(
+	value: ExternalAdapterIdentity,
+): ExternalAdapterIdentity | undefined {
+	if (!isExternalAdapterIdentity(value)) return undefined;
+	return {
+		adapterId: value.adapterId,
+		targetId: value.targetId,
+		protocol: { name: value.protocol.name, version: value.protocol.version },
+	};
+}
+
+/** Safe clone of an adapter execution association ref; returns undefined for unsafe input. */
+export function serializeExternalAdapterExecutionRef(
+	value: ExternalAdapterExecutionRef,
+): ExternalAdapterExecutionRef | undefined {
+	if (!isExternalAdapterExecutionRef(value)) return undefined;
+	const ref: ExternalAdapterExecutionRef = {
+		adapterId: value.adapterId,
+		targetId: value.targetId,
+		protocol: { name: value.protocol.name, version: value.protocol.version },
+		external: {
+			namespace: value.external.namespace,
+			externalSessionId: value.external.externalSessionId,
+			...(value.external.externalRunId === undefined ? {} : { externalRunId: value.external.externalRunId }),
+		},
+	};
+	if (value.bindingFingerprint !== undefined) (ref as { bindingFingerprint?: string }).bindingFingerprint = value.bindingFingerprint;
+	if (value.operationId !== undefined) (ref as { operationId?: string }).operationId = value.operationId;
+	return ref;
+}
+
+/** Identity drift check: selection and protocol must all match. */
+export function sameExternalAdapterIdentity(left: ExternalAdapterIdentity, right: ExternalAdapterIdentity): boolean {
+	return (
+		left.adapterId === right.adapterId &&
+		left.targetId === right.targetId &&
+		left.protocol.name === right.protocol.name &&
+		left.protocol.version === right.protocol.version
+	);
+}
+
+/** Full association check: identity, binding fingerprint, operation, and external ref must all match. */
+export function sameExternalAdapterExecutionRef(
+	left: ExternalAdapterExecutionRef,
+	right: ExternalAdapterExecutionRef,
+): boolean {
+	return (
+		sameExternalAdapterIdentity(left, right) &&
+		(left.bindingFingerprint ?? undefined) === (right.bindingFingerprint ?? undefined) &&
+		(left.operationId ?? undefined) === (right.operationId ?? undefined) &&
+		left.external.namespace === right.external.namespace &&
+		left.external.externalSessionId === right.external.externalSessionId &&
+		(left.external.externalRunId ?? undefined) === (right.external.externalRunId ?? undefined)
+	);
+}
+
+/** Stable association key binding the adapter identity to one external execution. */
+export function externalAdapterExecutionKey(value: ExternalAdapterExecutionRef): string {
+	return [
+		value.adapterId,
+		value.targetId,
+		value.protocol.name,
+		value.protocol.version,
+		value.external.namespace,
+		value.external.externalSessionId,
+		value.external.externalRunId ?? "<absent>",
+	].join("\u0000");
+}
+
 export function isExternalExecutionMapping(value: unknown): value is ExternalExecutionMapping {
 	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_MAPPING_KEYS)) return false;
 	return (
@@ -191,7 +357,8 @@ export function isExternalExecutionMapping(value: unknown): value is ExternalExe
 		isOptionalIdentifier(value.aosRunId) &&
 		isCanonicalExternalMappingTimestamp(value.createdAt) &&
 		isOptionalIdentifier(value.source) &&
-		isOptionalIdentifier(value.correlationId)
+		isOptionalIdentifier(value.correlationId) &&
+		(value.adapter === undefined || isExternalAdapterIdentity(value.adapter))
 	);
 }
 
@@ -226,6 +393,7 @@ export function serializeExternalExecutionMapping(value: ExternalExecutionMappin
 	if (value.aosRunId !== undefined) (mapping as { aosRunId?: string }).aosRunId = value.aosRunId;
 	if (value.source !== undefined) (mapping as { source?: string }).source = value.source;
 	if (value.correlationId !== undefined) (mapping as { correlationId?: string }).correlationId = value.correlationId;
+	if (value.adapter !== undefined) (mapping as { adapter?: ExternalAdapterIdentity }).adapter = value.adapter;
 	return mapping;
 }
 
@@ -240,6 +408,10 @@ function cloneMapping(value: ExternalExecutionMapping): ExternalExecutionMapping
 	if (value.aosRunId !== undefined) (mapping as { aosRunId?: string }).aosRunId = value.aosRunId;
 	if (value.source !== undefined) (mapping as { source?: string }).source = value.source;
 	if (value.correlationId !== undefined) (mapping as { correlationId?: string }).correlationId = value.correlationId;
+	if (value.adapter !== undefined) {
+		(mapping as { adapter?: ExternalAdapterIdentity }).adapter =
+			serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity;
+	}
 	return mapping;
 }
 
@@ -310,8 +482,13 @@ export function foldExternalMappingEntries(
 		const existingExternal = byExternal.get(leftKey);
 		const existingAos = byAos.get(rightKey);
 		const externalConflict = existingExternal !== undefined && !sameTarget(existingExternal, mapping);
+		const adapterDrift =
+			existingExternal !== undefined &&
+			existingExternal.adapter !== undefined &&
+			mapping.adapter !== undefined &&
+			!sameExternalAdapterIdentity(existingExternal.adapter, mapping.adapter);
 		const aosConflict = existingAos !== undefined && !sameExternal(existingAos, mapping);
-		if (externalConflict || aosConflict || conflictedExternal.has(leftKey) || conflictedAos.has(rightKey)) {
+		if (externalConflict || adapterDrift || aosConflict || conflictedExternal.has(leftKey) || conflictedAos.has(rightKey)) {
 			conflictedExternal.add(leftKey);
 			conflictedAos.add(rightKey);
 			if (existingExternal !== undefined) {
@@ -466,6 +643,17 @@ export class ExternalSessionMappingStore {
 		})) {
 			throw new ExternalMappingError("external_mapping_conflict", "External execution already maps to a different AOS target.");
 		}
+		if (
+			existingExternal !== undefined &&
+			existingExternal.adapter !== undefined &&
+			request.adapter !== undefined &&
+			!sameExternalAdapterIdentity(existingExternal.adapter, request.adapter)
+		) {
+			throw new ExternalMappingError(
+				"external_mapping_conflict",
+				"External mapping adapter identity drifted from append-only mapping history.",
+			);
+		}
 		const existingAos = this.fold.byAos.get(aosKeyValue);
 		if (existingAos !== undefined && !sameExternal(existingAos, {
 			...request.external,
@@ -498,6 +686,10 @@ export class ExternalSessionMappingStore {
 		if (request.aosRunId !== undefined) (proposed as { aosRunId?: string }).aosRunId = request.aosRunId;
 		if (request.source !== undefined) (proposed as { source?: string }).source = request.source;
 		if (request.correlationId !== undefined) (proposed as { correlationId?: string }).correlationId = request.correlationId;
+		if (request.adapter !== undefined) {
+			(proposed as { adapter?: ExternalAdapterIdentity }).adapter =
+				serializeExternalAdapterIdentity(request.adapter) as ExternalAdapterIdentity;
+		}
 		if (!isExternalExecutionMapping(proposed)) {
 			throw new ExternalMappingError("external_mapping_invalid", "External mapping data is invalid.");
 		}
@@ -512,6 +704,17 @@ export class ExternalSessionMappingStore {
 		}
 		if (existingExternal !== undefined && !sameTarget(existingExternal, proposed)) {
 			throw new ExternalMappingError("external_mapping_conflict", "External execution already maps to a different AOS target.");
+		}
+		if (
+			existingExternal !== undefined &&
+			existingExternal.adapter !== undefined &&
+			proposed.adapter !== undefined &&
+			!sameExternalAdapterIdentity(existingExternal.adapter, proposed.adapter)
+		) {
+			throw new ExternalMappingError(
+				"external_mapping_conflict",
+				"External mapping adapter identity drifted from append-only mapping history.",
+			);
 		}
 		if (existingAos !== undefined && !sameExternal(existingAos, proposed)) {
 			throw new ExternalMappingError("external_mapping_conflict", "AOS execution already maps to a different external target.");

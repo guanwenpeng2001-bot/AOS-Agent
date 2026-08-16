@@ -92,6 +92,10 @@
         {
           "title": "Session Format",
           "path": "session-format.md"
+        },
+        {
+          "title": "External Agent Adapter",
+          "path": "external-agent-adapter.md"
         }
       ]
     },

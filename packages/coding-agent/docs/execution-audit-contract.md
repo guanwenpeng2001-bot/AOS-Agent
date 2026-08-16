@@ -301,6 +301,37 @@ Policy, and Sandbox facts. The optional Session ledger sink writes this fact
 through the existing append-only Session custom-entry API; it does not create
 a second execution ledger.
 
+### External Agent Adapter summary
+
+The External Agent Adapter introduces no new audit event type and no new
+Session custom entry. Adapter activity is exposed only through the existing
+safe sources: the Run facts (`run.accepted` / `run.started` / the terminal),
+the `external.mapping` entry, and the `remote.operation` receipt. A probe is a
+short-term preflight fact; v1 never persists a probe snapshot as a long-term
+Session capability fact, so replay never fabricates a probe result. An
+external terminal receipt is evidence for the existing Run terminal gate and
+never writes or overrides a Run terminal.
+
+Adapter facts pass exact-shape, allowlisted validation before they reach a
+Session custom entry, an audit summary, or a Run observation. The guards are
+the existing fact layers, not a separate bridge: `src/core/external-agent-adapter.ts`
+(exact-shape snapshot / prepared-binding / event / receipt validators,
+serializers, and the `runExternalAgentAdapter` driver that bounds events to a
+consistent external identity with one `started` and strictly increasing
+positive sequences), `src/core/external-session-mapping.ts` (safe external
+refs and the append-only `external.mapping` store), and
+`src/core/remote-operation.ts` (`remote.operation` receipt guards and the
+Session ledger sink), with the ordering enforced by the host wiring in
+`src/modes/rpc/rpc-host.ts` and `src/core/run-lifecycle.ts`. Unknown keys,
+raw protocol data, prompt text, credentials, paths, URLs, and unbounded free
+text are rejected; an operation receipt is recorded only after the external
+execution has a persisted mapping; and persistence is acknowledged only after
+the append is durably visible. When a public summary needs adapter identity,
+only the allowlisted adapter fields apply (`adapterId`, `targetId`, protocol
+name/version, `bindingFingerprint`); prompt, transcript, raw protocol data,
+target self-report, credentials, and paths remain forbidden everywhere. See
+[External Agent Adapter](external-agent-adapter.md).
+
 ### Task Gate summary
 
 `task.gate` events are produced from `task.gate` Session custom entries. Each
