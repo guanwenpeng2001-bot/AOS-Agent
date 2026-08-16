@@ -114,7 +114,7 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		await prototype.handleMcpCommand.call(context, "");
 		const out = stripAnsi(renderedOutput(context));
 		expect(out).toContain("/mcp auth <serverId>");
-		expect(out).toContain("/mcp prompt [serverId] <name>");
+		expect(out).toContain("/mcp prompt [serverId] <promptId> [key=value ...]");
 		expect(context.session.listMcpResources).not.toHaveBeenCalled();
 	});
 
@@ -152,8 +152,12 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		const context = createContext();
 		context.session.readMcpResource.mockResolvedValue({
 			serverId: "docs",
-			uri: "docs://spec.md",
-			content: { blocks: [{ type: "text", text: "remote body" }], truncated: false, droppedBlocks: 0, droppedBytes: 0 },
+			resourceId: "mcp-res-1111111111111111",
+			content: { blocks: [{ type: "text", text: "remote body" }], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 11 },
+			byteCount: 11,
+			truncated: false,
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		});
 		context.session.attachMcpResource.mockResolvedValue({
 			attachmentId: "src-1",
@@ -163,14 +167,14 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		});
 		context.showExtensionConfirm.mockResolvedValue(true);
 
-		await prototype.handleMcpCommand.call(context, "resource docs docs://spec.md");
+		await prototype.handleMcpCommand.call(context, "resource docs mcp-res-1111111111111111");
 
-		expect(context.session.readMcpResource).toHaveBeenCalledWith("docs", "docs://spec.md");
+		expect(context.session.readMcpResource).toHaveBeenCalledWith("docs", "mcp-res-1111111111111111");
 		// The preview is shown behind the untrusted banner.
 		const preview = stripAnsi(String(context.showExtensionConfirm.mock.calls[0]?.[1] ?? ""));
 		expect(preview).toContain("UNTRUSTED EXTERNAL MCP CONTENT");
 		expect(context.showExtensionConfirm).toHaveBeenCalledOnce();
-		expect(context.session.attachMcpResource).toHaveBeenCalledWith("docs", "docs://spec.md");
+		expect(context.session.attachMcpResource).toHaveBeenCalledWith("docs", "mcp-res-1111111111111111", undefined, { allowTruncated: true });
 		expect(stripAnsi(renderedOutput(context))).toContain("MCP content attached for the next turn");
 	});
 
@@ -178,12 +182,16 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		const context = createContext();
 		context.session.readMcpResource.mockResolvedValue({
 			serverId: "docs",
-			uri: "docs://spec.md",
-			content: { blocks: [], truncated: false, droppedBlocks: 0, droppedBytes: 0 },
+			resourceId: "mcp-res-1111111111111111",
+			content: { blocks: [], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 0 },
+			byteCount: 0,
+			truncated: false,
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		});
 		context.showExtensionConfirm.mockResolvedValue(false);
 
-		await prototype.handleMcpResourceCommand.call(context, ["docs", "docs://spec.md"]);
+		await prototype.handleMcpResourceCommand.call(context, ["docs", "mcp-res-1111111111111111"]);
 
 		expect(context.session.attachMcpResource).not.toHaveBeenCalled();
 		expect(stripAnsi(renderedOutput(context))).toContain("MCP resource not attached.");
@@ -192,14 +200,18 @@ describe("InteractiveMode /mcp command dispatch", () => {
 	it("resolves the server from the cached catalog when the id is omitted", async () => {
 		const context = createContext();
 		context.session.getMcpContentCatalog.mockReturnValue({
-			resources: [{ uri: "docs://spec.md", name: "spec" }],
+			resources: [{ resourceId: "mcp-res-1111111111111111", serverId: "docs", name: "spec", provenanceId: "mcp-content-1111111111111111", revision: "rev:1111111111111111" }],
 			resourceTemplates: [],
 			prompts: [],
 		});
 		context.session.readMcpResource.mockResolvedValue({
 			serverId: "docs",
-			uri: "docs://spec.md",
-			content: { blocks: [], truncated: false, droppedBlocks: 0, droppedBytes: 0 },
+			resourceId: "mcp-res-1111111111111111",
+			content: { blocks: [], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 0 },
+			byteCount: 0,
+			truncated: false,
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		});
 		context.session.attachMcpResource.mockResolvedValue({
 			attachmentId: "src-1",
@@ -209,23 +221,23 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		});
 		context.showExtensionConfirm.mockResolvedValue(true);
 
-		await prototype.handleMcpResourceCommand.call(context, ["docs://spec.md"]);
+		await prototype.handleMcpResourceCommand.call(context, ["mcp-res-1111111111111111"]);
 
-		expect(context.session.readMcpResource).toHaveBeenCalledWith("docs", "docs://spec.md");
-		expect(context.session.attachMcpResource).toHaveBeenCalledWith("docs", "docs://spec.md");
+		expect(context.session.readMcpResource).toHaveBeenCalledWith("docs", "mcp-res-1111111111111111");
+		expect(context.session.attachMcpResource).toHaveBeenCalledWith("docs", "mcp-res-1111111111111111", undefined, { allowTruncated: true });
 	});
 
 	it("reports a resource that was never listed", async () => {
 		const context = createContext();
 		context.session.getMcpContentCatalog.mockReturnValue(undefined);
-		await prototype.handleMcpResourceCommand.call(context, ["docs://missing"]);
+		await prototype.handleMcpResourceCommand.call(context, ["mcp-res-2222222222222222"]);
 		expect(context.session.readMcpResource).not.toHaveBeenCalled();
 		expect(stripAnsi(renderedOutput(context))).toContain("Resource not listed for any server");
 	});
 
 	it("lists prompts of a server", async () => {
 		const context = createContext();
-		context.session.listMcpPrompts.mockResolvedValue({ items: [{ name: "summarize" }], truncated: false });
+		context.session.listMcpPrompts.mockResolvedValue({ items: [{ promptId: "mcp-prompt-1111111111111111", serverId: "docs", name: "summarize", provenanceId: "mcp-content-1111111111111111", revision: "rev:1111111111111111" }], truncated: false });
 		await prototype.handleMcpPromptsCommand.call(context, "docs");
 		expect(context.session.listMcpPrompts).toHaveBeenCalledWith("docs");
 		expect(stripAnsi(renderedOutput(context))).toContain("summarize");
@@ -236,14 +248,16 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		context.session.getMcpContentCatalog.mockReturnValue({
 			resources: [],
 			resourceTemplates: [],
-			prompts: [{ name: "summarize", arguments: [{ name: "uri", required: true }] }],
+			prompts: [{ promptId: "mcp-prompt-1111111111111111", serverId: "docs", name: "summarize", arguments: [{ name: "uri", required: true }], provenanceId: "mcp-content-1111111111111111", revision: "rev:1111111111111111" }],
 		});
 		context.session.getMcpPrompt.mockResolvedValue({
 			serverId: "docs",
-			promptName: "summarize",
+			promptId: "mcp-prompt-1111111111111111",
 			messages: [
-				{ role: "user", content: { blocks: [{ type: "text", text: "Summarize this" }], truncated: false, droppedBlocks: 0, droppedBytes: 0 } },
+				{ role: "user", content: { blocks: [{ type: "text", text: "Summarize this" }], truncated: false, unsafe: false, droppedBlocks: 0, droppedBytes: 0, byteCount: 14 } },
 			],
+			provenanceId: "mcp-content-1111111111111111",
+			revision: "rev:1111111111111111",
 		});
 		context.session.attachMcpPrompt.mockResolvedValue({
 			attachmentId: "src-2",
@@ -254,13 +268,13 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		context.showExtensionInput.mockResolvedValue("docs://spec.md");
 		context.showExtensionConfirm.mockResolvedValue(true);
 
-		await prototype.handleMcpPromptCommand.call(context, ["docs", "summarize"]);
+		await prototype.handleMcpPromptCommand.call(context, ["docs", "mcp-prompt-1111111111111111"]);
 
 		expect(context.showExtensionInput).toHaveBeenCalledWith("Value for uri", undefined);
-		expect(context.session.getMcpPrompt).toHaveBeenCalledWith("docs", "summarize", { uri: "docs://spec.md" });
+		expect(context.session.getMcpPrompt).toHaveBeenCalledWith("docs", "mcp-prompt-1111111111111111", { uri: "docs://spec.md" });
 		const preview = stripAnsi(String(context.showExtensionConfirm.mock.calls[0]?.[1] ?? ""));
 		expect(preview).toContain("UNTRUSTED EXTERNAL MCP CONTENT");
-		expect(context.session.attachMcpPrompt).toHaveBeenCalledWith("docs", "summarize", { uri: "docs://spec.md" });
+		expect(context.session.attachMcpPrompt).toHaveBeenCalledWith("docs", "mcp-prompt-1111111111111111", { uri: "docs://spec.md" }, undefined, { allowTruncated: true });
 	});
 
 	it("uses inline key=value prompt arguments and rejects malformed ones", async () => {
@@ -268,9 +282,9 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		context.session.getMcpContentCatalog.mockReturnValue({
 			resources: [],
 			resourceTemplates: [],
-			prompts: [{ name: "summarize", arguments: [{ name: "uri", required: true }] }],
+			prompts: [{ promptId: "mcp-prompt-1111111111111111", serverId: "docs", name: "summarize", arguments: [{ name: "uri", required: true }], provenanceId: "mcp-content-1111111111111111", revision: "rev:1111111111111111" }],
 		});
-		await prototype.handleMcpPromptCommand.call(context, ["docs", "summarize", "not-an-argument"]);
+		await prototype.handleMcpPromptCommand.call(context, ["docs", "mcp-prompt-1111111111111111", "not-an-argument"]);
 		expect(context.session.getMcpPrompt).not.toHaveBeenCalled();
 		expect(stripAnsi(renderedOutput(context))).toContain("expected key=value");
 	});
@@ -280,10 +294,10 @@ describe("InteractiveMode /mcp command dispatch", () => {
 		context.session.getMcpContentCatalog.mockReturnValue({
 			resources: [],
 			resourceTemplates: [],
-			prompts: [{ name: "summarize", arguments: [{ name: "uri", required: true }] }],
+			prompts: [{ promptId: "mcp-prompt-1111111111111111", serverId: "docs", name: "summarize", arguments: [{ name: "uri", required: true }], provenanceId: "mcp-content-1111111111111111", revision: "rev:1111111111111111" }],
 		});
 		context.showExtensionInput.mockResolvedValue(undefined);
-		await prototype.handleMcpPromptCommand.call(context, ["docs", "summarize"]);
+		await prototype.handleMcpPromptCommand.call(context, ["docs", "mcp-prompt-1111111111111111"]);
 		expect(context.session.getMcpPrompt).not.toHaveBeenCalled();
 		expect(stripAnsi(renderedOutput(context))).toContain("MCP prompt cancelled.");
 	});

@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { Agent } from "@aos-agent/agent-core";
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
+import {
+	InMemoryCredentialStore,
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	type Model,
+} from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -340,6 +346,7 @@ async function createRuntimeHost(options: {
 		checkAuth: async () => (options.withAuth ? { type: "api_key", key: "test-key" } : undefined),
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
+		getCredentialStore: () => new InMemoryCredentialStore(),
 	} as unknown as ModelRuntime;
 	const resourceLoader = options.resourceLoader ?? testResourceLoader();
 

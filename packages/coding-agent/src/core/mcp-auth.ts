@@ -850,16 +850,17 @@ export class MCPAuthSession {
 	 */
 	async logout(): Promise<void> {
 		this.settleCallback({ kind: "cancelled" });
+		// Memory-first cleanup: snapshot the binding and tokens, then clear all
+		// in-memory secrets and delete the stored record before any network
+		// work, so an abort or a revoke failure can never leave a credential
+		// behind. Revocation runs after, best-effort and bounded.
 		const binding = this.binding();
-		const tokens = this.tokens;
+		const refreshToken = this.tokens?.refresh_token;
 		const metadata = this.discovery?.authorizationServerMetadata;
 		const revocationEndpoint =
 			metadata !== undefined && typeof metadata === "object" && "revocation_endpoint" in metadata
 				? (metadata as { revocation_endpoint?: URL }).revocation_endpoint
 				: undefined;
-		if (tokens?.refresh_token !== undefined && revocationEndpoint !== undefined) {
-			await this.revokeToken(revocationEndpoint, tokens.refresh_token).catch(() => undefined);
-		}
 		this.tokens = undefined;
 		this.expiresAt = undefined;
 		this.clientInfo = undefined;
@@ -870,6 +871,11 @@ export class MCPAuthSession {
 		this.state = "unauthenticated";
 		if (binding !== undefined) {
 			await this.store?.delete(binding).catch(() => undefined);
+		}
+		if (refreshToken !== undefined && revocationEndpoint !== undefined) {
+			// Best-effort RFC 7009 revocation, bounded by the request timeout and
+			// never blocking local cleanup.
+			await this.revokeToken(revocationEndpoint, refreshToken).catch(() => undefined);
 		}
 	}
 

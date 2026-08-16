@@ -39,9 +39,9 @@ export function formatMcpUsage(): string {
 		"/mcp auth <serverId>",
 		"/mcp logout <serverId>",
 		"/mcp resources [serverId]",
-		"/mcp resource [serverId] <uri>",
+		"/mcp resource [serverId] <resourceId>",
 		"/mcp prompts [serverId]",
-		"/mcp prompt [serverId] <name> [key=value ...]",
+		"/mcp prompt [serverId] <promptId> [key=value ...]",
 	].join("\n");
 }
 
@@ -132,7 +132,7 @@ export function formatMcpResources(
 			info += `\n${theme.fg("dim", "Resources:")}\n`;
 			for (const resource of page.items) {
 				info += `  ${resource.name}\n`;
-				info += `    ${theme.fg("dim", resource.uri)}\n`;
+				info += `    ${theme.fg("dim", resource.resourceId)}\n`;
 				if (resource.description) {
 					info += `    ${theme.fg("dim", resource.description)}\n`;
 				}
@@ -147,20 +147,20 @@ export function formatMcpResources(
 		if (templates !== undefined && templates.items.length > 0) {
 			info += `\n${theme.fg("dim", "Resource templates:")}\n`;
 			for (const template of templates.items) {
-				info += `  ${template.name}  ${theme.fg("dim", template.uriTemplate)}\n`;
+				info += `  ${template.name}  ${theme.fg("dim", template.templateId)}\n`;
 			}
 		}
 	}
 	if (page.truncated || templates?.truncated) {
 		info += `\n${theme.fg("warning", "Listing was truncated by the per-page limit; use a server filter for more.")}\n`;
 	}
-	info += `\n${theme.fg("dim", "Read and preview one resource with /mcp resource [serverId] <uri>.")}\n`;
+	info += `\n${theme.fg("dim", "Read and preview one resource with /mcp resource [serverId] <resourceId>.")}\n`;
 	return info;
 }
 
 /** Preview of a read resource: capped text behind the untrusted banner. */
 export function formatMcpResourcePreview(serverId: string, result: MCPReadResourceResult): string {
-	let info = `${theme.bold(`MCP resource preview: ${result.uri} (${serverId})`)}\n`;
+	let info = `${theme.bold(`MCP resource preview: ${result.resourceId} (${serverId})`)}\n`;
 	info += `\n${formatMcpUntrustedBanner()}\n`;
 	info += `\n${theme.fg("dim", "Blocks:")} ${result.content.blocks.length}`;
 	if (result.content.droppedBlocks > 0) {
@@ -202,13 +202,13 @@ export function formatMcpPrompts(serverId: string, page: MCPPageResult<MCPPrompt
 	if (page.truncated) {
 		info += `\n${theme.fg("warning", "Listing was truncated by the per-page limit; use a server filter for more.")}\n`;
 	}
-	info += `\n${theme.fg("dim", "Preview one prompt with /mcp prompt [serverId] <name> [key=value ...].")}\n`;
+	info += `\n${theme.fg("dim", "Preview one prompt with /mcp prompt [serverId] <promptId> [key=value ...].")}\n`;
 	return info;
 }
 
 /** Preview of a fetched prompt: roles preserved, capped text behind the untrusted banner. */
 export function formatMcpPromptPreview(serverId: string, result: MCPGetPromptResult): string {
-	let info = `${theme.bold(`MCP prompt preview: ${result.promptName} (${serverId})`)}\n`;
+	let info = `${theme.bold(`MCP prompt preview: ${result.promptId} (${serverId})`)}\n`;
 	if (result.description) {
 		info += `${theme.fg("dim", result.description)}\n`;
 	}
@@ -246,8 +246,9 @@ export function formatMcpAttachment(result: McpAttachmentResult): string {
 
 /**
  * Format a thrown error from the Session MCP surface. Only stable redacted
- * codes and the TUI's own fixed template text are shown; error messages,
- * remote text, tokens, URLs, and parameters are never echoed.
+ * codes and fixed template text are shown; error messages, remote text,
+ * tokens, URLs, capability ids, policy sources, and parameters are never
+ * echoed.
  */
 export function formatMcpError(error: unknown): string {
 	if (error instanceof MCPAuthError) {
@@ -257,12 +258,33 @@ export function formatMcpError(error: unknown): string {
 		return `${theme.fg("error", error.kind)}: ${MCP_ERROR_TEXT[error.kind]}`;
 	}
 	if (error instanceof CapabilityError) {
-		return `${theme.fg("error", error.code)}: ${error.message}`;
+		return `${theme.fg("error", error.code)}: ${capabilityErrorText(error.code)}`;
 	}
 	if (error instanceof Error && error.name === "AbortError") {
 		return theme.fg("warning", "MCP command cancelled.");
 	}
 	return theme.fg("error", "MCP command failed.");
+}
+
+/**
+ * Fixed redacted texts for capability failures surfacing through the MCP
+ * surface; never derived from the error payload.
+ */
+function capabilityErrorText(code: string): string {
+	switch (code) {
+		case "capability_denied":
+			return "The MCP operation was denied by the capability binding";
+		case "capability_approval_required":
+			return "The MCP operation requires an approval that is not granted in headless mode";
+		case "capability_profile_not_found":
+			return "The capability profile is not available";
+		case "capability_name_conflict":
+			return "Multiple selected capabilities expose the same name";
+		case "capability_binding_unavailable":
+			return "The capability binding is unavailable";
+		default:
+			return "The MCP operation was denied";
+	}
 }
 
 /** Fixed redacted texts for MCP OAuth failures; never derived from the error payload. */
@@ -288,6 +310,8 @@ const MCP_ERROR_TEXT: Record<MCPErrorKind, string> = {
 	auth_required: "MCP server requires authentication",
 	unavailable: "MCP server is unavailable",
 	call_failed: "MCP server call failed",
+	content_invalid: "MCP server content is invalid or unsafe",
+	content_limit_exceeded: "MCP content exceeded the configured limits",
 };
 
 /** Capped single-block preview text; keeps the transcript bounded. */

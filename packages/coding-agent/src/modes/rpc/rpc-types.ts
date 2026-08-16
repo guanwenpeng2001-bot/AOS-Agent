@@ -13,6 +13,7 @@ import type {
 	MCPPageResult,
 	MCPPromptView,
 	MCPReadResourceResult,
+	MCPResourceTemplateView,
 	MCPResourceView,
 } from "../../core/mcp-content-types.ts";
 import type { MCPAuthOutcome } from "../../core/mcp-auth.ts";
@@ -134,11 +135,12 @@ export type RpcCommand =
 	// prompt argument values live only in the request; responses, events,
 	// receipts, and errors never echo them, remote text, or tokens.
 	| { id?: string; type: "mcp.list_resources"; serverId: string; cursor?: string }
-	| { id?: string; type: "mcp.read_resource"; serverId: string; uri: string }
-	| { id?: string; type: "mcp.attach_resource"; serverId: string; uri: string }
+	| { id?: string; type: "mcp.list_resource_templates"; serverId: string; cursor?: string }
+	| { id?: string; type: "mcp.read_resource"; serverId: string; resourceId: string }
+	| { id?: string; type: "mcp.attach_resource"; serverId: string; resourceId: string }
 	| { id?: string; type: "mcp.list_prompts"; serverId: string; cursor?: string }
-	| { id?: string; type: "mcp.get_prompt"; serverId: string; name: string; args?: Record<string, string> }
-	| { id?: string; type: "mcp.attach_prompt"; serverId: string; name: string; args?: Record<string, string> }
+	| { id?: string; type: "mcp.get_prompt"; serverId: string; promptId: string; args?: Record<string, string> }
+	| { id?: string; type: "mcp.attach_prompt"; serverId: string; promptId: string; args?: Record<string, string> }
 	| { id?: string; type: "mcp.auth.start"; serverId: string }
 	| { id?: string; type: "mcp.auth.logout"; serverId: string }
 
@@ -469,6 +471,13 @@ export type RpcResponse =
 	| {
 			id?: string;
 			type: "response";
+			command: "mcp.list_resource_templates";
+			success: true;
+			data: MCPPageResult<MCPResourceTemplateView>;
+	  }
+	| {
+			id?: string;
+			type: "response";
 			command: "mcp.read_resource";
 			success: true;
 			data: MCPReadResourceResult;
@@ -667,6 +676,7 @@ export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.re
 /** MCP public surface commands (resources/prompts/auth). */
 export type RpcMcpCommandType =
 	| "mcp.list_resources"
+	| "mcp.list_resource_templates"
 	| "mcp.read_resource"
 	| "mcp.attach_resource"
 	| "mcp.list_prompts"
@@ -836,6 +846,13 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.graph.node.attach"; success: true; data: TaskGraphMutationData }
 	| { id?: string; type: "response"; command: "task.graph.node.settle"; success: true; data: TaskGraphMutationData }
 	| { id?: string; type: "response"; command: "mcp.list_resources"; success: true; data: MCPPageResult<MCPResourceView> }
+	| {
+			id?: string;
+			type: "response";
+			command: "mcp.list_resource_templates";
+			success: true;
+			data: MCPPageResult<MCPResourceTemplateView>;
+	  }
 	| { id?: string; type: "response"; command: "mcp.read_resource"; success: true; data: MCPReadResourceResult }
 	| { id?: string; type: "response"; command: "mcp.attach_resource"; success: true; data: RpcMcpAttachmentReceipt }
 	| { id?: string; type: "response"; command: "mcp.list_prompts"; success: true; data: MCPPageResult<MCPPromptView> }

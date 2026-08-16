@@ -57,7 +57,13 @@ function isContextScope(value: unknown): value is ContextSnapshot["sources"][num
 }
 
 function isContextTrust(value: unknown): value is ContextSnapshot["sources"][number]["trust"] {
-	return value === "builtin" || value === "user_owned" || value === "trusted_project" || value === "untrusted_project";
+	return (
+		value === "builtin" ||
+		value === "user_owned" ||
+		value === "trusted_project" ||
+		value === "untrusted_project" ||
+		value === "external_untrusted"
+	);
 }
 
 function isContextDisposition(value: unknown): value is ContextSnapshot["sources"][number]["disposition"] {

@@ -708,31 +708,71 @@ export class RpcHostController {
 		};
 
 		/**
+		 * Fixed wire message for a capability/policy failure code surfacing
+		 * through an MCP command. Never derived from the error payload: a
+		 * caller-supplied message, raw URI, capability id, policy source, token,
+		 * or remote text cannot reach the wire.
+		 */
+		const mcpCommandWireMessage = (code: AutomationErrorCode, fallback: AutomationErrorCode): string => {
+			switch (code) {
+				case "capability_denied":
+				case "capability_approval_required":
+				case "capability_mcp_connect_failed":
+				case "capability_mcp_auth_required":
+				case "capability_mcp_unavailable":
+					return mcpFallbackMessage(code);
+				case "capability_profile_not_found":
+					return "The capability profile is not available.";
+				case "capability_name_conflict":
+					return "Multiple selected capabilities expose the same name.";
+				case "capability_binding_unavailable":
+					return "The capability binding is unavailable.";
+				case "policy_approval_required":
+					return "The operation requires an approval that is not granted in headless mode.";
+				case "policy_denied":
+				case "policy_violation":
+					return "The operation was denied by the execution policy.";
+				case "workspace_boundary_violation":
+				case "network_policy_violation":
+				case "credential_policy_violation":
+					return "The operation violates the execution policy.";
+				case "sandbox_required":
+				case "sandbox_unavailable":
+				case "sandbox_start_failed":
+				case "sandbox_capability_insufficient":
+					return "The operation requires a sandbox provider that is not available.";
+				default:
+					return mcpFallbackMessage(fallback);
+			}
+		};
+
+		/**
 		 * Map an MCP content/auth failure to a stable, public-safe Automation
-		 * Error. Only classified session errors (MCPError, MCPAuthError,
-		 * CapabilityError, PolicyError) keep their fixed, redacted message;
-		 * anything else degrades to the fallback code and a fixed message, so
-		 * remote error text can never reach the wire.
+		 * Error. Only the classified code survives; the wire message is always a
+		 * fixed template derived from the code, so MCPError / MCPAuthError /
+		 * CapabilityError / PolicyError can never pass their message, a raw URI,
+		 * a capability id, or a policy source onto the wire. Anything unclassified
+		 * degrades to the fallback code and a fixed message, so remote error text
+		 * can never reach the wire either.
 		 */
 		const mcpCommandError = (err: unknown, fallback: AutomationErrorCode): AutomationError => {
 			if (err instanceof MCPError) {
-				return createAutomationError(mcpErrorKindToCapabilityCode(err.kind), err.message, false);
+				const code = mcpErrorKindToCapabilityCode(err.kind);
+				return createAutomationError(code, mcpFallbackMessage(code), false);
 			}
 			if (err instanceof MCPAuthError) {
 				// A server that does not support OAuth degrades to capability_denied;
 				// every other auth failure is auth_required (fixed template messages
 				// only; the raw cause is never retained by MCPAuthError).
-				return createAutomationError(
-					err.kind === "mcp_auth_unsupported" ? "capability_denied" : "capability_mcp_auth_required",
-					err.message,
-					false,
-				);
+				const code =
+					err.kind === "mcp_auth_unsupported" ? "capability_denied" : "capability_mcp_auth_required";
+				return createAutomationError(code, mcpFallbackMessage(code), false);
 			}
 			if (err instanceof CapabilityError) {
-				return createAutomationError(err.code, err.message, false);
+				return createAutomationError(err.code, mcpCommandWireMessage(err.code, fallback), false);
 			}
 			if (err instanceof PolicyError) {
-				return createAutomationError(err.code, err.message, false);
+				return createAutomationError(err.code, mcpCommandWireMessage(err.code, fallback), false);
 			}
 			return createAutomationError(fallback, mcpFallbackMessage(fallback), false);
 		};
@@ -3344,6 +3384,7 @@ export class RpcHostController {
 						],
 						mcpCommands: [
 							"mcp.list_resources",
+							"mcp.list_resource_templates",
 							"mcp.read_resource",
 							"mcp.attach_resource",
 							"mcp.list_prompts",
@@ -3396,9 +3437,25 @@ export class RpcHostController {
 					}
 				}
 
+				case "mcp.list_resource_templates": {
+					try {
+						const data = await session.listMcpResourceTemplates(
+							command.serverId,
+							command.cursor === undefined ? undefined : command.cursor,
+						);
+						return success(id, "mcp.list_resource_templates", data);
+					} catch (err) {
+						return automationError(
+							id,
+							"mcp.list_resource_templates",
+							mcpCommandError(err, "capability_mcp_unavailable"),
+						);
+					}
+				}
+
 				case "mcp.read_resource": {
 					try {
-						const data = await session.readMcpResource(command.serverId, command.uri);
+						const data = await session.readMcpResource(command.serverId, command.resourceId);
 						return success(id, "mcp.read_resource", data);
 					} catch (err) {
 						return automationError(id, "mcp.read_resource", mcpCommandError(err, "capability_mcp_unavailable"));
@@ -3407,7 +3464,7 @@ export class RpcHostController {
 
 				case "mcp.attach_resource": {
 					try {
-						const data = await session.attachMcpResource(command.serverId, command.uri);
+						const data = await session.attachMcpResource(command.serverId, command.resourceId);
 						return success(id, "mcp.attach_resource", data);
 					} catch (err) {
 						return automationError(id, "mcp.attach_resource", mcpCommandError(err, "capability_mcp_unavailable"));
@@ -3428,7 +3485,7 @@ export class RpcHostController {
 
 				case "mcp.get_prompt": {
 					try {
-						const data = await session.getMcpPrompt(command.serverId, command.name, command.args);
+						const data = await session.getMcpPrompt(command.serverId, command.promptId, command.args);
 						return success(id, "mcp.get_prompt", data);
 					} catch (err) {
 						return automationError(id, "mcp.get_prompt", mcpCommandError(err, "capability_mcp_unavailable"));
@@ -3437,7 +3494,7 @@ export class RpcHostController {
 
 				case "mcp.attach_prompt": {
 					try {
-						const data = await session.attachMcpPrompt(command.serverId, command.name, command.args);
+						const data = await session.attachMcpPrompt(command.serverId, command.promptId, command.args);
 						return success(id, "mcp.attach_prompt", data);
 					} catch (err) {
 						return automationError(id, "mcp.attach_prompt", mcpCommandError(err, "capability_mcp_unavailable"));
