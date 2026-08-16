@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	createSessionRemoteOperationLedger,
 	executeRemoteOperation,
+	isRemoteOperationReceipt,
+	isRemoteOperationRequest,
 	REMOTE_ARTIFACT_KINDS,
 	REMOTE_OPERATION_CUSTOM_TYPE,
 	REMOTE_OPERATION_ERROR_CATEGORIES,
@@ -14,6 +16,7 @@ import {
 	type RemoteOperationProvider,
 	type RemoteOperationRequest,
 } from "../src/core/remote-operation.ts";
+import type { ExternalAdapterIdentity } from "../src/core/external-session-mapping.ts";
 import {
 	createBindingHandle,
 	createRunBindingAssociation,
@@ -304,4 +307,59 @@ describe("remote-neutral operation contract", () => {
 			expect(state.state.sideEffects).toHaveLength(1);
 		},
 	);
+
+	const ADAPTER_IDENTITY: ExternalAdapterIdentity = {
+		adapterId: "adapter-gondolin",
+		targetId: "target-1",
+		protocol: { name: "gondolin", version: "1.2.0" },
+	};
+
+	it("projects a safe adapter identity onto the receipt, ledger, and audit filter", async () => {
+		const session = SessionManager.inMemory("/workspace/remote-operation-adapter");
+		const pair = providerPair();
+		const receipt = await executeRemoteOperation(
+			pair.fake,
+			{ ...request("operation-adapter"), sessionId: session.getSessionId(), adapter: ADAPTER_IDENTITY },
+			{
+				now: () => NOW,
+				ledger: createSessionRemoteOperationLedger(session),
+			},
+		);
+
+		expect(receipt).toMatchObject({
+			operationId: "operation-adapter",
+			status: "completed",
+			adapter: ADAPTER_IDENTITY,
+		});
+		expect(isRemoteOperationReceipt(receipt)).toBe(true);
+		expect(session.getEntries()).toHaveLength(1);
+		expect(session.getEntries()[0]).toMatchObject({
+			customType: REMOTE_OPERATION_CUSTOM_TYPE,
+			data: { receipt: { operationId: "operation-adapter", adapter: ADAPTER_IDENTITY } },
+		});
+		const audit = new ExecutionAuditQuery(session).query({
+			scope: "current-session",
+			types: ["remote.operation"],
+			adapter: ADAPTER_IDENTITY,
+		});
+		expect(audit.events).toHaveLength(1);
+		expect(audit.events[0]).toMatchObject({ type: "remote.operation", adapter: ADAPTER_IDENTITY });
+		expect(JSON.stringify(session.getEntries())).not.toContain("secret");
+	});
+
+	it("rejects a malformed adapter identity before invoking the provider", async () => {
+		const pair = providerPair();
+		const malformed = {
+			...request("operation-adapter-malformed"),
+			adapter: { ...ADAPTER_IDENTITY, protocol: { name: "gondolin", version: "1.2.0", secret: "raw" } },
+		} as RemoteOperationRequest;
+
+		expect(isRemoteOperationRequest(malformed)).toBe(false);
+		const receipt = await executeRemoteOperation(pair.fake, malformed, { now: () => NOW });
+
+		expect(receipt.status).toBe("failed");
+		expect(receipt.error).toEqual({ category: "invalid", code: "invalid", retryable: false, sideEffects: "none" });
+		expect(pair.fake.state.invocations).toHaveLength(0);
+		expect(JSON.stringify(receipt)).not.toContain("raw");
+	});
 });

@@ -87,6 +87,49 @@ The `workspace-safe` profile must already name `sandboxProvider: "gondolin-local
 Installing or loading the example does not change the default `legacy` profile
 or register a provider. See [containerization.md](containerization.md).
 
+### External Agent Adapters
+
+External Agent Adapters follow the same trusted-composition rule: a Host
+application constructs adapter instances and registers them explicitly. The
+registry never loads an adapter from a project file, URL, command, module
+path, package, or prompt, and a model provider or model ID never selects one
+implicitly. A Run that never selects an adapter keeps the existing AOS Loop /
+Provider path.
+
+```typescript
+import { createExternalAgentAdapterRegistry } from "aos-agent";
+
+const registry = createExternalAgentAdapterRegistry();
+registry.register(myTrustedAdapterInstance); // implements the ExternalAgentAdapter contract
+
+const { session } = await createAgentSession({
+  externalAgentRegistry: registry,
+});
+```
+
+Each adapter exposes `probe(target, context)`, `prepare(request, snapshot)`,
+and `start(request, context)`; a started handle carries bounded events, a
+terminal receipt, `cancel()`, and `heartbeat()`. Selection is explicit
+(`adapterId` + `targetId`), probing proves protocol / start / cancel / receipt
+capability before a Run is accepted, and the frozen AOS Binding is translated
+into an immutable prepared binding.
+
+The credential boundary is fixed: adapters receive only public-safe binding
+references and a bounded capability summary. API keys, OAuth tokens,
+cookies, authorization headers, full environment values, raw Policy or
+Sandbox data, session file paths, and prompts never cross the adapter
+boundary. Target-owned tools, models, network, and credentials are never
+labeled as AOS capabilities, and there is no fallback to Host tool execution
+when an adapter or target is unavailable. See
+[external-agent-adapter.md](external-agent-adapter.md) for the full contract,
+including the stable `external_agent_*` error codes.
+
+Adapter selection is a public SDK type surface (`ExternalAgentAdapter`,
+`ExternalAgentAdapterRegistry`, `ExternalAgentSelection`,
+`ExternalAgentCapabilitySnapshot`, `ExternalAgentPreparedBinding`, and
+`ExternalAgentReceipt`). Automation Host `initialize` advertises registered
+adapters as an additive `externalAgentAdapters` summary (identifiers only).
+
 ### AgentSession
 
 The session manages agent lifecycle, message history, model state, compaction, and event streaming.

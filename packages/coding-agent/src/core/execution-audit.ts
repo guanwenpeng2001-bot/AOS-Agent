@@ -4,7 +4,9 @@
  * The adapter deliberately consumes the structural Session custom-entry
  * contract instead of RPC response types. It folds the existing append-only
  * ledgers into a small, allowlisted audit view and never writes to the
- * Session, invokes a provider, or performs an execution operation.
+ * Session, invokes a provider, or performs an execution operation. Source
+ * entries that carry an adapter identity (external.mapping, remote.operation)
+ * project it onto events as a safe, exactly-validated association.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -53,6 +55,12 @@ import type {
 	WorkspaceScope,
 } from "./execution-policy.ts";
 import type { SessionEntry } from "./session-manager.ts";
+import {
+	isExternalAdapterIdentity,
+	sameExternalAdapterIdentity,
+	serializeExternalAdapterIdentity,
+	type ExternalAdapterIdentity,
+} from "./external-session-mapping.ts";
 import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "./remote-operation.ts";
 import {
 	isTaskGateTransition,
@@ -167,6 +175,7 @@ export interface ExternalExecutionMapping extends ExternalExecutionRef {
 	readonly createdAt: string;
 	readonly source?: string;
 	readonly correlationId?: string;
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface AuditRunModelReference {
@@ -417,6 +426,8 @@ export interface AuditEventBase {
 	readonly sessionId: string;
 	readonly sourceEntryId: string;
 	readonly external?: ExternalExecutionRef;
+	/** Adapter identity attached when the source entry carries one (mapping or operation receipt). */
+	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export type AuditEvent =
@@ -505,6 +516,7 @@ export interface AuditQuery {
 	readonly sessionId?: string;
 	readonly runId?: string;
 	readonly external?: ExternalExecutionRef;
+	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -516,6 +528,7 @@ export interface AuditReplayQuery {
 	readonly runId: string;
 	readonly sessionId?: string;
 	readonly external?: ExternalExecutionRef;
+	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -668,8 +681,9 @@ const EXTERNAL_MAPPING_KEYS = new Set([
 	"createdAt",
 	"source",
 	"correlationId",
+	"adapter",
 ]);
-const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit"]);
+const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1136,7 +1150,8 @@ function isExternalMapping(value: unknown): value is ExternalExecutionMapping {
 	if (!isSafeIdentifier(value.aosSessionId) || !isCanonicalTimestamp(value.createdAt)) return false;
 	if (value.aosRunId !== undefined && !isSafeIdentifier(value.aosRunId)) return false;
 	if (value.source !== undefined && !isSafeIdentifier(value.source)) return false;
-	return value.correlationId === undefined || isSafeIdentifier(value.correlationId);
+	if (value.correlationId !== undefined && !isSafeIdentifier(value.correlationId)) return false;
+	return value.adapter === undefined || isExternalAdapterIdentity(value.adapter);
 }
 
 /** Explicit guard for the `automation.run` accepted/started/terminal payload. */
@@ -1490,6 +1505,9 @@ function safeExternalMapping(value: ExternalExecutionMapping): ExternalExecution
 	if (value.aosRunId !== undefined) mapping.aosRunId = value.aosRunId;
 	if (value.source !== undefined) mapping.source = value.source;
 	if (value.correlationId !== undefined) mapping.correlationId = value.correlationId;
+	if (value.adapter !== undefined) {
+		mapping.adapter = serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity;
+	}
 	return mapping;
 }
 
@@ -1594,6 +1612,7 @@ interface SourceCandidateBase {
 	readonly entry: Extract<SessionEntry, { type: "custom" }>;
 	readonly recordedAt: string;
 	readonly external?: ExternalExecutionRef;
+	readonly adapter?: ExternalAdapterIdentity;
 	readonly relation?: Relation;
 }
 
@@ -1761,6 +1780,7 @@ function createBase(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
 	external?: ExternalExecutionRef,
+	adapter?: ExternalAdapterIdentity,
 ): AuditEventBase {
 	const base = {
 		schemaVersion: 1,
@@ -1770,6 +1790,7 @@ function createBase(
 		sourceEntryId: entry.id,
 	} as DeepMutable<AuditEventBase>;
 	if (external !== undefined) base.external = external;
+	if (adapter !== undefined) base.adapter = adapter;
 	return base;
 }
 
@@ -1937,6 +1958,7 @@ function parseSourceCandidate(
 				recordedAt: entry.timestamp,
 				value,
 				external: externalFromMapping(value),
+				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
 				relation: { kind: "external", runId: value.aosRunId, sessionId: value.aosSessionId },
 			};
 		}
@@ -1963,6 +1985,7 @@ function parseSourceCandidate(
 				entry,
 				recordedAt: entry.timestamp,
 				value,
+				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
 				relation: { kind: "remote-operation", runId: relationRunId },
 			};
 		}
@@ -2464,7 +2487,7 @@ function sourceEventForCandidate(
 	runId: string | undefined,
 	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
-	const base = createBase(sessionId, candidate.entry, candidate.external ?? external);
+	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter);
 	if (candidate.eventType === "model.binding") {
 		const summary = safeModelBinding(candidate.value);
 		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
@@ -2653,9 +2676,15 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			const previousExternal = aosTargets.get(targetKey);
 			const previousMapping = mappingsByExternalKey.get(externalKey);
 			const previousAosMapping = mappingsByAosKey.get(targetKey);
+			const adapterDrift =
+				previousMapping !== undefined &&
+				previousMapping.adapter !== undefined &&
+				mapping.adapter !== undefined &&
+				!sameExternalAdapterIdentity(previousMapping.adapter, mapping.adapter);
 			const hasConflict =
 				(previousTarget !== undefined && previousTarget !== targetKey) ||
 				(previousExternal !== undefined && previousExternal !== externalKey) ||
+				adapterDrift ||
 				conflictedExternalKeys.has(externalKey) ||
 				conflictedAosKeys.has(targetKey);
 			if (hasConflict) {
@@ -2881,6 +2910,14 @@ function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
 	return result;
 }
 
+function canonicalAdapter(value: ExternalAdapterIdentity): ExternalAdapterIdentity {
+	return {
+		adapterId: value.adapterId,
+		targetId: value.targetId,
+		protocol: { name: value.protocol.name, version: value.protocol.version },
+	};
+}
+
 function canonicalTypes(types: ReadonlyArray<AuditEventType> | undefined): ReadonlyArray<AuditEventType> | undefined {
 	if (types === undefined) return undefined;
 	const unique = new Set<AuditEventType>(types);
@@ -2907,6 +2944,8 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 		throw new ExecutionAuditError("audit_query_invalid");
 	if (query.external !== undefined && !isExternalExecutionRef(query.external))
 		throw new ExecutionAuditError("audit_query_invalid");
+	if (query.adapter !== undefined && !isExternalAdapterIdentity(query.adapter))
+		throw new ExecutionAuditError("audit_query_invalid");
 	if (
 		query.types !== undefined &&
 		(!Array.isArray(query.types) || query.types.some((type) => !isAuditEventType(type)))
@@ -2929,6 +2968,7 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 	if (query.sessionId !== undefined) normalized.sessionId = query.sessionId;
 	if (query.runId !== undefined) normalized.runId = query.runId;
 	if (query.external !== undefined) normalized.external = canonicalExternal(query.external);
+	if (query.adapter !== undefined) normalized.adapter = canonicalAdapter(query.adapter);
 	const types = canonicalTypes(query.types);
 	if (types !== undefined) normalized.types = [...types];
 	if (query.from !== undefined) normalized.from = query.from;
@@ -2948,6 +2988,7 @@ function queryFingerprint(query: AuditQuery): string {
 		sessionId: query.sessionId,
 		runId: query.runId,
 		external: query.external,
+		adapter: query.adapter,
 		types: query.types,
 		from: query.from,
 		to: query.to,
@@ -3045,10 +3086,15 @@ function matchesExternal(event: AuditEvent, external: ExternalExecutionRef): boo
 	);
 }
 
+function matchesAdapter(event: AuditEvent, adapter: ExternalAdapterIdentity): boolean {
+	return event.adapter !== undefined && sameExternalAdapterIdentity(event.adapter, adapter);
+}
+
 function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): AuditEvent[] {
 	return events.filter((event) => {
 		if (query.runId !== undefined && event.runId !== query.runId) return false;
 		if (query.external !== undefined && !matchesExternal(event, query.external)) return false;
+		if (query.adapter !== undefined && !matchesAdapter(event, query.adapter)) return false;
 		if (query.types !== undefined && !query.types.includes(event.type)) return false;
 		if (query.from !== undefined && event.recordedAt < query.from) return false;
 		if (query.to !== undefined && event.recordedAt >= query.to) return false;
@@ -3165,3 +3211,6 @@ export const createExecutionAuditAdapter = (
 	session: AuditSession,
 	options?: ExecutionAuditAdapterOptions,
 ): ExecutionAuditAdapter => new ExecutionAuditAdapter(session, options);
+
+/** Adapter identity type re-export for query consumers that filter by adapter. */
+export type { ExternalAdapterIdentity } from "./external-session-mapping.ts";

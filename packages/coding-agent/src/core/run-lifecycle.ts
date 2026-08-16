@@ -76,6 +76,10 @@ import {
 	type ExternalMappingRequest,
 	type ExternalMappingWarning,
 } from "./external-session-mapping.ts";
+import {
+	serializeExternalAgentSelection,
+	type ExternalAgentSelection,
+} from "./external-agent-adapter.ts";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
@@ -121,6 +125,8 @@ export interface RunRequestFingerprintInput {
 	readonly modelRoute?: ModelRouteSelection;
 	readonly modelRole?: ModelRoleSelection;
 	readonly external?: ExternalExecutionRef;
+	/** Optional explicit External Agent Adapter selection for this Run. */
+	readonly externalAgent?: ExternalAgentSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -139,6 +145,8 @@ export interface CanonicalRunRequest {
 	readonly modelRouteDigest?: string;
 	readonly modelRoleDigest?: string;
 	readonly external?: ExternalExecutionRef;
+	/** Optional explicit External Agent Adapter selection; safe identifiers only. */
+	readonly externalAgent?: ExternalAgentSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -217,6 +225,8 @@ function stableRequestSerialization(value: unknown): string {
  */
 export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
 	const external = input.external === undefined ? undefined : serializeExternalExecutionRef(input.external);
+	const externalAgent =
+		input.externalAgent === undefined ? undefined : serializeExternalAgentSelection(input.externalAgent);
 	const scope = input.scope ?? (input.command === "run.start" ? "start" : "resume");
 	return {
 		schemaVersion: 1,
@@ -234,6 +244,7 @@ export function canonicalizeRunRequest(input: RunRequestFingerprintInput): Canon
 		...(input.modelRoute === undefined ? {} : { modelRouteDigest: digestRequestValue(input.modelRoute) }),
 		...(input.modelRole === undefined ? {} : { modelRoleDigest: digestRequestValue(input.modelRole) }),
 		...(external === undefined ? {} : { external }),
+		...(externalAgent === undefined ? {} : { externalAgent }),
 		...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
 	};
 }
@@ -569,6 +580,24 @@ export type AutomationErrorCode =
 	| "policy_ledger_persistence_failed"
 	// Terminal run.failed receipt code; not a command-level error.
 	| "model_error"
+	// External Agent Adapter preflight, start, cancel, receipt, and terminal
+	// outcome codes. Keep in sync with EXTERNAL_AGENT_ERROR_CODES in
+	// core/external-agent-adapter.ts.
+	| "external_agent_adapter_invalid"
+	| "external_agent_target_not_found"
+	| "external_agent_probe_failed"
+	| "external_agent_protocol_unsupported"
+	| "external_agent_capability_missing"
+	| "external_agent_binding_unsupported"
+	| "external_agent_start_failed"
+	| "external_agent_mapping_invalid"
+	| "external_agent_mapping_conflict"
+	| "external_agent_cancel_unsupported"
+	| "external_agent_cancel_failed"
+	| "external_agent_receipt_invalid"
+	| "external_agent_side_effect_unknown"
+	| "external_agent_resume_unsupported"
+	| "external_agent_persistence_failed"
 	// Task-level Human Gate control-plane errors.
 	| "task_gate_invalid"
 	| "task_gate_not_found"
@@ -660,6 +689,21 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "sandbox_capability_insufficient" ||
 		value === "policy_ledger_persistence_failed" ||
 		value === "model_error" ||
+		value === "external_agent_adapter_invalid" ||
+		value === "external_agent_target_not_found" ||
+		value === "external_agent_probe_failed" ||
+		value === "external_agent_protocol_unsupported" ||
+		value === "external_agent_capability_missing" ||
+		value === "external_agent_binding_unsupported" ||
+		value === "external_agent_start_failed" ||
+		value === "external_agent_mapping_invalid" ||
+		value === "external_agent_mapping_conflict" ||
+		value === "external_agent_cancel_unsupported" ||
+		value === "external_agent_cancel_failed" ||
+		value === "external_agent_receipt_invalid" ||
+		value === "external_agent_side_effect_unknown" ||
+		value === "external_agent_resume_unsupported" ||
+		value === "external_agent_persistence_failed" ||
 		value === "task_gate_invalid" ||
 		value === "task_gate_not_found" ||
 		value === "task_gate_conflict" ||

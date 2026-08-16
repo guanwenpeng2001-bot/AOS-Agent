@@ -23,6 +23,7 @@ import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -106,6 +107,8 @@ export interface CreateAgentSessionOptions {
 	mcpTransportFactory?: MCPTransportFactory;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Trusted External Agent Adapter registry composed by the Host. */
+	externalAgentRegistry?: ExternalAgentAdapterRegistry;
 }
 
 /** Result from createAgentSession */
@@ -454,6 +457,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		mcpTransportFactory: options.mcpTransportFactory,
 		sandboxProviders: options.sandboxProviders,
 		policyProfile: options.policyProfile,
+		externalAgentRegistry: options.externalAgentRegistry,
 		noTools: options.noTools,
 	});
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {

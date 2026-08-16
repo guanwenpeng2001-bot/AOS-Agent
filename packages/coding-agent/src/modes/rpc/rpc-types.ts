@@ -18,6 +18,8 @@ import type {
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
+import type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
+import type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
 import type {
 	ExternalExecutionRef,
 	ExternalMappingPersistenceResult,
@@ -141,6 +143,8 @@ export type RpcCommand =
 			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
+			/** Explicit trusted External Agent Adapter selection for this Run. */
+			externalAgent?: ExternalAgentSelection;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -160,6 +164,8 @@ export type RpcCommand =
 			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
+			/** Explicit trusted External Agent Adapter selection for the resumed Run. */
+			externalAgent?: ExternalAgentSelection;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -583,6 +589,8 @@ export interface InitializeData {
 	taskGateCommands?: RpcTaskGateCommandType[];
 	/** Additive Task Graph control-plane command list. */
 	taskGraphCommands?: RpcTaskGraphCommandType[];
+	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
+	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -726,6 +734,9 @@ export type {
 	ExternalMappingPersistenceResult,
 	ExternalMappingRequest,
 } from "../../core/external-session-mapping.ts";
+// Re-export the public External Agent Adapter selection surface (safe identifiers only).
+export type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
+export type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
 // Re-export public Task Gate types.
 export type {
 	TaskGateErrorCode,

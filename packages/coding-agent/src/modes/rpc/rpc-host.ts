@@ -34,7 +34,42 @@ import {
 } from "../../core/model-broker-ledger.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError } from "../../core/execution-audit.ts";
-import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
+import {
+	externalAgentCapabilityError,
+	EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH,
+	EXTERNAL_AGENT_ERROR_CODES,
+	EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY,
+	ExternalAgentError,
+	isExternalAgentCapabilitySnapshot,
+	isExternalAgentPreparedBinding,
+	isExternalAgentSelection,
+	runExternalAgentAdapter,
+	serializeExternalAgentSelection,
+	toExternalAgentError,
+	verifyExternalAgentPreparedBinding,
+	type ExternalAgentAdapter,
+	type ExternalAgentCapabilitySnapshot,
+	type ExternalAgentPreparedBinding,
+	type ExternalAgentPrepareRequest,
+	type ExternalAgentReceipt,
+	type ExternalAgentRunHandle,
+	type ExternalAgentSelection,
+	type ExternalAgentStartRequest,
+} from "../../core/external-agent-adapter.ts";
+import type { ExternalAgentResolvedSelection as ExternalAgentResolved } from "../../core/external-agent-registry.ts";
+import {
+	createSessionRemoteOperationLedger,
+	RemoteOperationError,
+	startRemoteOperation,
+	type RemoteOperationHeartbeat,
+	type RemoteOperationInvoker,
+	type RemoteOperationLease,
+	type RemoteOperationRequest,
+	type RemoteOperationResult,
+	type RemoteOperationSideEffectState,
+} from "../../core/remote-operation.ts";
+import { createRunBindingAssociation } from "../../core/binding-handles.ts";
+import { isExternalExecutionRef, serializeExternalExecutionRef, type ExternalAdapterIdentity } from "../../core/external-session-mapping.ts";
 import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
 import {
 	createTaskGraphStore,
@@ -292,6 +327,64 @@ function hashResumeTargetPath(sessionPath: string): string {
 	return `path:${crypto.createHash("sha256").update(sessionPath, "utf8").digest("hex")}`;
 }
 
+/** Bounded probe deadline for an External Agent Adapter target before any start. */
+const EXTERNAL_AGENT_PROBE_DEADLINE_MS = 10_000;
+
+/**
+ * Fixed host-authored `start_rejected` messages that may pass through the
+ * external start error mapping verbatim. These are the only lifecycle
+ * rejection texts this host creates for the external path (session switch,
+ * shutdown, connection close, and the consumed-reservation invariant); any
+ * other message carried by a `{code: "start_rejected", message}` payload is
+ * caller data and is never forwarded.
+ */
+const EXTERNAL_AGENT_START_REJECTED_MESSAGES: ReadonlySet<string> = new Set([
+	"The Host switched sessions before the external agent started.",
+	"Automation Host is shutting down; no new runs are accepted.",
+	"The RPC connection closed before the Run was accepted.",
+	"reservation has already been accepted or released",
+]);
+
+/**
+ * Wrap a validated External Agent Adapter run handle in the existing Remote
+ * Operation invoker contract, so an external execution settles through
+ * `startRemoteOperation` and its Session ledger instead of a second loop or
+ * ledger. `execute` awaits the driver terminal receipt and maps only bounded
+ * artifacts and the side-effect vocabulary; `cancel` and `heartbeat` delegate
+ * to the driver handle, which is idempotent. Without a lease in the adapter
+ * start request, heartbeat fails closed (the driver and the operation both
+ * reject). The stable external error code is preserved by the caller from the
+ * adapter receipt for the Run terminal; the Remote Operation receipt keeps
+ * only the small error-category vocabulary.
+ */
+export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHandle): RemoteOperationInvoker {
+	return {
+		async execute(): Promise<RemoteOperationResult> {
+			const receipt = await adapterRun.receipt;
+			if (receipt.status === "completed") {
+				return {
+					...(receipt.artifactRefs.length === 0 ? {} : { artifactRefs: receipt.artifactRefs }),
+					...(receipt.sideEffects === "none" ? {} : { sideEffects: receipt.sideEffects }),
+				};
+			}
+			// The driver already rewrote cancelled receipts that report associated
+			// or unknown side effects into failed side-effect-unknown, so a
+			// `cancelled` status here is side-effect-free and maps to the
+			// operation's cancelled category.
+			throw new RemoteOperationError(receipt.status === "cancelled" ? "cancelled" : "invalid", {
+				retryable: false,
+				sideEffects: receipt.sideEffects,
+			});
+		},
+		async cancel(): Promise<void> {
+			await adapterRun.cancel();
+		},
+		async heartbeat(_heartbeat: RemoteOperationHeartbeat): Promise<RemoteOperationLease> {
+			return adapterRun.heartbeat();
+		},
+	};
+}
+
 /**
  * Owns the RPC and Automation Host command/lifecycle state independently of
  * the transport used to deliver commands or records.
@@ -375,6 +468,41 @@ export class RpcHostController {
 		const terminalErrorByRun = new Map<RunId, AutomationError>();
 		const runDeadlineTimers = new Map<RunId, ReturnType<typeof setTimeout>>();
 		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
+		/**
+		 * Active external agent executions keyed by runId. Cancel is forwarded to
+		 * the adapter handle, which the driver makes idempotent; the terminal
+		 * settlement path owns the Run terminal record.
+		 */
+		const externalRuns = new Map<RunId, { cancel: () => Promise<void> }>();
+		/** Tracked external settlement promises keyed by runId (set by trackExternalRun). */
+		const externalRunSettlements = new Map<RunId, Promise<void>>();
+		/**
+		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
+		 * them for external runs only, so a pending start readiness race or a
+		 * started settlement race resolves even when the adapter never returns.
+		 */
+		const runAbortControllers = new Map<RunId, AbortController>();
+		/**
+		 * Deadline controllers of pending external starts, registered when the
+		 * external path commits (before preflight and before the externalRuns
+		 * entry exists) so lifecycle transitions abort preflight-phase starts
+		 * too; preflight is signal-aware and fails closed on the abort.
+		 */
+		const externalPendingControllers = new Map<RunId, AbortController>();
+		/**
+		 * Pending external start promises keyed by runId. Lifecycle transitions
+		 * must never await them: an adapter or preflight that ignores the abort
+		 * signal would block detach/rebind forever. They are aborted best-effort
+		 * and their continuation fails closed on the generation/epoch guards.
+		 */
+		const pendingExternalStarts = new Map<RunId, Promise<RpcAutomationResponse | undefined>>();
+		/**
+		 * Bumped whenever the Host replaces the Session. A pending external start
+		 * captures it at startRun entry and fails closed (start_rejected) if it
+		 * changed, so an in-flight start can never resume against the incoming
+		 * Session or write a mapping or ledger entry into it.
+		 */
+		let sessionGeneration = 0;
 		let transportEpoch = 0;
 		let detachTransportPromise: Promise<void> | undefined;
 
@@ -719,6 +847,29 @@ export class RpcHostController {
 		};
 
 		const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+		/** Stable code-derived External Agent Adapter error text; raw detail never escapes. */
+		const externalAgentMessage = (code: ExternalAgentError["code"]): string => new ExternalAgentError(code).message;
+
+		/** Map an External Agent Adapter failure to the stable Automation Host contract. */
+		const externalAgentAutomationError = (
+			err: unknown,
+			fallback: ExternalAgentError["code"],
+		): AutomationError => {
+			const agentError = err instanceof ExternalAgentError ? err : toExternalAgentError(err, fallback);
+			return createAutomationError(agentError.code, agentError.message, agentError.retryable);
+		};
+
+		/**
+		 * Merge the receipt-side-effect vocabulary the way the Remote Operation
+		 * contract does: unknown wins, then associated, then none. Associated or
+		 * unknown side effects fail the run closed; they are never cancelled.
+		 */
+		const mergeExternalAgentSideEffects = (receipt: ExternalAgentReceipt): RemoteOperationSideEffectState => {
+			if (receipt.sideEffects === "unknown" || receipt.error?.sideEffects === "unknown") return "unknown";
+			if (receipt.sideEffects === "associated" || receipt.error?.sideEffects === "associated") return "associated";
+			return "none";
+		};
 
 		const asAutomationError = (err: unknown): AutomationError => {
 			if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
@@ -1071,6 +1222,7 @@ export class RpcHostController {
 				modelRoute?: ModelRouteSelection;
 				modelRole?: ModelRoleSelection;
 				external?: ExternalExecutionRef;
+				externalAgent?: ExternalAgentSelection;
 				deadlineAt?: string;
 			},
 		): RunRequestIdentity | undefined => {
@@ -1091,6 +1243,7 @@ export class RpcHostController {
 					modelRoute: input.modelRoute,
 					modelRole: input.modelRole,
 					external: input.external,
+					externalAgent: input.externalAgent,
 					deadlineAt: input.deadlineAt,
 				}),
 				key: `${identityScope}\u0000${clientRequestId}`,
@@ -1211,6 +1364,8 @@ export class RpcHostController {
 			const timer = runDeadlineTimers.get(runId);
 			if (timer !== undefined) clearTimeout(timer);
 			runDeadlineTimers.delete(runId);
+			runAbortControllers.delete(runId);
+			externalPendingControllers.delete(runId);
 		};
 
 		const discardRunRequest = (identity: RunRequestIdentity | undefined): void => {
@@ -1293,6 +1448,205 @@ export class RpcHostController {
 			runPromptPromises.set(handle.runId, tracked);
 		};
 
+		/**
+		 * Race a terminal promise against the Run deadline signal. The deadline is
+		 * a hard bound: an unresponsive adapter must not keep the Run open past
+		 * its deadline. Resolves undefined when the deadline fires first.
+		 */
+		const raceWithDeadlineSignal = <T>(signal: AbortSignal, terminal: Promise<T>): Promise<T | undefined> => {
+			if (signal.aborted) return Promise.resolve(undefined);
+			return new Promise((resolve) => {
+				const onAbort = (): void => resolve(undefined);
+				signal.addEventListener("abort", onAbort, { once: true });
+				void terminal.then(
+					(value) => {
+						signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				},
+				() => {
+					signal.removeEventListener("abort", onAbort);
+					resolve(undefined);
+				},
+			);
+		});
+		};
+
+		/**
+		 * Track an external agent execution: settle through the existing Remote
+		 * Operation machinery (invoker wrapping the same adapter run handle,
+		 * `startRemoteOperation`, Session ledger record) and the Run terminal
+		 * gate. The adapter receipt is preserved separately for the stable
+		 * external error code and the bounded event forwarding. Side effects
+		 * associated or unknown settle the run failed
+		 * external_agent_side_effect_unknown, never cancelled or retried; the
+		 * Remote Operation receipt fail-closes the same way.
+		 */
+		const trackExternalRun = (
+			handle: RunHandle,
+			adapterRun: ExternalAgentRunHandle,
+			operationId: string,
+			deadlineSignal: AbortSignal | undefined,
+			adapter?: ExternalAdapterIdentity,
+		): void => {
+			const remoteRequest: RemoteOperationRequest = {
+				operationId,
+				runId: handle.runId,
+				sessionId: session.sessionId,
+				...(handle.record.capabilityBindingId === undefined
+					? {}
+					: { capabilityBindingId: handle.record.capabilityBindingId }),
+				...(handle.record.modelBindingId === undefined ? {} : { modelBindingId: handle.record.modelBindingId }),
+				...(handle.record.policyBindingId === undefined
+					? {}
+					: { policyBindingId: handle.record.policyBindingId }),
+				...(handle.record.bindingAssociation === undefined
+					? {}
+					: { bindingAssociation: handle.record.bindingAssociation }),
+				...(handle.record.deadlineAt === undefined ? {} : { deadlineAt: handle.record.deadlineAt }),
+				...(adapter === undefined ? {} : { adapter }),
+			};
+			// A remote.operation ledger append failure must never let the Run report
+			// completed or cancelled on an unrecorded external outcome: the observer
+			// flag below fails the Run closed with external_agent_persistence_failed.
+			let operationLedgerFailed = false;
+			const remoteHandle = startRemoteOperation(createExternalAgentRemoteInvoker(adapterRun), remoteRequest, {
+				signal: deadlineSignal,
+				ledger: createSessionRemoteOperationLedger(session.sessionManager),
+				now: () => new Date().toISOString(),
+				onLedgerError: () => {
+					operationLedgerFailed = true;
+				},
+			});
+			externalRuns.set(handle.runId, {
+				cancel: async () => {
+					// The operation cancels the provider and the driver cancel is
+					// idempotent; both paths reach the adapter handle exactly once.
+					await remoteHandle.cancel();
+					await adapterRun.cancel();
+				},
+			});
+			const tracked = (async (): Promise<void> => {
+				// The Remote Operation receipt is the remote terminal and is durably
+				// recorded in the Session ledger by startRemoteOperation. The Run
+				// deadline remains a hard bound: if it fires first, settle the Run
+				// failed run_deadline_exceeded without waiting for an unresponsive
+				// adapter.
+				const remoteReceipt = await raceWithDeadlineSignal(deadlineSignal ?? new AbortController().signal, remoteHandle.receipt);
+				if (remoteReceipt === undefined) {
+					await finalizeRun(
+						handle,
+						"failed",
+						terminalErrorByRun.get(handle.runId) ??
+							createAutomationError("run_deadline_exceeded", "The Run deadline was exceeded.", false),
+					);
+					return;
+				}
+				// The Remote Operation maps the same Run deadline into its own
+				// request.deadlineAt timer. When that timer fires before the host
+				// deadlineController, the operation receipt settles cancelled with
+				// error.category "deadline": the accepted Run's deadline intent still
+				// wins over any target cancelled receipt (PR section 7.4), so settle
+				// failed + run_deadline_exceeded and never requestCancel. The host
+				// hard-bound race above still covers unresponsive adapters.
+				if (remoteReceipt.error?.category === "deadline") {
+					handle.requestDeadlineExceeded();
+					await finalizeRun(
+						handle,
+						"failed",
+						terminalErrorByRun.get(handle.runId) ??
+							createAutomationError("run_deadline_exceeded", "The Run deadline was exceeded.", false),
+					);
+					return;
+				}
+				// A failed remote.operation ledger append means the external terminal
+				// was not durably recorded: fail closed with
+				// external_agent_persistence_failed instead of completing or
+				// cancelling the Run on an unrecorded outcome.
+				if (operationLedgerFailed) {
+					await finalizeRun(
+						handle,
+						"failed",
+						createAutomationError(
+							"external_agent_persistence_failed",
+							externalAgentMessage("external_agent_persistence_failed"),
+							false,
+						),
+					);
+					return;
+				}
+				// Map bounded events only: validated started/progress/artifact
+				// observations become run.event records; transcripts, prompts, and
+				// raw protocol data never cross the driver boundary.
+				for (const event of adapterRun.eventsList) {
+					const emitted = handle.captureSessionEvent({ type: "external_agent_event", event });
+					if (emitted !== undefined) outputRunEvent(emitted);
+				}
+				// Run terminal gate: the adapter receipt preserves the stable
+				// external error code; side effects associated or unknown settle
+				// failed external_agent_side_effect_unknown, never cancelled or
+				// retried. A cancelled adapter receipt is side-effect-free by the
+				// driver's fail-closed rewrite.
+				const adapterReceipt = await adapterRun.receipt;
+				let outcome: "completed" | "failed";
+				let terminalError: AutomationError | undefined;
+				if (adapterReceipt.status === "completed") {
+					outcome = "completed";
+				} else if (adapterReceipt.status === "cancelled") {
+					handle.requestCancel();
+					outcome = "completed";
+				} else {
+					outcome = "failed";
+					const sideEffects = mergeExternalAgentSideEffects(adapterReceipt);
+					const code =
+						sideEffects === "none" &&
+						adapterReceipt.error !== undefined &&
+						isAutomationErrorCode(adapterReceipt.error.code)
+							? adapterReceipt.error.code
+							: "external_agent_side_effect_unknown";
+					terminalError = createAutomationError(code, externalAgentMessage(code), false);
+				}
+				await finalizeRun(handle, outcome, terminalError);
+			})();
+			externalRunSettlements.set(handle.runId, tracked);
+			void tracked.then(
+				() => {
+					externalRuns.delete(handle.runId);
+					externalRunSettlements.delete(handle.runId);
+				},
+				() => {
+					externalRuns.delete(handle.runId);
+					externalRunSettlements.delete(handle.runId);
+				},
+			);
+		};
+
+		/**
+		 * Forward the existing Run cancellation intent to the adapter's idempotent
+		 * cancel path during a host lifecycle transition (transport detach, host
+		 * shutdown, session switch). The run's deadline controller is aborted
+		 * first so a pending start readiness race or a started settlement race
+		 * resolves even when the adapter never returns: the driver cancel alone
+		 * awaits startGate and cannot unblock a start that never resolves. Started
+		 * settlements are awaited so the terminal is durably recorded through the
+		 * existing Run and Remote Operation gates; a pending start fails closed
+		 * through its own continuation, which forwards the same idempotent cancel.
+		 * Local runs are untouched and keep the session.abort() path. Returns true
+		 * when the run was an external execution.
+		 */
+		const forwardExternalRunLifecycleCancel = async (runId: RunId): Promise<boolean> => {
+			const externalRun = externalRuns.get(runId);
+			if (externalRun === undefined) return false;
+			runAbortControllers.get(runId)?.abort();
+			const settlement = externalRunSettlements.get(runId);
+			if (settlement !== undefined) {
+				await settlement;
+			}
+			void externalRun.cancel().catch(() => {
+				// The driver retries idempotently; the tracked settlement owns the terminal.
+			});
+			return true;
+		};
+
 		const trackPendingStart = (
 			pending: Promise<RpcAutomationResponse | undefined>,
 		): Promise<RpcAutomationResponse | undefined> => {
@@ -1320,6 +1674,7 @@ export class RpcHostController {
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
 			external: ExternalExecutionRef | undefined,
+			externalAgent: ExternalAgentSelection | undefined,
 			deadlineAt: string | undefined,
 			clientRequestId: string | undefined,
 			precomputedRequestIdentity: RunRequestIdentity | undefined,
@@ -1327,6 +1682,7 @@ export class RpcHostController {
 			expectedTransportEpoch?: number,
 		): Promise<RpcAutomationResponse | undefined> => {
 			const requestEpoch = expectedTransportEpoch ?? transportEpoch;
+			const startGeneration = sessionGeneration;
 			const inputError = slashRunInputError(id, commandType, message);
 			if (inputError !== undefined) {
 				discardRunRequest(precomputedRequestIdentity);
@@ -1335,6 +1691,33 @@ export class RpcHostController {
 			if (external !== undefined && !isExternalExecutionRef(external)) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(id, commandType, auditCommandError(undefined, "external_mapping_invalid"));
+			}
+			if (externalAgent !== undefined && !isExternalAgentSelection(externalAgent)) {
+				discardRunRequest(precomputedRequestIdentity);
+				return automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"external_agent_adapter_invalid",
+						"The External Agent Adapter selection is invalid.",
+						false,
+					),
+				);
+			}
+			// The v1 adapter contract has start() only; there is no same-ref resume
+			// API, so an external run.resume can never be honored. Reject it instead
+			// of silently starting a fresh execution with a new operation id.
+			if (commandType === "run.resume" && externalAgent !== undefined) {
+				discardRunRequest(precomputedRequestIdentity);
+				return automationError(
+					id,
+					commandType,
+					createAutomationError(
+						"external_agent_resume_unsupported",
+						externalAgentMessage("external_agent_resume_unsupported"),
+						false,
+					),
+				);
 			}
 			if (deadlineAt !== undefined && !isRunTimestamp(deadlineAt)) {
 				discardRunRequest(precomputedRequestIdentity);
@@ -1391,6 +1774,7 @@ export class RpcHostController {
 					modelRoute,
 					modelRole,
 					external,
+					externalAgent,
 					deadlineAt,
 				});
 			let requestClaim: RunRequestIdentity | undefined;
@@ -1446,6 +1830,160 @@ export class RpcHostController {
 						),
 					),
 				);
+			}
+			// Explicit External Agent Adapter selection: resolve the trusted
+			// adapter/target and probe it with a bounded deadline BEFORE any
+			// preflight or ledger write. The probe carries no business input; only a
+			// target that confirms a known protocol/version and the minimum
+			// capability gate (start, terminal receipt, cooperative or strong cancel)
+			// may enter the existing Model/Capability/Policy/Sandbox preflight below.
+			let externalProbe:
+				| {
+						readonly adapter: ExternalAgentAdapter;
+						readonly selection: ExternalAgentSelection;
+						readonly snapshot: ExternalAgentCapabilitySnapshot;
+				  }
+				| undefined;
+			if (externalAgent !== undefined) {
+				const registry = session.getExternalAgentRegistry?.();
+				if (registry === undefined) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_agent_adapter_invalid",
+								"No trusted External Agent Adapter registry is composed into this Host.",
+								false,
+							),
+						),
+					);
+				}
+				const safeSelection = serializeExternalAgentSelection(externalAgent);
+				if (safeSelection === undefined) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_agent_adapter_invalid",
+								"The External Agent Adapter selection is invalid.",
+								false,
+							),
+						),
+					);
+				}
+				let resolved: ExternalAgentResolved;
+				try {
+					resolved = registry.resolve(safeSelection);
+				} catch (err) {
+					return startFailure(
+						automationError(id, commandType, externalAgentAutomationError(err, "external_agent_adapter_invalid")),
+					);
+				}
+				const probeController = new AbortController();
+				// The probe is bounded by both the fixed probe deadline and the
+				// requested Run deadline when one is earlier: a run with a 1s deadline
+				// must not spend 10s in probe. The Run deadline winning maps to
+				// run_deadline_exceeded; the probe deadline winning maps to
+				// external_agent_probe_failed.
+				const runDeadlineMs =
+					deadlineAt === undefined ? undefined : Date.parse(deadlineAt) - Date.now();
+				const probeDeadlineMs = Math.min(
+					EXTERNAL_AGENT_PROBE_DEADLINE_MS,
+					runDeadlineMs === undefined ? EXTERNAL_AGENT_PROBE_DEADLINE_MS : runDeadlineMs,
+				);
+				const probeDeadline = new Date(Date.now() + probeDeadlineMs).toISOString();
+				const probeTimer = setTimeout(() => probeController.abort(), Math.max(0, probeDeadlineMs));
+				if (
+					typeof probeTimer === "object" &&
+					"unref" in probeTimer &&
+					typeof probeTimer.unref === "function"
+				) {
+					probeTimer.unref();
+				}
+				let snapshot: ExternalAgentCapabilitySnapshot | undefined;
+				try {
+					// The probe AbortSignal also bounds the Host await itself: an
+					// adapter that ignores the signal and never settles must not hang
+					// run.start past the probe bound. A synchronous throw or a rejected
+					// probe settles the race the same way: probe failed.
+					snapshot = await raceWithDeadlineSignal(
+						probeController.signal,
+						resolved.adapter.probe(resolved.target, {
+							signal: probeController.signal,
+							deadlineAt: probeDeadline,
+						}),
+					);
+				} catch {
+					snapshot = undefined;
+				} finally {
+					clearTimeout(probeTimer);
+				}
+				if (snapshot === undefined) {
+					// The requested Run deadline expiring during probe is a deadline
+					// failure, not a probe failure: the run never entered preflight or
+					// acceptance, and the deadline intent wins.
+					const probeError =
+						deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()
+							? createAutomationError(
+									"run_deadline_exceeded",
+									"The Run deadline was exceeded before acceptance.",
+									false,
+								)
+							: createAutomationError(
+									"external_agent_probe_failed",
+									externalAgentMessage("external_agent_probe_failed"),
+									false,
+								);
+					return startFailure(automationError(id, commandType, probeError));
+				}
+				// Exact-shape guard: a target self-report that is not a bounded snapshot
+				// with a known protocol/version and capability vocabulary is a probe
+				// failure, never a protocol we recognize.
+				if (!isExternalAgentCapabilitySnapshot(snapshot)) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_agent_probe_failed",
+								externalAgentMessage("external_agent_probe_failed"),
+								false,
+							),
+						),
+					);
+				}
+				// Identity guard: the snapshot must self-identify exactly as the
+				// resolved explicit selection. A probe that reports a different
+				// adapter or target fails closed before any preflight or acceptance.
+				if (
+					snapshot.adapterId !== resolved.selection.adapterId ||
+					snapshot.targetId !== resolved.selection.targetId
+				) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_agent_probe_failed",
+								externalAgentMessage("external_agent_probe_failed"),
+								false,
+							),
+						),
+					);
+				}
+				const capabilityGateError = externalAgentCapabilityError(snapshot);
+				if (capabilityGateError !== undefined) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(capabilityGateError, externalAgentMessage(capabilityGateError), false),
+						),
+					);
+				}
+				externalProbe = { adapter: resolved.adapter, selection: safeSelection, snapshot };
 			}
 			const proposedRunId = crypto.randomUUID();
 			// Capability profile preflight: materialize the requested capability profile
@@ -1622,6 +2160,7 @@ export class RpcHostController {
 			// starts the run; otherwise the reservation is released and the caller gets
 			// start_rejected with no run id and no ledger entry.
 			const deadlineController = new AbortController();
+			runAbortControllers.set(proposedRunId, deadlineController);
 			if (deadlineAt !== undefined) {
 				const deadlineTimer = setTimeout(
 					() => {
@@ -1674,6 +2213,495 @@ export class RpcHostController {
 				output(response);
 				finishRunRequest(requestClaim, response);
 			};
+			// ---- External Agent Adapter run path -------------------------------
+			// The existing Model/Capability/Policy/Sandbox preflight ran above; the
+			// prompt-preflight policy/sandbox preparation runs without the model
+			// loop, the adapter executes with the bounded in-memory input, and the
+			// run settles through the existing Remote Operation and Run terminal
+			// gates. Every external failure maps to a stable external_agent_* code.
+			let externalAccepted = false;
+			let externalAdapterRun: ExternalAgentRunHandle | undefined;
+			const failExternalStart = (
+				err: unknown,
+				fallback: ExternalAgentError["code"] = "external_agent_start_failed",
+			): RpcAutomationResponse | undefined => {
+				if (externalAccepted) {
+					// The accepted fact is durable but the run never started: discard
+					// the live coordinator so this failed start cannot retain Session
+					// ownership; its ledger record is replayed as interrupted if
+					// recovered. No external.mapping was persisted and no started
+					// event carries a placeholder external ref.
+					activeReservation = undefined;
+					activeHandle = undefined;
+					coordinator = createRunLifecycleCoordinator(session.sessionManager);
+					externalRuns.delete(proposedRunId);
+					void externalAdapterRun?.cancel().catch(() => {
+						// The driver retries idempotently; the receipt settles the run.
+					});
+				} else if (activeReservation === reservation) {
+					activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// reservation may already be consumed
+					}
+				}
+				clearRunDeadline(proposedRunId);
+				terminalErrorByRun.delete(proposedRunId);
+				const startError = mapExternalStartError(err, fallback);
+				const response = automationError(id, commandType, startError);
+				output(response);
+				finishRunRequest(requestClaim, response);
+				return undefined;
+			};
+
+			/**
+			 * Map an external start-phase failure to a stable Automation Host error
+			 * without leaking raw provider detail. ExternalAgentError keeps its
+			 * stable code; known mapping/ledger store codes fold into the adapter
+			 * vocabulary (external_agent_mapping_invalid / _conflict /
+			 * _persistence_failed); every other raw exception becomes the phase
+			 * fallback code (prepare -> external_agent_binding_unsupported, start
+			 * -> external_agent_start_failed, mapping ->
+			 * external_agent_persistence_failed) with the code-derived message, so
+			 * caller payloads, paths, commands, and credentials never escape
+			 * through Error.message.
+			 */
+			const mapExternalStartError = (err: unknown, fallback: ExternalAgentError["code"]): AutomationError => {
+				if (err instanceof ExternalAgentError) return externalAgentAutomationError(err, fallback);
+				// A lifecycle rejection (transport detach, host shutdown, session
+				// switch, consumed reservation) is pre-encoded as start_rejected and
+				// must keep its code, fixed message, and retryable flag even when the
+				// transition aborted the deadline controller: the rejection is the
+				// cause, not the deadline. Only the host's own fixed messages pass
+				// through; a spoofed `{code: "start_rejected", message: "..."}`
+				// payload falls through to the phase fallback below so caller text
+				// can never ride a known code out of the host.
+				if (
+					typeof err === "object" &&
+					err !== null &&
+					"code" in err &&
+					(err as { code?: unknown }).code === "start_rejected"
+				) {
+					const rejected = err as AutomationError;
+					if (EXTERNAL_AGENT_START_REJECTED_MESSAGES.has(rejected.message)) {
+						return createAutomationError("start_rejected", rejected.message, rejected.retryable === true);
+					}
+				}
+				if (deadlineController.signal.aborted) {
+					return createAutomationError(
+						"run_deadline_exceeded",
+						"The Run deadline was exceeded before acceptance.",
+						false,
+					);
+				}
+				const code =
+					typeof err === "object" && err !== null && "code" in err
+						? (err as { code?: unknown }).code
+						: undefined;
+				if (typeof code === "string" && isAutomationErrorCode(code)) {
+					if (code === "external_mapping_invalid") {
+						return createAutomationError(
+							"external_agent_mapping_invalid",
+							externalAgentMessage("external_agent_mapping_invalid"),
+							false,
+						);
+					}
+					if (code === "external_mapping_conflict") {
+						return createAutomationError(
+							"external_agent_mapping_conflict",
+							externalAgentMessage("external_agent_mapping_conflict"),
+							false,
+						);
+					}
+					if (code === "audit_persistence_failed" || code === "ledger_persistence_failed") {
+						return createAutomationError(
+							"external_agent_persistence_failed",
+							externalAgentMessage("external_agent_persistence_failed"),
+							false,
+						);
+					}
+					// A known stable code keeps its code only when it is part of the
+					// External Agent vocabulary, and it is always paired with the
+					// code-derived allowlisted message, never with the raw
+					// Error.message. Any other known code (for example session_busy
+					// from the reservation layer) is not an adapter outcome and falls
+					// back to the phase fallback, so a payload that borrows a known
+					// code cannot smuggle caller text into the public error.
+					if (EXTERNAL_AGENT_ERROR_CODES.includes(code as ExternalAgentError["code"])) {
+						return createAutomationError(code, externalAgentMessage(code as ExternalAgentError["code"]), false);
+					}
+					return createAutomationError(fallback, externalAgentMessage(fallback), false);
+				}
+				return createAutomationError(fallback, externalAgentMessage(fallback), false);
+			};
+			const runExternalStart = async (): Promise<RpcAutomationResponse | undefined> => {
+				const probe = externalProbe;
+				if (probe === undefined) {
+					return failExternalStart(new ExternalAgentError("external_agent_adapter_invalid"));
+				}
+				// Session replacement guard: the Run was accepted for the session that
+				// prepared it. If the Host switched sessions while the start was
+				// pending, the run must fail closed instead of continuing against the
+				// incoming Session; its accepted record replays as interrupted in the
+				// outgoing session. The client can retry on the new session.
+				const sessionSwitchedStartError = (): AutomationError =>
+					createAutomationError(
+						"start_rejected",
+						"The Host switched sessions before the external agent started.",
+						true,
+					);
+				if (startGeneration !== sessionGeneration) {
+					return failExternalStart(sessionSwitchedStartError());
+				}
+				if (shuttingDown) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"Automation Host is shutting down; no new runs are accepted.",
+							false,
+						),
+					);
+				}
+				try {
+					await session.runExternalAgentPreflight(proposedRunId, deadlineController.signal);
+				} catch (err) {
+					// The abort of a lifecycle transition (detach, shutdown, session
+					// switch) surfaces through the signal-aware preflight; report the
+					// actual cause instead of a provider or deadline failure.
+					if (startGeneration !== sessionGeneration) {
+						return failExternalStart(sessionSwitchedStartError());
+					}
+					if (requestEpoch !== transportEpoch) {
+						return failExternalStart(
+							createAutomationError(
+								"start_rejected",
+								"The RPC connection closed before the Run was accepted.",
+								true,
+							),
+						);
+					}
+					if (shuttingDown) {
+						return failExternalStart(
+							createAutomationError(
+								"start_rejected",
+								"Automation Host is shutting down; no new runs are accepted.",
+								false,
+							),
+						);
+					}
+					return failExternalStart(err);
+				}
+				if (startGeneration !== sessionGeneration) {
+					return failExternalStart(sessionSwitchedStartError());
+				}
+				if (requestEpoch !== transportEpoch) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"The RPC connection closed before the Run was accepted.",
+							true,
+						),
+					);
+				}
+				if (shuttingDown) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"Automation Host is shutting down; no new runs are accepted.",
+							false,
+						),
+					);
+				}
+				if (
+					deadlineController.signal.aborted ||
+					(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
+				) {
+					return failExternalStart(
+						createAutomationError(
+							"run_deadline_exceeded",
+							"The Run deadline expired during preflight.",
+							false,
+						),
+					);
+				}
+				// Prepare the immutable Binding from the frozen preflight facts. The
+				// binding is reference-only unless the probed target proves the
+				// tool-gateway capability; the prepared binding is verified against
+				// the prepare request and the probe before any start.
+				const capabilityBinding = session.getActiveCapabilityBinding();
+				const policyBinding = session.getActiveExecutionPolicyBinding();
+				const bindingHandles = session.getActiveBindingHandles();
+				const capabilitySummary: string[] = [];
+				if (capabilityBinding !== undefined) {
+					for (const descriptor of capabilityBinding.descriptors) {
+						const name = descriptor.exposedToolName;
+						if (name !== undefined && name.length >= 1 && name.length <= EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH) {
+							capabilitySummary.push(name);
+						}
+						if (capabilitySummary.length >= EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY) break;
+					}
+				}
+				const bindingAssociation =
+					bindingHandles.length === 0 ? undefined : createRunBindingAssociation(proposedRunId, bindingHandles);
+				const prepareRequest: ExternalAgentPrepareRequest = {
+					runId: proposedRunId,
+					sessionId: session.sessionId,
+					selection: probe.selection,
+					...(modelSelection.resolution === undefined
+						? {}
+						: { modelBindingId: modelSelection.resolution.bindingId }),
+					...(capabilityBinding === undefined ? {} : { capabilityBindingId: capabilityBinding.id }),
+					...(policyBinding === undefined ? {} : { policyBindingId: policyBinding.id }),
+					...(bindingAssociation === undefined ? {} : { bindingAssociation }),
+					capabilitySummary,
+					policyProfile: session.getActiveExecutionPolicyProfile(),
+					...(policyBinding?.sandboxProviderId === undefined
+						? {}
+						: { sandboxProfile: policyBinding.sandboxProviderId }),
+					deadlineAt,
+				};
+				let prepared: ExternalAgentPreparedBinding;
+				try {
+					// The trusted adapter owns protocol/version-specific Binding
+					// translation: the host invokes adapter.prepare and never uses a
+					// default translator, so an unknown protocol/version fails closed
+					// in the adapter before any Run acceptance. The result must be a
+					// shape-valid prepared binding verified against the prepare request
+					// and the probed snapshot.
+					prepared = await probe.adapter.prepare(prepareRequest, probe.snapshot);
+					if (!isExternalAgentPreparedBinding(prepared)) {
+						throw new ExternalAgentError("external_agent_binding_unsupported");
+					}
+					if (!verifyExternalAgentPreparedBinding(prepared, prepareRequest, probe.snapshot)) {
+						throw new ExternalAgentError("external_agent_binding_unsupported");
+					}
+					// v1 has no independent tool-call/Policy/cancel/result gateway
+					// contract and the selection carries no explicit gateway opt-in:
+					// a target self-reporting toolGateway=true must never expand the
+					// AOS boundary or claim AOS tools, so a gateway-mode prepared
+					// binding is rejected until a separate contract exists.
+					if (prepared.bindingMode === "tool-gateway") {
+						throw new ExternalAgentError("external_agent_binding_unsupported");
+					}
+				} catch (err) {
+					return failExternalStart(err, "external_agent_binding_unsupported");
+				}
+				let handle: RunHandle;
+				// Lifecycle guards before the durable accepted write: a pending
+				// external start whose preflight or prepare ignored the abort
+				// signal must still fail closed here instead of accepting after a
+				// detach, shutdown, or session switch.
+				if (startGeneration !== sessionGeneration) {
+					return failExternalStart(sessionSwitchedStartError());
+				}
+				if (requestEpoch !== transportEpoch) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"The RPC connection closed before the Run was accepted.",
+							true,
+						),
+					);
+				}
+				if (shuttingDown) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"Automation Host is shutting down; no new runs are accepted.",
+							false,
+						),
+					);
+				}
+				try {
+					handle = reservation.accept({
+						runId: proposedRunId,
+						requestScope:
+							clientRequestId === undefined ? undefined : commandType === "run.start" ? "start" : "resume",
+						clientRequestId,
+						requestFingerprint: requestClaim?.fingerprint,
+						attempt,
+						sourceRunId,
+						deadlineAt,
+						previousBindingId,
+						previousPolicyBindingId,
+						previousModelBindingId,
+						model: currentRunModel(),
+						...(modelSelection.resolution === undefined
+							? {}
+							: {
+									modelBindingId: modelSelection.resolution.bindingId,
+									finalModel: finalModelForResolution(modelSelection.resolution),
+								}),
+						capabilityBinding: session.getActiveCapabilityBinding(),
+						policyBinding: session.getActiveExecutionPolicyBinding(),
+						policySummary: session.getActiveExecutionPolicySummary(),
+						bindingHandles: session.getActiveBindingHandles(),
+					});
+					handle.setUsageBaseline(usageSnapshot());
+				} catch (err) {
+					return failExternalStart(asAutomationError(err));
+				}
+				activeReservation = undefined;
+				activeHandle = handle;
+				externalAccepted = true;
+				// Start with the bounded in-memory input. Images are never forwarded:
+				// the adapter contract carries image references only, never bytes.
+				const startRequest: ExternalAgentStartRequest = {
+					preparedBinding: prepared,
+					input: { message },
+					operationId: proposedRunId,
+					deadlineAt,
+				};
+				try {
+					externalAdapterRun = runExternalAgentAdapter(probe.adapter, startRequest, {
+						signal: deadlineController.signal,
+						now: () => new Date().toISOString(),
+					});
+				} catch (err) {
+					return failExternalStart(err);
+				}
+				// Register the idempotent adapter cancel immediately so run.cancel
+				// reaches the adapter even while start readiness is pending.
+				externalRuns.set(proposedRunId, {
+					cancel: async () => {
+						try {
+							await externalAdapterRun!.cancel();
+						} catch {
+							// The driver retries idempotently; the receipt settles the run.
+						}
+					},
+				});
+				// Readiness gate: await the driver's explicit start confirmation and
+				// persist ONLY the real, validated external ref before the started
+				// event. The driver's fallback getter is never persisted. The Run
+				// deadline bounds the readiness wait so a hanging adapter.start cannot
+				// keep the run pending past its deadline.
+				const externalRef = await raceWithDeadlineSignal(deadlineController.signal, externalAdapterRun.externalReady);
+				if (externalRef === undefined) {
+					// The readiness race resolves undefined when a lifecycle transition
+					// aborted the deadline controller (detach, shutdown, session switch)
+					// or when the run deadline fired. Report the actual cause: a replaced
+					// session or a disconnected transport is a retryable start_rejection,
+					// never a deadline that never existed.
+					if (startGeneration !== sessionGeneration) {
+						return failExternalStart(sessionSwitchedStartError());
+					}
+					if (requestEpoch !== transportEpoch) {
+						return failExternalStart(
+							createAutomationError(
+								"start_rejected",
+								"The RPC connection closed before the Run was accepted.",
+								true,
+							),
+						);
+					}
+					if (shuttingDown) {
+						return failExternalStart(
+							createAutomationError(
+								"start_rejected",
+								"Automation Host is shutting down; no new runs are accepted.",
+								false,
+							),
+						);
+					}
+					if (deadlineController.signal.aborted) {
+						return failExternalStart(
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before the external agent started.",
+								false,
+							),
+						);
+					}
+					return failExternalStart(new ExternalAgentError("external_agent_start_failed"));
+				}
+				if (startGeneration !== sessionGeneration) {
+					return failExternalStart(sessionSwitchedStartError());
+				}
+				if (requestEpoch !== transportEpoch) {
+					return failExternalStart(
+						createAutomationError(
+							"start_rejected",
+							"The RPC connection closed before the Run was accepted.",
+							true,
+						),
+					);
+				}
+				const safeExternal = serializeExternalExecutionRef(externalRef);
+				if (safeExternal === undefined) {
+					return failExternalStart(new ExternalAgentError("external_agent_mapping_invalid"));
+				}
+				// A caller-provided external ref must be compatible with the identity
+				// the adapter returned: a mismatch fails closed before any mapping
+				// append or started event (PR section 6 field rules), and a matching
+				// ref is persisted as-is.
+				if (
+					external !== undefined &&
+					(external.namespace !== safeExternal.namespace ||
+						external.externalSessionId !== safeExternal.externalSessionId ||
+					(external.externalRunId ?? undefined) !== (safeExternal.externalRunId ?? undefined))
+				) {
+					return failExternalStart(new ExternalAgentError("external_agent_mapping_invalid"));
+				}
+				// The probed selection plus the verified protocol snapshot is the one
+				// safe adapter identity for this external execution; it is attached to
+				// the mapping and the Remote Operation request so the persisted
+				// receipt and Audit stay filterable by adapter without exposing any
+				// raw protocol or target data.
+				const probedAdapterIdentity: ExternalAdapterIdentity = {
+					adapterId: probe.selection.adapterId,
+					targetId: probe.selection.targetId,
+					protocol: probe.snapshot.protocol,
+				};
+				try {
+					coordinator!.persistExternalMapping({
+						external: safeExternal,
+						aosSessionId: session.sessionId,
+						aosRunId: handle.runId,
+						source: "external-agent",
+						adapter: probedAdapterIdentity,
+					});
+				} catch (err) {
+					return failExternalStart(err, "external_agent_persistence_failed");
+				}
+				let startEvents: RunStreamEvent[];
+				try {
+					startEvents = handle.start();
+				} catch (err) {
+					return failExternalStart(asAutomationError(err));
+				}
+				// Emit the accepted response before run.started so records appear in
+				// the contract order: response -> run.started -> run.event* -> terminal.
+				const acceptedResponse: RpcAutomationResponse = {
+					id,
+					type: "response",
+					command: commandType,
+					success: true,
+					data: acceptedDataFromResult(handle.result(), false, "accepted"),
+				};
+				output(acceptedResponse);
+				finishRunRequest(requestClaim, acceptedResponse);
+				for (const event of startEvents) {
+					outputRunEvent(event);
+				}
+				trackExternalRun(handle, externalAdapterRun, startRequest.operationId, deadlineController.signal, probedAdapterIdentity);
+				return undefined;
+			};
+			if (externalProbe !== undefined) {
+				// Register the deadline controller and promise of the pending
+				// external start BEFORE preflight so a lifecycle transition (detach,
+				// shutdown, session switch) can abort it even though externalRuns
+				// does not exist yet, and so it is never awaited by the transition.
+				externalPendingControllers.set(proposedRunId, deadlineController);
+				const pendingExternal = runExternalStart();
+				pendingExternalStarts.set(proposedRunId, pendingExternal);
+				void pendingExternal.then(
+					() => pendingExternalStarts.delete(proposedRunId),
+					() => pendingExternalStarts.delete(proposedRunId),
+				);
+				return trackPendingStart(pendingExternal);
+			}
 			try {
 				promptPromise = session.prompt(message, {
 					images,
@@ -2030,6 +3058,53 @@ export class RpcHostController {
 		});
 
 		const rebindSession = async (): Promise<void> => {
+			// A session replacement invalidates every run of the outgoing session.
+			// The Run cancellation intent of every tracked external execution is
+			// forwarded to the adapter's idempotent cancel path; started
+			// settlements are awaited so their terminal is recorded in the
+			// OUTGOING session's ledger, and every pending start is awaited so its
+			// session-generation guard fails it closed (start_rejected) BEFORE the
+			// incoming session is assigned and its stores are rebuilt. An in-flight
+			// external start can therefore never resume against the incoming
+			// Session or write a mapping or ledger entry into it.
+			if (hostInitialized) {
+				sessionGeneration += 1;
+				for (const runId of [...externalRuns.keys()]) {
+					const externalRun = externalRuns.get(runId);
+					if (externalRun === undefined) continue;
+					if (activeHandle?.runId === runId) {
+						activeHandle.requestCancel();
+					}
+					runAbortControllers.get(runId)?.abort();
+					const settlement = externalRunSettlements.get(runId);
+					if (settlement !== undefined) {
+						await settlement;
+					}
+					void externalRun.cancel().catch(() => {
+						// The driver retries idempotently; the tracked settlement owns the terminal.
+					});
+				}
+				// Abort every pending external start controller, including phases
+				// before the externalRuns registration (preflight), so the
+				// generation guard fails each one closed before the incoming
+				// session is assigned. Pending external starts are never awaited: a
+				// preflight or adapter start that ignores the abort signal must not
+				// block the switch (a run.resume in flight is itself a pending
+				// start blocked on this switch and would deadlock), and their
+				// continuation fails closed on the generation guard and can never
+				// accept or write into the incoming session.
+				for (const controller of externalPendingControllers.values()) {
+					controller.abort();
+				}
+			}
+			if (activeReservation !== undefined) {
+				try {
+					activeReservation.release();
+				} catch {
+					// reservation may already be consumed
+				}
+				activeReservation = undefined;
+			}
 			session = runtimeHost.session;
 			// Rebuild the run coordinator for the current session's ledger. When the
 			// host is initialized, a fresh coordinator folds the new session's
@@ -2039,6 +3114,10 @@ export class RpcHostController {
 				activeHandle = undefined;
 				settledRunIds.clear();
 				runPromptPromises.clear();
+				externalRuns.clear();
+				externalRunSettlements.clear();
+				runAbortControllers.clear();
+				externalPendingControllers.clear();
 			}
 			await session.bindExtensions({
 				uiContext: createExtensionUIContext(),
@@ -2183,6 +3262,13 @@ export class RpcHostController {
 							"task.graph.node.settle",
 						],
 					};
+					// Safe adapter summary: descriptors only (adapterId/displayName/version).
+					// Endpoints, commands, credentials, protocol names, and raw probe data
+					// are never advertised by initialize.
+					const externalAgentRegistry = session.getExternalAgentRegistry?.();
+					if (externalAgentRegistry !== undefined) {
+						initializeData.externalAgentAdapters = externalAgentRegistry.list();
+					}
 					const initializeResponse: RpcAutomationResponse = {
 						id,
 						type: "response",
@@ -2510,6 +3596,7 @@ export class RpcHostController {
 							command.modelRoute,
 							command.modelRole,
 							command.external,
+							command.externalAgent,
 							command.deadlineAt,
 							command.clientRequestId,
 							undefined,
@@ -2577,13 +3664,21 @@ export class RpcHostController {
 						);
 					}
 					activeHandle.requestCancel();
-					// Cancellation is a request, not the terminal transition. Trigger the
-					// existing abort path without waiting for its idle promise so the command
-					// response describes the current running state; the subscriber emits the
-					// unique run.cancelled event only after Session settlement.
-					void session.abort().catch(() => {
-						// The run remains governed by its normal settle/recovery path.
-					});
+					// Cancellation is a request, not the terminal transition. An external
+					// agent run forwards to the idempotent adapter cancel (the deadline
+					// signal reaches the adapter through the same driver); a local run
+					// triggers the existing abort path without waiting for its idle
+					// promise so the command response describes the current running
+					// state. The subscriber emits the unique run.cancelled event only
+					// after Session settlement.
+					const externalRun = externalRuns.get(command.runId);
+					if (externalRun !== undefined) {
+						void externalRun.cancel();
+					} else {
+						void session.abort().catch(() => {
+							// The run remains governed by its normal settle/recovery path.
+						});
+					}
 					const cancelResponse: RpcAutomationResponse = {
 						id,
 						type: "response",
@@ -2605,6 +3700,31 @@ export class RpcHostController {
 									id,
 									"run.resume",
 									auditCommandError(undefined, "external_mapping_invalid"),
+								);
+							}
+							if (command.externalAgent !== undefined && !isExternalAgentSelection(command.externalAgent)) {
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError(
+										"external_agent_adapter_invalid",
+										"The External Agent Adapter selection is invalid.",
+										false,
+									),
+								);
+							}
+							// The v1 adapter contract has start() only; there is no same-ref
+							// resume API, so an external run.resume can never be honored.
+							// Reject it instead of silently starting a fresh execution.
+							if (command.externalAgent !== undefined) {
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError(
+										"external_agent_resume_unsupported",
+										externalAgentMessage("external_agent_resume_unsupported"),
+										false,
+									),
 								);
 							}
 							if (command.clientRequestId !== undefined && !isRunClientRequestId(command.clientRequestId)) {
@@ -2669,6 +3789,7 @@ export class RpcHostController {
 								modelRoute: command.modelRoute,
 								modelRole: command.modelRole,
 								external: command.external,
+								externalAgent: command.externalAgent,
 								deadlineAt: command.deadlineAt,
 							});
 							let resumeClaim: RunRequestIdentity | undefined;
@@ -2770,6 +3891,25 @@ export class RpcHostController {
 									),
 								);
 							}
+							// Resume execution-kind consistency: an external source run can only
+							// be resumed through an External Agent Adapter, which v1 cannot
+							// honor; rejecting here avoids silently resuming a different
+							// execution kind locally.
+							const sourceIsExternal =
+								sourceRun.record.external !== undefined || sourceRun.receipt?.external !== undefined;
+							if (sourceIsExternal) {
+								return resumeFailure(
+									automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											"external_agent_resume_unsupported",
+											externalAgentMessage("external_agent_resume_unsupported"),
+											false,
+										),
+									),
+								);
+							}
 							// An interrupted run may have an accepted record but no terminal
 							// receipt. Preserve #6's binding-drift guard for that recovery path.
 							const previousBindingId =
@@ -2800,6 +3940,7 @@ export class RpcHostController {
 								command.modelRoute,
 								command.modelRole,
 								command.external,
+								command.externalAgent,
 								command.deadlineAt,
 								command.clientRequestId,
 								resumeIdentity,
@@ -3239,11 +4380,21 @@ export class RpcHostController {
 				}
 				if (activeHandle !== undefined) {
 					activeHandle.requestCancel();
-					try {
-						await session.abort();
-					} catch {
-						// settle proceeds regardless of abort errors
+					const forwarded = await forwardExternalRunLifecycleCancel(activeHandle.runId);
+					if (!forwarded) {
+						try {
+							await session.abort();
+						} catch {
+							// settle proceeds regardless of abort errors
+						}
 					}
+				}
+				// Abort every pending external start, including phases before the
+				// externalRuns registration (preflight), so none of them accepts or
+				// starts after the host is gone; each fails closed on the
+				// shuttingDown guard.
+				for (const controller of externalPendingControllers.values()) {
+					controller.abort();
 				}
 				unsubscribe?.();
 				unsubscribeBackpressure?.();
@@ -3272,15 +4423,35 @@ export class RpcHostController {
 					activeReservation = undefined;
 				}
 				if (handleAtDetach !== undefined) {
+					// The Run cancellation intent is forwarded to the adapter's
+					// idempotent cancel path for external executions: the Session
+					// agent loop does not drive them, so session.abort() alone would
+					// leave the external execution running and un-settled. Local runs
+					// keep the existing abort + tracked-prompt settlement.
 					handleAtDetach.requestCancel();
-					try {
-						await session.abort();
-					} catch {
-						// The terminal transition is attempted below even when abort reports an error.
+					const forwarded = await forwardExternalRunLifecycleCancel(handleAtDetach.runId);
+					if (!forwarded) {
+						try {
+							await session.abort();
+						} catch {
+							// The terminal transition is attempted below even when abort reports an error.
+						}
+						await runPromptPromises.get(handleAtDetach.runId);
 					}
-					await runPromptPromises.get(handleAtDetach.runId);
 				}
-				await Promise.all(pendingStartsAtDetach);
+				// Abort every pending external start controller (including phases
+				// before the externalRuns registration) so the preflight or
+				// readiness race resolves where the signal is honored; each fails
+				// closed on the epoch guard. Pending external starts are never
+				// awaited: an adapter start or preflight that ignores the abort
+				// signal must not block the detach.
+				for (const controller of externalPendingControllers.values()) {
+					controller.abort();
+				}
+				const externalPendingAtDetach = new Set(pendingExternalStarts.values());
+				await Promise.all(
+					[...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)),
+				);
 			})().finally(() => {
 				detachTransportPromise = undefined;
 			});

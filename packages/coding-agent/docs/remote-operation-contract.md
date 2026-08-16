@@ -85,3 +85,23 @@ choose how bytes are delivered without changing this contract.
 shape and therefore does not know whether execution is local, in-process, or
 remote. Policy authorization and sandbox selection remain before this boundary;
 this contract cannot bypass them.
+
+## External Agent Adapter boundary
+
+An External Agent Adapter is one consumer of this contract: the Host starts
+one remote operation per adapter Run and reuses `operationId`, `deadlineAt`,
+the optional lease (`heartbeat()`), idempotent `cancel`, safe artifact
+references, and the `side-effect-unknown` fail-closed rule. The adapter
+receipt is the provider-boundary receipt; it is never a Run terminal and
+never a second Run ledger. A Run selected for an external Agent still settles
+through the existing Run Lifecycle terminal gate, and its deadline keeps the
+`run.failed` + `run_deadline_exceeded` semantics.
+
+The optional lease is refreshed through the adapter handle's `heartbeat()`;
+lease expiry is treated as a deadline, and heartbeats after cancellation or
+terminal completion are rejected. Cancellation is idempotent and observes the
+same `AbortSignal` as the execution context. An operation receipt is refused
+until the external execution has a persisted `external.mapping`
+(mapping-before-operation ordering), and no receipt, event, or audit summary
+carries raw protocol data, prompts, paths, URLs, or credentials. See
+[External Agent Adapter](external-agent-adapter.md).
