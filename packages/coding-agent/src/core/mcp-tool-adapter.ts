@@ -1,6 +1,7 @@
 import type { ImageContent, TextContent } from "@aos-agent/ai";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { Type, type TSchema } from "typebox";
+import { DEFAULT_MCP_CONTENT_LIMITS, normalizeContentBlocks, type MCPContentLimits } from "./mcp-content-types.ts";
 import type { ToolDefinition } from "./extensions/types.ts";
 import type { CapabilityRegistry } from "./capability-registry.ts";
 import { type MCPCallResult, MCPError, mcpNamespaceSegmentError } from "./mcp-types.ts";
@@ -38,6 +39,8 @@ export interface MCPToolAdapterOptions extends MCPToolMappingOptions {
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	) => Promise<MCPCallResult>;
+	/** Normalization limits for tool result content; defaults to {@link DEFAULT_MCP_CONTENT_LIMITS}. */
+	contentLimits?: MCPContentLimits;
 }
 
 /** Stable, secret-free identity of a discovered MCP tool. */
@@ -130,7 +133,7 @@ export function createMCPToolDefinition(
 				);
 			}
 			return {
-				content: toAgentContent(result),
+				content: toAgentContent(result, options.contentLimits ?? DEFAULT_MCP_CONTENT_LIMITS),
 				details: result,
 			};
 		},
@@ -184,35 +187,13 @@ export function filterMCPExposedToolNames(names: ReadonlyArray<string>): string[
 	return names.filter((name) => isMCPExposedToolName(name));
 }
 
-function toAgentContent(result: MCPCallResult): (TextContent | ImageContent)[] {
-	const out: (TextContent | ImageContent)[] = [];
-	for (const block of result.content) {
-		switch (block.type) {
-			case "text":
-				out.push({ type: "text", text: block.text });
-				break;
-			case "image":
-				out.push({ type: "image", data: block.data, mimeType: block.mimeType });
-				break;
-			case "resource":
-				if (block.resource.text !== undefined) {
-					out.push({ type: "text", text: block.resource.text });
-				} else if (
-					block.resource.blob !== undefined &&
-					(block.resource.mimeType ?? "").startsWith("image/")
-				) {
-					out.push({
-						type: "image",
-						data: block.resource.blob,
-						mimeType: block.resource.mimeType ?? "image/png",
-					});
-				}
-				break;
-			case "audio":
-				// Audio content is not representable in AgentToolResult; omitted.
-				break;
-		}
-	}
+function toAgentContent(result: MCPCallResult, limits: MCPContentLimits): (TextContent | ImageContent)[] {
+	const normalized = normalizeContentBlocks(result.content, limits);
+	const out: (TextContent | ImageContent)[] = normalized.blocks.map((block) =>
+		block.type === "text"
+			? { type: "text", text: block.text }
+			: { type: "image", data: block.data, mimeType: block.mimeType },
+	);
 	if (out.length === 0 && result.structuredContent !== undefined) {
 		out.push({ type: "text", text: JSON.stringify(result.structuredContent) });
 	}

@@ -194,6 +194,10 @@ export interface MCPConnectionStatus {
 	lastError?: MCPErrorView;
 	/** Number of tools discovered by the last successful listTools. */
 	toolCount?: number;
+	/** Number of resources returned by the last successful listResources page. */
+	resourceCount?: number;
+	/** Number of prompts returned by the last successful listPrompts page. */
+	promptCount?: number;
 }
 
 /**
