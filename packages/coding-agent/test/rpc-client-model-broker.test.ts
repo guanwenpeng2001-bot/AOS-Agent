@@ -25,12 +25,16 @@ describe("RpcClient ModelBroker API", () => {
 
 		await client.startRun("implement this", undefined, undefined, "balanced");
 
-		expect(send).toHaveBeenCalledWith({
-			type: "run.start",
-			message: "implement this",
-			images: undefined,
-			modelRoute: "balanced",
-		});
+		expect(send).toHaveBeenCalledWith(
+			{
+				type: "run.start",
+				message: "implement this",
+				images: undefined,
+				modelRoute: "balanced",
+			},
+			undefined,
+			undefined,
+		);
 	});
 
 	it("forwards a role selection on run.resume", async () => {
@@ -45,14 +49,18 @@ describe("RpcClient ModelBroker API", () => {
 
 		await client.resumeRun("session.jsonl", "r1", "continue", undefined, undefined, undefined, "reviewer");
 
-		expect(send).toHaveBeenCalledWith({
-			type: "run.resume",
-			sessionPath: "session.jsonl",
-			sourceRunId: "r1",
-			message: "continue",
-			images: undefined,
-			modelRole: "reviewer",
-		});
+		expect(send).toHaveBeenCalledWith(
+			{
+				type: "run.resume",
+				sessionPath: "session.jsonl",
+				sourceRunId: "r1",
+				message: "continue",
+				images: undefined,
+				modelRole: "reviewer",
+			},
+			undefined,
+			undefined,
+		);
 	});
 
 	it("returns the typed redacted route catalog", async () => {

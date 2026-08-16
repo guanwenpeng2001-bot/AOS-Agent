@@ -144,6 +144,29 @@ export type {
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type { Tool } from "./tools/index.ts";
+// MCP content and auth types of the Session's explicit MCP surface (public SDK
+// surface; raw URIs, prompt args, and remote text are never retained by any of
+// these records, and the authorization URL is one-shot only).
+export type {
+	MCPContentLimits,
+	MCPGetPromptResult,
+	MCPNormalizedContent,
+	MCPNormalizedContentBlock,
+	MCPPageResult,
+	MCPPromptMessageView,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceTemplateView,
+	MCPResourceView,
+} from "./mcp-content-types.ts";
+export { DEFAULT_MCP_CONTENT_LIMITS } from "./mcp-content-types.ts";
+export type {
+	MCPAuthOutcome,
+	MCPAuthResult,
+	MCPAuthState,
+	MCPAuthStatus,
+} from "./mcp-auth.ts";
+export type { McpAttachmentResult, McpAuthStatusView } from "./agent-session.ts";
 
 export {
 	withFileMutationQueue,
