@@ -155,13 +155,12 @@ describe("MCP OAuth default session wiring", () => {
 
 		const statuses = await created.session.listMcpCredentialStatuses();
 		expect(statuses).toHaveLength(1);
-		expect(statuses[0]?.hasRefreshToken).toBe(true);
+		expect(statuses[0]?.status).toBe("authenticated");
 		expect(statuses[0]?.serverIdentity).toMatch(/^[0-9a-f]{64}$/);
-		// Token values never surface in status output; URL/issuer/resource are
-		// masked at the RPC/TUI boundaries (see rpc-mcp-auth and the
-		// interactive overview tests).
 		const serialized = JSON.stringify(statuses);
 		expect(serialized).not.toContain("access-secret");
 		expect(serialized).not.toContain("refresh-secret");
+		expect(serialized).not.toContain(HTTP_SERVER_URL);
+		expect(serialized).not.toContain(ISSUER_URL);
 	});
 });

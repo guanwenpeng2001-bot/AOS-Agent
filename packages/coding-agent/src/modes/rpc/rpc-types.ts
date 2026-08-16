@@ -701,7 +701,7 @@ export type RpcMcpAuthCommandType = "mcp.auth.start" | "mcp.auth.status" | "mcp.
 export type RpcMcpAuthStartStatus = "authorized" | "already_authorized" | "not_required";
 
 /** Fixed status vocabulary of `mcp.auth.status`. */
-export type RpcMcpAuthStatusValue = "authorized" | "required";
+export type RpcMcpAuthStatusValue = "authenticated" | "expired" | "required";
 
 /**
  * Masked credential status of one MCP server. Token values, the server URL,
@@ -711,11 +711,8 @@ export type RpcMcpAuthStatusValue = "authorized" | "required";
 export interface RpcMcpMaskedCredential {
 	/** Opaque server identity (one-way derivation of the canonical server URL). */
 	serverIdentity: string;
-	/** Granted scope, when the authorization server reported one. */
-	scope?: string;
-	/** Epoch milliseconds, when the server reported an expiry. */
-	expiresAt?: number;
-	hasRefreshToken: boolean;
+	/** authenticated when a usable token is stored; expired when the stored grant has elapsed. */
+	status: "authenticated" | "expired";
 }
 
 /**

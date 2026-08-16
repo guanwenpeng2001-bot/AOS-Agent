@@ -622,6 +622,44 @@ describe("MCP lifecycle state machine with in-memory transport", () => {
 		expect(serialized).not.toContain("secret-flow");
 	});
 
+	it("retries one UnauthorizedError when an auth provider is configured", async () => {
+		const setup = createMockServerFactory();
+		let attempts = 0;
+		const lifecycle = new MCPServerLifecycle(
+			{ id: "docs", transport: "streamable-http", url: "https://mcp.example.invalid/mcp" },
+			{
+				authProvider: {
+					get redirectUrl() {
+						return "http://127.0.0.1:0/callback";
+					},
+					get clientMetadata() {
+						return { redirect_uris: ["http://127.0.0.1:0/callback"] };
+					},
+					clientInformation: () => undefined,
+					tokens: () => undefined,
+					saveTokens: () => undefined,
+					redirectToAuthorization: () => undefined,
+					saveCodeVerifier: () => undefined,
+					codeVerifier: () => "",
+				},
+				transportFactory: async () => {
+					attempts += 1;
+					if (attempts === 1) {
+						return new FailingTransport(new UnauthorizedError("retry-once"));
+					}
+					return setup.transportFactory({
+						id: "docs",
+						transport: "streamable-http",
+						url: "https://mcp.example.invalid/mcp",
+					});
+				},
+			},
+		);
+		await lifecycle.connect();
+		expect(attempts).toBe(2);
+		expect(lifecycle.state).toBe("ready");
+	});
+
 	it("marks the server degraded and maps to capability unavailable when listTools fails", async () => {
 		const setup = createMockServerFactory({ listToolsError: new Error("server secret list failure") });
 		const lifecycle = new MCPServerLifecycle({ ...STDIO_CONFIG, id: "docs" }, {

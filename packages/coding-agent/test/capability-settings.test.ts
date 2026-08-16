@@ -361,6 +361,68 @@ describe("MCP server config validation", () => {
 		).toBe("capability_settings_invalid_server");
 	});
 
+	it("accepts secret-free streamable-http oauth settings and rejects stdio oauth", () => {
+		const settings = build({
+			global: {
+				mcp: {
+					servers: {
+						docs: {
+							transport: "streamable-http",
+							url: "https://mcp.example.invalid/mcp",
+							oauth: {
+								redirectUrl: "http://127.0.0.1:8754/callback",
+								clientId: "public-client",
+								scope: "mcp",
+							},
+						},
+					},
+				},
+			},
+		});
+		expect(settings.mcpServers[0]?.server).toMatchObject({
+			transport: "streamable-http",
+			oauth: {
+				redirectUrl: "http://127.0.0.1:8754/callback",
+				clientId: "public-client",
+				scope: "mcp",
+			},
+		});
+		expect(
+			errorCode(() =>
+				build({
+					global: {
+						mcp: {
+							servers: {
+								docs: {
+									transport: "stdio",
+									command: "node",
+									oauth: { redirectUrl: "http://127.0.0.1:8754/callback" },
+								},
+							},
+						},
+					},
+				}),
+			),
+		).toBe("capability_settings_invalid_server");
+		expect(
+			errorCode(() =>
+				build({
+					global: {
+						mcp: {
+							servers: {
+								docs: {
+									transport: "streamable-http",
+									url: "https://mcp.example.invalid/mcp",
+									oauth: { redirectUrl: "http://example.invalid/callback" },
+								},
+							},
+						},
+					},
+				}),
+			),
+		).toBe("capability_settings_invalid_server");
+	});
+
 	it("rejects streamable-http servers carrying stdio-only fields", () => {
 		expect(
 			errorCode(() =>

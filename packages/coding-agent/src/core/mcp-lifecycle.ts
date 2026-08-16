@@ -220,6 +220,8 @@ export class MCPServerLifecycle {
 	private readonly resourceUris = new Map<string, string>();
 	/** In-memory promptId -> sanitized prompt name map. */
 	private readonly promptNames = new Map<string, string>();
+	/** One 401 refresh/reconnect attempt per connect; reset on a successful ready state. */
+	private connectAuthRetried = false;
 
 	constructor(config: MCPServerConfig, options: MCPServerLifecycleOptions = {}) {
 		this.config = config;
@@ -361,6 +363,7 @@ export class MCPServerLifecycle {
 			this.connectedAt = new Date().toISOString();
 			this.lastError = undefined;
 			this.toolCount = undefined;
+			this.connectAuthRetried = false;
 		} catch (error) {
 			if (pendingClient !== undefined && this.pendingClient === pendingClient) {
 				this.pendingClient = undefined;
@@ -372,6 +375,17 @@ export class MCPServerLifecycle {
 			if (signal?.aborted) {
 				this.setState("unavailable");
 				throw abortError(signal);
+			}
+			if (
+				error instanceof UnauthorizedError &&
+				!this.connectAuthRetried &&
+				this.resolveAuthProvider() !== undefined
+			) {
+				// One 401 refresh/reconnect only. A second 401 becomes auth_required.
+				this.connectAuthRetried = true;
+				this.client = undefined;
+				this.transport = undefined;
+				return this.doConnect(signal);
 			}
 			const kind: MCPErrorKind = error instanceof UnauthorizedError ? "auth_required" : "connect_failed";
 			this.setState("unavailable");

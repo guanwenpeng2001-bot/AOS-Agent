@@ -277,7 +277,9 @@ describe("MCPAuthManager getProvider", () => {
 
 		// URL-keyed status works without any prior session registration.
 		const status = await manager.getStatus(SERVER_URL);
-		expect(status).toMatchObject({ serverUrl: SERVER_URL, issuer: ISSUER_URL, hasRefreshToken: true });
+		expect(status).toMatchObject({ status: "authenticated" });
+		expect(status).not.toHaveProperty("serverUrl");
+		expect(status).not.toHaveProperty("issuer");
 		expect(JSON.stringify(status)).not.toContain("at-1");
 	});
 
@@ -308,12 +310,9 @@ describe("MCPAuthManager start / status / logout", () => {
 		expect(fake.counts.token).toBe(1);
 
 		const status = await manager.getStatus(fake.url);
-		expect(status).toMatchObject({
-			serverUrl: fake.url,
-			issuer: `${fake.origin}/`,
-			resource: `${fake.origin}/mcp`,
-			hasRefreshToken: true,
-		});
+		expect(status).toMatchObject({ status: "authenticated" });
+		expect(status).not.toHaveProperty("serverUrl");
+		expect(status).not.toHaveProperty("issuer");
 		expect(JSON.stringify(status)).not.toContain("at-1");
 		expect(JSON.stringify(status)).not.toContain("rt-1");
 		expect(JSON.stringify(await manager.listStatuses())).not.toContain("at-1");

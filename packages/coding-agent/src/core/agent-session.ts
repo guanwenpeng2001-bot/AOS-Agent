@@ -3556,7 +3556,7 @@ export class AgentSession {
 	async startMcpAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult> {
 		try {
 			await this._preflightMcpAuthStart(serverId, serverUrl, options.interaction.signal);
-			const result = await this.requireMcpAuthManager().start(serverId, serverUrl, options);
+			const result = await this.requireMcpAuthManager().start(serverId, serverUrl, this._withMcpOAuthSettingsDefaults(serverId, options));
 			this._recordMcpOperationAuditEntry({
 				serverId,
 				operation: "auth",
@@ -3593,6 +3593,11 @@ export class AgentSession {
 	 * and records an allowlist-only session audit entry
 	 * (`operation: "auth"`).
 	 */
+	/** PR/SDK alias of {@link startMcpAuth}. */
+	async startMcpOAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult> {
+		return this.startMcpAuth(serverId, serverUrl, options);
+	}
+
 	async logoutMcpAuth(serverId: string, serverUrl?: string | URL): Promise<void> {
 		try {
 			// The policy binding settles synchronously from settings without
@@ -3627,8 +3632,34 @@ export class AgentSession {
 	 * even when this session never touched the server. Token values are never
 	 * surfaced.
 	 */
+	/** PR/SDK alias of {@link logoutMcpAuth}. */
+	async logoutMcp(serverId: string, serverUrl?: string | URL): Promise<void> {
+		return this.logoutMcpAuth(serverId, serverUrl);
+	}
+
 	async getMcpAuthStatus(serverId: string, serverUrl: string | URL): Promise<MCPCredentialStatus | undefined> {
 		return this.requireMcpAuthManager().getStatus(serverUrl);
+	}
+
+	private _withMcpOAuthSettingsDefaults(serverId: string, options: MCPAuthStartOptions): MCPAuthStartOptions {
+		if (options.callbackMode !== undefined || options.httpsCallbackUrl !== undefined) {
+			return options;
+		}
+		const diagnostic = this.settingsManager.getCapabilitySettings().mcpServers.find((server) => server.id === serverId);
+		const redirectUrl =
+			diagnostic?.server.transport === "streamable-http" ? diagnostic.server.oauth?.redirectUrl : undefined;
+		if (redirectUrl === undefined) {
+			return options;
+		}
+		try {
+			const parsed = new URL(redirectUrl);
+			if (parsed.protocol === "https:") {
+				return { ...options, callbackMode: "https", httpsCallbackUrl: redirectUrl };
+			}
+		} catch {
+			return options;
+		}
+		return { ...options, callbackMode: "loopback" };
 	}
 
 	/** Masked status of every MCP credential in this session's namespace; never token values. */

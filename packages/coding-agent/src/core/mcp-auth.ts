@@ -203,6 +203,33 @@ function isLoopbackHost(hostname: string): boolean {
 	return hostname === "localhost" || hostname === "::1" || hostname === "[::1]" || hostname.startsWith("127.");
 }
 
+/**
+ * Validates a settings or caller-supplied OAuth redirect URL.
+ * Accepts https (no userinfo/query/fragment) or http loopback.
+ * Returns a problem string, or undefined when the URL is allowed.
+ */
+export function mcpRedirectUrlProblem(url: string): string | undefined {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		return "must be an absolute URL";
+	}
+	if (parsed.username !== "" || parsed.password !== "") {
+		return "must not contain userinfo";
+	}
+	if (parsed.search !== "" || parsed.hash !== "") {
+		return "must not contain a query or fragment";
+	}
+	if (parsed.protocol === "https:") {
+		return undefined;
+	}
+	if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)) {
+		return undefined;
+	}
+	return "must be https or an http loopback address";
+}
+
 function stripTrailingSlashes(pathname: string): string {
 	return pathname.replace(/\/+$/, "");
 }

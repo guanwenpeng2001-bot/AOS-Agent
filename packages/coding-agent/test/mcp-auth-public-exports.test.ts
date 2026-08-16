@@ -22,6 +22,8 @@ describe("MCP OAuth interactive public entry exports", () => {
 		const client = new RpcClient();
 		expect(typeof client.startMcpAuthInteractive).toBe("function");
 		expect(typeof client.getMcpAuthStatus).toBe("function");
+		expect(typeof client.startMcpOAuth).toBe("function");
+		expect(typeof client.logoutMcp).toBe("function");
 	});
 
 	it("keeps the interactive bridge types type-safe for extension-UI callers", () => {

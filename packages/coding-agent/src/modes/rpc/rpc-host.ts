@@ -779,9 +779,7 @@ export class RpcHostController {
 		/** Redacted credential status: token values, URL, issuer/resource never cross the wire. */
 		const toRpcMcpMaskedCredential = (credential: MCPCredentialStatus): RpcMcpMaskedCredential => ({
 			serverIdentity: credential.serverIdentity,
-			...(credential.scope !== undefined ? { scope: credential.scope } : {}),
-			...(credential.expiresAt !== undefined ? { expiresAt: credential.expiresAt } : {}),
-			hasRefreshToken: credential.hasRefreshToken,
+			status: credential.status === "expired" ? "expired" : "authenticated",
 		});
 
 		// ---------------------------------------------------------------------
@@ -4857,7 +4855,7 @@ export class RpcHostController {
 							command: "mcp.auth.status",
 							success: true,
 							data: {
-								status: "authorized",
+								status: credential.status === "expired" ? "expired" : "authenticated",
 								credential: toRpcMcpMaskedCredential(credential),
 							} satisfies RpcMcpAuthStatusData,
 						};

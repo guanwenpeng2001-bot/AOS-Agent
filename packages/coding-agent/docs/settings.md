@@ -323,7 +323,27 @@ AOS Agent models what it can load and call as capabilities with profile decision
 
 `mcp.servers` maps server ids to configs. `stdio` servers spawn a local command with `env` (an array of environment variable **names** passed through to the child). The parent-process environment is not inherited implicitly; allowlist `PATH` when a non-absolute command needs it. `streamable-http` servers connect to a `url` and send `headersFromEnv`, each `{ name, valueFromEnv }` referencing an environment variable **name**.
 
-OAuth is not configured by putting tokens or client secrets in settings. Streamable HTTP servers use Authorization Code + PKCE with a default loopback callback (`http://127.0.0.1:<port>/callback`) or a caller-supplied HTTPS redirect URI on `/mcp auth` / `mcp.auth.start`. Tokens are stored only in the MCP credential namespace and never appear in settings, receipts, or logs. `stdio` servers never trigger OAuth and keep using the explicit `env` allowlist. Start or remove a stored credential with `/mcp auth <serverId>` and `/mcp logout <serverId>` (see [usage.md](usage.md) and [capabilities.md](capabilities.md#mcp-authentication)).
+OAuth is not configured by putting tokens or client secrets in settings. Streamable HTTP servers may add a secret-free `oauth` object:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "issue-tracker": {
+        "transport": "streamable-http",
+        "url": "https://mcp.example.invalid/mcp",
+        "oauth": {
+          "redirectUrl": "http://127.0.0.1:8754/callback",
+          "clientId": "public-client",
+          "scope": "mcp"
+        }
+      }
+    }
+  }
+}
+```
+
+`oauth.redirectUrl` is required when `oauth` is present (https or an http loopback address). `canonicalResource`, `clientId`, `scope`, and `clientName` are optional. Dynamic client registration is used when `clientId` is absent. Tokens and client secrets never live in settings. Without `oauth`, `/mcp auth` uses a default loopback callback. `stdio` servers must not set `oauth` and keep using the explicit `env` allowlist. Start or remove a stored credential with `/mcp auth <serverId>` and `/mcp logout <serverId>` (see [usage.md](usage.md) and [capabilities.md](capabilities.md#mcp-authentication)). Public status is `authenticated` / `expired` / `required` only.
 
 Capability profile selectors may match `mcp_resource`, `mcp_resource_template`, and `mcp_prompt` as well as `mcp_server` / `mcp_tool`. Server `deny` cascades to every child; a child may further `ask` or `deny` but cannot widen a parent `deny`. Resources and prompts are never model-visible tools. Content size, MIME, block count, and field limits are Host-side finite defaults; oversize or malformed content fails closed.
 

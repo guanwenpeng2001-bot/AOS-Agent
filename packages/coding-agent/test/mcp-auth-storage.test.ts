@@ -438,25 +438,28 @@ describe("listMCPCredentialStatuses", () => {
 		expect(statuses).toHaveLength(1);
 		expect(statuses[0]).toMatchObject({
 			serverIdentity: storage.providerId.slice(`mcp__${INSTALLATION_ID}__`.length),
-			serverUrl: SERVER_URL,
-			issuer: ISSUER,
-			resource: RESOURCE,
-			scope: "tools read",
-			hasRefreshToken: true,
+			status: "authenticated",
 		});
-		expect(statuses[0]!.expiresAt).toBeGreaterThan(Date.now());
 		const json = JSON.stringify(statuses);
 		expect(json).not.toContain("access-token");
 		expect(json).not.toContain("refresh-token");
+		expect(json).not.toContain(SERVER_URL);
+		expect(json).not.toContain(ISSUER);
+		expect(json).not.toContain(RESOURCE);
 		expect(json).not.toContain('"id"');
 	});
 
-	test("omits expiresAt when the server reported no expiry", async () => {
+	test("reports expired when the stored grant has elapsed", async () => {
 		const store = AuthStorage.inMemory();
-		await createStorage(store).saveTokens(tokenResponse("access-token", null), { issuer: ISSUER });
+		const storage = createStorage(store);
+		await storage.saveTokens(tokenResponse("access-token", null, { expires_in: 3600 }), { issuer: ISSUER });
+		await store.modify(storage.providerId, async (current) =>
+			current === undefined || current.type !== "oauth" ? current : { ...current, expires: Date.now() - 1 },
+		);
 		const [status] = await listMCPCredentialStatuses(store, INSTALLATION_ID);
-		expect(status?.hasRefreshToken).toBe(false);
-		expect(status?.expiresAt).toBeUndefined();
+		expect(status?.status).toBe("expired");
+		expect(status).not.toHaveProperty("serverUrl");
+		expect(status).not.toHaveProperty("issuer");
 	});
 
 	test("is scoped to the installation and skips foreign and ill-formed entries", async () => {
@@ -481,8 +484,9 @@ describe("listMCPCredentialStatuses", () => {
 
 		const statuses = await listMCPCredentialStatuses(store, INSTALLATION_ID);
 		expect(statuses).toHaveLength(1);
-		expect(statuses[0]?.serverUrl).toBe(SERVER_URL);
-		expect(statuses[0]?.issuer).toBe(ISSUER);
+		expect(statuses[0]?.status).toBe("authenticated");
+		expect(JSON.stringify(statuses)).not.toContain(SERVER_URL);
+		expect(JSON.stringify(statuses)).not.toContain(ISSUER);
 		expect(JSON.stringify(statuses)).not.toContain("theirs");
 		expect(JSON.stringify(statuses)).not.toContain("provider-key");
 	});

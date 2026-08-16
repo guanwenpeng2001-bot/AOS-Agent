@@ -502,9 +502,11 @@ describe("RPC MCP OAuth wire contract (mcp.auth.*)", () => {
 				status as Extract<RpcMcpAuthResponse, { command: "mcp.auth.status"; success: true }>
 			).data;
 			expect(statusData).toMatchObject({
-				status: "authorized",
-				credential: { hasRefreshToken: true, scope: "tools", expiresAt: expect.any(Number) },
+				status: "authenticated",
+				credential: { status: "authenticated" },
 			});
+			expect(statusData.credential).not.toHaveProperty("hasRefreshToken");
+			expect(statusData.credential).not.toHaveProperty("scope");
 			// Redaction: no token values, no URL, no issuer/resource, no raw URI.
 			const statusJson = JSON.stringify(status);
 			expect(statusJson).not.toContain("at-1");
@@ -632,7 +634,7 @@ describe("RPC MCP OAuth wire contract (mcp.auth.*)", () => {
 				type: "response",
 				command: "mcp.auth.status",
 				success: true,
-				data: { status: "authorized" },
+				data: { status: "authenticated" },
 			});
 			const audits = authAuditEntries(harness.session);
 			expect(audits).toHaveLength(1);
@@ -714,7 +716,7 @@ describe("RPC MCP OAuth wire contract (mcp.auth.*)", () => {
 				type: "response",
 				command: "mcp.auth.status",
 				success: true,
-				data: { status: "authorized", credential: { hasRefreshToken: true } },
+				data: { status: "authenticated", credential: { status: "authenticated" } },
 			});
 			expect(JSON.stringify(status)).not.toContain("at-1");
 			expect(JSON.stringify(status)).not.toContain(fake.origin);

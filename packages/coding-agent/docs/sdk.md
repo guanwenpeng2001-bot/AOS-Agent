@@ -197,7 +197,9 @@ interface AgentSession {
   attachMcpResource(input: { serverId: string; uri: string; signal?: AbortSignal }): Promise<McpAttachment>;
   attachMcpPrompt(input: { serverId: string; name: string; args?: Record<string, string>; signal?: AbortSignal }): Promise<McpAttachment>;
   startMcpAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult>;
+  startMcpOAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult>;
   logoutMcpAuth(serverId: string, serverUrl?: string | URL): Promise<void>;
+  logoutMcp(serverId: string, serverUrl?: string | URL): Promise<void>;
   getMcpAuthStatus(serverId: string, serverUrl: string | URL): Promise<MCPCredentialStatus | undefined>;
   listMcpCredentialStatuses(): Promise<readonly MCPCredentialStatus[]>;
 }

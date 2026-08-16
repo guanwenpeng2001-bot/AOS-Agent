@@ -1093,6 +1093,11 @@ export class RpcClient {
 		return this.getMcpAuthData<RpcMcpAuthStartData>(response);
 	}
 
+	/** PR/SDK alias of {@link startMcpAuth}. */
+	async startMcpOAuth(serverId: string, serverUrl: string, signal?: AbortSignal): Promise<RpcMcpAuthStartData> {
+		return this.startMcpAuth(serverId, serverUrl, signal);
+	}
+
 	/**
 	 * Start MCP OAuth authorization for one streamable-http server through
 	 * the interactive extension-UI bridge.
@@ -1267,6 +1272,11 @@ export class RpcClient {
 			signal,
 		);
 		this.getMcpAuthData<void>(response);
+	}
+
+	/** PR/SDK alias of {@link logoutMcpAuth}. */
+	async logoutMcp(serverId: string, serverUrl?: string, signal?: AbortSignal): Promise<void> {
+		return this.logoutMcpAuth(serverId, serverUrl, signal);
 	}
 
 	/** Read a safe, filtered execution-audit page. */

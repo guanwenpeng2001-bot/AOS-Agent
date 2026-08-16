@@ -102,20 +102,18 @@ export interface MCPTokenBinding {
 	requestedScope?: string;
 }
 
+/** Public MCP OAuth status. Never includes tokens, URLs, issuer, or resource. */
+export type MCPAuthPublicStatus = "authenticated" | "expired" | "required";
+
 /**
- * Masked, non-secret status of one server's stored MCP credential. Token
- * values are never included.
+ * Masked, non-secret status of one server's stored MCP credential.
+ * Token values, authorization URLs, and full issuer/resource/server URLs
+ * are never included.
  */
 export interface MCPCredentialStatus {
-	/** Opaque server identity (the namespaced key suffix). */
+	/** Opaque server identity (one-way derivation of the canonical server URL). */
 	serverIdentity: string;
-	serverUrl: string;
-	issuer: string;
-	resource?: string;
-	scope?: string;
-	/** Epoch milliseconds, when the server reported an expiry. */
-	expiresAt?: number;
-	hasRefreshToken: boolean;
+	status: MCPAuthPublicStatus;
 }
 
 function isValidHttpUrl(value: string): boolean {
@@ -501,14 +499,10 @@ export async function listMCPCredentialStatuses(
 		const credential = await store.read(providerId, options);
 		if (!isMCPCredential(credential)) continue;
 		if (!isWellFormedStoredTokens(credential)) continue;
+		const expired = credential.expires > 0 && credential.expires <= Date.now();
 		statuses.push({
 			serverIdentity: providerId.slice(prefix.length),
-			serverUrl: credential.serverUrl,
-			issuer: credential.issuer,
-			...(credential.resource !== undefined ? { resource: credential.resource } : {}),
-			...(credential.scope !== undefined ? { scope: credential.scope } : {}),
-			...(credential.expires > 0 ? { expiresAt: credential.expires } : {}),
-			hasRefreshToken: credential.refresh.length > 0,
+			status: expired ? "expired" : "authenticated",
 		});
 	}
 	return statuses;
