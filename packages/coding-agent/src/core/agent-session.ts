@@ -134,6 +134,12 @@ import {
 import {
 	authorizePolicyOperation,
 	createWorkspaceIdentity,
+	resolveExecutionPolicyProfile,
+	resolveTaskCredentialPreflight,
+	taskCredentialPolicyResource,
+	toPolicyBindingHandle,
+	toPublicPolicySummary,
+	type CapabilityBindingInput,
 	type ExecutionPolicyProfile,
 	type PolicyApprovalOutcome,
 	type PolicyApprovalRequest,
@@ -143,9 +149,8 @@ import {
 	PolicyError,
 	type PolicyOperationSource,
 	type PublicPolicySummary,
-	resolveExecutionPolicyProfile,
-	toPublicPolicySummary,
-	toPolicyBindingHandle,
+	type TaskCredentialPreflightResult,
+	type TaskCredentialSandboxPreflight,
 } from "./execution-policy.ts";
 import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
@@ -233,6 +238,24 @@ import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import { type SandboxHandle, type SandboxProvider, SandboxSession, toSandboxBindingHandle } from "./sandbox.ts";
 import { type BuiltinToolPolicy, createBuiltinToolPolicy } from "./sandbox-host.ts";
+import {
+	TASK_CREDENTIAL_MIN_TTL_MS,
+	TASK_CREDENTIAL_SCHEMA_VERSION,
+	TaskCredentialError,
+	isTaskCredentialIsoTimestamp,
+	isTaskExecutionBinding,
+} from "./task-credential-lease.ts";
+import {
+	parseTaskCredentialTargetCapabilities,
+	type TaskCredentialProvider,
+	type TaskCredentialProviderAvailability,
+	type TaskCredentialTargetCapabilities,
+} from "./task-credential-provider.ts";
+import {
+	TaskCredentialService,
+	type TaskCredentialPreflightFactsInput,
+	type TaskCredentialServiceOptions,
+} from "./task-credential-service.ts";
 import {
 	createSessionBranchBoundary,
 	createSessionCheckpoint,
@@ -511,6 +534,22 @@ export interface AgentSessionConfig {
 	policyProfile?: string;
 	/** Trusted External Agent Adapter registry composed by the Host. */
 	externalAgentRegistry?: ExternalAgentAdapterRegistry;
+	/**
+	 * Optional Task Credential provider composing the session-scoped Task
+	 * Credential lifecycle service. Absent (or without a policy TTL ceiling)
+	 * means the session has no credential service: every lifecycle signal
+	 * fails closed and no lease is ever issued.
+	 */
+	taskCredentialProvider?: TaskCredentialProvider;
+	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
+	taskCredentialPolicyMaxTtlMs?: number;
+	/**
+	 * Configured safe availability facts of the Task Credential provider. The
+	 * provider object's existence is never treated as an availability proof:
+	 * without this fact the T3 preflight fails closed with
+	 * `task_credential_provider_unavailable`.
+	 */
+	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	/** Session-local approvals for ask capabilities. Never overrides a deny. */
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	/** `noTools` suppression mode from createAgentSession: only narrows the binding. */
@@ -790,8 +829,14 @@ export class AgentSession {
 	/** Serializes policy binding teardown and sandbox preparation. */
 	private _executionPolicyPreparationTail: Promise<void> = Promise.resolve();
 	private _disposePolicyBoundaryPromise: Promise<void> | undefined;
+	private _disposeTaskCredentialPromise: Promise<void> | undefined;
 	private _currentBuiltinToolPolicy: BuiltinToolPolicy | undefined;
 	private _externalAgentRegistry: ExternalAgentAdapterRegistry | undefined;
+	private readonly _taskCredentialProvider: TaskCredentialProvider | undefined;
+	private readonly _taskCredentialPolicyMaxTtlMs: number | undefined;
+	private readonly _taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
+	private _taskCredentialService: TaskCredentialService | undefined;
+	private _taskCredentialDisposed = false;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._agentStreamFunction = config.agent.streamFunction;
@@ -833,6 +878,9 @@ export class AgentSession {
 						signal: config.mcpAuthManagerOptions.signal,
 					});
 		this._externalAgentRegistry = config.externalAgentRegistry;
+		this._taskCredentialProvider = config.taskCredentialProvider;
+		this._taskCredentialPolicyMaxTtlMs = config.taskCredentialPolicyMaxTtlMs;
+		this._taskCredentialProviderAvailability = config.taskCredentialProviderAvailability;
 		const sandboxProviders = config.sandboxProviders;
 		this._sandboxProviders =
 			sandboxProviders === undefined
@@ -2217,6 +2265,7 @@ export class AgentSession {
 			// Dispose must succeed even if an abort hook throws.
 		}
 		this._disposePolicyBoundaryPromise ??= this._disposePolicyBoundaryResources();
+		this._disposeTaskCredentialPromise ??= this._disposeTaskCredentialResources();
 
 		this._extensionRunner.invalidate(
 			"This extension ctx is stale after session replacement or reload. Do not use a captured agent or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
@@ -2227,9 +2276,12 @@ export class AgentSession {
 		cleanupSessionResources(this.sessionId);
 	}
 
-	/** Resolves after async policy-boundary cleanup started by dispose() settles. */
+	/** Resolves after async policy-boundary and Task Credential cleanup started by dispose() settles. */
 	waitForDispose(): Promise<void> {
-		return this._disposePolicyBoundaryPromise ?? Promise.resolve();
+		return Promise.all([
+			this._disposePolicyBoundaryPromise ?? Promise.resolve(),
+			this._disposeTaskCredentialPromise ?? Promise.resolve(),
+		]).then(() => undefined);
 	}
 
 	// =========================================================================
@@ -6380,11 +6432,7 @@ export class AgentSession {
 		return ref ? { id: ref.id, revision: ref.revision } : undefined;
 	}
 
-	private _policyCapabilityBindingInput(): {
-		id?: string;
-		descriptors?: ReadonlyArray<{ readonly id: string }>;
-		allowedCapabilityIds?: ReadonlyArray<string>;
-	} {
+	private _policyCapabilityBindingInput(): CapabilityBindingInput {
 		const binding = this._activeCapabilityBinding;
 		if (binding === undefined) return {};
 		const allowedCapabilityIds = binding.descriptors.map((descriptor) => descriptor.id);
@@ -6449,6 +6497,303 @@ export class AgentSession {
 		await this._executionPolicyPreparationTail;
 		await this._closeMcpConnectionsForPolicyBoundary();
 		await this._disposeSandboxSession();
+	}
+
+	/**
+	 * Session shutdown of the Task Credential service: revoke + settle every
+	 * outstanding lease before the session is replaced or the host exits. The
+	 * service is a side channel of the Run / Gate / Graph ledgers — it never
+	 * rewrites their terminal facts and never restores an old grant. Best
+	 * effort by contract: the signal never throws and appends only
+	 * `task.credential` custom entries to the outgoing session. After this
+	 * runs the service is closed: every later issue / renew fails closed and
+	 * no new service can be created for this session.
+	 */
+	private async _disposeTaskCredentialResources(): Promise<void> {
+		this._taskCredentialDisposed = true;
+		const service = this._taskCredentialService;
+		if (service === undefined) return;
+		try {
+			await service.onSessionShutdown();
+		} catch {
+			// Best effort: shutdown must never fail the host teardown.
+		}
+	}
+
+	/**
+	 * Read-only T3 Task Credential preflight for one operation (the Session
+	 * half of the Automation Host preflight). The caller (the Task Credential
+	 * service) supplies the frozen execution binding, the normalized scope
+	 * facts, and the host-resolvable Gate / node-attach facts; this method
+	 * resolves the frozen policy decision (`credential.task.<operation>` with
+	 * the exact scope-name set, target identity, and TTL facts), the approval
+	 * state from the existing approval ledger, the capability target
+	 * allow/deny facts, the live per-binding sandbox facts, the provider
+	 * scope, and the TTL bounds, then runs the frozen
+	 * {@link resolveTaskCredentialPreflight}.
+	 *
+	 * Pure and fail-closed: it never records a decision, never appends an
+	 * approval or violation, never prepares or disposes a binding or sandbox,
+	 * and only reads the provider's material-free capability snapshot. A
+	 * missing frozen fact (active profile/binding, capability binding,
+	 * sandbox session, provider, or an unambiguous target kind) is a stable
+	 * denial, never a fabricated allow.
+	 */
+	resolveTaskCredentialPreflight(input: TaskCredentialPreflightFactsInput): TaskCredentialPreflightResult {
+		// Step 0 - fail closed before any fact is derived: the scope facts must
+		// be structurally usable and the frozen binding must be valid (the
+		// frozen preflight re-validates the full correlation afterwards).
+		if (!Array.isArray(input.scopes) || input.scopes.length === 0 || !isTaskExecutionBinding(input.binding)) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_invalid") };
+		}
+		const provider = this._taskCredentialProvider;
+		if (provider === undefined) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_provider_unavailable") };
+		}
+		const policyMaxTtlMs = this._taskCredentialPolicyMaxTtlMs;
+		if (policyMaxTtlMs === undefined || policyMaxTtlMs <= 0) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_invalid") };
+		}
+		// The configured safe availability facts: the provider object's
+		// existence alone is never an issuer/delivery availability proof.
+		const providerAvailability = this._taskCredentialProviderAvailability;
+		if (
+			providerAvailability === undefined ||
+			typeof providerAvailability.available !== "boolean" ||
+			typeof providerAvailability.declaresDelivery !== "boolean" ||
+			!providerAvailability.available
+		) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_provider_unavailable") };
+		}
+		// The canonical service-clock timestamp is the preflight's `now` fact.
+		if (typeof input.requestedAt !== "string" || !isTaskCredentialIsoTimestamp(input.requestedAt)) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_invalid") };
+		}
+		// The frozen policy boundary: only the active profile/binding counts;
+		// a fresh unpersisted preview is never treated as a frozen fact.
+		const profile = this._activeExecutionPolicyProfile;
+		const policyBinding = this._activeExecutionPolicyBinding;
+		if (profile === undefined || policyBinding === undefined) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_policy_denied") };
+		}
+		const capabilityBindingId = this._activeCapabilityBinding?.id;
+		if (capabilityBindingId === undefined) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_binding_invalid") };
+		}
+		// Policy decision for `credential.task.<operation>` carrying exactly
+		// the requested scope-name set, target identity, and TTL facts. The
+		// operation id is intentionally omitted: the ask approval id is then
+		// derived canonically from the FULL operation (binding id + resource +
+		// source + credential names + target + TTL), so an approval for one
+		// credential request can never be reused for a different scope,
+		// target, or TTL under the same binding, and the id matches the
+		// existing approval workflow's derivation for the same request.
+		const credentialNames = [...new Set(input.scopes.map((scope) => scope.credentialName))].sort();
+		const capabilityBinding = this._policyCapabilityBindingInput();
+		const targetId = input.binding.targetId;
+		let decision: PolicyDecision;
+		try {
+			decision = authorizePolicyOperation({
+				profile,
+				binding: policyBinding,
+				operation: {
+					resource: taskCredentialPolicyResource(input.operation),
+					source: "rpc",
+					...(targetId === undefined ? {} : { targetId }),
+					...(credentialNames.length === 0 ? {} : { credentialNames }),
+					ttlMs: input.requestedTtlMs,
+				},
+				capabilityBinding,
+			});
+		} catch {
+			return { allowed: false, error: new TaskCredentialError("task_credential_policy_denied") };
+		}
+		// Approval state comes from the existing approval ledger only. A
+		// rejected ask is a hard deny; an ask without a recorded approval stays
+		// `approval_required`; an approved ask passes with `approvalGranted`.
+		const requestId = decision.requestId;
+		let approvalGranted = false;
+		if (decision.outcome === "ask" && requestId !== undefined) {
+			if (this._executionPolicyRejectedRequestIds.includes(requestId)) {
+				return { allowed: false, error: new TaskCredentialError("task_credential_policy_denied") };
+			}
+			approvalGranted = this._executionPolicyApprovedRequestIds.includes(requestId);
+		}
+		// Deny / ask-unapproved short-circuit BEFORE the provider capability
+		// snapshot, mirroring the frozen preflight mapping (steps 5-6): a
+		// denied or unapproved operation never touches the provider at all.
+		if (decision.outcome === "deny") {
+			if (decision.reasonCode === "credential_policy_violation") {
+				return { allowed: false, error: new TaskCredentialError("task_credential_scope_denied") };
+			}
+			if (
+				decision.reasonCode === "sandbox_unavailable" ||
+				decision.reasonCode === "sandbox_capability_insufficient"
+			) {
+				return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+			}
+			return { allowed: false, error: new TaskCredentialError("task_credential_policy_denied") };
+		}
+		if (decision.outcome === "sandbox_required") {
+			return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+		}
+		if (decision.outcome !== "allow" && decision.outcome !== "ask") {
+			return { allowed: false, error: new TaskCredentialError("task_credential_policy_denied") };
+		}
+		if (decision.outcome === "ask" && !approvalGranted) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_approval_required") };
+		}
+		// The credential target must exist and its kind must be resolvable: the
+		// validated command field wins; otherwise the scopes must declare
+		// exactly one distinct target kind (an ambiguous or empty declaration
+		// fails closed).
+		if (targetId === undefined) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+		}
+		let targetKind = input.targetKind;
+		if (targetKind === undefined) {
+			const declaredKinds = new Set<string>();
+			for (const scope of input.scopes) {
+				for (const kind of scope.targetKinds) declaredKinds.add(kind);
+			}
+			if (declaredKinds.size !== 1) {
+				return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+			}
+			targetKind = declaredKinds.values().next().value as string;
+		}
+		// Per-binding sandbox facts of the live session; a missing or
+		// non-ready session stays an unresolvable fact that the frozen
+		// preflight denies (step 8).
+		const sandboxSession = this._activeSandboxSession;
+		let sandbox: TaskCredentialSandboxPreflight | undefined;
+		if (sandboxSession !== undefined) {
+			const bindingCapabilities = sandboxSession.binding.sandboxCapabilities;
+			const handleCapabilities = sandboxSession.currentHandle?.capabilities;
+			// SandboxLifecycleStatus maps onto the frozen SandboxStatus; only
+			// `ready` ever passes the preflight (step 8), so a fresh, preparing,
+			// disposed, or failed session fails closed.
+			const status: TaskCredentialSandboxPreflight["status"] =
+				sandboxSession.currentStatus === "ready"
+					? "ready"
+					: sandboxSession.currentStatus === "disposed"
+						? "disposed"
+						: sandboxSession.currentStatus === "failed"
+							? "failed"
+							: "preparing";
+			sandbox = {
+				bindingId: sandboxSession.binding.id,
+				status,
+				capabilities: {
+					filesystem: bindingCapabilities.filesystem,
+					process: bindingCapabilities.process,
+					network: bindingCapabilities.network,
+					credentialIsolation: bindingCapabilities.credentialIsolation,
+					...(handleCapabilities?.credentialDelivery === undefined
+						? {}
+						: { credentialDelivery: handleCapabilities.credentialDelivery }),
+				},
+				perBinding: true,
+			};
+		}
+		// Sandbox step-8 short-circuit BEFORE the provider capability
+		// snapshot: a missing, foreign, non-ready, or isolation-less sandbox
+		// binding fails closed with the same code the frozen preflight would
+		// produce, so a sandbox denial never touches the provider at all.
+		const sandboxBindingId = input.binding.sandboxBindingId;
+		if (
+			sandboxBindingId === undefined ||
+			sandbox === undefined ||
+			sandbox.bindingId !== sandboxBindingId ||
+			!sandbox.perBinding ||
+			sandbox.status !== "ready" ||
+			!sandbox.capabilities.credentialIsolation
+		) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+		}
+		if (input.operation !== "issue" && !sandbox.capabilities.credentialDelivery) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+		}
+		// Material-free per-binding target capability snapshot (the ONLY
+		// provider query of the preflight); a throwing or malformed snapshot
+		// is an unresolvable fact (fail closed).
+		let target: TaskCredentialTargetCapabilities | undefined;
+		try {
+			target = parseTaskCredentialTargetCapabilities(
+				provider.target.getCapabilities({
+					schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+					targetId,
+					targetKind,
+					bindingId: input.binding.bindingId,
+					requestedAt: input.requestedAt,
+				}),
+			);
+		} catch {
+			target = undefined;
+		}
+		if (target === undefined) {
+			return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
+		}
+		// The frozen preflight runs last and stays the single authority: it
+		// re-validates every fact above (ownership, gate, node attach, decision
+		// correlation, capability target, sandbox, deadline, provider scope).
+		return resolveTaskCredentialPreflight({
+			operation: input.operation,
+			binding: input.binding,
+			sessionId: this.sessionId,
+			runId: input.binding.runId,
+			graphRevision: input.binding.graphRevision,
+			policyBindingId: policyBinding.id,
+			capabilityBindingId,
+			...(input.gate === undefined ? {} : { gate: input.gate }),
+			nodeAttached: input.nodeAttached,
+			decision,
+			approvalGranted,
+			capabilityBinding,
+			scopes: input.scopes,
+			scopeDigest: input.scopeDigest,
+			scopeCount: input.scopeCount,
+			target,
+			...(sandbox === undefined ? {} : { sandbox }),
+			requestedTtlMs: input.requestedTtlMs,
+			ttlBounds: { minTtlMs: TASK_CREDENTIAL_MIN_TTL_MS, maxTtlMs: policyMaxTtlMs },
+			nowMs: Date.parse(input.requestedAt),
+			provider: providerAvailability,
+		});
+	}
+
+	/**
+	 * Session-scoped Task Credential lifecycle service, created lazily on first
+	 * use and owned by this session (dispose() fires its shutdown signal and
+	 * closes it). Returns undefined when the session has no Task Credential
+	 * provider (or the policy TTL ceiling is missing/invalid), or after this
+	 * session was disposed before the service was ever created: without a
+	 * provider, or on a disposed session, every credential operation fails
+	 * closed. The returned instance is stable: repeated calls return the same
+	 * service, so an Automation Host can register it once and drive it through
+	 * this interface instead of touching the provider or the store directly.
+	 */
+	getTaskCredentialService(): TaskCredentialService | undefined {
+		if (this._taskCredentialService !== undefined) return this._taskCredentialService;
+		if (this._taskCredentialDisposed) return undefined;
+		const provider = this._taskCredentialProvider;
+		const policyMaxTtlMs = this._taskCredentialPolicyMaxTtlMs;
+		if (provider === undefined || policyMaxTtlMs === undefined || policyMaxTtlMs <= 0) return undefined;
+		try {
+			const options: TaskCredentialServiceOptions = {
+				session: this.sessionManager,
+				provider,
+				policyMaxTtlMs,
+				preflight: {
+					resolve: (preflightInput: TaskCredentialPreflightFactsInput) =>
+						this.resolveTaskCredentialPreflight(preflightInput),
+				},
+			};
+			this._taskCredentialService = new TaskCredentialService(options);
+		} catch {
+			// Fail closed: a malformed provider or option never breaks the session.
+			this._taskCredentialService = undefined;
+		}
+		return this._taskCredentialService;
 	}
 
 	private _enqueueExecutionPolicyTransition<T>(operation: () => Promise<T>): Promise<T> {

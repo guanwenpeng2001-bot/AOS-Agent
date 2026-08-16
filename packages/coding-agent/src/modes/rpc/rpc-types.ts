@@ -42,6 +42,12 @@ import type {
 	TaskGraphStatus,
 } from "../../core/task-graph.ts";
 import type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
+import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
 	PublicContextSnapshot,
@@ -296,6 +302,64 @@ export type RpcCommand =
 			taskId: string;
 			graphRevision: number;
 			nodeId: string;
+			clientRequestId: string;
+	  }
+	// Task Credential control-plane commands (write commands require clientRequestId)
+	| {
+			id?: string;
+			type: "task.credential.issue";
+			taskId: string;
+			graphRevision: number;
+			nodeId: string;
+			stageId?: string;
+			stageRevision?: number;
+			runId: string;
+			capabilityBindingId: string;
+			policyBindingId: string;
+			sandboxBindingId?: string;
+			targetId?: string;
+			/** Validated credential target kind; omitted kinds are derived from the scope facts when unambiguous. */
+			targetKind?: string;
+			workerId?: string;
+			/** Structured allowlist scopes; never free text and never credential material. */
+			scopes: ReadonlyArray<TaskCredentialScope>;
+			requestedTtlMs: number;
+			clientRequestId: string;
+	  }
+	| { id?: string; type: "task.credential.get"; leaseId: string }
+	| {
+			id?: string;
+			type: "task.credential.list";
+			taskId?: string;
+			nodeId?: string;
+			runId?: string;
+			status?: TaskCredentialStatus;
+			limit?: number;
+	  }
+	| {
+			id?: string;
+			type: "task.credential.heartbeat";
+			leaseId: string;
+			grantId: string;
+			bindingId: string;
+			/** Must equal the current grant's `heartbeatSequence + 1`; stale sequences fail closed. */
+			heartbeatSequence: number;
+			requestedTtlMs: number;
+			clientRequestId: string;
+	  }
+	| {
+			id?: string;
+			type: "task.credential.revoke";
+			leaseId: string;
+			/** Reject-only stable short code; never free text, path, or payload. */
+			reasonCode?: string;
+			clientRequestId: string;
+	  }
+	| {
+			id?: string;
+			type: "task.credential.settle";
+			leaseId: string;
+			reasonCode?: string;
 			clientRequestId: string;
 	  };
 
@@ -873,13 +937,23 @@ export type RpcTaskGraphCommandType =
 	| "task.graph.node.attach"
 	| "task.graph.node.settle";
 
+/** Task Credential v1 control-plane commands. Write commands require `clientRequestId`. */
+export type RpcTaskCredentialCommandType =
+	| "task.credential.issue"
+	| "task.credential.get"
+	| "task.credential.list"
+	| "task.credential.heartbeat"
+	| "task.credential.revoke"
+	| "task.credential.settle";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
 	| RpcRunCommandType
 	| RpcAuditCommandType
 	| RpcTaskGateCommandType
-	| RpcTaskGraphCommandType;
+	| RpcTaskGraphCommandType
+	| RpcTaskCredentialCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -893,6 +967,8 @@ export interface InitializeData {
 	taskGateCommands?: RpcTaskGateCommandType[];
 	/** Additive Task Graph control-plane command list. */
 	taskGraphCommands?: RpcTaskGraphCommandType[];
+	/** Additive Task Credential control-plane command list. */
+	taskCredentialCommands?: RpcTaskCredentialCommandType[];
 	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
 	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
 }
@@ -983,6 +1059,50 @@ export interface TaskGraphListData {
 	truncated: boolean;
 }
 
+/** Data returned by a successful `task.credential.issue`. */
+export interface TaskCredentialIssueData {
+	grant: TaskCredentialGrant;
+	leaseId: string;
+	bindingId: string;
+	/** Safe delivery receipt of the target projection, when the provider reported one. */
+	delivery?: TaskCredentialDeliveryReceipt;
+	/** True when this response replays an already durable issue (same context + clientRequestId). */
+	idempotent: boolean;
+}
+
+/** Data returned by a successful `task.credential.get`. */
+export interface TaskCredentialGetData {
+	grant: TaskCredentialGrant;
+}
+
+/** Data returned by a successful `task.credential.list`. */
+export interface TaskCredentialListData {
+	grants: TaskCredentialGrant[];
+	truncated: boolean;
+}
+
+/** Data returned by a successful `task.credential.heartbeat`. */
+export interface TaskCredentialHeartbeatData {
+	grant: TaskCredentialGrant;
+	leaseId: string;
+	bindingId: string;
+	/** True when this response replays an already durable renewal. */
+	idempotent: boolean;
+}
+
+/** Data returned by a successful `task.credential.revoke`. */
+export interface TaskCredentialRevokeData {
+	grant: TaskCredentialGrant;
+	/** True when this response replays an already durable revoke. */
+	idempotent: boolean;
+}
+
+/** Data returned by a successful `task.credential.settle`. */
+export interface TaskCredentialSettleData {
+	grant: TaskCredentialGrant;
+	idempotent: boolean;
+}
+
 /**
  * Automation Host v1 responses.
  *
@@ -1010,6 +1130,12 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.graph.list"; success: true; data: TaskGraphListData }
 	| { id?: string; type: "response"; command: "task.graph.node.attach"; success: true; data: TaskGraphMutationData }
 	| { id?: string; type: "response"; command: "task.graph.node.settle"; success: true; data: TaskGraphMutationData }
+	| { id?: string; type: "response"; command: "task.credential.issue"; success: true; data: TaskCredentialIssueData }
+	| { id?: string; type: "response"; command: "task.credential.get"; success: true; data: TaskCredentialGetData }
+	| { id?: string; type: "response"; command: "task.credential.list"; success: true; data: TaskCredentialListData }
+	| { id?: string; type: "response"; command: "task.credential.heartbeat"; success: true; data: TaskCredentialHeartbeatData }
+	| { id?: string; type: "response"; command: "task.credential.revoke"; success: true; data: TaskCredentialRevokeData }
+	| { id?: string; type: "response"; command: "task.credential.settle"; success: true; data: TaskCredentialSettleData }
 	| {
 			id?: string;
 			type: "response";
@@ -1073,6 +1199,13 @@ export type {
 	TaskGraphStatus,
 	TaskGraphSummary,
 } from "../../core/task-graph.ts";
+// Re-export public Task Credential types.
+export type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,

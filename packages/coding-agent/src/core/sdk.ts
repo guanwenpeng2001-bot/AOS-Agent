@@ -26,6 +26,7 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
+import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -127,6 +128,15 @@ export interface CreateAgentSessionOptions {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Trusted External Agent Adapter registry composed by the Host. */
 	externalAgentRegistry?: ExternalAgentAdapterRegistry;
+	/**
+	 * Optional Task Credential provider composing the session-scoped Task
+	 * Credential lifecycle service. Absent (or without a policy TTL ceiling)
+	 * means the session has no credential service: every lifecycle signal
+	 * fails closed and no lease is ever issued.
+	 */
+	taskCredentialProvider?: TaskCredentialProvider;
+	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
+	taskCredentialPolicyMaxTtlMs?: number;
 }
 
 /** Result from createAgentSession */
@@ -518,6 +528,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sandboxProviders: options.sandboxProviders,
 		policyProfile: options.policyProfile,
 		externalAgentRegistry: options.externalAgentRegistry,
+		taskCredentialProvider: options.taskCredentialProvider,
+		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		noTools: options.noTools,
 	});
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {

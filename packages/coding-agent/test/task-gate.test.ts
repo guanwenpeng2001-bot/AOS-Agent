@@ -14,6 +14,7 @@ import {
 	isTaskGateTransition,
 	taskGateActionForStatus,
 	taskGateCommandType,
+	type TaskGateRecord,
 	type TaskGateStatus,
 } from "../src/core/task-gate.ts";
 
@@ -851,5 +852,68 @@ describe("task gate store business key lookup", () => {
 		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", 1.5), "task_gate_invalid");
 		expectGateError(() => store.getByBusinessKey("task_42", "stage_review", Number.NaN), "task_gate_invalid");
 		expect(session.getEntries()).toHaveLength(1);
+	});
+});
+
+describe("task gate credential invalidation hook", () => {
+	it("fires onGateInvalidated only for a rejected or cancelled terminal decision", () => {
+		const session = makeSession();
+		const invalidated: Array<{ taskId: string; stageId: string; status: TaskGateStatus }> = [];
+		let nextGate = 0;
+		const store = new TaskGateStore(session, {
+			now: () => NOW,
+			createGateId: () => `gate_inv_${nextGate++}`,
+			onGateInvalidated: (gate) =>
+				invalidated.push({ taskId: gate.taskId, stageId: gate.stageId, status: gate.status }),
+		});
+		const requested = store.request(request({ clientRequestId: "req-inv-1" }));
+		expect(invalidated).toEqual([]);
+
+		// Approval is not an invalidation.
+		store.approve(decide(requested.gate.gateId, "req-inv-approve"));
+		expect(invalidated).toEqual([]);
+
+		// A later gate for the same stage is rejected by business-key conflict, so
+		// request a second stage to exercise reject and cancel.
+		const second = store.request(request({ stageId: "stage_build", clientRequestId: "req-inv-2" }));
+		store.reject(decide(second.gate.gateId, "req-inv-reject", { reasonCode: "blocked" }));
+		expect(invalidated).toHaveLength(1);
+		expect(invalidated[0]).toEqual({ taskId: "task_42", stageId: "stage_build", status: "rejected" });
+
+		const third = store.request(request({ stageId: "stage_deploy", clientRequestId: "req-inv-3" }));
+		store.cancel(decide(third.gate.gateId, "req-inv-cancel"));
+		expect(invalidated).toHaveLength(2);
+		expect(invalidated[1]).toEqual({ taskId: "task_42", stageId: "stage_deploy", status: "cancelled" });
+	});
+
+	it("does not re-fire for idempotent replays and never rewrites the terminal record", () => {
+		const session = makeSession();
+		let fired = 0;
+		let observed: TaskGateRecord | undefined;
+		const store = new TaskGateStore(session, {
+			now: () => NOW,
+			createGateId: () => "gate_replay",
+			onGateInvalidated: (gate) => {
+				fired += 1;
+				observed = gate;
+			},
+		});
+		const requested = store.request(request());
+		store.reject(decide(requested.gate.gateId, "req-reject"));
+		expect(fired).toBe(1);
+		expect(observed?.status).toBe("rejected");
+		expect(observed?.revision).toBe(1);
+
+		// The same decision replayed is idempotent and does not fire again.
+		const replay = store.reject(decide(requested.gate.gateId, "req-reject"));
+		expect(replay.idempotent).toBe(true);
+		expect(fired).toBe(1);
+
+		// The persisted terminal record is untouched: exactly one terminal entry.
+		const terminalEntries = session
+			.getEntries()
+			.filter((entry) => entry.type === "custom" && (entry.data as { action?: string }).action === "rejected");
+		expect(terminalEntries).toHaveLength(1);
+		expect(store.get(requested.gate.gateId)).toMatchObject({ status: "rejected", revision: 1 });
 	});
 });

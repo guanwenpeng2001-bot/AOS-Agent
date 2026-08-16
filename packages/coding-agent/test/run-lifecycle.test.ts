@@ -1418,6 +1418,257 @@ describe("interrupted recovery", () => {
 	});
 });
 
+describe("credential lifecycle hooks", () => {
+	it("fires onRunTerminal once with the final receipt after settle", () => {
+		const session = makeSession();
+		const terminalCalls: Array<{ runId: string; status: string; deadline: boolean }> = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunTerminal: (runId, receipt) => {
+					terminalCalls.push({
+						runId,
+						status: receipt.status,
+						deadline: receipt.terminalError?.code === "run_deadline_exceeded",
+					});
+				},
+			},
+		});
+		const run = accept(coordinator.reserve(), "r-hook");
+		run.start();
+		expect(terminalCalls).toEqual([]);
+		run.settle({ outcome: "completed" });
+		expect(terminalCalls).toEqual([{ runId: "r-hook", status: "completed", deadline: false }]);
+		// A duplicate settle never fires the hook again.
+		run.settle({ outcome: "completed" });
+		expect(terminalCalls).toHaveLength(1);
+		// The hook never rewrites the ledger: the terminal receipt is untouched.
+		expect(coordinator.getRun("r-hook")?.record.status).toBe("completed");
+		expect(ledgerKinds(session)).toEqual(["accepted", "started", "terminal"]);
+	});
+
+	it("exposes the deadline via the receipt terminal error code", () => {
+		const session = makeSession();
+		const terminalCalls: Array<{ status: string; code?: string }> = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunTerminal: (runId, receipt) => {
+					terminalCalls.push({ status: receipt.status, code: receipt.terminalError?.code });
+				},
+			},
+		});
+		const run = accept(coordinator.reserve(), "r-deadline");
+		run.start();
+		run.requestDeadlineExceeded();
+		run.settle({ outcome: "completed" });
+		expect(terminalCalls).toEqual([{ status: "failed", code: "run_deadline_exceeded" }]);
+	});
+
+	it("fires onRunInterrupted once per recovered run and never for live or settled runs", () => {
+		const session = makeSession();
+		// A live run settles normally; a second run stays interrupted.
+		const c1 = createRunLifecycleCoordinator(session, { now: () => "2026-08-10T12:00:00.000Z", diagnostics: () => {} });
+		const live = accept(c1.reserve(), "r-live");
+		live.start();
+		live.settle({ outcome: "completed" });
+		const interrupted = accept(c1.reserve(), "r-interrupted");
+		interrupted.start();
+
+		const interruptedCalls: string[] = [];
+		const c2 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:00.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunInterrupted: (runId) => interruptedCalls.push(runId),
+			},
+		});
+		const rebuilt = c2.rebuildIndex();
+		expect(rebuilt.get("r-live")?.receipt).toBeDefined();
+		expect(rebuilt.get("r-interrupted")?.recovery).toBe("interrupted");
+		expect(interruptedCalls).toEqual(["r-interrupted"]);
+		// Rebuilds are idempotent: the hook fires at most once per run.
+		c2.rebuildIndex();
+		c2.getRun("r-interrupted");
+		expect(interruptedCalls).toEqual(["r-interrupted"]);
+		// A fresh coordinator instance signals the recovered run again (restart).
+		const c3 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:00.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunInterrupted: (runId) => interruptedCalls.push(runId),
+			},
+		});
+		c3.rebuildIndex();
+		expect(interruptedCalls).toEqual(["r-interrupted", "r-interrupted"]);
+	});
+
+	it("never reports a live run as interrupted", () => {
+		const session = makeSession();
+		const interruptedCalls: string[] = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:00.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunInterrupted: (runId) => interruptedCalls.push(runId),
+			},
+		});
+		const run = accept(coordinator.reserve(), "r-live");
+		run.start();
+		coordinator.rebuildIndex();
+		expect(interruptedCalls).toEqual([]);
+		expect(coordinator.getRun("r-live")?.record.status).toBe("running");
+	});
+
+	it("terminal and interrupted observations fire only after the Run facts are persisted", () => {
+		const session = makeSession();
+		const observed: Array<{ runId: string; kinds: string[] }> = [];
+		const c1 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunTerminal: (runId) => observed.push({ runId, kinds: ledgerKinds(session) }),
+				onRunInterrupted: (runId) => observed.push({ runId, kinds: ledgerKinds(session) }),
+			},
+		});
+		const run = accept(c1.reserve(), "r-order");
+		run.start();
+		run.settle({ outcome: "completed" });
+		// The terminal observer sees the persisted terminal fact in the ledger.
+		expect(observed).toEqual([{ runId: "r-order", kinds: ["accepted", "started", "terminal"] }]);
+
+		// A recovered run without a terminal receipt is observed only after its
+		// accepted/started facts are folded from the persisted ledger.
+		const c2 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunInterrupted: (runId) => observed.push({ runId, kinds: ledgerKinds(session) }),
+			},
+		});
+		const interrupted = accept(c2.reserve(), "r-order-int");
+		interrupted.start();
+		const c3 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunInterrupted: (runId) => observed.push({ runId, kinds: ledgerKinds(session) }),
+			},
+		});
+		c3.rebuildIndex();
+		// The recovered run's own accepted/started facts are the last two entries
+		// in the append-only ledger and are persisted before the observer fires.
+		expect(observed[1].kinds.slice(-2)).toEqual(["accepted", "started"]);
+	});
+
+	it("fires onRunCancelRequested once on the first cancel request only", () => {
+		const session = makeSession();
+		const cancelCalls: string[] = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunCancelRequested: (runId) => cancelCalls.push(runId),
+			},
+		});
+		const run = accept(coordinator.reserve(), "r-cancel");
+		run.start();
+		run.requestCancel();
+		expect(cancelCalls).toEqual(["r-cancel"]);
+		// A duplicate cancel request never fires the observer again.
+		run.requestCancel();
+		run.requestCancel();
+		expect(cancelCalls).toEqual(["r-cancel"]);
+		// The observer is a side channel: no Run fact was written by the request.
+		expect(ledgerKinds(session)).toEqual(["accepted", "started"]);
+		// The terminal still settles through the normal gate, once.
+		run.settle({ outcome: "completed" });
+		expect(coordinator.getRun("r-cancel")?.record.status).toBe("cancelled");
+		expect(cancelCalls).toEqual(["r-cancel"]);
+		expect(ledgerKinds(session)).toEqual(["accepted", "started", "terminal"]);
+	});
+
+	it("never fires onRunCancelRequested for settle without a cancel request or after terminal", () => {
+		const session = makeSession();
+		const cancelCalls: string[] = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunCancelRequested: (runId) => cancelCalls.push(runId),
+			},
+		});
+		// A run that settles completed without an explicit request never fires it.
+		const direct = accept(coordinator.reserve(), "r-direct");
+		direct.start();
+		direct.settle({ outcome: "completed" });
+		expect(cancelCalls).toEqual([]);
+		expect(coordinator.getRun("r-direct")?.record.status).toBe("completed");
+		// A request after the terminal fact is ignored.
+		direct.requestCancel();
+		expect(cancelCalls).toEqual([]);
+		// A deadline request is not a cancel request.
+		const deadline = accept(coordinator.reserve(), "r-deadline-cancel");
+		deadline.start();
+		deadline.requestDeadlineExceeded();
+		expect(cancelCalls).toEqual([]);
+		deadline.settle({ outcome: "completed" });
+		expect(cancelCalls).toEqual([]);
+	});
+
+	it("a cancel request that loses a deadline race never fires the observer", () => {
+		const session = makeSession();
+		const cancelCalls: string[] = [];
+		const terminalCalls: Array<{ runId: string; status: string }> = [];
+		const coordinator = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:01.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunCancelRequested: (runId) => cancelCalls.push(runId),
+				onRunTerminal: (runId, receipt) => terminalCalls.push({ runId, status: receipt.status }),
+			},
+		});
+		// Deadline intent wins: the later cancel request is ignored, the terminal
+		// observation (failed + run_deadline_exceeded) fires after the fact is
+		// persisted, and the cancel observer never fires.
+		const run = accept(coordinator.reserve(), "r-race");
+		run.start();
+		run.requestDeadlineExceeded();
+		run.requestCancel();
+		expect(cancelCalls).toEqual([]);
+		run.settle({ outcome: "completed" });
+		expect(terminalCalls).toEqual([{ runId: "r-race", status: "failed" }]);
+		expect(coordinator.getRun("r-race")?.record.terminalError?.code).toBe("run_deadline_exceeded");
+	});
+
+	it("never fires onRunCancelRequested for a replayed run handle", () => {
+		const session = makeSession();
+		const cancelCalls: string[] = [];
+		const c1 = createRunLifecycleCoordinator(session, { now: () => "2026-08-10T12:00:00.000Z", diagnostics: () => {} });
+		const run = accept(c1.reserve(), "r-replay");
+		run.start();
+		run.settle({ outcome: "completed" });
+
+		const c2 = createRunLifecycleCoordinator(session, {
+			now: () => "2026-08-10T12:00:00.000Z",
+			diagnostics: () => {},
+			credentialHooks: {
+				onRunCancelRequested: (runId) => cancelCalls.push(runId),
+			},
+		});
+		const result = c2.getRun("r-replay");
+		expect(result).toBeDefined();
+		// `replayedHandle` is impl-internal; the duplicate-request path returns
+		// a read-only handle whose requestCancel() is a documented no-op.
+		const replayed = (c2 as unknown as { replayedHandle(run: RunResult): RunHandle }).replayedHandle(result!);
+		replayed.requestCancel();
+		expect(cancelCalls).toEqual([]);
+		expect(ledgerKinds(session)).toEqual(["accepted", "started", "terminal"]);
+	});
+});
+
 describe("structural contract", () => {
 	it("is satisfied by a real SessionManager without wrapping", () => {
 		const session = makeSession();

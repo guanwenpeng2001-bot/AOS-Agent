@@ -92,6 +92,20 @@ import {
 	type TaskGraphRecord,
 	type TaskGraphStore,
 } from "../../core/task-graph.ts";
+import {
+	TASK_CREDENTIAL_MAX_SCOPES,
+	TASK_CREDENTIAL_MAX_TTL_MS,
+	TASK_CREDENTIAL_MIN_TTL_MS,
+	TASK_CREDENTIAL_STATUS,
+	TaskCredentialError,
+	isTaskCredentialScope,
+	serializeTaskCredentialDeliveryReceipt,
+	serializeTaskCredentialGrant,
+	type TaskCredentialScope,
+	type TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
+import type { TaskCredentialService } from "../../core/task-credential-service.ts";
+import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type {
 	AutomationError,
@@ -165,6 +179,7 @@ import type {
 	RpcMcpGetPromptReceipt,
 	RpcMcpReadResourceReceipt,
 	RpcCommand,
+	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
 	RpcExtensionUIRequest,
@@ -176,6 +191,12 @@ import type {
 	RpcSourceInfo,
 	RunAcceptedData,
 	RunGetData,
+	TaskCredentialGetData,
+	TaskCredentialHeartbeatData,
+	TaskCredentialIssueData,
+	TaskCredentialListData,
+	TaskCredentialRevokeData,
+	TaskCredentialSettleData,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphMutationData,
@@ -300,6 +321,7 @@ export type {
 	RpcExternalMapCommand,
 	RpcRunCommandType,
 	RpcSessionState,
+	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
 	RunAcceptedData,
@@ -311,6 +333,12 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	TaskCredentialGetData,
+	TaskCredentialHeartbeatData,
+	TaskCredentialIssueData,
+	TaskCredentialListData,
+	TaskCredentialRevokeData,
+	TaskCredentialSettleData,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphMutationData,
@@ -565,6 +593,7 @@ export class RpcHostController {
 		let coordinator: RunLifecycleCoordinator | undefined;
 		let taskGateStore: TaskGateStore | undefined;
 		let taskGraphStore: TaskGraphStore | undefined;
+		let taskCredentialService: TaskCredentialService | undefined;
 		let activeHandle: RunHandle | undefined;
 		/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
 		let activeReservation: RunReservation | undefined;
@@ -1062,17 +1091,257 @@ export class RpcHostController {
 				false,
 			);
 
+		type TaskCredentialCommandErrorCode = TaskCredentialError["code"] | "task_credential_unavailable";
+
+		const taskCredentialErrorMessage = (code: TaskCredentialCommandErrorCode): string => {
+			switch (code) {
+				case "task_credential_invalid":
+					return "The task credential request is invalid.";
+				case "task_credential_binding_invalid":
+					return "The task credential binding is invalid or does not match the current execution context.";
+				case "task_credential_gate_required":
+					return "The task credential requires an approved task gate for this stage revision.";
+				case "task_credential_policy_denied":
+					return "The task credential policy denied the requested scope, target, or action.";
+				case "task_credential_approval_required":
+					return "The task credential policy approval is required but not granted.";
+				case "task_credential_scope_denied":
+					return "The task credential requested scope exceeds the allowlist.";
+				case "task_credential_ttl_invalid":
+					return "The task credential TTL is outside the allowed bounds or deadlines.";
+				case "task_credential_provider_unavailable":
+					return "The task credential issuer is temporarily unavailable.";
+				case "task_credential_issue_failed":
+					return "The task credential issuer did not return a manageable grant.";
+				case "task_credential_not_found":
+					return "The task credential grant or lease was not found in the current session.";
+				case "task_credential_conflict":
+					return "The task credential state conflict: binding, scope, target, or revision does not match.";
+				case "task_lease_expired":
+					return "The task credential lease is expired and cannot be extended.";
+				case "task_lease_heartbeat_invalid":
+					return "The task credential heartbeat sequence is not strictly increasing.";
+				case "task_credential_target_unavailable":
+					return "The task credential target does not declare the required isolation or revocation capability.";
+				case "task_credential_delivery_failed":
+					return "The task credential delivery failed.";
+				case "task_credential_revocation_unknown":
+					return "The task credential revocation outcome is unknown.";
+				case "task_credential_persistence_failed":
+					return "The task credential transition could not be persisted.";
+				case "task_credential_unavailable":
+					return "The task credential service is not available in this host.";
+			}
+		};
+
+		/**
+		 * Map a TaskCredentialError to a stable, public-safe Automation Error. The
+		 * code stays on the wire unchanged; only the code-derived message is used.
+		 * The shared AutomationErrorCode union includes every
+		 * TaskCredentialErrorCode, so a credential code can never be hidden as a
+		 * generic fallback.
+		 */
+		const taskCredentialCommandError = (
+			err: unknown,
+			fallback: TaskCredentialError["code"],
+		): AutomationError =>
+			createAutomationError(
+				err instanceof TaskCredentialError ? err.code : fallback,
+				taskCredentialErrorMessage(err instanceof TaskCredentialError ? err.code : fallback),
+				false,
+			);
+
+		/**
+		 * Only the documented keys may appear in a task.credential command. Free
+		 * text, tool payloads, paths, and credentials are rejected before they
+		 * reach the service.
+		 */
+		const TASK_CREDENTIAL_COMMAND_KEYS: Readonly<Record<RpcTaskCredentialCommandType, ReadonlySet<string>>> = {
+			"task.credential.issue": new Set([
+				"id",
+				"type",
+				"taskId",
+				"graphRevision",
+				"nodeId",
+				"stageId",
+				"stageRevision",
+				"runId",
+				"capabilityBindingId",
+				"policyBindingId",
+				"sandboxBindingId",
+				"targetId",
+				"targetKind",
+				"workerId",
+				"scopes",
+				"requestedTtlMs",
+				"clientRequestId",
+			]),
+			"task.credential.get": new Set(["id", "type", "leaseId"]),
+			"task.credential.list": new Set(["id", "type", "taskId", "nodeId", "runId", "status", "limit"]),
+			"task.credential.heartbeat": new Set([
+				"id",
+				"type",
+				"leaseId",
+				"grantId",
+				"bindingId",
+				"heartbeatSequence",
+				"requestedTtlMs",
+				"clientRequestId",
+			]),
+			"task.credential.revoke": new Set(["id", "type", "leaseId", "reasonCode", "clientRequestId"]),
+			"task.credential.settle": new Set(["id", "type", "leaseId", "reasonCode", "clientRequestId"]),
+		};
+
+		const isTaskCredentialCommandShapeValid = (command: RpcCommand): boolean => {
+			const allowed = TASK_CREDENTIAL_COMMAND_KEYS[command.type as RpcTaskCredentialCommandType];
+			if (allowed === undefined) return false;
+			return Object.keys(command).every((key) => allowed.has(key));
+		};
+
+		/**
+		 * Host-resolvable Task Credential issue preflight (T3 contract). The
+		 * control plane enforces the read-only preflight facts it can resolve
+		 * from its own stores before the service is touched: the stage pair
+		 * must appear together or not at all, a binding with a stage pair
+		 * requires an approved Gate at the exact stage revision, the graph node
+		 * must be attached to the Run, the requested TTL must fit the frozen
+		 * lease bounds, and the scope list must be non-empty, bounded, and
+		 * structurally valid. The Session-side facts (the `credential.task.*`
+		 * policy decision, the capability target snapshot, the per-binding
+		 * sandbox facts, and the provider scope) are resolved by the Session's
+		 * read-only preflight resolver inside the service; the control plane
+		 * never fabricates them. Returns the stable failure code or undefined
+		 * when the preflight passes.
+		 */
+		const taskCredentialIssuePreflight = (input: {
+			readonly taskId: string;
+			readonly graphRevision: number;
+			readonly nodeId: string;
+			readonly stageId?: string;
+			readonly stageRevision?: number;
+			readonly runId: string;
+			readonly scopes: ReadonlyArray<TaskCredentialScope>;
+			readonly requestedTtlMs: number;
+		}): TaskCredentialError["code"] | undefined => {
+			// The stage pair must appear together or not at all.
+			if ((input.stageId === undefined) !== (input.stageRevision === undefined)) {
+				return "task_credential_invalid";
+			}
+			// Gate (preflight step 3): an approved Gate at the exact stage
+			// revision; pending, rejected, cancelled, missing, or stale gates
+			// never pass.
+			if (input.stageId !== undefined && input.stageRevision !== undefined) {
+				const gate = resolveGateFact(input.taskId, input.stageId, input.stageRevision);
+				if (gate === undefined || gate.status !== "approved" || gate.stageRevision !== input.stageRevision) {
+					return "task_credential_gate_required";
+				}
+			}
+			// Node attach (preflight step 4): the graph node must be attached to
+			// the Run.
+			if (!resolveNodeAttached(input.taskId, input.graphRevision, input.nodeId, input.runId)) {
+				return "task_credential_binding_invalid";
+			}
+			// TTL bounds (preflight step 5 floor/ceiling): the frozen lease
+			// bounds always apply; the policy ceiling is enforced by the
+			// service's TTL bounds.
+			if (input.requestedTtlMs < TASK_CREDENTIAL_MIN_TTL_MS || input.requestedTtlMs > TASK_CREDENTIAL_MAX_TTL_MS) {
+				return "task_credential_ttl_invalid";
+			}
+			// Scope facts (preflight step 1): non-empty, bounded, structurally
+			// valid; normalization and digest correlation run in the service.
+			if (
+				!Array.isArray(input.scopes) ||
+				input.scopes.length === 0 ||
+				input.scopes.length > TASK_CREDENTIAL_MAX_SCOPES ||
+				!input.scopes.every((scope) => isTaskCredentialScope(scope))
+			) {
+				return "task_credential_invalid";
+			}
+			return undefined;
+		};
+
+		/**
+		 * Resolve the T3 Gate fact of one stage pair from the live Task Gate
+		 * store. Read-only; never appends. `undefined` means the Gate cannot be
+		 * resolved (the frozen preflight denies with `task_credential_gate_required`).
+		 */
+		const resolveGateFact = (
+			taskId: string,
+			stageId: string,
+			stageRevision: number,
+		): TaskCredentialGatePreflight | undefined => {
+			const gate = taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision);
+			if (gate === undefined) return undefined;
+			return { status: gate.status, stageRevision: gate.stageRevision };
+		};
+
+		/**
+		 * Resolve the T3 node-attach fact of one graph node from the live Task
+		 * Graph store. Read-only; never appends. A missing graph, missing node,
+		 * or a node not attached to the Run is `false` (the frozen preflight
+		 * denies with `task_credential_binding_invalid`).
+		 */
+		const resolveNodeAttached = (
+			taskId: string,
+			graphRevision: number,
+			nodeId: string,
+			runId: string,
+		): boolean => {
+			const graph = taskGraphStore?.get(taskId, graphRevision);
+			const node = graph?.nodes.find((candidate) => candidate.nodeId === nodeId);
+			return node !== undefined && node.runRef?.runId === runId;
+		};
+
+		/** True when the value is a positive safe integer; used for list limits. */
+		const isPositiveInteger = (value: unknown): value is number =>
+			typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+		/** True when the value is one of the stable lease statuses. */
+		const isTaskCredentialStatusValue = (value: unknown): value is TaskCredentialStatus =>
+			typeof value === "string" && (TASK_CREDENTIAL_STATUS as readonly string[]).includes(value);
+
 		/**
 		 * Rebuild the Automation Host state stores for the current Session. The Run
 		 * lookup and Task Gate lookup are read-only adapters over the live
 		 * coordinator/gate store, so attach only sees current-Session accepted or
 		 * running Runs and settle only sees the current terminal receipt; the Task
 		 * Graph store never starts, cancels, or rewrites a Run and never creates,
-		 * approves, rejects, or cancels a Gate.
+		 * approves, rejects, or cancels a Gate. The Task Credential service is
+		 * session-owned and lazily created by the Session from its configured
+		 * provider; without a provider every credential command fails closed with
+		 * task_credential_unavailable.
 		 */
 		const rebuildAutomationStores = (): void => {
-			coordinator = createRunLifecycleCoordinator(session.sessionManager);
-			taskGateStore = createTaskGateStore(session.sessionManager);
+			taskCredentialService = session.getTaskCredentialService?.();
+			coordinator = createRunLifecycleCoordinator(session.sessionManager, {
+				credentialHooks: {
+					onRunTerminal: (runId, receipt) => {
+						taskCredentialService?.onRunTerminal({
+							runId,
+							status: receipt.status,
+							...(receipt.terminalError === undefined ? {} : { terminalErrorCode: receipt.terminalError.code }),
+						});
+					},
+					onRunInterrupted: (runId) => {
+						taskCredentialService?.onRunInterrupted(runId);
+					},
+					onRunCancelRequested: (runId) => {
+						// The first cancel request revokes the run's live leases
+						// before the terminal transition; the terminal event settles.
+						taskCredentialService?.onRunCancelRequested(runId);
+					},
+				},
+			});
+			taskGateStore = createTaskGateStore(session.sessionManager, {
+				onGateInvalidated: (gate) => {
+					taskCredentialService?.onGateInvalidated({
+						taskId: gate.taskId,
+						stageId: gate.stageId,
+						stageRevision: gate.stageRevision,
+						status: gate.status === "rejected" ? "rejected" : "cancelled",
+					});
+				},
+			});
 			taskGraphStore = createTaskGraphStore(
 				session.sessionManager,
 				{
@@ -1090,6 +1359,21 @@ export class RpcHostController {
 				{
 					getByBusinessKey: (taskId, stageId, stageRevision) =>
 						taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision),
+				},
+				{
+					onNodeTerminal: (node, taskId, runId) => {
+						taskCredentialService?.onGraphNodeTerminal({
+							taskId,
+							nodeId: node.nodeId,
+							runId,
+							status:
+								node.status === "succeeded"
+									? "succeeded"
+									: node.status === "failed"
+										? "failed"
+										: "cancelled",
+						});
+					},
 				},
 			);
 		};
@@ -3529,6 +3813,12 @@ export class RpcHostController {
 					controller.abort();
 				}
 			}
+			// Session-switch teardown of the outgoing Task Credential service:
+			// every outstanding lease of the outgoing Session is revoked and
+			// settled before the incoming Session is assigned. Idempotent and
+			// best-effort; the runtime fires the same signal when it disposes the
+			// outgoing Session, and the incoming Session binds a fresh service.
+			taskCredentialService?.onSessionShutdown();
 			if (activeReservation !== undefined) {
 				try {
 					activeReservation.release();
@@ -3694,6 +3984,14 @@ export class RpcHostController {
 							"task.graph.list",
 							"task.graph.node.attach",
 							"task.graph.node.settle",
+						],
+						taskCredentialCommands: [
+							"task.credential.issue",
+							"task.credential.get",
+							"task.credential.list",
+							"task.credential.heartbeat",
+							"task.credential.revoke",
+							"task.credential.settle",
 						],
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
@@ -4009,6 +4307,421 @@ export class RpcHostController {
 						return taskGraphMutationResponse(id, "task.graph.node.settle", result);
 					} catch (err) {
 						return automationError(id, "task.graph.node.settle", taskGraphCommandError(err, "task_graph_invalid"));
+					}
+				}
+
+				case "task.credential.issue": {
+					if (!hostInitialized || coordinator === undefined) {
+						return automationError(id, "task.credential.issue", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.issue",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.issue",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						// Current-Session ownership: the grant is bound to a Run of this
+						// Session's ledger, so a lease can never be issued for another
+						// Session or a phantom Run. The service itself is session-scoped.
+						const boundRun = coordinator.getRun(command.runId);
+						if (boundRun === undefined || boundRun.record.sessionId !== session.sessionId) {
+							return automationError(
+								id,
+								"task.credential.issue",
+								taskCredentialCommandError(undefined, "task_credential_binding_invalid"),
+							);
+						}
+						// T3 preflight: the host-resolvable read-only facts (gate
+						// approval, node attach, TTL bounds, scope structure) must pass
+						// before the service is touched.
+						const preflightDenied = taskCredentialIssuePreflight({
+							taskId: command.taskId,
+							graphRevision: command.graphRevision,
+							nodeId: command.nodeId,
+							...(command.stageId === undefined ? {} : { stageId: command.stageId }),
+							...(command.stageRevision === undefined ? {} : { stageRevision: command.stageRevision }),
+							runId: command.runId,
+							scopes: command.scopes,
+							requestedTtlMs: command.requestedTtlMs,
+						});
+						if (preflightDenied !== undefined) {
+							return automationError(
+								id,
+								"task.credential.issue",
+								taskCredentialCommandError(undefined, preflightDenied),
+							);
+						}
+						const result = taskCredentialService.issueForTaskRun({
+							taskId: command.taskId,
+							graphRevision: command.graphRevision,
+							nodeId: command.nodeId,
+							...(command.stageId === undefined ? {} : { stageId: command.stageId }),
+							...(command.stageRevision === undefined ? {} : { stageRevision: command.stageRevision }),
+							runId: command.runId,
+							capabilityBindingId: command.capabilityBindingId,
+							policyBindingId: command.policyBindingId,
+							...(command.sandboxBindingId === undefined ? {} : { sandboxBindingId: command.sandboxBindingId }),
+							...(command.targetId === undefined ? {} : { targetId: command.targetId }),
+							...(command.targetKind === undefined ? {} : { targetKind: command.targetKind }),
+							...(command.workerId === undefined ? {} : { workerId: command.workerId }),
+							scopes: command.scopes,
+							requestedTtlMs: command.requestedTtlMs,
+							clientRequestId: command.clientRequestId,
+							...(command.stageId === undefined || command.stageRevision === undefined
+								? {}
+								: { gate: resolveGateFact(command.taskId, command.stageId, command.stageRevision) }),
+							nodeAttached: resolveNodeAttached(command.taskId, command.graphRevision, command.nodeId, command.runId),
+						});
+						if (!result.ok) {
+							return automationError(
+								id,
+								"task.credential.issue",
+								taskCredentialCommandError(undefined, result.code),
+							);
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.credential.issue",
+							success: true,
+							data: {
+								grant: serializeTaskCredentialGrant(result.grant),
+								leaseId: result.leaseId,
+								bindingId: result.bindingId,
+								...(result.delivery === undefined
+									? {}
+									: { delivery: serializeTaskCredentialDeliveryReceipt(result.delivery) }),
+								idempotent: result.idempotent,
+							} satisfies TaskCredentialIssueData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.issue",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
+					}
+				}
+
+				case "task.credential.get": {
+					if (!hostInitialized) {
+						return automationError(id, "task.credential.get", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.get",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.get",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						const grant = taskCredentialService.get(command.leaseId);
+						if (grant === undefined) {
+							return automationError(
+								id,
+								"task.credential.get",
+								taskCredentialCommandError(undefined, "task_credential_not_found"),
+							);
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.credential.get",
+							success: true,
+							data: { grant: serializeTaskCredentialGrant(grant) } satisfies TaskCredentialGetData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.get",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
+					}
+				}
+
+				case "task.credential.list": {
+					if (!hostInitialized) {
+						return automationError(id, "task.credential.list", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.list",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.list",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					const status =
+						command.status === undefined || isTaskCredentialStatusValue(command.status)
+							? command.status
+							: undefined;
+					if (status === undefined && command.status !== undefined) {
+						return automationError(
+							id,
+							"task.credential.list",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					if (command.limit !== undefined && !isPositiveInteger(command.limit)) {
+						return automationError(
+							id,
+							"task.credential.list",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						const grants = taskCredentialService.list({
+							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
+							...(command.nodeId === undefined ? {} : { nodeId: command.nodeId }),
+							...(command.runId === undefined ? {} : { runId: command.runId }),
+							...(status === undefined ? {} : { status }),
+						});
+						const limit = command.limit;
+						const page = limit === undefined ? grants : grants.slice(0, limit);
+						return {
+							id,
+							type: "response",
+							command: "task.credential.list",
+							success: true,
+							data: {
+								grants: [...page].map((grant) => serializeTaskCredentialGrant(grant)),
+								truncated: limit !== undefined && grants.length > limit,
+							} satisfies TaskCredentialListData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.list",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
+					}
+				}
+
+				case "task.credential.heartbeat": {
+					if (!hostInitialized) {
+						return automationError(id, "task.credential.heartbeat", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.heartbeat",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.heartbeat",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						// The renew preflight facts are host-resolvable from the
+						// lease's own grant and stores: the stage pair's Gate and the
+						// graph node attach of the lease's run context.
+						const grant = taskCredentialService.get(command.leaseId);
+						let gate: TaskCredentialGatePreflight | undefined;
+						let nodeAttached = false;
+						if (grant !== undefined) {
+							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
+								gate = resolveGateFact(grant.taskId, grant.stageId, grant.stageRevision);
+							}
+							nodeAttached = resolveNodeAttached(grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+						}
+						const result = taskCredentialService.renew({
+							leaseId: command.leaseId,
+							grantId: command.grantId,
+							bindingId: command.bindingId,
+							heartbeatSequence: command.heartbeatSequence,
+							requestedTtlMs: command.requestedTtlMs,
+							clientRequestId: command.clientRequestId,
+							...(gate === undefined ? {} : { gate }),
+							nodeAttached,
+						});
+						if (!result.ok) {
+							return automationError(
+								id,
+								"task.credential.heartbeat",
+								taskCredentialCommandError(undefined, result.code),
+							);
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.credential.heartbeat",
+							success: true,
+							data: {
+								grant: serializeTaskCredentialGrant(result.grant),
+								leaseId: result.leaseId,
+								bindingId: result.bindingId,
+								idempotent: result.idempotent,
+							} satisfies TaskCredentialHeartbeatData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.heartbeat",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
+					}
+				}
+
+				case "task.credential.revoke": {
+					if (!hostInitialized) {
+						return automationError(id, "task.credential.revoke", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.revoke",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.revoke",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						// The revoke preflight facts are host-resolvable from the
+						// lease's own grant and stores (same resolution as renew).
+						const grant = taskCredentialService.get(command.leaseId);
+						let gate: TaskCredentialGatePreflight | undefined;
+						let nodeAttached = false;
+						if (grant !== undefined) {
+							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
+								gate = resolveGateFact(grant.taskId, grant.stageId, grant.stageRevision);
+							}
+							nodeAttached = resolveNodeAttached(grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+						}
+						const result = taskCredentialService.revoke({
+							leaseId: command.leaseId,
+							...(command.reasonCode === undefined ? {} : { reasonCode: command.reasonCode }),
+							clientRequestId: command.clientRequestId,
+							...(gate === undefined ? {} : { gate }),
+							nodeAttached,
+						});
+						if (!result.ok) {
+							return automationError(
+								id,
+								"task.credential.revoke",
+								taskCredentialCommandError(undefined, result.code),
+							);
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.credential.revoke",
+							success: true,
+							data: {
+								grant: serializeTaskCredentialGrant(result.grant),
+								idempotent: result.idempotent,
+							} satisfies TaskCredentialRevokeData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.revoke",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
+					}
+				}
+
+				case "task.credential.settle": {
+					if (!hostInitialized) {
+						return automationError(id, "task.credential.settle", hostNotInitializedError());
+					}
+					if (taskCredentialService === undefined) {
+						return automationError(
+							id,
+							"task.credential.settle",
+							createAutomationError(
+								"task_credential_unavailable",
+								taskCredentialErrorMessage("task_credential_unavailable"),
+								false,
+							),
+						);
+					}
+					if (!isTaskCredentialCommandShapeValid(command)) {
+						return automationError(
+							id,
+							"task.credential.settle",
+							taskCredentialCommandError(undefined, "task_credential_invalid"),
+						);
+					}
+					try {
+						const result = taskCredentialService.settle({
+							leaseId: command.leaseId,
+							...(command.reasonCode === undefined ? {} : { reasonCode: command.reasonCode }),
+							clientRequestId: command.clientRequestId,
+						});
+						if (!result.ok) {
+							return automationError(
+								id,
+								"task.credential.settle",
+								taskCredentialCommandError(undefined, result.code),
+							);
+						}
+						return {
+							id,
+							type: "response",
+							command: "task.credential.settle",
+							success: true,
+							data: {
+								grant: serializeTaskCredentialGrant(result.grant),
+								idempotent: result.idempotent,
+							} satisfies TaskCredentialSettleData,
+						};
+					} catch (err) {
+						return automationError(
+							id,
+							"task.credential.settle",
+							taskCredentialCommandError(err, "task_credential_invalid"),
+						);
 					}
 				}
 
@@ -5136,6 +5849,11 @@ export class RpcHostController {
 				await Promise.all(
 					[...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)),
 				);
+				// Worker detach: the Host connection (worker) that drove the active
+				// Run detached from this Session. Revoke + settle every lease bound
+				// to the run (and its worker) before the transport is unbound;
+				// best-effort and idempotent with the run's own terminal signal.
+				taskCredentialService?.onWorkerDetach({ runId: handleAtDetach?.runId });
 			})().finally(() => {
 				detachTransportPromise = undefined;
 			});

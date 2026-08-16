@@ -27,6 +27,40 @@ runner appends exactly one validated `remote.operation` custom entry after the
 terminal receipt is formed. That entry is an Audit projection of the provider
 boundary result, not a second Run ledger or synthetic Run terminal receipt.
 
+## Task lease correlation
+
+A request may carry an optional `taskLease` reference
+(`TaskLeaseReference`) that correlates the operation with a Task Credential
+lease. The reference carries exactly the three stable identities:
+
+```ts
+interface TaskLeaseReference {
+  readonly leaseId: string;
+  readonly grantId: string;
+  readonly bindingId: string;
+}
+```
+
+It never carries an expiry, a heartbeat sequence, a scope, a target, or a
+status, so it cannot drive operation deadline, cancel, or heartbeat behavior.
+The terminal receipt repeats the same reference as a correlation fact when the
+request carried one.
+
+The host may inject a read-only `taskLeaseVerifier` that checks the referenced
+lease before provider execution. The check runs exactly once per operation,
+before the provider is invoked, and must not call the credential provider or
+append or mutate anything; the host wires a read-only store lookup behind it.
+It must confirm the lease is live (`active` or `renewing`, not expired) and
+that its binding, scope, and target correlate with the request's binding
+references. A missing verifier, a thrown verifier, or a result that is not the
+exact safe verified snapshot fails the operation closed as `invalid` before
+any provider execution. The verifier never participates in cancellation,
+deadlines, or heartbeats: those stay driven by the operation's own identity,
+deadline, and lease only. Task Credential lease expiry is a deadline, and a
+lease in `revocation_unknown` / quarantined state can never manufacture an
+operation terminal: it fails closed and coexists with an operation
+`side-effect-unknown` outcome without faking one.
+
 ## Cancellation, deadline, and lease
 
 `deadlineAt` is an optional canonical UTC timestamp. An expired deadline is
@@ -59,9 +93,9 @@ The stable error categories are:
 
 Unknown provider exceptions fail closed as `side-effect-unknown`. The final
 `RemoteOperationReceipt` includes the operation ID, terminal status, bounded
-timestamps, binding references, optional binding association, artifact
-references, side-effect state, and a stable error record when applicable. It
-contains no provider exception,
+timestamps, binding references, optional binding association, optional task
+lease reference, artifact references, side-effect state, and a stable error
+record when applicable. It contains no provider exception,
 payload, path, URL, credential, or transport detail.
 
 Terminal statuses reuse the existing Run vocabulary: `completed`, `failed`,

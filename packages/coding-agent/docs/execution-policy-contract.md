@@ -41,7 +41,11 @@ type PolicyResource =
   | "process.spawn"
   | "network.connect"
   | "credential.expose"
-  | "sandbox.prepare";
+  | "sandbox.prepare"
+  | "credential.task.issue"
+  | "credential.task.renew"
+  | "credential.task.project"
+  | "credential.task.revoke";
 
 type PolicyDecisionOutcome = PolicyAction | "sandbox_required";
 type SandboxStatus =
@@ -56,6 +60,33 @@ type SandboxStatus =
 `ask` means that an approval request is created before the side effect. It does
 not mean that the operation has started. `sandbox_required` is a hard failure
 outcome, not an approval outcome and not a fourth action.
+
+### Task credential resources
+
+The four `credential.task.*` resources (issue, renew, project, revoke) are the
+Task Credential lease surface and are frozen in
+`TASK_CREDENTIAL_POLICY_RESOURCES`. They are governed by the profile
+`credentials` action and `allowNames` with the same scope boundary as
+`credential.expose`: a non-empty `allowNames` requires every requested
+credential scope name to be allowlisted, and a non-legacy profile with an empty
+allowlist denies every credential-scoped operation. Policy decisions for these
+resources record only the safe operation facts (`credentialNames`, `targetId`,
+`ttlMs`); a decision for different names, a different target, or a different
+TTL can never authorize a request, and a request without matching recorded
+facts fails closed.
+
+Task credential leases are time-bounded and fail closed. The frozen lease TTL
+bounds are `TASK_CREDENTIAL_MIN_TTL_MS` (10,000 ms) and
+`TASK_CREDENTIAL_MAX_TTL_MS` (24 hours); an out-of-bounds requested TTL is
+`task_credential_ttl_invalid` and an accepted lease's earliest deadline (lease
+expiry, Run deadline, or scope deadline) is the effective bound. Expired,
+terminal (revoked / settled / expired), `revocation_unknown`, quarantined-target,
+and provider-less leases fail closed on every later operation. Task credential
+failures surface the stable `task_credential_*` codes (shared
+`AutomationErrorCode` union), never provider text, and are non-retryable by
+ModelBroker like every other policy error. The read-only
+`resolveTaskCredentialPreflight` check never writes the Session and never calls
+the provider; it reports success as `{ allowed: true, boundedTtlMs }`.
 
 The rule ordering is strictness-first when scopes are merged:
 
@@ -228,6 +259,13 @@ interface SandboxCapabilities {
   network: boolean;
   /** Keeps ModelRuntime credentials out of tool environments. */
   credentialIsolation: boolean;
+  /**
+   * Declares per-binding short-lived credential project / renew / revoke.
+   * Absent or false fails closed for `credential.task.project` / `renew` /
+   * `revoke`. `gondolin-local` never declares this and never falls back to
+   * Host env, command line, or temporary files.
+   */
+  credentialDelivery?: boolean;
 }
 
 interface PolicyBinding {
@@ -464,6 +502,12 @@ codes. A ledger persistence failure is a hard failure for strict operations.
 - RPC read-only command: `get_execution_policy`.
 - RPC approval commands: `policy.approve` and `policy.reject`, scoped to the
   current interaction Session and binding.
+- RPC `task.credential.issue`, `task.credential.heartbeat` (renew),
+  `task.credential.revoke`, and `task.credential.settle` Automation Host
+  commands enforce these resources through the Session's policy preflight;
+  `task.credential.get` / `task.credential.list` are read-only. See
+  [Remote-Neutral Operation Contract](remote-operation-contract.md) and
+  [Execution Audit Contract](execution-audit-contract.md).
 - CLI selector: `--policy <profile>`; there is no `--allow-all`.
 - TUI `/policy`: read-only profile, enforcement, sandbox status, provider
   capability summary, and pending approval metadata; explicit

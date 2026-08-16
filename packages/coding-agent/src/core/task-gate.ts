@@ -166,6 +166,13 @@ export interface TaskGateStoreOptions {
 	/** Server Gate ID generator; must return a safe identifier. */
 	readonly createGateId?: () => string;
 	readonly diagnostics?: (warning: TaskGateWarning) => void;
+	/**
+	 * Read-only invalidation observer fired when a pending Gate becomes
+	 * terminal by rejection or cancellation. It is a side channel of the Gate
+	 * ledger: it never rewrites the terminal Gate record and it is not fired
+	 * for approvals or for idempotent replays.
+	 */
+	readonly onGateInvalidated?: (gate: TaskGateRecord) => void;
 }
 
 export class TaskGateError extends Error {
@@ -650,6 +657,7 @@ export class TaskGateStore {
 	private readonly nowFn: () => string;
 	private readonly createIdFn: () => string;
 	private readonly diagnosticsSink: ((warning: TaskGateWarning) => void) | undefined;
+	private readonly invalidationSink: ((gate: TaskGateRecord) => void) | undefined;
 	private diagnosedEntryIds = new Set<string>();
 	private fold: TaskGateFoldResult = {
 		gates: [],
@@ -664,6 +672,7 @@ export class TaskGateStore {
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 		this.createIdFn = options.createGateId ?? (() => `gate_${randomUUID()}`);
 		this.diagnosticsSink = options.diagnostics;
+		this.invalidationSink = options.onGateInvalidated;
 		this.sessionId = session.getSessionId();
 		this.refresh();
 	}
@@ -831,13 +840,21 @@ export class TaskGateStore {
 		if (!sameGateIdentity(freshCurrent, current) || freshCurrent.revision !== current.revision) {
 			throw new TaskGateError("task_gate_conflict");
 		}
-		return this.appendTransition({
+		const result = this.appendTransition({
 			schemaVersion: 1,
 			action,
 			gate,
 			previousRevision: current.revision,
 			clientRequestId: input.clientRequestId,
 		});
+		// Rejection and cancellation invalidate the task stage: the observer
+		// (Task Credential service) revokes/settles the stage's credential
+		// grants. Approval is not an invalidation and the appended record is
+		// never rewritten here — this is a side channel only.
+		if ((action === "rejected" || action === "cancelled") && this.invalidationSink !== undefined) {
+			this.invalidationSink(serializeTaskGateRecord(result.gate));
+		}
+		return result;
 	}
 
 	private appendTransition(transition: TaskGateTransition): TaskGateMutationResult {
