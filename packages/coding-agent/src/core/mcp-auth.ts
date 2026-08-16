@@ -597,13 +597,22 @@ export class MCPAuthProvider {
 		return this.session(context, options).completeAuthorization(code, params);
 	}
 
-	/** Awaits the outcome of a flow started headlessly. */
-	async waitForAuthorization(context: MCPAuthContext, options: MCPAuthOptions): Promise<MCPAuthResult> {
-		return this.session(context, options).waitForAuthorization();
+	/** Awaits the outcome of a flow started headlessly; cancelling `signal` aborts the flow. */
+	async waitForAuthorization(
+		context: MCPAuthContext,
+		options: MCPAuthOptions,
+		signal?: AbortSignal,
+	): Promise<MCPAuthResult> {
+		return this.session(context, options).waitForAuthorization(signal);
 	}
 
 	async refresh(context: MCPAuthContext, options: MCPAuthOptions, signal?: AbortSignal): Promise<MCPAuthResult> {
 		return this.session(context, options).refresh(signal);
+	}
+
+	/** Cancels a pending flow for the context without releasing the session. */
+	cancel(context: MCPAuthContext, options: MCPAuthOptions): void {
+		this.session(context, options).cancel();
 	}
 
 	async logout(context: MCPAuthContext, options: MCPAuthOptions): Promise<void> {
@@ -666,6 +675,18 @@ export class MCPAuthSession {
 	private callbackCleanups: Array<() => void> = [];
 	private activeFlow: Promise<MCPAuthResult> | undefined;
 	private refreshPromise: Promise<MCPAuthResult> | undefined;
+	/**
+	 * Cancellation for the current flow. Aborted by logout/close/cancel and by
+	 * headless waiters that give up; a new flow replaces it with a fresh
+	 * controller, so a superseded flow can never write late tokens.
+	 */
+	private flowAbort: AbortController | undefined;
+	/**
+	 * Session tombstone set by logout/close/cancel and cleared when a new flow
+	 * starts. Blocks `saveTokens` from persisting tokens delivered by an SDK
+	 * exchange that was still in flight when the session was closed.
+	 */
+	private closed = false;
 
 	constructor(context: MCPAuthContext, options: MCPAuthOptions, store: MCPAuthStore | undefined) {
 		const redirectProblem = validateMCPRedirectUrl(options.redirectUrl);
@@ -778,13 +799,34 @@ export class MCPAuthSession {
 
 	/**
 	 * Awaits the outcome of a flow started headlessly (or joined). Returns
-	 * `interaction_required` when no flow is pending.
+	 * `interaction_required` when no flow is pending. Cancelling `signal`
+	 * aborts the pending flow itself — not just the wait — so a headless
+	 * caller that gives up can never let the flow complete later and persist
+	 * tokens.
 	 */
-	async waitForAuthorization(): Promise<MCPAuthResult> {
-		if (this.activeFlow !== undefined) {
-			return this.activeFlow;
+	async waitForAuthorization(signal?: AbortSignal): Promise<MCPAuthResult> {
+		if (this.activeFlow === undefined) {
+			return { outcome: "interaction_required", status: this.getStatus() };
 		}
-		return { outcome: "interaction_required", status: this.getStatus() };
+		if (signal !== undefined) {
+			const flow = this.flowAbort;
+			const cancelFlow = (): void => {
+				this.closed = true;
+				flow?.abort(signal.reason ?? new DOMException("Aborted", "AbortError"));
+				this.settleCallback({ kind: "cancelled" });
+			};
+			if (signal.aborted) {
+				cancelFlow();
+			} else {
+				signal.addEventListener("abort", cancelFlow, { once: true });
+				void this.activeFlow
+					.finally(() => {
+						signal.removeEventListener("abort", cancelFlow);
+					})
+					.catch(() => undefined);
+			}
+		}
+		return this.activeFlow;
 	}
 
 	/**
@@ -829,6 +871,11 @@ export class MCPAuthSession {
 		if (this.refreshPromise !== undefined) {
 			return this.refreshPromise;
 		}
+		// A refresh after logout must not resurrect a flow controller; the
+		// session tombstone keeps late saves blocked until a new flow starts.
+		if (!this.closed && this.flowAbort === undefined) {
+			this.flowAbort = new AbortController();
+		}
 		const refresh = this.doRefresh(signal);
 		this.refreshPromise = refresh;
 		try {
@@ -843,17 +890,28 @@ export class MCPAuthSession {
 	/**
 	 * Best-effort RFC 7009 token revocation, then local cleanup.
 	 *
-	 * Revocation is attempted only when the discovered authorization server
-	 * metadata exposes a `revocation_endpoint` and a refresh token exists. A
-	 * revocation failure never blocks local cleanup: memory is cleared and the
-	 * stored record is removed with the binding it was written under.
+	 * A fresh session (no in-memory tokens or discovery yet) still owns the
+	 * persisted credential, so the binding and tokens are hydrated first —
+	 * best-effort and bounded — before the stored record is deleted and the
+	 * refresh token is revoked. Hydration or revocation failures never block
+	 * local cleanup.
 	 */
 	async logout(): Promise<void> {
-		this.settleCallback({ kind: "cancelled" });
 		// Memory-first cleanup: snapshot the binding and tokens, then clear all
 		// in-memory secrets and delete the stored record before any network
 		// work, so an abort or a revoke failure can never leave a credential
 		// behind. Revocation runs after, best-effort and bounded.
+		if (this.tokens === undefined && !this.closed) {
+			// A fresh session has no issuer/resource binding until discovery
+			// runs; without it the storage key cannot be derived and the
+			// persisted record would survive the logout. Hydration is best
+			// effort: a metadata failure keeps the cleanup local-only.
+			await this.hydrateTokens().catch(() => undefined);
+		}
+		this.closed = true;
+		this.flowAbort?.abort(new DOMException("Aborted", "AbortError"));
+		this.settleCallback({ kind: "cancelled" });
+		this.settleRedirect(new DOMException("Aborted", "AbortError"));
 		const binding = this.binding();
 		const refreshToken = this.tokens?.refresh_token;
 		const metadata = this.discovery?.authorizationServerMetadata;
@@ -879,6 +937,13 @@ export class MCPAuthSession {
 		}
 	}
 
+	/** Cancels the pending flow; the flow settles cancelled and cannot write late tokens. */
+	cancel(): void {
+		this.closed = true;
+		this.flowAbort?.abort(new DOMException("Aborted", "AbortError"));
+		this.settleCallback({ kind: "cancelled" });
+	}
+
 	/**
 	 * Best-effort RFC 7009 revocation request. Never throws: every failure
 	 * (network, timeout, abort, non-2xx) is swallowed so logout always proceeds
@@ -901,6 +966,8 @@ export class MCPAuthSession {
 
 	/** Cancels pending flows and releases waiters; credentials stay in memory. */
 	async close(): Promise<void> {
+		this.closed = true;
+		this.flowAbort?.abort(new DOMException("Aborted", "AbortError"));
 		this.settleCallback({ kind: "cancelled" });
 		this.settleRedirect(abortReason(new AbortController().signal));
 	}
@@ -913,6 +980,9 @@ export class MCPAuthSession {
 	 */
 	createOAuthClientProvider(): OAuthClientProvider {
 		const session = this;
+		// The flow this adapter belongs to. Late SDK callbacks (token saves)
+		// carry this identity so a superseded or aborted flow can never write.
+		const flow = this.flowAbort;
 		return {
 			get redirectUrl(): string | URL {
 				return session.options.redirectUrl;
@@ -933,7 +1003,7 @@ export class MCPAuthSession {
 			clientInformation: () => session.getClientInformation(),
 			saveClientInformation: (clientInformation) => session.setClientInformation(clientInformation),
 			tokens: () => session.hydrateTokens(),
-			saveTokens: (tokens) => session.saveTokens(tokens),
+			saveTokens: (tokens) => session.saveTokens(tokens, flow),
 			redirectToAuthorization: (authorizationUrl) => session.onRedirectToAuthorization(authorizationUrl),
 			saveCodeVerifier: (codeVerifier) => {
 				session.codeVerifier = codeVerifier;
@@ -947,6 +1017,13 @@ export class MCPAuthSession {
 	}
 
 	private async runInteractiveFlow(): Promise<MCPAuthResult> {
+		// A new flow replaces the cancellation controller and clears the session
+		// tombstone: logout/close/cancel from a previous flow must not poison a
+		// fresh authorization, while the superseded flow's late callbacks stay
+		// blocked by the controller identity captured in its provider adapter.
+		this.closed = false;
+		const flow = new AbortController();
+		this.flowAbort = flow;
 		const signal = this.combinedSignal();
 		try {
 			await this.ensureDiscovery();
@@ -999,10 +1076,21 @@ export class MCPAuthSession {
 				throw new MCPAuthError("mcp_auth_cancelled", this.serverId);
 			}
 			throw this.classify(error, "discovery");
+		} finally {
+			// Release the flow controller once the flow settles: a cancelled or
+			// completed flow must not keep poisoning discovery/refresh calls, while
+			// late token callbacks stay blocked by the identity check in
+			// `saveTokens` (`this.flowAbort !== flow`).
+			if (this.flowAbort === flow) {
+				this.flowAbort = undefined;
+			}
 		}
 	}
 
 	private async doRefresh(signal?: AbortSignal): Promise<MCPAuthResult> {
+		// The flow identity of this refresh; a logout/close/cancel that aborts or
+		// supersedes it blocks the token save below.
+		const flow = this.flowAbort;
 		const tokens = await raceAbort(this.hydrateTokens(), signal);
 		if (tokens?.refresh_token === undefined) {
 			return { outcome: "interaction_required", status: this.getStatus() };
@@ -1029,7 +1117,7 @@ export class MCPAuthSession {
 				),
 				signal,
 			);
-			await this.saveTokens(refreshed);
+			await this.saveTokens(refreshed, flow, true);
 			this.state = "authenticated";
 			return { outcome: "authorized", status: this.getStatus() };
 		} catch (error) {
@@ -1202,7 +1290,18 @@ export class MCPAuthSession {
 		return this.tokens;
 	}
 
-	private async saveTokens(tokens: OAuthTokens): Promise<void> {
+	private async saveTokens(tokens: OAuthTokens, flow?: AbortController, refresh = false): Promise<void> {
+		// A flow that was cancelled, closed, or superseded must never persist:
+		// the SDK keeps running the network exchange after cancellation, and a
+		// late callback would otherwise resurrect credentials that logout/close
+		// already cleared. Refresh saves belong to the session, not to a flow
+		// generation, so they only check cancellation, never identity.
+		if (this.closed || flow?.signal.aborted === true) {
+			return;
+		}
+		if (!refresh && flow !== undefined && this.flowAbort !== flow) {
+			return;
+		}
 		this.tokens = tokens;
 		this.state = "authenticated";
 		this.expiresAt =
@@ -1414,7 +1513,7 @@ export class MCPAuthSession {
 	}
 
 	private combinedSignal(): AbortSignal | undefined {
-		const signals = [this.contextSignal, this.interaction?.signal].filter(
+		const signals = [this.contextSignal, this.interaction?.signal, this.flowAbort?.signal].filter(
 			(signal): signal is AbortSignal => signal !== undefined,
 		);
 		if (signals.length === 0) {

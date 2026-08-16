@@ -1143,6 +1143,73 @@ describe("credential store injection", () => {
 		expect(store.records.size).toBe(0);
 		expect(session.getStatus().state).toBe("unauthenticated");
 	});
+
+	it("logout on a fresh session hydrates the persisted credential, deletes it, and still revokes best-effort", async () => {
+		const fake = new FakeAuthServer();
+		// Loopback revocation endpoint so metadata validation passes and logout
+		// attempts best-effort revocation with the persisted refresh token.
+		fake.asMetadata = { ...DEFAULT_AS_METADATA, revocation_endpoint: "http://127.0.0.1:9999/revoke" };
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		await runInteractiveFlow(provider, ctx, flowOptions(fake), makeInteraction());
+		expect(store.records.size).toBe(1);
+
+		// A brand-new session (fresh provider, same store) has no in-memory
+		// tokens and no discovery: logout must hydrate the persisted binding
+		// and tokens first, delete the stored record, and still attempt the
+		// best-effort revoke with the persisted refresh token.
+		const provider2 = new MCPAuthProvider({ store });
+		const postsBefore = fake.mcpPosts.length;
+		await provider2.logout(ctx, flowOptions(fake));
+		expect(store.records.size).toBe(0);
+		expect(store.deletes).toBeGreaterThan(0);
+		// The revoke request reached the network layer (best-effort), and the
+		// session ended unauthenticated.
+		expect(fake.mcpPosts.length).toBeGreaterThan(postsBefore);
+		expect((await provider2.getStatus(ctx, flowOptions(fake))).state).toBe("unauthenticated");
+	});
+
+	it("cancelling a headless wait aborts the pending flow and blocks late token saves", async () => {
+		const fake = new FakeAuthServer();
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		const options = flowOptions(fake);
+		// No stored credential: the headless flow stays pending at the callback
+		// after returning the one-time authorization URL.
+		const started = await provider.startInteractive(ctx, options);
+		expect(started.outcome).toBe("interaction_required");
+		expect(started.authorizationUrl).toBeDefined();
+
+		// A headless waiter that gives up must cancel the flow itself, not just
+		// the wait, so the flow can never complete later and persist tokens. The
+		// flow either resolves cancelled (callback wait) or rejects with the
+		// fixed mcp_auth_cancelled error (in-flight exchange) — both are the
+		// same cancellation.
+		const controller = new AbortController();
+		const wait = provider.waitForAuthorization(ctx, options, controller.signal);
+		controller.abort();
+		const result = await wait.catch((error: unknown) => {
+			expect(isMCPAuthError(error)).toBe(true);
+			expect((error as MCPAuthError).kind).toBe("mcp_auth_cancelled");
+			return undefined;
+		});
+		if (result !== undefined) {
+			expect(result.outcome).toBe("cancelled");
+		}
+
+		// A late token delivery from the cancelled exchange cannot persist.
+		const session = provider.session(ctx, options);
+		await session.createOAuthClientProvider().saveTokens({ access_token: "at-late", token_type: "Bearer" });
+		expect(store.saves).toBe(0);
+
+		// A fresh flow after the cancellation is not poisoned and persists again.
+		const interaction = makeInteraction();
+		const reflow = await runInteractiveFlow(provider, ctx, options, interaction);
+		expect(reflow.outcome).toBe("authorized");
+		expect(store.saves).toBe(1);
+	});
 });
 
 describe("fixed redacted errors", () => {

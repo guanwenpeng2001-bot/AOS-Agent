@@ -7,7 +7,11 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
-import type { Tool } from "@modelcontextprotocol/sdk/types";
+import {
+	PromptListChangedNotificationSchema,
+	ResourceListChangedNotificationSchema,
+	type Tool,
+} from "@modelcontextprotocol/sdk/types";
 import {
 	applyPageLimit,
 	DEFAULT_MCP_CONTENT_LIMITS,
@@ -251,6 +255,13 @@ export class MCPServerLifecycle {
 	private readonly promptMetadata = new Map<string, { provenanceId: string; revision: string }>();
 	/** Incremented on every successful (re)connect; results from a superseded connection are stale. */
 	private connectionEpoch = 0;
+	/**
+	 * Set by `notifications/resources/list_changed` and
+	 * `notifications/prompts/list_changed`; cleared by the next explicit
+	 * cursorless listing. Notifications never auto-refresh the catalog, never
+	 * touch a frozen binding, and never attach anything.
+	 */
+	private catalogStale = false;
 
 	constructor(config: MCPServerConfig, options: MCPServerLifecycleOptions = {}) {
 		this.config = config;
@@ -298,6 +309,7 @@ export class MCPServerLifecycle {
 			...(this.toolCount !== undefined ? { toolCount: this.toolCount } : {}),
 			...(this.resourceCount !== undefined ? { resourceCount: this.resourceCount } : {}),
 			...(this.promptCount !== undefined ? { promptCount: this.promptCount } : {}),
+			...(this.catalogStale ? { catalogStale: true } : {}),
 		};
 	}
 
@@ -421,6 +433,15 @@ export class MCPServerLifecycle {
 			this.client = pendingClient;
 			this.chainTransportHandlers(transport);
 			this.connectionEpoch += 1;
+			// list_changed notifications only mark the catalog stale; the SDK
+			// auto-refresh listChanged config is deliberately not used, so a
+			// notification can never trigger a refresh, binding change, or attach.
+			this.client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+				this.catalogStale = true;
+			});
+			this.client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+				this.catalogStale = true;
+			});
 			// A new connection owns a fresh catalog generation: raw identities
 			// and metadata of a superseded connection must never resolve.
 			this.resourceUris.clear();
@@ -428,6 +449,7 @@ export class MCPServerLifecycle {
 			this.promptNames.clear();
 			this.resourceMetadata.clear();
 			this.promptMetadata.clear();
+			this.catalogStale = false;
 			this.setState("ready");
 			this.connectedAt = new Date().toISOString();
 			this.lastError = undefined;
@@ -555,6 +577,10 @@ export class MCPServerLifecycle {
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
 				this.resourceCount = result.resources.length;
+				if (cursor === undefined) {
+					// A full listing refreshes the catalog generation.
+					this.catalogStale = false;
+				}
 				const views: MCPResourceView[] = [];
 				for (const resource of result.resources) {
 					const view = mapResourceToView(resource, this.contentLimits, this.config.id);
@@ -589,6 +615,10 @@ export class MCPServerLifecycle {
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
 				const templateViews: MCPResourceTemplateView[] = [];
+				if (cursor === undefined) {
+					// A full listing refreshes the catalog generation.
+					this.catalogStale = false;
+				}
 				for (const template of result.resourceTemplates) {
 					const view = mapResourceTemplateToView(template, this.contentLimits, this.config.id);
 					if (view !== undefined) {
@@ -656,6 +686,10 @@ export class MCPServerLifecycle {
 					{ timeout: this.requestTimeoutMs, signal: innerSignal },
 				);
 				this.promptCount = result.prompts.length;
+				if (cursor === undefined) {
+					// A full listing refreshes the catalog generation.
+					this.catalogStale = false;
+				}
 				const promptViews: MCPPromptView[] = [];
 				for (const prompt of result.prompts) {
 					const view = mapPromptToView(prompt, this.contentLimits, this.config.id);

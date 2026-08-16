@@ -11,6 +11,7 @@
  * against a fake HTTP environment with an injected fetch.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1189,6 +1190,114 @@ describe("AgentSession MCP content surface", () => {
 			const snapshotId = session.getLastContextSnapshotId();
 			const { snapshot } = await session.inspectContext({ snapshotId });
 			expect(snapshot.sources.filter((source) => source.kind === "mcp_content")).toHaveLength(1);
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reconnects a selected server after an execution-policy boundary closes its transport", async () => {
+		const { dir, agentDir } = tmpDir("content-policy-reconnect");
+		const mock = createInMemoryContentServer({ resources: [RESOURCE_A], prompts: [PROMPT_A] });
+		const permissive = (id: string) => ({
+			id,
+			enforcement: "host",
+			defaultAction: "allow",
+			workspace: { read: ["workspace"], write: ["workspace"], deny: [] },
+			process: {
+				action: "allow",
+				inheritEnvironment: false,
+				allowEnvironment: [],
+				cwdScopes: ["workspace"],
+				timeoutMs: 60_000,
+			},
+			network: { action: "allow", allowDestinations: [] },
+			credentials: { action: "deny", allowNames: [] },
+			approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "allow" },
+			rules: [],
+		});
+		const settingsManager = SettingsManager.inMemory({
+			...stdioContentSettings(),
+			executionPolicy: {
+				defaultProfile: "default",
+				profiles: { default: permissive("default"), loose: permissive("loose") },
+			},
+		});
+		try {
+			const { session } = await createControlledSession({
+				dir,
+				agentDir,
+				settingsManager,
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+			await session.listMcpResources("docs");
+			await session.listMcpPrompts("docs");
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+
+			// The policy-boundary switch closes every MCP transport.
+			await session.setExecutionPolicyProfile("loose");
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "closed" });
+
+			// An explicit content operation after the boundary must reconnect the
+			// still-selected server through the policy-authorized path — never a
+			// silent reopen of a deselected or denied server — and keep resolving
+			// the already-listed resource without a re-list.
+			const read = await session.readMcpResource("docs", RESOURCE_ID);
+			expect(read.content.blocks).toContainEqual({ type: "text", text: "guide body" });
+			expect(session.getMcpConnectionStatus("docs")).toMatchObject({ state: "ready" });
+			const attached = await session.attachMcpResource("docs", RESOURCE_ID);
+			expect(attached.contentLength).toBe("guide body".length);
+			expect(mock.reads).toEqual(["docs://guide", "docs://guide"]);
+		} finally {
+			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves prompt roles as labels in the staged untrusted user context", async () => {
+		const { dir, agentDir } = tmpDir("prompt-role-labels");
+		const prompt: ContentPrompt = {
+			name: "chat",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "user side" }] },
+				{ role: "assistant", content: [{ type: "text", text: "assistant side" }] },
+			],
+		};
+		const mock = createInMemoryContentServer({ prompts: [prompt] });
+		const settingsManager = SettingsManager.inMemory(stdioContentSettings());
+		try {
+			const { session } = await createControlledSession({
+				dir,
+				agentDir,
+				settingsManager,
+				mcpTransportFactory: mock.transportFactory as never,
+			});
+			await session.whenCapabilitiesReady();
+			await session.listMcpPrompts("docs");
+
+			const promptId = mcpPromptId("docs", "chat");
+			// Every server-declared role is preserved as a non-instruction label
+			// ([user]/[assistant]) in the staged body.
+			const body = "[user]\nuser side\n\n[assistant]\nassistant side";
+			const attached = await session.attachMcpPrompt("docs", promptId);
+			expect(attached.contentLength).toBe(body.length);
+			expect(attached.truncated).toBe(false);
+
+			await session.prompt("hello");
+			const snapshotId = session.getLastContextSnapshotId();
+			expect(snapshotId).toBeDefined();
+			const { snapshot } = await session.inspectContext({ snapshotId });
+			const source = snapshot.sources.find((entry) => entry.kind === "mcp_content");
+			expect(source).toBeDefined();
+			// All content stays external_untrusted user-controlled context; the
+			// server roles are labels inside the body, never system/developer.
+			expect(source!.trust).toBe("external_untrusted");
+			expect(source!.scope).toBe("turn");
+			expect(source!.contentDigest).not.toBe(
+				createHash("sha256").update("user side\n\nassistant side").digest("hex"),
+			);
+			const wrapper = `<mcp_attachment server="docs" kind="prompt" truncated="false">\n${body}\n</mcp_attachment>`;
+			expect(source!.contentDigest).toBe(createHash("sha256").update(wrapper).digest("hex"));
+			assertSnapshotMetadataOnly(snapshot);
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 		}

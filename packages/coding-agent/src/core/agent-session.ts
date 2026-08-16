@@ -748,6 +748,12 @@ export class AgentSession {
 	private _activeMcpContentCandidates: CapabilityCandidate[] = [];
 	/** Last listed secret-free content per server, used for digest descriptor derivation. */
 	private readonly _mcpContentCatalogs = new Map<string, McpContentCatalog>();
+	/**
+	 * Listed catalog identities (resourceId -> URI, promptId -> name) captured
+	 * when an execution-policy boundary closes MCP transports, restored after
+	 * the next explicit reconnect so already-listed content keeps resolving.
+	 */
+	private readonly _mcpCatalogIdentitySnapshots = new Map<string, unknown>();
 	/** Explicitly attached MCP content, pending as untrusted context sources for the next turn. */
 	private _pendingMcpAttachments: ContextSourceInput[] = [];
 	/** MCP OAuth provider: one flow per (session, server), credentials in the MCP namespace. */
@@ -3616,8 +3622,11 @@ export class AgentSession {
 			},
 			async () => {
 				const { context, options } = this._mcpAuthBinding(serverId);
+				// The caller signal cancels the pending flow itself (not just the
+				// wait), so a headless cancellation can never let the flow
+				// complete later and persist tokens.
 				const result = await awaitWithOperationSignal(
-					this._mcpAuthProvider.waitForAuthorization(context, options),
+					this._mcpAuthProvider.waitForAuthorization(context, options, signal),
 					signal,
 				);
 				return { result };
@@ -3629,6 +3638,22 @@ export class AgentSession {
 						? { outcome: "cancelled" }
 						: { outcome: "failed", reasonCode: "mcp_auth_timeout" },
 		);
+	}
+
+	/**
+	 * Cancels a pending headless OAuth flow for one server. The flow settles
+	 * cancelled and can never persist late tokens; unknown or non-OAuth
+	 * servers are ignored. No-op when no flow is pending.
+	 */
+	cancelMcpAuth(serverId: string): void {
+		try {
+			const diagnostic = this._requireMcpDiagnostic(serverId);
+			this._assertMcpAuthSupported(diagnostic, serverId);
+			const { context, options } = this._mcpAuthBinding(serverId);
+			this._mcpAuthProvider.cancel(context, options);
+		} catch {
+			// Best-effort: unknown or unsupported servers have no pending flow.
+		}
 	}
 
 	/**
@@ -3777,8 +3802,11 @@ export class AgentSession {
 				return capability;
 			},
 			async (capability) => {
-				const uri = this._requireMcpResourceUri(serverId, resourceId);
+				// Connect (reconnecting a selected server whose transport a policy
+				// boundary closed) before resolving the listed identity, so the
+				// preserved catalog identities are restored for the lookup.
 				await this._ensureMcpServerConnected(serverId, signal);
+				const uri = this._requireMcpResourceUri(serverId, resourceId);
 				const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
 				return {
 					result,
@@ -3812,8 +3840,8 @@ export class AgentSession {
 			},
 			async (capability) => {
 				this._validateMcpPromptArguments(serverId, promptId, args);
-				const promptName = this._requireMcpPromptName(serverId, promptId);
 				await this._ensureMcpServerConnected(serverId, signal);
+				const promptName = this._requireMcpPromptName(serverId, promptId);
 				const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
 				return {
 					result,
@@ -3853,8 +3881,8 @@ export class AgentSession {
 				return capability;
 			},
 			async (capability) => {
-				const uri = this._requireMcpResourceUri(serverId, resourceId);
 				await this._ensureMcpServerConnected(serverId, signal);
+				const uri = this._requireMcpResourceUri(serverId, resourceId);
 				const result = await this._mcpLifecycleManager.readResource(serverId, uri, signal);
 				if (result.content.truncated && options?.allowTruncated !== true) {
 					throw new MCPError(
@@ -3926,8 +3954,8 @@ export class AgentSession {
 			},
 			async (capability) => {
 				this._validateMcpPromptArguments(serverId, promptId, args);
-				const promptName = this._requireMcpPromptName(serverId, promptId);
 				await this._ensureMcpServerConnected(serverId, signal);
+				const promptName = this._requireMcpPromptName(serverId, promptId);
 				const result = await this._mcpLifecycleManager.getPrompt(serverId, promptName, args, signal);
 				const truncated = result.messages.some((message) => message.content.truncated);
 				if (truncated && options?.allowTruncated !== true) {
@@ -3947,7 +3975,16 @@ export class AgentSession {
 					);
 				}
 				const content = result.messages
-					.map((message) => mcpAttachmentText(message.content.blocks))
+					.map((message) => {
+						const text = mcpAttachmentText(message.content.blocks);
+						if (text.length === 0) {
+							return "";
+						}
+						// Preserve the server-declared role as a non-instruction label:
+						// the staged source stays user-role external_untrusted context
+						// and can never become a system/developer directive.
+						return `[${message.role}]\n${text}`;
+					})
 					.filter((text) => text.length > 0)
 					.join("\n\n");
 				this._assertMcpAttachmentBudget(serverId, utf8ByteLength(content));
@@ -5897,6 +5934,21 @@ export class AgentSession {
 
 	private async _closeMcpConnectionsForPolicyBoundary(): Promise<void> {
 		this._mcpAuthorizedTransportValues.clear();
+		// Preserve the listed catalog identities (resourceId -> URI, promptId ->
+		// name) of still-selected servers across the boundary close, so an
+		// explicit content operation after the boundary can reconnect and keep
+		// resolving already-listed items without re-listing. The first close of
+		// a boundary owns the snapshot; a nested close (reconnect preflight)
+		// runs after the maps were already cleared and must not overwrite it.
+		for (const serverId of this._mcpLifecycleManager?.getSelectedServerIds() ?? []) {
+			if (this._mcpCatalogIdentitySnapshots.has(serverId)) {
+				continue;
+			}
+			this._mcpCatalogIdentitySnapshots.set(
+				serverId,
+				this._mcpLifecycleManager.snapshotCatalogIdentities(serverId),
+			);
+		}
 		await this._mcpLifecycleManager?.closeAll().catch(() => undefined);
 	}
 
@@ -6645,12 +6697,43 @@ export class AgentSession {
 	 * Ensures MCP capability discovery settled and the server is connected. The
 	 * server must be binding-selected; an unselected or failed server is
 	 * unavailable.
+	 *
+	 * A selected server whose transport was closed by an execution-policy
+	 * boundary (profile/binding change closes every MCP transport) or degraded
+	 * is reconnected here through the policy-authorized path — full preflight,
+	 * startup authorization, and the manager's selection-gated connect — so an
+	 * explicit content operation never runs on a stale transport and never
+	 * silently reopens a deselected or denied server.
 	 */
 	private async _ensureMcpServerConnected(serverId: string, signal?: AbortSignal): Promise<void> {
 		await this.whenCapabilitiesReady(undefined, signal);
-		const status = this._mcpLifecycleManager?.getStatus(serverId);
-		if (status === undefined || status.state !== "ready") {
+		const manager = this._mcpLifecycleManager;
+		const status = manager?.getStatus(serverId);
+		if (status === undefined) {
 			throw new MCPError("unavailable", serverId, `MCP server "${serverId}" is unavailable`);
+		}
+		if (status.state !== "ready") {
+			// The transport was closed or degraded (e.g. an execution-policy
+			// boundary). Reconnect through the same policy-authorized path used
+			// at discovery, then explicitly through the selection-gated manager
+			// connect so a degraded server that prep did not touch is still
+			// reconnected with a fresh transport. Nothing here reopens a
+			// deselected or denied server.
+			await this._ensureExecutionPolicyReady(undefined, signal, { deferMcpReconnect: true });
+			await manager.connect(serverId, signal);
+			const after = manager?.getStatus(serverId);
+			if (after === undefined || after.state !== "ready") {
+				throw new MCPError("unavailable", serverId, `MCP server "${serverId}" is unavailable`);
+			}
+		}
+		// Restore the listed catalog identities captured when the boundary
+		// closed the transports (the reconnect itself starts with an empty
+		// catalog generation), so already-listed resources/prompts keep
+		// resolving without re-listing.
+		const snapshot = this._mcpCatalogIdentitySnapshots.get(serverId);
+		if (snapshot !== undefined) {
+			manager?.restoreCatalogIdentities(serverId, snapshot);
+			this._mcpCatalogIdentitySnapshots.delete(serverId);
 		}
 	}
 
@@ -7207,6 +7290,7 @@ export class AgentSession {
 		this._activeMcpContentCandidates = [];
 		this._pendingMcpAttachments = [];
 		this._mcpContentCatalogs.clear();
+		this._mcpCatalogIdentitySnapshots.clear();
 		this._activeCapabilityBinding = undefined;
 		this._activeCapabilityCatalog = undefined;
 		this._mcpDiscoveryErrors = new Map();

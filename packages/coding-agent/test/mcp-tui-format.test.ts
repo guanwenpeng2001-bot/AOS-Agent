@@ -168,6 +168,9 @@ describe("interactive /mcp formatting", () => {
 		const out = stripAnsi(formatMcpPrompts("docs", page));
 		expect(out).toContain("MCP prompts: docs");
 		expect(out).toContain("summarize");
+		// The catalog must surface the opaque promptId the /mcp prompt command
+		// resolves, not just the display name.
+		expect(out).toContain("mcp-prompt-1111111111111111");
 		expect(out).toContain("arguments: uri*");
 		expect(out).toContain("/mcp prompt [serverId] <promptId>");
 	});

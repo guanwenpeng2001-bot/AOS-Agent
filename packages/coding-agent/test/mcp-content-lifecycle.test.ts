@@ -872,6 +872,34 @@ describe("MCP prompt lifecycle", () => {
 	});
 });
 
+describe("list_changed notifications", () => {
+	it("marks the catalog stale without auto-refreshing and clears on the next full listing", async () => {
+		const setup = createContentServerFactory({ resources: RESOURCES, prompts: PROMPTS });
+		const lifecycle = lifecycleWith({ transportFactory: setup.transportFactory });
+		await lifecycle.connect();
+		await lifecycle.listResources();
+		await lifecycle.listPrompts();
+		expect(lifecycle.getStatus().catalogStale).toBeUndefined();
+
+		const requestsBefore = setup.requests.length;
+		await setup.server.notification({ method: "notifications/resources/list_changed" });
+		await waitUntil(() => lifecycle.getStatus().catalogStale === true);
+		await setup.server.notification({ method: "notifications/prompts/list_changed" });
+		await waitUntil(() => lifecycle.getStatus().catalogStale === true);
+
+		// The notifications only flag the catalog; they never trigger a
+		// refresh, a binding change, or an attach.
+		expect(setup.requests.length).toBe(requestsBefore);
+
+		// A full (cursorless) listing refreshes the generation and clears it.
+		await lifecycle.listResources();
+		expect(lifecycle.getStatus().catalogStale).toBeUndefined();
+
+		// The marker stays secret-free: no raw URI, name, or server text.
+		expect(JSON.stringify(lifecycle.getStatus())).not.toContain("file:///");
+	});
+});
+
 describe("cancellation, teardown, and stale/degraded handling", () => {
 	it("aborts an in-flight read with AbortError without degrading the server", async () => {
 		const setup = createContentServerFactory({ holdRequests: true });
