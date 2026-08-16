@@ -62,6 +62,23 @@ import {
 	serializeExternalAdapterIdentity,
 	type ExternalAdapterIdentity,
 } from "./external-session-mapping.ts";
+import {
+	isLegalTaskCredentialTransition,
+	TASK_CREDENTIAL_SCHEMA_VERSION,
+	type TaskCredentialGrant,
+	type TaskCredentialStatus,
+} from "./task-credential-lease.ts";
+import {
+	canonicalTaskCredentialIssuePayload,
+	canonicalTaskCredentialProjectPayload,
+	canonicalTaskCredentialRenewPayload,
+	canonicalTaskCredentialRevokePayload,
+	canonicalTaskCredentialSettlePayload,
+	parseTaskCredentialTransition,
+	TASK_CREDENTIAL_CUSTOM_TYPE,
+	type TaskCredentialPersistedAction,
+	type TaskCredentialTransition,
+} from "./task-credential-store.ts";
 import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "./remote-operation.ts";
 import {
 	isTaskGateTransition,
@@ -107,6 +124,7 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"remote.operation",
 	"task.gate",
 	"task.graph",
+	"task.credential",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 /**
@@ -139,6 +157,7 @@ export const AUDIT_EVENT_TYPES = [
 	"remote.operation",
 	"task.gate",
 	"task.graph",
+	"task.credential",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -171,6 +190,36 @@ export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
 
 export const AUDIT_CURSOR_SORT_KEYS = ["recordedAt", "sessionId", "sourceEntryId", "eventId"] as const;
 export type AuditCursorSortKeyName = (typeof AUDIT_CURSOR_SORT_KEYS)[number];
+
+/**
+ * Keys that must never appear in a `task.credential` entry, event, or
+ * summary at any level the fold accepts. Material, environment values,
+ * headers, authorization, prompts, commands, paths, diffs, content,
+ * streams, provider responses, and OAuth codes are rejected before the
+ * serializer shape guard runs, so they can never become credential facts.
+ */
+export const TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS = Object.freeze([
+	"token",
+	"secret",
+	"credential",
+	"material",
+	"env",
+	"headers",
+	"authorization",
+	"prompt",
+	"command",
+	"args",
+	"cwd",
+	"path",
+	"diff",
+	"content",
+	"stdout",
+	"stderr",
+	"raw",
+	"providerResponse",
+	"providerError",
+	"oauthCode",
+] as const);
 
 export interface ExternalExecutionRef {
 	readonly namespace: string;
@@ -429,6 +478,39 @@ export interface AuditTaskGraphSummary {
 
 export type AuditRemoteOperationSummary = RemoteOperationReceipt;
 
+/**
+ * Safe summary of one `task.credential` transition. Only validated opaque
+ * IDs, the stable action/status, the scope digest (never scope values), the
+ * transition's recorded timestamp, and short outcome codes may appear;
+ * credential material, tokens, environment values, headers, authorization,
+ * prompts, commands, paths, diffs, content, streams, provider text, and raw
+ * custom data never enter the audit view. The summary is built from the
+ * persisted transition entry through the store's serializer guard
+ * (`parseTaskCredentialTransition`), so the audit view always matches what
+ * the store folds. `runId` is the grant's run correlation and is also
+ * projected onto the event base, so replay correlates by runId only and the
+ * fold never calls the provider or changes a Run's terminal state.
+ */
+export interface AuditTaskCredentialSummary {
+	readonly action: TaskCredentialPersistedAction;
+	readonly grantId: string;
+	readonly leaseId: string;
+	readonly bindingId: string;
+	readonly sessionId: string;
+	readonly taskId: string;
+	readonly graphRevision: number;
+	readonly nodeId: string;
+	readonly stageId?: string;
+	readonly stageRevision?: number;
+	readonly runId: string;
+	readonly targetId?: string;
+	readonly scopeDigest: string;
+	readonly scopeCount: number;
+	readonly status: TaskCredentialStatus;
+	readonly recordedAt: string;
+	readonly reasonCode?: string;
+}
+
 export interface AuditEventBase {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
@@ -511,6 +593,11 @@ export type AuditEvent =
 			readonly type: "task.graph";
 			readonly runId?: string;
 			readonly summary: AuditTaskGraphSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "task.credential";
+			readonly runId?: string;
+			readonly summary: AuditTaskCredentialSummary;
 	  });
 
 export interface AuditWarning {
@@ -1618,6 +1705,32 @@ function safeTaskGraphSummary(value: TaskGraphTransition): AuditTaskGraphSummary
 	return summary;
 }
 
+/** Build the allowlisted summary of one `task.credential` transition. */
+function safeTaskCredentialSummary(value: TaskCredentialTransition): AuditTaskCredentialSummary {
+	const grant = value.grant;
+	const summary = {
+		action: value.action,
+		grantId: grant.grantId,
+		leaseId: grant.leaseId,
+		bindingId: grant.bindingId,
+		sessionId: grant.sessionId,
+		taskId: grant.taskId,
+		graphRevision: grant.graphRevision,
+		nodeId: grant.nodeId,
+		runId: grant.runId,
+		scopeDigest: grant.scopeDigest,
+		scopeCount: grant.scopeCount,
+		status: grant.status,
+		recordedAt: value.recordedAt,
+	} as DeepMutable<AuditTaskCredentialSummary>;
+	if (grant.stageId !== undefined) summary.stageId = grant.stageId;
+	if (grant.stageRevision !== undefined) summary.stageRevision = grant.stageRevision;
+	if (grant.targetId !== undefined) summary.targetId = grant.targetId;
+	const reasonCode = value.reasonCode ?? grant.reasonCode;
+	if (reasonCode !== undefined) summary.reasonCode = reasonCode;
+	return summary;
+}
+
 function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
 	const external = {
 		namespace: value.namespace,
@@ -1695,7 +1808,8 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
 	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
 	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition })
-	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition });
+	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition })
+	| (SourceCandidateBase & { readonly eventType: "task.credential"; readonly value: TaskCredentialTransition });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -1707,7 +1821,8 @@ type Relation =
 	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string }
 	| { readonly kind: "remote-operation"; readonly runId?: string }
 	| { readonly kind: "task-gate"; readonly runId?: string }
-	| { readonly kind: "task-graph"; readonly runId?: string };
+	| { readonly kind: "task-graph"; readonly runId?: string }
+	| { readonly kind: "task-credential"; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -1772,6 +1887,7 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "remote.operation") return "remote.operation";
 	if (customType === "task.gate") return "task.gate";
 	if (customType === "task.graph") return "task.graph";
+	if (customType === "task.credential") return "task.credential";
 	return undefined;
 }
 
@@ -1789,7 +1905,8 @@ function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): 
 		relation.kind === "external" ||
 		relation.kind === "remote-operation" ||
 		relation.kind === "task-gate" ||
-		relation.kind === "task-graph"
+		relation.kind === "task-graph" ||
+		relation.kind === "task-credential"
 	) {
 		return relation.runId === undefined ? undefined : new Set([relation.runId]);
 	}
@@ -2409,6 +2526,245 @@ function parseTaskGraphFact(
 	});
 }
 
+/** Append-order fold state for `task.credential` custom entries. */
+interface TaskCredentialAuditFold {
+	/** Current accepted grant snapshot per lease, in append order of the first accepted transition. */
+	readonly byLeaseId: Map<string, TaskCredentialGrant>;
+	/** Business uniqueness key (bindingId) to leaseId. */
+	readonly byBindingId: Map<string, string>;
+	/** Grant uniqueness key (grantId) to leaseId. */
+	readonly byGrantId: Map<string, string>;
+	/** Idempotency key (`operation\u0000clientRequestId`) to the canonical payload of the accepted transition. */
+	readonly byIdempotency: Map<string, string>;
+}
+
+/** Idempotency operation per persisted action; mirrors the store fold's key derivation. */
+function taskCredentialIdempotencyKey(
+	action: TaskCredentialPersistedAction,
+	clientRequestId: string,
+): string {
+	const operation =
+		action === "issued"
+			? "issue"
+			: action === "renewed"
+				? "renew"
+				: action === "delivery_succeeded" || action === "delivery_failed"
+					? "project"
+					: action === "settled"
+						? "settle"
+						: "revoke";
+	return `${operation}\u0000${clientRequestId}`;
+}
+
+/** Canonical payload of a persisted transition; mirrors the store fold's idempotency fingerprint. */
+function taskCredentialTransitionPayload(transition: TaskCredentialTransition): string {
+	switch (transition.action) {
+		case "issued":
+			return canonicalTaskCredentialIssuePayload(
+				transition.binding!,
+				transition.grant,
+				transition.leaseId,
+				transition.grantId,
+			);
+		case "renewed":
+			return canonicalTaskCredentialRenewPayload(
+				transition.leaseId,
+				transition.grantId,
+				transition.bindingId,
+				transition.requestedTtlMs!,
+				transition.grant.heartbeatSequence,
+			);
+		case "delivery_succeeded":
+		case "delivery_failed":
+			return canonicalTaskCredentialProjectPayload(
+				transition.leaseId,
+				transition.grantId,
+				transition.bindingId,
+				transition.grant.targetId,
+			);
+		case "revoked":
+		case "revocation_unknown":
+			return canonicalTaskCredentialRevokePayload(
+				transition.leaseId,
+				transition.grantId,
+				transition.bindingId,
+				transition.reasonCode,
+			);
+		case "settled":
+			return canonicalTaskCredentialSettlePayload(
+				transition.leaseId,
+				transition.grantId,
+				transition.bindingId,
+				transition.reasonCode,
+			);
+	}
+}
+
+/** Expected resulting grant status of each persisted action; mirrors the store fold. */
+const EXPECTED_TASK_CREDENTIAL_STATUS: Record<TaskCredentialPersistedAction, TaskCredentialStatus> = {
+	issued: "active",
+	renewed: "active",
+	delivery_succeeded: "active",
+	delivery_failed: "active",
+	revoked: "revoked",
+	revocation_unknown: "revocation_unknown",
+	settled: "settled",
+};
+
+/** Two snapshots of the same lease must agree on all immutable fields. */
+function sameTaskCredentialLeaseIdentity(left: TaskCredentialGrant, right: TaskCredentialGrant): boolean {
+	return (
+		left.grantId === right.grantId &&
+		left.leaseId === right.leaseId &&
+		left.bindingId === right.bindingId &&
+		left.sessionId === right.sessionId &&
+		left.taskId === right.taskId &&
+		left.graphRevision === right.graphRevision &&
+		left.nodeId === right.nodeId &&
+		(left.stageId ?? undefined) === (right.stageId ?? undefined) &&
+		(left.stageRevision ?? undefined) === (right.stageRevision ?? undefined) &&
+		left.runId === right.runId &&
+		left.scopeDigest === right.scopeDigest &&
+		left.scopeCount === right.scopeCount &&
+		(left.targetId ?? undefined) === (right.targetId ?? undefined) &&
+		left.issuedAt === right.issuedAt
+	);
+}
+
+const TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEY_SET = new Set<string>(TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS);
+
+/** True when a record carries a forbidden material / environment / path / provider key. */
+function hasForbiddenTaskCredentialKey(value: Record<string, unknown>): boolean {
+	return Object.keys(value).some((key) => TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEY_SET.has(key.toLowerCase()));
+}
+
+/**
+ * Fold one `task.credential` custom entry in append order into a safe audit
+ * event. Entries that fail schema, identifier, session, forbidden-key,
+ * revision, identity, idempotency, business-key, or transition rules are
+ * skipped with the existing warning semantics and never surface raw data.
+ * The explicit forbidden-key guard runs before the serializer shape guard,
+ * so material / environment / path / provider keys can never become
+ * credential facts. Credential warnings never carry a run association or
+ * uncertainty flag, so they cannot change any Run's replay status or
+ * completeness; correlation is runId-only, from the grant, and the fold
+ * never calls the provider or rewrites a Run terminal.
+ */
+function parseTaskCredentialFact(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	fold: TaskCredentialAuditFold,
+	internalWarnings: InternalWarning[],
+	candidates: SourceCandidate[],
+): void {
+	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.credential", schemaVersion(entry.data), undefined, false),
+		);
+		return;
+	}
+	const version = schemaVersion(entry.data);
+	if (version === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", undefined, undefined, false));
+		return;
+	}
+	if (version !== TASK_CREDENTIAL_SCHEMA_VERSION) {
+		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, "task.credential", version, undefined, false));
+		return;
+	}
+	// Explicit forbidden-key guard: material / environment / path / provider
+	// keys are rejected before the exact-shape serializer guard runs, so they
+	// can never surface in an event or warning either way.
+	if (isRecord(entry.data) && hasForbiddenTaskCredentialKey(entry.data)) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+		return;
+	}
+	const transition = parseTaskCredentialTransition(entry.data);
+	if (transition === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+		return;
+	}
+	const grant = transition.grant;
+	if (grant.sessionId !== sessionId) {
+		internalWarnings.push(warning(sessionId, "orphan_source", entry, "task.credential", version, undefined, false));
+		return;
+	}
+	const key = taskCredentialIdempotencyKey(transition.action, transition.clientRequestId);
+	const canonical = taskCredentialTransitionPayload(transition);
+	const existing = fold.byIdempotency.get(key);
+	if (existing !== undefined) {
+		if (existing !== canonical) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+		}
+		return;
+	}
+	const current = fold.byLeaseId.get(transition.leaseId);
+	if (transition.action === "issued") {
+		if (current !== undefined) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		const bindingOwner = fold.byBindingId.get(transition.bindingId);
+		if (bindingOwner !== undefined && bindingOwner !== transition.leaseId) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		const grantOwner = fold.byGrantId.get(transition.grantId);
+		if (grantOwner !== undefined && grantOwner !== transition.leaseId) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+	} else {
+		if (current === undefined) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		if (
+			transition.previousRevision !== current.revision ||
+			transition.grant.revision !== current.revision + 1
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		if (!sameTaskCredentialLeaseIdentity(current, transition.grant)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		if (transition.action === "renewed") {
+			if (transition.grant.heartbeatSequence !== current.heartbeatSequence + 1) {
+				internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+				return;
+			}
+		} else if (transition.grant.heartbeatSequence !== current.heartbeatSequence) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		// A persisted `revoked` entry after `revocation_unknown` is trusted as
+		// provider-confirmed: the store only writes it after a confirmed
+		// provider revoke, and it converges to the safer status.
+		if (!isLegalTaskCredentialTransition(current.status, transition.action)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+		if (transition.grant.status !== EXPECTED_TASK_CREDENTIAL_STATUS[transition.action]) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			return;
+		}
+	}
+	fold.byLeaseId.set(transition.leaseId, transition.grant);
+	fold.byBindingId.set(transition.bindingId, transition.leaseId);
+	fold.byGrantId.set(transition.grantId, transition.leaseId);
+	fold.byIdempotency.set(key, canonical);
+	candidates.push({
+		eventType: "task.credential",
+		entry,
+		recordedAt: entry.timestamp,
+		value: transition,
+		relation: { kind: "task-credential", runId: grant.runId },
+	});
+}
+
+
 function parseRunFact(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
@@ -2636,6 +2992,14 @@ function sourceEventForCandidate(
 			summary: safeTaskGraphSummary(candidate.value),
 		};
 	}
+	if (candidate.eventType === "task.credential") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeTaskCredentialSummary(candidate.value),
+		};
+	}
 	return {
 		...base,
 		type: candidate.eventType,
@@ -2686,6 +3050,12 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const facts: RunFact[] = [];
 	const gateFold: TaskGateAuditFold = { byGateId: new Map(), byBusinessKey: new Map(), byIdempotency: new Map() };
 	const graphFold: TaskGraphAuditFold = { graphs: new Map(), byIdempotency: new Map() };
+	const credentialFold: TaskCredentialAuditFold = {
+		byLeaseId: new Map(),
+		byBindingId: new Map(),
+		byGrantId: new Map(),
+		byIdempotency: new Map(),
+	};
 	const seenEntryIds = new Set<string>();
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
@@ -2709,6 +3079,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			parseTaskGateFact(sessionId, entry, gateFold, internalWarnings, candidates);
 		else if (entry.customType === TASK_GRAPH_CUSTOM_TYPE)
 			parseTaskGraphFact(sessionId, entry, graphFold, internalWarnings, candidates);
+		else if (entry.customType === TASK_CREDENTIAL_CUSTOM_TYPE)
+			parseTaskCredentialFact(sessionId, entry, credentialFold, internalWarnings, candidates);
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
@@ -2901,7 +3273,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 						candidate.relation?.kind === "external" ||
 						candidate.relation?.kind === "remote-operation" ||
 						candidate.relation?.kind === "task-gate" ||
-						candidate.relation?.kind === "task-graph"
+						candidate.relation?.kind === "task-graph" ||
+						candidate.relation?.kind === "task-credential"
 					? candidate.relation.runId
 					: undefined;
 		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);

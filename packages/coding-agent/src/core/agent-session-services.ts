@@ -20,6 +20,7 @@ import {
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
+import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -67,6 +68,10 @@ export interface CreateAgentSessionServicesOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Optional Task Credential provider composing the session-scoped credential service. */
+	taskCredentialProvider?: TaskCredentialProvider;
+	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
+	taskCredentialPolicyMaxTtlMs?: number;
 }
 
 /**
@@ -90,6 +95,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
 	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
+	taskCredentialProvider?: CreateAgentSessionOptions["taskCredentialProvider"];
+	taskCredentialPolicyMaxTtlMs?: CreateAgentSessionOptions["taskCredentialPolicyMaxTtlMs"];
 }
 
 /**
@@ -122,6 +129,8 @@ export interface AgentSessionServices {
 	 */
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	taskCredentialProvider?: TaskCredentialProvider;
+	taskCredentialPolicyMaxTtlMs?: number;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -262,6 +271,8 @@ export async function createAgentSessionServices(
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
+		taskCredentialProvider: options.taskCredentialProvider,
+		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		diagnostics,
 	};
 }
@@ -289,6 +300,9 @@ export async function createAgentSessionFromServices(
 		mcpAuthProvider: options.services.mcpAuthProvider,
 		mcpAuthManagerOptions: options.services.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
+		taskCredentialProvider: options.taskCredentialProvider ?? options.services.taskCredentialProvider,
+		taskCredentialPolicyMaxTtlMs:
+			options.taskCredentialPolicyMaxTtlMs ?? options.services.taskCredentialPolicyMaxTtlMs,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		modelRoute: options.modelRoute,

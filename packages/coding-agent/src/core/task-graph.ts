@@ -328,6 +328,12 @@ export interface TaskGraphStoreOptions {
 	/** Server timestamp source; must return a canonical UTC ISO timestamp. */
 	readonly now?: () => string;
 	readonly diagnostics?: (warning: TaskGraphWarning) => void;
+	/**
+	 * Read-only terminal observer fired when a node becomes terminal through
+	 * node.settle. It is a side channel of the Graph ledger: it never rewrites
+	 * the terminal node record and it is not fired for idempotent replays.
+	 */
+	readonly onNodeTerminal?: (node: TaskGraphNodeRecord, taskId: string, runId: string) => void;
 }
 
 export class TaskGraphError extends Error {
@@ -1210,6 +1216,7 @@ export class TaskGraphStore {
 	private readonly gateLookup: TaskGraphGateLookup;
 	private readonly nowFn: () => string;
 	private readonly diagnosticsSink: ((warning: TaskGraphWarning) => void) | undefined;
+	private readonly nodeTerminalSink: ((node: TaskGraphNodeRecord, taskId: string, runId: string) => void) | undefined;
 	private diagnosedEntryIds = new Set<string>();
 	private fold: TaskGraphFoldResult = {
 		graphs: [],
@@ -1231,6 +1238,7 @@ export class TaskGraphStore {
 		this.gateLookup = gateLookup;
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 		this.diagnosticsSink = options.diagnostics;
+		this.nodeTerminalSink = options.onNodeTerminal;
 		this.refresh();
 	}
 
@@ -1595,7 +1603,7 @@ export class TaskGraphStore {
 				: { gateRef: { stageId: freshNode.gateRef.stageId, stageRevision: freshNode.gateRef.stageRevision } }),
 			runRef: { sessionId: freshNode.runRef.sessionId, runId: freshNode.runRef.runId },
 		};
-		return this.appendTransition({
+		const result = this.appendTransition({
 			schemaVersion: TASK_GRAPH_SCHEMA_VERSION,
 			action: taskGraphActionForStatus(terminalStatus),
 			taskId: input.taskId,
@@ -1604,6 +1612,13 @@ export class TaskGraphStore {
 			previousNodeRevision: 1,
 			clientRequestId: input.clientRequestId,
 		});
+		// A terminal node invalidates the node's credential grants: the observer
+		// (Task Credential service) revokes/settles them. The appended node
+		// record is never rewritten here — this is a side channel only.
+		if (this.nodeTerminalSink !== undefined) {
+			this.nodeTerminalSink(serializeTaskGraphNode(terminalNode), input.taskId, freshNode.runRef.runId);
+		}
+		return result;
 	}
 
 	private appendTransition(transition: TaskGraphTransition): TaskGraphMutationResult {

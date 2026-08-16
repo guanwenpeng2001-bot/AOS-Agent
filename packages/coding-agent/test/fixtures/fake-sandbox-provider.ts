@@ -3,6 +3,9 @@ import type { PolicyBinding, SandboxCapabilities } from "../../src/core/executio
 import {
 	SandboxError,
 	SandboxHandleDisposedError,
+	type SandboxCredentialDeliveryRequest,
+	type SandboxCredentialRenewRequest,
+	type SandboxCredentialRevokeRequest,
 	type SandboxHandle,
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
@@ -10,6 +13,12 @@ import {
 } from "../../src/core/sandbox.ts";
 
 export const FAKE_SANDBOX_PROVIDER_ID = "fake-sandbox";
+
+export interface FakeSandboxCredentialState {
+	readonly projects: SandboxCredentialDeliveryRequest[];
+	readonly renews: SandboxCredentialRenewRequest[];
+	readonly revokes: SandboxCredentialRevokeRequest[];
+}
 
 export interface FakeSandboxInvocation {
 	readonly bindingId: string;
@@ -36,6 +45,7 @@ export interface FakeSandboxProviderState {
 	readonly invocations: FakeSandboxInvocation[];
 	readonly disposedHandles: string[];
 	readonly handles: SandboxHandle[];
+	readonly credentialState: FakeSandboxCredentialState;
 }
 
 export interface FakeSandboxProviderOptions {
@@ -43,6 +53,12 @@ export interface FakeSandboxProviderOptions {
 	readonly capabilities?: Partial<SandboxCapabilities>;
 	readonly startFailure?: Error;
 	readonly onExecute?: (request: SandboxOperationRequest) => Promise<SandboxOperationResult | undefined>;
+	/** Outcome reported by the handle for every credential project/renew; default `succeeded`. */
+	readonly credentialDeliveryStatus?: "succeeded" | "failed" | "unknown";
+	/** Outcome reported by the handle for every credential revoke; default `confirmed`. */
+	readonly credentialRevokeStatus?: "confirmed" | "unknown";
+	/** Fail one credential operation with an unknown error; the channel quarantines and maps it. */
+	readonly failCredentialOperation?: (operation: "project" | "renew" | "revoke", leaseId: string) => boolean;
 }
 
 const FULL_CAPABILITIES: SandboxCapabilities = {
@@ -50,6 +66,7 @@ const FULL_CAPABILITIES: SandboxCapabilities = {
 	process: true,
 	network: true,
 	credentialIsolation: true,
+	credentialDelivery: true,
 };
 
 function completeCapabilities(capabilities: Partial<SandboxCapabilities> | undefined): SandboxCapabilities {
@@ -66,6 +83,7 @@ export function createFakeSandboxProvider(options: FakeSandboxProviderOptions = 
 		invocations: [],
 		disposedHandles: [],
 		handles: [],
+		credentialState: { projects: [], renews: [], revokes: [] },
 	};
 	const providerId = options.id ?? FAKE_SANDBOX_PROVIDER_ID;
 
@@ -122,6 +140,43 @@ export function createFakeSandboxProvider(options: FakeSandboxProviderOptions = 
 					}
 					return result ?? { exitCode: 0 };
 				},
+				// The handle exposes the credential channel only when the provider
+				// declares the delivery capability; otherwise the channel fails
+				// closed with task_credential_target_unavailable before any call.
+				...(capabilities.credentialDelivery === true
+					? {
+							projectCredential: async (request: SandboxCredentialDeliveryRequest) => {
+								if (state.disposedHandles.includes(handle.id)) {
+									throw new SandboxHandleDisposedError(handle.id);
+								}
+								state.credentialState.projects.push({ ...request, scopes: [...request.scopes] });
+								if (options.failCredentialOperation?.("project", request.leaseId)) {
+									throw new Error("fake sandbox credential delivery failure");
+								}
+								return { outcome: options.credentialDeliveryStatus ?? "succeeded" };
+							},
+							renewCredential: async (request: SandboxCredentialRenewRequest) => {
+								if (state.disposedHandles.includes(handle.id)) {
+									throw new SandboxHandleDisposedError(handle.id);
+								}
+								state.credentialState.renews.push({ ...request });
+								if (options.failCredentialOperation?.("renew", request.leaseId)) {
+									throw new Error("fake sandbox credential renew failure");
+								}
+								return { outcome: options.credentialDeliveryStatus ?? "succeeded" };
+							},
+							revokeCredential: async (request: SandboxCredentialRevokeRequest) => {
+								if (state.disposedHandles.includes(handle.id)) {
+									throw new SandboxHandleDisposedError(handle.id);
+								}
+								state.credentialState.revokes.push({ ...request });
+								if (options.failCredentialOperation?.("revoke", request.leaseId)) {
+									throw new Error("fake sandbox credential revoke failure");
+								}
+								return { outcome: options.credentialRevokeStatus ?? "confirmed" };
+							},
+					  }
+					: {}),
 			};
 			state.handles.push(handle);
 			return handle;

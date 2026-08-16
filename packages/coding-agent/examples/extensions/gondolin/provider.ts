@@ -39,6 +39,7 @@ const CAPABILITY_KEYS: ReadonlyArray<keyof SandboxCapabilities> = [
 	"process",
 	"network",
 	"credentialIsolation",
+	"credentialDelivery",
 ];
 
 export const GONDOLIN_SANDBOX_CAPABILITIES: SandboxCapabilities = Object.freeze({
@@ -46,6 +47,10 @@ export const GONDOLIN_SANDBOX_CAPABILITIES: SandboxCapabilities = Object.freeze(
 	process: true,
 	network: false,
 	credentialIsolation: true,
+	// Never declared: gondolin-local has no Task Credential delivery channel,
+	// so every credential delivery/renew/revoke fails closed instead of
+	// falling back to Host environment, command line, or temporary files.
+	credentialDelivery: false,
 });
 
 export interface GondolinSandboxProviderOptions {
@@ -264,6 +269,15 @@ async function dispatchOperation(
 				"network",
 			);
 			throw new SandboxCapabilityError(GONDOLIN_SANDBOX_PROVIDER_ID, "network");
+		case "credential.task.project":
+		case "credential.task.renew":
+		case "credential.task.revoke":
+			requireSandboxCapability(
+				GONDOLIN_SANDBOX_PROVIDER_ID,
+				GONDOLIN_SANDBOX_CAPABILITIES,
+				"credentialDelivery",
+			);
+			throw new SandboxCapabilityError(GONDOLIN_SANDBOX_PROVIDER_ID, "credentialDelivery");
 		default:
 			throw new SandboxError("policy_violation", undefined, {
 				providerId: GONDOLIN_SANDBOX_PROVIDER_ID,

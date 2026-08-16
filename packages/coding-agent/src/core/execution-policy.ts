@@ -5,6 +5,26 @@ import {
 	type BindingHandle,
 	type PublicBindingSummary,
 } from "./binding-handles.ts";
+import {
+	TASK_CREDENTIAL_MAX_SCOPES,
+	TASK_CREDENTIAL_MAX_TTL_MS,
+	TASK_CREDENTIAL_RENEWAL_WINDOW_MS,
+	TaskCredentialError,
+	calculateScopeDigest,
+	isTaskCredentialEpochMs,
+	isTaskCredentialIdentifier,
+	isTaskCredentialScope,
+	isTaskExecutionBinding,
+	normalizeTaskCredentialScopes,
+	type TaskCredentialErrorCode,
+	type TaskCredentialScope,
+	type TaskCredentialTtlBounds,
+	type TaskExecutionBinding,
+} from "./task-credential-lease.ts";
+import {
+	isTaskCredentialTargetCapabilities,
+	type TaskCredentialTargetCapabilities,
+} from "./task-credential-provider.ts";
 
 /**
  * Pure Execution Policy v1 resolver.
@@ -34,6 +54,10 @@ export type PolicyResource =
 	| "process.spawn"
 	| "network.connect"
 	| "credential.expose"
+	| "credential.task.issue"
+	| "credential.task.renew"
+	| "credential.task.project"
+	| "credential.task.revoke"
 	| "sandbox.prepare"
 	| "mcp.auth"
 	| "resource.list"
@@ -88,6 +112,10 @@ export const POLICY_RESOURCE_CATEGORIES = Object.freeze([
 	"process.spawn",
 	"network.connect",
 	"credential.expose",
+	"credential.task.issue",
+	"credential.task.renew",
+	"credential.task.project",
+	"credential.task.revoke",
 	"sandbox.prepare",
 	"mcp.auth",
 	"resource.list",
@@ -98,6 +126,24 @@ export const POLICY_RESOURCE_CATEGORIES = Object.freeze([
 ] as const);
 export const POLICY_OPERATION_CATEGORIES = POLICY_RESOURCE_CATEGORIES;
 export const POLICY_RESOURCES = POLICY_RESOURCE_CATEGORIES;
+
+/**
+ * The Task Credential / Lease v1 operations governed as independent policy
+ * resources. Each operation is authorized separately so a profile can allow
+ * issuance while denying delivery, renewal, or revoke paths.
+ */
+export const TASK_CREDENTIAL_POLICY_RESOURCES = Object.freeze([
+	"credential.task.issue",
+	"credential.task.renew",
+	"credential.task.project",
+	"credential.task.revoke",
+] as const);
+export type TaskCredentialPolicyResource = (typeof TASK_CREDENTIAL_POLICY_RESOURCES)[number];
+
+export function isTaskCredentialPolicyResource(value: unknown): value is TaskCredentialPolicyResource {
+	return typeof value === "string" && (TASK_CREDENTIAL_POLICY_RESOURCES as readonly string[]).includes(value);
+}
+
 export const POLICY_DECISION_OUTCOMES = Object.freeze(["allow", "ask", "deny", "sandbox_required"] as const);
 export const POLICY_APPROVAL_OUTCOMES = Object.freeze(["approved", "rejected"] as const);
 export const POLICY_APPROVAL_SOURCES = Object.freeze(["interactive", "rpc", "sdk", "system"] as const);
@@ -289,6 +335,10 @@ export interface PolicyOperationRequest {
 	readonly port?: number;
 	readonly credentialNames?: ReadonlyArray<string>;
 	readonly environmentNames?: ReadonlyArray<string>;
+	/** Opaque credential target identity of a Task Credential operation; matched locally only. */
+	readonly targetId?: string;
+	/** Requested lease TTL of a Task Credential operation; matched locally only. */
+	readonly ttlMs?: number;
 }
 
 export interface SandboxCapabilities {
@@ -296,6 +346,13 @@ export interface SandboxCapabilities {
 	readonly process: boolean;
 	readonly network: boolean;
 	readonly credentialIsolation: boolean;
+	/**
+	 * Declares per-binding Task Credential delivery (project/renew/revoke)
+	 * inside the sandbox target. Absent or false fails closed: the credential
+	 * delivery path never falls back to Host environment, command line, or
+	 * temporary files.
+	 */
+	readonly credentialDelivery?: boolean;
 }
 
 export interface SandboxPreflight {
@@ -320,6 +377,9 @@ export interface CapabilityBindingInput {
 	readonly deniedCapabilityIds?: ReadonlyArray<string>;
 	readonly allowedResources?: ReadonlyArray<PolicyResource>;
 	readonly deniedResources?: ReadonlyArray<PolicyResource>;
+	/** Target identities the capability binding declares for Task Credential operations. */
+	readonly allowedTargetIds?: ReadonlyArray<string>;
+	readonly deniedTargetIds?: ReadonlyArray<string>;
 }
 
 export interface PolicyProjectInput {
@@ -429,6 +489,17 @@ export interface PolicyDecision {
 	readonly requestId?: string;
 	readonly timestamp: string;
 	readonly approval?: PolicyApprovalRequest;
+	/**
+	 * Safe decision facts for Task Credential resources only: the exact
+	 * normalized requested credential-name set, the credential target
+	 * identity, and the requested lease TTL. Carried on every
+	 * `credential.task.*` decision so a later preflight can prove the
+	 * decision authorized exactly the requested scope, target, and TTL;
+	 * absent on every other resource.
+	 */
+	readonly credentialNames?: ReadonlyArray<string>;
+	readonly targetId?: string;
+	readonly ttlMs?: number;
 }
 
 /** The allowlisted public shape; raw operation data is intentionally absent. */
@@ -1195,6 +1266,9 @@ function validCapabilityBinding(value: CapabilityBindingInput | undefined): bool
 	for (const resources of [value.allowedResources, value.deniedResources]) {
 		if (resources !== undefined && (!Array.isArray(resources) || !resources.every(isResource))) return false;
 	}
+	for (const targets of [value.allowedTargetIds, value.deniedTargetIds]) {
+		if (targets !== undefined && (!Array.isArray(targets) || !targets.every(isSafeOpaqueId))) return false;
+	}
 	return value.allowed === undefined || typeof value.allowed === "boolean";
 }
 
@@ -1214,7 +1288,8 @@ function validSandboxPreflight(value: SandboxPreflight | undefined): boolean {
 				typeof capabilities.filesystem !== "boolean" ||
 				typeof capabilities.process !== "boolean" ||
 				typeof capabilities.network !== "boolean" ||
-				typeof capabilities.credentialIsolation !== "boolean")
+				typeof capabilities.credentialIsolation !== "boolean" ||
+				(capabilities.credentialDelivery !== undefined && typeof capabilities.credentialDelivery !== "boolean"))
 		) {
 			return false;
 		}
@@ -1325,6 +1400,10 @@ function defaultResourceAction(profile: ExecutionPolicyProfile, operation: Polic
 		case "network.connect":
 			return profile.network.action;
 		case "credential.expose":
+		case "credential.task.issue":
+		case "credential.task.renew":
+		case "credential.task.project":
+		case "credential.task.revoke":
 			return profile.credentials.action;
 		default:
 			return profile.defaultAction;
@@ -1346,6 +1425,10 @@ function approvalAction(profile: ExecutionPolicyProfile, operation: PolicyOperat
 		case "process.spawn":
 			return profile.approvals.process;
 		case "credential.expose":
+		case "credential.task.issue":
+		case "credential.task.renew":
+		case "credential.task.project":
+		case "credential.task.revoke":
 			return profile.approvals.credentials;
 		case "sandbox.prepare":
 			return profile.approvals.sandbox;
@@ -1390,6 +1473,14 @@ function capabilityDecision(
 			return "policy_denied";
 		}
 	}
+	if (operation.targetId !== undefined) {
+		// The capability binding declares the credential target: a target that
+		// is denied or outside the declared allowlist is a hard deny.
+		if (capability.deniedTargetIds?.includes(operation.targetId)) return "policy_denied";
+		if (capability.allowedTargetIds !== undefined && !capability.allowedTargetIds.includes(operation.targetId)) {
+			return "policy_denied";
+		}
+	}
 	return undefined;
 }
 
@@ -1405,6 +1496,10 @@ function requiredSandboxCapability(resource: PolicyResource): keyof SandboxCapab
 		case "network.connect":
 			return "network";
 		case "credential.expose":
+		case "credential.task.issue":
+		case "credential.task.renew":
+		case "credential.task.project":
+		case "credential.task.revoke":
 			return "credentialIsolation";
 		case "capability.invoke":
 		case "sandbox.prepare":
@@ -1422,6 +1517,12 @@ function requiredSandboxCapability(resource: PolicyResource): keyof SandboxCapab
 
 function requiredSandboxCapabilities(resource: PolicyResource): ReadonlyArray<keyof SandboxCapabilities> {
 	if (resource === "capability.invoke") return ["filesystem", "process", "network", "credentialIsolation"];
+	if (resource === "credential.task.renew" || resource === "credential.task.project" || resource === "credential.task.revoke") {
+		// Delivery, renewal, and revocation move material inside the target, so
+		// they additionally need the sandbox's declared credential delivery
+		// capability; issuance only needs isolation.
+		return ["credentialIsolation", "credentialDelivery"];
+	}
 	const required = requiredSandboxCapability(resource);
 	return required === undefined ? [] : [required];
 }
@@ -1458,17 +1559,20 @@ function operationBoundaryReason(profile: ExecutionPolicyProfile, operation: Pol
 			return "network_policy_violation";
 		}
 	}
-	if (operation.resource === "credential.expose" && profile.credentials.allowNames.length > 0) {
+	// The credential boundary covers both host-side exposure and the Task
+	// Credential lifecycle resources: every credential-scoped operation must
+	// name at least one credential and every name must be inside the profile
+	// allowlist, and a non-legacy profile with an empty allowlist denies all
+	// credential-scoped operations (an empty allowlist never means "all").
+	const credentialScoped =
+		operation.resource === "credential.expose" || isTaskCredentialPolicyResource(operation.resource);
+	if (credentialScoped && profile.credentials.allowNames.length > 0) {
 		const names = operation.credentialNames ?? [];
 		if (names.length === 0 || names.some((name) => !profile.credentials.allowNames.includes(name))) {
 			return "credential_policy_violation";
 		}
 	}
-	if (
-		operation.resource === "credential.expose" &&
-		profile.enforcement !== "legacy" &&
-		profile.credentials.allowNames.length === 0
-	) {
+	if (credentialScoped && profile.enforcement !== "legacy" && profile.credentials.allowNames.length === 0) {
 		return "credential_policy_violation";
 	}
 	return undefined;
@@ -1498,6 +1602,26 @@ function sandboxDecision(
 
 function safeReason(code: PolicyErrorCode | undefined): string | undefined {
 	return code === undefined ? undefined : POLICY_ERROR_MESSAGES[code];
+}
+
+/**
+ * Safe decision facts for Task Credential resources: the exact normalized
+ * requested credential-name set, the credential target identity, and the
+ * requested lease TTL. These are copied onto every `credential.task.*`
+ * decision so a later preflight can prove the decision authorized exactly
+ * the requested scope, target, and TTL; other resources carry no facts.
+ */
+function taskCredentialDecisionFacts(operation: PolicyOperationRequest): {
+	readonly credentialNames?: ReadonlyArray<string>;
+	readonly targetId?: string;
+	readonly ttlMs?: number;
+} {
+	if (!isTaskCredentialPolicyResource(operation.resource)) return {};
+	return {
+		...(operation.credentialNames === undefined ? {} : { credentialNames: [...operation.credentialNames] }),
+		...(operation.targetId === undefined ? {} : { targetId: operation.targetId }),
+		...(operation.ttlMs === undefined ? {} : { ttlMs: operation.ttlMs }),
+	};
 }
 
 function createApprovalRequest(
@@ -1567,12 +1691,16 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	if (port !== undefined && !isPort(port)) return undefined;
 	const credentialNames = value.credentialNames;
 	const environmentNames = value.environmentNames;
+	const targetId = value.targetId;
+	const ttlMs = value.ttlMs;
 	const parsedCredentialNames =
 		credentialNames === undefined ? undefined : parseStringArray(credentialNames, isEnvironmentName);
 	const parsedEnvironmentNames =
 		environmentNames === undefined ? undefined : parseStringArray(environmentNames, isEnvironmentName);
 	if (credentialNames !== undefined && parsedCredentialNames === undefined) return undefined;
 	if (environmentNames !== undefined && parsedEnvironmentNames === undefined) return undefined;
+	if (targetId !== undefined && !isSafeOpaqueId(targetId)) return undefined;
+	if (ttlMs !== undefined && !isPositiveInteger(ttlMs)) return undefined;
 	return deepFreeze({
 		resource: value.resource,
 		source: value.source,
@@ -1588,6 +1716,8 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		...(port === undefined ? {} : { port }),
 		...(parsedCredentialNames === undefined ? {} : { credentialNames: parsedCredentialNames }),
 		...(parsedEnvironmentNames === undefined ? {} : { environmentNames: parsedEnvironmentNames }),
+		...(targetId === undefined ? {} : { targetId }),
+		...(ttlMs === undefined ? {} : { ttlMs }),
 	});
 }
 
@@ -1601,6 +1731,7 @@ export function authorizePolicyOperation(input: {
 }): PolicyDecision {
 	const operation = validateOperation(input.operation);
 	if (operation === undefined) throw policyError("policy_settings_invalid");
+	const facts = taskCredentialDecisionFacts(operation);
 	const capabilityCode = capabilityDecision(operation, input.capabilityBinding);
 	const requestId = operation.id;
 	const timestamp = input.binding.createdAt;
@@ -1620,6 +1751,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...facts,
 		});
 	}
 	let action = ruleAction(input.profile, operation);
@@ -1646,6 +1778,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...facts,
 		});
 	}
 	const sandbox = sandboxDecision(input.profile, input.binding, operation);
@@ -1665,6 +1798,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: sandbox.hardDeny,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...facts,
 		});
 	}
 	if (action === "deny") {
@@ -1685,6 +1819,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...facts,
 		});
 	}
 	if (action === "ask") {
@@ -1710,6 +1845,7 @@ export function authorizePolicyOperation(input: {
 			...(requestId === undefined ? { requestId: approval.id } : { requestId }),
 			timestamp,
 			approval,
+			...facts,
 		});
 	}
 	return deepFreeze({
@@ -1725,6 +1861,7 @@ export function authorizePolicyOperation(input: {
 		hardDeny: false,
 		...(requestId === undefined ? {} : { requestId }),
 		timestamp,
+		...facts,
 	});
 }
 
@@ -1932,3 +2069,488 @@ export function resolveExecutionPolicy(input: ResolveExecutionPolicyInput): Poli
 }
 
 export const resolvePolicy = resolveExecutionPolicy;
+
+/**
+ * Task Credential / Lease v1 preflight (T3).
+ *
+ * Read-only preflight for one `credential.task.issue` / `renew` / `project` /
+ * `revoke` operation. It accepts already-resolved facts only (the frozen
+ * execution binding, the current Session/Run/Policy/Graph identities, the
+ * resolved Gate record, node attach state, the resolved policy decision, the
+ * capability binding, the per-binding sandbox facts, the TTL bounds with the
+ * earliest deadline, and the provider scope) and checks them in the fixed
+ * order below. It never writes to the Session, never calls the provider, and
+ * never starts an operation; every failure returns a provider-neutral
+ * `TaskCredentialError` carrying the frozen `task_credential_*` code.
+ */
+
+export const TASK_CREDENTIAL_PREFLIGHT_OPERATIONS = Object.freeze(["issue", "renew", "project", "revoke"] as const);
+export type TaskCredentialPreflightOperation = (typeof TASK_CREDENTIAL_PREFLIGHT_OPERATIONS)[number];
+
+/** The policy resource that governs one Task Credential preflight operation. */
+export function taskCredentialPolicyResource(operation: TaskCredentialPreflightOperation): TaskCredentialPolicyResource {
+	switch (operation) {
+		case "issue":
+			return "credential.task.issue";
+		case "renew":
+			return "credential.task.renew";
+		case "project":
+			return "credential.task.project";
+		case "revoke":
+			return "credential.task.revoke";
+	}
+}
+
+/** Resolved Task Gate fact for the preflight; never a live store handle. */
+export interface TaskCredentialGatePreflight {
+	readonly status: "pending" | "approved" | "rejected" | "cancelled";
+	readonly stageRevision: number;
+}
+
+/** Resolved per-binding sandbox facts for the preflight; never a live handle. */
+export interface TaskCredentialSandboxPreflight {
+	readonly bindingId: string;
+	readonly status: SandboxStatus;
+	readonly capabilities: SandboxCapabilities;
+	readonly perBinding: boolean;
+}
+
+/** Resolved provider scope facts for the preflight; never a live provider call. */
+export interface TaskCredentialProviderPreflight {
+	readonly available: boolean;
+	readonly declaresDelivery: boolean;
+}
+
+export interface TaskCredentialPreflightInput {
+	readonly operation: TaskCredentialPreflightOperation;
+	/** The frozen Task Execution Binding of the lease. */
+	readonly binding: TaskExecutionBinding;
+	/** Current Session id; must equal `binding.sessionId`. */
+	readonly sessionId: string;
+	/** Current Run id; must equal `binding.runId`. */
+	readonly runId: string;
+	/** Current graph revision; must equal `binding.graphRevision`. */
+	readonly graphRevision: number;
+	/** Current Policy Binding id; must equal `binding.policyBindingId`. */
+	readonly policyBindingId: string;
+	/** Current Capability Binding id; must equal `binding.capabilityBindingId`. */
+	readonly capabilityBindingId: string;
+	/**
+	 * Resolved Gate for `(sessionId, taskId, stageId, stageRevision)` when the
+	 * binding has a stage pair; must be `approved` with a matching revision.
+	 */
+	readonly gate?: TaskCredentialGatePreflight;
+	/** The graph node of the binding must be attached to the Run. */
+	readonly nodeAttached: boolean;
+	/**
+	 * The resolved policy decision for `credential.task.<operation>` carrying
+	 * the operation's scope/target/TTL facts (`credentialNames`,
+	 * `targetId`, `ttlMs`); never auto-approved here.
+	 */
+	readonly decision: PolicyDecision;
+	/** Resolved approval state for `ask` decisions. */
+	readonly approvalGranted: boolean;
+	/**
+	 * The capability binding of the execution context; required and its `id`
+	 * must equal `capabilityBindingId`. It declares the credential target via
+	 * `allowedTargetIds` / `deniedTargetIds`.
+	 */
+	readonly capabilityBinding: CapabilityBindingInput;
+	/**
+	 * Normalized requested scope allowlist (deduped, sorted, structurally
+	 * valid). `scopeDigest` must equal `calculateScopeDigest(scopes)` and
+	 * `scopeCount` must equal `scopes.length`, so the safe facts correlate
+	 * with exactly the requested scopes.
+	 */
+	readonly scopes: ReadonlyArray<TaskCredentialScope>;
+	/** Digest of the normalized requested scopes; must match `scopes`. */
+	readonly scopeDigest: string;
+	/** Count of the normalized requested scopes; must equal `scopes.length`. */
+	readonly scopeCount: number;
+	/**
+	 * Safe resolved per-binding target capability facts; never a live
+	 * provider call. `targetId` must equal `binding.targetId` and `bindingId`
+	 * must equal the Task Execution Binding id (`binding.bindingId`), not the
+	 * capability binding id — the capability binding stays a separately
+	 * checked execution-context identity.
+	 */
+	readonly target: TaskCredentialTargetCapabilities;
+	readonly sandbox?: TaskCredentialSandboxPreflight;
+	readonly requestedTtlMs: number;
+	/** Profile/policy TTL bounds including the earliest Task/Run deadline. */
+	readonly ttlBounds: TaskCredentialTtlBounds;
+	readonly nowMs: number;
+	readonly provider: TaskCredentialProviderPreflight;
+}
+
+export type TaskCredentialPreflightResult =
+	| { readonly allowed: true; readonly boundedTtlMs: number }
+	| { readonly allowed: false; readonly error: TaskCredentialError };
+
+const TASK_CREDENTIAL_PREFLIGHT_INPUT_KEYS = Object.freeze([
+	"operation",
+	"binding",
+	"sessionId",
+	"runId",
+	"graphRevision",
+	"policyBindingId",
+	"capabilityBindingId",
+	"gate",
+	"nodeAttached",
+	"decision",
+	"approvalGranted",
+	"capabilityBinding",
+	"scopes",
+	"scopeDigest",
+	"scopeCount",
+	"target",
+	"sandbox",
+	"requestedTtlMs",
+	"ttlBounds",
+	"nowMs",
+	"provider",
+] as const);
+
+const TASK_CREDENTIAL_GATE_STATUSES = Object.freeze(["pending", "approved", "rejected", "cancelled"] as const);
+const TASK_CREDENTIAL_GATE_KEYS = Object.freeze(["status", "stageRevision"] as const);
+const TASK_CREDENTIAL_TTL_BOUNDS_KEYS = Object.freeze(["minTtlMs", "maxTtlMs", "deadlineAtMs"] as const);
+const TASK_CREDENTIAL_SANDBOX_KEYS = Object.freeze(["bindingId", "status", "capabilities", "perBinding"] as const);
+const TASK_CREDENTIAL_PROVIDER_KEYS = Object.freeze(["available", "declaresDelivery"] as const);
+
+function hasOnlyPreflightKeys(value: Record<string, unknown>, allowed: ReadonlyArray<string>): boolean {
+	return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validTaskCredentialGate(value: unknown): value is TaskCredentialGatePreflight {
+	if (value === undefined) return true;
+	if (!isRecord(value) || !hasOnlyPreflightKeys(value, TASK_CREDENTIAL_GATE_KEYS)) {
+		return false;
+	}
+	return (
+		(TASK_CREDENTIAL_GATE_STATUSES as readonly string[]).includes(value.status as string) &&
+		isPositiveInteger(value.stageRevision)
+	);
+}
+
+function validTaskCredentialDecision(value: unknown): value is PolicyDecision {
+	if (!isRecord(value)) return false;
+	return (
+		isSafeOpaqueId(value.bindingId) &&
+		isResource(value.resource) &&
+		isAction(value.action) &&
+		(POLICY_DECISION_OUTCOMES as readonly string[]).includes(value.outcome as string) &&
+		(value.reasonCode === undefined || (POLICY_ERROR_CODES as readonly string[]).includes(value.reasonCode as string)) &&
+		(value.credentialNames === undefined ||
+			(Array.isArray(value.credentialNames) && value.credentialNames.every(isEnvironmentName))) &&
+		(value.targetId === undefined || isSafeOpaqueId(value.targetId)) &&
+		(value.ttlMs === undefined || isPositiveInteger(value.ttlMs))
+	);
+}
+
+function validTaskCredentialSandbox(value: unknown): value is TaskCredentialSandboxPreflight {
+	if (value === undefined) return true;
+	if (!isRecord(value) || !hasOnlyPreflightKeys(value, TASK_CREDENTIAL_SANDBOX_KEYS)) return false;
+	if (!isSafeOpaqueId(value.bindingId) || !isSandboxStatus(value.status) || typeof value.perBinding !== "boolean") {
+		return false;
+	}
+	const capabilities = value.capabilities;
+	if (!isRecord(capabilities)) return false;
+	for (const key of ["filesystem", "process", "network", "credentialIsolation"] as const) {
+		if (typeof capabilities[key] !== "boolean") return false;
+	}
+	return capabilities.credentialDelivery === undefined || typeof capabilities.credentialDelivery === "boolean";
+}
+
+function validTaskCredentialProvider(value: unknown): value is TaskCredentialProviderPreflight {
+	if (!isRecord(value) || !hasOnlyPreflightKeys(value, TASK_CREDENTIAL_PROVIDER_KEYS)) return false;
+	return typeof value.available === "boolean" && typeof value.declaresDelivery === "boolean";
+}
+
+function validTaskCredentialTtlBounds(value: unknown): value is TaskCredentialTtlBounds {
+	if (!isRecord(value) || !hasOnlyPreflightKeys(value, TASK_CREDENTIAL_TTL_BOUNDS_KEYS)) return false;
+	if (
+		!isPositiveInteger(value.minTtlMs) ||
+		!isPositiveInteger(value.maxTtlMs) ||
+		(value.minTtlMs as number) > (value.maxTtlMs as number)
+	) {
+		return false;
+	}
+	return value.deadlineAtMs === undefined || isTaskCredentialEpochMs(value.deadlineAtMs);
+}
+
+function sameTaskCredentialScope(left: TaskCredentialScope, right: TaskCredentialScope): boolean {
+	return (
+		left.credentialName === right.credentialName &&
+		left.purpose === right.purpose &&
+		(left.resource ?? null) === (right.resource ?? null) &&
+		left.operations.length === right.operations.length &&
+		left.operations.every((item, index) => item === right.operations[index]) &&
+		left.targetKinds.length === right.targetKinds.length &&
+		left.targetKinds.every((item, index) => item === right.targetKinds[index])
+	);
+}
+
+/**
+ * Structural scope facts check: the requested scope allowlist must be
+ * non-empty, bounded, structurally valid, already normalized (deduped and
+ * sorted), and must correlate with the supplied `scopeDigest` (the canonical
+ * digest of the normalized list) and `scopeCount` (its length). Any mismatch
+ * fails the preflight input.
+ */
+function validTaskCredentialScopeFacts(
+	scopes: unknown,
+	scopeDigest: unknown,
+	scopeCount: unknown,
+): scopes is ReadonlyArray<TaskCredentialScope> {
+	if (!Array.isArray(scopes) || scopes.length === 0 || scopes.length > TASK_CREDENTIAL_MAX_SCOPES) return false;
+	if (!scopes.every((item) => isTaskCredentialScope(item))) return false;
+	if (scopeCount !== scopes.length) return false;
+	if (typeof scopeDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(scopeDigest)) return false;
+	let normalized: ReadonlyArray<TaskCredentialScope>;
+	try {
+		normalized = normalizeTaskCredentialScopes(scopes);
+	} catch {
+		return false;
+	}
+	if (normalized.length !== scopes.length) return false;
+	if (!normalized.every((scope, index) => sameTaskCredentialScope(scope, scopes[index]))) return false;
+	let digest: string;
+	try {
+		digest = calculateScopeDigest(normalized);
+	} catch {
+		return false;
+	}
+	return digest === scopeDigest;
+}
+
+/**
+ * Per-operation target capabilities: delivery needs the short-lived
+ * projection capability and delivery receipts; renew and revoke need their
+ * own operation capability; every operation needs per-binding isolation.
+ */
+function requiredTaskCredentialTargetCapabilities(
+	operation: TaskCredentialPreflightOperation,
+): ReadonlyArray<keyof TaskCredentialTargetCapabilities> {
+	switch (operation) {
+		case "issue":
+			return ["canReceiveShortLivedCredential", "supportsPerBindingIsolation"];
+		case "renew":
+			return ["canRenewCredential", "supportsPerBindingIsolation"];
+		case "revoke":
+			return ["canRevokeCredential", "supportsPerBindingIsolation"];
+		case "project":
+			return ["canReceiveShortLivedCredential", "supportsPerBindingIsolation", "supportsDeliveryReceipt"];
+	}
+}
+
+/** Build one provider-neutral preflight failure with the frozen code. */
+function preflightError(code: TaskCredentialErrorCode): { readonly allowed: false; readonly error: TaskCredentialError } {
+	return { allowed: false, error: new TaskCredentialError(code) };
+}
+
+/**
+ * Resolve the read-only Task Credential preflight in the fixed check order:
+ * input/binding (including the normalized scope facts and the resolved target
+ * capability snapshot), Session/Run/Policy/Graph ownership, Task Gate
+ * approved/stageRevision, node attach, Policy scope/target/TTL correlation
+ * and action, ask unapproved `approval_required`, Capability target identity
+ * and per-operation capabilities, Sandbox/provider per-binding
+ * isolation/delivery/renew/revoke, earliest deadline, provider scope. Pure:
+ * no Session writes, no provider calls, no side effects. Success reports the
+ * bounded TTL actually granted; every failure is `{ allowed: false, error }`
+ * with a `TaskCredentialError` carrying the frozen provider-neutral code.
+ */
+export function resolveTaskCredentialPreflight(input: TaskCredentialPreflightInput): TaskCredentialPreflightResult {
+	// Step 1 - input/binding: structural validation only, no I/O. The
+	// capability binding is required and must carry the capability binding id,
+	// and the scope facts must be normalized and mutually consistent.
+	const raw: unknown = input;
+	if (
+		!isRecord(raw) ||
+		!hasOnlyPreflightKeys(raw, TASK_CREDENTIAL_PREFLIGHT_INPUT_KEYS) ||
+		!(TASK_CREDENTIAL_PREFLIGHT_OPERATIONS as readonly string[]).includes(input.operation) ||
+		!isTaskCredentialIdentifier(input.sessionId) ||
+		!isTaskCredentialIdentifier(input.runId) ||
+		!isTaskCredentialIdentifier(input.policyBindingId) ||
+		!isTaskCredentialIdentifier(input.capabilityBindingId) ||
+		!isPositiveInteger(input.graphRevision) ||
+		typeof input.nodeAttached !== "boolean" ||
+		typeof input.approvalGranted !== "boolean" ||
+		!isPositiveInteger(input.requestedTtlMs) ||
+		!isTaskCredentialEpochMs(input.nowMs) ||
+		!validTaskCredentialTtlBounds(input.ttlBounds) ||
+		!validTaskCredentialGate(input.gate) ||
+		!validTaskCredentialDecision(input.decision) ||
+		input.capabilityBinding === undefined ||
+		!validCapabilityBinding(input.capabilityBinding) ||
+		!validTaskCredentialScopeFacts(input.scopes, input.scopeDigest, input.scopeCount) ||
+		!isTaskCredentialTargetCapabilities(input.target) ||
+		!validTaskCredentialSandbox(input.sandbox) ||
+		!validTaskCredentialProvider(input.provider)
+	) {
+		return preflightError("task_credential_invalid");
+	}
+	if (!isTaskExecutionBinding(input.binding)) {
+		return preflightError("task_credential_binding_invalid");
+	}
+	// Step 2 - Session/Run/Policy/Graph ownership: every identity the lease
+	// froze must equal the current execution context, including the capability
+	// binding the input carries.
+	if (
+		input.binding.sessionId !== input.sessionId ||
+		input.binding.runId !== input.runId ||
+		input.binding.policyBindingId !== input.policyBindingId ||
+		input.binding.graphRevision !== input.graphRevision ||
+		input.binding.capabilityBindingId !== input.capabilityBindingId ||
+		input.capabilityBinding.id !== input.capabilityBindingId
+	) {
+		return preflightError("task_credential_binding_invalid");
+	}
+	// Step 3 - Task Gate approved/stageRevision: the stage pair requires an
+	// approved Gate at the exact stage revision; a pending, rejected,
+	// cancelled, missing, or revision-mismatched Gate never passes.
+	if (input.binding.stageId !== undefined) {
+		if (
+			input.gate === undefined ||
+			input.gate.status !== "approved" ||
+			input.gate.stageRevision !== input.binding.stageRevision
+		) {
+			return preflightError("task_credential_gate_required");
+		}
+	}
+	// Step 4 - node attach: the graph node must be attached to the Run.
+	if (!input.nodeAttached) {
+		return preflightError("task_credential_binding_invalid");
+	}
+	// Step 5 - Policy scope/target/TTL/action: the decision must belong to
+	// this Policy Binding and this operation and must carry exactly the
+	// requested scope credential-name set, target identity, and TTL facts; a
+	// decision that authorized a different scope, target, or TTL can never
+	// authorize this request, and the requested TTL must fit the
+	// profile/policy ceiling before the deadline is consulted.
+	if (
+		input.decision.bindingId !== input.policyBindingId ||
+		input.decision.resource !== taskCredentialPolicyResource(input.operation)
+	) {
+		return preflightError("task_credential_invalid");
+	}
+	const requestedCredentialNames = uniqueSorted(input.scopes.map((scope) => scope.credentialName));
+	if (
+		input.decision.credentialNames === undefined ||
+		input.decision.credentialNames.length !== requestedCredentialNames.length ||
+		!arraySubset(requestedCredentialNames, input.decision.credentialNames) ||
+		!arraySubset(input.decision.credentialNames, requestedCredentialNames)
+	) {
+		return preflightError("task_credential_scope_denied");
+	}
+	if (input.decision.targetId !== input.binding.targetId) {
+		return preflightError("task_credential_policy_denied");
+	}
+	if (input.decision.ttlMs !== input.requestedTtlMs) {
+		return preflightError("task_credential_ttl_invalid");
+	}
+	const ttlFloor = Math.max(input.ttlBounds.minTtlMs, TASK_CREDENTIAL_RENEWAL_WINDOW_MS);
+	const ttlCeiling = Math.min(input.ttlBounds.maxTtlMs, TASK_CREDENTIAL_MAX_TTL_MS);
+	if (ttlCeiling < ttlFloor || input.requestedTtlMs < ttlFloor || input.requestedTtlMs > ttlCeiling) {
+		return preflightError("task_credential_ttl_invalid");
+	}
+	if (input.decision.outcome === "deny") {
+		if (input.decision.reasonCode === "credential_policy_violation") {
+			return preflightError("task_credential_scope_denied");
+		}
+		if (
+			input.decision.reasonCode === "sandbox_unavailable" ||
+			input.decision.reasonCode === "sandbox_capability_insufficient"
+		) {
+			// The decision already failed on the sandbox boundary; the live
+			// sandbox facts below confirm the same failure with the
+			// provider-neutral code.
+			return preflightError("task_credential_target_unavailable");
+		}
+		return preflightError("task_credential_policy_denied");
+	}
+	if (input.decision.outcome === "sandbox_required") {
+		return preflightError("task_credential_target_unavailable");
+	}
+	if (input.decision.outcome !== "allow" && input.decision.outcome !== "ask") {
+		return preflightError("task_credential_policy_denied");
+	}
+	// Step 6 - ask must be explicitly approved; an unapproved ask never passes
+	// and is never auto-approved here.
+	if (input.decision.outcome === "ask" && !input.approvalGranted) {
+		return preflightError("task_credential_approval_required");
+	}
+	// Step 7 - Capability target: the capability binding declares the
+	// credential target; a denied or undeclared target is a hard deny. The
+	// resolved target facts must address the lease's own target under the
+	// lease's Task Execution Binding (the target snapshot `bindingId` is the
+	// execution binding id, never the capability binding id) and declare the
+	// operation's capabilities. The scope contract also restricts which target
+	// kinds may receive material: every scope that declares a non-empty
+	// `targetKinds` list must permit the resolved target's kind.
+	const targetId = input.binding.targetId;
+	if (targetId === undefined) {
+		return preflightError("task_credential_target_unavailable");
+	}
+	const capabilityBinding = input.capabilityBinding;
+	if (capabilityBinding.deniedTargetIds?.includes(targetId)) {
+		return preflightError("task_credential_policy_denied");
+	}
+	if (capabilityBinding.allowedTargetIds !== undefined && !capabilityBinding.allowedTargetIds.includes(targetId)) {
+		return preflightError("task_credential_policy_denied");
+	}
+	if (input.target.targetId !== targetId || input.target.bindingId !== input.binding.bindingId) {
+		// The capability snapshot addresses a different target or a different
+		// Task Execution Binding than the lease's.
+		return preflightError("task_credential_policy_denied");
+	}
+	if (input.scopes.some((scope) => scope.targetKinds.length > 0 && !scope.targetKinds.includes(input.target.targetKind))) {
+		return preflightError("task_credential_scope_denied");
+	}
+	for (const capability of requiredTaskCredentialTargetCapabilities(input.operation)) {
+		if (!input.target[capability]) {
+			return preflightError("task_credential_target_unavailable");
+		}
+	}
+	// Step 8 - Sandbox/provider per-binding isolation/delivery/renew/revoke:
+	// the lease's sandbox binding must be the live per-binding session and
+	// declare credentialIsolation for every operation, plus credentialDelivery
+	// for delivery/renewal/revocation.
+	const sandboxBindingId = input.binding.sandboxBindingId;
+	if (
+		sandboxBindingId === undefined ||
+		input.sandbox === undefined ||
+		input.sandbox.bindingId !== sandboxBindingId ||
+		!input.sandbox.perBinding ||
+		input.sandbox.status !== "ready" ||
+		!input.sandbox.capabilities.credentialIsolation
+	) {
+		return preflightError("task_credential_target_unavailable");
+	}
+	if (input.operation !== "issue" && !input.sandbox.capabilities.credentialDelivery) {
+		return preflightError("task_credential_target_unavailable");
+	}
+	// Step 9 - earliest deadline: the requested TTL must fit before the
+	// earliest of the Task and Run deadlines; a passed deadline never issues.
+	if (input.ttlBounds.deadlineAtMs !== undefined) {
+		if (input.nowMs >= input.ttlBounds.deadlineAtMs || input.nowMs + input.requestedTtlMs > input.ttlBounds.deadlineAtMs) {
+			return preflightError("task_credential_ttl_invalid");
+		}
+	}
+	// Step 10 - provider scope: the issuer must be reachable for issue, and
+	// the target must declare delivery for project/renew/revoke.
+	if (!input.provider.available) {
+		return preflightError("task_credential_provider_unavailable");
+	}
+	if (input.operation !== "issue" && !input.provider.declaresDelivery) {
+		return preflightError("task_credential_target_unavailable");
+	}
+	// The bounded TTL is the requested TTL clamped to the policy ceiling and
+	// the earliest deadline; every bound above already passed, so the result
+	// is the effective grant length the caller may rely on.
+	let boundedTtlMs = Math.min(input.requestedTtlMs, ttlCeiling);
+	if (input.ttlBounds.deadlineAtMs !== undefined) {
+		boundedTtlMs = Math.min(boundedTtlMs, input.ttlBounds.deadlineAtMs - input.nowMs);
+	}
+	return { allowed: true, boundedTtlMs };
+}

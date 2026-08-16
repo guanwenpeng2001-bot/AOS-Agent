@@ -1606,7 +1606,7 @@ loopback-only, so it is not a remotely exposed service.
 
 Automation Host is strictly opt-in. A client that never sends `initialize` sees exactly the legacy RPC behavior described above: `prompt`, bare session events, the string `error` field, the extension UI sub-protocol, and so on. No existing client has to migrate.
 
-All `run.*`, `task.gate.*`, and `task.graph.*` commands require a successful `initialize` first. If a client sends a `run.*`, `task.gate.*`, or `task.graph.*` command before initializing, the host replies with the structured error `host_not_initialized`.
+All `run.*`, `task.gate.*`, `task.graph.*`, and `task.credential.*` commands require a successful `initialize` first. If a client sends a `run.*`, `task.gate.*`, `task.graph.*`, or `task.credential.*` command before initializing, the host replies with the structured error `host_not_initialized`.
 
 `initialize` accepts exactly `protocolVersion: 1`. Any other version is rejected with `unsupported_protocol_version`; there is no silent downgrade and no fallback to an older contract.
 
@@ -1631,6 +1631,7 @@ Response:
     "auditCommands": ["audit.query", "audit.replay", "external.map"],
     "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"],
     "taskGraphCommands": ["task.graph.create", "task.graph.get", "task.graph.list", "task.graph.node.attach", "task.graph.node.settle"],
+    "taskCredentialCommands": ["task.credential.issue", "task.credential.get", "task.credential.list", "task.credential.heartbeat", "task.credential.revoke", "task.credential.settle"],
     "externalAgentAdapters": [
       {"adapterId": "trusted-adapter", "displayName": "Trusted Adapter", "version": "1"}
     ]
@@ -1638,7 +1639,7 @@ Response:
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, task gate, and task graph commands available on this host. `taskGateCommands`, `taskGraphCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 `externalAgentAdapters` is an optional additive summary of adapters registered
 by the trusted Host composition; each entry contains only `adapterId`,
@@ -2499,6 +2500,87 @@ Task Graph v1 deliberately does not implement:
 
 Graph commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot mutate Graph state itself.
 
+### Task Credential commands (task.credential.*)
+
+Task Credential / Lease is the v1 control-plane contract for a short-lived, revocable, auditable grant bound to one Task Execution Binding. It records which scopes a task stage / Run may expose, to which target, until which deadline, and whether delivery or revocation completed. It is not a ModelRuntime key, not a Remote Operation lease, and not a Worker scheduler.
+
+The commands are additive Automation Host capabilities advertised as `taskCredentialCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
+
+```text
+task.credential.issue
+task.credential.get
+task.credential.list
+task.credential.heartbeat
+task.credential.revoke
+task.credential.settle
+```
+
+The intended consumption order is:
+
+```text
+Task Gate approved + Task Graph node attached
+  → task.credential.issue (preflight Gate / Graph / Policy / Capability / Sandbox / target)
+  → project through a target that declares isolation and revoke
+  → task.credential.heartbeat before renewAfter
+  → Run cancel / deadline / terminal / detach → task.credential.revoke
+  → task.credential.settle after delivery and revoke outcome are known
+```
+
+#### Grant identity and safe record
+
+A grant binds one immutable Task Execution Binding (`sessionId`, `taskId`, `graphRevision`, `nodeId`, optional paired `stageId`/`stageRevision`, `runId`, policy / capability / optional sandbox bindings, optional `targetId`). Renew cannot migrate the grant to a new Run, stage revision, policy binding, scope, or target.
+
+Every successful write response and every `task.credential.get` / `task.credential.list` result returns the current safe grant snapshot: opaque IDs, `scopeDigest` / `scopeCount`, `status`, `issuedAt` / `expiresAt` / `renewAfter`, `heartbeatSequence`, `revision`, optional `targetId` / `reasonCode`. Responses never contain tokens, env, headers, provider material, paths, or raw provider errors.
+
+Statuses: `active`, `renewing`, `expired`, `revoked`, `settled`, `revocation_unknown`. Terminal statuses cannot resurrect. `revocation_unknown` quarantines the target and blocks new delivery and credential-dependent operations; it is never rewritten as `revoked` unless the provider later confirms revoke.
+
+#### task.credential.issue
+
+```json
+{
+  "type": "task.credential.issue",
+  "taskId": "task_42",
+  "graphRevision": 7,
+  "nodeId": "node_test",
+  "stageId": "stage_run",
+  "stageRevision": 2,
+  "runId": "run_abc123",
+  "capabilityBindingId": "cap_001",
+  "policyBindingId": "policy_001",
+  "targetId": "sandbox_1",
+  "scopes": [
+    {
+      "credentialName": "package_registry",
+      "purpose": "dependency_read",
+      "operations": ["read"],
+      "targetKinds": ["isolated_sandbox"]
+    }
+  ],
+  "requestedTtlMs": 60000,
+  "clientRequestId": "credential-issue-001"
+}
+```
+
+`issue` requires an approved Task Gate for the same task/stage revision, a Graph node attached to the current Run, Policy allow for `credential.task.issue`, and a target that declares the required isolation / revoke capabilities. Headless mode never treats Policy `ask` as allow. The same binding, scope, target, and `clientRequestId` replay the original grant; a different payload on the same key is `task_credential_conflict`. Failures include `task_credential_invalid`, `task_credential_binding_invalid`, `task_credential_gate_required`, `task_credential_policy_denied`, `task_credential_approval_required`, `task_credential_scope_denied`, `task_credential_ttl_invalid`, `task_credential_target_unavailable`, and `task_credential_persistence_failed`.
+
+#### task.credential.get / task.credential.list
+
+`task.credential.get` and `task.credential.list` are read-only: they never append a Session entry and never change grant state. `get` takes `leaseId` and fails with `task_credential_not_found` when the lease is not in the current Session. `list` accepts optional exact-match `taskId`, `nodeId`, `runId`, and `status` plus a server-restricted `limit`.
+
+#### task.credential.heartbeat
+
+Heartbeat must send `heartbeatSequence` equal to the current grant sequence plus one, plus `grantId`, `bindingId`, `requestedTtlMs`, and `clientRequestId`. Stale, replayed, or mismatched sequences fail with `task_lease_heartbeat_invalid`. Terminal or expired leases fail with `task_lease_expired` or `task_credential_conflict` and never resurrect. Renew does not change binding, scope digest, or target.
+
+#### task.credential.revoke / task.credential.settle
+
+`revoke` is idempotent. A confirmed provider revoke persists `revoked`. An unknown provider outcome persists `revocation_unknown` and quarantines the target. `settle` requires a recorded delivery outcome and a revoke/expiry outcome; it does not change Run terminal. A `revocation_unknown` grant cannot report a safe `settled` status.
+
+#### Persistence, audit, and isolation
+
+Each transition is persisted as a Session custom entry with `customType: "task.credential"` containing the action and a complete safe grant snapshot. Audit events use source/type `task.credential` and the `AuditTaskCredentialSummary` allowlist. Replay associates only by direct `runId` and never issues, renews, revokes, or changes Run terminal.
+
+`task.credential.*` commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot issue or revoke a grant. Host-side Runtime Credentials and MCP OAuth stay on their own contracts. `gondolin-local` does not declare `credentialDelivery` and never falls back to Host environment, command-line, or temporary-file projection.
+
 ### External Agent Adapter selection (`externalAgent`)
 
 `run.start` and `run.resume` accept an optional `externalAgent` selection
@@ -2581,7 +2663,7 @@ Error codes:
 | Code | Meaning | Retryable |
 |------|---------|-----------|
 | `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
-| `host_not_initialized` | A `run.*`, `task.gate.*`, or `task.graph.*` command was sent before a successful `initialize` | no |
+| `host_not_initialized` | A `run.*`, `task.gate.*`, `task.graph.*`, or `task.credential.*` command was sent before a successful `initialize` | no |
 | `session_busy` | A run is already active in the session; only one run per session at a time | yes |
 | `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
 | `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
@@ -2620,6 +2702,24 @@ Error codes:
 | `task_graph_run_not_terminal` | The attached Run is still `accepted`/`running`; settle cannot map a terminal yet | no |
 | `task_graph_run_state_mismatch` | The Run record and receipt facts are inconsistent at settle time | no |
 | `task_graph_persistence_failed` | The Graph transition could not be durably appended to the session | no |
+| `task_credential_invalid` | Task Credential input failed validation (IDs, scope, TTL, or payload bounds) | no |
+| `task_credential_binding_invalid` | Binding does not match the current Session, Run, stage, or graph | no |
+| `task_credential_gate_required` | The matching Task Gate is not `approved` | no |
+| `task_credential_policy_denied` | Policy denied the requested scope, target, or action | no |
+| `task_credential_approval_required` | Policy `ask` is not yet approved | no |
+| `task_credential_scope_denied` | Requested scope exceeds the allowlist | no |
+| `task_credential_ttl_invalid` | TTL exceeds provider, Policy, Task, or Run deadline bounds | no |
+| `task_credential_provider_unavailable` | The issuer is temporarily unavailable | yes |
+| `task_credential_issue_failed` | The issuer did not return a manageable grant | no |
+| `task_credential_not_found` | The grant or lease does not exist in the current Session | no |
+| `task_credential_conflict` | Binding, scope, target, revision, or settle preconditions conflict | no |
+| `task_lease_expired` | The lease is expired and cannot be extended or resurrected | no |
+| `task_lease_heartbeat_invalid` | Heartbeat sequence is not strictly increasing or does not match the lease | no |
+| `task_credential_target_unavailable` | The target does not declare the required isolation or revoke capability | no |
+| `task_credential_delivery_failed` | Target delivery receipt reported failure | no |
+| `task_credential_revocation_unknown` | Provider did not confirm revoke; the target is quarantined | no |
+| `task_credential_persistence_failed` | The grant transition could not be durably appended; re-read before retrying | no |
+| `task_credential_unavailable` | The Session has no Task Credential provider / service | no |
 | `external_agent_adapter_invalid` | Adapter selection or registration is invalid (unsafe `adapterId` / `targetId` / descriptor) | no |
 | `external_agent_target_not_found` | The trusted registry has no such target | no |
 | `external_agent_probe_failed` | Target probe failed or timed out; probe has no business side effects by contract | yes |
@@ -2845,7 +2945,7 @@ checkpoints; it never resends `run.start` or `run.resume`.
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
 - After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_context`, `get_entries`, `get_tree`, and `get_messages` remain available.
 - Terminal run receipts may include additive `contextSnapshotId` linking the run to a Context Engine snapshot (see [Context Engine](context.md)).
-- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` / `task.graph.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`, `task.graph.create`, `task.graph.node.attach`, `task.graph.node.settle`); `task.gate.get`, `task.gate.list`, `task.graph.get`, and `task.graph.list` are read-only.
+- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` / `task.graph.*` / `task.credential.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`, `task.graph.create`, `task.graph.node.attach`, `task.graph.node.settle`, `task.credential.issue`, `task.credential.heartbeat`, `task.credential.revoke`, `task.credential.settle`); `task.gate.get`, `task.gate.list`, `task.graph.get`, `task.graph.list`, `task.credential.get`, and `task.credential.list` are read-only.
 - While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
 - Clients that never `initialize` always see the bare session events, as before.
 - Extension UI requests/responses continue to use the existing sub-protocol and are not disguised as run events.

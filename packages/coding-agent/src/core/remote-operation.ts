@@ -7,6 +7,17 @@
  * Run/Policy/Binding/Audit/Receipt remains authoritative for the associated
  * Agent execution; this operation receipt is only the provider boundary.
  *
+ * Task Lease correlation: an operation may carry an optional safe
+ * `TaskLeaseReference` (leaseId/grantId/bindingId only). Before start an
+ * injected read-only verifier must confirm the referenced Task Credential
+ * lease is live and that its binding, scope, and target correlate with the
+ * request binding references; the verification never calls the credential
+ * provider. The operation identity, deadline, cancellation, heartbeat, and
+ * side-effect state stay fully independent of the Task Lease identity,
+ * sequence, expiry, and terminal status: task lease expiry never terminates
+ * an operation, operation heartbeats never advance the task lease sequence,
+ * and a task revoke never fakes an operation terminal.
+ *
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
  */
 
@@ -61,6 +72,8 @@ const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SAFE_ARTIFACT_DIGEST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
 const SAFE_RECEIPT_INPUT_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** The T1 scope fingerprint format: `sha256:` plus 64 lowercase hex characters. */
+const TASK_LEASE_SCOPE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 /** A portable reference; it contains no local path, URL, payload, or secret. */
 export interface RemoteArtifactReference {
@@ -78,6 +91,35 @@ export type RemoteArtifactRef = RemoteArtifactReference;
 export interface RemoteOperationLease {
 	readonly leaseId: RemoteOperationLeaseId;
 	readonly expiresAt: string;
+}
+
+/**
+ * Optional Task Credential Lease correlation. Only the three stable
+ * identities cross the provider boundary; scope, target, and binding facts
+ * stay inside the store and are only checked by the injected read-only
+ * verifier before start. The reference never carries an expiry, a sequence,
+ * or a status, so it cannot drive operation deadline, cancel, or heartbeat
+ * behavior.
+ */
+export interface TaskLeaseReference {
+	readonly leaseId: string;
+	readonly grantId: string;
+	readonly bindingId: string;
+}
+
+/**
+ * The safe facts returned by the injected Task Lease verifier and recorded
+ * on the terminal receipt. `status` is the live status observed at start
+ * (`active` or `renewing`); unknown, expired, revoked, settled, and
+ * quarantined (`revocation_unknown`) leases never produce a result, so a
+ * task revoke can never manufacture an operation terminal and a
+ * `revocation_unknown` lease coexists with an operation `side-effect-unknown`
+ * outcome without faking one.
+ */
+export interface TaskLeaseVerificationResult {
+	readonly status: "active" | "renewing";
+	readonly scopeDigest: string;
+	readonly targetId: string;
 }
 
 export interface RemoteOperationHeartbeat {
@@ -106,6 +148,13 @@ export interface RemoteOperationRequest extends RemoteOperationBindingRefs {
 	readonly deadlineAt?: string;
 	/** A lease is optional for local execution and required by lease-aware providers. */
 	readonly lease?: RemoteOperationLease;
+	/**
+	 * Optional Task Lease correlation. When present, the injected
+	 * `taskLeaseVerifier` must confirm a live lease and binding/scope/target
+	 * correlation before the operation starts; a credential-dependent
+	 * operation without a verifier fails closed as `invalid`.
+	 */
+	readonly taskLease?: TaskLeaseReference;
 	/** Input artifacts are references only; bytes are exchanged by a provider-specific mechanism. */
 	readonly artifactRefs?: ReadonlyArray<RemoteArtifactReference>;
 	/** Optional adapter identity that produced this operation; validated exactly. */
@@ -135,6 +184,18 @@ export interface RemoteOperationReceipt extends RemoteOperationBindingRefs {
 	readonly error?: RemoteOperationErrorInfo;
 	readonly lease?: RemoteOperationLease;
 	readonly heartbeatSequence?: number;
+	/**
+	 * Task Lease correlation carried from a safe request; present whenever
+	 * the request carried a valid reference. Correlation evidence only, never
+	 * a second lease or a Run/Policy authority.
+	 */
+	readonly taskLease?: TaskLeaseReference;
+	/**
+	 * The live lease facts confirmed by the injected read-only verifier at
+	 * start; only ever present together with `taskLease`. Terminal and
+	 * quarantined (`revocation_unknown`) leases never appear here.
+	 */
+	readonly taskLeaseVerified?: TaskLeaseVerificationResult;
 	/** Optional adapter identity that produced this operation; validated exactly. */
 	readonly adapter?: ExternalAdapterIdentity;
 }
@@ -182,7 +243,28 @@ export interface RemoteOperationStartOptions {
 	readonly ledger?: RemoteOperationLedger;
 	/** Receives ledger failures without exposing provider details to callers. */
 	readonly onLedgerError?: (error: unknown) => void;
+	/**
+	 * Read-only Task Lease safety check for credential-dependent operations.
+	 * It must not call the credential provider and must not append or mutate
+	 * anything; the Host wires a read-only store lookup behind it. It must
+	 * confirm the referenced lease is live (`active` or `renewing`, not
+	 * expired) and that its binding, scope, and target correlate with the
+	 * request's binding references. Returning `undefined` or throwing fails
+	 * the operation closed as `invalid` before any provider execution.
+	 */
+	readonly taskLeaseVerifier?: RemoteOperationTaskLeaseVerifier;
 }
+
+/**
+ * Injected read-only Task Lease verifier used before start. The check runs
+ * exactly once per operation, before the provider is invoked, and never
+ * participates in cancellation, deadlines, or heartbeats: those stay driven
+ * by the operation's own identity, deadline, and lease only.
+ */
+export type RemoteOperationTaskLeaseVerifier = (
+	reference: TaskLeaseReference,
+	request: RemoteOperationRequest,
+) => TaskLeaseVerificationResult | undefined;
 
 export interface RemoteOperationHandle {
 	readonly operationId: RemoteOperationId;
@@ -281,6 +363,36 @@ function cloneLease(value: RemoteOperationLease): RemoteOperationLease {
 	return { leaseId: value.leaseId, expiresAt: value.expiresAt };
 }
 
+/** Public guard for the safe Task Lease reference allowlist. */
+export function isTaskLeaseReference(value: unknown): value is TaskLeaseReference {
+	return (
+		isRecord(value) &&
+		isSafeIdentifier(value.leaseId) &&
+		isSafeIdentifier(value.grantId) &&
+		isSafeIdentifier(value.bindingId) &&
+		Object.keys(value).every((key) => key === "leaseId" || key === "grantId" || key === "bindingId")
+	);
+}
+
+function isTaskLeaseVerificationResult(value: unknown): value is TaskLeaseVerificationResult {
+	return (
+		isRecord(value) &&
+		(value.status === "active" || value.status === "renewing") &&
+		typeof value.scopeDigest === "string" &&
+		TASK_LEASE_SCOPE_DIGEST_PATTERN.test(value.scopeDigest) &&
+		isSafeIdentifier(value.targetId) &&
+		Object.keys(value).every((key) => key === "status" || key === "scopeDigest" || key === "targetId")
+	);
+}
+
+function cloneTaskLeaseReference(value: TaskLeaseReference): TaskLeaseReference {
+	return { leaseId: value.leaseId, grantId: value.grantId, bindingId: value.bindingId };
+}
+
+function cloneTaskLeaseVerificationResult(value: TaskLeaseVerificationResult): TaskLeaseVerificationResult {
+	return { status: value.status, scopeDigest: value.scopeDigest, targetId: value.targetId };
+}
+
 function safeBindingRefs(request: unknown): RemoteOperationBindingRefs {
 	if (!isRecord(request)) return {};
 	const bindingAssociation = serializePublicRunBindingAssociation(request.bindingAssociation);
@@ -376,6 +488,24 @@ function invalidRequestError(): RemoteOperationErrorInfo {
 	return { category: "invalid", code: "invalid", retryable: false, sideEffects: "none" };
 }
 
+/**
+ * Run the injected read-only Task Lease check exactly once, fail-closed.
+ * A thrown verifier or any result that is not the exact safe verified
+ * snapshot counts as a failed verification; the provider is never touched.
+ */
+function verifyTaskLease(
+	verifier: RemoteOperationTaskLeaseVerifier,
+	reference: TaskLeaseReference,
+	request: RemoteOperationRequest,
+): TaskLeaseVerificationResult | undefined {
+	try {
+		const result = verifier(reference, request);
+		return isTaskLeaseVerificationResult(result) ? cloneTaskLeaseVerificationResult(result) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function isRemoteOperationErrorInfo(value: unknown): value is RemoteOperationErrorInfo {
 	return (
 		isRecord(value) &&
@@ -406,6 +536,7 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 		return false;
 	if (value.deadlineAt !== undefined && !isCanonicalTimestamp(value.deadlineAt)) return false;
 	if (value.lease !== undefined && !validateLease(value.lease)) return false;
+	if (value.taskLease !== undefined && !isTaskLeaseReference(value.taskLease)) return false;
 	if (value.artifactRefs !== undefined && !isSafeArtifactReferenceList(value.artifactRefs)) return false;
 	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
@@ -419,6 +550,7 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 			key === "bindingAssociation" ||
 			key === "deadlineAt" ||
 			key === "lease" ||
+			key === "taskLease" ||
 			key === "artifactRefs" ||
 			key === "adapter",
 	);
@@ -441,6 +573,7 @@ function cloneRequest(request: RemoteOperationRequest): RemoteOperationRequest {
 				}),
 		...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
 		...(request.lease === undefined ? {} : { lease: cloneLease(request.lease) }),
+		...(request.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(request.taskLease) }),
 		...(request.artifactRefs === undefined ? {} : { artifactRefs: request.artifactRefs.map(cloneArtifactReference) }),
 		...(request.adapter === undefined
 			? {}
@@ -461,6 +594,9 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 	if (!REMOTE_OPERATION_SIDE_EFFECT_STATES.includes(value.sideEffects as RemoteOperationSideEffectState)) return false;
 	if (value.error !== undefined && !isRemoteOperationErrorInfo(value.error)) return false;
 	if (value.lease !== undefined && !validateLease(value.lease)) return false;
+	if (value.taskLease !== undefined && !isTaskLeaseReference(value.taskLease)) return false;
+	if (value.taskLeaseVerified !== undefined && !isTaskLeaseVerificationResult(value.taskLeaseVerified)) return false;
+	if (value.taskLeaseVerified !== undefined && value.taskLease === undefined) return false;
 	if (
 		value.heartbeatSequence !== undefined &&
 		(typeof value.heartbeatSequence !== "number" ||
@@ -494,6 +630,8 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 			key === "error" ||
 			key === "lease" ||
 			key === "heartbeatSequence" ||
+			key === "taskLease" ||
+			key === "taskLeaseVerified" ||
 			key === "adapter",
 	);
 }
@@ -529,6 +667,7 @@ export function startRemoteOperation(
 	let cancellationFailed = false;
 	let providerStarted = false;
 	let lease = request?.lease === undefined || !validateLease(request.lease) ? undefined : cloneLease(request.lease);
+	let taskLeaseVerified: TaskLeaseVerificationResult | undefined;
 	let heartbeatSequence = 0;
 	const artifacts = new Map<string, RemoteArtifactReference>();
 	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -624,6 +763,12 @@ export function startRemoteOperation(
 			...(finalError === undefined ? {} : { error: finalError }),
 			...(lease === undefined ? {} : { lease: cloneLease(lease) }),
 			...(heartbeatSequence === 0 ? {} : { heartbeatSequence }),
+			...(isRecord(request) && isTaskLeaseReference(request.taskLease)
+				? { taskLease: cloneTaskLeaseReference(request.taskLease) }
+				: {}),
+			...(taskLeaseVerified === undefined
+				? {}
+				: { taskLeaseVerified: cloneTaskLeaseVerificationResult(taskLeaseVerified) }),
 		};
 		const frozenReceipt = Object.freeze(receipt);
 		if (options.ledger !== undefined) {
@@ -644,6 +789,18 @@ export function startRemoteOperation(
 		if (!isRemoteOperationRequest(request)) return complete(undefined, invalidRequestError());
 		const requestCopy = cloneRequest(request);
 		addArtifacts(artifacts, requestCopy.artifactRefs);
+		// Credential-dependent operations are gated before any deadline or
+		// cancellation check: an unverified, unknown, terminal, expired, or
+		// quarantined (`revocation_unknown`) lease refuses the operation with
+		// `invalid` and zero provider invocations. The check is read-only and
+		// runs exactly once; it never drives deadline, cancel, or heartbeat.
+		if (requestCopy.taskLease !== undefined) {
+			const verified = options.taskLeaseVerifier === undefined
+				? undefined
+				: verifyTaskLease(options.taskLeaseVerifier, requestCopy.taskLease, requestCopy);
+			if (verified === undefined) return complete(undefined, invalidRequestError());
+			taskLeaseVerified = verified;
+		}
 		const current = safeNow(options.now);
 		if (options.signal?.aborted) {
 			cancellation = "cancelled";
@@ -716,6 +873,9 @@ export function startRemoteOperation(
 				throw new RemoteOperationError(cancellation ?? "cancelled");
 			}
 			heartbeatSequence += 1;
+			// Operation heartbeats renew only the operation lease and never
+			// advance a Task Lease sequence; the Task Lease has its own store
+			// heartbeat contract that this boundary never calls.
 			const refreshed = await invoker.heartbeat({
 				operationId,
 				leaseId: lease.leaseId,
@@ -772,6 +932,10 @@ export function createSessionRemoteOperationLedger(session: RemoteOperationLedge
 								receipt.bindingAssociation,
 							) as RunBindingAssociation,
 						}),
+				...(receipt.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(receipt.taskLease) }),
+				...(receipt.taskLeaseVerified === undefined
+					? {}
+					: { taskLeaseVerified: cloneTaskLeaseVerificationResult(receipt.taskLeaseVerified) }),
 			};
 			session.appendCustomEntry(REMOTE_OPERATION_CUSTOM_TYPE, {
 				schemaVersion: REMOTE_OPERATION_LEDGER_SCHEMA_VERSION,

@@ -674,7 +674,28 @@ export type AutomationErrorCode =
 	| "task_graph_run_not_found"
 	| "task_graph_run_not_terminal"
 	| "task_graph_run_state_mismatch"
-	| "task_graph_persistence_failed";
+	| "task_graph_persistence_failed"
+	// Task Credential v1 control-plane errors. Keep in sync with
+	// TASK_CREDENTIAL_ERROR_CODES in core/task-credential-lease.ts.
+	| "task_credential_invalid"
+	| "task_credential_binding_invalid"
+	| "task_credential_gate_required"
+	| "task_credential_policy_denied"
+	| "task_credential_approval_required"
+	| "task_credential_scope_denied"
+	| "task_credential_ttl_invalid"
+	| "task_credential_provider_unavailable"
+	| "task_credential_issue_failed"
+	| "task_credential_not_found"
+	| "task_credential_conflict"
+	| "task_lease_expired"
+	| "task_lease_heartbeat_invalid"
+	| "task_credential_target_unavailable"
+	| "task_credential_delivery_failed"
+	| "task_credential_revocation_unknown"
+	| "task_credential_persistence_failed"
+	// Host-level code emitted when no Task Credential service is bound to the Session.
+	| "task_credential_unavailable";
 
 export interface AutomationError {
 	code: AutomationErrorCode;
@@ -777,7 +798,25 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "task_graph_run_not_found" ||
 		value === "task_graph_run_not_terminal" ||
 		value === "task_graph_run_state_mismatch" ||
-		value === "task_graph_persistence_failed"
+		value === "task_graph_persistence_failed" ||
+		value === "task_credential_invalid" ||
+		value === "task_credential_binding_invalid" ||
+		value === "task_credential_gate_required" ||
+		value === "task_credential_policy_denied" ||
+		value === "task_credential_approval_required" ||
+		value === "task_credential_scope_denied" ||
+		value === "task_credential_ttl_invalid" ||
+		value === "task_credential_provider_unavailable" ||
+		value === "task_credential_issue_failed" ||
+		value === "task_credential_not_found" ||
+		value === "task_credential_conflict" ||
+		value === "task_lease_expired" ||
+		value === "task_lease_heartbeat_invalid" ||
+		value === "task_credential_target_unavailable" ||
+		value === "task_credential_delivery_failed" ||
+		value === "task_credential_revocation_unknown" ||
+		value === "task_credential_persistence_failed" ||
+		value === "task_credential_unavailable"
 	);
 }
 
@@ -983,6 +1022,33 @@ export interface RunLifecycleCoordinatorOptions {
 	runId?: () => RunId;
 	/** Diagnostics sink; defaults to stderr. */
 	diagnostics?: (message: string) => void;
+	/**
+	 * Read-only Task Credential lifecycle observers. The hooks are side
+	 * channels of the Run ledger: they never rewrite RunStatus / RunReceipt
+	 * facts and never participate in the ledger fold.
+	 */
+	credentialHooks?: RunCredentialLifecycleHooks;
+}
+
+/**
+ * Read-only Run lifecycle observers used by the Task Credential service.
+ * Each hook fires exactly once per Run per coordinator instance, only after
+ * the Run fact it observes has been persisted (or, for the cancel intent,
+ * on the first request only), and never rewrites RunStatus / RunReceipt
+ * facts.
+ */
+export interface RunCredentialLifecycleHooks {
+	/** A Run reached a terminal status through settle() (status is final). */
+	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+	/** Recovery folded an accepted/running Run with no terminal receipt (interrupted). */
+	onRunInterrupted?: (runId: RunId) => void;
+	/**
+	 * The first cancel request for a Run was recorded. The hook observes the
+	 * request intent only: no Run fact is written, and a later settle() still
+	 * produces the unique terminal event. Never fires for a replayed Run or
+	 * for a Run that settles without an explicit cancel request.
+	 */
+	onRunCancelRequested?: (runId: RunId) => void;
 }
 
 export interface RunLifecycleCoordinator {
@@ -3059,6 +3125,12 @@ class RunHandleImpl implements RunHandle {
 		if (this._receipt !== undefined || isTerminalStatus(this._record.status)) return;
 		if (this._terminationIntent !== undefined) return;
 		this._terminationIntent = intent;
+		// Side-channel observer of the cancel intent: fires only when the first
+		// cancel request is actually recorded (the intent guard above makes it
+		// at most once per Run) and never writes a Run fact itself.
+		if (intent === "cancel") {
+			this.coordinator.credentialHooks?.onRunCancelRequested?.(this.runId);
+		}
 	}
 }
 
@@ -3260,6 +3332,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly nowFn: () => string;
 	private readonly runIdFn: () => RunId;
 	private readonly diagnosticsSink: (message: string) => void;
+	readonly credentialHooks: RunCredentialLifecycleHooks | undefined;
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
@@ -3268,6 +3341,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private _capabilityBindings = new Map<string, CapabilityBindingLedgerRecord>();
 	private readonly _requestIndex = new Map<string, { runId: RunId; requestFingerprint: string }>();
 	private readonly _requestConflicts = new Set<string>();
+	private readonly interruptedSignaled = new Set<RunId>();
 	private _active: RunHandleImpl | undefined;
 	private _reserved: RunReservationImpl | undefined;
 
@@ -3277,6 +3351,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 		this.runIdFn = options.runId ?? (() => randomUUID());
 		this.diagnosticsSink = options.diagnostics ?? ((message) => console.error(message));
+		this.credentialHooks = options.credentialHooks;
 		try {
 			this.externalMappings = new ExternalSessionMappingStore(session, {
 				now: () => this.now(),
@@ -3500,6 +3575,16 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (result.receipt !== undefined && result.receipt.external === undefined) result.receipt.external = external;
 			}
 			if (result.receipt === undefined) result.recovery = "interrupted";
+			// Interrupted is a recovered-run fact: a Run that is live in this
+			// coordinator (accepted/running handle) is never reported interrupted,
+			// even though its persisted entries lack a terminal fact. The hook
+			// fires at most once per Run per coordinator instance.
+			if (result.receipt === undefined && !this.runs.has(result.record.id)) {
+				if (!this.interruptedSignaled.has(result.record.id)) {
+					this.interruptedSignaled.add(result.record.id);
+					this.credentialHooks?.onRunInterrupted?.(result.record.id);
+				}
+			}
 			const policySummary = result.receipt?.policySummary ?? result.record.policySummary;
 			if (policySummary !== undefined) {
 				const cloned = clonePublicPolicySummary(policySummary);
@@ -3778,6 +3863,10 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	onTerminal(run: RunHandleImpl): void {
 		if (this._active === run) this._active = undefined;
+		// Side-channel observer: the Run ledger is already terminal at this
+		// point, so the hook can never rewrite RunStatus / RunReceipt facts.
+		const receipt = run.receipt();
+		if (receipt !== undefined) this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
 	}
 
 	private emitIfNew(entryId: string, diag: LedgerDiagnostic): void {

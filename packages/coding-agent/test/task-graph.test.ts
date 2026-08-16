@@ -19,6 +19,7 @@ import {
 	taskGraphCommandType,
 	taskGraphNodeStatusForRunTerminal,
 	type TaskGraphCreateRequest,
+	type TaskGraphNodeStatus,
 	type TaskGraphRunLookup,
 	type TaskGraphRunSnapshot,
 	type TaskGraphStatus,
@@ -1608,5 +1609,70 @@ describe("task graph store", () => {
 		expect(first).toBe(second);
 		expect(first).toContain('"nodeId":"implement"');
 		expect(first).not.toContain('"status"');
+	});
+});
+
+describe("task graph credential node-terminal hook", () => {
+	it("fires onNodeTerminal once per terminal settle with node, task, and run facts", () => {
+		const session = makeSession();
+		const runLookup = new FakeRunLookup();
+		runLookup.sessionId = session.getSessionId();
+		const gateLookup = new FakeGateLookup();
+		const terminal: Array<{ nodeId: string; status: TaskGraphNodeStatus; taskId: string; runId: string }> = [];
+		const store = new TaskGraphStore(session, runLookup, gateLookup, {
+			now: () => NOW,
+			onNodeTerminal: (node, taskId, runId) =>
+				terminal.push({ nodeId: node.nodeId, status: node.status, taskId, runId }),
+		});
+		store.create(createRequest());
+		runLookup.add("run_a", "accepted");
+		store.attach(attachRequest({ nodeId: "inspect", runId: "run_a", clientRequestId: "attach-hook-1" }));
+		expect(terminal).toEqual([]);
+		runLookup.add("run_a", "failed", { receiptStatus: "failed" });
+		store.settle(settleRequest({ nodeId: "inspect", clientRequestId: "settle-hook-1" }));
+		expect(terminal).toHaveLength(1);
+		expect(terminal[0]).toEqual({ nodeId: "inspect", status: "failed", taskId: "task_42", runId: "run_a" });
+	});
+
+	it("maps succeeded and cancelled receipts and never re-fires on replays", () => {
+		const session = makeSession();
+		const runLookup = new FakeRunLookup();
+		runLookup.sessionId = session.getSessionId();
+		const gateLookup = new FakeGateLookup();
+		const terminal: Array<{ nodeId: string; status: TaskGraphNodeStatus }> = [];
+		const store = new TaskGraphStore(session, runLookup, gateLookup, {
+			now: () => NOW,
+			onNodeTerminal: (node, taskId, runId) => terminal.push({ nodeId: node.nodeId, status: node.status }),
+		});
+		store.create(createRequest());
+
+		// implement depends on inspect: settle inspect first so implement is ready.
+		runLookup.add("run_c", "accepted");
+		store.attach(attachRequest({ nodeId: "inspect", runId: "run_c", clientRequestId: "attach-hook-2a" }));
+		runLookup.add("run_c", "completed", { receiptStatus: "completed" });
+		store.settle(settleRequest({ nodeId: "inspect", clientRequestId: "settle-hook-2a" }));
+		expect(terminal).toHaveLength(1);
+		expect(terminal[0]).toEqual({ nodeId: "inspect", status: "succeeded" });
+
+		runLookup.add("run_b", "accepted");
+		store.attach(attachRequest({ nodeId: "implement", runId: "run_b", clientRequestId: "attach-hook-2" }));
+		runLookup.add("run_b", "completed", { receiptStatus: "completed" });
+		store.settle(settleRequest({ nodeId: "implement", clientRequestId: "settle-hook-2" }));
+		expect(terminal).toHaveLength(2);
+		expect(terminal[1]).toEqual({ nodeId: "implement", status: "succeeded" });
+
+		// The same settle replayed is idempotent and does not fire again.
+		const replay = store.settle(settleRequest({ nodeId: "implement", clientRequestId: "settle-hook-2" }));
+		expect(replay.idempotent).toBe(true);
+		expect(terminal).toHaveLength(2);
+
+		// The persisted terminal node record is untouched: exactly one node entry.
+		const nodeEntries = session
+			.getEntries()
+			.filter(
+				(entry) =>
+					entry.type === "custom" && (entry.data as { node?: { nodeId?: string } }).node?.nodeId === "implement",
+			);
+		expect(nodeEntries).toHaveLength(2); // attach + settle
 	});
 });

@@ -133,6 +133,34 @@ describe("Gondolin provider identity and lifecycle", () => {
 		});
 	});
 
+	it("never declares credential delivery and fails closed when a binding requires it", async () => {
+		const workspace = await createWorkspace();
+		const vm = createFakeGondolinVm();
+		const { provider } = createProvider(workspace, vm);
+
+		expect(provider.capabilities.credentialDelivery).toBe(false);
+		expect(GONDOLIN_SANDBOX_CAPABILITIES.credentialDelivery).toBe(false);
+
+		const requiring = createBinding(workspace, {
+			sandboxCapabilities: {
+				filesystem: true,
+				process: true,
+				network: false,
+				credentialIsolation: true,
+				credentialDelivery: true,
+			},
+		});
+		await expect(provider.prepare(requiring)).rejects.toMatchObject({
+			code: "sandbox_capability_insufficient",
+			providerId: "gondolin-local",
+		});
+
+		const handle = await provider.prepare(createBinding(workspace));
+		expect(handle.projectCredential).toBeUndefined();
+		expect(handle.renewCredential).toBeUndefined();
+		expect(handle.revokeCredential).toBeUndefined();
+	});
+
 	it("binds capabilities and rejects mismatched or unavailable bindings before VM creation", async () => {
 		const workspace = await createWorkspace();
 		const vm = createFakeGondolinVm();

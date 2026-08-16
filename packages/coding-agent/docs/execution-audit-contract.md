@@ -55,6 +55,7 @@ not create a second event ledger.
 | `remote.operation` | `remote.operation` | receipt `sessionId` and optional `runId` |
 | `task.gate` | `task.gate` | `gateId`; optional `runId` for direct Run correlation |
 | `task.graph` | `task.graph` | node `runRef` `runId` when present; never guessed from `taskId`, `nodeId`, or dependencies |
+| `task.credential` | `task.credential` | grant `runId`; never guessed from `taskId`, `nodeId`, `leaseId`, or `bindingId` |
 
 `context.memory` is deliberately not an audit source. It contains explicit
 user text and must not be made visible through an audit summary. The same
@@ -81,6 +82,8 @@ The source files that establish these facts are:
 - `src/core/session-manager.ts` for Session entry identity and file scope;
 - `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
 - `src/core/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
+- `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
+  for Task Credential grant, transition, and fold facts;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
@@ -108,7 +111,8 @@ type AuditEventType =
   | "external.mapping"
   | "remote.operation"
   | "task.gate"
-  | "task.graph";
+  | "task.graph"
+  | "task.credential";
 ```
 
 Every event has this base shape:
@@ -146,7 +150,8 @@ type AuditEvent =
   | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping })
   | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt })
   | (AuditEventBase & { type: "task.gate"; runId?: string; summary: AuditTaskGateSummary })
-  | (AuditEventBase & { type: "task.graph"; runId?: string; summary: AuditTaskGraphSummary });
+  | (AuditEventBase & { type: "task.graph"; runId?: string; summary: AuditTaskGraphSummary })
+  | (AuditEventBase & { type: "task.credential"; runId?: string; summary: AuditTaskCredentialSummary });
 ```
 
 `sourceEntryId` is the outer SessionEntry `id`, not an inner ledger sequence
@@ -426,6 +431,62 @@ rejected with the existing warnings and never enters public Graph state or
 audit events. Replay and query never backfill a missing transition, never
 fold a completed Run into a node terminal, and never fabricate an attachment.
 
+Task Credential transitions append their own `task.credential` custom entries
+through the Automation Host control plane (`task.credential.issue` /
+`task.credential.get` / `task.credential.list` / `task.credential.heartbeat` /
+`task.credential.revoke` / `task.credential.settle`, advertised as
+`taskCredentialCommands`). The audit adapter only reads `task.credential`
+entries and never mutates lease, grant, or store state; the fold never calls
+the credential provider.
+
+### Task Credential summary
+
+`task.credential` events are produced from `task.credential` Session custom
+entries. Each persisted transition — `issued`, `renewed`, `delivery_succeeded`,
+`delivery_failed`, `revoked`, `revocation_unknown`, or `settled` — produces
+exactly one event; the `eventId` is the outer Session entry identity, never a
+random ID or an in-memory sequence.
+
+`AuditTaskCredentialSummary` permits only:
+
+```text
+action, grantId, leaseId, bindingId, sessionId, taskId, graphRevision,
+nodeId, stageId, stageRevision, runId, targetId, scopeDigest, scopeCount,
+status, recordedAt, reasonCode
+```
+
+`action` is `issued`/`renewed`/`delivery_succeeded`/`delivery_failed`/
+`revoked`/`revocation_unknown`/`settled` and `status` is one of the stable
+lease statuses (`active`, `renewing`, `expired`, `revoked`, `settled`,
+`revocation_unknown`). `stageId`/`stageRevision`, `targetId`, and
+`reasonCode` are present only when defined by the grant or transition. Only
+opaque validated IDs, the stable action/status, the scope digest (never the
+scope values), the scope count, the recorded timestamp, and short outcome
+codes may appear. `runId` is the grant's run correlation and is also
+projected onto the event base, so replay correlates by `runId` only.
+
+Task Credential events never contain the credential material, tokens,
+environment or header values, authorization, OAuth codes, prompts, commands,
+arguments, working directory or path, diffs, file content, stdout/stderr,
+provider responses or errors, raw custom-entry `data`, or free text.
+`clientRequestId` participates in the internal idempotency fold
+(`operation\u0000clientRequestId` plus the canonical payload fingerprint) but
+never enters the public summary.
+
+The fold applies the same malformed-entry rules as every other source: an
+entry whose `sessionId` does not match the Session, an unsupported schema, an
+unsafe identifier, a forbidden key, a non-contiguous grant `revision`, a
+non-increasing `heartbeatSequence`, an immutable-identity drift between two
+grant snapshots of the same lease, a status that is not the expected result of
+the persisted action, an illegal status jump, a second `issued` for the same
+lease, a `bindingId` or `grantId` reused by a different lease, or an
+idempotency key replayed with a different payload is rejected with the
+existing warnings and never enters public audit events. A persisted `revoked`
+entry after `revocation_unknown` is trusted as provider-confirmed (the store
+only writes it after a confirmed provider revoke) and converges to the safer
+status. Replay and query never backfill a missing transition, never call the
+credential provider, and never fabricate a grant or a lease.
+
 ### Forbidden keys
 
 The following keys are forbidden at every summary nesting level:
@@ -434,10 +495,17 @@ The following keys are forbidden at every summary nesting level:
 data, raw, prompt, message, messages, finalText, command, args, cwd,
 path, targetPath, content, output, url, payload, callback, stdout, stderr,
 env, environment, headers,
-token, authorization, credentials, authorizationUrl, providerPid, tempPath,
-sessionFile, workspaceIdentity, constraints, bindingHash, providerError, stack,
+token, secret, credential, material, authorization, credentials, authorizationUrl, providerPid, tempPath,
+sessionFile, workspaceIdentity, constraints, bindingHash, providerError,
+providerResponse, oauthCode, diff, stack,
 instructions, serverInstructions, agentSelfReport, details
 ```
+
+`task.credential` entries additionally pass the dedicated
+`TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS` guard before the exact-shape
+serializer guard runs, so material, environment values, headers,
+authorization, prompts, commands, paths, diffs, content, streams, provider
+responses, and OAuth codes can never become credential facts.
 
 An unknown key is not preserved merely because it appears in a current source
 entry. Unknown source data produces a warning, not a generic summary field.
@@ -671,6 +739,21 @@ Task Graph replay association follows the same direct-`runId` rule:
 - Replaying or querying a Graph never attaches a Run, settles a node, or
   starts a Run.
 
+Task Credential replay association follows the same direct-`runId` rule:
+
+- A `task.credential` event whose summary `runId` equals the replayed Run's
+  `runId` is included as a non-terminal control-plane correlation event.
+- A `task.credential` event without `runId` is never associated to a Run by
+  `taskId`, `nodeId`, `leaseId`, `bindingId`, or any other guess.
+- Credential events are correlation facts only. They never participate in Run
+  terminal status selection and cannot change a replay's `complete`,
+  `interrupted`, or `incomplete` determination, which remains based on the
+  Run and other existing sources. Credential warnings never carry a run
+  association or uncertainty flag.
+- Replaying or querying a credential transition never calls the credential
+  provider, never issues, renews, revokes, or settles a lease, and never
+  appends a transition.
+
 Warnings are safe records with only `code` and optional safe
 `sessionId`/`sourceEntryId`/`eventType`/`schemaVersion` fields. They contain no
 free-form detail.
@@ -723,7 +806,9 @@ not call:
 - TaskGateStore mutations (`task.gate.request`, `task.gate.approve`,
   `task.gate.reject`, `task.gate.cancel`);
 - TaskGraphStore mutations (`task.graph.create`, `task.graph.node.attach`,
-  `task.graph.node.settle`).
+  `task.graph.node.settle`);
+- TaskCredentialStore or provider mutations (`task.credential.issue`,
+  `task.credential.heartbeat`, `task.credential.revoke`, `task.credential.settle`).
 
 Replay of a historical `policy.approval` is an observation only. It never
 reopens or resolves the request. Reading a Sandbox lifecycle fact never
@@ -731,7 +816,9 @@ prepares, executes, or disposes a Sandbox. Replay of a historical `task.gate`
 transition is an observation only; it never resolves, reopens, or rewrites
 the Gate. Replay of a historical `task.graph` transition is an observation
 only; it never attaches a Run to a node, never settles a node, and never
-starts a Run.
+starts a Run. Replay of a historical `task.credential` transition is an
+observation only; it never issues, renews, revokes, or settles a lease, never
+calls the credential provider, and never rewrites a Run terminal.
 
 `external.map` is limited to validation, conflict checking, and appending the
 exact schema-versioned mapping entry. It does not execute a Run, model,
@@ -762,8 +849,12 @@ The reusable fixture freezes these cases:
 | Graph event with matching `runId` in Run replay | included as non-terminal correlation event |
 | Graph event without `runId` | never guessed into any Run |
 | Malformed `task.graph` entry | warning only; never in public state or audit events |
+| `task.credential` entries | safe `task.credential` events with allowlisted summaries |
+| Credential event with matching `runId` in Run replay | included as non-terminal correlation event |
+| Credential event without `runId` | never guessed into any Run |
+| Malformed or forbidden-key `task.credential` entry | warning only; never in public state or audit events |
 | Mapping persistence failure | `audit_persistence_failed`; no success acknowledgement |
-| Query or replay | no model, tool, MCP, Extension, Policy, Sandbox, Session, or Run side effect |
+| Query or replay | no model, tool, MCP, Extension, Policy, Sandbox, credential provider, Session, or Run side effect |
 
 The contract fixture and test remain the machine-checked boundary. The current
 integration also covers the adapter, controlled directory query/replay,
