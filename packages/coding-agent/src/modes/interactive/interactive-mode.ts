@@ -114,6 +114,19 @@ import {
 	formatCapabilityCatalog,
 	formatCapabilityDescriptor,
 } from "./capabilities.ts";
+import {
+	formatMcpAttachmentReceipt,
+	formatMcpError,
+	formatMcpGetPromptReceipt,
+	formatMcpPromptList,
+	formatMcpReadResourceReceipt,
+	formatMcpResourceList,
+	formatMcpServersOverview,
+	formatMcpUsage,
+	McpCommandError,
+	type McpServerOverviewEntry,
+	parseMcpCommandArgs,
+} from "./mcp.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -791,6 +804,67 @@ export class InteractiveMode {
 			);
 		};
 		slashCommands.push(capabilitiesCommand);
+
+		const mcpCommand = slashCommands.find((command) => command.name === "mcp");
+		if (mcpCommand) {
+			mcpCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const servers = this.session.settingsManager.getCapabilitySettings().mcpServers;
+				const items: Array<{ value: string; label: string; search: string; description?: string }> = [
+					{
+						value: "auth ",
+						label: "auth",
+						search: "auth oauth authorize",
+						description: "Run OAuth authorization for a Streamable HTTP server",
+					},
+					{
+						value: "logout ",
+						label: "logout",
+						search: "logout credential remove",
+						description: "Remove the stored OAuth credential for a server",
+					},
+					{
+						value: "resources ",
+						label: "resources",
+						search: "resources list catalog",
+						description: "List the resources catalog (digest metadata only)",
+					},
+					{
+						value: "resource ",
+						label: "resource",
+						search: "resource read attach",
+						description: "Read one resource, then confirm attaching it",
+					},
+					{
+						value: "prompts ",
+						label: "prompts",
+						search: "prompts list catalog",
+						description: "List the prompts catalog (digest metadata only)",
+					},
+					{
+						value: "prompt ",
+						label: "prompt",
+						search: "prompt get attach",
+						description: "Get one prompt, then confirm attaching it",
+					},
+					...servers.map((server) => ({
+						value: server.id,
+						label: server.id,
+						search: `server ${server.id} ${server.server.transport}`,
+						description: server.server.transport,
+					})),
+				];
+				return createFuzzyAutocompleteItems(
+					items,
+					prefix,
+					(item) => item.search,
+					(item) => ({
+						value: item.value,
+						label: item.label,
+						...(item.description !== undefined ? { description: item.description } : {}),
+					}),
+				);
+			};
+		}
 
 		// Convert prompt templates to SlashCommand format for autocomplete
 		const templateCommands: SlashCommand[] = this.session.promptTemplates.map((cmd) => ({
@@ -3055,6 +3129,12 @@ export class InteractiveMode {
 				const args = text === "/capabilities" ? "" : text.slice("/capabilities".length).trim();
 				this.editor.setText("");
 				await this.handleCapabilitiesCommand(args);
+				return;
+			}
+			if (text === "/mcp" || text.startsWith("/mcp ")) {
+				const args = text === "/mcp" ? "" : text.slice("/mcp".length).trim();
+				this.editor.setText("");
+				await this.handleMcpCommand(args);
 				return;
 			}
 			if (text === "/changelog") {
@@ -6433,6 +6513,246 @@ export class InteractiveMode {
 		} catch (error) {
 			show(formatCapabilitiesError(error));
 		}
+	}
+
+	// =========================================================================
+	// MCP command (/mcp auth|logout|resources|resource|prompts|prompt)
+	// =========================================================================
+
+	/**
+	 * Interactive `/mcp` command. Every read/get/attach/confirm is an explicit
+	 * action: nothing is auto-approved, remote text is never injected into the
+	 * system/developer prompt, no model is started, and local prompt templates
+	 * are never overridden. Output carries digest/metadata receipts labeled
+	 * untrusted; raw URIs, prompt arguments, tokens, and remote originals are
+	 * never rendered.
+	 */
+	private async handleMcpCommand(args: string): Promise<void> {
+		const show = (info: string): void => {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(info, 1, 0));
+			this.ui.requestRender();
+		};
+		const parsed = parseMcpCommandArgs(args);
+		if (!parsed.ok) {
+			show(`${theme.fg("error", parsed.error)}\n${formatMcpUsage()}`);
+			return;
+		}
+		const command = parsed.command;
+		if (command.sub === undefined) {
+			show(`${formatMcpUsage()}\n\n${await this.formatMcpOverview()}`);
+			return;
+		}
+		try {
+			switch (command.sub) {
+				case "auth": {
+					if (command.serverId === undefined) {
+						show(`${formatMcpUsage()}\n\n${await this.formatMcpOverview()}`);
+						return;
+					}
+					show(await this.runMcpAuth(command.serverId));
+					return;
+				}
+				case "logout": {
+					if (command.serverId === undefined) {
+						show(`${formatMcpUsage()}\n\n${await this.formatMcpOverview()}`);
+						return;
+					}
+					show(await this.runMcpLogout(command.serverId));
+					return;
+				}
+				case "resources": {
+					if (command.serverId === undefined) {
+						show(`${formatMcpUsage()}\n\n${await this.formatMcpOverview()}`);
+						return;
+					}
+					const result = await this.session.listMcpResources(
+						command.serverId,
+						command.cursor === undefined ? undefined : { cursor: command.cursor },
+					);
+					show(formatMcpResourceList(result));
+					return;
+				}
+				case "prompts": {
+					if (command.serverId === undefined) {
+						show(`${formatMcpUsage()}\n\n${await this.formatMcpOverview()}`);
+						return;
+					}
+					const result = await this.session.listMcpPrompts(
+						command.serverId,
+						command.cursor === undefined ? undefined : { cursor: command.cursor },
+					);
+					show(formatMcpPromptList(result));
+					return;
+				}
+				case "resource": {
+					const result = await this.session.readMcpResource(command.serverId, command.resourceId);
+					show(formatMcpReadResourceReceipt(result));
+					const confirmed = await this.showExtensionConfirm(
+						"Attach MCP resource",
+						`Attach the untrusted resource ${result.resourceId} (${result.provenance.byteCount} bytes, ${result.provenance.blockCount} blocks) to this session?`,
+					);
+					if (!confirmed) {
+						show(theme.fg("dim", "Attachment cancelled."));
+						return;
+					}
+					const attachment = await this.session.attachMcpResource({
+						serverId: command.serverId,
+						uri: command.resourceId,
+					});
+					show(formatMcpAttachmentReceipt(attachment));
+					return;
+				}
+				case "prompt": {
+					const result = await this.session.getMcpPrompt(command.serverId, command.promptId, command.args);
+					show(formatMcpGetPromptReceipt(result));
+					const confirmed = await this.showExtensionConfirm(
+						"Attach MCP prompt",
+						`Attach the untrusted prompt ${result.promptId} (${result.provenance.byteCount} bytes, ${result.provenance.blockCount} blocks) to this session?`,
+					);
+					if (!confirmed) {
+						show(theme.fg("dim", "Attachment cancelled."));
+						return;
+					}
+					const attachment = await this.session.attachMcpPrompt({
+						serverId: command.serverId,
+						name: command.promptId,
+						args: command.args,
+					});
+					show(formatMcpAttachmentReceipt(attachment));
+					return;
+				}
+			}
+		} catch (error) {
+			show(formatMcpError(error));
+		}
+	}
+
+	private async formatMcpOverview(): Promise<string> {
+		const servers = this.session.settingsManager.getCapabilitySettings().mcpServers;
+		const entries: McpServerOverviewEntry[] = [];
+		for (const diagnostic of servers) {
+			const connection = this.session.getMcpConnectionStatus(diagnostic.id);
+			let oauth: McpServerOverviewEntry["oauth"];
+			if (diagnostic.server.transport === "stdio") {
+				oauth = "not-applicable";
+			} else {
+				oauth = (await this.isMcpServerAuthorized(diagnostic.id, diagnostic.server.url)) ? "authorized" : "none";
+			}
+			entries.push({
+				id: diagnostic.id,
+				transport: diagnostic.server.transport,
+				trusted: diagnostic.trusted,
+				...(connection !== undefined ? { connection } : {}),
+				oauth,
+			});
+		}
+		return formatMcpServersOverview(entries);
+	}
+
+	/**
+	 * Masked per-server OAuth fact for the `/mcp` overview. Never renders
+	 * tokens, URLs, issuer, or resource: only whether a credential exists.
+	 * A failed status read (unconfigured manager, unreadable store) degrades
+	 * to "none" instead of surfacing raw storage errors.
+	 */
+	private async isMcpServerAuthorized(serverId: string, serverUrl: string): Promise<boolean> {
+		try {
+			return (await this.session.getMcpAuthStatus(serverId, serverUrl)) !== undefined;
+		} catch {
+			return false;
+		}
+	}
+
+	private async runMcpAuth(serverId: string): Promise<string> {
+		const diagnostic = this.session.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		if (diagnostic === undefined) {
+			throw new McpCommandError(`MCP server "${serverId}" is not configured.`);
+		}
+		if (diagnostic.server.transport === "stdio") {
+			throw new McpCommandError(`MCP server "${serverId}" uses stdio and does not support OAuth.`);
+		}
+		const serverUrl = diagnostic.server.url;
+		const result = await this.session.startMcpAuth(serverId, serverUrl, {
+			interaction: {
+				signal: undefined,
+				prompt: (prompt: AuthPrompt) => this.showMcpAuthPrompt(prompt),
+				notify: (event: AuthEvent) => this.notifyMcpAuthEvent(event),
+			},
+		});
+		if (result?.status === "not_required") {
+			return theme.fg("dim", `MCP server "${serverId}" does not advertise OAuth and connects unauthenticated.`);
+		}
+		return theme.fg("success", `MCP server "${serverId}" OAuth authorization completed.`);
+	}
+
+	private async runMcpLogout(serverId: string): Promise<string> {
+		const diagnostic = this.session.settingsManager
+			.getCapabilitySettings()
+			.mcpServers.find((server) => server.id === serverId);
+		if (diagnostic === undefined) {
+			throw new McpCommandError(`MCP server "${serverId}" is not configured.`);
+		}
+		if (diagnostic.server.transport === "stdio") {
+			throw new McpCommandError(`MCP server "${serverId}" uses stdio and does not support OAuth.`);
+		}
+		const serverUrl = diagnostic.server.url;
+		await this.session.logoutMcpAuth(serverId, serverUrl);
+		return theme.fg("success", `MCP server "${serverId}" OAuth credential removed.`);
+	}
+
+	private async showMcpAuthPrompt(prompt: AuthPrompt): Promise<string> {
+		if (prompt.type === "select") {
+			return new Promise((resolve, reject) => {
+				const labels = prompt.options.map((option) => option.label);
+				const selector = new ExtensionSelectorComponent(
+					prompt.message,
+					labels,
+					(optionLabel) => {
+						this.hideExtensionSelector();
+						const id = prompt.options.find((option) => option.label === optionLabel)?.id;
+						if (id !== undefined) {
+							resolve(id);
+						} else {
+							reject(new Error("MCP authorization cancelled"));
+						}
+					},
+					() => {
+						this.hideExtensionSelector();
+						reject(new Error("MCP authorization cancelled"));
+					},
+				);
+				this.disposeActiveSelector();
+				this.editorContainer.clear();
+				this.editorContainer.addChild(selector);
+				this.ui.setFocus(selector);
+				this.ui.requestRender();
+			});
+		}
+		if (prompt.type === "manual_code") {
+			const code = await this.showExtensionInput(prompt.message, prompt.placeholder);
+			if (code === undefined) {
+				throw new Error("MCP authorization cancelled");
+			}
+			return code;
+		}
+		throw new Error("Unsupported MCP authorization prompt");
+	}
+
+	private notifyMcpAuthEvent(event: AuthEvent): void {
+		if (event.type !== "auth_url") {
+			return;
+		}
+		const lines = [theme.bold("MCP OAuth authorization")];
+		if (event.instructions !== undefined) {
+			lines.push(event.instructions);
+		}
+		lines.push(event.url);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
 	}
 
 	private handleSessionCommand(): void {

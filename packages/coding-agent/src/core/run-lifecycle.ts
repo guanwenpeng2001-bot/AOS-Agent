@@ -26,6 +26,7 @@ import {
 	type RunBindingAssociation,
 } from "./binding-handles.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
+import type { McpAttachment } from "./mcp-attachment.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
 import {
 	MODEL_ATTEMPT_CUSTOM_TYPE,
@@ -399,6 +400,54 @@ export interface RunRecord {
 	terminalError?: AutomationError;
 }
 
+/**
+ * Public-safe attachment summary recorded on a Run receipt. Digest identity
+ * and opaque descriptor/binding ids only — never a raw URI, prompt name,
+ * argument value, token, auth URL, header, or content body.
+ */
+export interface RunAttachmentSummary {
+	/** Digest identity of the attached source; never the raw URI or name. */
+	sourceId: string;
+	/** `resource` for an attached MCP resource; `prompt` for an attached MCP prompt. */
+	kind: "resource" | "prompt";
+	/** Opaque capability descriptor id that selected the source. */
+	descriptorId?: string;
+	/** Descriptor revision held by the frozen binding at attach time. */
+	revision?: string;
+	/** Opaque capability binding id that authorized the attach. */
+	capabilityBindingId?: string;
+	/** Opaque execution policy binding id that authorized the attach. */
+	policyBindingId?: string;
+	/** SHA-256 hex digest over all normalized blocks of the read/get result. */
+	contentDigest: string;
+	/** Total normalized byte count of the read/get result. */
+	byteCount: number;
+	/** Total normalized block count of the read/get result. */
+	blockCount: number;
+	/** Distinct normalized MIME types of the content blocks; never body text. */
+	mimeTypes?: ReadonlyArray<string>;
+}
+
+/** Public-safe attachment summary from one registered MCP attachment. */
+export function runAttachmentSummaryFromMcpAttachment(attachment: McpAttachment): RunAttachmentSummary {
+	return {
+		sourceId: attachment.sourceId,
+		kind: attachment.kind,
+		...(attachment.descriptorId === undefined ? {} : { descriptorId: attachment.descriptorId }),
+		...(attachment.descriptorRevision === undefined ? {} : { revision: attachment.descriptorRevision }),
+		...(attachment.capabilityBindingId === undefined
+			? {}
+			: { capabilityBindingId: attachment.capabilityBindingId }),
+		...(attachment.policyBindingId === undefined ? {} : { policyBindingId: attachment.policyBindingId }),
+		contentDigest: attachment.contentDigest,
+		byteCount: attachment.byteCount,
+		blockCount: attachment.blockCount,
+		...(attachment.mimeTypes === undefined || attachment.mimeTypes.length === 0
+			? {}
+			: { mimeTypes: [...attachment.mimeTypes] }),
+	};
+}
+
 export interface RunUsage {
 	input: number;
 	output: number;
@@ -445,6 +494,12 @@ export interface RunReceipt {
 	policyBindingId?: string;
 	/** Id of the source Run's Execution Policy binding when this is a resume. */
 	previousPolicyBindingId?: string;
+	/**
+	 * Public-safe attachment summaries of the MCP content this Run's context
+	 * used. Additive; older ledgers omit it. Metadata-only — never carries raw
+	 * URIs, prompt names, argument values, tokens, auth URLs, headers, or bodies.
+	 */
+	attachments?: ReadonlyArray<RunAttachmentSummary>;
 	/** Final candidate and safe attempt/budget summaries are additive metadata. */
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
@@ -877,6 +932,8 @@ export interface SettleInput {
 	currentUsage?: RunUsageSnapshot;
 	/** Snapshot id explicitly bound to this run's model call(s). */
 	contextSnapshotId?: string;
+	/** Public-safe attachment summaries of the MCP content this run used. */
+	attachments?: ReadonlyArray<RunAttachmentSummary>;
 	/** Additive ModelBroker receipt metadata. */
 	modelBindingId?: string;
 	previousModelBindingId?: string;
@@ -1213,7 +1270,13 @@ function isPolicyResource(value: unknown): value is PolicyResource {
 		value === "process.spawn" ||
 		value === "network.connect" ||
 		value === "credential.expose" ||
-		value === "sandbox.prepare"
+		value === "sandbox.prepare" ||
+		value === "mcp.auth" ||
+		value === "resource.list" ||
+		value === "resource.read" ||
+		value === "prompt.list" ||
+		value === "prompt.get" ||
+		value === "context.attach"
 	);
 }
 
@@ -1464,7 +1527,59 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
 	if (obj.policySummary !== undefined && !isPublicPolicySummary(obj.policySummary)) return false;
+	if (obj.attachments !== undefined && (!Array.isArray(obj.attachments) || obj.attachments.some((attachment) => !isRunAttachmentSummary(attachment)))) {
+		return false;
+	}
 	return true;
+}
+
+const RUN_ATTACHMENT_KINDS = new Set(["resource", "prompt"]);
+/** SHA-256 base64url digest id (43 chars) of an MCP source or attachment. */
+const RUN_ATTACHMENT_DIGEST_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** SHA-256 hex content digest (64 chars). */
+const RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+
+/** Validate one public-safe run attachment summary (digest/opaque metadata only). */
+function isRunAttachmentSummary(value: unknown): value is RunAttachmentSummary {
+	if (typeof value !== "object" || value === null) return false;
+	const obj = value as Record<string, unknown>;
+	if (typeof obj.sourceId !== "string" || !RUN_ATTACHMENT_DIGEST_ID_PATTERN.test(obj.sourceId)) return false;
+	if (typeof obj.kind !== "string" || !RUN_ATTACHMENT_KINDS.has(obj.kind)) return false;
+	if (obj.descriptorId !== undefined && !isOpaqueCapabilityDescriptorId(obj.descriptorId)) return false;
+	if (obj.revision !== undefined && !isOpaqueCapabilityRevision(obj.revision)) return false;
+	if (obj.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(obj.capabilityBindingId)) return false;
+	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
+	if (typeof obj.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(obj.contentDigest)) return false;
+	if (typeof obj.byteCount !== "number" || !Number.isInteger(obj.byteCount) || obj.byteCount < 0) return false;
+	if (typeof obj.blockCount !== "number" || !Number.isInteger(obj.blockCount) || obj.blockCount < 0) return false;
+	if (obj.mimeTypes !== undefined) {
+		if (!Array.isArray(obj.mimeTypes) || obj.mimeTypes.length > 16) return false;
+		if (obj.mimeTypes.some((mimeType) => !isRunMetadataText(mimeType))) return false;
+	}
+	return true;
+}
+
+/** Fresh copy of one validated run attachment summary; undefined when invalid. */
+function cloneRunAttachmentSummary(value: RunAttachmentSummary): RunAttachmentSummary | undefined {
+	if (!isRunAttachmentSummary(value)) return undefined;
+	const copy: RunAttachmentSummary = {
+		sourceId: value.sourceId,
+		kind: value.kind,
+		contentDigest: value.contentDigest,
+		byteCount: value.byteCount,
+		blockCount: value.blockCount,
+	};
+	if (value.descriptorId !== undefined) copy.descriptorId = value.descriptorId;
+	if (value.revision !== undefined) copy.revision = value.revision;
+	if (value.capabilityBindingId !== undefined) copy.capabilityBindingId = value.capabilityBindingId;
+	if (value.policyBindingId !== undefined) copy.policyBindingId = value.policyBindingId;
+	if (value.mimeTypes !== undefined) copy.mimeTypes = [...value.mimeTypes];
+	return copy;
+}
+
+function cloneRunAttachmentSummaries(value: ReadonlyArray<RunAttachmentSummary>): RunAttachmentSummary[] | undefined {
+	const cloned = value.map(cloneRunAttachmentSummary);
+	return cloned.some((summary) => summary === undefined) ? undefined : (cloned as RunAttachmentSummary[]);
 }
 
 function parseLedgerEntry(value: unknown): ParsedLedgerEntry {
@@ -1612,6 +1727,9 @@ const OPAQUE_CAPABILITY_KINDS = new Set([
 	"extension",
 	"mcp_server",
 	"mcp_tool",
+	"mcp_resource",
+	"mcp_resource_template",
+	"mcp_prompt",
 ]);
 
 /** True when {@link value} is a current-format opaque capability binding id. */
@@ -1697,6 +1815,8 @@ export interface PublicRunReceipt {
 	modelBudget?: RunModelBudgetSummary;
 	policySummary?: PublicPolicySummary;
 	bindingAssociation?: RunBindingAssociation;
+	/** Public-safe attachment summaries; only digest/opaque metadata. */
+	attachments?: ReadonlyArray<RunAttachmentSummary>;
 }
 
 /**
@@ -1995,6 +2115,10 @@ export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt
 	if (receipt.bindingAssociation !== undefined) {
 		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
 		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
+	}
+	if (receipt.attachments !== undefined) {
+		const attachments = cloneRunAttachmentSummaries(receipt.attachments);
+		if (attachments !== undefined) copy.attachments = attachments;
 	}
 	return copy;
 }
@@ -2542,6 +2666,10 @@ function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
 		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
 		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
 	}
+	if (receipt.attachments !== undefined) {
+		const attachments = cloneRunAttachmentSummaries(receipt.attachments);
+		if (attachments !== undefined) copy.attachments = attachments;
+	}
 	return copy;
 }
 
@@ -2778,6 +2906,10 @@ class RunHandleImpl implements RunHandle {
 		if (terminalError !== undefined) receipt.terminalError = terminalError;
 		const contextSnapshotId = input.contextSnapshotId;
 		if (contextSnapshotId !== undefined) receipt.contextSnapshotId = contextSnapshotId;
+		if (input.attachments !== undefined) {
+			const attachments = cloneRunAttachmentSummaries(input.attachments);
+			if (attachments !== undefined) receipt.attachments = attachments;
+		}
 		const capabilityBindingId = this._capabilityBindingId;
 		if (capabilityBindingId !== undefined) receipt.capabilityBindingId = capabilityBindingId;
 		const requestedModelBindingId = input.modelBindingId ?? this._record.modelBindingId;

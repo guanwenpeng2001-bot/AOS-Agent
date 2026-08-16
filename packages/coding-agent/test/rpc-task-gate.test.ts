@@ -17,6 +17,8 @@ import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } f
 import type {
 	GetExecutionPolicyData,
 	RpcAutomationResponse,
+	RpcMcpAuthResponse,
+	RpcMcpContentResponse,
 	RpcCommand,
 	RpcResponse,
 	TaskGateRecord,
@@ -245,7 +247,7 @@ function automationRecords(records: readonly RpcHostOutputRecord[]): RpcAutomati
 function dispatchCommand(
 	controller: RpcHostController,
 	command: RpcCommand,
-): Promise<RpcResponse | RpcAutomationResponse | undefined> {
+): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> {
 	return controller.dispatch(command);
 }
 
@@ -260,7 +262,7 @@ function gateEntries(session: AgentSession): Array<{ id: string; data: unknown }
 }
 
 function expectAutomationError(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: string,
 	code: string,
 ): void {
@@ -302,7 +304,7 @@ function policyApprovalEntries(session: AgentSession): unknown[] {
 }
 
 function expectGateResponse(
-	response: RpcResponse | RpcAutomationResponse | undefined,
+	response: RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined,
 	command: string,
 ): { gate: TaskGateRecord; idempotent: boolean } {
 	expect(response).toBeDefined();

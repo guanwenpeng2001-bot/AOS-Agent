@@ -52,6 +52,27 @@ Common patterns are documented in [Containerization](containerization.md):
 
 If you bind-mount a host workspace read/write, writes from inside the container or VM can still modify host files. Use read-only mounts or copy files into and out of the sandbox when you need stronger protection from unintended writes.
 
+## MCP servers, OAuth, and remote content
+
+MCP servers are governed by the capability registry, execution policy, and project trust (see [Capabilities and MCP](capabilities.md)). A configured server is never connected automatically; only servers selected by the frozen capability binding connect, and only for tool discovery and calls.
+
+### Transport and authentication
+
+- **stdio** servers run as local child processes. They never participate in OAuth. Only environment variable names listed in the config are passed through, under execution-policy authorization; the process environment is never inherited wholesale.
+- **Streamable HTTP** servers can use OAuth 2.0 (Authorization Code + PKCE). Authorization is an explicit user action (`/mcp auth <server-id>`): confirm before any redirect, the authorization URL is shown in the interactive dialog, and the callback is a loopback listener or a manual code. Tokens are stored only in the MCP credential namespace (`mcp__<installationId>__<serverIdentity>`) in the session's agent directory, bound to the canonical server URL, issuer, and scope. Tokens are never displayed, logged, or returned by any public surface. `/mcp logout <server-id>` deletes the local credential after a best-effort RFC 7009 revocation; revocation failure never blocks local cleanup.
+
+### Remote content is untrusted
+
+Resources and prompts are never loaded automatically and are never injected into the system or developer prompt. Access is explicit and confirm-gated:
+
+- `/mcp resources` and `/mcp prompts` list catalog metadata only.
+- `/mcp resource <server-id> <resourceId>` and `/mcp prompt <server-id> <promptId> [key=value ...]` read or get one listed item by its digest id, show a redacted digest receipt, and only then ask for confirmation before attaching it to the session.
+- Attaching is the only way remote content enters the session. Attachments carry an untrusted provenance wrapper, digest/size metadata, and only allowlisted text/image blocks; they are never treated as trusted instructions and never override local prompt templates.
+
+All MCP output is restricted to sanitized digests and metadata labeled untrusted. Raw URIs, prompt names and argument values, tokens, server URLs, and remote original text are never rendered and never retained on receipts. Errors use fixed safe templates or stable codes, so remote error text cannot leak into the TUI, RPC, SDK, or logs. The authorization URL appears only in the interactive `/mcp auth` dialog, which is the user's own authorization step.
+
+Headless modes (print, JSON, RPC, SDK) never auto-approve an OAuth flow or an attach: a pending approval or an unattached resource fails closed with a stable code.
+
 ## Reporting Security Issues
 
 To report a security issue, follow the repository [Security Policy](../../../SECURITY.md). Do not open a public issue for security-sensitive reports.

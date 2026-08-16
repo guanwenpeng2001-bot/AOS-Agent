@@ -25,8 +25,12 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 
-/** `context.memory` is intentionally not an audit source because it contains user text. */
-export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
+/**
+ * `context.memory` is intentionally not an audit source because it contains
+ * user text; `mcp.content.audit` is the allowlist-only per-operation MCP
+ * trail (no run facts) and stays inspectable as a Session custom entry.
+ */
+export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory", "mcp.content.audit"] as const;
 
 	export const AUDIT_EVENT_TYPES = [
 	"run.accepted",
@@ -423,6 +427,7 @@ export const AUDIT_PUBLIC_SUMMARY_KEYS = {
 		"terminalError",
 		"finalModel",
 		"modelBudget",
+		"attachments",
 	],
 	modelBinding: [
 		"bindingId",

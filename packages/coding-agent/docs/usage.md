@@ -62,6 +62,13 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display version history |
 | `/capabilities` | List the redacted capability catalog, inspect a descriptor, or approve an ask capability for this session |
+| `/mcp` | List configured MCP servers, connection state, and masked OAuth credential status |
+| `/mcp auth <server-id>` | Run OAuth authorization for a Streamable HTTP MCP server |
+| `/mcp logout <server-id>` | Remove the stored OAuth credential of a server |
+| `/mcp resources <server-id> [cursor]` | List one page of the resources catalog (digest metadata only) |
+| `/mcp resource <server-id> <resourceId>` | Read one listed resource by digest id, then confirm attaching it to the session |
+| `/mcp prompts <server-id> [cursor]` | List one page of the prompts catalog (digest metadata only) |
+| `/mcp prompt <server-id> <promptId> [key=value ...]` | Get one listed prompt by digest id, then confirm attaching it to the session |
 | `/quit` | Quit AOS Agent |
 
 ## Capabilities
@@ -82,7 +89,9 @@ Approvals are session-local and never written to settings; a denied, untrusted, 
 
 Capability trust: project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable/degraded rather than exposing connection internals.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
+MCP content (resources and prompts) is never loaded automatically. The `/mcp` command family lists catalogs and reads or attaches one resource or prompt at a time, always as explicit actions with a confirmation step before anything enters the session. Output is restricted to digest/metadata receipts labeled untrusted; raw URIs, prompt names and argument values, tokens, and remote original text are never displayed. Errors use fixed safe messages. OAuth authorization is Streamable HTTP only (stdio servers never use OAuth) and stores credentials only in the MCP credential namespace; see [Capabilities and MCP](capabilities.md#mcp-authentication) for the full contract.
+
+Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP, including explicit MCP resource/prompt inspection and attach and Streamable-HTTP-only MCP OAuth. It does not include the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
 
 ## Message Queue
 
@@ -327,6 +336,6 @@ aos --exclude-tools ask_question
 
 AOS Agent keeps the core small and pushes workflow-specific behavior into extensions, skills, prompt templates, and packages.
 
-It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
+It intentionally does not include sub-agents, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
 
 For implementation background and source history, see the [upstream provenance record](../../UPSTREAM.md).

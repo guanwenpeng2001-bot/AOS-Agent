@@ -16,7 +16,10 @@ export type CapabilityKind =
 	| "skill"
 	| "extension"
 	| "mcp_server"
-	| "mcp_tool";
+	| "mcp_tool"
+	| "mcp_resource"
+	| "mcp_resource_template"
+	| "mcp_prompt";
 
 export type CapabilityDecision = "allow" | "ask" | "deny";
 
@@ -29,9 +32,9 @@ export interface CapabilitySelector {
 	/** Matches SourceInfo.source (the capability origin's identity). */
 	sourceId?: string;
 	scope?: SourceScope;
-	/** Matches the logical MCP server id, for mcp_server and its mcp_tool children. */
+	/** Matches the logical MCP server id, for mcp_server and its child capabilities. */
 	mcpServerId?: string;
-	/** Matches the parent descriptor id (mcp_tool -> mcp_server). */
+	/** Matches the parent descriptor id (mcp_tool/mcp_resource/... -> mcp_server). */
 	parentId?: string;
 }
 
@@ -55,10 +58,16 @@ export interface CapabilityCandidate {
 	/** Identity component of the id; defaults to name. */
 	localName?: string;
 	exposedToolName?: string;
-	/** mcp_tool -> its parent mcp_server descriptor id. */
+	/** mcp_tool/mcp_resource/mcp_resource_template/mcp_prompt -> their parent mcp_server descriptor id. */
 	parentId?: string;
-	/** Logical MCP server id; mcp_server and its mcp_tool children share it. */
+	/** Logical MCP server id; mcp_server and its children share it. */
 	mcpServerId?: string;
+	/**
+	 * Opaque, secret-free provenance of the discovery that produced this
+	 * capability (e.g. the MCP content summary's provenance id). The raw source
+	 * reference (URI, template, or prompt name) is never retained.
+	 */
+	provenance?: string;
 	/**
 	 * Trust result computed by the caller. Project-scoped sources default to
 	 * untrusted; an untrusted capability is force-denied regardless of profile.
@@ -85,6 +94,8 @@ export interface CapabilityDescriptor {
 	exposedToolName?: string;
 	parentId?: string;
 	mcpServerId?: string;
+	/** Opaque, secret-free provenance id of the discovery that produced this capability. */
+	provenance?: string;
 }
 
 export interface CapabilityCatalogInput {
@@ -165,6 +176,7 @@ export interface CapabilityDescriptorView {
 	exposedToolName?: string;
 	parentId?: string;
 	mcpServerId?: string;
+	provenance?: string;
 }
 
 export interface CapabilityCatalogView {
@@ -340,7 +352,9 @@ export function createCapabilityId(
 }
 
 function defaultDecisionFor(kind: CapabilityKind): CapabilityDecision {
-	return kind === "mcp_server" || kind === "mcp_tool" ? "deny" : "allow";
+	// Remote MCP content is as untrusted as the server that serves it: every MCP
+	// kind defaults to deny until a profile selects it.
+	return kind.startsWith("mcp_") ? "deny" : "allow";
 }
 
 function defaultTrustFor(source: SourceInfo): boolean {
@@ -355,12 +369,19 @@ function stricterDecision(a: CapabilityDecision, b: CapabilityDecision): Capabil
 
 /**
  * Descriptors that must resolve a governing parent before they can be enabled:
- * mcp_tool is definitionally a child of an mcp_server (a lone mcp_tool is
+ * every MCP child kind (mcp_tool, mcp_resource, mcp_resource_template,
+ * mcp_prompt) is definitionally a child of an mcp_server (a lone child is
  * denied even without a declared parentId), while extension_tool and any other
  * kind inherit their parent's decision only when they declare a parentId.
  */
 function requiresParent(descriptor: CapabilityDescriptor): boolean {
-	return descriptor.kind === "mcp_tool" || getInternalParentId(descriptor) !== undefined;
+	return (
+		descriptor.kind === "mcp_tool" ||
+		descriptor.kind === "mcp_resource" ||
+		descriptor.kind === "mcp_resource_template" ||
+		descriptor.kind === "mcp_prompt" ||
+		getInternalParentId(descriptor) !== undefined
+	);
 }
 
 function defaultExposedToolName(
@@ -375,6 +396,13 @@ function defaultExposedToolName(
 		case "extension_tool":
 		case "sdk_tool":
 			return localName;
+		case "mcp_resource":
+		case "mcp_resource_template":
+		case "mcp_prompt":
+			// MCP resources and prompts are content capabilities, never tools:
+			// they are selected and governed by the registry but must not enter the
+			// model tool schema or the binding's model-visible tool allowlist.
+			return undefined;
 		default:
 			return undefined;
 	}
@@ -418,8 +446,11 @@ function resolveDecision(
 	if (decision === undefined) decision = defaultDecisionFor(descriptor.kind);
 	if (!descriptor.trusted) decision = stricterDecision(decision, "deny");
 	if (requiresParent(descriptor) && parentDecision !== undefined) {
-		// A child capability cannot be enabled independently of its parent
-		// (mcp_tool -> mcp_server, extension_tool -> extension).
+		// A child capability cannot be enabled independently of its parent, and
+		// can only further restrict it: a server deny cascades to a child deny,
+		// and a child may only move ask -> ask/deny, never ask -> allow.
+		// (mcp_tool/mcp_resource/mcp_resource_template/mcp_prompt -> mcp_server,
+		// extension_tool -> extension).
 		decision = stricterDecision(decision, parentDecision);
 	}
 	return decision;
@@ -465,6 +496,7 @@ function fallbackRevisionInput(candidate: CapabilityCandidate, localName: string
 		...(exposedToolName !== undefined ? { exposedToolName } : {}),
 		...(candidate.parentId !== undefined ? { parentId: candidate.parentId } : {}),
 		...(candidate.mcpServerId !== undefined ? { mcpServerId: candidate.mcpServerId } : {}),
+		...(candidate.provenance !== undefined ? { provenance: candidate.provenance } : {}),
 	};
 }
 
@@ -493,6 +525,7 @@ export function buildCapabilityCatalog(
 			trusted: candidate.trusted ?? defaultTrustFor(candidate.source),
 			...(candidate.exposedToolName !== undefined ? { exposedToolName: candidate.exposedToolName } : {}),
 			...(candidate.mcpServerId !== undefined ? { mcpServerId: candidate.mcpServerId } : {}),
+			...(candidate.provenance !== undefined ? { provenance: candidate.provenance } : {}),
 		};
 		if (descriptor.exposedToolName === undefined) {
 			descriptor.exposedToolName = defaultExposedToolName(candidate.kind, localName, candidate.mcpServerId);
@@ -721,6 +754,7 @@ export function createCapabilityCatalogView(catalog: CapabilityCatalog): Capabil
 			...(descriptor.exposedToolName !== undefined ? { exposedToolName: descriptor.exposedToolName } : {}),
 			...(descriptor.parentId !== undefined ? { parentId: descriptor.parentId } : {}),
 			...(descriptor.mcpServerId !== undefined ? { mcpServerId: descriptor.mcpServerId } : {}),
+			...(descriptor.provenance !== undefined ? { provenance: descriptor.provenance } : {}),
 		})),
 	});
 }

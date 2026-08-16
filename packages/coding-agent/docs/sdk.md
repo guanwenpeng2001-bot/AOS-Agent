@@ -185,6 +185,28 @@ interface AgentSession {
 }
 ```
 
+MCP OAuth, resources, and prompts are explicit Session methods. They never start a model run and never write into system or developer instructions. Attach is the only way remote content enters the next prompt.
+
+```typescript
+interface AgentSession {
+  listMcpResources(serverId: string, params?: { cursor?: string }, signal?: AbortSignal): Promise<MCPResourceListResult>;
+  listMcpResourceTemplates(serverId: string, params?: { cursor?: string }, signal?: AbortSignal): Promise<MCPResourceTemplateListResult>;
+  listMcpPrompts(serverId: string, params?: { cursor?: string }, signal?: AbortSignal): Promise<MCPPromptListResult>;
+  readMcpResource(serverId: string, resourceIdOrUri: string, signal?: AbortSignal): Promise<MCPReadResourceResult>;
+  getMcpPrompt(serverId: string, promptIdOrName: string, args?: Record<string, string>, signal?: AbortSignal): Promise<MCPGetPromptResult>;
+  attachMcpResource(input: { serverId: string; uri: string; signal?: AbortSignal }): Promise<McpAttachment>;
+  attachMcpPrompt(input: { serverId: string; name: string; args?: Record<string, string>; signal?: AbortSignal }): Promise<McpAttachment>;
+  startMcpAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult>;
+  startMcpOAuth(serverId: string, serverUrl: string | URL, options: MCPAuthStartOptions): Promise<MCPAuthStartResult>;
+  logoutMcpAuth(serverId: string, serverUrl?: string | URL): Promise<void>;
+  logoutMcp(serverId: string, serverUrl?: string | URL): Promise<void>;
+  getMcpAuthStatus(serverId: string, serverUrl: string | URL): Promise<MCPCredentialStatus | undefined>;
+  listMcpCredentialStatuses(): Promise<readonly MCPCredentialStatus[]>;
+}
+```
+
+`readMcpResource` / `getMcpPrompt` accept a listed digest id (`resourceId` / `promptId`) after an explicit list, or an explicit URI / prompt name for a caller-supplied template. Raw URIs stay in memory for the current call; receipts return digest ids, size, MIME, and untrusted provenance only. Headless and RPC callers must not auto-approve OAuth or attach. See [Capabilities and MCP](capabilities.md).
+
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
 
 ### ModelBroker

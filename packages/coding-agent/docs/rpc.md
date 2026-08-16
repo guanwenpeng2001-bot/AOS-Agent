@@ -1495,6 +1495,78 @@ Dismiss any dialog method. The extension receives `undefined` (for select/input/
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
 ```
 
+### MCP OAuth interactive start (`mcp.auth.start`)
+
+`mcp.auth.start` is headless by default: without `"interactive": true` (or
+without an attached output sink) it fails closed immediately with the fixed
+`mcp_auth_interaction_required` error — no browser is opened, no OAuth flow is
+created, and nothing waits for input.
+
+A client that can drive the extension-UI sub-protocol declares
+`"interactive": true` on the request:
+
+```json
+{"type": "mcp.auth.start", "id": "auth-1", "serverId": "docs", "serverUrl": "https://mcp.example.com/api", "interactive": true, "timeoutMs": 180000}
+```
+
+The host then runs the one-shot OAuth flow through the extension-UI bridge:
+
+- the flow's allow/cancel consent is emitted as a `confirm` dialog request;
+  answer `{"type": "extension_ui_response", "id": "<id>", "confirmed": true}`
+  to proceed or `false` / `cancelled` to abort (`mcp_auth_cancelled`);
+- with `"callbackMode": "https"`, the manual authorization-code entry is
+  emitted as an `input` dialog request; answer with `value` or `cancelled`;
+- the authorization URL is delivered at most once, only through the dedicated
+  fire-and-forget `auth_url` request:
+
+```json
+{"type": "extension_ui_request", "id": "url-1", "method": "auth_url", "url": "https://auth.example.com/authorize?state=...", "instructions": "Open this URL in your browser and authorize access, then return here."}
+```
+
+The URL never appears in the `mcp.auth.start` response, session events,
+capability catalogs, status/list output, receipts, audit entries, errors, or
+logs, and never carries a token or raw URI. The response carries only the
+terminal status (`authorized`, `already_authorized`, or `not_required`);
+failures map to the stable `mcp_auth_*` error codes with fixed messages.
+Dialogs are bounded by the flow deadline, and host detach/shutdown or client
+abort settles them as cancelled instead of waiting indefinitely.
+
+`RpcClient` exposes the one-shot driver as `startMcpAuthInteractive(serverId,
+serverUrl, { onAuthUrl, confirm, inputCode }, options)`, which answers the
+consent and manual-code dialogs automatically and delivers the authorization
+URL to `onAuthUrl` exactly once. `onExtensionUIRequest()` /
+`sendExtensionUIResponse()` provide the raw sub-protocol for custom drivers.
+
+### MCP resources and prompts
+
+These commands are explicit catalog and attach operations. They do not start a
+Run, do not inject content into system or developer instructions, and return
+allowlisted receipts only (digest ids, size, MIME, revision, untrusted
+provenance). Headless callers never auto-approve `ask`.
+
+| Command | Effect |
+| --- | --- |
+| `mcp.resource.list` | One page of resource catalog metadata for a selected server |
+| `mcp.resource.templates.list` | One page of resource-template catalog metadata |
+| `mcp.resource.read` | Read one listed resource or an explicit template URI; returns a redacted receipt |
+| `mcp.resource.attach` | Read and attach as untrusted session context |
+| `mcp.prompt.list` | One page of prompt catalog metadata |
+| `mcp.prompt.get` | Get one listed prompt; returns a redacted receipt, does not start a Run |
+| `mcp.prompt.attach` | Get and attach as untrusted session context |
+| `mcp.auth.status` / `mcp.auth.list` / `mcp.auth.logout` | Masked credential status and local logout (best-effort revoke) |
+
+```json
+{"type": "mcp.resource.list", "id": "r1", "serverId": "docs"}
+{"type": "mcp.resource.read", "id": "r2", "serverId": "docs", "uri": "<resourceId-or-explicit-template-uri>"}
+{"type": "mcp.prompt.get", "id": "p1", "serverId": "docs", "name": "<promptId-or-name>", "args": {"topic": "release"}}
+```
+
+The `uri` / `name` request fields accept a listed digest id after
+`mcp.resource.list` / `mcp.prompt.list`, or an explicit template URI / prompt
+name. Responses never include tokens, authorization URLs, raw URIs, prompt
+argument values, or remote original text. Failures use the stable
+`mcp_resource_*`, `mcp_prompt_*`, `mcp_content_*`, and `mcp_auth_*` codes.
+
 ## Error Handling
 
 Failed commands return a response with `success: false`:

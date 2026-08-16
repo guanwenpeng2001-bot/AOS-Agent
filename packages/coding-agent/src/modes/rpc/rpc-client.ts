@@ -11,6 +11,8 @@ import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
@@ -48,7 +50,20 @@ import type {
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationResponse,
+	RpcMcpAttachmentReceipt,
+	RpcMcpAuthError,
+	RpcMcpAuthErrorCode,
+	RpcMcpContentError,
+	RpcMcpContentErrorCode,
+	RpcMcpAuthListData,
+	RpcMcpAuthStartData,
+	RpcMcpAuthStatusData,
+	RpcMcpGetPromptReceipt,
+	RpcMcpMaskedCredential,
+	RpcMcpReadResourceReceipt,
 	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
 	RpcSessionStats,
@@ -198,6 +213,68 @@ export class AutomationRpcError extends Error {
 	}
 }
 
+/** Structured error thrown when an `mcp.auth.*` command fails. */
+export class McpAuthRpcError extends Error {
+	readonly code: RpcMcpAuthErrorCode;
+
+	constructor(error: RpcMcpAuthError) {
+		super(error.message);
+		this.name = "McpAuthRpcError";
+		this.code = error.code;
+	}
+}
+
+/**
+ * Callbacks that drive the one-shot interactive `mcp.auth.start` bridge.
+ *
+ * The host delivers the consent dialog, the manual-code dialog, and the
+ * authorization URL through `extension_ui_request` records; the
+ * {@link RpcClient.startMcpAuthInteractive} driver translates them into these
+ * callbacks and answers the dialogs automatically. Every URL is delivered at
+ * most once and never appears in any response, session event, receipt,
+ * audit, error, or log, and never carries a token or raw URI.
+ */
+export interface RpcMcpAuthInteraction {
+	/**
+	 * One-shot authorization URL delivery; invoked at most once per start.
+	 * The URL is the dedicated interactive result for this authorized client
+	 * only.
+	 */
+	onAuthUrl?(url: string, instructions?: string): void;
+	/** OAuth consent confirmation; resolve `false` to cancel the flow. */
+	confirm?(message: string): boolean | Promise<boolean>;
+	/**
+	 * Manual authorization-code entry (https callback mode); resolve
+	 * `undefined` to cancel.
+	 */
+	inputCode?(message: string, placeholder?: string): string | undefined | Promise<string | undefined>;
+}
+
+/** Options for {@link RpcClient.startMcpAuthInteractive}. */
+export interface RpcMcpAuthInteractiveOptions {
+	/** Fixed callback shape; defaults to `loopback`. */
+	callbackMode?: "loopback" | "https";
+	/** Fixed HTTPS redirect URI; required when `callbackMode` is `https`. */
+	httpsCallbackUrl?: string;
+	/** Bounded deadline for the interactive callback capture (ms). */
+	timeoutMs?: number;
+	/** Per-HTTP-request deadline for discovery/token calls (ms). */
+	requestTimeoutMs?: number;
+	/** Aborts the interactive start; pending dialogs resolve as cancelled. */
+	signal?: AbortSignal;
+}
+
+/** Structured error thrown when an `mcp.resource.*` / `mcp.prompt.*` command fails. */
+export class McpContentRpcError extends Error {
+	readonly code: RpcMcpContentErrorCode;
+
+	constructor(error: RpcMcpContentError) {
+		super(error.message);
+		this.name = "McpContentRpcError";
+		this.code = error.code;
+	}
+}
+
 // ============================================================================
 // RPC Client
 // ============================================================================
@@ -215,6 +292,7 @@ export class RpcClient {
 	} | null = null;
 	private eventListeners: RpcEventListener[] = [];
 	private runEventListeners: RpcRunEventListener[] = [];
+	private extensionUIListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -406,6 +484,33 @@ export class RpcClient {
 				this.runEventListeners.splice(index, 1);
 			}
 		};
+	}
+
+	/**
+	 * Subscribe to extension UI request records (dialogs, notifications, and
+	 * the one-shot MCP OAuth `auth_url` delivery). While subscribers exist,
+	 * `extension_ui_request` records are routed here instead of the generic
+	 * session event listeners; answer dialog requests with
+	 * {@link sendExtensionUIResponse}.
+	 */
+	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
+		this.extensionUIListeners.push(listener);
+		return () => {
+			const index = this.extensionUIListeners.indexOf(listener);
+			if (index !== -1) {
+				this.extensionUIListeners.splice(index, 1);
+			}
+		};
+	}
+
+	/**
+	 * Send an `extension_ui_response` for a pending extension UI dialog
+	 * request. Fire-and-forget from the client's perspective: the record is
+	 * written to the transport and the promise resolves once the write
+	 * completes; the host correlates it by `id`.
+	 */
+	async sendExtensionUIResponse(response: RpcExtensionUIResponse): Promise<void> {
+		await this.writeRecord(response);
 	}
 
 	/**
@@ -844,6 +949,336 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	// =========================================================================
+	// MCP content (resource/prompt)
+	// =========================================================================
+
+	/**
+	 * List one page of the resources catalog of a selected, trusted server.
+	 * Never starts a Run or a model. Pass the previous page's `nextCursor` as
+	 * `cursor` to fetch the next page. Responses carry digest metadata only:
+	 * the raw URI never leaves the request.
+	 * @param signal - Optional caller cancellation; the pending request rejects
+	 * when the signal aborts.
+	 */
+	async listMcpResources(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceListResult> {
+		const response = await this.send(
+			{
+				type: "mcp.resource.list",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getMcpContentData<MCPResourceListResult>(response);
+	}
+
+	/**
+	 * List one page of the resource templates catalog of a selected, trusted
+	 * server. Never starts a Run or a model. Responses carry digest ids and a
+	 * sanitized display pattern only; the raw URI template never leaves the
+	 * request.
+	 * @param signal - Optional caller cancellation; the pending request rejects
+	 * when the signal aborts.
+	 */
+	async listMcpResourceTemplates(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPResourceTemplateListResult> {
+		const response = await this.send(
+			{
+				type: "mcp.resource.templates.list",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getMcpContentData<MCPResourceTemplateListResult>(response);
+	}
+
+	/**
+	 * Read one resource of a selected, trusted server. The raw URI is used
+	 * once and never echoed: the response is a redacted receipt with digest
+	 * and metadata only (no remote text). Never starts a Run or a model.
+	 */
+	async readMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<RpcMcpReadResourceReceipt> {
+		const response = await this.send({ type: "mcp.resource.read", serverId, uri }, signal);
+		return this.getMcpContentData<RpcMcpReadResourceReceipt>(response);
+	}
+
+	/**
+	 * Explicitly read a resource and register the normalized result as a
+	 * structured external attachment in the Session. The response is a
+	 * redacted receipt (metadata and digests only); the raw URI and remote
+	 * text never cross the wire. Re-attaching the same content is idempotent
+	 * (same digest id). Never starts a Run or a model.
+	 */
+	async attachMcpResource(serverId: string, uri: string, signal?: AbortSignal): Promise<RpcMcpAttachmentReceipt> {
+		const response = await this.send({ type: "mcp.resource.attach", serverId, uri }, signal);
+		return this.getMcpContentData<RpcMcpAttachmentReceipt>(response);
+	}
+
+	/**
+	 * List one page of the prompts catalog of a selected, trusted server.
+	 * Never starts a Run or a model. Responses carry digest metadata only.
+	 */
+	async listMcpPrompts(
+		serverId: string,
+		params?: { cursor?: string },
+		signal?: AbortSignal,
+	): Promise<MCPPromptListResult> {
+		const response = await this.send(
+			{
+				type: "mcp.prompt.list",
+				serverId,
+				...(params?.cursor === undefined ? {} : { cursor: params.cursor }),
+			},
+			signal,
+		);
+		return this.getMcpContentData<MCPPromptListResult>(response);
+	}
+
+	/**
+	 * Get one prompt of a selected, trusted server. The name and argument
+	 * values are used once and never echoed: the response is a redacted
+	 * receipt with digest and metadata only (no remote text). Never starts a
+	 * Run or a model.
+	 */
+	async getMcpPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<RpcMcpGetPromptReceipt> {
+		const response = await this.send({ type: "mcp.prompt.get", serverId, name, args }, signal);
+		return this.getMcpContentData<RpcMcpGetPromptReceipt>(response);
+	}
+
+	/**
+	 * Explicitly get a prompt and register the normalized result as a
+	 * structured external attachment in the Session. The response is a
+	 * redacted receipt; the prompt name, argument values, and remote text
+	 * never cross the wire. Re-attaching the same content is idempotent.
+	 * Never starts a Run or a model.
+	 */
+	async attachMcpPrompt(
+		serverId: string,
+		name: string,
+		args?: Record<string, string>,
+		signal?: AbortSignal,
+	): Promise<RpcMcpAttachmentReceipt> {
+		const response = await this.send({ type: "mcp.prompt.attach", serverId, name, args }, signal);
+		return this.getMcpContentData<RpcMcpAttachmentReceipt>(response);
+	}
+
+	// =========================================================================
+	// MCP OAuth (mcp.auth.*)
+	// =========================================================================
+
+	/**
+	 * Start MCP OAuth authorization for one streamable-http server in
+	 * headless mode. Without a declared interaction bridge the host fails
+	 * closed immediately with the fixed `mcp_auth_interaction_required`
+	 * error: no browser is opened and nothing waits for input. Use
+	 * {@link startMcpAuthInteractive} to drive the flow through the
+	 * extension-UI bridge. Never starts a Run or a model.
+	 */
+	async startMcpAuth(serverId: string, serverUrl: string, signal?: AbortSignal): Promise<RpcMcpAuthStartData> {
+		const response = await this.send({ type: "mcp.auth.start", serverId, serverUrl }, signal);
+		return this.getMcpAuthData<RpcMcpAuthStartData>(response);
+	}
+
+	/** PR/SDK alias of {@link startMcpAuth}. */
+	async startMcpOAuth(serverId: string, serverUrl: string, signal?: AbortSignal): Promise<RpcMcpAuthStartData> {
+		return this.startMcpAuth(serverId, serverUrl, signal);
+	}
+
+	/**
+	 * Start MCP OAuth authorization for one streamable-http server through
+	 * the interactive extension-UI bridge.
+	 *
+	 * The caller declares `interactive` by using this method; without it the
+	 * host fails closed with `mcp_auth_interaction_required`. The driver:
+	 * - answers the host's consent `confirm` dialog through
+	 *   {@link RpcMcpAuthInteraction.confirm} (false cancels);
+	 * - answers the `input` dialog for manual authorization codes (https
+	 *   callback mode) through {@link RpcMcpAuthInteraction.inputCode}
+	 *   (undefined cancels);
+	 * - delivers the one-shot authorization URL at most once through
+	 *   {@link RpcMcpAuthInteraction.onAuthUrl}; the URL never appears in the
+	 *   returned data, session events, receipts, audit, errors, or logs, and
+	 *   never carries a token or raw URI;
+	 * - cancels any unknown dialog fail-closed instead of echoing input.
+	 *
+	 * Resolves with the terminal status only. Rejects with
+	 * {@link McpAuthRpcError} on failure (cancel, timeout, abort, or host
+	 * detach/shutdown), using the stable PR error codes.
+	 */
+	async startMcpAuthInteractive(
+		serverId: string,
+		serverUrl: string,
+		interaction: RpcMcpAuthInteraction = {},
+		options: RpcMcpAuthInteractiveOptions = {},
+	): Promise<RpcMcpAuthStartData> {
+		const flowTimeoutMs = options.timeoutMs ?? MCP_OAUTH_DEFAULT_TIMEOUT_MS;
+		// The host bounds the whole flow by `flowTimeoutMs`; the response wait
+		// must outlast it so a flow that completes right at its deadline is not
+		// cut off by the client's own response timeout.
+		const sendTimeoutMs = flowTimeoutMs + 10_000;
+		let deliveredAuthUrl = false;
+		let settled = false;
+		// Dialog request ids still waiting for an answer. On abort every one of
+		// them is answered `cancelled` so the host flow fails closed promptly
+		// instead of hanging until its own timeout.
+		const pendingDialogIds = new Set<string>();
+		const cancelPendingDialogs = (): void => {
+			for (const id of pendingDialogIds) {
+				void this.sendExtensionUIResponse({ type: "extension_ui_response", id, cancelled: true }).catch(
+					() => undefined,
+				);
+			}
+			pendingDialogIds.clear();
+		};
+		const onAbort = (): void => {
+			cancelPendingDialogs();
+		};
+		options.signal?.addEventListener("abort", onAbort, { once: true });
+		const unsubscribe = this.onExtensionUIRequest((request) => {
+			// After the start settled (response, failure, or abort) no further
+			// dialog answers or URL deliveries happen.
+			if (settled) return;
+			if (request.method === "auth_url") {
+				if (!deliveredAuthUrl) {
+					deliveredAuthUrl = true;
+					try {
+						interaction.onAuthUrl?.(request.url, request.instructions);
+					} catch {
+						// A failing consumer callback never breaks or leaks the
+						// flow: the start continues and settles on its own.
+					}
+				}
+				return;
+			}
+			if (request.method === "confirm") {
+				pendingDialogIds.add(request.id);
+				void this.answerConfirmDialog(request, interaction, pendingDialogIds).catch(() => undefined);
+				return;
+			}
+			if (request.method === "input") {
+				pendingDialogIds.add(request.id);
+				void this.answerInputDialog(request, interaction, pendingDialogIds).catch(() => undefined);
+				return;
+			}
+			// Unknown dialog methods fail closed: cancel instead of echoing
+			// input or blocking the host.
+			void this.sendExtensionUIResponse({ type: "extension_ui_response", id: request.id, cancelled: true }).catch(
+				() => undefined,
+			);
+		});
+		try {
+			const response = await this.send(
+				{
+					type: "mcp.auth.start",
+					serverId,
+					serverUrl,
+					interactive: true,
+					...(options.callbackMode !== undefined ? { callbackMode: options.callbackMode } : {}),
+					...(options.httpsCallbackUrl !== undefined ? { httpsCallbackUrl: options.httpsCallbackUrl } : {}),
+					...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+					...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
+				},
+				options.signal,
+				sendTimeoutMs,
+			);
+			return this.getMcpAuthData<RpcMcpAuthStartData>(response);
+		} finally {
+			settled = true;
+			options.signal?.removeEventListener("abort", onAbort);
+			cancelPendingDialogs();
+			unsubscribe();
+		}
+	}
+
+	private async answerConfirmDialog(
+		request: Extract<RpcExtensionUIRequest, { method: "confirm" }>,
+		interaction: RpcMcpAuthInteraction,
+		pendingDialogIds: Set<string>,
+	): Promise<void> {
+		// Fail closed: without a confirm callback (or when the callback
+		// rejects) the consent is never granted.
+		let answer: boolean;
+		try {
+			answer = (await interaction.confirm?.(request.message ?? request.title)) ?? false;
+		} catch {
+			answer = false;
+		}
+		pendingDialogIds.delete(request.id);
+		await this.sendExtensionUIResponse({ type: "extension_ui_response", id: request.id, confirmed: answer });
+	}
+
+	private async answerInputDialog(
+		request: Extract<RpcExtensionUIRequest, { method: "input" }>,
+		interaction: RpcMcpAuthInteraction,
+		pendingDialogIds: Set<string>,
+	): Promise<void> {
+		// Fail closed: without an inputCode callback (or when the callback
+		// rejects) the manual-code dialog is cancelled.
+		let code: string | undefined;
+		try {
+			code = await interaction.inputCode?.(request.title, request.placeholder);
+		} catch {
+			code = undefined;
+		}
+		pendingDialogIds.delete(request.id);
+		if (code === undefined) {
+			await this.sendExtensionUIResponse({ type: "extension_ui_response", id: request.id, cancelled: true });
+			return;
+		}
+		await this.sendExtensionUIResponse({ type: "extension_ui_response", id: request.id, value: code });
+	}
+
+	/**
+	 * Masked MCP OAuth status for one streamable-http server. Resolves
+	 * `{ status: "required" }` when no credential is stored and
+	 * `{ status: "authorized", credential }` with masked metadata otherwise.
+	 * The response never contains tokens, the server URL, issuer/resource, or
+	 * raw URIs.
+	 */
+	async getMcpAuthStatus(serverId: string, serverUrl: string, signal?: AbortSignal): Promise<RpcMcpAuthStatusData> {
+		const response = await this.send({ type: "mcp.auth.status", serverId, serverUrl }, signal);
+		return this.getMcpAuthData<RpcMcpAuthStatusData>(response);
+	}
+
+	/** Masked status of every stored MCP credential in this session's namespace. */
+	async listMcpAuthCredentials(signal?: AbortSignal): Promise<readonly RpcMcpMaskedCredential[]> {
+		const response = await this.send({ type: "mcp.auth.list" }, signal);
+		return this.getMcpAuthData<RpcMcpAuthListData>(response).credentials;
+	}
+
+	/**
+	 * Logout one MCP server: best-effort revocation and local deletion of the
+	 * namespaced credential. `serverUrl` (the canonical streamable-http URL)
+	 * lets a fresh session delete a previously stored credential without
+	 * having resolved a provider for the server.
+	 */
+	async logoutMcpAuth(serverId: string, serverUrl?: string, signal?: AbortSignal): Promise<void> {
+		const response = await this.send(
+			{ type: "mcp.auth.logout", serverId, ...(serverUrl !== undefined ? { serverUrl } : {}) },
+			signal,
+		);
+		this.getMcpAuthData<void>(response);
+	}
+
+	/** PR/SDK alias of {@link logoutMcpAuth}. */
+	async logoutMcp(serverId: string, serverUrl?: string, signal?: AbortSignal): Promise<void> {
+		return this.logoutMcpAuth(serverId, serverUrl, signal);
+	}
+
 	/** Read a safe, filtered execution-audit page. */
 	async auditQuery(query: AuditQuery): Promise<AuditQueryResult> {
 		const response = await this.sendAutomation({ type: "audit.query", ...query });
@@ -1014,6 +1449,18 @@ export class RpcClient {
 				return;
 			}
 
+			// Extension UI request records go to the dedicated listeners while
+			// any are subscribed (dialog drivers); otherwise they fall through to
+			// the generic session event listeners for backward compatibility.
+			if (record?.type === "extension_ui_request") {
+				if (this.extensionUIListeners.length > 0) {
+					for (const listener of this.extensionUIListeners) {
+						listener(record as RpcExtensionUIRequest);
+					}
+					return;
+				}
+			}
+
 			// Otherwise it's a legacy session event
 			for (const listener of this.eventListeners) {
 				listener(data as JsonAgentSessionEvent);
@@ -1170,7 +1617,62 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
-	private async send(command: RpcCommandBody): Promise<RpcResponse> {
+	/**
+	 * Write one record to the active transport (stdio stdin or TCP). Rejects
+	 * when the transport is unavailable or the write fails.
+	 */
+	private async writeRecord(record: unknown): Promise<void> {
+		const childProcess = this.process;
+		if (this.exitError) {
+			throw this.exitError;
+		}
+		const socket = this.socket;
+		const stdin = this.inputStream;
+		if ((!childProcess && !socket) || !stdin) {
+			throw new Error("Client not started");
+		}
+		if (childProcess && childProcess.exitCode !== null) {
+			const error = this.createProcessExitError(childProcess.exitCode, childProcess.signalCode);
+			this.exitError = error;
+			throw error;
+		}
+		if (socket && (socket.destroyed || !socket.writable)) {
+			const error = new RpcTransportError(
+				socket.destroyed ? "rpc_transport_closed" : "rpc_transport_write_failed",
+				socket.destroyed ? "RPC transport connection is closed" : "RPC transport write failed",
+			);
+			this.handleTcpSocketError(socket, error);
+			throw error;
+		}
+		if (childProcess && (stdin.destroyed || !stdin.writable)) {
+			const error = new Error(`Agent process stdin is not writable. Stderr: ${this.stderr}`);
+			this.exitError = error;
+			throw error;
+		}
+		const writePromise = socket
+			? this.tcpWriter?.write(record)
+			: writeStdioLine(stdin, serializeJsonLine(record));
+		if (writePromise === undefined) {
+			const writeError = new RpcTransportError("rpc_transport_write_failed", "RPC transport write failed");
+			throw writeError;
+		}
+		try {
+			await writePromise;
+		} catch (error: unknown) {
+			const writeError = socket
+				? toRpcTransportError(
+						error,
+						error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
+					)
+				: error instanceof Error
+					? error
+					: new Error(String(error));
+			if (socket) this.handleTcpSocketError(socket, writeError);
+			throw writeError;
+		}
+	}
+
+	private async send(command: RpcCommandBody, signal?: AbortSignal, timeoutMs = 30000): Promise<RpcResponse> {
 		const childProcess = this.process;
 		if (this.exitError) {
 			throw this.exitError;
@@ -1203,44 +1705,37 @@ export class RpcClient {
 		const fullCommand = { ...command, id } as RpcCommand;
 
 		return new Promise((resolve, reject) => {
+			const onAbort = (): void => {
+				if (!this.pendingRequests.has(id)) return;
+				this.pendingRequests.delete(id);
+				const reason = signal?.reason;
+				reject(reason instanceof Error ? reason : new Error("Request aborted"));
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
+				signal?.removeEventListener("abort", onAbort);
 				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30000);
+			}, timeoutMs);
 
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
 					clearTimeout(timeout);
+					signal?.removeEventListener("abort", onAbort);
 					resolve(response);
 				},
 				reject: (error) => {
 					clearTimeout(timeout);
+					signal?.removeEventListener("abort", onAbort);
 					reject(error);
 				},
 			});
 
-			const writePromise = socket
-				? this.tcpWriter?.write(fullCommand)
-				: writeStdioLine(stdin, serializeJsonLine(fullCommand));
-			if (writePromise === undefined) {
-				const writeError = new RpcTransportError("rpc_transport_write_failed", "RPC transport write failed");
-				this.pendingRequests.delete(id);
-				reject(writeError);
-				return;
-			}
-			void writePromise.catch((error: unknown) => {
-				const writeError = socket
-					? toRpcTransportError(
-							error,
-							error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
-						)
-					: error instanceof Error
-						? error
-						: new Error(String(error));
+			void this.writeRecord(fullCommand).catch((writeError: unknown) => {
 				const pending = this.pendingRequests.get(id);
 				this.pendingRequests.delete(id);
-				pending?.reject(writeError);
-				if (socket) this.handleTcpSocketError(socket, writeError);
+				pending?.reject(writeError instanceof Error ? writeError : new Error(String(writeError)));
 			});
 		});
 	}
@@ -1252,6 +1747,40 @@ export class RpcClient {
 		}
 		// Type assertion: we trust response.data matches T based on the command sent.
 		// This is safe because each public method specifies the correct T for its command.
+		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
+		return successResponse.data as T;
+	}
+
+	/**
+	 * Unwrap an MCP content (`mcp.resource.*` / `mcp.prompt.*`) response.
+	 * Failures carry a structured {@link RpcMcpContentError}; the stable code
+	 * is preserved on the thrown {@link McpContentRpcError}.
+	 */
+	private getMcpContentData<T>(response: RpcResponse): T {
+		if (!response.success) {
+			const error = (response as { error: unknown }).error;
+			if (typeof error === "object" && error !== null && "code" in error && "message" in error) {
+				throw new McpContentRpcError(error as RpcMcpContentError);
+			}
+			throw new Error(typeof error === "string" ? error : String(error));
+		}
+		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
+		return successResponse.data as T;
+	}
+
+	/**
+	 * Unwrap an `mcp.auth.*` response. Failures carry a structured
+	 * {@link RpcMcpAuthError}; the stable code is preserved on the thrown
+	 * {@link McpAuthRpcError}.
+	 */
+	private getMcpAuthData<T>(response: RpcResponse): T {
+		if (!response.success) {
+			const error = (response as { error: unknown }).error;
+			if (typeof error === "object" && error !== null && "code" in error && "message" in error) {
+				throw new McpAuthRpcError(error as RpcMcpAuthError);
+			}
+			throw new Error(typeof error === "string" ? error : String(error));
+		}
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}

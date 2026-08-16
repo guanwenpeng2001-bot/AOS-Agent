@@ -20,6 +20,7 @@ import {
 import type {
 	CapabilityBindingLedgerRecord,
 	PersistedRunLedgerEntry,
+	RunAttachmentSummary,
 	RunFinalModelReference,
 	RunModelAttemptSummary,
 	RunModelBudgetSummary,
@@ -108,7 +109,15 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"task.graph",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
-export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory"] as const;
+/**
+ * Custom entries that are deliberately not audit sources: `context.memory`
+ * contains explicit user text and `mcp.content.audit` is the allowlist-only
+ * per-operation MCP trail (serverId/operation/outcome/descriptor digest/
+ * revision/digest/bytes/blocks/mime/binding ids/timestamp) folded by no
+ * Run fact — its entries stay inspectable as Session custom entries and
+ * never surface unknown-source warnings or raw data in the audit.
+ */
+export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory", "mcp.content.audit"] as const;
 
 export const AUDIT_EVENT_TYPES = [
 	"run.accepted",
@@ -258,6 +267,7 @@ export interface AuditRunSummary {
 	readonly finalModel?: AuditRunFinalModelReference;
 	readonly modelBudget?: AuditModelBudgetSummary;
 	readonly bindingAssociation?: RunBindingAssociation;
+	readonly attachments?: ReadonlyArray<RunAttachmentSummary>;
 }
 
 export interface AuditModelBudgetLimitSummary {
@@ -617,6 +627,12 @@ const POLICY_RESOURCES = new Set<PolicyResource>([
 	"network.connect",
 	"credential.expose",
 	"sandbox.prepare",
+	"mcp.auth",
+	"resource.list",
+	"resource.read",
+	"prompt.list",
+	"prompt.get",
+	"context.attach",
 ]);
 const POLICY_ERROR_CODES = new Set<PolicyErrorCode>([
 	"policy_settings_invalid",
@@ -659,6 +675,7 @@ const CONTEXT_KINDS = new Set([
 	"session_message",
 	"memory",
 	"extension",
+	"attachment",
 ]);
 const CONTEXT_SCOPES = new Set(["global", "project", "directory", "session", "turn"]);
 const CONTEXT_TRUSTS = new Set(["builtin", "user_owned", "trusted_project", "untrusted_project"]);
@@ -1010,7 +1027,32 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	)
 		return false;
 	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
+	if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some((attachment) => !isRunAttachmentAuditSummary(attachment)))) {
+		return false;
+	}
 	return value.policySummary === undefined || isPolicySummary(value.policySummary);
+}
+
+const RUN_ATTACHMENT_KINDS = new Set(["resource", "prompt"]);
+const RUN_ATTACHMENT_DIGEST_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+
+/** Validate one public-safe run attachment summary (digest/opaque metadata only). */
+function isRunAttachmentAuditSummary(value: unknown): value is RunAttachmentSummary {
+	if (!isRecord(value)) return false;
+	if (typeof value.sourceId !== "string" || !RUN_ATTACHMENT_DIGEST_ID_PATTERN.test(value.sourceId)) return false;
+	if (typeof value.kind !== "string" || !RUN_ATTACHMENT_KINDS.has(value.kind)) return false;
+	if (value.descriptorId !== undefined && !isOpaqueCapabilityDescriptorId(value.descriptorId)) return false;
+	if (value.revision !== undefined && !isOpaqueCapabilityRevision(value.revision)) return false;
+	if (value.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(value.capabilityBindingId)) return false;
+	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
+	if (typeof value.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(value.contentDigest)) return false;
+	if (!isCount(value.byteCount) || !isCount(value.blockCount)) return false;
+	if (value.mimeTypes !== undefined) {
+		if (!Array.isArray(value.mimeTypes) || value.mimeTypes.length > 16) return false;
+		if (value.mimeTypes.some((mimeType) => !isSafeText(mimeType))) return false;
+	}
+	return true;
 }
 
 function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
@@ -1029,6 +1071,12 @@ function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
 	if (value.visibility !== undefined && value.visibility !== "snapshot_only" && value.visibility !== "model_and_snapshot") return false;
 	if (!isSafeText(value.contentDigest) || !isCount(value.estimatedTokens)) return false;
 	if (value.reason !== undefined && (typeof value.reason !== "string" || !CONTEXT_REASONS.has(value.reason))) return false;
+	if (value.byteCount !== undefined && !isCount(value.byteCount)) return false;
+	if (value.blockCount !== undefined && !isCount(value.blockCount)) return false;
+	if (value.mimeTypes !== undefined) {
+		if (!Array.isArray(value.mimeTypes) || value.mimeTypes.length > 16) return false;
+		if (value.mimeTypes.some((mimeType) => !isSafeText(mimeType))) return false;
+	}
 	return true;
 }
 
@@ -1369,6 +1417,24 @@ function safeRunSummary(
 	if (previousPolicyBindingId !== undefined) summary.previousPolicyBindingId = previousPolicyBindingId;
 	const contextSnapshotId = safeOptionalIdentifier(receipt?.contextSnapshotId);
 	if (contextSnapshotId !== undefined) summary.contextSnapshotId = contextSnapshotId;
+	if (receipt?.attachments !== undefined && receipt.attachments.length > 0) {
+		const attachments = receipt.attachments.map((attachment) => {
+			const copy: DeepMutable<RunAttachmentSummary> = {
+				sourceId: attachment.sourceId,
+				kind: attachment.kind,
+				contentDigest: attachment.contentDigest,
+				byteCount: attachment.byteCount,
+				blockCount: attachment.blockCount,
+			};
+			if (attachment.descriptorId !== undefined) copy.descriptorId = attachment.descriptorId;
+			if (attachment.revision !== undefined) copy.revision = attachment.revision;
+			if (attachment.capabilityBindingId !== undefined) copy.capabilityBindingId = attachment.capabilityBindingId;
+			if (attachment.policyBindingId !== undefined) copy.policyBindingId = attachment.policyBindingId;
+			if (attachment.mimeTypes !== undefined) copy.mimeTypes = [...attachment.mimeTypes];
+			return copy;
+		});
+		summary.attachments = attachments;
+	}
 	if (record.startedAt !== undefined) summary.startedAt = record.startedAt;
 	const terminalEndedAt = endedAt ?? record.endedAt;
 	if (terminalEndedAt !== undefined) summary.endedAt = terminalEndedAt;
@@ -1811,7 +1877,7 @@ function parseSourceCandidate(
 	candidates: SourceCandidate[],
 ): void {
 	const customType = entry.customType;
-	if (customType === "context.memory") return;
+	if ((AUDIT_EXCLUDED_CUSTOM_TYPES as readonly string[]).includes(customType)) return;
 	if (customType === "automation.run") return;
 	const eventType = sourceEventType(customType);
 	if (eventType === undefined) {

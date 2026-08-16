@@ -73,6 +73,28 @@ describe("RuntimeCredentials", () => {
 		expect(await credentials.read("anthropic")).toEqual({ type: "api_key", key: "runtime-key" });
 	});
 
+	test("omits MCP credential namespace keys from model-provider enumeration", async () => {
+		const storage = AuthStorage.inMemory({
+			anthropic: { type: "api_key", key: "stored-key" },
+			"mcp__install__server": {
+				type: "oauth",
+				access: "mcp-access",
+				refresh: "mcp-refresh",
+				expires: Date.now() + 60_000,
+			},
+			"mcp:global:docs": {
+				type: "oauth",
+				access: "other-access",
+				refresh: "other-refresh",
+				expires: Date.now() + 60_000,
+			},
+		});
+		const credentials = new RuntimeCredentials(storage);
+		credentials.setRuntimeApiKey("mcp__should-not-list", "runtime-mcp");
+
+		expect(await credentials.list()).toEqual([{ providerId: "anthropic", type: "api_key" }]);
+	});
+
 	test("delete clears both the override and persisted credential", async () => {
 		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
 		const credentials = new RuntimeCredentials(storage);

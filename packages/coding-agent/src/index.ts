@@ -24,6 +24,22 @@ export {
 	type SessionStats,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
+export {
+	canonicalizeMCPServerUrl,
+	deriveMCPServerIdentity,
+	getMCPAuthInstallationId,
+	isMCPCredential,
+	isScopeSubset,
+	listMCPCredentialStatuses,
+	MCPAuthStorage,
+	MCPAuthStorageError,
+	mcpCredentialKey,
+	type MCPAuthStorageOptions,
+	type MCPCredentialStatus,
+	type MCPStoredTokens,
+	type MCPTokenBinding,
+	type MCPTokenResponse,
+} from "./core/mcp-auth-storage.ts";
 // Compaction
 export {
 	type BranchPreparation,
@@ -646,6 +662,9 @@ export {
 	createReadOnlyTools,
 	createReadTool,
 	createWriteTool,
+	type MCPAuthCallbackMode,
+	type MCPAuthStartOptions,
+	type MCPAuthStartResult,
 	type PromptTemplate,
 } from "./core/sdk.ts";
 export {
@@ -806,6 +825,8 @@ export type {
 	RpcAuditReplayCommand,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcMcpAuthInteraction,
+	RpcMcpAuthInteractiveOptions,
 	RpcTransportAddress,
 	RpcTransportAddressErrorCode,
 	RpcTransportAddressParseResult,
@@ -851,6 +872,8 @@ export type {
 // Run modes for programmatic SDK usage
 export {
 	AutomationRpcError,
+	McpAuthRpcError,
+	McpContentRpcError,
 	InteractiveMode,
 	type InteractiveModeOptions,
 	type JsonAgentSessionEvent,

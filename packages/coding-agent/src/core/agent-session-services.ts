@@ -6,7 +6,11 @@ import { resolvePath } from "../utils/paths.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import type { MCPTransportFactory } from "./mcp-types.ts";
+import {
+	createDefaultMCPAuthManagerOptions,
+	type MCPAuthManagerOptions,
+} from "./mcp-auth-manager.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import {
@@ -53,6 +57,14 @@ export interface CreateAgentSessionServicesOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override (tests inject in-memory transports). */
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Per-session OAuth client provider for streamable-http servers (B/C
+	 * contract). One provider instance never crosses sessions. stdio servers
+	 * never receive it.
+	 */
+	mcpAuthProvider?: MCPAuthProviderResolver;
+	/** Session-scoped MCP OAuth manager options; see {@link MCPAuthManagerOptions}. */
+	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 }
@@ -96,6 +108,19 @@ export interface AgentSessionServices {
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Per-session OAuth client provider for streamable-http servers (B/C
+	 * contract). One provider instance never crosses sessions. stdio servers
+	 * never receive it.
+	 */
+	mcpAuthProvider?: MCPAuthProviderResolver;
+	/**
+	 * Session-scoped MCP OAuth manager options. Defaults to the shared agent
+	 * auth namespace (`agentDir/auth.json` {@link AuthStorage}) with the
+	 * agentDir's per-install namespace identity when the caller did not
+	 * supply explicit options.
+	 */
+	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
@@ -220,6 +245,9 @@ export async function createAgentSessionServices(
 	});
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 
+	const mcpAuthManagerOptions =
+		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
+
 	return {
 		cwd,
 		agentDir,
@@ -231,6 +259,8 @@ export async function createAgentSessionServices(
 		capabilityRegistry:
 			options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir)),
 		mcpTransportFactory: options.mcpTransportFactory,
+		mcpAuthProvider: options.mcpAuthProvider,
+		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
 		diagnostics,
 	};
@@ -256,6 +286,8 @@ export async function createAgentSessionFromServices(
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
 		mcpTransportFactory: options.services.mcpTransportFactory,
+		mcpAuthProvider: options.services.mcpAuthProvider,
+		mcpAuthManagerOptions: options.services.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
 		sessionManager: options.sessionManager,
 		model: options.model,

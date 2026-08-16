@@ -13,7 +13,12 @@
 
 import * as crypto from "node:crypto";
 import { AgentOperationError, type ThinkingLevel } from "@aos-agent/agent-core";
-import type { ImageContent } from "@aos-agent/ai";
+import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
+import { CapabilityError } from "../../core/capability-registry.ts";
+import { PolicyError } from "../../core/execution-policy.ts";
+import { MCPAuthError, MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
+import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
+import { MCPError, type MCPServerConfigView } from "../../core/mcp-types.ts";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
@@ -34,6 +39,14 @@ import {
 } from "../../core/model-broker-ledger.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError } from "../../core/execution-audit.ts";
+import type { McpAttachment } from "../../core/mcp-attachment.ts";
+import type {
+	MCPGetPromptResult,
+	MCPNormalizedContentBlock,
+	MCPReadResourceResult,
+} from "../../core/mcp-content.ts";
+import { MCPContentError } from "../../core/mcp-content.ts";
+import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/mcp-error-codes.ts";
 import {
 	externalAgentCapabilityError,
 	EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH,
@@ -114,6 +127,7 @@ import {
 	serializePublicContextSnapshot,
 	serializePublicRunReceipt,
 	serializePublicRunRecord,
+	runAttachmentSummaryFromMcpAttachment,
 	serializePublicRunStreamEvent,
 	serializePublicSessionEntry,
 	serializePublicSessionEvent,
@@ -136,6 +150,20 @@ import type {
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcMcpAttachmentReceipt,
+	RpcMcpAuthCommandType,
+	RpcMcpAuthErrorCode,
+	RpcMcpAuthListData,
+	RpcMcpAuthResponse,
+	RpcMcpAuthStartData,
+	RpcMcpAuthStatusData,
+	RpcMcpContentCommandType,
+	RpcMcpContentErrorCode,
+	RpcMcpContentResponse,
+	RpcMcpMaskedCredential,
+	RpcMcpContentBlockSummary,
+	RpcMcpGetPromptReceipt,
+	RpcMcpReadResourceReceipt,
 	RpcCommand,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
@@ -157,6 +185,8 @@ import type {
 export type RpcWireRecord =
 	| RpcResponse
 	| RpcAutomationResponse
+	| RpcMcpAuthResponse
+	| RpcMcpContentResponse
 	| RpcExtensionUIRequest
 	| JsonAgentSessionEvent
 	| RpcHostRunStreamEvent
@@ -253,6 +283,19 @@ export type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcMcpAttachmentReceipt,
+	RpcMcpAuthCommandType,
+	RpcMcpAuthError,
+	RpcMcpAuthErrorCode,
+	RpcMcpAuthListData,
+	RpcMcpAuthResponse,
+	RpcMcpAuthStartStatus,
+	RpcMcpAuthStatusData,
+	RpcMcpAuthStatusValue,
+	RpcMcpContentBlockSummary,
+	RpcMcpGetPromptReceipt,
+	RpcMcpMaskedCredential,
+	RpcMcpReadResourceReceipt,
 	RpcResponse,
 	RpcExternalMapCommand,
 	RpcRunCommandType,
@@ -280,6 +323,67 @@ function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
 	return { scope: sourceInfo.scope, origin: sourceInfo.origin };
+}
+
+/** Redacted block summary: text and image payloads never cross the RPC wire. */
+function toRpcMcpContentBlockSummary(block: MCPNormalizedContentBlock): RpcMcpContentBlockSummary {
+	switch (block.kind) {
+		case "text":
+			return { kind: "text", bytes: block.bytes, digest: block.digest };
+		case "image":
+			return { kind: "image", bytes: block.bytes, digest: block.digest, mimeType: block.mimeType };
+		case "unattached":
+			return {
+				kind: "unattached",
+				bytes: block.bytes,
+				digest: block.digest,
+				reason: block.reason,
+				...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+				...(block.size !== undefined ? { size: block.size } : {}),
+			};
+	}
+}
+
+/** Redacted read receipt; the raw URI and remote text are never echoed. */
+function toRpcMcpReadResourceReceipt(result: MCPReadResourceResult): RpcMcpReadResourceReceipt {
+	return {
+		serverId: result.serverId,
+		resourceId: result.resourceId,
+		blocks: result.contents.map((block) => toRpcMcpContentBlockSummary(block)),
+		provenance: result.provenance,
+	};
+}
+
+/** Redacted get receipt; the prompt name, args, and remote text are never echoed. */
+function toRpcMcpGetPromptReceipt(result: MCPGetPromptResult): RpcMcpGetPromptReceipt {
+	return {
+		serverId: result.serverId,
+		promptId: result.promptId,
+		messages: result.messages.map((message) => ({
+			role: message.role,
+			blocks: message.blocks.map((block) => toRpcMcpContentBlockSummary(block)),
+			digest: message.digest,
+		})),
+		provenance: result.provenance,
+	};
+}
+
+/** Redacted attachment receipt; the remote text never crosses the wire. */
+function toRpcMcpAttachmentReceipt(attachment: McpAttachment): RpcMcpAttachmentReceipt {
+	return {
+		id: attachment.id,
+		kind: attachment.kind,
+		serverId: attachment.serverId,
+		sourceId: attachment.sourceId,
+		provenance: attachment.provenance,
+		contentDigest: attachment.contentDigest,
+		byteCount: attachment.byteCount,
+		blockCount: attachment.blockCount,
+		attachableBlockCount: attachment.attachableBlocks.length,
+		capabilityBindingId: attachment.capabilityBindingId,
+		policyBindingId: attachment.policyBindingId,
+		createdAt: attachment.createdAt,
+	};
 }
 
 /**
@@ -393,7 +497,9 @@ export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
-	private commandHandler?: (command: RpcCommand) => Promise<RpcResponse | RpcAutomationResponse | undefined>;
+	private commandHandler?: (
+		command: RpcCommand,
+	) => Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
 	private detachTransportHandler?: () => Promise<void>;
@@ -504,6 +610,19 @@ export class RpcHostController {
 		 */
 		let sessionGeneration = 0;
 		let transportEpoch = 0;
+		/**
+		 * Host-side signal bound to the lifetime of the current transport
+		 * attachment. MCP content commands pass it into the session operations so
+		 * a detach/shutdown aborts the in-flight server/session MCP operation
+		 * (the lifecycle signal contract rejects on abort without degrading the
+		 * server). Cancellation is bounded: aborting is synchronous and in-flight
+		 * commands are never awaited; each fails closed on its own abort path.
+		 */
+		let mcpOperationController = new AbortController();
+		const abortMcpOperations = (): void => {
+			mcpOperationController.abort();
+			mcpOperationController = new AbortController();
+		};
 		let detachTransportPromise: Promise<void> | undefined;
 
 		type RunRequestIdentity = {
@@ -544,6 +663,213 @@ export class RpcHostController {
 		const error = (id: string | undefined, command: string, message: string): RpcResponse => {
 			return { id, type: "response", command, success: false, error: redactErrorText(message) };
 		};
+
+		// ---------------------------------------------------------------------
+		// MCP OAuth (mcp.auth.*) helpers
+		// ---------------------------------------------------------------------
+
+		/** Fixed, fail-closed message templates; never raw error text, tokens, or URLs. */
+		const MCP_AUTH_ERROR_MESSAGES: Record<RpcMcpAuthErrorCode, string> = {
+			mcp_auth_interaction_required:
+				"MCP OAuth authorization requires an explicit interaction; this call is headless.",
+			mcp_auth_not_configured: "MCP OAuth is not configured for this session.",
+			mcp_auth_stdio_not_applicable: 'MCP server "%s" uses stdio and does not support OAuth.',
+			mcp_auth_invalid_request: "The MCP OAuth request is invalid.",
+			mcp_auth_metadata_invalid: 'MCP server "%s" OAuth metadata could not be validated.',
+			mcp_auth_resource_mismatch: 'MCP server "%s" OAuth resource does not match the server endpoint.',
+			mcp_auth_state_mismatch: 'MCP server "%s" authorization callback state did not match.',
+			mcp_auth_invalid: 'MCP server "%s" OAuth credentials are invalid.',
+			mcp_auth_cancelled: 'MCP server "%s" authorization was cancelled.',
+			mcp_auth_storage_invalid_server_url: 'MCP server "%s" OAuth credential URL is invalid.',
+			mcp_auth_storage_invalid_tokens: 'MCP server "%s" OAuth tokens are invalid.',
+			mcp_auth_storage_invalid_scope: 'MCP server "%s" OAuth scope is invalid.',
+			mcp_auth_storage_binding_mismatch: 'MCP server "%s" OAuth credential binding does not match.',
+			mcp_auth_storage_namespace_collision: "MCP OAuth credential namespace is unavailable.",
+			mcp_auth_capability_denied: 'MCP server "%s" is not authorized by the capability binding.',
+			mcp_auth_not_selected: 'MCP server "%s" is not selected for this binding.',
+			mcp_auth_invalid_config: 'MCP server "%s" has no valid configuration.',
+			mcp_auth_policy_denied: 'MCP server "%s" authorization is denied by the execution policy.',
+			mcp_auth_aborted: "The MCP OAuth request was aborted.",
+		};
+
+		const mcpAuthErrorResponse = (
+			id: string | undefined,
+			command: RpcMcpAuthCommandType,
+			code: RpcMcpAuthErrorCode,
+			serverId: string,
+		): RpcMcpAuthResponse => ({
+			id,
+			type: "response",
+			command,
+			success: false,
+			error: { code, message: MCP_AUTH_ERROR_MESSAGES[code].replace("%s", serverId) },
+		});
+
+		const isAbortError = (candidate: unknown): candidate is DOMException =>
+			candidate instanceof DOMException && candidate.name === "AbortError";
+
+		/**
+		 * Map any MCP OAuth failure to a stable wire code. Only code-derived
+		 * fixed messages are ever used; raw error text never crosses the wire.
+		 */
+		const mcpAuthFailureCode = (err: unknown): RpcMcpAuthErrorCode => {
+			if (err instanceof MCPAuthError) {
+				return mcpAuthErrorPublicCode(err.kind);
+			}
+			if (err instanceof MCPAuthStorageError) {
+				switch (err.code) {
+					case "invalid_server_url":
+						return "mcp_auth_storage_invalid_server_url";
+					case "invalid_tokens":
+						return "mcp_auth_storage_invalid_tokens";
+					case "invalid_scope":
+						return "mcp_auth_storage_invalid_scope";
+					case "binding_mismatch":
+						return "mcp_auth_storage_binding_mismatch";
+					case "namespace_collision":
+						return "mcp_auth_storage_namespace_collision";
+				}
+			}
+			if (err instanceof MCPError) {
+				switch (err.kind) {
+					case "invalid_config":
+						return "mcp_auth_invalid_config";
+					case "not_selected":
+						return "mcp_auth_not_selected";
+					default:
+						return "mcp_auth_invalid";
+				}
+			}
+			if (err instanceof CapabilityError) {
+				return "mcp_auth_capability_denied";
+			}
+			if (err instanceof PolicyError) {
+				return "mcp_auth_policy_denied";
+			}
+			if (isAbortError(err)) {
+				return "mcp_auth_aborted";
+			}
+			return "mcp_auth_invalid";
+		};
+
+		const mcpAuthFailure = (
+			id: string | undefined,
+			command: RpcMcpAuthCommandType,
+			err: unknown,
+			serverId: string,
+		): RpcMcpAuthResponse => mcpAuthErrorResponse(id, command, mcpAuthFailureCode(err), serverId);
+
+		/**
+		 * Fixed reject for stdio servers: OAuth never applies to a stdio
+		 * config. Unknown server ids pass through (the credential namespace is
+		 * bound to the canonical URL, not to registration).
+		 */
+		const mcpAuthStdioError = (
+			id: string | undefined,
+			command: RpcMcpAuthCommandType,
+			serverId: string,
+		): RpcMcpAuthResponse | undefined => {
+			const view: MCPServerConfigView | undefined = session.getMcpServerConfigView(serverId);
+			if (view !== undefined && view.transport === "stdio") {
+				return mcpAuthErrorResponse(id, command, "mcp_auth_stdio_not_applicable", serverId);
+			}
+			return undefined;
+		};
+
+		/** Redacted credential status: token values, URL, issuer/resource never cross the wire. */
+		const toRpcMcpMaskedCredential = (credential: MCPCredentialStatus): RpcMcpMaskedCredential => ({
+			serverIdentity: credential.serverIdentity,
+			status: credential.status === "expired" ? "expired" : "authenticated",
+		});
+
+		// ---------------------------------------------------------------------
+		// MCP content (mcp.resource.* / mcp.prompt.*) error helpers
+		// ---------------------------------------------------------------------
+
+		/** Fixed, fail-closed message templates; never raw error text, URIs, or prompt args. */
+		const MCP_CONTENT_ERROR_MESSAGES: Record<RpcMcpContentErrorCode, string> = {
+			mcp_content_malformed: 'MCP server "%s" returned malformed content',
+			mcp_content_oversize: 'MCP server "%s" returned content over the safety limits',
+			mcp_content_unsupported: 'MCP server "%s" returned unsupported content',
+			mcp_content_encoding: 'MCP server "%s" returned content with an invalid encoding',
+			mcp_content_mime: 'MCP server "%s" returned content with an invalid MIME type',
+			mcp_content_invalid: 'MCP server "%s" returned content that does not match the MCP contract',
+			mcp_content_limit_exceeded: 'MCP server "%s" returned content over the safety limits',
+			mcp_resource_unavailable: 'MCP server "%s" does not support resources',
+			mcp_prompt_unavailable: 'MCP server "%s" does not support prompts',
+			mcp_resource_denied: 'MCP server "%s" resource access is denied',
+			mcp_prompt_denied: 'MCP server "%s" prompt access is denied',
+			mcp_not_selected: 'MCP server "%s" is not selected for this binding',
+			mcp_invalid_config: 'MCP server "%s" has an invalid configuration',
+			mcp_connect_failed: 'Failed to connect to MCP server "%s"',
+			mcp_auth_required: 'MCP server "%s" requires authentication',
+			mcp_unavailable: 'MCP server "%s" is unavailable',
+			mcp_capability_denied: 'MCP server "%s" is not authorized by the capability binding',
+			mcp_policy_denied: 'MCP server "%s" is denied by the execution policy',
+			mcp_aborted: "The MCP content request was aborted",
+		};
+
+		const mcpContentErrorResponse = (
+			id: string | undefined,
+			command: RpcMcpContentCommandType,
+			code: RpcMcpContentErrorCode,
+			serverId: string,
+		): RpcMcpContentResponse => ({
+			id,
+			type: "response",
+			command,
+			success: false,
+			error: { code, message: MCP_CONTENT_ERROR_MESSAGES[code].replace("%s", serverId) },
+		});
+
+		/**
+		 * Map any MCP content failure to a stable wire code. Content-safety
+		 * failures surface the PR contract codes (`mcp_content_invalid`,
+		 * `mcp_content_limit_exceeded`) mapped from the fine-grained core code;
+		 * capability denials surface the operation-specific denial code. Only
+		 * code-derived fixed messages are ever used; raw remote text never
+		 * crosses the wire.
+		 */
+		const mcpContentFailureCode = (err: unknown, command: RpcMcpContentCommandType): RpcMcpContentErrorCode => {
+			if (err instanceof MCPContentError) {
+				return mcpContentErrorPublicCode(err.code);
+			}
+			if (err instanceof MCPError) {
+				switch (err.kind) {
+					case "not_selected":
+						return "mcp_not_selected";
+					case "invalid_config":
+						return "mcp_invalid_config";
+					case "connect_failed":
+						return "mcp_connect_failed";
+					case "auth_required":
+						return "mcp_auth_required";
+					case "call_failed":
+					case "unavailable":
+						return "mcp_unavailable";
+				}
+			}
+			if (err instanceof CapabilityError) {
+				// PR contract: a denied resource/prompt descriptor or operation
+				// surfaces the operation-specific denial code.
+				return command.startsWith("mcp.prompt.") ? "mcp_prompt_denied" : "mcp_resource_denied";
+			}
+			if (err instanceof PolicyError) {
+				return "mcp_policy_denied";
+			}
+			if (isAbortError(err)) {
+				return "mcp_aborted";
+			}
+			return "mcp_unavailable";
+		};
+
+		const mcpContentFailure = (
+			id: string | undefined,
+			command: RpcMcpContentCommandType,
+			err: unknown,
+			serverId: string,
+		): RpcMcpContentResponse =>
+			mcpContentErrorResponse(id, command, mcpContentFailureCode(err, command), serverId);
 
 		// Pending extension UI requests waiting for response
 		const pendingExtensionRequests = new Map<
@@ -591,6 +917,8 @@ export class RpcHostController {
 			"fork",
 			"clone",
 			"set_session_name",
+			"mcp.resource.attach",
+			"mcp.prompt.attach",
 		]);
 
 		const automationError = (
@@ -1389,6 +1717,7 @@ export class RpcHostController {
 					terminalError,
 					currentUsage: usageSnapshot(),
 					contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
+					attachments: session.listMcpAttachments().map(runAttachmentSummaryFromMcpAttachment),
 					...runModelMetadata(handle),
 				});
 			} catch {
@@ -2865,6 +3194,109 @@ export class RpcHostController {
 		}
 
 		/**
+		 * Build the `AuthInteraction` that bridges an interactive
+		 * `mcp.auth.start` into the extension-UI dialog protocol.
+		 *
+		 * Contract (PR: MCP OAuth interaction bridge):
+		 * - The MCP OAuth flow's allow/cancel consent select maps to a
+		 *   `confirm` dialog; cancel/timeout/abort resolves false and the flow
+		 *   classifies it as user cancellation.
+		 * - The manual-code prompt (https callback mode) maps to an `input`
+		 *   dialog; cancel/timeout/abort rejects the prompt so the flow fails
+		 *   closed with `mcp_auth_cancelled`.
+		 * - The authorization URL is delivered exactly once through the
+		 *   dedicated fire-and-forget `auth_url` `extension_ui_request` record;
+		 *   it never enters command responses, session events, catalogs,
+		 *   status/list output, receipts, audit entries, errors, or logs, and
+		 *   no token or raw URI is ever carried.
+		 * - Every dialog is bounded by the flow deadline and aborts with the
+		 *   host transport signal, so detach/shutdown settles pending dialogs
+		 *   instead of waiting indefinitely.
+		 * - Unsupported prompt shapes fail closed with a classified error
+		 *   instead of echoing input.
+		 */
+		const createMcpAuthInteraction = (serverId: string, flowTimeoutMs: number): AuthInteraction => {
+			const dialogOptions: ExtensionUIDialogOptions = {
+				signal: mcpOperationController.signal,
+				timeout: flowTimeoutMs,
+			};
+			return {
+				signal: mcpOperationController.signal,
+				prompt: async (prompt) => {
+					if (prompt.type === "select") {
+						// The MCP OAuth flow issues exactly the allow/cancel consent
+						// select; any other select shape fails closed.
+						if (
+							prompt.options.length === 2 &&
+							prompt.options[0].id === "allow" &&
+							prompt.options[1].id === "cancel"
+						) {
+							const confirmed = await createDialogPromise(
+								dialogOptions,
+								false,
+								{ method: "confirm", title: prompt.message, message: prompt.message, timeout: flowTimeoutMs },
+								(r) => ("cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
+							);
+							// A declined consent, a dialog cancel, a bounded-timeout
+							// expiry, or an abort all resolve false and classify as
+							// user cancellation.
+							return confirmed ? "allow" : "cancel";
+						}
+						throw new MCPAuthError("auth_failed", serverId);
+					}
+					if (prompt.type === "manual_code" || prompt.type === "text") {
+						const code = await createDialogPromise(
+							dialogOptions,
+							undefined,
+							{
+								method: "input",
+								title: prompt.message,
+								placeholder: prompt.placeholder,
+								timeout: flowTimeoutMs,
+							},
+							(r) => ("cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
+						);
+						if (code === undefined) {
+							// Cancel, timeout, or abort of the manual-code dialog is a
+							// user cancellation, never a generic failure.
+							throw new MCPAuthError("user_cancelled", serverId);
+						}
+						return code;
+					}
+					// `secret` prompts must never be echoed over the wire; the MCP
+					// flow never issues one, so fail closed.
+					throw new MCPAuthError("auth_failed", serverId);
+				},
+				notify: (event) => {
+					if (event.type === "auth_url") {
+						// One-shot, dedicated delivery of the authorization URL. The
+						// flow emits it at most once per authorize() call; the record
+						// is fire-and-forget and never persisted.
+						output({
+							type: "extension_ui_request",
+							id: crypto.randomUUID(),
+							method: "auth_url",
+							url: event.url,
+							instructions: event.instructions,
+						} as RpcExtensionUIRequest);
+						return;
+					}
+					if (event.type === "info") {
+						output({
+							type: "extension_ui_request",
+							id: crypto.randomUUID(),
+							method: "notify",
+							message: event.message,
+							notifyType: "info",
+						} as RpcExtensionUIRequest);
+					}
+					// device_code / progress events are never produced by the MCP
+					// OAuth flow; ignore them rather than leaking anything.
+				},
+			};
+		};
+
+		/**
 		 * Create an extension UI context that uses the RPC protocol.
 		 */
 		const createExtensionUIContext = (): ExtensionUIContext => ({
@@ -3201,7 +3633,9 @@ export class RpcHostController {
 		await rebindSession();
 
 		// Handle a single command
-		const handleCommand = async (command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | undefined> => {
+		const handleCommand = async (
+			command: RpcCommand,
+		): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> => {
 			const id = command.id;
 
 			// Once the Automation Host is initialized, legacy commands that would mutate
@@ -4224,6 +4658,246 @@ export class RpcHostController {
 					);
 				}
 
+				// =================================================================
+				// MCP content (resource/prompt): explicit, governed remote reads.
+				// Raw URIs and prompt args live only in the request; responses,
+				// audit records, and errors never echo them or remote text.
+				// =================================================================
+
+				case "mcp.resource.list": {
+					// Available without Automation Host initialize: read-only, never
+					// starts a Run or a model. The host signal cancels the in-flight
+					// server/session operation on detach/shutdown (bounded).
+					try {
+						const data = await session.listMcpResources(
+							command.serverId,
+							command.cursor === undefined ? undefined : { cursor: command.cursor },
+							mcpOperationController.signal,
+						);
+						return success(id, "mcp.resource.list", data);
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.resource.list", err, command.serverId);
+					}
+				}
+
+				case "mcp.resource.templates.list": {
+					// Same read-only contract as mcp.resource.list; the response
+					// carries digest ids and a sanitized display pattern only, never
+					// the raw URI template.
+					try {
+						const data = await session.listMcpResourceTemplates(
+							command.serverId,
+							command.cursor === undefined ? undefined : { cursor: command.cursor },
+							mcpOperationController.signal,
+						);
+						return success(id, "mcp.resource.templates.list", data);
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.resource.templates.list", err, command.serverId);
+					}
+				}
+
+				case "mcp.resource.read": {
+					try {
+						const result = await session.readMcpResource(
+							command.serverId,
+						command.uri,
+						mcpOperationController.signal,
+					);
+					return success(id, "mcp.resource.read", toRpcMcpReadResourceReceipt(result));
+				} catch (err) {
+					return mcpContentFailure(id, "mcp.resource.read", err, command.serverId);
+				}
+			}
+
+				case "mcp.resource.attach": {
+					// Explicit attach: reads the resource and registers the normalized
+					// result as a session attachment. Rejected while the Automation
+					// Host is initialized (mutates session state).
+					try {
+						const attachment = await session.attachMcpResource({
+							serverId: command.serverId,
+							uri: command.uri,
+							signal: mcpOperationController.signal,
+						});
+						return success(id, "mcp.resource.attach", toRpcMcpAttachmentReceipt(attachment));
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.resource.attach", err, command.serverId);
+					}
+				}
+
+				case "mcp.prompt.list": {
+					try {
+						const data = await session.listMcpPrompts(
+							command.serverId,
+							command.cursor === undefined ? undefined : { cursor: command.cursor },
+							mcpOperationController.signal,
+						);
+						return success(id, "mcp.prompt.list", data);
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.prompt.list", err, command.serverId);
+					}
+				}
+
+				case "mcp.prompt.get": {
+					try {
+						const result = await session.getMcpPrompt(
+							command.serverId,
+							command.name,
+							command.args,
+							mcpOperationController.signal,
+						);
+						return success(id, "mcp.prompt.get", toRpcMcpGetPromptReceipt(result));
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.prompt.get", err, command.serverId);
+					}
+				}
+
+				case "mcp.prompt.attach": {
+					try {
+						const attachment = await session.attachMcpPrompt({
+							serverId: command.serverId,
+							name: command.name,
+							args: command.args,
+							signal: mcpOperationController.signal,
+						});
+						return success(id, "mcp.prompt.attach", toRpcMcpAttachmentReceipt(attachment));
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.prompt.attach", err, command.serverId);
+					}
+				}
+
+				// =================================================================
+				// MCP OAuth (mcp.auth.*): credential status/lifecycle. Headless
+				// start (no `interactive` declaration) fails closed immediately
+				// with the fixed `mcp_auth_interaction_required` error — no
+				// browser, no flow creation, no unbounded wait. Declaring
+				// `interactive: true` routes the flow through the extension-UI
+				// bridge (confirm / manual-code dialogs, one-shot `auth_url`
+				// delivery) bounded by the flow deadline and the host transport
+				// signal. All responses are masked: no tokens, URLs,
+				// issuer/resource, or raw URIs, and every failure maps to a
+				// stable code with a fixed message.
+				// =================================================================
+
+				case "mcp.auth.start": {
+					// Default headless: without an explicitly declared interaction
+					// bridge the call must fail closed instead of opening a browser
+					// or waiting for input that will never come.
+					if (command.interactive !== true) {
+						return mcpAuthErrorResponse(
+							id,
+							"mcp.auth.start",
+							"mcp_auth_interaction_required",
+							command.serverId,
+						);
+					}
+					// An interactive start needs a live output sink to deliver the
+					// dialogs and the one-shot authorization URL; without one the
+					// call fails closed immediately instead of creating dialogs
+					// that could only time out.
+					if (this.outputSink === undefined) {
+						return mcpAuthErrorResponse(
+							id,
+							"mcp.auth.start",
+							"mcp_auth_interaction_required",
+							command.serverId,
+						);
+					}
+					const stdioError = mcpAuthStdioError(id, "mcp.auth.start", command.serverId);
+					if (stdioError !== undefined) return stdioError;
+					if (session.getMcpAuthManager() === undefined) {
+						return mcpAuthErrorResponse(id, "mcp.auth.start", "mcp_auth_not_configured", command.serverId);
+					}
+					const interaction = createMcpAuthInteraction(
+						command.serverId,
+						command.timeoutMs ?? MCP_OAUTH_DEFAULT_TIMEOUT_MS,
+					);
+					try {
+						const result = await session.startMcpAuth(command.serverId, command.serverUrl, {
+							interaction,
+							callbackMode: command.callbackMode,
+							httpsCallbackUrl: command.httpsCallbackUrl,
+							timeoutMs: command.timeoutMs,
+							requestTimeoutMs: command.requestTimeoutMs,
+						});
+						return {
+							id,
+							type: "response",
+							command: "mcp.auth.start",
+							success: true,
+							data: { status: result.status } satisfies RpcMcpAuthStartData,
+						};
+					} catch (err) {
+						return mcpAuthFailure(id, "mcp.auth.start", err, command.serverId);
+					}
+				}
+
+				case "mcp.auth.status": {
+					const stdioError = mcpAuthStdioError(id, "mcp.auth.status", command.serverId);
+					if (stdioError !== undefined) return stdioError;
+					if (session.getMcpAuthManager() === undefined) {
+						return mcpAuthErrorResponse(id, "mcp.auth.status", "mcp_auth_not_configured", command.serverId);
+					}
+					try {
+						const credential = await session.getMcpAuthStatus(command.serverId, command.serverUrl);
+						if (credential === undefined) {
+							return {
+								id,
+								type: "response",
+								command: "mcp.auth.status",
+								success: true,
+								data: { status: "required" } satisfies RpcMcpAuthStatusData,
+							};
+						}
+						return {
+							id,
+							type: "response",
+							command: "mcp.auth.status",
+							success: true,
+							data: {
+								status: credential.status === "expired" ? "expired" : "authenticated",
+								credential: toRpcMcpMaskedCredential(credential),
+							} satisfies RpcMcpAuthStatusData,
+						};
+					} catch (err) {
+						return mcpAuthFailure(id, "mcp.auth.status", err, command.serverId);
+					}
+				}
+
+				case "mcp.auth.list": {
+					if (session.getMcpAuthManager() === undefined) {
+						return mcpAuthErrorResponse(id, "mcp.auth.list", "mcp_auth_not_configured", "");
+					}
+					try {
+						const credentials = await session.listMcpCredentialStatuses();
+						return {
+							id,
+							type: "response",
+							command: "mcp.auth.list",
+							success: true,
+							data: {
+								credentials: credentials.map((credential) => toRpcMcpMaskedCredential(credential)),
+							} satisfies RpcMcpAuthListData,
+						};
+					} catch (err) {
+						return mcpAuthFailure(id, "mcp.auth.list", err, "");
+					}
+				}
+
+				case "mcp.auth.logout": {
+					const stdioError = mcpAuthStdioError(id, "mcp.auth.logout", command.serverId);
+					if (stdioError !== undefined) return stdioError;
+					if (session.getMcpAuthManager() === undefined) {
+						return mcpAuthErrorResponse(id, "mcp.auth.logout", "mcp_auth_not_configured", command.serverId);
+					}
+					try {
+						await session.logoutMcpAuth(command.serverId, command.serverUrl);
+						return { id, type: "response", command: "mcp.auth.logout", success: true };
+					} catch (err) {
+						return mcpAuthFailure(id, "mcp.auth.logout", err, command.serverId);
+					}
+				}
+
 				case "export_html": {
 					const path = await session.exportToHtml(command.outputPath);
 					return success(id, "export_html", { path });
@@ -4396,6 +5070,11 @@ export class RpcHostController {
 				for (const controller of externalPendingControllers.values()) {
 					controller.abort();
 				}
+				// Abort in-flight MCP content operations bound to this host; each
+				// rejects on the lifecycle signal contract and fails closed without
+				// blocking the shutdown (bounded cancellation).
+				abortMcpOperations();
+				rejectPendingExtensionRequests();
 				unsubscribe?.();
 				unsubscribeBackpressure?.();
 				await runtimeHost.dispose();
@@ -4448,6 +5127,11 @@ export class RpcHostController {
 				for (const controller of externalPendingControllers.values()) {
 					controller.abort();
 				}
+				// Abort in-flight MCP content operations bound to the detaching
+				// transport. Bounded: the abort is synchronous and the in-flight
+				// commands are never awaited; each fails closed on its own abort
+				// path, and a fresh controller serves the next attachment.
+				abortMcpOperations();
 				const externalPendingAtDetach = new Set(pendingExternalStarts.values());
 				await Promise.all(
 					[...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)),
@@ -4465,7 +5149,7 @@ export class RpcHostController {
 
 		this.commandHandler = async (
 			command: RpcCommand,
-		): Promise<RpcResponse | RpcAutomationResponse | undefined> => {
+		): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
 				const response = await handleCommand(command);
@@ -4499,7 +5183,7 @@ export class RpcHostController {
 	}
 
 	/** Dispatch a typed command, publish its response or error record, and return it. */
-	async dispatch(command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | undefined> {
+	async dispatch(command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");
 		}

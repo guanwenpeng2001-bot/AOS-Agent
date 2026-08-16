@@ -57,7 +57,14 @@ not create a second event ledger.
 | `task.graph` | `task.graph` | node `runRef` `runId` when present; never guessed from `taskId`, `nodeId`, or dependencies |
 
 `context.memory` is deliberately not an audit source. It contains explicit
-user text and must not be made visible through an audit summary. Unknown
+user text and must not be made visible through an audit summary. The same
+holds for `mcp.content.audit`: it is the allowlist-only per-operation MCP
+content trail (serverId, operation, outcome, fixed reasonCode, descriptor
+id/revision, source digest, capability/policy binding ids, content digest,
+byte/block counts, MIME types, timestamp — never raw URIs, prompt arguments,
+remote text, tokens, auth URLs, headers, or remote error text) and stays
+inspectable as a Session custom entry without surfacing unknown-source
+warnings or raw data in the audit. Unknown
 custom types and malformed known entries never expose their raw `data`.
 
 The source files that establish these facts are:
@@ -175,8 +182,22 @@ extension.
 status, attempt, model, sourceRunId, previousBindingId,
 capabilityBindingId, modelBindingId, previousModelBindingId,
 policyBindingId, previousPolicyBindingId, contextSnapshotId,
-startedAt, endedAt, terminalError, finalModel, modelBudget
+startedAt, endedAt, terminalError, finalModel, modelBudget,
+attachments
 ```
+
+Each attachment permits only:
+
+```text
+sourceId, kind, descriptorId, revision, capabilityBindingId,
+policyBindingId, contentDigest, byteCount, blockCount, mimeTypes
+```
+
+Attachment `sourceId` is a 43-character SHA-256 base64url digest (never a raw
+URI or prompt name), `contentDigest` is 64-character SHA-256 hex, `kind` is
+`resource` or `prompt`, and `mimeTypes` is a bounded array of normalized MIME
+types. Raw URIs, prompt names, argument values, tokens, auth URLs, headers,
+and content bodies are never copied.
 
 The primary Run model uses `{ provider, id, thinkingLevel }`. The optional
 final model uses `{ provider, id?, modelId?, thinkingLevel? }`. A terminal

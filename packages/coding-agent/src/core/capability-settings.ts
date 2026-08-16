@@ -6,6 +6,12 @@ import type {
 	CapabilityProfileRule,
 	CapabilitySelector,
 } from "./capability-registry.ts";
+import { mcpRedirectUrlProblem } from "./mcp-auth.ts";
+import type {
+	MCPPromptSummary,
+	MCPResourceSummary,
+	MCPResourceTemplateSummary,
+} from "./mcp-types.ts";
 import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "./source-info.ts";
 
 /**
@@ -69,6 +75,25 @@ export interface McpStreamableHttpServer {
 	transport: "streamable-http";
 	url: string;
 	headersFromEnv: ReadonlyArray<McpHeaderFromEnv>;
+	/** Optional secret-free OAuth settings. Tokens and client secrets are rejected. */
+	oauth?: McpOAuthConfig;
+}
+
+/**
+ * OAuth settings for one Streamable HTTP MCP server. All values are
+ * secret-free: tokens and client secrets never appear in settings.
+ */
+export interface McpOAuthConfig {
+	/** Authorization callback; https or an http loopback address. */
+	redirectUrl: string;
+	/** Explicit canonical RFC 8707 resource override. */
+	canonicalResource?: string;
+	/** Static public client id; dynamic registration is used when absent. */
+	clientId?: string;
+	/** Optional scope requested on authorization. */
+	scope?: string;
+	/** Client name used for dynamic registration metadata. */
+	clientName?: string;
 }
 
 export interface McpHeaderFromEnv {
@@ -112,6 +137,16 @@ export interface McpServerSettingsView {
 	env?: ReadonlyArray<string>;
 	url?: string;
 	headersFromEnv?: ReadonlyArray<McpHeaderFromEnv>;
+	oauth?: McpOAuthSettingsView;
+}
+
+/** Secret-free OAuth settings view; URLs are redacted. */
+export interface McpOAuthSettingsView {
+	redirectUrl: string;
+	canonicalResource?: string;
+	clientId?: string;
+	scope?: string;
+	clientName?: string;
 }
 
 export interface CapabilitySettingsView {
@@ -129,6 +164,9 @@ const VALID_KINDS: ReadonlySet<string> = new Set<CapabilityKind>([
 	"extension",
 	"mcp_server",
 	"mcp_tool",
+	"mcp_resource",
+	"mcp_resource_template",
+	"mcp_prompt",
 ]);
 const VALID_SCOPES: ReadonlySet<string> = new Set<SourceScope>(["user", "project", "temporary"]);
 const SELECTOR_KEYS: ReadonlySet<string> = new Set(["id", "kind", "sourceId", "scope", "mcpServerId", "parentId"]);
@@ -497,19 +535,75 @@ function validateHeaders(value: unknown, path: string): ReadonlyArray<McpHeaderF
 	return out;
 }
 
+function parseMcpOAuthConfig(value: unknown, path: string): McpOAuthConfig | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (!isPlainObject(value)) {
+		settingsError("capability_settings_invalid_server", path, "oauth must be an object");
+	}
+	const allowed = new Set(["redirectUrl", "canonicalResource", "clientId", "scope", "clientName"]);
+	for (const key of Object.keys(value)) {
+		if (!allowed.has(key)) {
+			settingsError("capability_settings_invalid_server", `${path}.${key}`, "unknown oauth field");
+		}
+	}
+	const { redirectUrl, canonicalResource, clientId, scope, clientName } = value;
+	if (typeof redirectUrl !== "string" || redirectUrl.trim() === "") {
+		settingsError("capability_settings_invalid_server", `${path}.redirectUrl`, "oauth requires a redirectUrl");
+	}
+	const redirectProblem = mcpRedirectUrlProblem(redirectUrl);
+	if (redirectProblem !== undefined) {
+		settingsError(
+			"capability_settings_invalid_server",
+			`${path}.redirectUrl`,
+			`oauth redirectUrl ${redirectProblem}`,
+		);
+	}
+	const out: McpOAuthConfig = { redirectUrl };
+	if (canonicalResource !== undefined) {
+		if (typeof canonicalResource !== "string" || canonicalResource.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.canonicalResource`, "must be a non-empty URL");
+		}
+		out.canonicalResource = validateUrl(canonicalResource, `${path}.canonicalResource`);
+	}
+	if (clientId !== undefined) {
+		if (typeof clientId !== "string" || clientId.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.clientId`, "must be a non-empty string");
+		}
+		if (clientId.toLowerCase().includes("secret") || clientId.length > 256) {
+			settingsError("capability_settings_invalid_server", `${path}.clientId`, "must be a bounded public client id");
+		}
+		out.clientId = clientId;
+	}
+	if (scope !== undefined) {
+		if (typeof scope !== "string" || scope.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.scope`, "must be a non-empty string");
+		}
+		out.scope = scope;
+	}
+	if (clientName !== undefined) {
+		if (typeof clientName !== "string" || clientName.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.clientName`, "must be a non-empty string");
+		}
+		out.clientName = clientName;
+	}
+	return out;
+}
+
 function parseMcpServer(value: unknown, path: string): McpServer {
 	if (!isPlainObject(value)) {
 		settingsError("capability_settings_invalid_server", path, "must be an object");
 	}
-	const allowed = new Set(["transport", "command", "args", "env", "url", "headersFromEnv"]);
+	const allowed = new Set(["transport", "command", "args", "env", "url", "headersFromEnv", "oauth"]);
 	for (const key of Object.keys(value)) {
 		if (!allowed.has(key)) {
 			settingsError("capability_settings_invalid_server", `${path}.${key}`, "unknown server field");
 		}
 	}
 	if (value.transport === "stdio") {
-		if (value.url !== undefined || value.headersFromEnv !== undefined) {
-			settingsError("capability_settings_invalid_server", path, "stdio servers must not set url or headersFromEnv");
+		if (value.url !== undefined || value.headersFromEnv !== undefined || value.oauth !== undefined) {
+			settingsError("capability_settings_invalid_server", path, "stdio servers must not set url, headersFromEnv or oauth");
 		}
 		if (value.command === undefined) {
 			settingsError("capability_settings_invalid_server", `${path}.command`, "stdio servers require a command");
@@ -528,11 +622,13 @@ function parseMcpServer(value: unknown, path: string): McpServer {
 		if (value.url === undefined) {
 			settingsError("capability_settings_invalid_server", `${path}.url`, "streamable-http servers require a url");
 		}
+		const oauth = parseMcpOAuthConfig(value.oauth, `${path}.oauth`);
 		return {
 			transport: "streamable-http",
 			url: validateUrl(value.url, `${path}.url`),
 			headersFromEnv:
 				value.headersFromEnv === undefined ? [] : validateHeaders(value.headersFromEnv, `${path}.headersFromEnv`),
+			...(oauth === undefined ? {} : { oauth }),
 		};
 	}
 	settingsError(
@@ -674,6 +770,55 @@ export function createMcpServerCapabilityCandidate(diagnostic: McpServerDiagnost
 	};
 }
 
+/** MCP content capability kinds governed as children of an mcp_server. */
+export type McpContentCapabilityKind = "mcp_resource" | "mcp_resource_template" | "mcp_prompt";
+
+/** A discovered MCP content entry (resource, resource template, or prompt). */
+export type McpContentSummary = MCPResourceSummary | MCPResourceTemplateSummary | MCPPromptSummary;
+
+export function contentSummaryId(kind: McpContentCapabilityKind, summary: McpContentSummary): string {
+	switch (kind) {
+		case "mcp_resource":
+			return (summary as MCPResourceSummary).resourceId;
+		case "mcp_resource_template":
+			return (summary as MCPResourceTemplateSummary).templateId;
+		case "mcp_prompt":
+			return (summary as MCPPromptSummary).promptId;
+	}
+}
+
+/**
+ * Build the Registry candidate for a discovered MCP resource, resource
+ * template, or prompt summary from D's content normalizer.
+ *
+ * The candidate stays secret-free: the local name is the summary's opaque
+ * digest id (the raw URI, template, or prompt name never enters the registry),
+ * the revision input is the already-sanitized summary, and the provenance is
+ * the summary's opaque provenance id. The parent is the owning mcp_server
+ * descriptor, so server deny/ask cascades to the content child and a child can
+ * only further restrict the server decision. Content capabilities never expose
+ * a tool name, so they can never enter the model tool schema.
+ */
+export function createMcpContentCapabilityCandidate(input: {
+	kind: McpContentCapabilityKind;
+	server: McpServerDiagnostic;
+	summary: McpContentSummary;
+}): CapabilityCandidate {
+	const { kind, server, summary } = input;
+	return {
+		kind,
+		name: summary.name,
+		localName: contentSummaryId(kind, summary),
+		sourceIdentity: server.source.source,
+		source: server.source,
+		mcpServerId: server.id,
+		parentId: `mcp_server:${server.source.source}:${server.id}`,
+		trusted: server.trusted,
+		provenance: summary.provenanceId,
+		revisionInput: summary,
+	};
+}
+
 /**
  * Redacted public view of the merged settings. Env/header values never exist
  * in the parsed model (only names), URLs have userinfo/query stripped, and
@@ -699,6 +844,23 @@ export function createCapabilitySettingsView(settings: CapabilitySettings): Capa
 				transport: "streamable-http" as const,
 				url: redactUrl(diagnostic.server.url),
 				headersFromEnv: diagnostic.server.headersFromEnv.map((header) => ({ ...header })),
+				...(diagnostic.server.oauth === undefined
+					? {}
+					: {
+							oauth: {
+								redirectUrl: redactUrl(diagnostic.server.oauth.redirectUrl),
+								...(diagnostic.server.oauth.canonicalResource === undefined
+									? {}
+									: { canonicalResource: redactUrl(diagnostic.server.oauth.canonicalResource) }),
+								...(diagnostic.server.oauth.clientId === undefined
+									? {}
+									: { clientId: diagnostic.server.oauth.clientId }),
+								...(diagnostic.server.oauth.scope === undefined ? {} : { scope: diagnostic.server.oauth.scope }),
+								...(diagnostic.server.oauth.clientName === undefined
+									? {}
+									: { clientName: diagnostic.server.oauth.clientName }),
+							},
+						}),
 			};
 		}),
 	};

@@ -51,7 +51,7 @@ describe("execution audit T0 contract", () => {
 			"external.mapping",
 			"task.gate",
 		]);
-		expect(AUDIT_EXCLUDED_CUSTOM_TYPES).toEqual(["context.memory"]);
+		expect(AUDIT_EXCLUDED_CUSTOM_TYPES).toEqual(["context.memory", "mcp.content.audit"]);
 		expect(AUDIT_EVENT_TYPES).toEqual([
 			"run.accepted",
 			"run.started",
@@ -130,6 +130,7 @@ describe("execution audit T0 contract", () => {
 			"terminalError",
 			"finalModel",
 			"modelBudget",
+			"attachments",
 		]);
 		expect(AUDIT_PUBLIC_SUMMARY_KEYS.modelBinding).toEqual([
 			"bindingId",

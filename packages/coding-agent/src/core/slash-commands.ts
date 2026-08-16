@@ -41,6 +41,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "trust", description: "Save project trust decision for future sessions" },
 	{ name: "login", description: "Configure provider authentication", argumentHint: "<provider>" },
 	{ name: "logout", description: "Remove provider authentication" },
+	{
+		name: "mcp",
+		description: "Manage MCP servers: OAuth auth/logout, and inspect/attach resources and prompts (digest metadata only)",
+		argumentHint: "auth|logout|resources|resource|prompts|prompt ...",
+	},
 	{ name: "new", description: "Start a new session" },
 	{ name: "compact", description: "Manually compact the session context" },
 	{
