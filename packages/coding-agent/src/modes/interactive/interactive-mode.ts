@@ -114,6 +114,19 @@ import {
 	formatCapabilityCatalog,
 	formatCapabilityDescriptor,
 } from "./capabilities.ts";
+import {
+	formatMcpAttachment,
+	formatMcpAuthResult,
+	formatMcpAuthStatusView,
+	formatMcpError,
+	formatMcpPromptPreview,
+	formatMcpPrompts,
+	formatMcpResourcePreview,
+	formatMcpResources,
+	formatMcpServerList,
+	formatMcpUsage,
+	parseMcpPromptArgs,
+} from "./mcp.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -132,6 +145,7 @@ import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
+import { McpAuthDialogComponent } from "./components/mcp-auth-dialog.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ModelSelectorComponent } from "./components/model-selector.ts";
 import {
@@ -3055,6 +3069,12 @@ export class InteractiveMode {
 				const args = text === "/capabilities" ? "" : text.slice("/capabilities".length).trim();
 				this.editor.setText("");
 				await this.handleCapabilitiesCommand(args);
+				return;
+			}
+			if (text === "/mcp" || text.startsWith("/mcp ")) {
+				const args = text === "/mcp" ? "" : text.slice("/mcp".length).trim();
+				this.editor.setText("");
+				await this.handleMcpCommand(args);
 				return;
 			}
 			if (text === "/changelog") {
@@ -6432,6 +6452,348 @@ export class InteractiveMode {
 			show(`${theme.fg("error", `Unknown /capabilities subcommand: ${sub}`)}\n${formatCapabilitiesUsage()}`);
 		} catch (error) {
 			show(formatCapabilitiesError(error));
+		}
+	}
+
+	// =========================================================================
+	// Interactive `/mcp` command family
+	//
+	// Every subcommand calls the Session's explicit MCP surface: auth starts
+	// only after the user confirms the redacted status, logout deletes the
+	// local credential, list/read/get never start a run or inject anything,
+	// and attach happens only after a preview confirmation. Remote content is
+	// always rendered behind the untrusted banner, and only fixed redacted
+	// errors are ever shown.
+	// =========================================================================
+
+	private async handleMcpCommand(args: string): Promise<void> {
+		const parts = args.split(/\s+/).filter((part) => part.length > 0);
+		const sub = parts[0];
+		const rest = parts.slice(1);
+		switch (sub) {
+			case "auth":
+				await this.handleMcpAuthCommand(rest[0] ?? "");
+				return;
+			case "logout":
+				await this.handleMcpLogoutCommand(rest[0] ?? "");
+				return;
+			case "resources":
+				await this.handleMcpResourcesCommand(rest[0] ?? "");
+				return;
+			case "resource":
+				await this.handleMcpResourceCommand(rest);
+				return;
+			case "prompts":
+				await this.handleMcpPromptsCommand(rest[0] ?? "");
+				return;
+			case "prompt":
+				await this.handleMcpPromptCommand(rest);
+				return;
+			default:
+				this.showMcpOutput(`${theme.fg("error", "Usage:")}\n${formatMcpUsage()}`);
+		}
+	}
+
+	/** Configured MCP server ids from the merged settings (global then project). */
+	private mcpServerIds(): string[] {
+		return this.session.settingsManager.getCapabilitySettings().mcpServers.map((diagnostic) => diagnostic.id);
+	}
+
+	/**
+	 * Resolves the server for a command: explicit id, or the sole configured
+	 * server. Never guesses when several servers exist.
+	 */
+	private async resolveMcpServerId(serverId: string): Promise<string | undefined> {
+		const serverIds = this.mcpServerIds();
+		if (serverId) {
+			if (!serverIds.includes(serverId)) {
+				this.showMcpOutput(
+					`${theme.fg("error", `MCP server not found: ${serverId}`)}\n${formatMcpServerList(serverIds)}`,
+				);
+				return undefined;
+			}
+			return serverId;
+		}
+		if (serverIds.length === 1) {
+			return serverIds[0];
+		}
+		this.showMcpOutput(
+			`${theme.fg("error", "Specify an MCP server.")}\n${formatMcpServerList(serverIds)}\n${formatMcpUsage()}`,
+		);
+		return undefined;
+	}
+
+	/**
+	 * Finds the server whose cached catalog contains the given resource uri or
+	 * prompt name. Returns undefined when absent or ambiguous.
+	 */
+	private findMcpContentServer(kind: "resource" | "prompt", localName: string): string | undefined {
+		let found: string | undefined;
+		for (const serverId of this.mcpServerIds()) {
+			const catalog = this.session.getMcpContentCatalog(serverId);
+			if (catalog === undefined) {
+				continue;
+			}
+			const matches =
+				kind === "resource"
+					? catalog.resources.some((resource) => resource.uri === localName)
+					: catalog.prompts.some((prompt) => prompt.name === localName);
+			if (!matches) {
+				continue;
+			}
+			if (found !== undefined) {
+				return undefined;
+			}
+			found = serverId;
+		}
+		return found;
+	}
+
+	/** Renders `/mcp` command output into the chat transcript. */
+	private showMcpOutput(info: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	/**
+	 * `/mcp auth <serverId>`: shows the redacted status, asks the user to
+	 * confirm, then runs the interactive OAuth flow. The one-time authorization
+	 * URL is displayed only inside the transient dialog and never echoed into
+	 * the transcript.
+	 */
+	private async handleMcpAuthCommand(serverId: string): Promise<void> {
+		if (!serverId) {
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp auth <serverId>`);
+			return;
+		}
+		const resolved = await this.resolveMcpServerId(serverId);
+		if (resolved === undefined) {
+			return;
+		}
+		try {
+			const status = await this.session.getMcpAuthStatus(resolved);
+			if (!status.authSupported) {
+				this.showMcpOutput(
+					`${theme.fg("warning", "MCP server does not support OAuth")} ${resolved}\n` +
+						`${theme.fg("dim", "stdio servers use explicit environment variables and never authenticate.")}`,
+				);
+				return;
+			}
+			const confirmed = await this.showExtensionConfirm(
+				`Start MCP OAuth for ${resolved}?`,
+				formatMcpAuthStatusView(status),
+			);
+			if (!confirmed) {
+				this.showMcpOutput(theme.fg("warning", "MCP OAuth cancelled."));
+				return;
+			}
+
+			const dialog = new McpAuthDialogComponent(this.ui, resolved, () => {});
+			const restoreEditor = () => {
+				this.editorContainer.clear();
+				this.editorContainer.addChild(this.editor);
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+			};
+			this.editorContainer.clear();
+			this.editorContainer.addChild(dialog);
+			this.ui.setFocus(dialog);
+			this.ui.requestRender();
+			try {
+				const result = await this.session.startMcpAuth(resolved, {
+					signal: dialog.signal,
+					prompt: async (prompt) => {
+						// The MCP OAuth flow never prompts for input; fail closed
+						// if a future flow unexpectedly does.
+						throw new Error(`Unexpected MCP auth prompt: ${prompt.type}`);
+					},
+					notify: (event) => {
+						if (event.type === "auth_url") {
+							dialog.showAuth(event.url, event.instructions);
+						} else if (event.type === "progress") {
+							dialog.showProgress(event.message);
+						}
+					},
+				});
+				restoreEditor();
+				this.showMcpOutput(formatMcpAuthResult(result));
+			} catch (error) {
+				restoreEditor();
+				this.showMcpOutput(formatMcpError(error));
+			}
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
+		}
+	}
+
+	/** `/mcp logout <serverId>`: removes the local credential after confirmation. */
+	private async handleMcpLogoutCommand(serverId: string): Promise<void> {
+		if (!serverId) {
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp logout <serverId>`);
+			return;
+		}
+		const resolved = await this.resolveMcpServerId(serverId);
+		if (resolved === undefined) {
+			return;
+		}
+		try {
+			const status = await this.session.getMcpAuthStatus(resolved);
+			if (!status.authSupported) {
+				this.showMcpOutput(
+					`${theme.fg("warning", "MCP server does not support OAuth")} ${resolved}\n` +
+						`${theme.fg("dim", "stdio servers use explicit environment variables and never authenticate.")}`,
+				);
+				return;
+			}
+			const confirmed = await this.showExtensionConfirm(
+				`Log out of MCP server ${resolved}?`,
+				`${formatMcpAuthStatusView(status)}\n\n${theme.fg("warning", "The stored OAuth credential for this server will be deleted.")}`,
+			);
+			if (!confirmed) {
+				this.showMcpOutput(theme.fg("warning", "MCP logout cancelled."));
+				return;
+			}
+			await this.session.logoutMcpAuth(resolved);
+			this.showMcpOutput(theme.fg("success", `Logged out of MCP server ${resolved}.`));
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
+		}
+	}
+
+	/** `/mcp resources [serverId]`: lists resources and templates of one server. */
+	private async handleMcpResourcesCommand(serverId: string): Promise<void> {
+		const resolved = await this.resolveMcpServerId(serverId);
+		if (resolved === undefined) {
+			return;
+		}
+		try {
+			const page = await this.session.listMcpResources(resolved);
+			const templates = await this.session.listMcpResourceTemplates(resolved).catch(() => undefined);
+			this.showMcpOutput(formatMcpResources(resolved, page, templates));
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
+		}
+	}
+
+	/**
+	 * `/mcp resource [serverId] <uri>`: reads a listed resource, previews it
+	 * behind the untrusted banner, and only attaches after explicit
+	 * confirmation. Reading or attaching never starts a model run.
+	 */
+	private async handleMcpResourceCommand(parts: string[]): Promise<void> {
+		if (parts.length === 0) {
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp resource [serverId] <uri>`);
+			return;
+		}
+		const serverId = parts.length >= 2 ? parts[0]! : "";
+		const uri = parts.length >= 2 ? parts.slice(1).join(" ") : parts[0]!;
+		try {
+			const resolved = serverId
+				? await this.resolveMcpServerId(serverId)
+				: this.findMcpContentServer("resource", uri);
+			if (resolved === undefined) {
+				if (!serverId) {
+					this.showMcpOutput(
+						`${theme.fg("error", `Resource not listed for any server: ${uri}`)}\n` +
+							`${theme.fg("dim", "List a server first with /mcp resources [serverId], or pass the server explicitly: /mcp resource <serverId> <uri>.")}`,
+					);
+				}
+				return;
+			}
+			const preview = await this.session.readMcpResource(resolved, uri);
+			const confirmed = await this.showExtensionConfirm(
+				"Attach this MCP resource for the next turn?",
+				formatMcpResourcePreview(resolved, preview),
+			);
+			if (!confirmed) {
+				this.showMcpOutput(theme.fg("warning", "MCP resource not attached."));
+				return;
+			}
+			const attached = await this.session.attachMcpResource(resolved, uri);
+			this.showMcpOutput(formatMcpAttachment(attached));
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
+		}
+	}
+
+	/** `/mcp prompts [serverId]`: lists prompts of one server. */
+	private async handleMcpPromptsCommand(serverId: string): Promise<void> {
+		const resolved = await this.resolveMcpServerId(serverId);
+		if (resolved === undefined) {
+			return;
+		}
+		try {
+			const page = await this.session.listMcpPrompts(resolved);
+			this.showMcpOutput(formatMcpPrompts(resolved, page));
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
+		}
+	}
+
+	/**
+	 * `/mcp prompt [serverId] <name> [key=value ...]`: fetches a listed prompt,
+	 * collects missing required arguments, previews the messages behind the
+	 * untrusted banner, and only attaches after explicit confirmation. Prompt
+	 * roles are preserved but never become system/developer instructions.
+	 */
+	private async handleMcpPromptCommand(parts: string[]): Promise<void> {
+		if (parts.length === 0) {
+			this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <name> [key=value ...]`);
+			return;
+		}
+		try {
+			// Split a leading serverId (when it matches a configured server) from
+			// the prompt name and its key=value arguments.
+			const serverIds = this.mcpServerIds();
+			const hasServer = serverIds.includes(parts[0]!);
+			const name = hasServer ? parts[1] : parts[0];
+			const inlineArgs = hasServer ? parts.slice(2) : parts.slice(1);
+			if (!name) {
+				this.showMcpOutput(`${theme.fg("error", "Usage:")} /mcp prompt [serverId] <name> [key=value ...]`);
+				return;
+			}
+			const serverId = hasServer ? parts[0]! : this.findMcpContentServer("prompt", name);
+			const resolved = serverId ? await this.resolveMcpServerId(serverId) : undefined;
+			if (resolved === undefined) {
+				if (!hasServer) {
+					this.showMcpOutput(
+						`${theme.fg("error", `Prompt not listed for any server: ${name}`)}\n` +
+							`${theme.fg("dim", "List a server first with /mcp prompts [serverId], or pass the server explicitly: /mcp prompt <serverId> <name>.")}`,
+					);
+				}
+				return;
+			}
+			const args = parseMcpPromptArgs(inlineArgs);
+			if (args.error !== undefined) {
+				this.showMcpOutput(`${theme.fg("error", args.error)}\n${formatMcpUsage()}`);
+				return;
+			}
+			const catalog = this.session.getMcpContentCatalog(resolved);
+			const declared = catalog?.prompts.find((prompt) => prompt.name === name);
+			for (const argument of declared?.arguments ?? []) {
+				if (argument.required && !(argument.name in args.values)) {
+					const value = await this.showExtensionInput(`Value for ${argument.name}`, argument.description);
+					if (value === undefined) {
+						this.showMcpOutput(theme.fg("warning", "MCP prompt cancelled."));
+						return;
+					}
+					args.values[argument.name] = value;
+				}
+			}
+			const preview = await this.session.getMcpPrompt(resolved, name, args.values);
+			const confirmed = await this.showExtensionConfirm(
+				"Attach this MCP prompt result for the next turn?",
+				formatMcpPromptPreview(resolved, preview),
+			);
+			if (!confirmed) {
+				this.showMcpOutput(theme.fg("warning", "MCP prompt not attached."));
+				return;
+			}
+			const attached = await this.session.attachMcpPrompt(resolved, name, args.values);
+			this.showMcpOutput(formatMcpAttachment(attached));
+		} catch (error) {
+			this.showMcpOutput(formatMcpError(error));
 		}
 	}
 

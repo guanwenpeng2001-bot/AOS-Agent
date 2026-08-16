@@ -323,6 +323,29 @@ AOS Agent models what it can load and call as capabilities with profile decision
 
 `mcp.servers` maps server ids to configs. `stdio` servers spawn a local command with `env` (an array of environment variable **names** passed through to the child). The parent-process environment is not inherited implicitly; allowlist `PATH` when a non-absolute command needs it. `streamable-http` servers connect to a `url` and send `headersFromEnv`, each `{ name, valueFromEnv }` referencing an environment variable **name**.
 
+Streamable HTTP servers may add an `oauth` object for MCP OAuth (Authorization Code + PKCE):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "issue-tracker": {
+        "transport": "streamable-http",
+        "url": "https://mcp.example.invalid/mcp",
+        "oauth": {
+          "redirectUrl": "http://127.0.0.1:3000/callback",
+          "canonicalResource": "https://mcp.example.invalid/mcp",
+          "clientId": "my-public-client",
+          "scope": "read write"
+        }
+      }
+    }
+  }
+}
+```
+
+`oauth.redirectUrl` is required (https or an http loopback address); `canonicalResource` overrides the discovered RFC 8707 resource; `clientId` pins a static public client (dynamic client registration is used when absent); `scope` and `clientName` are optional. OAuth settings are secret-free — tokens and client secrets never live in settings. OAuth only applies to Streamable HTTP servers; `stdio` servers keep using `env` and never authenticate. Start or remove an OAuth credential interactively with `/mcp auth <serverId>` and `/mcp logout <serverId>` (see [usage.md](usage.md#mcp-servers-oauth-resources-and-prompts)).
+
 Safety:
 
 - MCP config references environment variable values only by name: set the value in the environment and reference the name via `env` (stdio child process) or `headersFromEnv.valueFromEnv` (HTTP header). This keeps the parsed config secret-free and safe to show in redacted views.
