@@ -1845,7 +1845,7 @@ export class RpcHostController {
 				  }
 				| undefined;
 			if (externalAgent !== undefined) {
-				const registry = session.getExternalAgentRegistry();
+				const registry = session.getExternalAgentRegistry?.();
 				if (registry === undefined) {
 					return startFailure(
 						automationError(
@@ -3265,7 +3265,7 @@ export class RpcHostController {
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
 					// are never advertised by initialize.
-					const externalAgentRegistry = session.getExternalAgentRegistry();
+					const externalAgentRegistry = session.getExternalAgentRegistry?.();
 					if (externalAgentRegistry !== undefined) {
 						initializeData.externalAgentAdapters = externalAgentRegistry.list();
 					}
