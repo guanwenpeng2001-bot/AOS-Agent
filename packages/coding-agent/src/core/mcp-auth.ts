@@ -939,8 +939,15 @@ export class MCPAuthSession {
 
 	/** Cancels the pending flow; the flow settles cancelled and cannot write late tokens. */
 	cancel(): void {
+		if (this.flowAbort === undefined) {
+			// No flow is pending, so there is nothing to settle — and the session
+			// tombstone must not be set: a stray cancel (for example a transport
+			// detach racing a flow that already settled by timeout) would otherwise
+			// block the next refresh from persisting rotated tokens.
+			return;
+		}
 		this.closed = true;
-		this.flowAbort?.abort(new DOMException("Aborted", "AbortError"));
+		this.flowAbort.abort(new DOMException("Aborted", "AbortError"));
 		this.settleCallback({ kind: "cancelled" });
 	}
 

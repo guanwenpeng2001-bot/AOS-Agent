@@ -544,6 +544,16 @@ export class RpcHostController {
 		 * controller.
 		 */
 		const mcpAuthControllers = new Map<string, AbortController>();
+		/**
+		 * ServerIds whose headless mcp.auth.start flows are still pending in the
+		 * Session after their command returned. A headless start resolves
+		 * `interaction_required` immediately while the flow waits for the
+		 * authorization callback, so the in-flight command tracking above can no
+		 * longer see it. Lifecycle transitions cancel these flows too: a detach
+		 * keeps the Session alive, and an untracked flow could otherwise complete
+		 * later and persist tokens after the host moved on.
+		 */
+		const pendingMcpAuthFlows = new Set<string>();
 
 		const waitForOutput = async (): Promise<void> => {
 			await this.outputSink?.waitForBackpressure?.();
@@ -3221,6 +3231,13 @@ export class RpcHostController {
 					controller.abort();
 				}
 				mcpAuthControllers.clear();
+				// Headless flows started by completed commands are cancelled too: the
+				// outgoing Session is disposed by the runtime, and the incoming Session
+				// must never inherit a flow that could complete late and persist tokens.
+				for (const serverId of pendingMcpAuthFlows) {
+					session.cancelMcpAuth(serverId);
+				}
+				pendingMcpAuthFlows.clear();
 			}
 			if (activeReservation !== undefined) {
 				try {
@@ -3541,6 +3558,12 @@ export class RpcHostController {
 							};
 							output(event);
 						}
+						if (started.outcome === "interaction_required") {
+							// The flow stays pending in the Session after this command
+							// returns; track it so a later detach/shutdown/rebind cancels
+							// it instead of letting it complete late and persist tokens.
+							pendingMcpAuthFlows.add(command.serverId);
+						}
 						const status = await session.getMcpAuthStatus(command.serverId);
 						return success(
 							id,
@@ -3561,6 +3584,8 @@ export class RpcHostController {
 				case "mcp.auth.logout": {
 					try {
 						await session.logoutMcpAuth(command.serverId);
+						// Logout cancels the pending flow itself; stop tracking it.
+						pendingMcpAuthFlows.delete(command.serverId);
 						return success(id, "mcp.auth.logout");
 					} catch (err) {
 						return automationError(id, "mcp.auth.logout", mcpCommandError(err, "capability_mcp_auth_required"));
@@ -4695,6 +4720,13 @@ export class RpcHostController {
 					controller.abort();
 				}
 				mcpAuthControllers.clear();
+				// Flows started by completed commands are cancelled too: the Session is
+				// disposed below, but the host must not leave a flow that could report
+				// or persist tokens after shutdown began.
+				for (const serverId of pendingMcpAuthFlows) {
+					session.cancelMcpAuth(serverId);
+				}
+				pendingMcpAuthFlows.clear();
 				unsubscribe?.();
 				unsubscribeBackpressure?.();
 				await runtimeHost.dispose();
@@ -4758,6 +4790,13 @@ export class RpcHostController {
 					controller.abort();
 				}
 				mcpAuthControllers.clear();
+				// Flows started by completed commands survive the in-flight map and the
+				// Session (a detach keeps host and Session alive for re-attach); cancel
+				// them explicitly so none can complete later and persist tokens.
+				for (const serverId of pendingMcpAuthFlows) {
+					session.cancelMcpAuth(serverId);
+				}
+				pendingMcpAuthFlows.clear();
 				const externalPendingAtDetach = new Set(pendingExternalStarts.values());
 				await Promise.all(
 					[...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)),

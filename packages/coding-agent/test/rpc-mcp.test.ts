@@ -46,6 +46,7 @@ interface FakeSession {
 	attachMcpPrompt: ReturnType<typeof vi.fn>;
 	startMcpAuth: ReturnType<typeof vi.fn>;
 	waitForMcpAuth: ReturnType<typeof vi.fn>;
+	cancelMcpAuth: ReturnType<typeof vi.fn>;
 	logoutMcpAuth: ReturnType<typeof vi.fn>;
 	getMcpAuthStatus: ReturnType<typeof vi.fn>;
 	prompt: ReturnType<typeof vi.fn>;
@@ -161,6 +162,7 @@ function createFakeSession(): FakeSession {
 			outcome: "authorized",
 			status: { serverId: "docs", state: "authenticated" },
 		})),
+		cancelMcpAuth: vi.fn(),
 		logoutMcpAuth: vi.fn(async () => {}),
 		getMcpAuthStatus: vi.fn(async () => ({
 			serverId: "docs",
@@ -187,6 +189,7 @@ interface Harness {
 	session: FakeSession;
 	records: RpcHostOutputRecord[];
 	dispatch: (command: RpcCommand) => Promise<RpcResponse | RpcAutomationResponse | undefined>;
+	rebindSession: () => Promise<void>;
 	cleanup: () => Promise<void>;
 }
 
@@ -206,11 +209,18 @@ async function createHarness(): Promise<Harness> {
 		},
 	});
 	await controller.start();
+	const rebindSession = (runtimeHost.setRebindSession as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
+		| (() => Promise<void>)
+		| undefined;
 	return {
 		controller,
 		session,
 		records,
 		dispatch: (command) => controller.dispatch(command),
+		rebindSession: async () => {
+			if (rebindSession === undefined) throw new Error("no rebind callback captured");
+			await rebindSession();
+		},
 		cleanup: async () => {
 			await controller.shutdown().catch(() => undefined);
 		},
@@ -517,6 +527,126 @@ describe("RPC MCP public surface (mcp.list/read/attach_resources, mcp.list/get/a
 			session.logoutMcpAuth.mockRejectedValueOnce(new MCPAuthError("mcp_auth_required", "docs"));
 			const failed = await controller.dispatch({ type: "mcp.auth.logout", serverId: "docs" });
 			expect(failed).toMatchObject({ success: false, error: { code: "capability_mcp_auth_required" } });
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("cancels the pending headless flow on transport detach after mcp.auth.start returned", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			// The headless start returns immediately with the one-time URL while
+			// the flow stays pending in the Session waiting for the callback.
+			const start = await controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+			expect(start).toMatchObject({ type: "response", command: "mcp.auth.start", success: true });
+			expect(session.cancelMcpAuth).not.toHaveBeenCalled();
+
+			// Detaching keeps host and Session alive for re-attach; the pending
+			// flow must still be cancelled so it can never complete later and
+			// persist tokens after the host moved on.
+			await controller.detachTransport();
+			expect(session.cancelMcpAuth).toHaveBeenCalledWith("docs");
+
+			// A second detach does not cancel again: the flow is no longer tracked.
+			session.cancelMcpAuth.mockClear();
+			await controller.detachTransport();
+			expect(session.cancelMcpAuth).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("cancels the pending headless flow on shutdown after mcp.auth.start returned", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			await controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+
+			await controller.shutdown();
+			expect(session.cancelMcpAuth).toHaveBeenCalledWith("docs");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("cancels the pending headless flow on session rebind after mcp.auth.start returned", async () => {
+		const { controller, session, rebindSession, cleanup } = await createHarness();
+		try {
+			// Initialize the Automation Host so the rebind path runs its
+			// full cancellation block for the outgoing session.
+			await controller.dispatch({ type: "initialize", protocolVersion: 1 });
+			await controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+
+			await rebindSession();
+			expect(session.cancelMcpAuth).toHaveBeenCalledWith("docs");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("cancels the flow when detach aborts an in-flight mcp.auth.start and fails it closed", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			let resolveStart: (value: {
+				outcome: "interaction_required";
+				status: { serverId: string; state: string };
+				authorizationUrl: string;
+			}) => void = () => {};
+			session.startMcpAuth.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveStart = resolve;
+				}),
+			);
+			const pending = controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+
+			// Detach while the command is in its discovery window: the flow is
+			// cancelled immediately and the command settles fail-closed.
+			await controller.detachTransport();
+			expect(session.cancelMcpAuth).toHaveBeenCalledWith("docs");
+
+			resolveStart({
+				outcome: "interaction_required",
+				status: { serverId: "docs", state: "interaction_required" },
+				authorizationUrl: AUTH_URL,
+			});
+			const result = await pending;
+			expect(result).toMatchObject({
+				type: "response",
+				command: "mcp.auth.start",
+				success: false,
+				error: { code: "capability_mcp_auth_required", retryable: false },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("does not cancel anything on detach when the flow started already authorized", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			session.startMcpAuth.mockResolvedValueOnce({
+				outcome: "authorized",
+				status: { serverId: "docs", state: "authenticated" },
+			});
+			const start = await controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+			expect(start).toMatchObject({ type: "response", command: "mcp.auth.start", success: true });
+
+			await controller.detachTransport();
+			expect(session.cancelMcpAuth).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("stops tracking the pending flow when logout cancels it", async () => {
+		const { controller, session, cleanup } = await createHarness();
+		try {
+			await controller.dispatch({ type: "mcp.auth.start", serverId: "docs" });
+			await controller.dispatch({ type: "mcp.auth.logout", serverId: "docs" });
+
+			// Logout already cancelled the flow; a later detach must not cancel
+			// again (the flow is no longer tracked as pending).
+			await controller.detachTransport();
+			expect(session.cancelMcpAuth).not.toHaveBeenCalled();
 		} finally {
 			await cleanup();
 		}

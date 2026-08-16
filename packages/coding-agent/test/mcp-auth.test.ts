@@ -831,6 +831,31 @@ describe("refresh and the 401 single-retry contract", () => {
 		expect(secondRefresh[1]?.params.get("refresh_token")).toBe("rt-2");
 	});
 
+	it("a cancel with no pending flow does not block the next refresh save", async () => {
+		const fake = new FakeAuthServer();
+		const store = new FakeAuthStore();
+		const provider = new MCPAuthProvider({ store });
+		const ctx = context();
+		const options = flowOptions(fake, );
+		// Establish a persisted credential through a full interactive flow.
+		const interaction = makeInteraction();
+		const result = await runInteractiveFlow(provider, ctx, options, interaction);
+		expect(result.outcome).toBe("authorized");
+		expect(store.saves).toBe(1);
+
+		// A stray cancel with no flow pending (for example a transport detach
+		// racing a flow that already settled by timeout) must not set the
+		// session tombstone: a poisoned tombstone would silently drop the next
+		// refresh's rotated token instead of persisting it.
+		provider.cancel(ctx, options);
+
+		const refreshResult = await provider.refresh(ctx, options);
+		expect(refreshResult.outcome).toBe("authorized");
+		expect(fake.tokenRequests.some((entry) => entry.grant === "refresh_token")).toBe(true);
+		expect(store.saves).toBe(2);
+		expect(await provider.getAccessToken(ctx, options)).toBe("at-2");
+	});
+
 	it("serializes concurrent refreshes into a single token request", async () => {
 		const fake = new FakeAuthServer();
 		const provider = new MCPAuthProvider();
