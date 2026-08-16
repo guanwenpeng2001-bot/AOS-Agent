@@ -8,7 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
-import { McpError, type Tool } from "@modelcontextprotocol/sdk/types";
+import { McpError, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
 	createMCPServerConfigView,
 	DEFAULT_MCP_CONTENT_LIMITS,
