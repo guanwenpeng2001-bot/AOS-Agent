@@ -1,3 +1,4 @@
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapabilityAvailability, CapabilityErrorCode } from "./capability-registry.ts";
 
@@ -72,6 +73,41 @@ export interface MCPStreamableHttpServerConfig {
 
 export type MCPServerConfig = MCPStdioServerConfig | MCPStreamableHttpServerConfig;
 
+/**
+ * Bounded limits applied to MCP resources/prompts catalog metadata and
+ * content. All defaults are finite; unbounded values are never allowed.
+ */
+export interface MCPContentLimits {
+	/** Maximum resource entries accepted in one listResources page. */
+	maxResourcesPerPage: number;
+	/** Maximum prompt entries accepted in one listPrompts page. */
+	maxPromptsPerPage: number;
+	/** Maximum content blocks accepted in one read/get result. */
+	maxBlocks: number;
+	/** Maximum UTF-8 bytes of a single text block after sanitization. */
+	maxTextBytes: number;
+	/** Maximum decoded bytes of a single base64 blob/image. */
+	maxBlobBytes: number;
+	/** Maximum total bytes across one read/get result. */
+	maxAttachmentBytes: number;
+	/** Maximum UTF-8 bytes of a single prompt argument value. */
+	maxPromptArgumentBytes: number;
+	/** Maximum total bytes of all prompt argument values. */
+	maxRunAttachmentBytes: number;
+}
+
+/** Default content limits; every bound is finite and intentionally small. */
+export const DEFAULT_MCP_CONTENT_LIMITS: MCPContentLimits = {
+	maxResourcesPerPage: 100,
+	maxPromptsPerPage: 100,
+	maxBlocks: 64,
+	maxTextBytes: 262_144,
+	maxBlobBytes: 8_388_608,
+	maxAttachmentBytes: 8_388_608,
+	maxPromptArgumentBytes: 4_096,
+	maxRunAttachmentBytes: 16_777_216,
+};
+
 /** Normalized content blocks returned by a tool call. */
 export type MCPToolContentBlock =
 	| { type: "text"; text: string; annotations?: unknown; _meta?: unknown }
@@ -83,6 +119,88 @@ export type MCPToolContentBlock =
 			annotations?: unknown;
 			_meta?: unknown;
 	  };
+
+/**
+ * Catalog metadata of a discovered resource. Never contains the raw URI: the
+ * resourceId is a deterministic digest of (serverId, uri) and the revision is a
+ * digest of the sanitized metadata fields.
+ */
+export interface MCPResourceSummary {
+	/** Deterministic, secret-free digest id of the resource. */
+	resourceId: string;
+	serverId: string;
+	/** Server-reported name, sanitized and bounded. */
+	name: string;
+	title?: string;
+	description?: string;
+	/** Normalized (lowercase type/subtype) MIME type. */
+	mimeType?: string;
+	/** Server-reported size in bytes, when present and finite. */
+	size?: number;
+	/** Deterministic digest id of the source catalog entry. */
+	provenanceId: string;
+	/** Deterministic digest of the sanitized metadata fields. */
+	revision: string;
+}
+
+/** Catalog metadata of a discovered resource template. */
+export interface MCPResourceTemplateSummary {
+	/** Deterministic, secret-free digest id of the template. */
+	templateId: string;
+	serverId: string;
+	name: string;
+	/** Sanitized display pattern: control characters, userinfo, query, and fragment removed. */
+	displayPattern?: string;
+	/** Digest of the full URI template; the raw template never leaves the call. */
+	uriTemplateDigest: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+	provenanceId: string;
+	revision: string;
+}
+
+/** A prompt's declared argument, sanitized and bounded. */
+export interface MCPPromptArgumentSummary {
+	name: string;
+	description?: string;
+	required?: boolean;
+}
+
+/** Catalog metadata of a discovered prompt. */
+export interface MCPPromptSummary {
+	/** Deterministic, secret-free digest id of the prompt. */
+	promptId: string;
+	serverId: string;
+	name: string;
+	title?: string;
+	description?: string;
+	arguments: ReadonlyArray<MCPPromptArgumentSummary>;
+	provenanceId: string;
+	revision: string;
+}
+
+/** One page of the resources catalog; the cursor is an opaque token, never logged. */
+export interface MCPResourceListResult {
+	serverId: string;
+	resources: ReadonlyArray<MCPResourceSummary>;
+	/** Opaque pagination token for the next listResources call. */
+	nextCursor?: string;
+}
+
+/** One page of the resource templates catalog. */
+export interface MCPResourceTemplateListResult {
+	serverId: string;
+	resourceTemplates: ReadonlyArray<MCPResourceTemplateSummary>;
+	nextCursor?: string;
+}
+
+/** One page of the prompts catalog. */
+export interface MCPPromptListResult {
+	serverId: string;
+	prompts: ReadonlyArray<MCPPromptSummary>;
+	nextCursor?: string;
+}
 
 /** Normalized result of calling a tool on a server. */
 export interface MCPCallResult {
@@ -109,7 +227,18 @@ export type MCPEnvResolver = (name: string) => string | undefined;
 export type MCPTransportFactory = (
 	config: MCPServerConfig,
 	env: MCPEnvResolver,
+	authProvider?: OAuthClientProvider,
 ) => Promise<Transport> | Transport;
+
+/**
+ * Resolves the per-session OAuth client provider for a server config, or
+ * returns undefined when the server needs no OAuth (stdio, or a streamable-http
+ * server without a session provider). One provider instance never crosses
+ * sessions: each session builds its own lifecycle with its own provider.
+ */
+export type MCPAuthProviderResolver =
+	| OAuthClientProvider
+	| ((config: MCPServerConfig) => OAuthClientProvider | undefined);
 
 /**
  * Classified lifecycle failures. Messages are fail-closed: they never contain
@@ -194,6 +323,13 @@ export interface MCPConnectionStatus {
 	lastError?: MCPErrorView;
 	/** Number of tools discovered by the last successful listTools. */
 	toolCount?: number;
+	/**
+	 * True when the server sent a resources/prompts list-changed notification
+	 * after the last successful catalog listing. A stale catalog never modifies
+	 * a frozen binding or attached content; it only signals that the next
+	 * explicit list reflects the server's current catalog.
+	 */
+	catalogStale?: boolean;
 }
 
 /**
