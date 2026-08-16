@@ -17,12 +17,47 @@ export {
 	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type McpAttachmentResult,
+	type McpAuthStatusView,
+	type McpContentCatalog,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
+export {
+	type MCPAuthErrorView,
+	type MCPAuthOutcome,
+	type MCPAuthResult,
+	type MCPAuthState,
+	MCPAuthError,
+	type MCPAuthStatus,
+} from "./core/mcp-auth.ts";
+export {
+	type MCPCredentialStatusView,
+	MCPCredentialNamespace,
+	type MCPCredentialScope,
+} from "./core/mcp-auth-storage.ts";
+export type {
+	MCPGetPromptResult,
+	MCPNormalizedContent,
+	MCPNormalizedContentBlock,
+	MCPPageResult,
+	MCPPromptMessageView,
+	MCPPromptView,
+	MCPReadResourceResult,
+	MCPResourceTemplateView,
+	MCPResourceView,
+} from "./core/mcp-content-types.ts";
+export {
+	type MCPConnectionStatus,
+	type MCPConnectionState,
+	MCPError,
+	type MCPErrorView,
+	type MCPServerConfig,
+	type MCPServerConfigView,
+} from "./core/mcp-types.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 // Compaction
 export {

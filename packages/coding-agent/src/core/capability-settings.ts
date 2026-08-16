@@ -6,6 +6,7 @@ import type {
 	CapabilityProfileRule,
 	CapabilitySelector,
 } from "./capability-registry.ts";
+import { validateMCPRedirectUrl } from "./mcp-auth.ts";
 import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "./source-info.ts";
 
 /**
@@ -69,6 +70,25 @@ export interface McpStreamableHttpServer {
 	transport: "streamable-http";
 	url: string;
 	headersFromEnv: ReadonlyArray<McpHeaderFromEnv>;
+	/** Optional OAuth (Authorization Code + PKCE) settings for this server. */
+	oauth?: McpOAuthConfig;
+}
+
+/**
+ * OAuth settings for one Streamable HTTP MCP server. All values are
+ * secret-free: tokens and client secrets never appear in settings.
+ */
+export interface McpOAuthConfig {
+	/** Authorization callback redirect URL; https or an http loopback address. */
+	redirectUrl: string;
+	/** Explicit canonical RFC 8707 resource override. */
+	canonicalResource?: string;
+	/** Static public client id; dynamic registration is used when absent. */
+	clientId?: string;
+	/** Optional scope requested on authorization and token requests. */
+	scope?: string;
+	/** Client name used for dynamic registration metadata. */
+	clientName?: string;
 }
 
 export interface McpHeaderFromEnv {
@@ -112,6 +132,16 @@ export interface McpServerSettingsView {
 	env?: ReadonlyArray<string>;
 	url?: string;
 	headersFromEnv?: ReadonlyArray<McpHeaderFromEnv>;
+	oauth?: McpOAuthSettingsView;
+}
+
+/** Secret-free OAuth settings view; URLs are redacted, ids/scopes are public. */
+export interface McpOAuthSettingsView {
+	redirectUrl: string;
+	canonicalResource?: string;
+	clientId?: string;
+	scope?: string;
+	clientName?: string;
 }
 
 export interface CapabilitySettingsView {
@@ -500,19 +530,81 @@ function validateHeaders(value: unknown, path: string): ReadonlyArray<McpHeaderF
 	return out;
 }
 
+function parseMcpOAuthConfig(value: unknown, path: string): McpOAuthConfig | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (!isPlainObject(value)) {
+		settingsError("capability_settings_invalid_server", path, "oauth must be an object");
+	}
+	const allowed = new Set(["redirectUrl", "canonicalResource", "clientId", "scope", "clientName"]);
+	for (const key of Object.keys(value)) {
+		if (!allowed.has(key)) {
+			settingsError("capability_settings_invalid_server", `${path}.${key}`, "unknown oauth field");
+		}
+	}
+	const { redirectUrl, canonicalResource, clientId, scope, clientName } = value;
+	if (typeof redirectUrl !== "string" || redirectUrl.trim() === "") {
+		settingsError("capability_settings_invalid_server", `${path}.redirectUrl`, "oauth requires a redirectUrl");
+	}
+	const redirectProblem = validateMCPRedirectUrl(redirectUrl);
+	if (redirectProblem !== undefined) {
+		settingsError(
+			"capability_settings_invalid_server",
+			`${path}.redirectUrl`,
+			`oauth redirectUrl ${redirectProblem}`,
+		);
+	}
+	const out: McpOAuthConfig = { redirectUrl };
+	if (canonicalResource !== undefined) {
+		if (typeof canonicalResource !== "string" || canonicalResource.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.canonicalResource`, "must be a non-empty URL");
+		}
+		let parsed: URL;
+		try {
+			parsed = new URL(canonicalResource);
+		} catch {
+			settingsError("capability_settings_invalid_server", `${path}.canonicalResource`, "must be an absolute http(s) URL");
+		}
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			settingsError("capability_settings_invalid_server", `${path}.canonicalResource`, "must use http or https");
+		}
+		out.canonicalResource = canonicalResource;
+	}
+	if (clientId !== undefined) {
+		if (typeof clientId !== "string" || clientId.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.clientId`, "must be a non-empty string");
+		}
+		out.clientId = clientId;
+	}
+	if (scope !== undefined) {
+		if (typeof scope !== "string" || scope.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.scope`, "must be a non-empty string");
+		}
+		out.scope = scope;
+	}
+	if (clientName !== undefined) {
+		if (typeof clientName !== "string" || clientName.trim() === "") {
+			settingsError("capability_settings_invalid_server", `${path}.clientName`, "must be a non-empty string");
+		}
+		out.clientName = clientName;
+	}
+	return out;
+}
+
 function parseMcpServer(value: unknown, path: string): McpServer {
 	if (!isPlainObject(value)) {
 		settingsError("capability_settings_invalid_server", path, "must be an object");
 	}
-	const allowed = new Set(["transport", "command", "args", "env", "url", "headersFromEnv"]);
+	const allowed = new Set(["transport", "command", "args", "env", "url", "headersFromEnv", "oauth"]);
 	for (const key of Object.keys(value)) {
 		if (!allowed.has(key)) {
 			settingsError("capability_settings_invalid_server", `${path}.${key}`, "unknown server field");
 		}
 	}
 	if (value.transport === "stdio") {
-		if (value.url !== undefined || value.headersFromEnv !== undefined) {
-			settingsError("capability_settings_invalid_server", path, "stdio servers must not set url or headersFromEnv");
+		if (value.url !== undefined || value.headersFromEnv !== undefined || value.oauth !== undefined) {
+			settingsError("capability_settings_invalid_server", path, "stdio servers must not set url, headersFromEnv or oauth");
 		}
 		if (value.command === undefined) {
 			settingsError("capability_settings_invalid_server", `${path}.command`, "stdio servers require a command");
@@ -536,6 +628,7 @@ function parseMcpServer(value: unknown, path: string): McpServer {
 			url: validateUrl(value.url, `${path}.url`),
 			headersFromEnv:
 				value.headersFromEnv === undefined ? [] : validateHeaders(value.headersFromEnv, `${path}.headersFromEnv`),
+			oauth: parseMcpOAuthConfig(value.oauth, `${path}.oauth`),
 		};
 	}
 	settingsError(
@@ -702,6 +795,21 @@ export function createCapabilitySettingsView(settings: CapabilitySettings): Capa
 				transport: "streamable-http" as const,
 				url: redactUrl(diagnostic.server.url),
 				headersFromEnv: diagnostic.server.headersFromEnv.map((header) => ({ ...header })),
+				...(diagnostic.server.oauth === undefined
+					? {}
+					: {
+							oauth: {
+								redirectUrl: redactUrl(diagnostic.server.oauth.redirectUrl),
+								...(diagnostic.server.oauth.canonicalResource === undefined
+									? {}
+									: { canonicalResource: redactUrl(diagnostic.server.oauth.canonicalResource) }),
+								...(diagnostic.server.oauth.clientId === undefined ? {} : { clientId: diagnostic.server.oauth.clientId }),
+								...(diagnostic.server.oauth.scope === undefined ? {} : { scope: diagnostic.server.oauth.scope }),
+								...(diagnostic.server.oauth.clientName === undefined
+									? {}
+									: { clientName: diagnostic.server.oauth.clientName }),
+							},
+						}),
 			};
 		}),
 	};

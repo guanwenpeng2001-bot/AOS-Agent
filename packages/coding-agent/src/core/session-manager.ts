@@ -47,7 +47,8 @@ function isContextSourceKind(value: unknown): value is ContextSnapshot["sources"
 		value === "session_summary" ||
 		value === "session_message" ||
 		value === "memory" ||
-		value === "extension"
+		value === "extension" ||
+		value === "mcp_content"
 	);
 }
 
@@ -103,8 +104,12 @@ function parseContextSourceReceipt(value: unknown): ContextSnapshot["sources"][n
 		(value.refId !== undefined && typeof value.refId !== "string") ||
 		(value.label !== undefined && typeof value.label !== "string") ||
 		(value.visibility !== undefined && !isContextExtensionVisibility(value.visibility)) ||
+		(value.capabilityId !== undefined && typeof value.capabilityId !== "string") ||
+		(value.capabilityRevision !== undefined && typeof value.capabilityRevision !== "string") ||
+		(value.capabilityBindingId !== undefined && typeof value.capabilityBindingId !== "string") ||
 		(value.kind === "extension" && (typeof value.label !== "string" || !isContextExtensionVisibility(value.visibility))) ||
-		(value.kind !== "extension" && (value.label !== undefined || value.visibility !== undefined))
+		(value.kind === "mcp_content" && value.visibility !== undefined) ||
+		(value.kind !== "extension" && value.kind !== "mcp_content" && (value.label !== undefined || value.visibility !== undefined))
 	) {
 		return undefined;
 	}
@@ -122,6 +127,9 @@ function parseContextSourceReceipt(value: unknown): ContextSnapshot["sources"][n
 	if (typeof value.refId === "string") receipt.refId = value.refId;
 	if (typeof value.label === "string") receipt.label = value.label;
 	if (isContextExtensionVisibility(value.visibility)) receipt.visibility = value.visibility;
+	if (typeof value.capabilityId === "string") receipt.capabilityId = value.capabilityId;
+	if (typeof value.capabilityRevision === "string") receipt.capabilityRevision = value.capabilityRevision;
+	if (typeof value.capabilityBindingId === "string") receipt.capabilityBindingId = value.capabilityBindingId;
 	return receipt;
 }
 

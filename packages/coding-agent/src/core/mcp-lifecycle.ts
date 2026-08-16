@@ -1,5 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client";
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
 	getDefaultEnvironment,
 	StdioClientTransport,
@@ -26,6 +26,7 @@ import {
 	type MCPResourceTemplateView,
 	type MCPResourceView,
 } from "./mcp-content-types.ts";
+import type { MCPAuthOutcome } from "./mcp-auth.ts";
 import {
 	createMCPServerConfigView,
 	type MCPCallResult,
@@ -42,6 +43,7 @@ import {
 	type MCPStreamableHttpServerConfig,
 	type MCPToolContentBlock,
 	type MCPTransportFactory,
+	type MCPTransportFactoryOptions,
 	mcpNamespaceSegmentError,
 	mcpStateToAvailability,
 	validateMCPServerConfig,
@@ -121,6 +123,7 @@ export function createMCPStdioTransport(config: MCPStdioServerConfig, env: MCPEn
 export function createMCPHttpTransport(
 	config: MCPStreamableHttpServerConfig,
 	env: MCPEnvResolver,
+	options?: MCPTransportFactoryOptions,
 ): StreamableHTTPClientTransport {
 	const headers: Record<string, string> = {};
 	for (const ref of config.headersFromEnv ?? []) {
@@ -131,17 +134,18 @@ export function createMCPHttpTransport(
 	}
 	return new StreamableHTTPClientTransport(new URL(config.url), {
 		...(Object.keys(headers).length > 0 ? { requestInit: { headers } } : {}),
+		...(options?.authProvider === undefined ? {} : { authProvider: options.authProvider }),
 	});
 }
 
 /** Default transport factory used in production. Tests inject an in-memory factory. */
 export function createMCPDefaultTransportFactory(): MCPTransportFactory {
-	return (config: MCPServerConfig, env: MCPEnvResolver): Transport => {
+	return (config: MCPServerConfig, env: MCPEnvResolver, options?: MCPTransportFactoryOptions): Transport => {
 		switch (config.transport) {
 			case "stdio":
 				return createMCPStdioTransport(config, env);
 			case "streamable-http":
-				return createMCPHttpTransport(config, env);
+				return createMCPHttpTransport(config, env, options);
 		}
 	};
 }
@@ -158,6 +162,33 @@ export interface MCPServerLifecycleOptions {
 	contentLimits?: MCPContentLimits;
 	/** Per-page item cap for paginated listings; defaults to {@link DEFAULT_MCP_PAGE_LIMITS}. */
 	pageLimits?: MCPPageLimits;
+	/**
+	 * Session-scoped OAuth hooks for this server. Only Streamable HTTP
+	 * transports ever receive the auth provider; stdio is untouched.
+	 */
+	auth?: MCPServerAuthHooks;
+}
+
+/**
+ * Session-scoped OAuth integration for one MCP server.
+ *
+ * The provider is attached as `StreamableHTTPClientTransport.authProvider` so
+ * the SDK performs exactly one token refresh and exactly one request retry per
+ * 401 for connect/list/read/get/call. When an operation still surfaces
+ * `UnauthorizedError` (no tokens, refresh failed, or interactive authorization
+ * is pending), the lifecycle invokes `refresh` exactly once and retries the
+ * operation exactly once before classifying the failure as `auth_required`.
+ * `refresh` must be single-flight (concurrent callers join one attempt).
+ */
+export interface MCPServerAuthHooks {
+	/** SDK OAuth client provider bound to the session+server flow. */
+	authProvider?: OAuthClientProvider;
+	/**
+	 * Attempts one token refresh; resolves `authorized` when a usable token was
+	 * produced, or the terminal outcome otherwise. Never throws for auth
+	 * failures; lifecycle failures classify as `auth_required`.
+	 */
+	refresh?: () => Promise<MCPAuthOutcome>;
 }
 
 const DEFAULT_ENV_RESOLVER: MCPEnvResolver = (name) => process.env[name];
@@ -176,6 +207,7 @@ export class MCPServerLifecycle {
 	private readonly requestTimeoutMs: number;
 	private readonly contentLimits: MCPContentLimits;
 	private readonly pageLimits: MCPPageLimits;
+	private readonly auth: MCPServerAuthHooks | undefined;
 	private client: Client | undefined;
 	/** Client created for a connect that has not settled; close must not orphan it. */
 	private pendingClient: Client | undefined;
@@ -199,6 +231,7 @@ export class MCPServerLifecycle {
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.contentLimits = options.contentLimits ?? DEFAULT_MCP_CONTENT_LIMITS;
 		this.pageLimits = options.pageLimits ?? DEFAULT_MCP_PAGE_LIMITS;
+		this.auth = options.auth;
 		this.connectionState = "configured";
 	}
 
@@ -281,24 +314,67 @@ export class MCPServerLifecycle {
 		this.setState("connecting");
 		let pendingClient: Client | undefined;
 		try {
-			const transport = await this.transportFactory(this.config, this.env);
+			let transport: Transport | undefined;
+			let authRetried = false;
+			while (true) {
+				try {
+					transport = await this.transportFactory(this.config, this.env, {
+						authProvider: this.auth?.authProvider,
+					});
+					if (signal?.aborted) {
+						const abortedTransport = transport;
+						transport = undefined;
+						await abortedTransport.close?.().catch(() => undefined);
+						throw abortError(signal);
+					}
+					if (this.isClosingOrClosed()) {
+						const closedTransport = transport;
+						transport = undefined;
+						await closedTransport.close?.().catch(() => undefined);
+						throw this.failure("unavailable");
+					}
+					pendingClient = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
+					this.pendingClient = pendingClient;
+					await pendingClient.connect(transport, { timeout: this.requestTimeoutMs, signal });
+					break;
+				} catch (error) {
+					if (pendingClient !== undefined && this.pendingClient === pendingClient) {
+						this.pendingClient = undefined;
+						await pendingClient.close().catch(() => undefined);
+					} else {
+						await transport?.close?.().catch(() => undefined);
+					}
+					pendingClient = undefined;
+					transport = undefined;
+					if (error instanceof UnauthorizedError && !authRetried && this.auth?.refresh !== undefined) {
+						authRetried = true;
+						let outcome: MCPAuthOutcome;
+						try {
+							outcome = await this.auth.refresh();
+						} catch {
+							throw this.authFailure();
+						}
+						if (outcome === "authorized") continue;
+						throw this.authFailure();
+					}
+					throw error;
+				}
+			}
+			if (pendingClient === undefined || transport === undefined) {
+				throw this.failure("connect_failed");
+			}
 			if (signal?.aborted) {
-				await transport.close?.().catch(() => undefined);
+				const abortedClient = pendingClient;
+				pendingClient = undefined;
+				if (this.pendingClient === abortedClient) this.pendingClient = undefined;
+				await abortedClient.close().catch(() => undefined);
 				throw abortError(signal);
 			}
 			if (this.isClosingOrClosed()) {
-				await transport.close?.().catch(() => undefined);
-				throw this.failure("unavailable");
-			}
-			pendingClient = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
-			this.pendingClient = pendingClient;
-			await pendingClient.connect(transport, { timeout: this.requestTimeoutMs, signal });
-			if (signal?.aborted) {
-				await pendingClient.close().catch(() => undefined);
-				throw abortError(signal);
-			}
-			if (this.isClosingOrClosed()) {
-				await pendingClient.close().catch(() => undefined);
+				const closedClient = pendingClient;
+				pendingClient = undefined;
+				if (this.pendingClient === closedClient) this.pendingClient = undefined;
+				await closedClient.close().catch(() => undefined);
 				throw this.failure("unavailable");
 			}
 			this.client = pendingClient;
@@ -322,10 +398,15 @@ export class MCPServerLifecycle {
 				this.setState("unavailable");
 				throw abortError(signal);
 			}
-			const kind: MCPErrorKind = error instanceof UnauthorizedError ? "auth_required" : "connect_failed";
+			const kind: MCPErrorKind =
+				error instanceof MCPLifecycleError
+					? error.kind
+					: error instanceof UnauthorizedError
+						? "auth_required"
+						: "connect_failed";
 			this.setState("unavailable");
 			this.recordError(kind);
-			throw this.failure(kind);
+			throw error instanceof MCPLifecycleError ? error : this.failure(kind);
 		} finally {
 			if (pendingClient !== undefined && this.pendingClient === pendingClient) {
 				this.pendingClient = undefined;
@@ -342,7 +423,9 @@ export class MCPServerLifecycle {
 	async listTools(signal?: AbortSignal): Promise<Tool[]> {
 		const client = this.requireReady();
 		try {
-			const result = await raceWithAbort(client.listTools({}, { timeout: this.requestTimeoutMs, signal }), signal);
+			const result = await this.runWithSingleAuthRetry(() =>
+				raceWithAbort(client.listTools({}, { timeout: this.requestTimeoutMs, signal }), signal),
+			);
 			if (signal?.aborted) throw abortError(signal);
 			this.toolCount = result.tools.length;
 			this.lastError = undefined;
@@ -350,6 +433,9 @@ export class MCPServerLifecycle {
 		} catch (error) {
 			if (signal?.aborted) {
 				throw error instanceof DOMException && error.name === "AbortError" ? error : abortError(signal);
+			}
+			if (error instanceof MCPLifecycleError) {
+				throw error;
 			}
 			this.markDegraded();
 			throw this.failure("unavailable");
@@ -372,10 +458,12 @@ export class MCPServerLifecycle {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		try {
-			const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
-				signal: controller.signal,
-				timeout: this.requestTimeoutMs,
-			});
+			const result = await this.runWithSingleAuthRetry(() =>
+				client.callTool({ name: toolName, arguments: args }, undefined, {
+					signal: controller.signal,
+					timeout: this.requestTimeoutMs,
+				}),
+			);
 			return {
 				serverId: this.config.id,
 				toolName,
@@ -385,9 +473,12 @@ export class MCPServerLifecycle {
 					? { structuredContent: result.structuredContent as Record<string, unknown> }
 					: {}),
 			};
-		} catch {
+		} catch (error) {
 			if (signal?.aborted) {
 				throw new DOMException(`MCP tool call "${toolName}" was aborted`, "AbortError");
+			}
+			if (error instanceof MCPLifecycleError) {
+				throw error;
 			}
 			if (this.state === "closing" || this.state === "closed") {
 				throw this.failure("unavailable");
@@ -625,7 +716,7 @@ export class MCPServerLifecycle {
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		try {
-			const result = await raceWithAbort(run(client, controller.signal), signal);
+			const result = await this.runWithSingleAuthRetry(() => raceWithAbort(run(client, controller.signal), signal));
 			if (signal?.aborted) throw abortError(signal);
 			if (epoch !== this.connectionEpoch || this.client !== client) {
 				throw this.failure("unavailable");
@@ -655,6 +746,53 @@ export class MCPServerLifecycle {
 			signal?.removeEventListener("abort", onAbort);
 			this.inflightCalls.delete(controller);
 		}
+	}
+
+	/**
+	 * Runs an operation under the exactly-one refresh/retry contract. When the
+	 * operation fails with `UnauthorizedError`, `auth.refresh` is invoked
+	 * exactly once (the session-level refresh is single-flight) and the
+	 * operation is retried exactly once when the refresh produced a usable
+	 * token. A second `UnauthorizedError` — or any refresh failure — classifies
+	 * as `auth_required` with a fixed redacted message and never degrades the
+	 * connection: the same transport remains usable once authorization
+	 * completes.
+	 */
+	private async runWithSingleAuthRetry<T>(run: () => Promise<T>): Promise<T> {
+		try {
+			return await run();
+		} catch (error) {
+			if (!(error instanceof UnauthorizedError)) {
+				throw error;
+			}
+			if (this.auth?.refresh === undefined) {
+				throw this.authFailure();
+			}
+			let outcome: MCPAuthOutcome;
+			try {
+				outcome = await this.auth.refresh();
+			} catch {
+				// Refresh failures are never surfaced raw; without a usable token
+				// the operation is not retried.
+				throw this.authFailure();
+			}
+			if (outcome !== "authorized") {
+				throw this.authFailure();
+			}
+			try {
+				return await run();
+			} catch (retryError) {
+				if (retryError instanceof UnauthorizedError) {
+					throw this.authFailure();
+				}
+				throw retryError;
+			}
+		}
+	}
+
+	private authFailure(): MCPError {
+		this.recordError("auth_required");
+		return this.failure("auth_required");
 	}
 
 	private chainTransportHandlers(transport: Transport): void {
@@ -717,6 +855,8 @@ export class MCPServerLifecycle {
 export interface MCPLifecycleManagerOptions extends MCPServerLifecycleOptions {
 	/** Server ids the current binding selected. Only these may connect. */
 	selectedServerIds?: ReadonlySet<string>;
+	/** Per-server OAuth hooks; only Streamable HTTP servers use them. */
+	authFor?: (serverId: string) => MCPServerAuthHooks | undefined;
 }
 
 /**
@@ -726,6 +866,7 @@ export interface MCPLifecycleManagerOptions extends MCPServerLifecycleOptions {
  */
 export class MCPLifecycleManager {
 	private readonly options: MCPServerLifecycleOptions;
+	private readonly authFor: ((serverId: string) => MCPServerAuthHooks | undefined) | undefined;
 	private readonly lifecycles = new Map<string, MCPServerLifecycle>();
 	private selectedServerIds: ReadonlySet<string>;
 	/** Per-server deselection closes, coalesced so overlapping updates await one teardown. */
@@ -733,6 +874,7 @@ export class MCPLifecycleManager {
 
 	constructor(options: MCPLifecycleManagerOptions = {}) {
 		this.options = options;
+		this.authFor = options.authFor;
 		// Copy the set so later mutation of the caller's Set cannot change selection.
 		this.selectedServerIds = options.selectedServerIds === undefined ? new Set() : new Set(options.selectedServerIds);
 	}
@@ -743,7 +885,13 @@ export class MCPLifecycleManager {
 			if (this.lifecycles.has(config.id)) {
 				throw new MCPLifecycleError("invalid_config", config.id, `Duplicate MCP server id: "${config.id}"`);
 			}
-			this.lifecycles.set(config.id, new MCPServerLifecycle(config, this.options));
+			this.lifecycles.set(
+				config.id,
+				new MCPServerLifecycle(config, {
+					...this.options,
+					...(this.authFor === undefined ? {} : { auth: this.authFor(config.id) }),
+				}),
+			);
 		}
 	}
 

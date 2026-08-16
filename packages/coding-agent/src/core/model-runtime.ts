@@ -609,6 +609,15 @@ export class ModelRuntime implements Models {
 		return this.credentials.list(options);
 	}
 
+	/**
+	 * The underlying CredentialStore shared with the model runtime. MCP
+	 * credential records live under `mcp:` keys and can never collide with a
+	 * `Provider.id`, so ModelRuntime provider enumeration never observes them.
+	 */
+	getCredentialStore(): CredentialStore {
+		return this.credentials;
+	}
+
 	getProviderAuthStatus(providerId: string): AuthStatus {
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };

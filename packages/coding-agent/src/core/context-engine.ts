@@ -31,7 +31,8 @@ export type ContextSourceKind =
 	| "session_summary"
 	| "session_message"
 	| "memory"
-	| "extension";
+	| "extension"
+	| "mcp_content";
 
 export type ContextTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project";
 
@@ -453,6 +454,11 @@ function sourcePriority(source: ContextSourceInput): number {
 		case "instruction":
 			return 1;
 		case "extension":
+			return source.required ? 2 : 7;
+		case "mcp_content":
+			// Explicitly attached MCP content belongs with the current turn, like
+			// a required extension contribution; it must not displace retained
+			// session context, memory, or the capability index.
 			return source.required ? 2 : 7;
 		case "session_summary":
 			return 3;

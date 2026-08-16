@@ -1,3 +1,4 @@
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapabilityAvailability, CapabilityErrorCode } from "./capability-registry.ts";
 
@@ -99,6 +100,17 @@ export interface MCPCallResult {
 export type MCPEnvResolver = (name: string) => string | undefined;
 
 /**
+ * Transport construction inputs beyond the config/env pair.
+ *
+ * `authProvider` is the session-scoped OAuth client provider and is attached
+ * ONLY to Streamable HTTP transports. stdio and SSE transports never receive
+ * it, so their behavior is unchanged. In-memory test factories may ignore it.
+ */
+export interface MCPTransportFactoryOptions {
+	authProvider?: OAuthClientProvider;
+}
+
+/**
  * Creates the SDK transport for a server config.
  *
  * Production uses {@link createMCPDefaultTransport}. Tests inject a factory that
@@ -109,6 +121,7 @@ export type MCPEnvResolver = (name: string) => string | undefined;
 export type MCPTransportFactory = (
 	config: MCPServerConfig,
 	env: MCPEnvResolver,
+	options?: MCPTransportFactoryOptions,
 ) => Promise<Transport> | Transport;
 
 /**

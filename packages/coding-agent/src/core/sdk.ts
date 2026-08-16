@@ -9,6 +9,7 @@ import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport";
 import type { MCPTransportFactory } from "./mcp-types.ts";
 import { convertToLlm } from "./messages.ts";
 import {
@@ -105,6 +106,12 @@ export interface CreateAgentSessionOptions {
 	capabilityRegistry?: CapabilityRegistry;
 	/** MCP transport factory override; tests inject in-memory transports. */
 	mcpTransportFactory?: MCPTransportFactory;
+	/**
+	 * Base fetch for MCP OAuth HTTP requests. Defaults to the global fetch.
+	 * Every request is additionally gated by the execution policy before the
+	 * base fetch runs; tests inject a fake fetch so no request leaves the test.
+	 */
+	mcpAuthFetch?: FetchLike;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Trusted External Agent Adapter registry composed by the Host. */
@@ -455,6 +462,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionStartEvent: options.sessionStartEvent,
 		capabilityRegistry,
 		mcpTransportFactory: options.mcpTransportFactory,
+		mcpAuthFetch: options.mcpAuthFetch,
 		sandboxProviders: options.sandboxProviders,
 		policyProfile: options.policyProfile,
 		externalAgentRegistry: options.externalAgentRegistry,
