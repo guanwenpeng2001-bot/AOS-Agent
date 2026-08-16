@@ -80,9 +80,31 @@ Version 1 supports only stdio and Streamable HTTP transports. Legacy SSE is not 
 
 `env` and `headersFromEnv` contain environment-variable names only. Stdio receives no parent-process environment values implicitly; only explicitly allowlisted values are passed through. If the command needs `PATH`, allowlist it or use an absolute executable path. Literal header values, URL userinfo, and credential-like URL query parameters are rejected.
 
+Streamable HTTP servers can additionally declare OAuth (Authorization Code + PKCE):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "search": {
+        "transport": "streamable-http",
+        "url": "https://mcp.example.invalid/mcp",
+        "oauth": {
+          "redirectUrl": "http://127.0.0.1:3000/callback",
+          "canonicalResource": "https://mcp.example.invalid/mcp",
+          "clientId": "my-public-client"
+        }
+      }
+    }
+  }
+}
+```
+
+`oauth.redirectUrl` is required and must be https or an http loopback address. `canonicalResource` overrides the RFC 8707 resource discovered from the server; `clientId` pins a static public client (dynamic client registration is used when absent); `scope` and `clientName` are optional. All OAuth settings are secret-free: tokens and client secrets never appear in settings. Only Streamable HTTP servers authenticate; stdio servers keep using explicit environment variables and never trigger OAuth discovery.
+
 MCP configuration is trust-aware. Project-local servers are surfaced for diagnosis but cannot start a process or establish a remote connection until the project is trusted. A configured server is not connected automatically; only a server selected by the active binding is connected for tool discovery and calls.
 
-The client does not load MCP resources or prompts and does not inject server instructions into system context. MCP tools are exposed with canonical names of the form `mcp__<serverId>__<toolName>`.
+MCP tools are exposed with canonical names of the form `mcp__<serverId>__<toolName>`. The client never loads MCP resources or prompts and does not inject server instructions into system context; resources and prompts are only read and attached through the explicit `/mcp` commands below.
 
 ## Inspection, approval, and redaction
 
@@ -107,6 +129,25 @@ Public capability and policy views are allowlisted. They may include opaque ids,
 
 Policy errors are stable, machine-readable, and non-retryable by ModelBroker. A route retry can handle a model transport failure, but it cannot change an operation decision or satisfy a missing sandbox capability.
 
+## MCP OAuth, resources, and prompts
+
+MCP server OAuth, resources, and prompts are governed like every other MCP capability: the server must be selected by the active capability binding, and every operation (`mcp.auth`, `mcp.content.list`, `mcp.content.read`, `mcp.content.attach`) runs through the Execution Policy. MCP servers, tools, resources, and prompts all default to `deny`; a profile rule must expose them, and an `ask` still requires current-session approval in interactive mode. Headless modes never auto-approve.
+
+Interactive mode provides:
+
+- `/mcp auth <serverId>` — show the redacted OAuth/credential status and, after confirmation, run the interactive Authorization Code + PKCE flow. The one-time authorization URL is displayed only inside the transient auth dialog (Esc cancels) and never written to the transcript, status, receipts, or logs.
+- `/mcp logout <serverId>` — delete the stored OAuth credential for the server after confirmation. Revocation is best effort; local cleanup always completes.
+- `/mcp resources [serverId]` — list the redacted resource and resource-template catalog of one server (the sole configured server is used when the id is omitted).
+- `/mcp resource [serverId] <uri>` — read a listed resource, show a capped preview, and attach it as untrusted context for the next turn only after explicit confirmation.
+- `/mcp prompts [serverId]` — list the prompt catalog of one server.
+- `/mcp prompt [serverId] <name> [key=value ...]` — fetch a listed prompt (missing required arguments are prompted for), preview its messages, and attach them as untrusted context only after explicit confirmation.
+
+Every command calls the public `AgentSession` MCP surface directly (`getMcpAuthStatus`, `startMcpAuth`, `logoutMcpAuth`, `listMcpResources`, `listMcpResourceTemplates`, `listMcpPrompts`, `readMcpResource`, `getMcpPrompt`, `attachMcpResource`, `attachMcpPrompt`). List/read/get never start a model run, never inject into system or developer prompts, and never auto-approve anything; attach is the only path that stages remote content, and it requires the explicit preview confirmation above.
+
+Remote content is always displayed behind a fixed **UNTRUSTED EXTERNAL MCP CONTENT** banner and is capped in size. It is staged as user-controlled context for the next turn; it cannot change policy, capability, or system/developer directives. Embedded resource links in prompt results do not bypass resource capability or policy. Prompt messages keep their server roles (`user`/`assistant`) but are never elevated to instructions.
+
+All MCP command output is redacted: tokens, authorization URLs (outside the transient dialog), OAuth metadata, raw remote errors, raw URIs in errors, and unnecessary parameters never appear. Failures show only the stable error code plus the fixed redacted text (`mcp_auth_*`, MCP lifecycle kinds, `capability_*` codes, or a generic failure line). Cancellation, timeouts, and rejected confirmations are surfaced as fixed messages and never leave a flow, connection, or waiter behind.
+
 ## Non-goals
 
-This feature does not implement MCP OAuth browser flows or credential storage, legacy SSE, MCP resource/prompt ingestion, argument-level capability policy, or external agent orchestration. The registry is not an operating-system sandbox, and the legacy profile is not isolation. Use a strict policy with a real Sandbox Provider, a container, or another separately governed environment when stronger execution isolation is required.
+This feature does not implement legacy SSE, argument-level capability policy, automatic resource/prompt ingestion, or external agent orchestration. MCP OAuth covers Streamable HTTP servers only; stdio credentials come from explicit environment variables. The registry is not an operating-system sandbox, and the legacy profile is not isolation. Use a strict policy with a real Sandbox Provider, a container, or another separately governed environment when stronger execution isolation is required.
