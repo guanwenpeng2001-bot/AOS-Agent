@@ -1,0 +1,448 @@
+{
+  "schemaVersion": 1,
+  "recorder": "old-AgentSession (suite harness + faux provider)",
+  "normalization": {
+    "stripped": [
+      "message timestamps",
+      "message/entry ids",
+      "leaf ids",
+      "session ids",
+      "run ids",
+      "tool call ids (replayed as tc1..tcN)",
+      "response ids",
+      "session file paths",
+      "temp dir paths"
+    ],
+    "collapsed": [
+      "streaming deltas (message_update) to one marker per assistant stream"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "prompt-stream",
+      "description": "Idle prompt: a user message is appended, the model streams an assistant reply through message_start/message_update/message_end, the run ends with agent_end/agent_settled, and the session returns to idle.",
+      "coverage": [
+        "prompt",
+        "model stream",
+        "message lifecycle",
+        "agent settlement",
+        "waitForIdle"
+      ],
+      "finalMessages": [
+        {
+          "role": "user",
+          "text": "hi"
+        },
+        {
+          "role": "assistant",
+          "text": "hello from the model",
+          "stopReason": "stop"
+        }
+      ],
+      "eventTypes": [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled"
+      ],
+      "streamDeltasObserved": true,
+      "markers": {
+        "idleAfterPrompt": true,
+        "pendingAtEnd": 0,
+        "streamingAtEnd": false
+      }
+    },
+    {
+      "id": "tool-loop",
+      "description": "Tool loop: the model emits a tool call, the tool executes (tool_execution_start/end), a toolResult message is appended, and a follow-up LLM response completes the run.",
+      "coverage": [
+        "tool loop",
+        "tool execution lifecycle",
+        "toolResult message",
+        "tool call"
+      ],
+      "finalMessages": [
+        {
+          "role": "user",
+          "text": "start"
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "toolCalls": [
+            {
+              "name": "echo",
+              "args": {
+                "text": "hello"
+              },
+              "id": "tc1"
+            }
+          ],
+          "stopReason": "toolUse"
+        },
+        {
+          "role": "toolResult",
+          "text": "echo:hello",
+          "toolName": "echo",
+          "toolCallId": "tc1"
+        },
+        {
+          "role": "assistant",
+          "text": "done",
+          "stopReason": "stop"
+        }
+      ],
+      "eventTypes": [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "tool_execution_start",
+        "tool_execution_end",
+        "message_start",
+        "message_end",
+        "turn_end",
+        "turn_start",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled"
+      ],
+      "streamDeltasObserved": true,
+      "markers": {
+        "toolRuns": [
+          "hello"
+        ],
+        "toolExecutionStarts": [
+          "echo"
+        ],
+        "finalRoles": [
+          "user",
+          "assistant",
+          "toolResult",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "id": "queued-follow-up",
+      "description": "Queued follow-up: while a run is blocked in a tool, steer and followUp messages are queued (queue_update events, pendingMessageCount), then delivered in order once the run settles.",
+      "coverage": [
+        "queued follow-up",
+        "steer",
+        "followUp",
+        "queue_update",
+        "pendingMessageCount"
+      ],
+      "finalMessages": [
+        {
+          "role": "user",
+          "text": "start"
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "toolCalls": [
+            {
+              "name": "wait",
+              "args": {},
+              "id": "tc1"
+            }
+          ],
+          "stopReason": "toolUse"
+        },
+        {
+          "role": "toolResult",
+          "text": "wait released",
+          "toolName": "wait",
+          "toolCallId": "tc1"
+        },
+        {
+          "role": "user",
+          "text": "steer now"
+        },
+        {
+          "role": "assistant",
+          "text": "handled steer",
+          "stopReason": "stop"
+        },
+        {
+          "role": "user",
+          "text": "follow-up later"
+        },
+        {
+          "role": "assistant",
+          "text": "handled follow-up",
+          "stopReason": "stop"
+        }
+      ],
+      "eventTypes": [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "tool_execution_start",
+        "queue_update",
+        "queue_update",
+        "tool_execution_end",
+        "message_start",
+        "message_end",
+        "turn_end",
+        "turn_start",
+        "queue_update",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "turn_start",
+        "queue_update",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled"
+      ],
+      "streamDeltasObserved": true,
+      "markers": {
+        "queuedCountWhileBlocked": 2,
+        "queueSnapshotsWhileBlocked": [
+          {
+            "steering": [
+              "steer now"
+            ],
+            "followUp": []
+          },
+          {
+            "steering": [
+              "steer now"
+            ],
+            "followUp": [
+              "follow-up later"
+            ]
+          }
+        ],
+        "queueSnapshotsAll": [
+          {
+            "steering": [
+              "steer now"
+            ],
+            "followUp": []
+          },
+          {
+            "steering": [
+              "steer now"
+            ],
+            "followUp": [
+              "follow-up later"
+            ]
+          },
+          {
+            "steering": [],
+            "followUp": [
+              "follow-up later"
+            ]
+          },
+          {
+            "steering": [],
+            "followUp": []
+          }
+        ],
+        "pendingAtEnd": 0,
+        "finalUserTexts": [
+          "start",
+          "steer now",
+          "follow-up later"
+        ],
+        "finalAssistantTexts": [
+          "",
+          "handled steer",
+          "handled follow-up"
+        ]
+      }
+    },
+    {
+      "id": "cancel-abort",
+      "description": "Cancel/abort: aborting an active streamed response settles the run with an assistant message whose stopReason is 'aborted'.",
+      "coverage": [
+        "cancel/abort",
+        "aborted assistant message",
+        "run settlement"
+      ],
+      "finalMessages": [
+        {
+          "role": "user",
+          "text": "cancel me"
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "stopReason": "aborted"
+        }
+      ],
+      "eventTypes": [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled"
+      ],
+      "streamDeltasObserved": true,
+      "markers": {
+        "abortedStopReason": "aborted",
+        "finalRoles": [
+          "user",
+          "assistant"
+        ],
+        "streamingAtEnd": false
+      }
+    },
+    {
+      "id": "compact",
+      "description": "Compact: a manual compaction with an extension-provided summary emits compaction_start/compaction_end(manual) and replaces the seeded transcript with a compactionSummary message.",
+      "coverage": [
+        "compact",
+        "compaction events",
+        "compactionSummary message"
+      ],
+      "finalMessages": [
+        {
+          "role": "compactionSummary",
+          "summary": "summary from extension",
+          "tokensBefore": 1
+        },
+        {
+          "role": "assistant",
+          "text": "assistant response to compact",
+          "stopReason": "stop"
+        }
+      ],
+      "eventTypes": [
+        "compaction_start",
+        "compaction_end"
+      ],
+      "streamDeltasObserved": false,
+      "markers": {
+        "compactionSummary": [
+          "summary from extension"
+        ],
+        "compactionStartReasons": [
+          "manual"
+        ],
+        "compactionEndPayload": {
+          "reason": "manual",
+          "aborted": false,
+          "willRetry": false,
+          "summary": "summary from extension"
+        },
+        "finalRoles": [
+          "compactionSummary",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "id": "resume",
+      "description": "Resume: a persisted transcript is restored by a fresh session over the same file (session_start reason 'resume') and the conversation continues without losing prior messages.",
+      "coverage": [
+        "resume",
+        "session persistence",
+        "session_start(resume)"
+      ],
+      "finalMessages": [
+        {
+          "role": "user",
+          "text": "first question"
+        },
+        {
+          "role": "assistant",
+          "text": "first reply",
+          "stopReason": "stop"
+        },
+        {
+          "role": "user",
+          "text": "second question"
+        },
+        {
+          "role": "assistant",
+          "text": "reply after resume",
+          "stopReason": "stop"
+        }
+      ],
+      "eventTypes": [
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled",
+        "session_before_switch",
+        "session_shutdown",
+        "session_start",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "agent_settled"
+      ],
+      "streamDeltasObserved": true,
+      "markers": {
+        "beforeResumeRoles": [
+          "user",
+          "assistant"
+        ],
+        "restoredRoles": [
+          "user",
+          "assistant"
+        ],
+        "sessionStartReasons": [
+          "startup",
+          "resume"
+        ],
+        "sessionShutdownReasons": [
+          "resume"
+        ],
+        "sessionBeforeSwitchReasons": [
+          "resume"
+        ],
+        "finalUserTexts": [
+          "first question",
+          "second question"
+        ]
+      }
+    }
+  ]
+}
