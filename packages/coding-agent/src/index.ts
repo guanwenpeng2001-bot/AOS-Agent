@@ -494,7 +494,6 @@ export {
 	SandboxCredentialChannel,
 	SandboxError,
 	SandboxHandleDisposedError,
-	SandboxSession,
 	createSandboxBindingHandle,
 	isSandboxBindingHandle,
 	preflightTaskCredentialDelivery,
