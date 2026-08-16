@@ -33,6 +33,7 @@
 - Trusted project extensions, their tools, and project skills now enter the capability profile as trusted candidates when the project is trusted; untrusted projects remain force-denied with no bypass, while user/temporary sources keep their existing trust behavior and parent extension governance is unchanged.
 - MCP discovery and reconnect now establish the Run ID and policy binding before side effects, preserve binding lineage across capability discovery, and pass only explicitly authorized host-policy environment and header values.
 - Explicit MCP attaches persist allowlist-only `mcp.content.audit` Session entries and Run/Context receipts (server id, operation, outcome, reasonCode, descriptor id/revision, digests, byte/block counts, MIME — never tokens, raw URIs, authorization URLs, prompt arguments, or remote text). `mcp.auth.start` stays headless by default (`mcp_auth_interaction_required`) and delivers an authorization URL at most once through the extension-UI `auth_url` request.
+- ModelRuntime credential enumeration now skips MCP namespace keys (`mcp__*` / `mcp:*`) so MCP OAuth records in the shared CredentialStore never appear as model providers.
 
 ### Fixed
 

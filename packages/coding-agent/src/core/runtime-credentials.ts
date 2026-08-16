@@ -1,5 +1,14 @@
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
 
+/**
+ * MCP OAuth records share the CredentialStore file but must never appear in
+ * ModelRuntime provider enumeration. Keys use `mcp__` (this Host) or the
+ * PR-example `mcp:` prefix.
+ */
+function isMcpCredentialProviderId(providerId: string): boolean {
+	return providerId.startsWith("mcp__") || providerId.startsWith("mcp:");
+}
+
 /** Async credential store overlay for non-persistent runtime API keys. */
 export class RuntimeCredentials implements CredentialStore {
 	private readonly store: CredentialStore;
@@ -28,9 +37,14 @@ export class RuntimeCredentials implements CredentialStore {
 	}
 
 	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
-		const entries = new Map((await this.store.list(options)).map((entry) => [entry.providerId, entry]));
+		const entries = new Map(
+			(await this.store.list(options))
+				.filter((entry) => !isMcpCredentialProviderId(entry.providerId))
+				.map((entry) => [entry.providerId, entry]),
+		);
 		options?.signal?.throwIfAborted();
 		for (const providerId of this.overrides.keys()) {
+			if (isMcpCredentialProviderId(providerId)) continue;
 			entries.set(providerId, { providerId, type: "api_key" });
 		}
 		return [...entries.values()];
