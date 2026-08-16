@@ -215,6 +215,12 @@ export interface MCPConnectionStatus {
 	resourceCount?: number;
 	/** Number of prompts returned by the last successful listPrompts page. */
 	promptCount?: number;
+	/**
+	 * Set by `resources/list_changed` / `prompts/list_changed` notifications
+	 * and cleared by the next full listing. Notifications never auto-refresh
+	 * the catalog, never change a binding, and never attach anything.
+	 */
+	catalogStale?: boolean;
 }
 
 /**

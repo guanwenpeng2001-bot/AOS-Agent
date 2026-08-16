@@ -189,6 +189,9 @@ export function formatMcpPrompts(serverId: string, page: MCPPageResult<MCPPrompt
 	} else {
 		for (const prompt of page.items) {
 			info += `\n  ${prompt.name}\n`;
+			// The opaque promptId is the token `/mcp prompt <promptId>` resolves,
+			// so the catalog must always surface it.
+			info += `    ${theme.fg("dim", prompt.promptId)}\n`;
 			if (prompt.description) {
 				info += `    ${theme.fg("dim", prompt.description)}\n`;
 			}

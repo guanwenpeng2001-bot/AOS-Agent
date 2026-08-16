@@ -3212,7 +3212,11 @@ export class RpcHostController {
 				// Abort every in-flight MCP auth flow: the flow belongs to the outgoing
 				// Session and must not report against the incoming one. The command
 				// fails closed via its post-start aborted check after the rebind
-				// completes.
+				// completes, and the pending Session flow itself is cancelled so it
+				// can never complete later and persist tokens.
+				for (const [serverId] of mcpAuthControllers) {
+					session.cancelMcpAuth(serverId);
+				}
 				for (const controller of mcpAuthControllers.values()) {
 					controller.abort();
 				}
@@ -4682,7 +4686,11 @@ export class RpcHostController {
 				}
 				// Abort every in-flight MCP auth command so a pending discovery can
 				// never report after the host is gone; each fails closed via its
-				// post-start aborted check.
+				// post-start aborted check, and the pending Session flow is cancelled
+				// so it cannot complete later and persist tokens.
+				for (const [serverId] of mcpAuthControllers) {
+					session.cancelMcpAuth(serverId);
+				}
 				for (const controller of mcpAuthControllers.values()) {
 					controller.abort();
 				}
@@ -4741,7 +4749,11 @@ export class RpcHostController {
 				}
 				// Abort every in-flight MCP auth command; the command settles
 				// fail-closed via its post-start aborted check after the detach
-				// completes.
+				// completes, and the pending Session flow is cancelled so it cannot
+				// complete later and persist tokens.
+				for (const [serverId] of mcpAuthControllers) {
+					session.cancelMcpAuth(serverId);
+				}
 				for (const controller of mcpAuthControllers.values()) {
 					controller.abort();
 				}
