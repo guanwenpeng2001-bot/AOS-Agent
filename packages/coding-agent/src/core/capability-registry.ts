@@ -16,7 +16,10 @@ export type CapabilityKind =
 	| "skill"
 	| "extension"
 	| "mcp_server"
-	| "mcp_tool";
+	| "mcp_tool"
+	| "mcp_resource"
+	| "mcp_resource_template"
+	| "mcp_prompt";
 
 export type CapabilityDecision = "allow" | "ask" | "deny";
 
@@ -252,6 +255,38 @@ export function matchesCapabilityDescriptorId(descriptor: CapabilityDescriptor, 
 	return descriptor.id === id || getInternalDescriptorId(descriptor) === id;
 }
 
+/**
+ * The stable local identity component of a descriptor: the last segment of its
+ * internal id (`kind:sourceIdentity:localName`). Callers that only hold a
+ * secret-free local name (for example an MCP content digest id) can match a
+ * descriptor without ever exposing the source identity.
+ */
+export function getCapabilityLocalName(descriptor: CapabilityDescriptor): string | undefined {
+	const internalId = getInternalDescriptorId(descriptor);
+	const separator = internalId.lastIndexOf(":");
+	return separator < 0 ? undefined : internalId.slice(separator + 1);
+}
+
+/**
+ * Finds the catalog descriptor for a capability identified by kind, its MCP
+ * server id, and its stable local name. Content capabilities are keyed by
+ * their digest id (resourceId/promptId/templateId), which never contains a
+ * colon, so the last internal id segment is unambiguous.
+ */
+export function findCapabilityDescriptor(
+	catalog: CapabilityCatalog,
+	kind: CapabilityKind,
+	mcpServerId: string,
+	localName: string,
+): CapabilityDescriptor | undefined {
+	return catalog.descriptors.find(
+		(descriptor) =>
+			descriptor.kind === kind &&
+			descriptor.mcpServerId === mcpServerId &&
+			getCapabilityLocalName(descriptor) === localName,
+	);
+}
+
 function getDefaultPublicIdentity(): CapabilityPublicIdentity {
 	if (defaultPublicIdentity === undefined) {
 		defaultPublicIdentity = CapabilityPublicIdentity.loadSync(getAgentDir());
@@ -340,7 +375,19 @@ export function createCapabilityId(
 }
 
 function defaultDecisionFor(kind: CapabilityKind): CapabilityDecision {
-	return kind === "mcp_server" || kind === "mcp_tool" ? "deny" : "allow";
+	switch (kind) {
+		case "mcp_server":
+		case "mcp_tool":
+		// MCP content capabilities (resources, resource templates, prompts) are
+		// remote server content; like the server and its tools they default to
+		// deny and only a profile rule can expose them.
+		case "mcp_resource":
+		case "mcp_resource_template":
+		case "mcp_prompt":
+			return "deny";
+		default:
+			return "allow";
+	}
 }
 
 function defaultTrustFor(source: SourceInfo): boolean {
@@ -355,12 +402,19 @@ function stricterDecision(a: CapabilityDecision, b: CapabilityDecision): Capabil
 
 /**
  * Descriptors that must resolve a governing parent before they can be enabled:
- * mcp_tool is definitionally a child of an mcp_server (a lone mcp_tool is
- * denied even without a declared parentId), while extension_tool and any other
- * kind inherit their parent's decision only when they declare a parentId.
+ * mcp_tool, mcp_resource, mcp_resource_template, and mcp_prompt are
+ * definitionally children of an mcp_server (a lone child is denied even
+ * without a declared parentId), while extension_tool and any other kind
+ * inherit their parent's decision only when they declare a parentId.
  */
 function requiresParent(descriptor: CapabilityDescriptor): boolean {
-	return descriptor.kind === "mcp_tool" || getInternalParentId(descriptor) !== undefined;
+	return (
+		descriptor.kind === "mcp_tool" ||
+		descriptor.kind === "mcp_resource" ||
+		descriptor.kind === "mcp_resource_template" ||
+		descriptor.kind === "mcp_prompt" ||
+		getInternalParentId(descriptor) !== undefined
+	);
 }
 
 function defaultExposedToolName(
@@ -446,6 +500,19 @@ function resolveDecisions(
 		}
 	}
 	return decisions;
+}
+
+/**
+ * Resolves the final decision for every descriptor in a catalog, keyed by the
+ * public descriptor id. Child descriptors (mcp_tool and MCP content kinds)
+ * already carry their inherited parent cap, so a caller can evaluate a single
+ * descriptor against the map without re-walking the parent chain.
+ */
+export function resolveCapabilityDecisions(
+	catalog: CapabilityCatalog,
+	profile?: CapabilityProfile,
+): ReadonlyMap<string, CapabilityDecision> {
+	return resolveDecisions(catalog.descriptors, profile);
 }
 
 /**
@@ -577,7 +644,7 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		throw new CapabilityProfileNotFoundError(input.profile);
 	}
 
-	const decisions = resolveDecisions(input.catalog.descriptors, profileDef);
+	const decisions = resolveCapabilityDecisions(input.catalog, profileDef);
 	const approved = new Set(input.approvedDescriptorIds ?? []);
 	const isApproved = (descriptor: CapabilityDescriptor): boolean =>
 		approved.has(descriptor.id) || approved.has(getInternalDescriptorId(descriptor));

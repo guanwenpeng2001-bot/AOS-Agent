@@ -14,6 +14,10 @@ export type PolicyEnforcement = (typeof POLICY_ENFORCEMENTS)[number];
 
 export const POLICY_RESOURCES = [
 	"capability.invoke",
+	"mcp.auth",
+	"mcp.content.list",
+	"mcp.content.read",
+	"mcp.content.attach",
 	"filesystem.read",
 	"filesystem.write",
 	"filesystem.find",

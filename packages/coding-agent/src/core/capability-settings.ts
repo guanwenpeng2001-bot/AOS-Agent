@@ -129,6 +129,9 @@ const VALID_KINDS: ReadonlySet<string> = new Set<CapabilityKind>([
 	"extension",
 	"mcp_server",
 	"mcp_tool",
+	"mcp_resource",
+	"mcp_resource_template",
+	"mcp_prompt",
 ]);
 const VALID_SCOPES: ReadonlySet<string> = new Set<SourceScope>(["user", "project", "temporary"]);
 const SELECTOR_KEYS: ReadonlySet<string> = new Set(["id", "kind", "sourceId", "scope", "mcpServerId", "parentId"]);
