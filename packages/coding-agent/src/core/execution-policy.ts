@@ -27,6 +27,10 @@ export type PolicyAction = "allow" | "ask" | "deny";
 export type PolicyEnforcement = "legacy" | "host" | "sandbox";
 export type PolicyResource =
 	| "capability.invoke"
+	| "mcp.auth"
+	| "mcp.content.list"
+	| "mcp.content.read"
+	| "mcp.content.attach"
 	| "filesystem.read"
 	| "filesystem.write"
 	| "filesystem.find"
@@ -75,6 +79,10 @@ export const POLICY_ACTIONS = Object.freeze(["allow", "ask", "deny"] as const);
 export const POLICY_ENFORCEMENTS = Object.freeze(["legacy", "host", "sandbox"] as const);
 export const POLICY_RESOURCE_CATEGORIES = Object.freeze([
 	"capability.invoke",
+	"mcp.auth",
+	"mcp.content.list",
+	"mcp.content.read",
+	"mcp.content.attach",
 	"filesystem.read",
 	"filesystem.write",
 	"filesystem.find",
@@ -260,6 +268,14 @@ export interface PolicyOperationRequest {
 	readonly source: PolicyOperationSource;
 	readonly scope?: WorkspaceScope;
 	readonly capabilityId?: string;
+	/** For MCP content operations: the logical MCP server id (e.g. "docs"). */
+	readonly serverId?: string;
+	/** For MCP content operations: the digest id of the content item (resourceId/promptId). */
+	readonly sourceId?: string;
+	/** For MCP content operations: the parent mcp_server descriptor id. */
+	readonly parentId?: string;
+	/** For MCP content operations: the descriptor revision the caller resolved. */
+	readonly revision?: string;
 	readonly path?: string;
 	readonly targetPath?: string;
 	readonly command?: string;
@@ -295,7 +311,7 @@ export interface CapabilityBindingInput {
 	readonly id?: string;
 	readonly allowed?: boolean;
 	readonly trusted?: boolean;
-	readonly descriptors?: ReadonlyArray<{ readonly id: string }>;
+	readonly descriptors?: ReadonlyArray<{ readonly id: string; readonly revision?: string }>;
 	readonly allowedCapabilityIds?: ReadonlyArray<string>;
 	readonly deniedCapabilityIds?: ReadonlyArray<string>;
 	readonly allowedResources?: ReadonlyArray<PolicyResource>;
@@ -1150,7 +1166,14 @@ function normalizeSandbox(profile: ExecutionPolicyProfile, input: ResolveExecuti
 function validCapabilityBinding(value: CapabilityBindingInput | undefined): boolean {
 	if (value === undefined) return true;
 	if (value.id !== undefined && !isSafeOpaqueId(value.id)) return false;
-	if (value.descriptors?.some((descriptor) => !isRecord(descriptor) || !isSafeOpaqueId(descriptor.id))) {
+	if (
+		value.descriptors?.some(
+			(descriptor) =>
+				!isRecord(descriptor) ||
+				!isSafeOpaqueId(descriptor.id) ||
+				(descriptor.revision !== undefined && !isSafeOpaqueId(descriptor.revision)),
+		)
+	) {
 		return false;
 	}
 	for (const ids of [value.allowedCapabilityIds, value.deniedCapabilityIds]) {
@@ -1318,6 +1341,25 @@ function approvalAction(profile: ExecutionPolicyProfile, operation: PolicyOperat
 	}
 }
 
+/**
+ * MCP operation resources governed by the frozen capability binding. Every
+ * one names the governing mcp_server descriptor; item operations (read and
+ * attach) additionally name the content item descriptor and its parent.
+ */
+function isMCPOperationResource(resource: PolicyResource): boolean {
+	return (
+		resource === "mcp.auth" ||
+		resource === "mcp.content.list" ||
+		resource === "mcp.content.read" ||
+		resource === "mcp.content.attach"
+	);
+}
+
+/** MCP operations that name a content item (mcp_resource/mcp_prompt) and its parent. */
+function isMCPContentItemResource(resource: PolicyResource): boolean {
+	return resource === "mcp.content.read" || resource === "mcp.content.attach";
+}
+
 function capabilityDecision(
 	operation: PolicyOperationRequest,
 	capability: CapabilityBindingInput | undefined,
@@ -1335,12 +1377,47 @@ function capabilityDecision(
 	) {
 		return "policy_denied";
 	}
+	// MCP operations always name their governing capability: auth and list
+	// name the mcp_server descriptor, read and attach name the content item
+	// descriptor. Without it the operation cannot be checked against the
+	// frozen binding.
+	if (isMCPOperationResource(operation.resource) && capability.descriptors !== undefined && operation.capabilityId === undefined) {
+		return "policy_denied";
+	}
+	// A content read/attach also names its parent: the mcp_server descriptor
+	// that must be selected in the same frozen binding.
+	if (
+		isMCPContentItemResource(operation.resource) &&
+		capability.descriptors !== undefined &&
+		operation.parentId === undefined
+	) {
+		return "policy_denied";
+	}
 	if (operation.capabilityId !== undefined) {
 		if (capability.deniedCapabilityIds?.includes(operation.capabilityId)) return "policy_denied";
 		if (capability.allowedCapabilityIds !== undefined && !capability.allowedCapabilityIds.includes(operation.capabilityId)) {
 			return "policy_denied";
 		}
-		if (capability.descriptors !== undefined && !capability.descriptors.some((descriptor) => descriptor.id === operation.capabilityId)) {
+		if (capability.descriptors !== undefined) {
+			const descriptor = capability.descriptors.find((descriptor) => descriptor.id === operation.capabilityId);
+			if (descriptor === undefined) return "policy_denied";
+			if (isMCPOperationResource(operation.resource)) {
+				// The binding froze the exact descriptor revision. A caller holding
+				// a stale catalog entry fails closed instead of touching content
+				// the binding never selected.
+				if (operation.revision === undefined || descriptor.revision === undefined || descriptor.revision !== operation.revision) {
+					return "policy_denied";
+				}
+			}
+		}
+		if (
+			isMCPContentItemResource(operation.resource) &&
+			operation.parentId !== undefined &&
+			capability.descriptors !== undefined &&
+			!capability.descriptors.some((descriptor) => descriptor.id === operation.parentId)
+		) {
+			// A content item can never be read or attached unless its parent
+			// mcp_server is selected in the same frozen binding.
 			return "policy_denied";
 		}
 	}
@@ -1367,7 +1444,19 @@ function requiredSandboxCapability(resource: PolicyResource): keyof SandboxCapab
 }
 
 function requiredSandboxCapabilities(resource: PolicyResource): ReadonlyArray<keyof SandboxCapabilities> {
-	if (resource === "capability.invoke") return ["filesystem", "process", "network", "credentialIsolation"];
+	// Capability invocation and MCP operations (auth, content listing, content
+	// reads, and content attachment) pull remote content or execute remote
+	// behavior in-process; a sandbox-enforced profile requires the full
+	// isolation report before any of them may proceed.
+	if (
+		resource === "capability.invoke" ||
+		resource === "mcp.auth" ||
+		resource === "mcp.content.list" ||
+		resource === "mcp.content.read" ||
+		resource === "mcp.content.attach"
+	) {
+		return ["filesystem", "process", "network", "credentialIsolation"];
+	}
 	const required = requiredSandboxCapability(resource);
 	return required === undefined ? [] : [required];
 }
@@ -1493,6 +1582,18 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	if (id !== undefined && !isSafeOpaqueId(id)) return undefined;
 	if (scope !== undefined && !isWorkspaceScope(scope)) return undefined;
 	if (capabilityId !== undefined && !isSafeText(capabilityId)) return undefined;
+	const serverId = value.serverId === undefined ? undefined : isSafeText(value.serverId) ? value.serverId : undefined;
+	const sourceId = value.sourceId === undefined ? undefined : isSafeText(value.sourceId) ? value.sourceId : undefined;
+	const parentId = value.parentId === undefined ? undefined : isSafeText(value.parentId) ? value.parentId : undefined;
+	const revision = value.revision === undefined ? undefined : isSafeText(value.revision) ? value.revision : undefined;
+	if (
+		(value.serverId !== undefined && serverId === undefined) ||
+		(value.sourceId !== undefined && sourceId === undefined) ||
+		(value.parentId !== undefined && parentId === undefined) ||
+		(value.revision !== undefined && revision === undefined)
+	) {
+		return undefined;
+	}
 	const path = value.path === undefined ? undefined : isSafeText(value.path) ? value.path : undefined;
 	const targetPath = value.targetPath === undefined ? undefined : isSafeText(value.targetPath) ? value.targetPath : undefined;
 	const command = value.command === undefined ? undefined : isSafeText(value.command) ? value.command : undefined;
@@ -1525,6 +1626,10 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		...(id === undefined ? {} : { id }),
 		...(scope === undefined ? {} : { scope }),
 		...(capabilityId === undefined ? {} : { capabilityId }),
+		...(serverId === undefined ? {} : { serverId }),
+		...(sourceId === undefined ? {} : { sourceId }),
+		...(parentId === undefined ? {} : { parentId }),
+		...(revision === undefined ? {} : { revision }),
 		...(path === undefined ? {} : { path }),
 		...(targetPath === undefined ? {} : { targetPath }),
 		...(command === undefined ? {} : { command }),

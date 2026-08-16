@@ -26,6 +26,10 @@ describe("execution policy T0 contract", () => {
 		expect(POLICY_ENFORCEMENTS).toEqual(["legacy", "host", "sandbox"]);
 		expect(POLICY_RESOURCES).toEqual([
 			"capability.invoke",
+			"mcp.auth",
+			"mcp.content.list",
+			"mcp.content.read",
+			"mcp.content.attach",
 			"filesystem.read",
 			"filesystem.write",
 			"filesystem.find",
