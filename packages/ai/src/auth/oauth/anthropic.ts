@@ -12,10 +12,10 @@ import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
 import { generatePKCE } from "./pkce.ts";
 
 type CallbackServerInfo = {
-	server: Server;
 	redirectUri: string;
 	cancelWait: () => void;
 	waitForCode: () => Promise<{ code: string; state: string } | null>;
+	close: () => Promise<void>;
 };
 
 type NodeApis = {
@@ -29,7 +29,6 @@ const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-const CALLBACK_HOST = getProviderEnvValue("AOS_AGENT_OAUTH_CALLBACK_HOST") || "127.0.0.1";
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
@@ -47,6 +46,21 @@ async function getNodeApis(): Promise<NodeApis> {
 	}
 	nodeApis = await nodeApisPromise;
 	return nodeApis;
+}
+
+function getCallbackHosts(): string[] {
+	const configuredHost = getProviderEnvValue("AOS_AGENT_OAUTH_CALLBACK_HOST");
+	return configuredHost ? [configuredHost] : ["127.0.0.1", "localhost"];
+}
+
+function closeCallbackServer(server: Server): Promise<void> {
+	return new Promise((resolve) => {
+		try {
+			server.close(() => resolve());
+		} catch {
+			resolve();
+		}
+	});
 }
 
 function parseAuthorizationInput(input: string): { code?: string; state?: string } {
@@ -96,75 +110,124 @@ function formatErrorDetails(error: unknown): string {
 	return String(error);
 }
 
-async function startCallbackServer(expectedState: string): Promise<CallbackServerInfo> {
+async function startCallbackServer(expectedState: string, signal: AbortSignal): Promise<CallbackServerInfo | undefined> {
 	const { createServer } = await getNodeApis();
 
-	return new Promise((resolve, reject) => {
-		let settleWait: ((value: { code: string; state: string } | null) => void) | undefined;
-		const waitForCodePromise = new Promise<{ code: string; state: string } | null>((resolveWait) => {
-			let settled = false;
-			settleWait = (value) => {
-				if (settled) return;
-				settled = true;
-				resolveWait(value);
+	for (const callbackHost of getCallbackHosts()) {
+		if (signal.aborted) return undefined;
+		const callbackServer = await new Promise<CallbackServerInfo | undefined>((resolve) => {
+			let settleWait: ((value: { code: string; state: string } | null) => void) | undefined;
+			let listening = false;
+			let startupFailed = false;
+			let closePromise: Promise<void> | undefined;
+			const waitForCodePromise = new Promise<{ code: string; state: string } | null>((resolveWait) => {
+				let settled = false;
+				settleWait = (value) => {
+					if (settled) return;
+					settled = true;
+					resolveWait(value);
+				};
+			});
+
+			const server = createServer((req, res) => {
+				try {
+					const url = new URL(req.url || "", "http://localhost");
+					if (url.pathname !== CALLBACK_PATH) {
+						res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(oauthErrorHtml("Callback route not found."));
+						return;
+					}
+
+					const code = url.searchParams.get("code");
+					const state = url.searchParams.get("state");
+					const error = url.searchParams.get("error");
+
+					if (error) {
+						res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(oauthErrorHtml("Anthropic authentication did not complete.", `Error: ${error}`));
+						return;
+					}
+
+					if (!code || !state) {
+						res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(oauthErrorHtml("Missing code or state parameter."));
+						return;
+					}
+
+					if (state !== expectedState) {
+						res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(oauthErrorHtml("State mismatch."));
+						return;
+					}
+
+					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+					res.end(oauthSuccessHtml("Anthropic authentication completed. You can close this window."));
+					settleWait?.({ code, state });
+				} catch {
+					res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+					res.end("Internal error");
+				}
+			});
+
+			const close = (): Promise<void> => {
+				settleWait?.(null);
+				server.removeListener("error", onServerError);
+				signal.removeEventListener("abort", onAbort);
+				if (!closePromise) closePromise = closeCallbackServer(server);
+				return closePromise;
 			};
-		});
 
-		const server = createServer((req, res) => {
+			const failStartup = (): void => {
+				if (startupFailed) return;
+				startupFailed = true;
+				void close().then(() => resolve(undefined));
+			};
+
+			function onServerError(): void {
+				if (!listening) {
+					failStartup();
+					return;
+				}
+				void close();
+			}
+
+			function onAbort(): void {
+				if (!listening) {
+					failStartup();
+					return;
+				}
+				void close();
+			}
+
+			server.on("error", onServerError);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) {
+				failStartup();
+				return;
+			}
 			try {
-				const url = new URL(req.url || "", "http://localhost");
-				if (url.pathname !== CALLBACK_PATH) {
-					res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Callback route not found."));
-					return;
-				}
-
-				const code = url.searchParams.get("code");
-				const state = url.searchParams.get("state");
-				const error = url.searchParams.get("error");
-
-				if (error) {
-					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Anthropic authentication did not complete.", `Error: ${error}`));
-					return;
-				}
-
-				if (!code || !state) {
-					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("Missing code or state parameter."));
-					return;
-				}
-
-				if (state !== expectedState) {
-					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-					res.end(oauthErrorHtml("State mismatch."));
-					return;
-				}
-
-				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(oauthSuccessHtml("Anthropic authentication completed. You can close this window."));
-				settleWait?.({ code, state });
+				server.listen(CALLBACK_PORT, callbackHost, () => {
+					if (startupFailed) return;
+					listening = true;
+					resolve({
+						redirectUri: REDIRECT_URI,
+						cancelWait: () => {
+							settleWait?.(null);
+						},
+						waitForCode: () => waitForCodePromise,
+						close,
+					});
+				});
 			} catch {
-				res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-				res.end("Internal error");
+				failStartup();
 			}
 		});
 
-		server.on("error", (err) => {
-			reject(err);
-		});
+		if (callbackServer) return callbackServer;
+		if (signal.aborted) return undefined;
+	}
 
-		server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
-			resolve({
-				server,
-				redirectUri: REDIRECT_URI,
-				cancelWait: () => {
-					settleWait?.(null);
-				},
-				waitForCode: () => waitForCodePromise,
-			});
-		});
-	});
+	return undefined;
 }
 
 async function postJson(url: string, body: Record<string, string | number>, signal: AbortSignal): Promise<string> {
@@ -232,10 +295,18 @@ async function exchangeAuthorizationCode(
 }
 
 async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
+	if (interaction.signal.aborted) throw new Error("Login cancelled");
 	const { verifier, challenge } = await generatePKCE();
-	const server = await startCallbackServer(verifier);
+	const server = await startCallbackServer(verifier, interaction.signal);
+	if (interaction.signal.aborted) {
+		await server?.close();
+		throw new Error("Login cancelled");
+	}
 	const manualAbort = new AbortController();
-	const onAbort = () => server.cancelWait();
+	const onAbort = () => {
+		manualAbort.abort();
+		server?.cancelWait();
+	};
 	interaction.signal.addEventListener("abort", onAbort, { once: true });
 	if (interaction.signal.aborted) onAbort();
 	let code: string | undefined;
@@ -260,6 +331,12 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			instructions:
 				"Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.",
 		});
+		if (!server) {
+			interaction.notify({
+				type: "info",
+				message: "The local OAuth callback listener is unavailable. Paste the final redirect URL manually.",
+			});
+		}
 
 		const manualPromise = interaction
 			.prompt({
@@ -270,14 +347,14 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 			})
 			.then((input) => {
 				manualInput = input;
-				server.cancelWait();
+				server?.cancelWait();
 			})
 			.catch((error) => {
 				manualError = error instanceof Error ? error : new Error(String(error));
-				server.cancelWait();
+				server?.cancelWait();
 			});
 
-		const result = await server.waitForCode();
+		const result = await (server?.waitForCode() ?? Promise.resolve(null));
 		if (manualError) throw manualError;
 		if (result?.code) {
 			code = result.code;
@@ -307,7 +384,7 @@ async function loginAnthropic(interaction: ProviderAuthInteraction): Promise<OAu
 	} finally {
 		interaction.signal.removeEventListener("abort", onAbort);
 		manualAbort.abort();
-		server.server.close();
+		await server?.close();
 	}
 }
 
