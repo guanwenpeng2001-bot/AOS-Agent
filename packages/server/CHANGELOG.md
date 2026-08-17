@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Use deterministic Windows named pipes for the Unix transport and keep filesystem lifecycle checks portable.
+
 ## [0.84.3] - 2026-08-10
 
 ### Added

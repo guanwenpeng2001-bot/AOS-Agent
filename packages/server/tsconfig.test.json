@@ -6,7 +6,9 @@
 		"moduleResolution": "NodeNext",
 		"types": ["node", "vitest"],
 		"paths": {
-			"@aos-agent/protocol": ["../protocol/src/index.ts"]
+			"@aos-agent/ai": ["../ai/src/index.ts"],
+			"@aos-agent/protocol": ["../protocol/src/index.ts"],
+			"@aos-agent/telemetry": ["../telemetry/src/index.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"]

@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ByteConnection } from "../src/connection.ts";
 import { AosServer } from "../src/index.ts";
 import { TestServerService } from "../src/testing/index.ts";
+import { getWindowsPipePath } from "../src/transports/unix/listener.ts";
 import { createUnixServer } from "../src/transports/unix/index.ts";
 
 const service = new TestServerService();
@@ -33,13 +34,18 @@ test("rejects Unix socket paths that cannot fit in sockaddr_un", () => {
 	expect(() => createUnixServer(service, { path: `/tmp/${"x".repeat(512)}` })).toThrow(/too long/);
 });
 
-test("rejects an overlong derived private Unix bind path", async () => {
+test("handles a derived private Unix bind path across platforms", async () => {
 	const maxLength = process.platform === "linux" ? 107 : 103;
 	const suffixLength = Buffer.byteLength("/tmp//s");
 	const path = `/tmp/${"x".repeat(maxLength - suffixLength)}/s`;
 	server = createUnixServer(service, { path });
 
-	await expect(server.start()).rejects.toThrow(/private Unix bind path.*too long/);
+	if (process.platform === "win32") {
+		await server.start();
+		expect(server.addresses[0]).toBe(getWindowsPipePath(path));
+	} else {
+		await expect(server.start()).rejects.toThrow(/private Unix bind path.*too long/);
+	}
 });
 
 test("rejects concurrent start calls without leaking the Unix listener", async () => {
