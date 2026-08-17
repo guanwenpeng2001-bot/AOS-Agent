@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { allowNetwork } from "./test-network-env.ts";
+import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
 
@@ -59,13 +60,9 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 	);
 
 	return await new Promise((resolvePromise, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...args], {
+		const child = spawn(process.execPath, sourceProcessArgs(cliPath, args), {
 			cwd: projectDir,
-			env: {
-				...process.env,
-				[ENV_AGENT_DIR]: agentDir,
-				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
-			},
+			env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: agentDir },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
 const tempDirs: string[] = [];
@@ -73,14 +74,9 @@ async function runCli(
 
 	let stderr = "";
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...resolvedArgs], {
+		const child = spawn(process.execPath, sourceProcessArgs(cliPath, resolvedArgs), {
 			cwd: dirs.projectDir,
-			env: {
-				...process.env,
-				[ENV_AGENT_DIR]: dirs.agentDir,
-				AOS_AGENT_OFFLINE: "1",
-				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
-			},
+			env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: dirs.agentDir, AOS_AGENT_OFFLINE: "1" },
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		child.stderr.on("data", (chunk) => {
