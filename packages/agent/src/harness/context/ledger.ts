@@ -2,10 +2,12 @@ import { canonicalFoundationJson, newFoundationId, sha256HexValue, type Foundati
 import {
 	SessionArtifactStore,
 	redactArtifactReference,
+	type ArtifactValidationState,
 	type ArtifactBlobStore,
 	type ArtifactPutOptions,
 	type ArtifactReference,
 } from "../artifacts.ts";
+import type { ToolResultMessage, Usage } from "@aos-agent/ai";
 import {
 	SessionMemoryStore,
 	type MemoryEntry,
@@ -17,6 +19,7 @@ import {
 import type { Session } from "../session/session.ts";
 import type { FileSystem } from "../types.ts";
 import { SessionLedgerBindingError, SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
+import type { FoundationCorrelationInputV1 } from "../session/durable/types.ts";
 import {
 	contextSnapshotFromJSON,
 	createContextSnapshot,
@@ -61,6 +64,52 @@ export interface SessionT5LedgerOptions extends SessionLedgerWriterOptions {
 	readonly memoryOwnerId?: string;
 	readonly memoryParentId?: string;
 	readonly memoryProvenance?: MemoryProvenanceBoundary;
+}
+
+export interface ToolResultArtifactContentV1 {
+	readonly index: number;
+	readonly kind: "text" | "image";
+	readonly reference: ArtifactReference;
+}
+
+export interface ToolResultFactV1 {
+	readonly schemaVersion: 1;
+	readonly resultEntryId: string;
+	readonly toolCallId: string;
+	readonly toolName: string;
+	readonly content: readonly ToolResultArtifactContentV1[];
+	readonly detailsRef?: ArtifactReference;
+	readonly usage?: Usage;
+	readonly addedToolNames?: readonly string[];
+	readonly isError: boolean;
+	readonly timestamp: number;
+	readonly validation: {
+		readonly state: ArtifactValidationState;
+		readonly validator: string;
+		readonly validatedAt: number;
+		readonly artifactIds: readonly string[];
+	};
+	readonly provenance: {
+		readonly producer: "agent-harness";
+		readonly sessionId: string;
+		readonly laneId: string;
+		readonly runId: string;
+		readonly resultEntryId: string;
+		readonly toolCallId: string;
+		readonly toolName: string;
+	};
+}
+
+export interface ToolResultPersistenceOptions {
+	readonly lane: string;
+	readonly runId: string;
+	readonly resultEntryId: string;
+	readonly correlation?: Partial<FoundationCorrelationInputV1>;
+}
+
+export interface PersistedToolResultV1 {
+	readonly fact: ToolResultFactV1;
+	readonly message: ToolResultMessage<ArtifactReference>;
 }
 
 export interface PromptCacheRecordV1 {
@@ -181,6 +230,32 @@ function latestFacts<T extends { readonly objectId: string; readonly seq: number
 	return [...latest.values()].sort((left, right) => left.seq - right.seq);
 }
 
+function decodeImageData(data: string): Uint8Array {
+	const encoded = data.startsWith("data:") ? data.slice(data.indexOf(",") + 1) : data;
+	const binary = atob(encoded);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+	return bytes;
+}
+
+function toolResultPlaceholder(reference: ArtifactReference): string {
+	return `[tool-result-artifact ${reference.digest} media=${reference.mediaType} bytes=${reference.sizeBytes}]`;
+}
+
+function projectToolResult(fact: ToolResultFactV1): ToolResultMessage<ArtifactReference> {
+	return {
+		role: "toolResult",
+		toolCallId: fact.toolCallId,
+		toolName: fact.toolName,
+		content: fact.content.map(({ kind, reference }) => ({ type: "text" as const, text: `${kind}:${toolResultPlaceholder(reference)}` })),
+		...(fact.detailsRef === undefined ? {} : { details: structuredClone(fact.detailsRef) }),
+		...(fact.usage === undefined ? {} : { usage: structuredClone(fact.usage) }),
+		...(fact.addedToolNames === undefined ? {} : { addedToolNames: [...fact.addedToolNames] }),
+		isError: fact.isError,
+		timestamp: fact.timestamp,
+	};
+}
+
 /**
  * Complete T5 facade. Every durable read/write routes through one Session
  * foundation ledger; artifact blobs and transient cache data are projections.
@@ -203,8 +278,8 @@ export class SessionT5Ledger {
 		}
 		this.artifacts = options.artifacts ?? new SessionArtifactStore(session, { ...options, writer: this.writer, blobStore: options.artifactBlobStore });
 		this.memory = new SessionMemoryStore(session, this.artifacts, {
-			...options,
 			policy: options.memoryPolicy,
+			now: options.now,
 			writer: this.writer,
 			memoryScopeId: options.memoryScopeId,
 			memoryOwnerId: options.memoryOwnerId,
@@ -213,6 +288,107 @@ export class SessionT5Ledger {
 		});
 		this.now = options.now ?? Date.now;
 		this.defaultBindingEpochId = options.bindingEpochId;
+	}
+
+	/**
+	 * Persist a tool result as artifact references and a validation fact. The
+	 * Session transcript receives only a redacted projection, so image bytes,
+	 * attachments, and structured details never become JSONL payloads.
+	 */
+	async persistToolResult(message: ToolResultMessage, options: ToolResultPersistenceOptions): Promise<PersistedToolResultV1> {
+		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.toolResult, options.resultEntryId);
+		if (existing !== undefined) {
+			const fact = existing.payload as unknown as ToolResultFactV1;
+			return { fact: structuredClone(fact), message: projectToolResult(fact) };
+		}
+
+		const content: ToolResultArtifactContentV1[] = [];
+		const artifactIds: string[] = [];
+		for (const [index, block] of message.content.entries()) {
+			const isImage = block.type === "image";
+			const bytes = isImage ? decodeImageData(block.data) : new TextEncoder().encode(block.text);
+			const reference = isImage
+				? await this.artifacts.putAttachment(bytes, {
+						mediaType: block.mimeType,
+						producer: "t5-tool-result",
+						validation: { state: "verified", validator: "t5.tool_result", validatedAt: this.now() },
+					})
+				: await this.artifacts.putStructuredResult(bytes, {
+						mediaType: "text/plain",
+						producer: "t5-tool-result",
+						validation: { state: "verified", validator: "t5.tool_result", validatedAt: this.now() },
+					});
+			artifactIds.push(reference.artifactId);
+			await this.artifacts.retainReference({
+				artifactId: reference.artifactId,
+				referenceId: `tool-result:${options.resultEntryId}:${index}`,
+				consumerType: T5_LEDGER_OBJECT_TYPES.toolResult,
+				consumerId: options.resultEntryId,
+			});
+			content.push({ index, kind: isImage ? "image" : "text", reference });
+		}
+
+		let detailsRef: ArtifactReference | undefined;
+		let validationState: ArtifactValidationState = "verified";
+		if (message.details !== undefined) {
+			let serialized: string;
+			try {
+				serialized = JSON.stringify(message.details) ?? "null";
+			} catch {
+				serialized = "[unserializable tool details]";
+				validationState = "unknown";
+			}
+			const details = await this.artifacts.putStructuredResult(new TextEncoder().encode(serialized), {
+				mediaType: "application/json",
+				producer: "t5-tool-result",
+				validation: { state: validationState, validator: "t5.tool_result", validatedAt: this.now() },
+			});
+			detailsRef = details;
+			artifactIds.push(details.artifactId);
+			await this.artifacts.retainReference({
+				artifactId: details.artifactId,
+				referenceId: `tool-result:${options.resultEntryId}:details`,
+				consumerType: T5_LEDGER_OBJECT_TYPES.toolResult,
+				consumerId: options.resultEntryId,
+			});
+		}
+
+		const metadata = await this.session.getMetadata();
+		const fact: ToolResultFactV1 = {
+			schemaVersion: 1,
+			resultEntryId: options.resultEntryId,
+			toolCallId: message.toolCallId,
+			toolName: message.toolName,
+			content,
+			...(detailsRef === undefined ? {} : { detailsRef }),
+			...(message.usage === undefined ? {} : { usage: structuredClone(message.usage) }),
+			...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
+			isError: message.isError,
+			timestamp: message.timestamp,
+			validation: { state: validationState, validator: "t5.tool_result", validatedAt: this.now(), artifactIds },
+			provenance: {
+				producer: "agent-harness",
+				sessionId: metadata.id,
+				laneId: options.lane,
+				runId: options.runId,
+				resultEntryId: options.resultEntryId,
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+			},
+		};
+		const accepted = await this.writer.writeFact({
+			objectType: T5_LEDGER_OBJECT_TYPES.toolResult,
+			objectId: options.resultEntryId,
+			clientRequestId: `tool-result:${options.resultEntryId}`,
+			payload: asFoundationJson(fact),
+			correlation: {
+				...(options.correlation ?? {}),
+				laneId: options.lane,
+				runId: options.runId,
+			},
+		});
+		const stored = accepted.payload as unknown as ToolResultFactV1;
+		return { fact: structuredClone(stored), message: projectToolResult(stored) };
 	}
 
 	async saveContextSnapshot(snapshot: ContextSnapshot): Promise<ContextSnapshot> {

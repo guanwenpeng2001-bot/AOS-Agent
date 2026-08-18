@@ -255,10 +255,10 @@ export class SessionMemoryStore implements MemoryStore {
 		this.artifacts = artifacts;
 		this.policy = options.policy;
 		this.now = options.now ?? Date.now;
-		// Session storage is already the durable outer boundary. Keep defaults stable
-		// across reopen; callers that share a Session can opt into explicit owners.
+		// The Session ledger writer owner is a lease identity, not a memory subject.
+		// Keep the memory subject stable when a reopened Session acquires a new lease.
 		const scopeId = options.memoryScopeId ?? options.scopeId ?? "session";
-		const ownerId = options.memoryOwnerId ?? options.ownerId ?? "session";
+		const ownerId = options.memoryOwnerId ?? "session";
 		const parentId = options.memoryParentId ?? options.parentId;
 		this.scope = {
 			scopeId: requireIdentity(scopeId, "scopeId"),

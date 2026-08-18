@@ -308,7 +308,7 @@ export function resolveInstructionSources(
 		sources: resolvedSources,
 		locks: orderedLocks,
 		decisions: finalDecisions,
-		path: normalizePath(options.path),
+		...(options.path === undefined ? {} : { path: normalizePath(options.path) }),
 	};
 	const digest = `instruction:sha256:${sha256HexValue(new TextEncoder().encode(canonicalFoundationJson(digestBody)))}`;
 	return {

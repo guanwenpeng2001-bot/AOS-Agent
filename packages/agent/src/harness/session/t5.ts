@@ -27,6 +27,7 @@ export const T5_LEDGER_OBJECT_TYPES = Object.freeze({
 	rewindExecution: "t5.rewind_execution",
 	artifactManifest: "t5.artifact_manifest",
 	artifactReference: "t5.artifact_reference",
+	toolResult: "t5.tool_result",
 	contextBuild: "t5.context_build",
 	taskContextPackage: "t5.task_context_package",
 } as const);

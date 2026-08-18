@@ -8,8 +8,9 @@ import {
 	type Resources,
 	type StreamOptions,
 } from "../../src/harness/agent-harness.ts";
+import { InMemoryArtifactBlobStore } from "../../src/harness/artifacts.ts";
 import { createHostTerminalGateAuthorityV1, fingerprintFoundationValue, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
-import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
+import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
 function createSession(id = "session"): Session {
@@ -160,6 +161,98 @@ describe("AgentHarness runtime", () => {
 		expect((facts[2]?.payload as { taskResultId?: string }).taskResultId).toContain("task_result_");
 		expect((facts[1]?.payload as { provenance: { providerId: string } }).provenance.providerId).toBe("host-harness-runtime");
 		await harness.close();
+	});
+
+	it("selects an in-memory artifact backend without an unhandled root rejection", async () => {
+		const session = createSession("in-memory-artifacts");
+		const unhandled: unknown[] = [];
+		const onUnhandledRejection = (reason: unknown): void => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			const { harness } = await AgentHarness.create({ session, ...createModelsWithResponse() });
+			await Promise.resolve();
+			expect(harness.artifacts.blobs).toBeInstanceOf(InMemoryArtifactBlobStore);
+			expect(unhandled).toEqual([]);
+			await harness.close();
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+		}
+	});
+
+	it("projects public tool results through artifact and validation facts", async () => {
+		const session = createSession("tool-result-artifacts");
+		const blobStore = new InMemoryArtifactBlobStore();
+		const runtime = createModelsWithResponse();
+		const models = Object.create(runtime.models) as Models;
+		let responses = 0;
+		models.streamSimple = (requestModel) => {
+			const stream = createAssistantMessageEventStream();
+			if (responses++ === 0) {
+				stream.push({
+					type: "done",
+					reason: "toolUse",
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "artifact-call", name: "artifact-tool", arguments: {} }],
+						api: requestModel.api,
+						provider: requestModel.provider,
+						model: requestModel.id,
+						usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+						stopReason: "toolUse",
+						timestamp: Date.now(),
+					},
+				});
+			} else {
+				stream.push({ type: "done", reason: "stop", message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: requestModel.api,
+					provider: requestModel.provider,
+					model: requestModel.id,
+					usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "stop",
+					timestamp: Date.now(),
+				} });
+			}
+			return stream;
+		};
+		const tool: HarnessTool = {
+			name: "artifact-tool",
+			label: "Artifact tool",
+			description: "Returns structured and binary data",
+			parameters: { type: "object", properties: {}, additionalProperties: false } as HarnessTool["parameters"],
+			execute: async () => ({
+				content: [
+					{ type: "text" as const, text: `large-secret-output-${"x".repeat(4096)}` },
+					{ type: "image" as const, data: "AQID", mimeType: "image/png" },
+				],
+				details: { structured: `secret-structured-output-${"y".repeat(1024)}` },
+			}),
+		};
+		const { harness } = await AgentHarness.create({ session, models, model: runtime.model, tools: [tool], t5Options: { artifactBlobStore: blobStore } });
+		const result = await harness.prompt("artifact conversion");
+		expect(result.ok).toBe(true);
+		const entries = await session.findEntries({ type: "message", order: "oldestFirst" });
+		const toolEntry = entries.find((entry) => entry.type === "message" && entry.message.role === "toolResult");
+		expect(toolEntry).toBeDefined();
+		const persisted = JSON.stringify(toolEntry);
+		expect(persisted).not.toContain("large-secret-output");
+		expect(persisted).not.toContain("secret-structured-output");
+		expect(persisted).not.toContain("AQID");
+		const facts = (await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" })).filter((record) => record.kind === "fact");
+		expect(facts).toHaveLength(1);
+		expect(facts[0]?.payload).toMatchObject({ validation: { state: "verified" }, provenance: { runId: expect.any(String), toolCallId: "artifact-call" } });
+		const fact = facts[0]?.payload as { content: Array<{ reference: { artifactId: string } }>; detailsRef: { artifactId: string } };
+		expect(fact.content).toHaveLength(2);
+		expect(await harness.artifacts.verify(fact.content[1]!.reference.artifactId)).toBe("verified");
+		expect(await harness.artifacts.verify(fact.detailsRef.artifactId)).toBe("verified");
+		await harness.close();
+		const reopened = await AgentHarness.create({ session, ...createModelsWithResponse(), t5Options: { artifactBlobStore: blobStore } });
+		expect(await reopened.harness.artifacts.verify(fact.content[1]!.reference.artifactId)).toBe("verified");
+		expect(await reopened.harness.t5.writer.readFact(T5_LEDGER_OBJECT_TYPES.toolResult, toolEntry!.id)).toBeDefined();
+		await reopened.harness.close();
 	});
 
 	it("uses the latest durable operation evidence for receipt timestamps", async () => {

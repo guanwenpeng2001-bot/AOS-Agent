@@ -464,6 +464,22 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
+interface SessionMetadataWithPath {
+	readonly path?: unknown;
+}
+
+function hasExplicitArtifactBackend(options: SessionT5LedgerOptions | undefined): boolean {
+	return options?.artifacts !== undefined || options?.artifactBlobStore !== undefined || options?.artifactRoot !== undefined;
+}
+
+async function composeT5Options(options: AgentHarnessOptions): Promise<AgentHarnessOptions> {
+	if (options.t5 !== undefined || hasExplicitArtifactBackend(options.t5Options) || options.t5Options?.allowInMemory !== undefined) return options;
+	const metadata = await options.session.getMetadata();
+	const hasPersistentPath = typeof (metadata as SessionMetadataWithPath).path === "string";
+	if (hasPersistentPath) return options;
+	return { ...options, t5Options: { ...(options.t5Options ?? {}), allowInMemory: true } };
+}
+
 function sessionStopReason(message: AssistantMessage): SessionStopReason {
 	return message.stopReason === "pending" ? "error" : message.stopReason;
 }
@@ -856,7 +872,15 @@ export class AgentHarness implements AgentLane {
 		if (options.t5 !== undefined && options.t5.session !== options.session) {
 			throw new SessionLedgerBindingError("AgentHarness T5 authority must use the supplied Session");
 		}
-		this.t5 = options.t5 ?? new SessionT5Ledger(options.session, options.t5Options);
+		this.foundationOwnerId =
+			options.foundationExecution === undefined
+				? undefined
+				: options.t5Options?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
+		const t5Options =
+			this.foundationOwnerId === undefined || options.t5Options?.ownerId !== undefined
+				? options.t5Options
+				: { ...(options.t5Options ?? {}), ownerId: this.foundationOwnerId };
+		this.t5 = options.t5 ?? new SessionT5Ledger(options.session, t5Options);
 		this.context = this.t5;
 		this.memory = this.t5.memory;
 		this.artifacts = this.t5.artifacts;
@@ -887,7 +911,6 @@ export class AgentHarness implements AgentLane {
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
 		this.artifactStore = options.artifactStore;
-		this.foundationOwnerId = options.foundationExecution === undefined ? undefined : `agent-harness:${options.session.idGenerator.next()}`;
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
 		this.hooks = this.hookRegistry;
@@ -897,7 +920,7 @@ export class AgentHarness implements AgentLane {
 	static async create(
 		options: AgentHarnessOptions,
 	): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
-		const harness = new AgentHarness(options);
+		const harness = new AgentHarness(await composeT5Options(options));
 		try {
 			await harness.initializeFoundationExecution();
 			const suspended = await harness.restore();
@@ -2303,6 +2326,12 @@ export class AgentHarness implements AgentLane {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
 		const started = records.find((record) => record.toolCallId === message.toolCallId);
 		if (!started) throw new HarnessFault(`Tool result ${message.toolCallId} has no durable start`, undefined);
+		const persisted = await this.t5.persistToolResult(message, {
+			lane,
+			runId,
+			resultEntryId: started.resultEntryId,
+			correlation: this.foundationCorrelation(lane, runId, { runId }),
+		});
 		const folded = this.foundationExecution === undefined ? undefined : await this.foundationReceiptForToolCall(lane, runId, message.toolCallId);
 		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, folded.error.code === "session_ledger_conflict" ? "side_effect_unknown" : "side_effect_unknown");
 		const receipt = folded?.ok === true ? folded.value : undefined;
@@ -2325,10 +2354,7 @@ export class AgentHarness implements AgentLane {
 				data: this.foundationJson(resultEntry, "tool result entry"),
 			};
 		} else {
-			if (message.content.some((item) => item.type === "image")) {
-				throw new HarnessToolPipelineError("Image tool result has no recoverable durable ArtifactRef", "side_effect_unknown");
-			}
-			target = { type: "message", id: started.resultEntryId, message: structuredClone(message) };
+			target = { type: "message", id: started.resultEntryId, message: persisted.message };
 		}
 		await this.persistOperationEntry(lane, runId, target);
 		if (message.usage) {

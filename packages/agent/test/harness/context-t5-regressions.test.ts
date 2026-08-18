@@ -162,6 +162,23 @@ describe("T5 authority and CAS regressions", () => {
 });
 
 describe("T5 durable reopen and recovery regressions", () => {
+	it("reopens memory with a new lease writer while preserving child boundaries", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "t5-memory-reopen", createdAt: 1 }));
+		const blobStore = new InMemoryArtifactBlobStore();
+		const first = new SessionT5Ledger(session, { ownerId: "lease-first", artifactBlobStore: blobStore });
+		const root = await first.putMemory({ id: "root-reopen", kind: "fact", trust: "user_owned", content: "root", source: "root-source", principal: "system" });
+		const childStore = first.memory.fork({ scope: "agent", scopeId: "agent-reopen", ownerId: "agent-owner", provenance: { taskId: "task-reopen" } });
+		const child = await childStore.put({ id: "child-reopen", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { taskId: "task-reopen" }, principal: "system" });
+		await first.writer.releaseLease();
+
+		const reopened = new SessionT5Ledger(session, { ownerId: "lease-second", artifactBlobStore: blobStore });
+		expect(await reopened.getMemory(root.id, "system")).toMatchObject({ id: root.id, content: "root" });
+		expect(await reopened.memory.get(child.id, "system")).toBeUndefined();
+		const reopenedChild = reopened.memory.fork({ scope: "agent", scopeId: "agent-reopen", ownerId: "agent-owner", provenance: { taskId: "task-reopen" } });
+		expect(await reopenedChild.get(root.id, "system")).toBeUndefined();
+		expect(await reopenedChild.get(child.id, "system")).toMatchObject({ id: child.id, content: "child" });
+	});
+
 	it("uses a persistent default blob root for a JSONL Session", async () => {
 		const root = createTempDir();
 		const env = new NodeExecutionEnv({ cwd: root });

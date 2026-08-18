@@ -423,12 +423,20 @@ function validateReference(value: ArtifactReferenceRecordV1): ArtifactReferenceR
  * test-only allowInMemory option) instead of silently losing artifacts.
  */
 class SessionFileArtifactBlobStore implements ArtifactBlobStore {
-	private readonly rootPromise: Promise<string>;
+	private readonly configuredRoot?: string;
 	private readonly session: Session;
+	private rootPromise?: Promise<string>;
 
 	constructor(session: Session, root?: string) {
 		this.session = session;
-		this.rootPromise = root === undefined ? this.deriveRoot() : Promise.resolve(root);
+		this.configuredRoot = root;
+	}
+
+	private root(): Promise<string> {
+		if (this.rootPromise === undefined) {
+			this.rootPromise = this.configuredRoot === undefined ? this.deriveRoot() : Promise.resolve(this.configuredRoot);
+		}
+		return this.rootPromise;
 	}
 
 	private async deriveRoot(): Promise<string> {
@@ -445,7 +453,7 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 
 	private async path(id: ArtifactId): Promise<string> {
 		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
-		return joinArtifactPath(await this.rootPromise, "blobs", id.slice(0, 2), id.slice(2));
+		return joinArtifactPath(await this.root(), "blobs", id.slice(0, 2), id.slice(2));
 	}
 
 	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
@@ -453,7 +461,7 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 		if (!verifyArtifact(content, id)) throw new ArtifactStoreError("corrupt", `Blob content does not match artifact id: ${id}`);
 		const path = await this.path(id);
 		const fs = nodeFileSystemPromises();
-		await fs.mkdir(joinArtifactPath(await this.rootPromise, "blobs", id.slice(0, 2)), { recursive: true });
+		await fs.mkdir(joinArtifactPath(await this.root(), "blobs", id.slice(0, 2)), { recursive: true });
 		await fs.writeFile(path, content);
 	}
 
