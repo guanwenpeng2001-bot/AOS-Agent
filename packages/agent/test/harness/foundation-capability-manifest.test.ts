@@ -546,6 +546,19 @@ describe("Foundation v1 capability manifest", () => {
 		}
 	});
 
+	it("seals C011 and C050 at the gateway layer while leaving ModelBroker composition to T8", () => {
+		const c011 = FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 11);
+		const c050 = FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 50);
+		expect(c011).toMatchObject({ closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/gateway.ts" });
+		expect(c050).toMatchObject({ closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/gateway.ts" });
+		for (const entry of [c011, c050]) {
+			expect(entry?.tests).toContain("packages/agent/test/harness/t6-executor-gateway-conformance.test.ts");
+			expect(entry?.publicContract).toContain("ScopedExecutionGateway");
+			expect(entry?.publicContract).toContain("ScopedModelGateway");
+		}
+		expect(c050?.laterConsumer).toBe("13");
+	});
+
 	it("never claims a later provider as closed, and future-only ids stay within the owned capability space", () => {
 		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
 			if (entry.laterConsumer === undefined) continue;

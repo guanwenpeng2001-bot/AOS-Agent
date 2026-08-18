@@ -1177,6 +1177,39 @@ export class AgentHarness implements AgentLane {
 		if (payload === undefined || asRecord(payload)?.runId !== runId) throw new HarnessFault(`Foundation intent is invalid for operation ${runId}`, undefined);
 	}
 
+	private async startFoundationAttempt(lane: string, runId: string): Promise<void> {
+		const execution = this.foundationExecution;
+		const provider = this.foundationProvider;
+		if (execution === undefined || provider === undefined) return;
+		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
+		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while starting Foundation Attempt", undefined);
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const started = await settlement.startDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
+		if (!started.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt start: ${started.error.message}`, started.error);
+	}
+
+	private async resumeFoundationAttempt(lane: string, runId: string): Promise<void> {
+		const execution = this.foundationExecution;
+		const provider = this.foundationProvider;
+		if (execution === undefined || provider === undefined) return;
+		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
+		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while resuming Foundation Attempt", undefined);
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const resumed = await settlement.resumeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
+		if (!resumed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt resume: ${resumed.error.message}`, resumed.error);
+	}
+
+	private async cancelFoundationAttempt(lane: string, runId: string): Promise<void> {
+		const execution = this.foundationExecution;
+		const provider = this.foundationProvider;
+		if (execution === undefined || provider === undefined) return;
+		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
+		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while cancelling Foundation Attempt", undefined);
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const cancelled = await settlement.cancelAttempt({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
+		if (!cancelled.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt cancellation: ${cancelled.error.message}`, cancelled.error);
+	}
+
 	private async persistFoundationReceipts(
 		lane: string,
 		runId: string,
@@ -1926,6 +1959,7 @@ export class AgentHarness implements AgentLane {
 					},
 				} satisfies NewRecord<OperationStartedRecord>);
 				await this.persistFoundationIntent(lane, id);
+				await this.startFoundationAttempt(lane, id);
 				await this.refreshSnapshots();
 				await this.hookRegistry.emit("before_run", { lane, runId: id, messages: structuredClone(messages) });
 				return Result.ok<string>(id);
@@ -2964,6 +2998,7 @@ export class AgentHarness implements AgentLane {
 		const missingModels = this.missingModels(reduction.effectiveConfiguration.model);
 		if (missingTools.length > 0 || missingModels.length > 0) return Result.err(new MissingIdentities({ lane, tools: missingTools, models: missingModels, message: "Suspended operation requires unavailable identities" }));
 		await this.hookRegistry.emit("before_resume", { lane, operationId: operation.id });
+		await this.resumeFoundationAttempt(lane, operation.id);
 		await this.runToCompletionImpl(lane);
 		if (operation.kind === "run") {
 			const result = await this.runOutcome(lane, operation.id);
@@ -3000,6 +3035,7 @@ export class AgentHarness implements AgentLane {
 			for (const entry of [...operation.pendingSteer, ...operation.pendingFollowUp]) {
 				await this.durableSession.appendRecord({ type: "queue_cancelled", id: this.durableSession.idGenerator.next(), lane, runId: operation.id, entryId: entry.id });
 			}
+			await this.cancelFoundationAttempt(lane, operation.id);
 			this.activeOperations.get(operation.id)?.controller.abort();
 			await this.refreshSnapshots();
 			return Result.ok({ runId: operation.id, steer, followUp });

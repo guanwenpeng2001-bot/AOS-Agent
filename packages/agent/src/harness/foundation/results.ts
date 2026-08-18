@@ -71,6 +71,7 @@ export function validateWorkerReceipt(value: unknown): ResultValue<WorkerReceipt
 		if (receipt[field] !== undefined && correlation.value[field] !== receipt[field]) return Result.err(new FoundationError("invalid_correlation", "WorkerReceipt provenance does not match its operation identity", { details: { workerReceiptId: receipt.workerReceiptId, field } }));
 	}
 	if (receipt.provenance.producerKind !== "operation_worker" || receipt.provenance.providerId !== receipt.sandboxProviderId) return Result.err(new FoundationError("worker_receipt_invalid_producer", "WorkerReceipt provenance must identify its operation worker", { details: { workerReceiptId: receipt.workerReceiptId } }));
+	if (receipt.status === "succeeded" && receipt.sideEffectState !== "none") return Result.err(new FoundationError("side_effect_unknown", "A succeeded WorkerReceipt must prove that no side effect remains unknown", { details: { workerReceiptId: receipt.workerReceiptId, sideEffectState: receipt.sideEffectState } }));
 	return Result.ok(receipt);
 }
 export interface SettleTaskResultInput { taskResultId: string; task: TaskEnvelopeV1; receipts: readonly AttemptReceiptV1[]; summary: string; artifacts?: readonly ArtifactRefV1[]; diff?: ArtifactRefV1; tests: readonly ValidationResultV1[]; evidence: readonly AcceptanceFactV1[]; producer: ResultProvenanceV1; validation?: ResultValidationV1; }

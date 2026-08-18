@@ -28,6 +28,7 @@ import {
 	type FoundationProviderExecutionOptionsV1,
 	type ModelProfileV1,
 	type RevisionReferenceV1,
+	type RoleRevisionV1,
 	type ChildAgentProvider,
 	type ChildSpawnRequestV1,
 	type ChildSpawnResultV1,
@@ -144,10 +145,21 @@ class UnknownSideEffectSchedulerProvider extends SchedulerProvider {
 
 class ChildProvider implements ChildAgentProvider {
 	readonly schemaVersion = 1 as const;
-	readonly providerId = "agent-child-t6";
+	readonly providerId: string;
 	readonly providerClass = "agent" as const;
+	spawnCount = 0;
+	lookupCount = 0;
+	failSpawn = false;
+	receivedRoleRevision: RoleRevisionV1 | undefined;
+	receivedModelProfile: ModelProfileV1 | undefined;
+	private lastSpawn: ChildSpawnResultV1 | undefined;
+	constructor(providerId = "agent-child-t6") { this.providerId = providerId; }
 	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [providerCapability]; }
 	async spawn(request: ChildSpawnRequestV1, _options: FoundationProviderExecutionOptionsV1): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+		this.spawnCount += 1;
+		this.receivedRoleRevision = request.roleRevision;
+		this.receivedModelProfile = request.modelProfile;
+		if (this.failSpawn) return Result.err(new FoundationError("provider_spawn_failed", "provider spawn failed after the durable intent"));
 		const childTaskId = request.taskEnvelope.taskId;
 		const childBindingId = `binding-${childTaskId}`;
 		const child = createAgentInstance({ agentInstanceId: `child-instance-${childTaskId}`, providerId: this.providerId, providerDeclaredAgent: true, roleRevision: request.roleRevision, taskId: childTaskId, now: () => now });
@@ -157,8 +169,10 @@ class ChildProvider implements ChildAgentProvider {
 		const childDispatch = dispatch(this.providerId, childBindingId, childTaskId);
 		const childAttempt = createAttempt({ attemptId: `child-attempt-${childTaskId}`, dispatch: childDispatch, providerId: this.providerId, initialBindingEpoch: childEpoch.value, providerClass: "agent", agentInstanceId: child.value.agentInstanceId, now: () => now });
 		if (!childAttempt.ok) return childAttempt;
-		return Result.ok({ schemaVersion: 1, attempt: childAttempt.value, agentInstance: child.value, initialBindingEpoch: childEpoch.value });
+		this.lastSpawn = { schemaVersion: 1, attempt: childAttempt.value, agentInstance: child.value, initialBindingEpoch: childEpoch.value };
+		return Result.ok(this.lastSpawn);
 	}
+	async lookupSpawn(_spawnId: string) { this.lookupCount += 1; return Result.ok(this.lastSpawn); }
 	async resume(_attemptId: string) { return Result.err(new FoundationError("foundation_schema_unknown_record", "child resume is not implemented")); }
 	async cancel(_attemptId: string) { return Result.ok(undefined); }
 	async dispose() {}
@@ -222,7 +236,8 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		expect(resolved).toMatchObject({ ok: true, value: { binding: { bindingId: "resolver-binding" } } });
 		const { fingerprint: _fingerprint, ...fabricatedBase } = modelProfile();
 		const fabricatedModel = createModelProfileRevision({ ...fabricatedBase, model: "caller-shaped-model" });
-		expect(await roles.resolve({ ...input, modelProfile: fabricatedModel })).toMatchObject({ ok: false, error: { code: "binding_required_fact" } });
+		const canonicalized = await roles.resolve({ ...input, modelProfile: fabricatedModel });
+		expect(canonicalized).toMatchObject({ ok: true, value: { binding: { modelRoute: { model: "fake-model" } } } });
 		await roles.release();
 	});
 
@@ -292,11 +307,50 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		await seed.release();
 		const provider = new ChildProvider();
 		const settlement = new LayeredResultSettlementV1(session, { ownerId: "spawn-settlement" });
-		const spawned = await settlement.executeAgentSpawn({ provider, request: { schemaVersion: 1, spawnId: "spawn-t6", taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" }, correlation: { sessionId: "spawn-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } });
+		const canonicalRole = roleRevision();
+		const { fingerprint: _roleFingerprint, ...callerRoleSnapshot } = canonicalRole;
+		const callerRole = { ...callerRoleSnapshot, name: "caller-shaped-role", fingerprint: fingerprintFoundationValue({ ...callerRoleSnapshot, name: "caller-shaped-role" }) };
+		const canonicalProfile = modelProfile();
+		const { fingerprint: _profileFingerprint, ...callerProfileSnapshot } = canonicalProfile;
+		const callerProfile = { ...callerProfileSnapshot, model: "caller-shaped-model", fingerprint: fingerprintFoundationValue({ ...callerProfileSnapshot, model: "caller-shaped-model" }) };
+		const spawnInput = { provider, request: { schemaVersion: 1 as const, spawnId: "spawn-t6", taskEnvelope: childTask, roleRevision: callerRole, modelProfile: callerProfile, forkScope: "none" as const }, correlation: { sessionId: "spawn-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
+		const spawned = await settlement.executeAgentSpawn(spawnInput);
 		if (!spawned.ok) throw spawned.error;
 		expect(spawned).toMatchObject({ ok: true, value: { attempt: { attemptId: `child-attempt-${childTask.taskId}`, taskId: childTask.taskId } } });
+		expect(provider.spawnCount).toBe(1);
+		expect(provider.receivedRoleRevision).toEqual(canonicalRole);
+		expect(provider.receivedModelProfile).toEqual(canonicalProfile);
+		expect(spawned.value.agentInstance.roleRevision).toEqual({ schemaVersion: 1, type: "role_revision", id: canonicalRole.roleRevisionId, revision: canonicalRole.revision, fingerprint: canonicalRole.fingerprint });
+		const replayed = await settlement.executeAgentSpawn(spawnInput);
+		expect(replayed).toMatchObject({ ok: true, value: { attempt: { attemptId: `child-attempt-${childTask.taskId}` } } });
+		expect(provider.spawnCount).toBe(1);
 		for (const objectType of ["task", "context", "dispatch", "agent_instance", "binding_epoch", "attempt"] as const) expect((await session.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" })).length).toBeGreaterThan(0);
 		await settlement.release();
+	});
+
+	it("fails closed before lookup when a durable spawn intent belongs to another provider", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "spawn-recovery-session", createdAt: 1 }));
+		const childTask = task("recovery-child-task-t6");
+		const childBinding = binding("binding-recovery-child-task-t6", childTask);
+		await seedBindingFacts(session, childBinding);
+		const seed = new SessionLedgerV1(session, { ownerId: "spawn-recovery-binding-seed" });
+		await seed.appendFact("agent_binding", childBinding.bindingId, childBinding, { clientRequestId: "spawn-recovery:binding", correlation: { taskId: childBinding.taskId, bindingId: childBinding.bindingId } });
+		await seed.release();
+		const providerA = new ChildProvider("agent-child-t6-a");
+		providerA.failSpawn = true;
+		const spawnInput = { provider: providerA, request: { schemaVersion: 1 as const, spawnId: "spawn-recovery-t6", taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" as const }, correlation: { sessionId: "spawn-recovery-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
+		const settlementA = new LayeredResultSettlementV1(session, { ownerId: "spawn-recovery-a" });
+		const first = await settlementA.executeAgentSpawn(spawnInput);
+		expect(first).toMatchObject({ ok: false, error: { code: "provider_spawn_failed" } });
+		expect(providerA.spawnCount).toBe(1);
+		await settlementA.release();
+		const providerB = new ChildProvider("agent-child-t6-b");
+		const settlementB = new LayeredResultSettlementV1(session, { ownerId: "spawn-recovery-b" });
+		const recovered = await settlementB.executeAgentSpawn({ ...spawnInput, provider: providerB });
+		expect(recovered).toMatchObject({ ok: false, error: { code: "session_ledger_conflict" } });
+		expect(providerB.lookupCount).toBe(0);
+		expect(providerB.spawnCount).toBe(0);
+		await settlementB.release();
 	});
 
 	it("requires the next immutable Binding and safe boundary for mode switch", () => {

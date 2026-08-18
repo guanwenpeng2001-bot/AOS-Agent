@@ -19,7 +19,7 @@ import {
 } from "./providers.ts";
 import { validateAttemptReceiptForProviderV1, validateWorkerReceiptForProviderV1 } from "./conformance.ts";
 import type { AttemptReceiptV1, ResultProvenanceV1, WorkerReceiptV1 } from "./results.ts";
-import { validateAgentInstanceV1, validateBindingEpochV1 } from "./role.ts";
+import { validateAgentInstanceV1, validateBindingEpochV1, type AgentInstanceV1, type ModelProfileV1, type ModelRouteV1, type RoleRevisionV1 } from "./role.ts";
 import { validateAttempt, validateDispatch, type AttemptV1, type DispatchV1, type ModeSwitchIntentV1 } from "./task.ts";
 
 export interface DispatchExecutionInputV1 {
@@ -28,6 +28,13 @@ export interface DispatchExecutionInputV1 {
 	readonly initialBindingEpoch: BindingEpochV1;
 	readonly provider: TaskExecutorProvider;
 	readonly correlation: ExecutionCorrelationV1;
+	/** Canonical durable source facts supplied by the settlement gate. */
+	readonly roleRevision?: RoleRevisionV1;
+	readonly modelProfile?: ModelProfileV1;
+	readonly modelRoute?: ModelRouteV1;
+	readonly agentInstance?: AgentInstanceV1;
+	/** A previously persisted Attempt may be resumed after a crash. */
+	readonly existingAttempt?: AttemptV1;
 	/** Internal provider-consumer hook used to persist the Attempt before runAttempt. */
 	readonly beforeRunAttempt?: (attempt: AttemptV1) => Promise<ResultValue<void, FoundationError>>;
 	readonly signal?: AbortSignal;
@@ -37,6 +44,12 @@ export interface DispatchExecutionInputV1 {
 export interface DispatchExecutionResultV1 {
 	readonly attempt: AttemptV1;
 	readonly receipt: AttemptReceiptV1;
+	readonly providerId: string;
+	readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector";
+}
+
+export interface DispatchAttemptStartResultV1 {
+	readonly attempt: AttemptV1;
 	readonly providerId: string;
 	readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector";
 }
@@ -142,8 +155,7 @@ function validateReceiptCorrelation(receipt: AttemptReceiptV1, attempt: AttemptV
 	return correlationMatches(receipt.provenance, input.correlation, ["sessionId", "laneId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"], receipt.attemptReceiptId);
 }
 
-/** Runs Dispatch -> selected provider -> provider-created Attempt -> AttemptReceipt. */
-export async function executeDispatchV1(input: DispatchExecutionInputV1): Promise<ResultValue<DispatchExecutionResultV1, FoundationError>> {
+function validateDispatchInput(input: DispatchExecutionInputV1): ResultValue<{ readonly dispatch: DispatchV1; readonly binding: AgentBindingV1; readonly correlation: ExecutionCorrelationV1 }, FoundationError> {
 	const checkedDispatch = validateDispatch(input.dispatch);
 	if (!checkedDispatch.ok) return checkedDispatch;
 	const checkedBinding = validateImmutableAgentBinding(input.binding);
@@ -156,25 +168,54 @@ export async function executeDispatchV1(input: DispatchExecutionInputV1): Promis
 	if (!correlation.ok) return correlation;
 	const correlationIdentity = correlationMatchesIdentity(correlation.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, attemptId: input.initialBindingEpoch.attemptId, bindingId: checkedBinding.value.bindingId, bindingEpochId: input.initialBindingEpoch.bindingEpochId }, input.initialBindingEpoch.attemptId);
 	if (!correlationIdentity.ok) return correlationIdentity;
-	const context: TaskExecutorAttemptContextV1 = { initialBindingEpoch: input.initialBindingEpoch, correlation: correlation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) };
+	return Result.ok({ dispatch: checkedDispatch.value, binding: checkedBinding.value, correlation: correlation.value });
+}
+
+/** Creates or validates the first Attempt without running provider side effects. */
+export async function startDispatchAttemptV1(input: DispatchExecutionInputV1): Promise<ResultValue<DispatchAttemptStartResultV1, FoundationError>> {
+	const checked = validateDispatchInput(input);
+	if (!checked.ok) return checked;
+	const context: TaskExecutorAttemptContextV1 = {
+		initialBindingEpoch: input.initialBindingEpoch,
+		correlation: checked.value.correlation,
+		...(input.signal === undefined ? {} : { signal: input.signal }),
+		...(input.roleRevision === undefined ? {} : { roleRevision: input.roleRevision }),
+		...(input.modelProfile === undefined ? {} : { modelProfile: input.modelProfile }),
+		...(input.modelRoute === undefined ? {} : { modelRoute: input.modelRoute }),
+		...(input.agentInstance === undefined ? {} : { agentInstance: input.agentInstance }),
+	};
 	try {
-		const created = await input.provider.createAttempt(checkedDispatch.value, checkedBinding.value, context);
-		if (!created.ok) return created;
-		const checkedAttempt = validateAttempt(created.value);
+		const candidate = input.existingAttempt === undefined
+			? await input.provider.createAttempt(checked.value.dispatch, checked.value.binding, context)
+			: Result.ok(input.existingAttempt);
+		if (!candidate.ok) return candidate;
+		const checkedAttempt = validateAttempt(candidate.value);
 		if (!checkedAttempt.ok) return checkedAttempt;
 		const attemptCorrelation = validateAttemptCorrelation(checkedAttempt.value, input);
 		if (!attemptCorrelation.ok) return attemptCorrelation;
+		return Result.ok({ attempt: cloneDeepFrozen(checkedAttempt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+	} catch (error) {
+		return providerError(error, "TaskExecutor provider threw while creating an Attempt");
+	}
+}
+
+/** Runs Dispatch -> selected provider -> provider-created Attempt -> AttemptReceipt. */
+export async function executeDispatchV1(input: DispatchExecutionInputV1): Promise<ResultValue<DispatchExecutionResultV1, FoundationError>> {
+	try {
+		const started = await startDispatchAttemptV1(input);
+		if (!started.ok) return started;
+		const checkedAttempt = started.value.attempt;
 		if (input.beforeRunAttempt !== undefined) {
-			const persisted = await input.beforeRunAttempt(checkedAttempt.value);
+			const persisted = await input.beforeRunAttempt(checkedAttempt);
 			if (!persisted.ok) return persisted;
 		}
-		const settled = await input.provider.runAttempt(checkedAttempt.value, { correlation: correlation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+		const settled = await input.provider.runAttempt(checkedAttempt, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!settled.ok) return settled;
 		const checkedReceipt = validateAttemptReceiptForProviderV1(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 		if (!checkedReceipt.ok) return checkedReceipt;
-		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, checkedAttempt.value, input);
+		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, checkedAttempt, input);
 		if (!receiptCorrelation.ok) return receiptCorrelation;
-		return Result.ok({ attempt: cloneDeepFrozen(checkedAttempt.value), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		return Result.ok({ attempt: cloneDeepFrozen(checkedAttempt), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 	} catch (error) {
 		return providerError(error, "TaskExecutor provider threw while consuming a Dispatch");
 	}

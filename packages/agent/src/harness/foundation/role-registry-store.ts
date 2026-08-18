@@ -19,6 +19,7 @@ import {
 	type RoleRegistrySearchQueryV1,
 	type RoleResolveInputV1,
 	type RoleResolutionPreviewV1,
+	type RoleResolutionOverrideV1,
 	type RoleTombstoneV1,
 	validateRoleRegistryRecordV1,
 } from "./role-registry.ts";
@@ -60,25 +61,25 @@ function immutableRoleRevisionValid(value: RoleRevisionV1): boolean {
 	return fingerprint.value === fingerprintFoundationValue(base).value;
 }
 
-function findRoleRevision(records: readonly RoleRegistryRecordV1[], reference: RoleRevisionV1): RoleRevisionV1 | undefined {
+function findRoleRevision(records: readonly RoleRegistryRecordV1[], roleRevisionId: string, revision: number): RoleRevisionV1 | undefined {
 	for (const record of records) {
 		for (const candidate of record.revisions) {
 			const checked = validateRoleRevisionV1(candidate);
-			if (checked.ok && immutableRoleRevisionValid(checked.value) && canonicalFoundationJson(checked.value) === canonicalFoundationJson(reference)) return checked.value;
+			if (checked.ok && immutableRoleRevisionValid(checked.value) && checked.value.roleRevisionId === roleRevisionId && checked.value.revision === revision) return checked.value;
 		}
 	}
 	return undefined;
 }
 
-function modelProfileFromPayload(payload: unknown, modelProfileId: string, revision: number, fingerprint: string): ModelProfileV1 | undefined {
+function modelProfileFromPayload(payload: unknown, modelProfileId: string, revision: number): ModelProfileV1 | undefined {
 	const direct = validateSecretFreeModelProfileV1(payload);
-	if (direct.ok && direct.value.modelProfileId === modelProfileId && direct.value.revision === revision && direct.value.fingerprint.value === fingerprint) return direct.value;
+	if (direct.ok && direct.value.modelProfileId === modelProfileId && direct.value.revision === revision) return direct.value;
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
 	const record = payload as Record<string, unknown>;
 	if (record.modelProfileId !== modelProfileId || !Array.isArray(record.revisions)) return undefined;
 	for (const candidate of record.revisions) {
 		const checked = validateSecretFreeModelProfileV1(candidate);
-		if (checked.ok && checked.value.modelProfileId === modelProfileId && checked.value.revision === revision && checked.value.fingerprint.value === fingerprint) return checked.value;
+		if (checked.ok && checked.value.modelProfileId === modelProfileId && checked.value.revision === revision) return checked.value;
 	}
 	return undefined;
 }
@@ -223,15 +224,27 @@ export class DurableRoleRegistryV1 {
 		const task = validateTaskEnvelope(taskRecord.payload);
 		if (!task.ok) return Result.err(new FoundationError("role_resolver_task_required", "Role resolution requires an exact durable TaskEnvelope", { details: { taskId: input.task.taskId } }));
 		if (canonicalFoundationJson(task.value) !== canonicalFoundationJson(input.task)) return Result.err(new FoundationError("role_resolver_task_required", "Role resolution must consume the durable TaskEnvelope", { details: { taskId: input.task.taskId } }));
-		const modelProfile = await this.findDurableModelProfile(input.modelProfile.modelProfileId, input.modelProfile.revision, input.modelProfile.fingerprint.value);
+		const modelProfile = await this.findDurableModelProfile(input.modelProfile.modelProfileId, input.modelProfile.revision);
 		if (modelProfile === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile must resolve from a durable registry fact", { details: { modelProfileId: input.modelProfile.modelProfileId, revision: input.modelProfile.revision } }));
 		const records = await this.loadRecords();
+		const canonicalOverrides: RoleResolutionOverrideV1[] = [];
 		for (const override of input.overrides ?? []) {
-			if (override.roleRevision !== undefined && findRoleRevision(records, override.roleRevision) === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution RoleRevision override must resolve from a durable registry fact", { details: { roleRevisionId: override.roleRevision.roleRevisionId, revision: override.roleRevision.revision } }));
+			const roleRevision = override.roleRevision === undefined ? undefined : findRoleRevision(records, override.roleRevision.roleRevisionId, override.roleRevision.revision);
+			if (override.roleRevision !== undefined && roleRevision === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution RoleRevision override must resolve from a durable registry fact", { details: { roleRevisionId: override.roleRevision.roleRevisionId, revision: override.roleRevision.revision } }));
+			const modelProfile = override.modelProfile === undefined ? undefined : await this.findDurableModelProfile(override.modelProfile.modelProfileId, override.modelProfile.revision);
 			if (override.modelProfile !== undefined) {
-				const durableOverride = await this.findDurableModelProfile(override.modelProfile.modelProfileId, override.modelProfile.revision, override.modelProfile.fingerprint.value);
-				if (durableOverride === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile override must resolve from a durable registry fact", { details: { modelProfileId: override.modelProfile.modelProfileId, revision: override.modelProfile.revision } }));
+				if (modelProfile === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile override must resolve from a durable registry fact", { details: { modelProfileId: override.modelProfile.modelProfileId, revision: override.modelProfile.revision } }));
 			}
+			const overrideWithoutRoute = { ...override };
+			delete overrideWithoutRoute.modelRoute;
+			canonicalOverrides.push({
+				...overrideWithoutRoute,
+				...(roleRevision === undefined ? {} : { roleRevision }),
+				...(modelProfile === undefined ? {} : { modelProfile }),
+				// Routing metadata is derived from the canonical profile. A caller
+				// may select a profile revision, but cannot supply route values.
+				...(modelProfile === undefined ? {} : { modelRoute: { provider: modelProfile.provider, model: modelProfile.model, ...(modelProfile.effort === undefined ? {} : { effort: modelProfile.effort }), ...(modelProfile.serviceTier === undefined ? {} : { serviceTier: modelProfile.serviceTier }) } }),
+			});
 		}
 		const context = input.externalAgentBindingRevision ?? input.contextRevision;
 		if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return Result.err(new FoundationError("binding_required_fact", "Role resolution received conflicting External-Agent Binding aliases"));
@@ -255,19 +268,19 @@ export class DurableRoleRegistryV1 {
 				if (source === undefined || source.kind !== "fact" || !durableReferenceMatches(reference, source.payload)) return Result.err(new FoundationError("binding_required_fact", "Role resolution override source does not match its durable Session fact", { details: { objectType, objectId: reference.id, revision: reference.revision } }));
 			}
 		}
-		return Result.ok({ ...input, task: task.value, modelProfile });
+		return Result.ok({ ...input, task: task.value, modelProfile, overrides: canonicalOverrides });
 	}
 
-	private async findDurableModelProfile(modelProfileId: string, revision: number, fingerprint: string): Promise<ModelProfileV1 | undefined> {
+	private async findDurableModelProfile(modelProfileId: string, revision: number): Promise<ModelProfileV1 | undefined> {
 		const direct = await this.ledger.get("model_profile_revision", modelProfileId);
 		if (direct?.kind === "fact") {
-			const profile = modelProfileFromPayload(direct.payload, modelProfileId, revision, fingerprint);
+			const profile = modelProfileFromPayload(direct.payload, modelProfileId, revision);
 			if (profile !== undefined) return profile;
 		}
 		const records = await this.ledger.find({ kind: "fact", objectType: MODEL_PROFILE_OBJECT_TYPE_V1, order: "oldestFirst" });
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
-			const profile = modelProfileFromPayload(record.payload, modelProfileId, revision, fingerprint);
+			const profile = modelProfileFromPayload(record.payload, modelProfileId, revision);
 			if (profile !== undefined) return profile;
 		}
 		return undefined;

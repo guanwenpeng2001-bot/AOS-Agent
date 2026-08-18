@@ -2,9 +2,9 @@ import { Result, type Result as ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
-import { canonicalFoundationJson, fingerprintFoundationValue } from "./identity.ts";
+import { canonicalFoundationJson, fingerprintFoundationValue, type ExecutionCorrelationV1 } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
-import { executeDispatchV1, executeOperationV1, executeAgentSpawnV1, switchAgentModeV1, type DispatchExecutionInputV1, type DispatchExecutionResultV1, type OperationExecutionInputV1, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInputV1 } from "./execution.ts";
+import { executeDispatchV1, executeOperationV1, executeAgentSpawnV1, startDispatchAttemptV1, switchAgentModeV1, type DispatchAttemptStartResultV1, type DispatchExecutionInputV1, type DispatchExecutionResultV1, type OperationExecutionInputV1, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInputV1 } from "./execution.ts";
 import { validateImmutableAgentBinding } from "./binding.ts";
 import { validateAttemptReceiptForProviderV1, validateWorkerReceiptForProviderV1 } from "./conformance.ts";
 import {
@@ -21,12 +21,14 @@ import {
 	type TaskResultV1,
 	type WorkerReceiptV1,
 } from "./results.ts";
-import { validateChildSpawnRequestV1, type ChildSpawnResultV1 } from "./providers.ts";
-import { validateAgentInstanceV1, validateBindingEpochV1, validateRoleRevisionV1, type AgentBindingV1, type AgentInstanceV1, type BindingEpochV1, type ModelProfileV1, type RoleRevisionV1 } from "./role.ts";
+import { validateChildSpawnRequestV1, validateChildSpawnResultV1, type ChildAgentProvider, type ChildSpawnRequestV1, type ChildSpawnResultV1, type FoundationProviderExecutionOptionsV1, type TaskExecutorProvider } from "./providers.ts";
+import { validateAgentInstanceV1, validateBindingEpochV1, validateRoleRevisionV1, type AgentBindingV1, type AgentInstanceV1, type BindingEpochV1, type ModelProfileV1, type ModelRouteV1, type RoleRevisionV1 } from "./role.ts";
 import { validateRoleRegistryRecordV1 } from "./role-registry.ts";
 import { validateSecretFreeModelProfileV1 } from "./model-profile.ts";
 import { validateAttempt, validateDispatch, validateTaskEnvelope, type AttemptV1, type DispatchV1, type TaskEnvelopeV1 } from "./task.ts";
 import { SessionLedgerV1 } from "./session-ledger.ts";
+import type { FoundationJsonValue } from "./event-catalog.ts";
+import type { FoundationIntentRecordV1 } from "../session/durable/types.ts";
 
 export interface FoundationTaskPersistenceOptionsV1 {
 	readonly ownerId?: string;
@@ -99,6 +101,39 @@ export interface LayeredRunFinalizationInput {
 	readonly completedAt?: string;
 }
 
+/** Durable idempotency identity for child-agent provider side effects. */
+export const AGENT_SPAWN_OBJECT_TYPE_V1 = "agent_spawn";
+export interface AgentSpawnIntentPayloadV1 {
+	readonly schemaVersion: 1;
+	readonly spawnId: string;
+	readonly providerId: string;
+	readonly request: ChildSpawnRequestV1;
+	readonly correlation: ExecutionCorrelationV1;
+}
+export interface AgentSpawnFactPayloadV1 {
+	readonly schemaVersion: 1;
+	readonly spawnId: string;
+	readonly providerId: string;
+	readonly request: ChildSpawnRequestV1;
+	readonly result: ChildSpawnResultV1;
+	readonly contextId: string;
+}
+
+export interface DurableBindingFactsV1 {
+	readonly roleRevision: RoleRevisionV1;
+	readonly modelProfile: ModelProfileV1;
+	readonly modelRoute: ModelRouteV1;
+}
+
+export interface DispatchStartResultV1 extends DispatchAttemptStartResultV1 {
+	readonly receipt?: AttemptReceiptV1;
+}
+
+interface TaskExecutorProviderResumeSurface extends TaskExecutorProvider {
+	readonly resumeAttempt?: (attemptId: string, options: FoundationProviderExecutionOptionsV1) => Promise<ResultValue<AttemptReceiptV1, FoundationError>>;
+	readonly resume?: (attemptId: string, options?: { readonly signal?: AbortSignal }) => Promise<ResultValue<AttemptReceiptV1, FoundationError>>;
+}
+
 function durableReferenceMatches(reference: { readonly id: string; readonly revision: number; readonly fingerprint?: { readonly value: string } }, payload: unknown): boolean {
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return false;
 	const record = payload as Record<string, unknown>;
@@ -133,6 +168,23 @@ async function findDurableRoleRevision(ledger: SessionLedgerV1, reference: Agent
 	throw sourceRequired(reference, "roleRevision");
 }
 
+async function findCanonicalRoleRevision(ledger: SessionLedgerV1, roleRevisionId: string, revision: number): Promise<RoleRevisionV1> {
+	const direct = await ledger.get("role_revision", roleRevisionId);
+	if (direct?.kind === "fact") {
+		const checked = validateRoleRevisionV1(direct.payload);
+		if (checked.ok && checked.value.roleRevisionId === roleRevisionId && checked.value.revision === revision && immutableEntityFingerprintValid(checked.value as unknown as { readonly fingerprint: { readonly value: string } } & Record<string, unknown>)) return checked.value;
+	}
+	const records = await ledger.find({ kind: "fact", objectType: "role_registry", order: "oldestFirst" });
+	for (const record of records) {
+		if (record.kind !== "fact") continue;
+		const checked = validateRoleRegistryRecordV1(record.payload);
+		if (!checked.ok) continue;
+		const candidate = checked.value.revisions.find((item) => item.roleRevisionId === roleRevisionId && item.revision === revision);
+		if (candidate !== undefined && immutableEntityFingerprintValid(candidate as unknown as { readonly fingerprint: { readonly value: string } } & Record<string, unknown>)) return candidate;
+	}
+	throw new FoundationError("binding_required_fact", "Requested RoleRevision is not present in the durable registry", { details: { roleRevisionId, revision } });
+}
+
 function profileFromRecord(payload: unknown, reference: AgentBindingV1["modelProfileRevision"]): ModelProfileV1 | undefined {
 	const direct = validateSecretFreeModelProfileV1(payload);
 	if (direct.ok && direct.value.modelProfileId === reference.id && direct.value.revision === reference.revision && direct.value.fingerprint.value === reference.fingerprint?.value) return direct.value;
@@ -142,6 +194,19 @@ function profileFromRecord(payload: unknown, reference: AgentBindingV1["modelPro
 	for (const candidate of record.revisions) {
 		const checked = validateSecretFreeModelProfileV1(candidate);
 		if (checked.ok && checked.value.modelProfileId === reference.id && checked.value.revision === reference.revision && checked.value.fingerprint.value === reference.fingerprint?.value) return checked.value;
+	}
+	return undefined;
+}
+
+function profileFromIdentity(payload: unknown, modelProfileId: string, revision: number): ModelProfileV1 | undefined {
+	const direct = validateSecretFreeModelProfileV1(payload);
+	if (direct.ok && direct.value.modelProfileId === modelProfileId && direct.value.revision === revision) return direct.value;
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+	const record = payload as Record<string, unknown>;
+	if (record.modelProfileId !== modelProfileId || !Array.isArray(record.revisions)) return undefined;
+	for (const candidate of record.revisions) {
+		const checked = validateSecretFreeModelProfileV1(candidate);
+		if (checked.ok && checked.value.modelProfileId === modelProfileId && checked.value.revision === revision) return checked.value;
 	}
 	return undefined;
 }
@@ -161,12 +226,92 @@ async function findDurableModelProfile(ledger: SessionLedgerV1, reference: Agent
 	throw sourceRequired(reference, "modelProfileRevision");
 }
 
+async function findCanonicalModelProfile(ledger: SessionLedgerV1, modelProfileId: string, revision: number): Promise<ModelProfileV1> {
+	const direct = await ledger.get("model_profile_revision", modelProfileId);
+	if (direct?.kind === "fact") {
+		const profile = profileFromIdentity(direct.payload, modelProfileId, revision);
+		if (profile !== undefined) return profile;
+	}
+	const records = await ledger.find({ kind: "fact", objectType: "model_profile", order: "oldestFirst" });
+	for (const record of records) {
+		if (record.kind !== "fact") continue;
+		const profile = profileFromIdentity(record.payload, modelProfileId, revision);
+		if (profile !== undefined) return profile;
+	}
+	throw new FoundationError("binding_required_fact", "Requested ModelProfile is not present in the durable registry", { details: { modelProfileId, revision } });
+}
+
+function routeFromProfile(profile: ModelProfileV1): ModelRouteV1 {
+	return { provider: profile.provider, model: profile.model, ...(profile.effort === undefined ? {} : { effort: profile.effort }), ...(profile.serviceTier === undefined ? {} : { serviceTier: profile.serviceTier }) };
+}
+
+function canonicalBindingFromFacts(binding: AgentBindingV1, facts: DurableBindingFactsV1): AgentBindingV1 {
+	const { fingerprint: _callerFingerprint, ...bindingBase } = binding;
+	const base = {
+		...bindingBase,
+		roleRevision: { schemaVersion: 1 as const, type: "role_revision" as const, id: facts.roleRevision.roleRevisionId, revision: facts.roleRevision.revision, fingerprint: facts.roleRevision.fingerprint },
+		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision" as const, id: facts.modelProfile.modelProfileId, revision: facts.modelProfile.revision, fingerprint: facts.modelProfile.fingerprint },
+		modelRoute: facts.modelRoute,
+	};
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
+function canonicalAgentInstanceRole(agent: AgentInstanceV1, role: RoleRevisionV1): ResultValue<AgentInstanceV1, FoundationError> {
+	if (agent.roleRevision.id !== role.roleRevisionId || agent.roleRevision.revision !== role.revision) return Result.err(new FoundationError("invalid_correlation", "AgentInstance RoleRevision does not match the canonical durable RoleRevision", { details: { agentInstanceId: agent.agentInstanceId, roleRevisionId: role.roleRevisionId, revision: role.revision } }));
+	return Result.ok({ ...agent, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision, fingerprint: role.fingerprint } });
+}
+
+function spawnCorrelationValid(correlation: ExecutionCorrelationV1, request: ChildSpawnRequestV1): boolean {
+	return typeof correlation.sessionId === "string" && correlation.sessionId.length > 0 && typeof correlation.laneId === "string" && correlation.laneId.length > 0 && Number.isSafeInteger(correlation.revision) && correlation.revision >= 0 && correlation.taskId === request.taskEnvelope.taskId && typeof correlation.agentInstanceId === "string" && correlation.agentInstanceId.length > 0;
+}
+
+function parseSpawnFact(payload: unknown, spawnId: string, providerId: string): ResultValue<AgentSpawnFactPayloadV1, FoundationError> {
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn fact is not an object", { details: { spawnId } }));
+	const candidate = payload as Record<string, unknown>;
+	if (candidate.schemaVersion !== 1 || candidate.spawnId !== spawnId || candidate.providerId !== providerId || typeof candidate.contextId !== "string") return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn fact identity does not match the request", { details: { spawnId, providerId } }));
+	const request = validateChildSpawnRequestV1(candidate.request);
+	if (!request.ok) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn fact contains an invalid request", { details: { spawnId } }));
+	const result = validateChildSpawnResultV1(candidate.result);
+	if (!result.ok) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn fact contains an invalid result", { details: { spawnId } }));
+	return Result.ok({ schemaVersion: 1, spawnId, providerId, request: request.value, result: result.value, contextId: candidate.contextId });
+}
+
+function parseSpawnIntent(record: FoundationIntentRecordV1, spawnId: string, providerId: string, expectedRequest: ChildSpawnRequestV1, expectedCorrelation: ExecutionCorrelationV1): ResultValue<AgentSpawnIntentPayloadV1, FoundationError> {
+	const details = { spawnId, providerId };
+	if (record.objectId !== spawnId || record.intent !== "create" || record.clientRequestId !== `agent-spawn:${spawnId}`) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn intent identity does not match the stable spawn request", { details }));
+	if (record.payload === undefined || typeof record.payload !== "object" || Array.isArray(record.payload)) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn intent has no replayable request", { details }));
+	const candidate = record.payload as Record<string, unknown>;
+	if (candidate.schemaVersion !== 1 || candidate.spawnId !== spawnId || candidate.providerId !== providerId) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn intent provider identity does not match the current provider", { details }));
+	const request = validateChildSpawnRequestV1(candidate.request);
+	if (!request.ok || canonicalFoundationJson(request.value) !== canonicalFoundationJson(expectedRequest)) return Result.err(new FoundationError("session_ledger_conflict", "A stable spawnId is already bound to a different canonical request", { details }));
+	const correlation = candidate.correlation;
+	if (correlation === undefined || typeof correlation !== "object" || Array.isArray(correlation) || canonicalFoundationJson(correlation) !== canonicalFoundationJson(expectedCorrelation) || !spawnCorrelationValid(correlation as ExecutionCorrelationV1, request.value)) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn intent correlation does not match the current request", { details }));
+	return Result.ok({ schemaVersion: 1, spawnId, providerId, request: request.value, correlation: correlation as ExecutionCorrelationV1 });
+}
+
+function canonicalizeSpawnResult(result: ChildSpawnResultV1, request: ChildSpawnRequestV1, providerId: string, role: RoleRevisionV1): ResultValue<ChildSpawnResultV1, FoundationError> {
+	const checkedAttempt = validateAttempt(result.attempt);
+	if (!checkedAttempt.ok) return checkedAttempt;
+	const checkedAgent = validateAgentInstanceV1(result.agentInstance);
+	if (!checkedAgent.ok) return checkedAgent;
+	const checkedEpoch = validateBindingEpochV1(result.initialBindingEpoch);
+	if (!checkedEpoch.ok) return checkedEpoch;
+	if (checkedAttempt.value.providerId !== providerId || checkedAttempt.value.taskId !== request.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or canonical TaskEnvelope", { details: { spawnId: request.spawnId } }));
+	if (checkedAgent.value.providerId !== providerId || checkedAgent.value.taskId !== checkedAttempt.value.taskId || checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: request.spawnId } }));
+	if (checkedAgent.value.roleRevision.id !== role.roleRevisionId || checkedAgent.value.roleRevision.revision !== role.revision) return Result.err(new FoundationError("invalid_correlation", "Agent spawn AgentInstance must retain the canonical durable RoleRevision", { details: { spawnId: request.spawnId } }));
+	if (checkedEpoch.value.ordinal !== 0 || checkedEpoch.value.attemptId !== checkedAttempt.value.attemptId || checkedEpoch.value.taskId !== checkedAttempt.value.taskId || checkedEpoch.value.bindingId !== checkedAttempt.value.bindingId || checkedEpoch.value.agentInstanceId !== checkedAgent.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn epoch does not match its Attempt or AgentInstance", { details: { spawnId: request.spawnId } }));
+	if (!checkedAttempt.value.bindingEpochIds.includes(checkedEpoch.value.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt omitted its initial BindingEpoch", { details: { spawnId: request.spawnId } }));
+	if (request.parentSpawn !== undefined && (request.parentSpawn.parentTaskId === request.taskEnvelope.taskId || request.parentSpawn.newTaskEnvelopeRef.id !== request.taskEnvelope.taskId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent does not identify a distinct requested child TaskEnvelope", { details: { spawnId: request.spawnId } }));
+	if (request.parentAgentInstanceId !== undefined && checkedAgent.value.lineage.parentId !== request.parentAgentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn child AgentInstance lineage does not identify its parent", { details: { spawnId: request.spawnId } }));
+	return Result.ok({ schemaVersion: 1, attempt: checkedAttempt.value, agentInstance: { ...checkedAgent.value, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision, fingerprint: role.fingerprint } }, initialBindingEpoch: checkedEpoch.value });
+}
+
 async function requireDurableRevisionFact(ledger: SessionLedgerV1, objectType: string, reference: AgentBindingV1["contextRevision"]): Promise<void> {
 	const fact = await ledger.get(objectType, reference.id);
 	if (fact?.kind !== "fact" || !durableReferenceMatches(reference, fact.payload)) throw sourceRequired(reference, reference.type);
 }
 
-async function requireDurableBindingSources(ledger: SessionLedgerV1, binding: AgentBindingV1, task?: TaskEnvelopeV1): Promise<void> {
+async function requireDurableBindingSources(ledger: SessionLedgerV1, binding: AgentBindingV1, task?: TaskEnvelopeV1): Promise<DurableBindingFactsV1> {
 	const role = await findDurableRoleRevision(ledger, binding.roleRevision);
 	const profile = await findDurableModelProfile(ledger, binding.modelProfileRevision);
 	if (task !== undefined && binding.taskId !== task.taskId) throw new FoundationError("binding_task_before_binding", "Binding references a different durable TaskEnvelope", { details: { bindingId: binding.bindingId, taskId: task.taskId } });
@@ -179,6 +324,7 @@ async function requireDurableBindingSources(ledger: SessionLedgerV1, binding: Ag
 	await requireDurableRevisionFact(ledger, "capability_binding", binding.capabilityRevision);
 	await requireDurableRevisionFact(ledger, "model_broker_binding", binding.modelBrokerBindingRevision);
 	await requireDurableRevisionFact(ledger, "policy_binding", binding.policyRevision);
+	return { roleRevision: role, modelProfile: profile, modelRoute: expectedRoute };
 }
 
 /**
@@ -206,7 +352,8 @@ export class LayeredResultSettlementV1 {
 		}
 	}
 
-	async executeDispatch(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<DispatchExecutionResultV1, FoundationError>> {
+	/** Persist the provider-created Attempt before any provider run side effect. */
+	async startDispatch(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<DispatchStartResultV1, FoundationError>> {
 		const checkedDispatch = validateDispatch(input.dispatch);
 		if (!checkedDispatch.ok) return checkedDispatch;
 		const checkedBinding = validateImmutableAgentBinding(input.binding);
@@ -223,27 +370,76 @@ export class LayeredResultSettlementV1 {
 		}
 		try {
 			await this.requireExistingTask(checkedDispatch.value.taskId);
-			await this.requireExistingBindingFacts(checkedBinding.value, checkedDispatch.value.taskId);
-			await this.persistFact("agent_binding", checkedBinding.value.bindingId, checkedBinding.value, { taskId: checkedBinding.value.taskId, bindingId: checkedBinding.value.bindingId }, { immutable: true });
+			const durableFacts = await this.requireExistingBindingFacts(checkedBinding.value, checkedDispatch.value.taskId);
+			const canonicalBinding = canonicalBindingFromFacts(checkedBinding.value, durableFacts);
+			const canonicalAgent = input.agentInstance === undefined ? undefined : canonicalAgentInstanceRole(input.agentInstance, durableFacts.roleRevision);
+			if (canonicalAgent !== undefined && !canonicalAgent.ok) return canonicalAgent;
+			await this.persistFact("agent_binding", canonicalBinding.bindingId, canonicalBinding, { taskId: canonicalBinding.taskId, bindingId: canonicalBinding.bindingId }, { immutable: true });
 			await this.persistFact("binding_epoch", checkedEpoch.value.bindingEpochId, checkedEpoch.value, { taskId: checkedEpoch.value.taskId, attemptId: checkedEpoch.value.attemptId, bindingId: checkedEpoch.value.bindingId, bindingEpochId: checkedEpoch.value.bindingEpochId, agentInstanceId: checkedEpoch.value.agentInstanceId }, { immutable: true });
-			if (input.agentInstance !== undefined) await this.persistFact("agent_instance", input.agentInstance.agentInstanceId, input.agentInstance, { taskId: input.agentInstance.taskId, agentInstanceId: input.agentInstance.agentInstanceId }, { immutable: true });
+			if (canonicalAgent?.ok) await this.persistFact("agent_instance", canonicalAgent.value.agentInstanceId, canonicalAgent.value, { taskId: canonicalAgent.value.taskId, agentInstanceId: canonicalAgent.value.agentInstanceId }, { immutable: true });
 			await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId }, { immutable: true });
-			const replayed = await this.findDurableDispatchExecution(checkedDispatch.value, checkedBinding.value, checkedEpoch.value, input.provider);
-			if (replayed !== undefined) return Result.ok(replayed);
-			const executed = await executeDispatchV1({ ...input, beforeRunAttempt: async (attempt) => {
-				const checkedAttempt = validateAttempt(attempt);
-				if (!checkedAttempt.ok) return checkedAttempt;
-				try {
-					await this.persistFact("attempt", checkedAttempt.value.attemptId, checkedAttempt.value, { taskId: checkedAttempt.value.taskId, dispatchId: checkedAttempt.value.dispatchId, attemptId: checkedAttempt.value.attemptId, bindingId: checkedAttempt.value.bindingId, bindingEpochId: checkedAttempt.value.bindingEpochIds[0], agentInstanceId: checkedAttempt.value.agentInstanceId }, { immutable: true });
-					return Result.ok(undefined);
-				} catch (error) {
-					return this.persistenceError(error, "session_writer_stale_revision");
-				}
-			} });
-			if (!executed.ok) return executed;
-			return this.acceptProviderExecution(executed.value, input.provider.providerId, input.provider.providerClass);
+			const replayed = await this.findDurableDispatchExecution(checkedDispatch.value, canonicalBinding, checkedEpoch.value, input.provider);
+			if (replayed !== undefined) return Result.ok({ ...replayed, receipt: replayed.receipt });
+			const existingAttempt = await this.findDurableAttempt(checkedDispatch.value, canonicalBinding, checkedEpoch.value, input.provider);
+			const started = await startDispatchAttemptV1({
+				...input,
+				binding: canonicalBinding,
+				...(canonicalAgent === undefined ? {} : { agentInstance: canonicalAgent.value }),
+				roleRevision: durableFacts.roleRevision,
+				modelProfile: durableFacts.modelProfile,
+				modelRoute: durableFacts.modelRoute,
+				existingAttempt,
+			});
+			if (!started.ok) return started;
+			try {
+				await this.persistFact("attempt", started.value.attempt.attemptId, started.value.attempt, { taskId: started.value.attempt.taskId, dispatchId: started.value.attempt.dispatchId, attemptId: started.value.attempt.attemptId, bindingId: started.value.attempt.bindingId, bindingEpochId: started.value.attempt.bindingEpochIds[0], agentInstanceId: started.value.attempt.agentInstanceId }, { immutable: true });
+				return Result.ok({ ...started.value });
+			} catch (error) {
+				return this.persistenceError(error, "session_writer_stale_revision");
+			}
 		} catch (error) {
 			return this.persistenceError(error, "session_writer_stale_revision");
+		}
+	}
+
+	async executeDispatch(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<DispatchExecutionResultV1, FoundationError>> {
+		const started = await this.startDispatch(input);
+		if (!started.ok) return started;
+		if (started.value.receipt !== undefined) return Result.ok({ attempt: started.value.attempt, receipt: started.value.receipt, providerId: started.value.providerId, providerClass: started.value.providerClass });
+		const executed = await executeDispatchV1({ ...input, existingAttempt: started.value.attempt });
+		if (!executed.ok) return executed;
+		return this.acceptProviderExecution(executed.value, input.provider.providerId, input.provider.providerClass);
+	}
+
+	/** Resume a durable Attempt through an optional provider resume surface. */
+	async resumeDispatch(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<DispatchStartResultV1, FoundationError>> {
+		const started = await this.startDispatch(input);
+		if (!started.ok || started.value.receipt !== undefined) return started;
+		const provider = input.provider as TaskExecutorProviderResumeSurface;
+		try {
+			let resumed: ResultValue<AttemptReceiptV1, FoundationError>;
+			if (provider.resumeAttempt !== undefined) resumed = await provider.resumeAttempt(started.value.attempt.attemptId, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+			else if (provider.resume !== undefined) resumed = await provider.resume(started.value.attempt.attemptId, { signal: input.signal });
+			else return started;
+			if (!resumed.ok) return resumed;
+			const accepted = await this.acceptProviderExecution({ ...started.value, receipt: resumed.value }, input.provider.providerId, input.provider.providerClass);
+			if (!accepted.ok) return accepted;
+			return Result.ok({ ...accepted.value, receipt: accepted.value.receipt });
+		} catch (error) {
+			return this.persistenceError(error, "worker_receipt_invalid_producer");
+		}
+	}
+
+	/** Cancel the durable Attempt through the provider. No terminal receipt is fabricated here. */
+	async cancelAttempt(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<void, FoundationError>> {
+		const started = await this.startDispatch(input);
+		if (!started.ok) return started;
+		if (started.value.receipt !== undefined) return Result.ok(undefined);
+		try {
+			const cancelled = await input.provider.cancelAttempt(started.value.attempt.attemptId);
+			return cancelled;
+		} catch (error) {
+			return this.persistenceError(error, "task_executor_invalid_provider_class");
 		}
 	}
 
@@ -270,25 +466,72 @@ export class LayeredResultSettlementV1 {
 		const checkedRequest = validateChildSpawnRequestV1(input.request);
 		if (!checkedRequest.ok) return checkedRequest;
 		try {
-			await this.persistFact("task", checkedRequest.value.taskEnvelope.taskId, checkedRequest.value.taskEnvelope, { taskId: checkedRequest.value.taskEnvelope.taskId, spawnId: checkedRequest.value.spawnId }, { immutable: true });
-			await this.requireDurableSpawnSources(checkedRequest.value.roleRevision, checkedRequest.value.modelProfile);
-			const spawned = await executeAgentSpawnV1(input);
+			if (!spawnCorrelationValid(input.correlation, checkedRequest.value)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn requires a complete child Task and AgentInstance correlation", { details: { spawnId: checkedRequest.value.spawnId } }));
+			const durableTask = await this.persistFact("task", checkedRequest.value.taskEnvelope.taskId, checkedRequest.value.taskEnvelope, { taskId: checkedRequest.value.taskEnvelope.taskId, spawnId: checkedRequest.value.spawnId }, { immutable: true });
+			const durableSources = await this.requireDurableSpawnSources(checkedRequest.value.roleRevision, checkedRequest.value.modelProfile);
+			const canonicalRequest: ChildSpawnRequestV1 = { ...checkedRequest.value, taskEnvelope: durableTask.payload as TaskEnvelopeV1, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile };
+			const existingFact = await this.ledger.get(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId);
+			if (existingFact?.kind === "fact") {
+				const fact = parseSpawnFact(existingFact.payload, canonicalRequest.spawnId, input.provider.providerId);
+				if (!fact.ok) return fact;
+				if (canonicalFoundationJson(fact.value.request) !== canonicalFoundationJson(canonicalRequest)) return Result.err(new FoundationError("session_ledger_conflict", "A stable spawnId is already bound to a different canonical request", { details: { spawnId: canonicalRequest.spawnId } }));
+				await this.persistSpawnChain(fact.value.request, fact.value.result, fact.value.contextId);
+				return Result.ok(cloneDeepFrozen(fact.value.result));
+			}
+			const intents = await this.ledger.find({ kind: "intent", objectType: AGENT_SPAWN_OBJECT_TYPE_V1, objectId: canonicalRequest.spawnId, includePruned: true, order: "oldestFirst" });
+			const existingIntent = intents[0];
+			let spawned: ResultValue<ChildSpawnResultV1, FoundationError>;
+			if (existingIntent !== undefined && existingIntent.kind === "intent") {
+				const parsedIntent = parseSpawnIntent(existingIntent, canonicalRequest.spawnId, input.provider.providerId, canonicalRequest, input.correlation);
+				if (!parsedIntent.ok) return parsedIntent;
+				const provider = input.provider as ChildAgentProvider;
+				if (provider.lookupSpawn === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "A durable spawn intent exists without a provider idempotency lookup; refusing to spawn again", { details: { spawnId: canonicalRequest.spawnId } }));
+				const recovered = await provider.lookupSpawn(canonicalRequest.spawnId, input.signal === undefined ? undefined : { signal: input.signal });
+				if (!recovered.ok) return recovered;
+				if (recovered.value === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "Provider cannot recover the durable spawn intent without spawning again", { details: { spawnId: canonicalRequest.spawnId } }));
+				spawned = Result.ok(recovered.value);
+			} else if (existingIntent === undefined) {
+				const intentPayload: AgentSpawnIntentPayloadV1 = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, correlation: input.correlation };
+				const appendedIntent = await this.ledger.appendIntent(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId, { clientRequestId: `agent-spawn:${canonicalRequest.spawnId}`, expectedRevision: 0, intent: "create", payload: intentPayload as unknown as FoundationJsonValue, correlation: input.correlation });
+				if (appendedIntent.replayed) {
+					const parsedIntent = parseSpawnIntent(appendedIntent.record, canonicalRequest.spawnId, input.provider.providerId, canonicalRequest, input.correlation);
+					if (!parsedIntent.ok) return parsedIntent;
+					const provider = input.provider as ChildAgentProvider;
+					if (provider.lookupSpawn === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "A durable spawn intent exists without a provider idempotency lookup; refusing to spawn again", { details: { spawnId: canonicalRequest.spawnId } }));
+					const recovered = await provider.lookupSpawn(canonicalRequest.spawnId, input.signal === undefined ? undefined : { signal: input.signal });
+					if (!recovered.ok) return recovered;
+					if (recovered.value === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "Provider cannot recover the durable spawn intent without spawning again", { details: { spawnId: canonicalRequest.spawnId } }));
+					spawned = Result.ok(recovered.value);
+				} else {
+					spawned = await executeAgentSpawnV1({ ...input, request: canonicalRequest });
+				}
+			} else {
+				return Result.err(new FoundationError("session_ledger_conflict", "A durable non-create spawn intent already occupies this spawnId", { details: { spawnId: canonicalRequest.spawnId } }));
+			}
 			if (!spawned.ok) return spawned;
-			await this.requireExistingBindingFactsFromId(spawned.value.attempt.bindingId, spawned.value.attempt.taskId);
-			const childDispatch: DispatchV1 = { schemaVersion: 1, dispatchId: spawned.value.attempt.dispatchId, taskId: spawned.value.attempt.taskId, bindingId: spawned.value.attempt.bindingId, taskExecutorProviderId: input.provider.providerId, status: "pending", createdAt: spawned.value.attempt.startedAt };
-			const checkedDispatch = validateDispatch(childDispatch);
-			if (!checkedDispatch.ok) return checkedDispatch;
-			const contextId = `context_${spawned.value.attempt.taskId}`;
-			const context = { schemaVersion: 1 as const, contextId, taskId: spawned.value.attempt.taskId, spawnId: checkedRequest.value.spawnId, forkScope: checkedRequest.value.forkScope, ...(checkedRequest.value.parentSpawn === undefined ? {} : { parentTaskId: checkedRequest.value.parentSpawn.parentTaskId }), createdAt: spawned.value.attempt.startedAt };
-			await this.persistFact("context", contextId, context, { taskId: spawned.value.attempt.taskId, spawnId: checkedRequest.value.spawnId, contextId }, { immutable: true });
-			await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, spawnId: checkedRequest.value.spawnId }, { immutable: true });
-			await this.persistFact("agent_instance", spawned.value.agentInstance.agentInstanceId, spawned.value.agentInstance, { taskId: spawned.value.agentInstance.taskId, agentInstanceId: spawned.value.agentInstance.agentInstanceId }, { immutable: true });
-			await this.persistFact("binding_epoch", spawned.value.initialBindingEpoch.bindingEpochId, spawned.value.initialBindingEpoch, { taskId: spawned.value.initialBindingEpoch.taskId, attemptId: spawned.value.initialBindingEpoch.attemptId, bindingId: spawned.value.initialBindingEpoch.bindingId, bindingEpochId: spawned.value.initialBindingEpoch.bindingEpochId, agentInstanceId: spawned.value.initialBindingEpoch.agentInstanceId }, { immutable: true });
-			await this.persistFact("attempt", spawned.value.attempt.attemptId, spawned.value.attempt, { taskId: spawned.value.attempt.taskId, dispatchId: spawned.value.attempt.dispatchId, attemptId: spawned.value.attempt.attemptId, bindingId: spawned.value.attempt.bindingId, bindingEpochId: spawned.value.attempt.bindingEpochIds[0], agentInstanceId: spawned.value.attempt.agentInstanceId }, { immutable: true });
-			return spawned;
+			const canonicalResult = canonicalizeSpawnResult(spawned.value, canonicalRequest, input.provider.providerId, durableSources.roleRevision);
+			if (!canonicalResult.ok) return canonicalResult;
+			const contextId = `context_${canonicalRequest.spawnId}`;
+			const spawnFact: AgentSpawnFactPayloadV1 = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, result: canonicalResult.value, contextId };
+			await this.persistFact(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId, spawnFact, { taskId: canonicalRequest.taskEnvelope.taskId, spawnId: canonicalRequest.spawnId }, { expectedRevision: 1 });
+			await this.persistSpawnChain(canonicalRequest, canonicalResult.value, contextId);
+			return Result.ok(cloneDeepFrozen(canonicalResult.value));
 		} catch (error) {
 			return this.persistenceError(error, "session_writer_stale_revision");
 		}
+	}
+
+	private async persistSpawnChain(request: ChildSpawnRequestV1, spawned: ChildSpawnResultV1, contextId: string): Promise<void> {
+		await this.requireExistingBindingFactsFromId(spawned.attempt.bindingId, spawned.attempt.taskId);
+		const childDispatch: DispatchV1 = { schemaVersion: 1, dispatchId: spawned.attempt.dispatchId, taskId: spawned.attempt.taskId, bindingId: spawned.attempt.bindingId, taskExecutorProviderId: spawned.attempt.providerId, status: "pending", createdAt: spawned.attempt.startedAt };
+		const checkedDispatch = validateDispatch(childDispatch);
+		if (!checkedDispatch.ok) throw checkedDispatch.error;
+		const context = { schemaVersion: 1 as const, contextId, taskId: spawned.attempt.taskId, spawnId: request.spawnId, forkScope: request.forkScope, ...(request.parentSpawn === undefined ? {} : { parentTaskId: request.parentSpawn.parentTaskId }), createdAt: spawned.attempt.startedAt };
+		await this.persistFact("context", contextId, context, { taskId: spawned.attempt.taskId, spawnId: request.spawnId, contextId }, { immutable: true });
+		await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, spawnId: request.spawnId }, { immutable: true });
+		await this.persistFact("agent_instance", spawned.agentInstance.agentInstanceId, spawned.agentInstance, { taskId: spawned.agentInstance.taskId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
+		await this.persistFact("binding_epoch", spawned.initialBindingEpoch.bindingEpochId, spawned.initialBindingEpoch, { taskId: spawned.initialBindingEpoch.taskId, attemptId: spawned.initialBindingEpoch.attemptId, bindingId: spawned.initialBindingEpoch.bindingId, bindingEpochId: spawned.initialBindingEpoch.bindingEpochId, agentInstanceId: spawned.initialBindingEpoch.agentInstanceId }, { immutable: true });
+		await this.persistFact("attempt", spawned.attempt.attemptId, spawned.attempt, { taskId: spawned.attempt.taskId, dispatchId: spawned.attempt.dispatchId, attemptId: spawned.attempt.attemptId, bindingId: spawned.attempt.bindingId, bindingEpochId: spawned.attempt.bindingEpochIds[0], agentInstanceId: spawned.attempt.agentInstanceId }, { immutable: true });
 	}
 
 	async switchAgentMode(input: ModeSwitchExecutionInputV1): Promise<ResultValue<BindingEpochV1, FoundationError>> {
@@ -422,9 +665,9 @@ export class LayeredResultSettlementV1 {
 		return checked.value;
 	}
 
-	private async requireExistingBindingFacts(binding: AgentBindingV1, taskId?: string): Promise<void> {
+	private async requireExistingBindingFacts(binding: AgentBindingV1, taskId?: string): Promise<DurableBindingFactsV1> {
 		const task = taskId === undefined ? undefined : await this.requireExistingTask(taskId);
-		await requireDurableBindingSources(this.ledger, binding, task);
+		const durableFacts = await requireDurableBindingSources(this.ledger, binding, task);
 		const refs: readonly [string, string, string][] = [
 			["external_agent_binding", binding.contextRevision.id, binding.contextRevision.fingerprint?.value ?? ""],
 			["capability_binding", binding.capabilityRevision.id, binding.capabilityRevision.fingerprint?.value ?? ""],
@@ -437,13 +680,13 @@ export class LayeredResultSettlementV1 {
 			const reference = revisions[index];
 			if (fact === undefined || fact.kind !== "fact" || fact.revision <= 0 || reference === undefined || fact.payload === undefined || fact.payload === null || typeof fact.payload !== "object" || !("revision" in fact.payload) || fact.payload.revision !== reference.revision || fingerprint.length === 0 || fingerprintFoundationValue(fact.payload).value !== fingerprint) throw new FoundationError("binding_required_fact", "AgentBinding references a missing or different immutable binding fact", { details: { objectType, objectId, revision: reference?.revision } });
 		}
+		return durableFacts;
 	}
 
-	private async requireDurableSpawnSources(roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): Promise<void> {
-		const roleReference = { schemaVersion: 1 as const, type: "role_revision", id: roleRevision.roleRevisionId, revision: roleRevision.revision, fingerprint: roleRevision.fingerprint };
-		const profileReference = { schemaVersion: 1 as const, type: "model_profile_revision", id: modelProfile.modelProfileId, revision: modelProfile.revision, fingerprint: modelProfile.fingerprint };
-		await findDurableRoleRevision(this.ledger, roleReference);
-		await findDurableModelProfile(this.ledger, profileReference);
+	private async requireDurableSpawnSources(roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): Promise<DurableBindingFactsV1> {
+		const canonicalRole = await findCanonicalRoleRevision(this.ledger, roleRevision.roleRevisionId, roleRevision.revision);
+		const canonicalProfile = await findCanonicalModelProfile(this.ledger, modelProfile.modelProfileId, modelProfile.revision);
+		return { roleRevision: canonicalRole, modelProfile: canonicalProfile, modelRoute: routeFromProfile(canonicalProfile) };
 	}
 
 	private async requireExistingBindingFactsFromId(bindingId: string, taskId: string): Promise<void> {
@@ -465,6 +708,16 @@ export class LayeredResultSettlementV1 {
 	private async requireExistingEpoch(epoch: BindingEpochV1): Promise<void> {
 		const stored = await this.ledger.get("binding_epoch", epoch.bindingEpochId);
 		if (stored === undefined || stored.kind !== "fact" || canonicalFoundationJson(stored.payload) !== canonicalFoundationJson(epoch)) throw new FoundationError("binding_required_fact", "Mode switch requires the current immutable BindingEpoch to be durable", { details: { bindingEpochId: epoch.bindingEpochId } });
+	}
+
+	private async findDurableAttempt(dispatch: DispatchV1, binding: AgentBindingV1, epoch: BindingEpochV1, provider: DispatchExecutionInputV1["provider"]): Promise<AttemptV1 | undefined> {
+		const record = await this.ledger.get("attempt", epoch.attemptId);
+		if (record === undefined) return undefined;
+		if (record.kind !== "fact") throw new FoundationError("session_ledger_tombstoned", "A durable Attempt identity cannot be replaced by a terminal object", { details: { attemptId: epoch.attemptId } });
+		const checked = validateAttempt(record.payload);
+		if (!checked.ok) throw checked.error;
+		if (checked.value.taskId !== dispatch.taskId || checked.value.dispatchId !== dispatch.dispatchId || checked.value.bindingId !== binding.bindingId || checked.value.providerId !== provider.providerId || !checked.value.bindingEpochIds.includes(epoch.bindingEpochId) || checked.value.agentInstanceId !== epoch.agentInstanceId) throw new FoundationError("invalid_correlation", "Durable Attempt does not match the replayed Dispatch", { details: { attemptId: checked.value.attemptId, dispatchId: dispatch.dispatchId } });
+		return cloneDeepFrozen(checked.value);
 	}
 
 	private async findDurableDispatchExecution(dispatch: DispatchExecutionInputV1["dispatch"], binding: AgentBindingV1, epoch: BindingEpochV1, provider: DispatchExecutionInputV1["provider"]): Promise<DispatchExecutionResultV1 | undefined> {

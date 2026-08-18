@@ -768,7 +768,7 @@ describe("provider-neutral compilation contracts", () => {
 		expect(isSideEffectRetryable("unknown", "idempotent")).toBe(true);
 		expect(isSideEffectRetryable("unknown", "non_idempotent")).toBe(false);
 		expect(isSideEffectRetryable("side_effect_unknown", "idempotent")).toBe(false);
-		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "side_effect_unknown", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(true);
+		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "side_effect_unknown", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(false);
 		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "idempotent", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(false);
 	});
 });

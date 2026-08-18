@@ -6,6 +6,7 @@ import { FoundationError, toFoundationError } from "./errors.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import type {
 	FoundationFactRecordV1,
+	FoundationIntentRecordV1,
 	FoundationObjectResultV1,
 	FoundationRecordQueryV1,
 	FoundationRecordV1,
@@ -29,6 +30,11 @@ export interface AppendFoundationFactOptionsV1 {
 export interface SessionLedgerFactResultV1<TPayload> {
 	readonly record: FoundationFactRecordV1;
 	readonly payload: TPayload;
+	readonly replayed: boolean;
+}
+
+export interface SessionLedgerIntentResultV1 {
+	readonly record: FoundationIntentRecordV1;
 	readonly replayed: boolean;
 }
 
@@ -101,6 +107,48 @@ export class SessionLedgerV1 {
 		try {
 			const appended = await this.session.appendFoundationRecord(input);
 			return { record: appended.record as FoundationFactRecordV1, payload: appended.record.kind === "fact" ? appended.record.payload as TPayload : payload, replayed: appended.replayed };
+		} catch (error) {
+			if (error instanceof DurableLedgerError) throw error;
+			throw toFoundationError(error, "session_writer_stale_revision");
+		}
+	}
+
+	/**
+	 * Persist a side-effect-free intent before invoking an external provider.
+	 * The client request id is the durable idempotency key; replaying the same
+	 * intent returns the original record without advancing the ledger.
+	 */
+	async appendIntent(objectType: string, objectId: string, options: AppendFoundationFactOptionsV1 & { readonly intent: "create" | "update" | "delete"; readonly payload?: FoundationJsonValue }): Promise<SessionLedgerIntentResultV1> {
+		const existing = await this.session.findFoundationRecords({ kind: "intent", objectType, objectId, includePruned: true, order: "oldestFirst" });
+		const replay = existing.find((record) => record.kind === "intent" && record.clientRequestId === options.clientRequestId);
+		if (replay !== undefined && replay.kind === "intent") return { record: replay, replayed: true };
+		const actualRevision = await this.session.getFoundationRevision(objectType, objectId);
+		if (options.expectedRevision !== undefined && options.expectedRevision !== actualRevision) throw new FoundationError("session_writer_stale_revision", "Foundation object revision does not match the compare-and-set expectation", { details: { objectType, objectId, expectedRevision: options.expectedRevision, actualRevision } });
+		const lease = await this.ensureLease();
+		const metadata = await this.session.getMetadata();
+		const correlation = {
+			...Object.fromEntries(Object.entries(options.correlation).filter(([, value]) => value !== undefined)),
+			sessionId: metadata.id,
+			laneId: this.laneId,
+			revision: 0,
+		};
+		const input: ProvisionedFoundationRecordV1 = {
+			schemaVersion: 1,
+			kind: "intent",
+			id: `${objectType}:${objectId}:${options.clientRequestId}`,
+			lane: this.laneId,
+			objectType,
+			objectId,
+			clientRequestId: options.clientRequestId,
+			intent: options.intent,
+			...(options.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision }),
+			...(options.payload === undefined ? {} : { payload: options.payload }),
+			fencingToken: lease.fencingToken,
+			correlation,
+		};
+		try {
+			const appended = await this.session.appendFoundationRecord(input);
+			return { record: appended.record as FoundationIntentRecordV1, replayed: appended.replayed };
 		} catch (error) {
 			if (error instanceof DurableLedgerError) throw error;
 			throw toFoundationError(error, "session_writer_stale_revision");
