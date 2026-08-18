@@ -1460,6 +1460,18 @@ export class AgentHarness implements AgentLane {
 		await this.refreshSnapshots();
 	}
 
+	private async finishActiveOperation(runId: string): Promise<void> {
+		this.activeOperations.delete(runId);
+		try {
+			await this.refreshSnapshots();
+		} catch (error) {
+			this.faulted = true;
+			this.sessionSnapshot = { ...this.sessionSnapshot, faulted: true };
+			if (isHarnessInfrastructureFault(error)) throw error;
+			throw new HarnessFault("Harness failed closed while refreshing snapshots", error);
+		}
+	}
+
 	private async runAgentOperation(lane: string, runId: string): Promise<void> {
 		const existing = this.activeOperations.get(runId);
 		if (existing) return existing.promise;
@@ -1523,8 +1535,7 @@ export class AgentHarness implements AgentLane {
 					throw new HarnessFault("Harness failed closed after operation error", persistenceError);
 				}
 			} finally {
-				this.activeOperations.delete(runId);
-				await this.refreshSnapshots();
+				await this.finishActiveOperation(runId);
 			}
 		})();
 		void promise.catch(() => undefined);
@@ -1558,8 +1569,7 @@ export class AgentHarness implements AgentLane {
 					throw new HarnessFault("Harness failed closed after active operation error", persistenceError);
 				}
 			} finally {
-				this.activeOperations.delete(runId);
-				await this.refreshSnapshots();
+				await this.finishActiveOperation(runId);
 			}
 		})();
 		void promise.catch(() => undefined);

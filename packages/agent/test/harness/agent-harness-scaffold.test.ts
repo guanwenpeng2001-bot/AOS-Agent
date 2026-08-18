@@ -9,7 +9,7 @@ import {
 	type StreamOptions,
 } from "../../src/harness/agent-harness.ts";
 import { createHostTerminalGateAuthorityV1, fingerprintFoundationValue } from "../../src/harness/foundation/index.ts";
-import { DurableLedgerError, InMemorySessionStorage, Session, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
+import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
 function createSession(id = "session"): Session {
@@ -390,6 +390,36 @@ describe("AgentHarness runtime", () => {
 		await expect(harness.prompt("storage fault")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
 		expect(acquireCalls).toBe(0);
 		await expect(harness.prompt("faulted after storage fault")).rejects.toThrow("AgentHarness is faulted");
+		await harness.close().catch(() => undefined);
+	});
+
+	it("fails closed when an active operation final snapshot refresh fails", async () => {
+		const session = createSession("active-final-refresh-fault");
+		const runtime = createModelsWithResponse();
+		const originalAppendRecord = session.appendRecord.bind(session);
+		const originalGetLanes = session.getLanes.bind(session);
+		let armed = false;
+		let postFinishedReads = 0;
+		let injected = false;
+		session.appendRecord = async (record) => {
+			const accepted = await originalAppendRecord(record);
+			if (record.type === "operation_finished") armed = true;
+			return accepted;
+		};
+		session.getLanes = async () => {
+			if (armed) {
+				postFinishedReads += 1;
+				if (!injected && postFinishedReads === 6) {
+					injected = true;
+					throw new SessionError("storage", "Injected final snapshot refresh failure");
+				}
+			}
+			return originalGetLanes();
+		};
+		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model });
+		await expect(harness.prompt("final refresh fault")).rejects.toMatchObject({ name: "SessionError", code: "storage" });
+		expect(injected).toBe(true);
+		await expect(harness.prompt("faulted harness must reject")).rejects.toThrow("AgentHarness is faulted");
 		await harness.close().catch(() => undefined);
 	});
 
