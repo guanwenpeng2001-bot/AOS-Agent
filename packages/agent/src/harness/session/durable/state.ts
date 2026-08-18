@@ -262,8 +262,8 @@ export class FoundationLedgerState {
 			retentionRevision: this.retentionRevision + 1,
 			policy: clone(policy),
 			clientRequestId: options.clientRequestId,
-			expectedRevision: options.expectedRevision,
-			fencingToken: options.fencingToken,
+			...(options.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision }),
+			...(options.fencingToken === undefined ? {} : { fencingToken: options.fencingToken }),
 			correlation: options.correlation,
 		});
 	}

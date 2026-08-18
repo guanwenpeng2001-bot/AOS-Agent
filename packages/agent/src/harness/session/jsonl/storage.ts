@@ -476,7 +476,6 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			this.alignDurableCursor();
 			await this.loadLeaseSidecar();
 			await this.assertWriterLockOwned(lockToken);
-			this.state.validateUnusedId(`retention:${options.clientRequestId}`);
 			const prepared = this.durableState.prepareAppend({
 				schemaVersion: 1,
 				kind: "retention",
@@ -485,8 +484,8 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 				retentionRevision: this.durableState.getRetentionRevision() + 1,
 				policy,
 				clientRequestId: options.clientRequestId,
-				expectedRevision: options.expectedRevision,
-				fencingToken: options.fencingToken,
+				...(options.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision }),
+				...(options.fencingToken === undefined ? {} : { fencingToken: options.fencingToken }),
 				correlation: options.correlation,
 			});
 			if ("replayed" in prepared) return prepared;

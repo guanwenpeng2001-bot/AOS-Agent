@@ -50,6 +50,29 @@ describe("T2 single Session ledger", () => {
 		expect((await session.getLog({})).map((item) => item.seq)).toEqual([1, 2]);
 		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
 	});
+
+	it("replays a retention request idempotently without a second physical record", async () => {
+		const root = tempRoot();
+		const env = new NodeExecutionEnv({ cwd: root });
+		const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: root });
+		const session = await repo.create({ id: "retention-replay", cwd: root });
+		const lease = await session.acquireWriterLease({ ownerId: "retention-replay-test" });
+		const policy = { schemaVersion: 1 as const, cutSequence: 0, reason: "replay-test" };
+		const options = {
+			clientRequestId: "retention-request-1",
+			correlation: correlation("retention-replay"),
+			fencingToken: lease.fencingToken,
+		};
+
+		const first = await session.setRetentionPolicy(policy, options);
+		const replay = await session.setRetentionPolicy(policy, options);
+		expect(first.replayed).toBe(false);
+		expect(replay.replayed).toBe(true);
+		expect(replay.record).toEqual(first.record);
+		expect(await session.findFoundationRecords({ kind: "retention", order: "oldestFirst" })).toHaveLength(1);
+		expect(await session.getLedgerRevision()).toBe(1);
+		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
+	});
 });
 
 describe("T2 JSONL recovery and writer fencing", () => {
