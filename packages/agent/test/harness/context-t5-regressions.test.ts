@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	InMemoryArtifactBlobStore,
 	InMemoryArtifactStore,
@@ -186,6 +186,10 @@ describe("T5 durable reopen and recovery regressions", () => {
 		await expect(ledger.applyRewind(approvedPlan.planId, unknownWorkspace)).rejects.toThrow("not safe to apply");
 		const forgedUnknownPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, known: false } };
 		expect(applyCheckpointRewind(snapshot, forgedUnknownPlan)).toBeUndefined();
+		const rewindTo = vi.spyOn(snapshot, "rewindTo");
+		const forgedModifiedFilesPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, modifiedFiles: ["forged.ts"] } };
+		expect(applyCheckpointRewind(snapshot, forgedModifiedFilesPlan)).toBeUndefined();
+		expect(rewindTo).not.toHaveBeenCalled();
 		expect((await session.getLanes()).find((lane) => lane.lane === "main")?.leafId).toBe(snapshot.headEntryId);
 		await ledger.writer.releaseLease();
 	});

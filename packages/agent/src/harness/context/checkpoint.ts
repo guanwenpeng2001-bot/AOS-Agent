@@ -213,21 +213,38 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 }
 
 export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlanV1): ContextSnapshot | undefined {
-	if (plan.status !== "approved" || plan.failClosed !== true || plan.sourceSnapshotId !== snapshot.snapshotId) return undefined;
-	if (plan.reason !== "ok" || plan.workspace.known !== true || !workspaceImpactEvidenceComplete(plan.workspace) || plan.workspace.hasUncommittedImpact) return undefined;
-	if (plan.boundary.workspaceDigest !== plan.workspace.digest) return undefined;
-	if (plan.boundary.transcriptDigest !== digestCheckpointTranscript(snapshot.entries())) return undefined;
+	const workspace: WorkspaceCheckpointState = {
+		known: plan.workspace.known,
+		...(plan.workspace.digest === undefined ? {} : { digest: plan.workspace.digest }),
+		readFiles: plan.workspace.readFiles,
+		modifiedFiles: plan.workspace.modifiedFiles,
+		pendingFiles: plan.workspace.pendingFiles,
+		unknownFiles: plan.workspace.unknownFiles,
+	};
+	if (!validateCheckpointImpactPlan(plan, snapshot, workspace)) return undefined;
 	if (plan.targetEntryId === null) return snapshot.fork({ mode: "none", checkpointId: plan.checkpointId });
 	return snapshot.rewindTo(plan.targetEntryId);
 }
 
 export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snapshot: ContextSnapshot, workspace?: WorkspaceCheckpointState): boolean {
-	if (plan.status !== "approved" || plan.failClosed !== true || plan.sourceSnapshotId !== snapshot.snapshotId) return false;
+	if (
+		plan.schemaVersion !== CHECKPOINT_SCHEMA_VERSION ||
+		plan.status !== "approved" ||
+		plan.reason !== "ok" ||
+		plan.failClosed !== true ||
+		plan.sourceSnapshotId !== snapshot.snapshotId
+	) return false;
 	const planWithSessionFields = plan as CheckpointImpactPlanV1 & { readonly lane?: string; readonly planId?: string };
 	const { lane: _lane, planId: _planId, digest: planDigest, ...planBody } = planWithSessionFields;
 	if (digest(planBody) !== planDigest) return false;
 	if (plan.transcript.beforeDigest !== digestCheckpointTranscript(snapshot.entries())) return false;
 	if (plan.currentLaneLeafId !== undefined && plan.currentLaneLeafId !== snapshot.headEntryId) return false;
+	if (
+		plan.boundary.failClosed !== true ||
+		plan.boundary.entryId !== plan.targetEntryId ||
+		plan.boundary.transcriptDigest !== plan.transcript.beforeDigest ||
+		plan.boundary.workspaceDigest !== plan.workspace.digest
+	) return false;
 	if (workspace === undefined || plan.workspace.known !== true || !workspaceImpactEvidenceComplete(plan.workspace) || !workspaceEvidenceComplete(workspace)) return false;
 	if (plan.workspace.digest !== workspace.digest) return false;
 	return !workspaceImpact(workspace).hasUncommittedImpact;
