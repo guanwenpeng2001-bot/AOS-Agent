@@ -2,7 +2,7 @@ import { Result, type Result as ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
-import { canonicalFoundationJson, fingerprintFoundationValue, type ExecutionCorrelationV1 } from "./identity.ts";
+import { canonicalFoundationJson, extendFoundationLineage, fingerprintFoundationValue, type ExecutionCorrelationV1, type FoundationLineageV1 } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { executeDispatchV1, executeOperationV1, executeAgentSpawnV1, startDispatchAttemptV1, switchAgentModeV1, type DispatchAttemptStartResultV1, type DispatchExecutionInputV1, type DispatchExecutionResultV1, type OperationExecutionInputV1, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInputV1 } from "./execution.ts";
 import { validateImmutableAgentBinding } from "./binding.ts";
@@ -25,7 +25,8 @@ import { validateChildSpawnRequestV1, validateChildSpawnResultV1, type ChildAgen
 import { validateAgentInstanceV1, validateBindingEpochV1, validateRoleRevisionV1, type AgentBindingV1, type AgentInstanceV1, type BindingEpochV1, type ModelProfileV1, type ModelRouteV1, type RoleRevisionV1 } from "./role.ts";
 import { validateRoleRegistryRecordV1 } from "./role-registry.ts";
 import { validateSecretFreeModelProfileV1 } from "./model-profile.ts";
-import { validateAttempt, validateDispatch, validateTaskEnvelope, type AttemptV1, type DispatchV1, type TaskEnvelopeV1 } from "./task.ts";
+import { validateAttempt, validateDispatch, validateSpawnAgentIntent, validateTaskEnvelope, type AttemptV1, type DispatchV1, type SpawnAgentIntentV1, type TaskEnvelopeV1 } from "./task.ts";
+import { validateLineageV1 } from "./schema.ts";
 import { SessionLedgerV1 } from "./session-ledger.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import type { FoundationIntentRecordV1 } from "../session/durable/types.ts";
@@ -265,6 +266,49 @@ function spawnCorrelationValid(correlation: ExecutionCorrelationV1, request: Chi
 	return typeof correlation.sessionId === "string" && correlation.sessionId.length > 0 && typeof correlation.laneId === "string" && correlation.laneId.length > 0 && Number.isSafeInteger(correlation.revision) && correlation.revision >= 0 && correlation.taskId === request.taskEnvelope.taskId && typeof correlation.agentInstanceId === "string" && correlation.agentInstanceId.length > 0;
 }
 
+interface SpawnContextRecordV1 {
+	readonly schemaVersion: 1;
+	readonly contextId: string;
+	readonly taskId: string;
+	readonly spawnId: string;
+	readonly forkScope: ChildSpawnRequestV1["forkScope"];
+	readonly parentTaskId?: string;
+	readonly parentContextId?: string;
+	readonly parentAttemptId?: string;
+	readonly parentAgentInstanceId?: string;
+	readonly lineage: FoundationLineageV1;
+	readonly createdAt: string;
+}
+
+function spawnContextId(spawnId: string): string {
+	return `context_${spawnId}`;
+}
+
+function validateSpawnIntentIdentity(intent: SpawnAgentIntentV1, request: ChildSpawnRequestV1, providerId: string): ResultValue<SpawnAgentIntentV1, FoundationError> {
+	const checked = validateSpawnAgentIntent(intent);
+	if (!checked.ok) return checked;
+	if (intent.spawnId === request.spawnId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must allocate a child Context identity distinct from its parent Context", { details: { spawnId: request.spawnId } }));
+	if (intent.newTaskEnvelopeRef.id !== request.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent does not identify the requested child TaskEnvelope", { details: { spawnId: request.spawnId } }));
+	if (intent.providerId !== undefined && intent.providerId !== providerId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent provider does not match the selected child provider", { details: { spawnId: request.spawnId } }));
+	if (intent.newTaskEnvelopeRef.providerId !== undefined && intent.newTaskEnvelopeRef.providerId !== providerId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn TaskEnvelope reference provider does not match the selected child provider", { details: { spawnId: request.spawnId } }));
+	return Result.ok(checked.value);
+}
+
+function parseSpawnContext(payload: unknown, expectedContextId: string): ResultValue<SpawnContextRecordV1, FoundationError> {
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context is not a durable object", { details: { contextId: expectedContextId } }));
+	const candidate = payload as Record<string, unknown>;
+	if (candidate.schemaVersion !== 1 || candidate.contextId !== expectedContextId || typeof candidate.taskId !== "string" || candidate.taskId.length === 0 || typeof candidate.spawnId !== "string" || candidate.spawnId.length === 0 || typeof candidate.forkScope !== "string" || !["none", "all", "recent_n", "task_package"].includes(candidate.forkScope) || typeof candidate.createdAt !== "string") return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context identity is incomplete", { details: { contextId: expectedContextId } }));
+	if (candidate.parentTaskId !== undefined && (typeof candidate.parentTaskId !== "string" || candidate.parentTaskId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context Task identity is invalid", { details: { contextId: expectedContextId } }));
+	if (candidate.lineage === undefined) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context is missing durable lineage", { details: { contextId: expectedContextId } }));
+	const lineage = validateLineageV1(candidate.lineage);
+	if (!lineage.ok) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context lineage is invalid", { details: { contextId: expectedContextId } }));
+	if (lineage.value.entityType !== "context" || lineage.value.entityId !== expectedContextId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context lineage does not match its identity", { details: { contextId: expectedContextId } }));
+	if (candidate.parentContextId !== undefined && (typeof candidate.parentContextId !== "string" || candidate.parentContextId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context parent identity is invalid", { details: { contextId: expectedContextId } }));
+	if (candidate.parentAttemptId !== undefined && (typeof candidate.parentAttemptId !== "string" || candidate.parentAttemptId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context Attempt identity is invalid", { details: { contextId: expectedContextId } }));
+	if (candidate.parentAgentInstanceId !== undefined && (typeof candidate.parentAgentInstanceId !== "string" || candidate.parentAgentInstanceId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context AgentInstance identity is invalid", { details: { contextId: expectedContextId } }));
+	return Result.ok({ schemaVersion: 1, contextId: expectedContextId, taskId: candidate.taskId, spawnId: candidate.spawnId, forkScope: candidate.forkScope as SpawnContextRecordV1["forkScope"], ...(candidate.parentTaskId === undefined ? {} : { parentTaskId: candidate.parentTaskId }), ...(candidate.parentContextId === undefined ? {} : { parentContextId: candidate.parentContextId }), ...(candidate.parentAttemptId === undefined ? {} : { parentAttemptId: candidate.parentAttemptId }), ...(candidate.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: candidate.parentAgentInstanceId }), lineage: lineage.value, createdAt: candidate.createdAt });
+}
+
 function parseSpawnFact(payload: unknown, spawnId: string, providerId: string): ResultValue<AgentSpawnFactPayloadV1, FoundationError> {
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return Result.err(new FoundationError("session_ledger_conflict", "Durable spawn fact is not an object", { details: { spawnId } }));
 	const candidate = payload as Record<string, unknown>;
@@ -465,32 +509,48 @@ export class LayeredResultSettlementV1 {
 	async executeAgentSpawn(input: ChildSpawnExecutionInputV1): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
 		const checkedRequest = validateChildSpawnRequestV1(input.request);
 		if (!checkedRequest.ok) return checkedRequest;
+		if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
 		try {
-			if (!spawnCorrelationValid(input.correlation, checkedRequest.value)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn requires a complete child Task and AgentInstance correlation", { details: { spawnId: checkedRequest.value.spawnId } }));
-			const durableTask = await this.persistFact("task", checkedRequest.value.taskEnvelope.taskId, checkedRequest.value.taskEnvelope, { taskId: checkedRequest.value.taskEnvelope.taskId, spawnId: checkedRequest.value.spawnId }, { immutable: true });
-			const durableSources = await this.requireDurableSpawnSources(checkedRequest.value.roleRevision, checkedRequest.value.modelProfile);
-			const canonicalRequest: ChildSpawnRequestV1 = { ...checkedRequest.value, taskEnvelope: durableTask.payload as TaskEnvelopeV1, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile };
+			const request = checkedRequest.value;
+			if (!spawnCorrelationValid(input.correlation, request)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn requires a complete child Task and AgentInstance correlation", { details: { spawnId: request.spawnId } }));
+			if (request.parentSpawn === undefined) return Result.err(new FoundationError("role_resolver_task_required", "Agent spawn requires a durable parent Task and Context", { details: { spawnId: request.spawnId } }));
+			const checkedParentIntent = validateSpawnIntentIdentity(request.parentSpawn, request, input.provider.providerId);
+			if (!checkedParentIntent.ok) return checkedParentIntent;
+			const parentTask = await this.requireExistingTask(checkedParentIntent.value.parentTaskId);
+			const parentContext = await this.requireParentSpawnContext(checkedParentIntent.value, parentTask, request);
+			await this.validateChildTaskReference(request, checkedParentIntent.value);
+			const durableSources = await this.requireDurableSpawnSources(request.roleRevision, request.modelProfile);
+			const durableTask = await this.persistFact("task", request.taskEnvelope.taskId, request.taskEnvelope, { taskId: request.taskEnvelope.taskId, spawnId: request.spawnId }, { immutable: true });
+			const persistedIntent = validateSpawnAgentIntent(checkedParentIntent.value, { taskExists: (taskId) => taskId === (durableTask.payload as TaskEnvelopeV1).taskId });
+			if (!persistedIntent.ok) return persistedIntent;
+			const canonicalRequest = cloneDeepFrozen({ ...request, taskEnvelope: durableTask.payload as TaskEnvelopeV1, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile });
 			const existingFact = await this.ledger.get(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId);
 			if (existingFact?.kind === "fact") {
 				const fact = parseSpawnFact(existingFact.payload, canonicalRequest.spawnId, input.provider.providerId);
 				if (!fact.ok) return fact;
 				if (canonicalFoundationJson(fact.value.request) !== canonicalFoundationJson(canonicalRequest)) return Result.err(new FoundationError("session_ledger_conflict", "A stable spawnId is already bound to a different canonical request", { details: { spawnId: canonicalRequest.spawnId } }));
+				const childContext = this.createChildSpawnContext(canonicalRequest, parentContext);
+				if (fact.value.contextId !== childContext.contextId) return Result.err(new FoundationError("session_ledger_conflict", "A durable spawn fact reuses a different child Context identity", { details: { spawnId: canonicalRequest.spawnId } }));
+				await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId, spawnId: canonicalRequest.spawnId, contextId: childContext.contextId }, { immutable: true });
 				await this.persistSpawnChain(fact.value.request, fact.value.result, fact.value.contextId);
 				return Result.ok(cloneDeepFrozen(fact.value.result));
 			}
 			const intents = await this.ledger.find({ kind: "intent", objectType: AGENT_SPAWN_OBJECT_TYPE_V1, objectId: canonicalRequest.spawnId, includePruned: true, order: "oldestFirst" });
 			const existingIntent = intents[0];
+			const parsedExistingIntent = existingIntent?.kind === "intent" ? parseSpawnIntent(existingIntent, canonicalRequest.spawnId, input.provider.providerId, canonicalRequest, input.correlation) : undefined;
+			if (parsedExistingIntent !== undefined && !parsedExistingIntent.ok) return parsedExistingIntent;
+			if (existingIntent !== undefined && existingIntent.kind !== "intent") return Result.err(new FoundationError("session_ledger_conflict", "A durable non-create spawn intent already occupies this spawnId", { details: { spawnId: canonicalRequest.spawnId } }));
+			const childContext = this.createChildSpawnContext(canonicalRequest, parentContext);
+			await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId, spawnId: canonicalRequest.spawnId, contextId: childContext.contextId }, { immutable: true });
 			let spawned: ResultValue<ChildSpawnResultV1, FoundationError>;
-			if (existingIntent !== undefined && existingIntent.kind === "intent") {
-				const parsedIntent = parseSpawnIntent(existingIntent, canonicalRequest.spawnId, input.provider.providerId, canonicalRequest, input.correlation);
-				if (!parsedIntent.ok) return parsedIntent;
+			if (parsedExistingIntent?.ok) {
 				const provider = input.provider as ChildAgentProvider;
 				if (provider.lookupSpawn === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "A durable spawn intent exists without a provider idempotency lookup; refusing to spawn again", { details: { spawnId: canonicalRequest.spawnId } }));
 				const recovered = await provider.lookupSpawn(canonicalRequest.spawnId, input.signal === undefined ? undefined : { signal: input.signal });
 				if (!recovered.ok) return recovered;
 				if (recovered.value === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "Provider cannot recover the durable spawn intent without spawning again", { details: { spawnId: canonicalRequest.spawnId } }));
 				spawned = Result.ok(recovered.value);
-			} else if (existingIntent === undefined) {
+			} else {
 				const intentPayload: AgentSpawnIntentPayloadV1 = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, correlation: input.correlation };
 				const appendedIntent = await this.ledger.appendIntent(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId, { clientRequestId: `agent-spawn:${canonicalRequest.spawnId}`, expectedRevision: 0, intent: "create", payload: intentPayload as unknown as FoundationJsonValue, correlation: input.correlation });
 				if (appendedIntent.replayed) {
@@ -505,29 +565,74 @@ export class LayeredResultSettlementV1 {
 				} else {
 					spawned = await executeAgentSpawnV1({ ...input, request: canonicalRequest });
 				}
-			} else {
-				return Result.err(new FoundationError("session_ledger_conflict", "A durable non-create spawn intent already occupies this spawnId", { details: { spawnId: canonicalRequest.spawnId } }));
 			}
 			if (!spawned.ok) return spawned;
 			const canonicalResult = canonicalizeSpawnResult(spawned.value, canonicalRequest, input.provider.providerId, durableSources.roleRevision);
 			if (!canonicalResult.ok) return canonicalResult;
-			const contextId = `context_${canonicalRequest.spawnId}`;
-			const spawnFact: AgentSpawnFactPayloadV1 = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, result: canonicalResult.value, contextId };
+			const spawnFact: AgentSpawnFactPayloadV1 = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, result: canonicalResult.value, contextId: childContext.contextId };
 			await this.persistFact(AGENT_SPAWN_OBJECT_TYPE_V1, canonicalRequest.spawnId, spawnFact, { taskId: canonicalRequest.taskEnvelope.taskId, spawnId: canonicalRequest.spawnId }, { expectedRevision: 1 });
-			await this.persistSpawnChain(canonicalRequest, canonicalResult.value, contextId);
+			await this.persistSpawnChain(canonicalRequest, canonicalResult.value, childContext.contextId);
 			return Result.ok(cloneDeepFrozen(canonicalResult.value));
 		} catch (error) {
 			return this.persistenceError(error, "session_writer_stale_revision");
 		}
 	}
 
+	private async validateChildTaskReference(request: ChildSpawnRequestV1, intent: SpawnAgentIntentV1): Promise<void> {
+		const stored = await this.ledger.get("task", request.taskEnvelope.taskId);
+		if (intent.newTaskEnvelopeRef.revision !== (stored?.revision ?? 1)) throw new FoundationError("invalid_correlation", "Agent spawn TaskEnvelope reference revision does not match the durable child Task", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
+		if (stored === undefined) {
+			if (intent.newTaskEnvelopeRef.fingerprint !== undefined && request.taskEnvelope.fingerprint?.value !== intent.newTaskEnvelopeRef.fingerprint.value) throw new FoundationError("invalid_correlation", "Agent spawn TaskEnvelope reference fingerprint does not match the child Task", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
+			return;
+		}
+		if (stored.kind !== "fact") throw new FoundationError("role_resolver_task_required", "Agent spawn child TaskEnvelope identity is terminal", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
+		const task = validateTaskEnvelope(stored.payload);
+		if (!task.ok || task.value.taskId !== request.taskEnvelope.taskId) throw new FoundationError("role_resolver_task_required", "Agent spawn child TaskEnvelope is not a valid durable task", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
+		if (intent.newTaskEnvelopeRef.fingerprint !== undefined && task.value.fingerprint?.value !== intent.newTaskEnvelopeRef.fingerprint.value) throw new FoundationError("invalid_correlation", "Agent spawn TaskEnvelope reference fingerprint does not match the durable child Task", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
+	}
+
+	private async requireParentSpawnContext(intent: SpawnAgentIntentV1, parentTask: TaskEnvelopeV1, request: ChildSpawnRequestV1): Promise<SpawnContextRecordV1> {
+		const expectedContextId = spawnContextId(intent.spawnId);
+		const stored = await this.ledger.get("context", expectedContextId);
+		if (stored === undefined || stored.kind !== "fact") throw new FoundationError("role_resolver_task_required", "Agent spawn requires a durable parent Context", { details: { spawnId: request.spawnId, parentTaskId: intent.parentTaskId, parentContextId: expectedContextId } });
+		const checked = parseSpawnContext(stored.payload, expectedContextId);
+		if (!checked.ok) throw checked.error;
+		const parentLineage = checked.value.lineage;
+		const lineageParentMatchesContext = checked.value.parentContextId === parentLineage.parentId;
+		const lineageDepthMatchesParent = parentLineage.depth === 0 ? checked.value.parentContextId === undefined && parentLineage.parentId === undefined && (parentLineage.ancestorIds === undefined || parentLineage.ancestorIds.length === 0) : checked.value.parentContextId !== undefined && parentLineage.parentId !== undefined && (parentLineage.ancestorIds ?? []).includes(parentLineage.parentId);
+		if (checked.value.contextId === spawnContextId(request.spawnId) || checked.value.spawnId !== intent.spawnId || checked.value.taskId !== parentTask.taskId || (checked.value.parentTaskId !== undefined && checked.value.parentTaskId === request.taskEnvelope.taskId) || !lineageParentMatchesContext || !lineageDepthMatchesParent || checked.value.parentContextId === spawnContextId(request.spawnId) || parentLineage.ancestorIds?.includes(checked.value.contextId)) throw new FoundationError("invalid_correlation", "Agent spawn parent Context does not match the parent Task or child identity", { details: { spawnId: request.spawnId, parentContextId: checked.value.contextId } });
+		if (request.parentAttemptId !== undefined) {
+			const attemptRecord = await this.ledger.get("attempt", request.parentAttemptId);
+			if (attemptRecord === undefined || attemptRecord.kind !== "fact") throw new FoundationError("invalid_correlation", "Agent spawn parent Attempt is not durable", { details: { spawnId: request.spawnId, parentAttemptId: request.parentAttemptId } });
+			const attempt = validateAttempt(attemptRecord.payload);
+			if (!attempt.ok || attempt.value.taskId !== parentTask.taskId) throw new FoundationError("invalid_correlation", "Agent spawn parent Attempt does not match the parent Task", { details: { spawnId: request.spawnId, parentAttemptId: request.parentAttemptId } });
+		}
+		if (request.parentAgentInstanceId !== undefined) {
+			const agentRecord = await this.ledger.get("agent_instance", request.parentAgentInstanceId);
+			if (agentRecord === undefined || agentRecord.kind !== "fact") throw new FoundationError("invalid_correlation", "Agent spawn parent AgentInstance is not durable", { details: { spawnId: request.spawnId, parentAgentInstanceId: request.parentAgentInstanceId } });
+			const agent = validateAgentInstanceV1(agentRecord.payload);
+			if (!agent.ok || agent.value.taskId !== parentTask.taskId) throw new FoundationError("invalid_correlation", "Agent spawn parent AgentInstance does not match the parent Task", { details: { spawnId: request.spawnId, parentAgentInstanceId: request.parentAgentInstanceId } });
+		}
+		return checked.value;
+	}
+
+	private createChildSpawnContext(request: ChildSpawnRequestV1, parentContext: SpawnContextRecordV1): SpawnContextRecordV1 {
+		if (request.parentSpawn === undefined) throw new FoundationError("role_resolver_task_required", "Agent spawn requires a parent intent before creating child Context", { details: { spawnId: request.spawnId } });
+		const contextId = spawnContextId(request.spawnId);
+		if (contextId === parentContext.contextId || parentContext.lineage.ancestorIds?.includes(contextId)) throw new FoundationError("invalid_correlation", "Agent spawn child Context would reuse or cycle through the parent Context", { details: { spawnId: request.spawnId, parentContextId: parentContext.contextId } });
+		return cloneDeepFrozen({ schemaVersion: 1, contextId, taskId: request.taskEnvelope.taskId, spawnId: request.spawnId, forkScope: request.forkScope, parentTaskId: request.parentSpawn.parentTaskId, parentContextId: parentContext.contextId, ...(request.parentAttemptId === undefined ? {} : { parentAttemptId: request.parentAttemptId }), ...(request.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: request.parentAgentInstanceId }), lineage: extendFoundationLineage(parentContext.lineage, { entityType: "context", entityId: contextId }), createdAt: request.taskEnvelope.createdAt });
+	}
+
 	private async persistSpawnChain(request: ChildSpawnRequestV1, spawned: ChildSpawnResultV1, contextId: string): Promise<void> {
 		await this.requireExistingBindingFactsFromId(spawned.attempt.bindingId, spawned.attempt.taskId);
+		const contextRecord = await this.ledger.get("context", contextId);
+		if (contextRecord === undefined || contextRecord.kind !== "fact") throw new FoundationError("role_resolver_task_required", "Agent spawn Dispatch requires its durable child Context", { details: { spawnId: request.spawnId, contextId } });
+		const context = parseSpawnContext(contextRecord.payload, contextId);
+		if (!context.ok) throw context.error;
+		if (context.value.taskId !== request.taskEnvelope.taskId || context.value.spawnId !== request.spawnId) throw new FoundationError("invalid_correlation", "Agent spawn child Context does not match the child Task or spawn identity", { details: { spawnId: request.spawnId, contextId } });
 		const childDispatch: DispatchV1 = { schemaVersion: 1, dispatchId: spawned.attempt.dispatchId, taskId: spawned.attempt.taskId, bindingId: spawned.attempt.bindingId, taskExecutorProviderId: spawned.attempt.providerId, status: "pending", createdAt: spawned.attempt.startedAt };
 		const checkedDispatch = validateDispatch(childDispatch);
 		if (!checkedDispatch.ok) throw checkedDispatch.error;
-		const context = { schemaVersion: 1 as const, contextId, taskId: spawned.attempt.taskId, spawnId: request.spawnId, forkScope: request.forkScope, ...(request.parentSpawn === undefined ? {} : { parentTaskId: request.parentSpawn.parentTaskId }), createdAt: spawned.attempt.startedAt };
-		await this.persistFact("context", contextId, context, { taskId: spawned.attempt.taskId, spawnId: request.spawnId, contextId }, { immutable: true });
 		await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, spawnId: request.spawnId }, { immutable: true });
 		await this.persistFact("agent_instance", spawned.agentInstance.agentInstanceId, spawned.agentInstance, { taskId: spawned.agentInstance.taskId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
 		await this.persistFact("binding_epoch", spawned.initialBindingEpoch.bindingEpochId, spawned.initialBindingEpoch, { taskId: spawned.initialBindingEpoch.taskId, attemptId: spawned.initialBindingEpoch.attemptId, bindingId: spawned.initialBindingEpoch.bindingId, bindingEpochId: spawned.initialBindingEpoch.bindingEpochId, agentInstanceId: spawned.initialBindingEpoch.agentInstanceId }, { immutable: true });

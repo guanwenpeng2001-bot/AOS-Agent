@@ -83,6 +83,14 @@ async function seedBindingFacts(session: Session, value: AgentBindingV1): Promis
 	await ledger.release();
 }
 
+async function seedParentSpawnContext(session: Session, parentTaskId: string, parentSpawnId: string): Promise<void> {
+	const ledger = new SessionLedgerV1(session, { ownerId: `seed-parent-${parentSpawnId}` });
+	await ledger.appendFact("task", parentTaskId, task(parentTaskId), { clientRequestId: `seed:parent-task:${parentTaskId}`, expectedRevision: 0, correlation: { taskId: parentTaskId } });
+	const contextId = `context_${parentSpawnId}`;
+	await ledger.appendFact("context", contextId, { schemaVersion: 1 as const, contextId, taskId: parentTaskId, spawnId: parentSpawnId, forkScope: "none" as const, lineage: { schemaVersion: 1 as const, entityType: "context", entityId: contextId, depth: 0 }, createdAt: now }, { clientRequestId: `seed:parent-context:${parentSpawnId}`, expectedRevision: 0, correlation: { taskId: parentTaskId } });
+	await ledger.release();
+}
+
 function dispatch(providerId: string, bindingId = "binding-t6", taskId = "task-t6"): DispatchV1 {
 	return { schemaVersion: 1, dispatchId: `dispatch-${providerId}`, taskId, bindingId, taskExecutorProviderId: providerId, status: "pending", createdAt: now };
 }
@@ -302,6 +310,7 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const childTask = task("child-task-t6");
 		const childBinding = binding("binding-child-task-t6", childTask);
 		await seedBindingFacts(session, childBinding);
+		await seedParentSpawnContext(session, "parent-task-t6", "parent-spawn-t6");
 		const seed = new SessionLedgerV1(session, { ownerId: "spawn-binding-seed" });
 		await seed.appendFact("agent_binding", childBinding.bindingId, childBinding, { clientRequestId: "spawn:binding", correlation: { taskId: childBinding.taskId, bindingId: childBinding.bindingId } });
 		await seed.release();
@@ -313,7 +322,7 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const canonicalProfile = modelProfile();
 		const { fingerprint: _profileFingerprint, ...callerProfileSnapshot } = canonicalProfile;
 		const callerProfile = { ...callerProfileSnapshot, model: "caller-shaped-model", fingerprint: fingerprintFoundationValue({ ...callerProfileSnapshot, model: "caller-shaped-model" }) };
-		const spawnInput = { provider, request: { schemaVersion: 1 as const, spawnId: "spawn-t6", taskEnvelope: childTask, roleRevision: callerRole, modelProfile: callerProfile, forkScope: "none" as const }, correlation: { sessionId: "spawn-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
+		const spawnInput = { provider, request: { schemaVersion: 1 as const, spawnId: "spawn-t6", parentSpawn: { schemaVersion: 1 as const, type: "agent.spawn" as const, spawnId: "parent-spawn-t6", parentTaskId: "parent-task-t6", newTaskEnvelopeRef: { schemaVersion: 1 as const, type: "task_envelope" as const, id: childTask.taskId, revision: 1 }, createdAt: now }, taskEnvelope: childTask, roleRevision: callerRole, modelProfile: callerProfile, forkScope: "none" as const }, correlation: { sessionId: "spawn-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
 		const spawned = await settlement.executeAgentSpawn(spawnInput);
 		if (!spawned.ok) throw spawned.error;
 		expect(spawned).toMatchObject({ ok: true, value: { attempt: { attemptId: `child-attempt-${childTask.taskId}`, taskId: childTask.taskId } } });
@@ -325,6 +334,45 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		expect(replayed).toMatchObject({ ok: true, value: { attempt: { attemptId: `child-attempt-${childTask.taskId}` } } });
 		expect(provider.spawnCount).toBe(1);
 		for (const objectType of ["task", "context", "dispatch", "agent_instance", "binding_epoch", "attempt"] as const) expect((await session.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" })).length).toBeGreaterThan(0);
+		const childContext = await session.getFoundationObject("context", "context_spawn-t6");
+		expect(childContext).toMatchObject({ kind: "fact", payload: { contextId: "context_spawn-t6", taskId: childTask.taskId, parentTaskId: "parent-task-t6", parentContextId: "context_parent-spawn-t6", lineage: { entityType: "context", entityId: "context_spawn-t6", parentId: "context_parent-spawn-t6", depth: 1 } } });
+		const orderedFacts = await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" });
+		const childTaskIndex = orderedFacts.findIndex((record) => record.kind === "fact" && record.objectType === "task" && record.objectId === childTask.taskId);
+		const childContextIndex = orderedFacts.findIndex((record) => record.kind === "fact" && record.objectType === "context" && record.objectId === "context_spawn-t6");
+		const childDispatchIndex = orderedFacts.findIndex((record) => record.kind === "fact" && record.objectType === "dispatch" && record.objectId === `dispatch-${provider.providerId}`);
+		expect(childTaskIndex).toBeGreaterThanOrEqual(0);
+		expect(childContextIndex).toBeGreaterThan(childTaskIndex);
+		expect(childDispatchIndex).toBeGreaterThan(childContextIndex);
+		await settlement.release();
+	});
+
+	it("executes the canonical public spawn-intent validator before any child records are written", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "spawn-validator-session", createdAt: 1 }));
+		const provider = new ChildProvider();
+		const settlement = new LayeredResultSettlementV1(session, { ownerId: "spawn-validator-settlement" });
+		const childTask = task("validator-child-task-t6");
+		const invalid = await settlement.executeAgentSpawn({ provider, request: { schemaVersion: 1, spawnId: "validator-spawn-t6", parentSpawn: { schemaVersion: 1, type: "agent.spawn", spawnId: "validator-parent-spawn-t6", parentTaskId: childTask.taskId, newTaskEnvelopeRef: { schemaVersion: 1, type: "task_envelope", id: childTask.taskId, revision: 1 }, createdAt: now }, taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" }, correlation: { sessionId: "spawn-validator-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: "validator-child-instance-t6", revision: 1 } });
+		expect(invalid).toMatchObject({ ok: false, error: { code: "role_resolver_conflict" } });
+		expect(provider.spawnCount).toBe(0);
+		expect(await session.findFoundationRecords({ order: "oldestFirst" })).toHaveLength(0);
+		await settlement.release();
+	});
+
+	it("fails closed without a durable parent Context before creating the child Task", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "spawn-missing-parent-context-session", createdAt: 1 }));
+		const parentTask = task("missing-context-parent-task-t6");
+		const childTask = task("missing-context-child-task-t6");
+		const seed = new SessionLedgerV1(session, { ownerId: "missing-context-parent-seed" });
+		await seed.appendFact("task", parentTask.taskId, parentTask, { clientRequestId: "missing-context:parent-task", expectedRevision: 0, correlation: { taskId: parentTask.taskId } });
+		await seed.release();
+		const provider = new ChildProvider();
+		const settlement = new LayeredResultSettlementV1(session, { ownerId: "missing-context-settlement" });
+		const missing = await settlement.executeAgentSpawn({ provider, request: { schemaVersion: 1, spawnId: "missing-context-spawn-t6", parentSpawn: { schemaVersion: 1, type: "agent.spawn", spawnId: "missing-context-parent-spawn-t6", parentTaskId: parentTask.taskId, newTaskEnvelopeRef: { schemaVersion: 1, type: "task_envelope", id: childTask.taskId, revision: 1 }, createdAt: now }, taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" }, correlation: { sessionId: "spawn-missing-parent-context-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: "missing-context-child-instance-t6", revision: 1 } });
+		expect(missing).toMatchObject({ ok: false, error: { code: "role_resolver_task_required" } });
+		expect(provider.spawnCount).toBe(0);
+		expect(await session.getFoundationObject("task", childTask.taskId)).toBeUndefined();
+		expect(await session.getFoundationObject("context", "context_missing-context-spawn-t6")).toBeUndefined();
+		expect(await session.findFoundationRecords({ kind: "fact", objectType: "dispatch", order: "oldestFirst" })).toHaveLength(0);
 		await settlement.release();
 	});
 
@@ -333,12 +381,13 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const childTask = task("recovery-child-task-t6");
 		const childBinding = binding("binding-recovery-child-task-t6", childTask);
 		await seedBindingFacts(session, childBinding);
+		await seedParentSpawnContext(session, "recovery-parent-task-t6", "recovery-parent-spawn-t6");
 		const seed = new SessionLedgerV1(session, { ownerId: "spawn-recovery-binding-seed" });
 		await seed.appendFact("agent_binding", childBinding.bindingId, childBinding, { clientRequestId: "spawn-recovery:binding", correlation: { taskId: childBinding.taskId, bindingId: childBinding.bindingId } });
 		await seed.release();
 		const providerA = new ChildProvider("agent-child-t6-a");
 		providerA.failSpawn = true;
-		const spawnInput = { provider: providerA, request: { schemaVersion: 1 as const, spawnId: "spawn-recovery-t6", taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" as const }, correlation: { sessionId: "spawn-recovery-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
+		const spawnInput = { provider: providerA, request: { schemaVersion: 1 as const, spawnId: "spawn-recovery-t6", parentSpawn: { schemaVersion: 1 as const, type: "agent.spawn" as const, spawnId: "recovery-parent-spawn-t6", parentTaskId: "recovery-parent-task-t6", newTaskEnvelopeRef: { schemaVersion: 1 as const, type: "task_envelope" as const, id: childTask.taskId, revision: 1 }, createdAt: now }, taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" as const }, correlation: { sessionId: "spawn-recovery-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } };
 		const settlementA = new LayeredResultSettlementV1(session, { ownerId: "spawn-recovery-a" });
 		const first = await settlementA.executeAgentSpawn(spawnInput);
 		expect(first).toMatchObject({ ok: false, error: { code: "provider_spawn_failed" } });
