@@ -180,6 +180,7 @@ const FUTURE_RESULT_CONTRACT_IDS = [99, 100, 101, 122, 123, 124, 125, 126];
 const ROLE_CONTRACT_TOKENS = ["RoleDefinition", "RoleRevision", "ModelProfile", "AgentBinding", "BindingEpoch"];
 
 const RESULT_CONTRACT_TOKENS = ["AttemptReceipt", "TaskResult", "RunReceipt", "Artifact"];
+const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
@@ -287,6 +288,17 @@ describe("Foundation v1 capability manifest", () => {
 	it("rejects duplicate test references within one closure entry", () => {
 		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
 			expect(new Set(entry.tests).size, `closure ${entry.id} repeats a test reference`).toBe(entry.tests.length);
+		}
+	});
+
+	it("resolves every T4 evidence path and does not overclaim implementation paths", () => {
+		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES.filter((candidate) => candidate.id >= 29 && candidate.id <= 46 && candidate.implementationStages.includes("T4"))) {
+			for (const test of entry.tests) {
+				expect(existsSync(resolve(REPO_ROOT, test)), `T4 closure ${entry.id} references missing test ${test}`).toBe(true);
+			}
+			if (entry.closure === "implemented" || entry.closure === "regression_locked") {
+				expect(existsSync(resolve(REPO_ROOT, entry.ownerModule)), `T4 closure ${entry.id} references missing owner ${entry.ownerModule}`).toBe(true);
+			}
 		}
 	});
 

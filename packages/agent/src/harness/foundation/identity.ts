@@ -18,11 +18,17 @@ export interface ExecutionCorrelationV1 {
 	stageId?: string;
 	taskId?: string;
 	dispatchId?: string;
+	/** Stable operation identity. For AgentHarness runs this is the durable operation id. */
+	operationId?: string;
 	attemptId?: string;
 	attemptReceiptId?: string;
 	taskResultId?: string;
 	runReceiptId?: string;
 	runId?: string;
+	/** Provider identity that executed the correlated operation. */
+	providerId?: string;
+	/** Tool-call identity when the record belongs to a tool invocation. */
+	toolCallId?: string;
 	turnId?: string;
 	stepId?: string;
 	parentId?: string;

@@ -170,6 +170,8 @@ export interface FoundationRecordQueryV1 {
 	kind?: FoundationRecordKindV1;
 	objectType?: string;
 	objectId?: string;
+	/** Exact correlation fields used to keep records from different operations separate. */
+	correlation?: Partial<ExecutionCorrelationV1>;
 	afterSeq?: number;
 	beforeSeq?: number;
 	limit?: number;

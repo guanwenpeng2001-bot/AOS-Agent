@@ -8,7 +8,7 @@ import {
 	type Resources,
 	type StreamOptions,
 } from "../../src/harness/agent-harness.ts";
-import { createHostTerminalGateAuthorityV1, fingerprintFoundationValue } from "../../src/harness/foundation/index.ts";
+import { createHostTerminalGateAuthorityV1, fingerprintFoundationValue, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
 import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
@@ -728,7 +728,7 @@ describe("AgentHarness runtime", () => {
 		await restored.harness.close();
 	});
 
-	it("rejects an existing AttemptReceipt when the restored execution graph conflicts", async () => {
+	it("rejects a conflicting Foundation intent during restore before replay", async () => {
 		const session = createSession("receipt-conflict");
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
@@ -742,11 +742,37 @@ describe("AgentHarness runtime", () => {
 		const conflicting = createFoundationExecution();
 		conflicting.providerId = "conflicting-agent-provider";
 		conflicting.dispatch.taskExecutorProviderId = "conflicting-agent-provider";
-		const restored = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: conflicting });
-		await expect(restored.harness.resume()).rejects.toThrow("Existing AttemptReceipt conflicts with its deterministic reconstruction");
+		await expect(AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: conflicting })).rejects.toThrow("Existing Foundation intent conflicts with its deterministic reconstruction");
 		expect(await facts(session)).toEqual(before);
 		expect(await session.getLedgerRevision()).toBe(revision);
-		await restored.harness.close().catch(() => undefined);
+	});
+
+	it("rejects recovery when an existing terminal receipt no longer matches its intent correlation", async () => {
+		const session = createSession("receipt-correlation-conflict");
+		const runtime = createModelsWithResponse();
+		const execution = createFoundationExecution();
+		const first = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		injectFoundationFault(session, "task_result", "before");
+		await expect(first.harness.prompt("receipt correlation conflict")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
+		await first.harness.close().catch(() => undefined);
+
+		const originalGetFoundationObject = session.getFoundationObject.bind(session);
+		session.getFoundationObject = async (objectType, objectId) => {
+			const object = await originalGetFoundationObject(objectType, objectId);
+			if (objectType !== "attempt_receipt" || object === undefined || object.kind !== "fact" || object.payload === null || typeof object.payload !== "object" || Array.isArray(object.payload)) return object;
+			const payload = structuredClone(object.payload) as Record<string, unknown>;
+			if (payload.provenance === null || typeof payload.provenance !== "object" || Array.isArray(payload.provenance)) return object;
+			payload.providerId = "tampered-agent-provider";
+			(payload.provenance as Record<string, unknown>).providerId = "tampered-agent-provider";
+			return { ...object, payload: payload as FoundationJsonValue };
+		};
+		try {
+			const restored = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+			await expect(restored.harness.resume()).rejects.toThrow("Existing AttemptReceipt conflicts with its deterministic reconstruction");
+			await restored.harness.close().catch(() => undefined);
+		} finally {
+			session.getFoundationObject = originalGetFoundationObject;
+		}
 	});
 
 	it("replays a run receipt after a post-write durable storage fault", async () => {

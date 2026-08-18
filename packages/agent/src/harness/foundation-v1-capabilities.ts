@@ -25,6 +25,11 @@
  * merged repository so the manifest cannot hide missing evidence behind an
  * audit assignment.
  *
+ * Owner and test paths are concrete evidence references. A closure status records
+ * only the front-layer claim made by this manifest: `contract_sealed` freezes a
+ * contract without claiming a later provider, while `implemented` and
+ * `regression_locked` require the referenced implementation and tests to exist.
+ *
  * Truthfulness rule applied when a capability has multiple closure kinds in the
  * PR ledger (for example "implemented, regression_locked"): the single
  * `closure` value is the strongest forward-looking claim that applies:
@@ -508,7 +513,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/runtime-services.ts",
 		publicContract: "Extension lifecycle with fixed ordering, error isolation and deterministic unload semantics",
 		persistence: "Effect-scoped registration records with grouped cleanup",
-		tests: ["packages/agent/test/harness/runtime-services.test.ts", "packages/coding-agent/test/agent-session-capabilities.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/coding-agent/test/agent-session-capabilities.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -520,7 +525,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/runtime-services.ts",
 		publicContract: "Dynamic tool registration conflict, revision, override and reload rules",
 		persistence: "Tool registration/revision facts in the ledger",
-		tests: ["packages/agent/test/harness/runtime-services.test.ts", "packages/coding-agent/test/agent-session-dynamic-tools.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/coding-agent/test/agent-session-dynamic-tools.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -535,7 +540,6 @@ const closures = [
 		tests: [
 			"packages/coding-agent/test/mcp-lifecycle.test.ts",
 			"packages/coding-agent/test/mcp-tool-adapter.test.ts",
-			"packages/coding-agent/test/foundation-provider-conformance.test.ts",
 		],
 		laterConsumer: "13",
 		laterCapabilityIds: [111, 112, 114],
@@ -561,10 +565,9 @@ const closures = [
 		publicContract: "all/none/named/except MCP inheritance selectors on Role/parent Binding with lower layers only tightening",
 		persistence: "MCP selector resolution frozen into AgentBinding records",
 		tests: [
-			"packages/agent/test/harness/profile-binding.test.ts",
-			"packages/agent/test/harness/role-registry-resolver.test.ts",
-			"packages/agent/test/harness/t6-role-binding-results.test.ts",
-			"packages/coding-agent/test/foundation-provider-conformance.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
+			"packages/agent/test/harness/t4-runtime-lifecycle.test.ts",
 		],
 		laterConsumer: "12A",
 		laterCapabilityIds: [96, 110],
@@ -577,7 +580,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/tool-pipeline.ts",
 		publicContract: "Fixed tool pipeline: prepare -> pre -> guard -> execute -> post -> finalize",
 		persistence: "Tool intent and ToolReceipt durable records per invocation",
-		tests: ["packages/agent/test/harness/tool-pipeline.test.ts"],
+		tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/t4-tool-gateway.test.ts", "packages/agent/test/harness/t4-agent-harness-pipeline.test.ts"],
 		laterConsumer: "11",
 		laterCapabilityIds: [84, 87, 140],
 	},
@@ -589,7 +592,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/tool-pipeline.ts",
 		publicContract: "Pre-call durable record, original/accepted argument digests, monotonic guard, no silent parameter mutation",
 		persistence: "Argument digest and transform provenance facts in the ledger",
-		tests: ["packages/agent/test/harness/tool-pipeline.test.ts"],
+		tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/t4-agent-harness-pipeline.test.ts"],
 	},
 	{
 		id: 37,
@@ -599,7 +602,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/runtime-services.ts",
 		publicContract: "Runtime service provider/consumer with explicit service id, version, dependencies, and startup cycle validation",
 		persistence: "Service DAG and registration records",
-		tests: ["packages/agent/test/harness/runtime-services.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -611,7 +614,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/profile.ts",
 		publicContract: "Deterministic Profile/Bundle/Patch composition with Global/Project Role override, conflict and source records",
 		persistence: "Bundle/Patch composition and override records; Managed Lock never overridable",
-		tests: ["packages/agent/test/harness/profile-binding.test.ts", "packages/agent/test/harness/profile.test.ts", "packages/agent/test/harness/role-registry-resolver.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "14",
 		laterCapabilityIds: [134],
 	},
@@ -623,7 +626,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/runtime-services.ts",
 		publicContract: "Effect-scoped registration and unload with grouped cleanup, rollback and resource release",
 		persistence: "Effect scope activation/teardown records",
-		tests: ["packages/agent/test/harness/runtime-services.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -635,7 +638,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/events.ts",
 		publicContract: "Typed event catalog with producer, consumer, version and stable field declarations",
 		persistence: "Durable events in the ledger with sequence, event id and timestamp",
-		tests: ["packages/agent/test/harness/events.test.ts", "packages/agent/test/harness/observer-continuity.test.ts"],
+		tests: ["packages/agent/test/harness/events.test.ts"],
 		laterConsumer: "14",
 		laterCapabilityIds: [142, 150],
 	},
@@ -647,7 +650,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/events.ts",
 		publicContract: "durable/live/derived event taxonomy with testable derivation rules",
 		persistence: "Only durable facts persisted; live deltas are discardable",
-		tests: ["packages/agent/test/harness/events.test.ts", "packages/coding-agent/test/rpc-observer-continuity.test.ts"],
+		tests: ["packages/agent/test/harness/events.test.ts"],
 		laterConsumer: "14",
 		laterCapabilityIds: [142],
 	},
@@ -659,7 +662,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/plugins.ts",
 		publicContract: "Plugin composite package can contain skills, extensions, MCP, agents, hooks, LSP, monitors, bin and settings",
 		persistence: "Plugin manifest and activation records",
-		tests: ["packages/agent/test/harness/plugins.test.ts", "packages/agent/test/harness/runtime-services.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -671,7 +674,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/plugins.ts",
 		publicContract: "Local plugin namespace, manifest, signature, version and install/update/rollback lifecycle",
 		persistence: "Staged activation with atomic switch and rollback point",
-		tests: ["packages/agent/test/harness/plugins.test.ts", "packages/agent/test/harness/runtime-services.test.ts", "packages/coding-agent/test/foundation-provider-conformance.test.ts"],
+		tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
 	},
@@ -683,7 +686,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/foundation/role-registry.ts",
 		publicContract: "Config precedence with Managed Lock, Global/Project Role override, path activation, resolved preview and conflict report",
 		persistence: "Resolution source and conflict records; resolved preview derivable",
-		tests: ["packages/agent/test/harness/role-registry-resolver.test.ts", "packages/agent/test/harness/profile-binding.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/t4-runtime-lifecycle.test.ts"],
 		laterConsumer: "14",
 		laterCapabilityIds: [134],
 	},
@@ -696,8 +699,8 @@ const closures = [
 		publicContract: "TUI/headless/RPC/SDK shared RuntimeSession facade; other surfaces consume conformance adapters",
 		persistence: "Surfaces never hold a second Session state authority",
 		tests: [
-			"packages/coding-agent/test/agent-session-harness-parity.test.ts",
-			"packages/coding-agent/test/foundation-surface-conformance.test.ts",
+			"packages/coding-agent/test/suite/agent-session-runtime.test.ts",
+			"packages/coding-agent/test/agent-session-capabilities.test.ts",
 		],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
@@ -711,9 +714,9 @@ const closures = [
 		publicContract: "Standard LSP/Monitor extension types, permissions, lifecycle and diagnostic events",
 		persistence: "Diagnostic event records via the typed event catalog",
 		tests: [
-			"packages/agent/test/harness/runtime-services.test.ts",
+			"packages/agent/test/harness/t4-runtime-lifecycle.test.ts",
 			"packages/agent/test/harness/events.test.ts",
-			"packages/coding-agent/test/foundation-provider-conformance.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
 		],
 		laterConsumer: "15",
 		laterCapabilityIds: [147, 150],
@@ -1628,10 +1631,10 @@ const futureOwners = [
 ] as const satisfies readonly FoundationFutureCapabilityOwnerV1[];
 
 /**
- * PR-1 only wires the durable kernel, reducer, session, event, compaction,
- * skills, and AgentHarness paths. The remaining manifest entries retain their
- * contract metadata but stay drafted until their owning implementation slice
- * is actually merged.
+ * PR-1 wires the durable kernel, reducer, session, event, compaction, skills,
+ * and AgentHarness paths. T4 additionally wires only its own runtime closure
+ * range (29-46); all other entries retain contract metadata and stay drafted
+ * until their owning implementation slice is actually merged.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
@@ -1647,8 +1650,23 @@ const WIRED_CLOSURE_IDS = new Set([
 	25,
 	26,
 	29,
+	30,
+	31,
+	32,
+	33,
+	34,
+	35,
+	36,
+	37,
+	38,
+	39,
 	40,
 	41,
+	42,
+	43,
+	44,
+	45,
+	46,
 	59,
 ]);
 

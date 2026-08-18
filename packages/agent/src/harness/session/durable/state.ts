@@ -126,6 +126,19 @@ function normalizeCorrelation(correlation: Omit<ExecutionCorrelationV1, "revisio
 	return { ...clone(correlation), revision, fencingToken };
 }
 
+function matchesCorrelation(
+	correlation: ExecutionCorrelationV1 & { fencingToken: string },
+	query: Partial<ExecutionCorrelationV1>,
+): boolean {
+	for (const [key, expected] of Object.entries(query) as [keyof ExecutionCorrelationV1, ExecutionCorrelationV1[keyof ExecutionCorrelationV1]][]) {
+		if (expected === undefined) continue;
+		const actual = correlation[key];
+		if (actual === undefined) return false;
+		if (canonicalFoundationJson(actual) !== canonicalFoundationJson(expected)) return false;
+	}
+	return true;
+}
+
 function inputFingerprint(input: ProvisionedFoundationRecordV1, _fencingToken: string): string {
 	const value = { ...input } as Record<string, unknown>;
 	if (value.expectedRevision === undefined) delete value.expectedRevision;
@@ -330,6 +343,7 @@ export class FoundationLedgerState {
 			if (query.kind !== undefined && record.kind !== query.kind) continue;
 			if (query.objectType !== undefined && (record.kind === "retention" || record.objectType !== query.objectType)) continue;
 			if (query.objectId !== undefined && (record.kind === "retention" || record.objectId !== query.objectId)) continue;
+			if (query.correlation !== undefined && !matchesCorrelation(record.correlation, query.correlation)) continue;
 			if (query.afterSeq !== undefined && record.seq <= query.afterSeq) continue;
 			if (query.beforeSeq !== undefined && record.seq >= query.beforeSeq) continue;
 			if (!query.includePruned && this.isPruned(record)) continue;

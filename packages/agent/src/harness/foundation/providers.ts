@@ -16,7 +16,24 @@ export const PROVIDER_KINDS = ["model", "tool", "sandbox", "operation", "externa
 export interface ExecutionProviderDescriptorV1 { schemaVersion: 1; providerId: string; providerClass: "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector"; }
 export interface FoundationProviderCapabilityV1 { schemaVersion: 1; id: string; version: number; }
 export interface FoundationProviderV1 { readonly schemaVersion: 1; readonly providerId: string; readonly providerClass: FoundationProviderClassV1; capabilities(): Promise<readonly FoundationProviderCapabilityV1[]>; dispose(): Promise<void>; }
-export interface SandboxOperationRequestV1 { schemaVersion: 1; operationId: string; taskId?: string; dispatchId?: string; attemptId?: string; credentialTargets?: readonly string[]; workspace?: string; deadlineAt?: number; }
+export interface SandboxOperationRequestV1 {
+	schemaVersion: 1;
+	operationId: string;
+	providerId?: string;
+	bindingId?: string;
+	bindingEpochId?: string;
+	agentInstanceId?: string;
+	toolCallId?: string;
+	toolName?: string;
+	namespace?: string;
+	payload?: FoundationJsonValue;
+	taskId?: string;
+	dispatchId?: string;
+	attemptId?: string;
+	credentialTargets?: readonly string[];
+	workspace?: string;
+	deadlineAt?: number;
+}
 export interface SandboxOperationProvider extends FoundationProviderV1 { readonly providerClass: "operation_worker"; start(request: SandboxOperationRequestV1, options?: { signal?: AbortSignal }): Promise<Result<WorkerReceiptV1, FoundationError>>; cancel(operationId: string): Promise<Result<void, FoundationError>>; }
 export type OperationWorkerProviderV1 = SandboxOperationProvider;
 export interface ChildSpawnRequestV1 { schemaVersion: 1; spawnId: string; parentSpawn?: SpawnAgentIntentV1; taskEnvelope: TaskEnvelopeV1; roleRevision: RoleRevisionV1; modelProfile: ModelProfileV1; parentAttemptId?: string; parentAgentInstanceId?: string; forkScope: "none" | "all" | "recent_n" | "task_package"; recentN?: number; taskPackageRef?: string; }
@@ -30,7 +47,7 @@ export interface SchedulerTaskExecutorProvider extends TaskExecutorProvider { re
 export interface ConnectorCapabilitySnapshotV1 { schemaVersion: 1; providerId: string; protocol: string; capabilityVersion: number; resumeSupported: boolean; modelAccess: "none" | "agent_owned" | "aos_gateway"; toolAccess?: readonly string[]; }
 export interface ExternalAgentStartRequestV1 { schemaVersion: 1; requestId: string; task: TaskEnvelopeV1; binding: AgentBindingV1; translatedConfig?: FoundationJsonValue; deadlineAt?: number; }
 export interface ExternalAgentConnector extends FoundationProviderV1 { readonly providerClass: "external_connector"; probe(): Promise<Result<ConnectorCapabilitySnapshotV1, FoundationError>>; start(request: ExternalAgentStartRequestV1, options?: { signal?: AbortSignal }): Promise<Result<AttemptV1, FoundationError>>; resume(attemptId: string): Promise<Result<AttemptReceiptV1, FoundationError>>; cancel(attemptId: string): Promise<Result<void, FoundationError>>; }
-export interface ToolGatewayContextV1 { schemaVersion: 1; bindingId: string; bindingEpochId: string; taskId: string; attemptId?: string; agentInstanceId?: string; }
+export interface ToolGatewayContextV1 { schemaVersion: 1; bindingId: string; bindingEpochId: string; taskId: string; dispatchId?: string; providerId?: string; attemptId?: string; agentInstanceId?: string; operationId?: string; }
 export interface ToolGatewayRequestV1 { schemaVersion: 1; toolCallId: string; toolName: string; namespace?: string; originalArguments: FoundationJsonValue; context: ToolGatewayContextV1; idempotencyKey?: string; deadlineAt?: number; }
 export interface ToolExecutionResultV1 { schemaVersion: 1; toolCallId: string; toolName: string; ok: boolean; sideEffectState: SideEffectStateV1; artifacts?: readonly ArtifactRefV1[]; error?: PublicExecutionErrorV1; toolReceiptRef?: string; }
 export interface ToolGateway extends FoundationProviderV1 { readonly providerClass: "gateway"; execute(request: ToolGatewayRequestV1, options?: { signal?: AbortSignal }): Promise<Result<ToolExecutionResultV1, FoundationError>>; }
@@ -55,12 +72,12 @@ export function validateProviderJsonV1(value: unknown): value is FoundationJsonV
 	try { canonicalFoundationJson(value); return true; } catch { return false; }
 }
 
-export const SandboxOperationRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), operationId: Type.String({ minLength: 1 }), taskId: Type.Optional(Type.String({ minLength: 1 })), dispatchId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), credentialTargets: Type.Optional(Type.Array(Type.String({ minLength: 1 }))), workspace: Type.Optional(Type.String({ minLength: 1 })), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
+export const SandboxOperationRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), operationId: Type.String({ minLength: 1 }), providerId: Type.Optional(Type.String({ minLength: 1 })), bindingId: Type.Optional(Type.String({ minLength: 1 })), bindingEpochId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), toolCallId: Type.Optional(Type.String({ minLength: 1 })), toolName: Type.Optional(Type.String({ minLength: 1 })), namespace: Type.Optional(Type.String({ minLength: 1 })), payload: Type.Optional(FoundationJsonValueSchema), taskId: Type.Optional(Type.String({ minLength: 1 })), dispatchId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), credentialTargets: Type.Optional(Type.Array(Type.String({ minLength: 1 }))), workspace: Type.Optional(Type.String({ minLength: 1 })), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
 export const FoundationProviderCapabilityV1Schema = Type.Object({ schemaVersion: Type.Literal(1), id: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
 export const ConnectorCapabilitySnapshotV1Schema = Type.Object({ schemaVersion: Type.Literal(1), providerId: Type.String({ minLength: 1 }), protocol: Type.String({ minLength: 1 }), capabilityVersion: Type.Integer({ minimum: 1 }), resumeSupported: Type.Boolean(), modelAccess: Type.Union([Type.Literal("none"), Type.Literal("agent_owned"), Type.Literal("aos_gateway")]), toolAccess: Type.Optional(Type.Array(Type.String({ minLength: 1 }))) }, { additionalProperties: false });
 export const ChildSpawnRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), spawnId: Type.String({ minLength: 1 }), parentSpawn: Type.Optional(SpawnAgentIntentV1Schema), taskEnvelope: TaskEnvelopeV1Schema, roleRevision: RoleRevisionV1Schema, modelProfile: ModelProfileV1Schema, parentAttemptId: Type.Optional(Type.String({ minLength: 1 })), parentAgentInstanceId: Type.Optional(Type.String({ minLength: 1 })), forkScope: Type.Union([Type.Literal("none"), Type.Literal("all"), Type.Literal("recent_n"), Type.Literal("task_package")]), recentN: Type.Optional(Type.Integer({ minimum: 1 })), taskPackageRef: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ExternalAgentStartRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), requestId: Type.String({ minLength: 1 }), task: TaskEnvelopeV1Schema, binding: AgentBindingV1Schema, translatedConfig: Type.Optional(FoundationJsonValueSchema), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
-export const ToolGatewayContextV1Schema = Type.Object({ schemaVersion: Type.Literal(1), bindingId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), attemptId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
+export const ToolGatewayContextV1Schema = Type.Object({ schemaVersion: Type.Literal(1), bindingId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), dispatchId: Type.Optional(Type.String({ minLength: 1 })), providerId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), operationId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ToolGatewayRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), originalArguments: FoundationJsonValueSchema, context: ToolGatewayContextV1Schema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
 export const ScopedModelRequestV1Schema = Type.Object({ schemaVersion: Type.Literal(1), requestId: Type.String({ minLength: 1 }), modelProfileRevision: RevisionReferenceV1Schema, bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), attemptId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), input: FoundationJsonValueSchema }, { additionalProperties: false });
 export const TransportObserverCursorV1Schema = Type.Object({ schemaVersion: Type.Literal(1), sessionId: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), catalogVersion: Type.Literal(1) }, { additionalProperties: false });

@@ -12,7 +12,7 @@ import type {
 	Usage,
 } from "@aos-agent/ai";
 import { runAgentLoopContinue } from "../agent-loop.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../types.ts";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback, QueueMode, ThinkingLevel } from "../types.ts";
 import {
 	canonicalFoundationJson,
 	createExecutionCorrelation,
@@ -49,6 +49,20 @@ import { formatSkillInvocation } from "./skills.ts";
 import { formatSkillsForSystemPrompt } from "./system-prompt.ts";
 import { HarnessEventBus, type HarnessEventListener } from "./events.ts";
 import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
+import { FoundationError } from "./foundation/errors.ts";
+import {
+	FoundationToolPipelineV1,
+	SessionToolPipelineStorageV1,
+	validateToolIntentV1,
+	validateToolReceiptV1,
+	type ToolDefinitionRegistryV1,
+	type ToolDefinitionV1,
+	type ToolIntentV1,
+	type ToolPipelineContextV1,
+	type ToolPipelineOptionsV1,
+	type ToolReceiptV1,
+	type ToolRevisionV1,
+} from "./tool-pipeline.ts";
 import {
 	assertJsonSerializable,
 	type BranchSummaryEntry,
@@ -365,6 +379,9 @@ export interface AgentHarnessOptions {
 	context?: TelemetryContext;
 	/** Optional explicit product execution graph; omitted prompts remain session-only. */
 	foundationExecution?: AgentHarnessFoundationExecution;
+	/** Optional pipeline override; when Foundation execution is configured, storage defaults to the Session ledger. */
+	toolPipeline?: FoundationToolPipelineV1;
+	toolPipelineOptions?: Omit<ToolPipelineOptionsV1, "registry" | "storage">;
 }
 
 export interface WatchHandle<TSnapshot> {
@@ -453,7 +470,10 @@ export class AgentHarness implements AgentLane {
 	private readonly foundationOwnerId?: string;
 	private foundationSessionId?: string;
 	private foundationLease?: LedgerWriterLeaseV1;
+	private toolPipeline?: FoundationToolPipelineV1;
+	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
 	private readonly foundationReceipts = new Map<string, FoundationReceiptBundle>();
+	private readonly pipelineResults = new Map<string, AgentToolResult<unknown>>();
 	private readonly eventBus = new HarnessEventBus();
 	private readonly hookRegistry = new HookRegistry();
 	private readonly activeOperations = new Map<string, ActiveOperation>();
@@ -496,6 +516,8 @@ export class AgentHarness implements AgentLane {
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
 		this.foundationOwnerId = options.foundationExecution === undefined ? undefined : `agent-harness:${options.session.idGenerator.next()}`;
+		this.toolPipeline = options.toolPipeline;
+		this.toolPipelineOptions = options.toolPipelineOptions;
 		this.hooks = this.hookRegistry;
 		this.events = new EventsFacade(this.eventBus);
 	}
@@ -597,6 +619,20 @@ export class AgentHarness implements AgentLane {
 		} catch (error) {
 			throw new HarnessFault("Failed to acquire the Foundation session writer lease", error);
 		}
+		if (this.toolPipeline === undefined) {
+			const registry = this.createToolRegistry();
+			const storage = new SessionToolPipelineStorageV1({
+				ledger: this.durableSession,
+				laneId: "main",
+				correlationFor: (_kind, value) => this.toolCorrelation(value),
+				fencingToken: async () => (await this.ensureFoundationLease()).fencingToken,
+			});
+			this.toolPipeline = new FoundationToolPipelineV1({
+				...(this.toolPipelineOptions ?? {}),
+				registry,
+				storage,
+			});
+		}
 	}
 
 	private async releaseFoundationLease(): Promise<void> {
@@ -644,8 +680,30 @@ export class AgentHarness implements AgentLane {
 			goalId: execution.task.goalId,
 			taskId: execution.task.taskId,
 			dispatchId: execution.dispatch.dispatchId,
+			operationId: runId,
+			providerId: execution.providerId,
 			runId,
 			...fields,
+			revision: 0,
+		});
+	}
+
+	private toolCorrelation(value: ToolIntentV1 | ToolReceiptV1): ExecutionCorrelationV1 {
+		const binding = value.binding;
+		if (binding.sessionId === undefined || binding.laneId === undefined || binding.runId === undefined || binding.operationId === undefined || binding.attemptId === undefined || binding.providerId === undefined) {
+			throw new HarnessFault("Tool pipeline correlation is missing a complete execution identity", undefined);
+		}
+		return createExecutionCorrelation(binding.sessionId, binding.laneId, {
+			bindingId: binding.bindingId,
+			bindingEpochId: binding.bindingEpochId,
+			taskId: binding.taskId,
+			dispatchId: binding.dispatchId,
+			operationId: binding.operationId,
+			runId: binding.runId,
+			attemptId: binding.attemptId,
+			providerId: binding.providerId,
+			agentInstanceId: binding.agentInstanceId,
+			toolCallId: value.toolCallId,
 			revision: 0,
 		});
 	}
@@ -717,6 +775,34 @@ export class AgentHarness implements AgentLane {
 		const ids = this.foundationIds(runId);
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for Foundation intent", undefined);
+		const clientRequestId = `harness:intent:${runId}`;
+		const payload = this.foundationJson({
+			schemaVersion: 1,
+			attemptId: ids.attemptId,
+			taskId: this.foundationExecution.task.taskId,
+			dispatchId: this.foundationExecution.dispatch.dispatchId,
+			bindingId: this.foundationExecution.binding.bindingId,
+			bindingEpochIds: [...this.foundationExecution.bindingEpochIds],
+			agentInstanceId: this.foundationExecution.agentInstanceId,
+			runId,
+		}, "intent payload");
+		const existing = (await this.durableSession.findFoundationRecords({ kind: "intent", includePruned: true, order: "oldestFirst" }))
+			.find((record) => record.kind === "intent" && (record.clientRequestId === clientRequestId || (record.objectType === "attempt" && record.objectId === ids.attemptId)));
+		if (existing !== undefined && existing.kind === "intent") {
+			const { revision: _existingRevision, fencingToken: _existingFencingToken, ...existingCorrelation } = existing.correlation;
+			const { revision: _expectedRevision, fencingToken: _expectedFencingToken, ...expectedCorrelation } = correlation;
+			const matches = existing.id === `attempt_intent:${runId}`
+				&& existing.lane === lane
+				&& existing.objectType === "attempt"
+				&& existing.objectId === ids.attemptId
+				&& existing.clientRequestId === clientRequestId
+				&& existing.intent === "create"
+				&& existing.payload !== undefined
+				&& canonicalFoundationJson(existing.payload) === canonicalFoundationJson(payload)
+				&& canonicalFoundationJson(existingCorrelation) === canonicalFoundationJson(expectedCorrelation);
+			if (matches) return;
+			throw new HarnessFault("Existing Foundation intent conflicts with its deterministic reconstruction", undefined);
+		}
 		await this.appendFoundation({
 			schemaVersion: 1,
 			kind: "intent",
@@ -724,26 +810,17 @@ export class AgentHarness implements AgentLane {
 			lane,
 			objectType: "attempt",
 			objectId: ids.attemptId,
-			clientRequestId: `harness:intent:${runId}`,
+			clientRequestId,
 			intent: "create",
-			payload: this.foundationJson({
-				schemaVersion: 1,
-				attemptId: ids.attemptId,
-				taskId: this.foundationExecution.task.taskId,
-				dispatchId: this.foundationExecution.dispatch.dispatchId,
-				bindingId: this.foundationExecution.binding.bindingId,
-				bindingEpochIds: [...this.foundationExecution.bindingEpochIds],
-				agentInstanceId: this.foundationExecution.agentInstanceId,
-				runId,
-			}, "intent payload"),
+			payload,
 			correlation,
 		});
 	}
 
 	private async ensureFoundationIntentForOperation(lane: string, runId: string): Promise<void> {
-		await this.persistFoundationIntent(lane, runId);
 		if (this.foundationExecution === undefined) return;
 		const ids = this.foundationIds(runId);
+		await this.persistFoundationIntent(lane, runId);
 		const records = await this.durableSession.findFoundationRecords({ kind: "intent", objectType: "attempt", objectId: ids.attemptId, includePruned: true, order: "oldestFirst" });
 		const intent = records.find((record) => record.kind === "intent" && record.clientRequestId === `harness:intent:${runId}`);
 		if (intent === undefined || intent.kind !== "intent") throw new HarnessFault(`Foundation intent is missing for operation ${runId}`, undefined);
@@ -1000,7 +1077,50 @@ export class AgentHarness implements AgentLane {
 			: await this.durableSession.view(lane).findEntriesOnBranch({ start: pointer.leafId, order: "oldestFirst" });
 		const records = await this.durableSession.findRecords({ lane, order: "oldestFirst" });
 		const openOperations = await this.durableSession.findOpenOperations(lane, { limit: 2 });
+		const operation = openOperations[0];
+		const operationAttempt = operation === undefined
+			? undefined
+			: records.filter((record) => record.type === "step_attempt" && record.runId === operation.id).at(-1);
+		const toolCorrelation = this.foundationExecution === undefined || operation === undefined || this.foundationSessionId === undefined
+			? undefined
+			: {
+					sessionId: this.foundationSessionId,
+					laneId: lane,
+					runId: operation.id,
+					operationId: operation.id,
+					taskId: this.foundationExecution.task.taskId,
+					dispatchId: this.foundationExecution.dispatch.dispatchId,
+					bindingId: this.foundationExecution.binding.bindingId,
+					bindingEpochId: this.foundationExecution.bindingEpochIds[0],
+					...(operationAttempt === undefined ? {} : { attemptId: operationAttempt.id }),
+					providerId: this.foundationExecution.providerId,
+				};
+		const toolCallIds = [...new Set(ownEntries.flatMap((entry) => entry.type === "message" && entry.message.role === "assistant" ? entry.message.content.filter((content) => content.type === "toolCall").map((content) => content.id) : []))];
+		const findToolRecords = async (kind: "intent" | "fact", objectType: "tool_intent" | "tool_receipt"): Promise<FoundationRecordV1[]> => {
+			if (toolCorrelation === undefined) return [];
+			const batches = await Promise.all(toolCallIds.map((toolCallId) => this.durableSession.findFoundationRecords({ kind, objectType, includePruned: true, order: "oldestFirst", correlation: { ...toolCorrelation, toolCallId } })));
+			return batches.flat();
+		};
+		const toolIntentRecords = await findToolRecords("intent", "tool_intent");
+		const toolReceiptRecords = await findToolRecords("fact", "tool_receipt");
+		const toolIntents = this.foundationExecution === undefined
+			? []
+			: toolIntentRecords.flatMap((record) => {
+				if (record.kind !== "intent" || record.payload === undefined) return [];
+				const checked = validateToolIntentV1(record.payload);
+				if (!checked.ok) throw new HarnessFault("Persisted tool intent failed validation", checked.error);
+				return [checked.value];
+			});
+		const toolReceipts = this.foundationExecution === undefined
+			? []
+			: toolReceiptRecords.flatMap((record) => {
+				if (record.kind !== "fact") return [];
+				const checked = validateToolReceiptV1(record.payload);
+				if (!checked.ok) throw new HarnessFault("Persisted tool receipt failed validation", checked.error);
+				return [checked.value];
+			});
 		const reduction = reduceLaneState({
+			sessionId: this.foundationSessionId,
 			lane,
 			leafId: pointer.leafId,
 			openOperations,
@@ -1013,6 +1133,9 @@ export class AgentHarness implements AgentLane {
 				thinkingLevel: this.defaultThinkingLevel,
 				activeToolNames: [...this.defaultActiveToolNames],
 			},
+			toolIntents,
+			toolReceipts,
+			toolIdentity: toolCorrelation,
 		});
 		this.laneReductions.set(lane, reduction);
 		return reduction;
@@ -1124,23 +1247,152 @@ export class AgentHarness implements AgentLane {
 		return projectors;
 	}
 
-	private async contextForOperation(lane: string): Promise<{ context: AgentContext; reduction: LaneReductionResult; model: Model<Api>; thinkingLevel: ThinkingLevel; activeToolNames: string[] }> {
+	private async contextForOperation(lane: string, operationId?: string): Promise<{ context: AgentContext; reduction: LaneReductionResult; model: Model<Api>; thinkingLevel: ThinkingLevel; activeToolNames: string[] }> {
 		const reduction = await this.getLaneReduction(lane);
 		const context = await buildSessionContextAsync(await this.getLaneEntries(lane), { entryProjectors: this.projectorMap() });
 		const model = this.models.getModel(reduction.effectiveConfiguration.model.provider, reduction.effectiveConfiguration.model.modelId);
 		if (!model) throw new MissingIdentities({ lane, tools: [], models: [`${reduction.effectiveConfiguration.model.provider}/${reduction.effectiveConfiguration.model.modelId}`,], message: "Configured model is unavailable" });
 		const thinkingLevel = isThinkingLevel(reduction.effectiveConfiguration.thinkingLevel) ? reduction.effectiveConfiguration.thinkingLevel : this.defaultThinkingLevel;
 		const activeToolNames = [...reduction.effectiveConfiguration.activeToolNames];
+		const pipelineOperationId = operationId ?? reduction.laneState.operation?.id ?? "context";
+		const activeTools = this.tools.filter((tool) => activeToolNames.includes(tool.name));
 		return {
 			context: {
 				systemPrompt: await this.systemPrompt(),
 				messages: context.messages,
-				tools: this.tools.filter((tool) => activeToolNames.includes(tool.name)),
+				tools: this.foundationExecution === undefined || this.toolPipeline === undefined
+					? activeTools
+					: activeTools.map((tool) => this.pipelineTool(tool, lane, pipelineOperationId)),
 			},
 			reduction,
 			model,
 			thinkingLevel,
 			activeToolNames,
+		};
+	}
+
+	private createToolRegistry(): ToolDefinitionRegistryV1 {
+		return {
+			resolve: (toolName, namespace) => {
+				const tool = this.tools.find((candidate) => candidate.name === toolName && (namespace === undefined || namespace === (candidate as unknown as { namespace?: string }).namespace));
+				return tool === undefined
+					? Result.err(new FoundationError("invalid_identifier", `tool ${toolName} is not registered`))
+					: Result.ok(this.toolDefinition(tool));
+			},
+		};
+	}
+
+	private toolDefinition(tool: HarnessTool): ToolDefinitionV1 {
+		const metadata = tool as unknown as {
+			capabilities?: readonly string[];
+			namespace?: string;
+			toolRevision?: ToolRevisionV1;
+			idempotency?: "idempotent" | "non_idempotent";
+			conflictKeys?: (args: Record<string, unknown>) => readonly string[];
+		};
+		return {
+			name: tool.name,
+			...(metadata.namespace === undefined ? {} : { namespace: metadata.namespace }),
+			label: tool.label,
+			description: tool.description,
+			toolRevision: metadata.toolRevision ?? { schemaVersion: 1, type: "tool_revision", id: `tool:${tool.name}`, revision: 1 },
+			capabilities: [...(metadata.capabilities ?? [])],
+			parameters: tool.parameters,
+			executionMode: tool.executionMode,
+			// AgentLoop prepares the public wrapper before invoking execute; the
+			// pipeline must not apply the transform a second time.
+			...(metadata.conflictKeys === undefined ? {} : { conflictKeys: metadata.conflictKeys }),
+			...(metadata.idempotency === undefined ? {} : { idempotency: metadata.idempotency }),
+			execute: async (args, options) => {
+				const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
+				this.pipelineResults.set(this.pipelineResultKey(options.context, options.toolCallId), result as AgentToolResult<unknown>);
+				return {
+					ok: true,
+					sideEffectState: "none" as const,
+					...(result.usage === undefined ? {} : { usage: { toolCalls: 1 } }),
+				};
+			},
+		};
+	}
+
+	private pipelineTool(tool: HarnessTool, lane: string, operationId: string): HarnessTool {
+		const pipeline = this.toolPipeline;
+		if (pipeline === undefined || this.foundationExecution === undefined) return tool;
+		return {
+			...tool,
+			execute: async (toolCallId, params, signal, onUpdate: AgentToolUpdateCallback<unknown> | undefined) => {
+				const pipelineArgs = this.foundationJson(params, "tool arguments");
+				const context = await this.pipelineContext(lane, operationId);
+				const idempotencyKey = this.defaultToolIdempotencyKey(context, toolCallId);
+				const execution = await pipeline.execute(
+					{ toolCallId, toolName: tool.name, idempotencyKey, ...(context.attempt === undefined ? {} : { attempt: context.attempt }), args: pipelineArgs },
+					context,
+					{ signal, onUpdate: onUpdate === undefined ? undefined : (partial) => onUpdate(partial as AgentToolResult<unknown>) },
+				);
+				const resultKey = this.pipelineResultKey(context, toolCallId);
+				const actual = this.pipelineResults.get(resultKey);
+				this.pipelineResults.delete(resultKey);
+				if (execution.ok && execution.value.outcome === "succeeded" && actual !== undefined) return actual as AgentToolResult<never>;
+				return {
+					content: [{ type: "text", text: execution.ok ? execution.value.error?.message ?? execution.value.outcome : execution.error.message }],
+					details: {},
+				};
+			},
+		} as HarnessTool;
+	}
+
+	private pipelineResultKey(context: ToolPipelineContextV1, toolCallId: string): string {
+		return canonicalFoundationJson({
+			sessionId: context.sessionId,
+			laneId: context.laneId,
+			runId: context.runId,
+			operationId: context.operationId,
+			taskId: context.taskId,
+			dispatchId: context.dispatchId,
+			attemptId: context.attemptId,
+			bindingId: context.binding.bindingId,
+			bindingEpochId: context.bindingEpoch.bindingEpochId,
+			providerId: context.providerId,
+			toolCallId,
+		});
+	}
+
+	private defaultToolIdempotencyKey(context: ToolPipelineContextV1, toolCallId: string): string {
+		return `agent-harness:${this.pipelineResultKey(context, toolCallId)}`;
+	}
+
+	private async pipelineContext(lane: string, operationId: string): Promise<ToolPipelineContextV1> {
+		const execution = this.foundationExecution;
+		if (execution === undefined) throw new HarnessFault("Tool pipeline requires Foundation execution", undefined);
+		const attempts = await this.durableSession.findRecords({ lane, runId: operationId, type: "step_attempt", order: "oldestFirst" });
+		const attempt = attempts.at(-1);
+		if (attempt === undefined) throw new HarnessFault(`Tool pipeline operation ${operationId} has no durable attempt`, undefined);
+		return {
+			sessionId: this.foundationSessionId ?? execution.task.taskId,
+			laneId: lane,
+			runId: operationId,
+			operationId,
+			binding: execution.binding,
+			bindingEpoch: {
+				schemaVersion: 1,
+				bindingEpochId: execution.bindingEpochIds[0]!,
+				taskId: execution.task.taskId,
+				attemptId: attempt.id,
+				bindingId: execution.binding.bindingId,
+				ordinal: 0,
+				activationReason: "attempt_started",
+				activatedByCommandId: execution.dispatch.dispatchId,
+				activatedAt: execution.task.updatedAt,
+				agentInstanceId: execution.agentInstanceId,
+			},
+			taskId: execution.task.taskId,
+			dispatchId: execution.dispatch.dispatchId,
+			providerId: execution.providerId,
+			agentInstanceId: execution.agentInstanceId,
+			attemptId: attempt.id,
+			attempt: attempt.attempt,
+			workspace: execution.task.workspace,
+			...(execution.dispatch.deadlineAt === undefined && execution.task.requirements?.deadlineAt === undefined ? {} : { deadlineAt: Date.parse(execution.dispatch.deadlineAt ?? execution.task.requirements!.deadlineAt!) }),
 		};
 	}
 
@@ -1486,7 +1738,7 @@ export class AgentHarness implements AgentLane {
 		const promise = (async () => {
 			try {
 				await this.hookRegistry.emit("before_request", { lane, runId });
-				const prepared = await this.contextForOperation(lane);
+				const prepared = await this.contextForOperation(lane, runId);
 				operationModel = prepared.model;
 				const config = this.loopConfig(lane, runId, prepared.context, controller.signal, prepared.model, prepared.thinkingLevel);
 				await runAgentLoopContinue(

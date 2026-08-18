@@ -11,6 +11,8 @@ import type {
 	ToolStartedRecord,
 	WriteDeferredRecord,
 } from "./session/types.ts";
+import type { ExecutionCorrelationV1 } from "./foundation/identity.ts";
+import type { ToolBindingRefV1, ToolIntentV1, ToolReceiptV1 } from "./tool-pipeline.ts";
 
 /**
  * Machine-readable category for a contradiction in a lane's durable recovery
@@ -73,6 +75,8 @@ export interface ToolBatchState {
 		toolIndex: number;
 		toolCall: AgentToolCall;
 		started?: ToolStartedRecord;
+		intent?: ToolIntentV1;
+		receipt?: ToolReceiptV1;
 		resultExists: boolean;
 		terminate?: boolean;
 	}[];
@@ -288,6 +292,8 @@ export function advanceLoopConvergence(
 }
 
 export interface LaneReductionInput extends RecordLogSlice {
+	/** Session identity used to keep tool facts from another session out of the reduction. */
+	sessionId?: string;
 	leafId: string | null;
 	/** Entries appended by the open operation, oldest first. Empty when idle. */
 	ownEntries: readonly Entry[];
@@ -295,6 +301,10 @@ export interface LaneReductionInput extends RecordLogSlice {
 	configurationEntries: readonly Entry[];
 	/** Harness option fallbacks used when no persisted value exists. */
 	defaults: EffectiveLaneConfiguration;
+	toolIntents?: readonly ToolIntentV1[];
+	toolReceipts?: readonly ToolReceiptV1[];
+	/** Complete execution identity used to exclude tool facts from another attempt or operation. */
+	toolIdentity?: Partial<ExecutionCorrelationV1>;
 }
 
 export interface LaneReductionResult {
@@ -766,12 +776,40 @@ function deriveNewestOwn(
 	};
 }
 
+function toolIdentityMatches(
+	binding: ToolBindingRefV1,
+	identity: Partial<ExecutionCorrelationV1>,
+): boolean {
+	const expected: Array<[keyof ToolBindingRefV1, string | undefined]> = [
+		["sessionId", identity.sessionId],
+		["laneId", identity.laneId],
+		["runId", identity.runId],
+		["operationId", identity.operationId],
+		["taskId", identity.taskId],
+		["dispatchId", identity.dispatchId],
+		["attemptId", identity.attemptId],
+		["bindingId", identity.bindingId],
+		["bindingEpochId", identity.bindingEpochId],
+		["providerId", identity.providerId],
+		["agentInstanceId", identity.agentInstanceId],
+	];
+	for (const [field, expectedValue] of expected) {
+		if (expectedValue !== undefined && binding[field] !== expectedValue) return false;
+	}
+	return true;
+}
+
 function deriveToolBatch(
+	sessionId: string | undefined,
+	laneId: string,
 	operationId: string,
 	records: readonly LaneRecord[],
 	ownEntries: readonly Entry[],
 	entriesById: ReadonlyMap<string, Entry>,
 	deferredWriteIds: ReadonlySet<string>,
+	toolIntents: readonly ToolIntentV1[] = [],
+	toolReceipts: readonly ToolReceiptV1[] = [],
+	toolIdentity: Partial<ExecutionCorrelationV1> = {},
 ): ToolBatchState | null {
 	const assistantEntry = [...ownEntries]
 		.reverse()
@@ -786,7 +824,22 @@ function deriveToolBatch(
 	const toolCalls = assistantEntry.message.content.filter(
 		(content): content is AgentToolCall => content.type === "toolCall",
 	);
+	const identity: Partial<ExecutionCorrelationV1> = {
+		...toolIdentity,
+		...(toolIdentity.sessionId === undefined && sessionId === undefined ? {} : { sessionId: toolIdentity.sessionId ?? sessionId }),
+		laneId,
+		runId: toolIdentity.runId ?? operationId,
+		operationId: toolIdentity.operationId ?? operationId,
+	};
 	const starts = new Map<number, ToolStartedRecord>();
+	const intents = new Map<string, ToolIntentV1>();
+	for (const intent of toolIntents) {
+		if (toolIdentityMatches(intent.binding, identity)) intents.set(intent.toolCallId, intent);
+	}
+	const receipts = new Map<string, ToolReceiptV1>();
+	for (const receipt of toolReceipts) {
+		if (toolIdentityMatches(receipt.binding, identity)) receipts.set(receipt.toolCallId, receipt);
+	}
 	for (const record of records) {
 		if (
 			record.type === "tool_started" &&
@@ -813,6 +866,8 @@ function deriveToolBatch(
 			toolIndex,
 			toolCall: clone(toolCall),
 			...(started ? { started: clone(started) } : {}),
+			...(intents.get(toolCall.id) === undefined ? {} : { intent: clone(intents.get(toolCall.id)!) }),
+			...(receipts.get(toolCall.id) === undefined ? {} : { receipt: clone(receipts.get(toolCall.id)!) }),
 			resultExists: result !== undefined,
 			...(result?.type === "message" && result.terminate === true ? { terminate: true } : {}),
 		};
@@ -986,7 +1041,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 		operationRecords.filter((record) => record.type === "write_deferred").map((record) => record.target.id),
 	);
 	const deferredFetch = deriveDeferredFetchState(started.id, ownEntries);
-	const toolBatch = deriveToolBatch(started.id, operationRecords, ownEntries, entriesById, deferredWriteIds);
+	const toolBatch = deriveToolBatch(input.sessionId, input.lane, started.id, operationRecords, ownEntries, entriesById, deferredWriteIds, input.toolIntents, input.toolReceipts, input.toolIdentity);
 	let terminalFailure: TerminalFailureState | null = null;
 	if (
 		newestOwnEntry?.type === "message" &&
