@@ -21,6 +21,9 @@ import type {
  */
 export type RecordLogCorruptionReason =
 	| "multiple_open_operations"
+	| "non_monotonic_sequence"
+	| "duplicate_record_id"
+	| "open_operations_mismatch"
 	| "unknown_operation"
 	| "record_after_finish"
 	| "non_consecutive_attempt"
@@ -479,10 +482,19 @@ export function validateRecordLog(input: RecordLogSlice): void {
 	const queueEnqueues = new Map<string, Extract<LaneRecord, { type: "queue_enqueued" }>>();
 	const latestAttempt = new Map<string, AttemptSeries>();
 	const toolInvocations = new Set<string>();
-	const records = [...input.records].sort((left, right) => left.seq - right.seq);
+	const records = input.records;
+	let previousSequence = 0;
+	const recordIds = new Set<string>();
 
 	for (const record of records) {
+		if (!Number.isSafeInteger(record.seq) || record.seq <= previousSequence) {
+			corrupt("non_monotonic_sequence", `Record ${record.id} does not follow the lane record sequence`);
+		}
+		if (recordIds.has(record.id)) corrupt("duplicate_record_id", `Record ${record.id} appears more than once`);
+		recordIds.add(record.id);
+		previousSequence = record.seq;
 		if (record.type === "operation_started") {
+			if (starts.has(record.id)) corrupt("duplicate_record_id", `Operation ${record.id} starts more than once`);
 			starts.set(record.id, record);
 			validateOperationResult(entriesById, record);
 			continue;
@@ -543,6 +555,17 @@ export function validateRecordLog(input: RecordLogSlice): void {
 			case "usage":
 				break;
 		}
+	}
+
+	const actualOpenOperationIds = new Set(
+		[...starts.keys()].filter((operationId) => finishedAt.get(operationId) === undefined),
+	);
+	const suppliedOpenOperationIds = new Set(input.openOperations.map((operation) => operation.id));
+	if (
+		actualOpenOperationIds.size !== suppliedOpenOperationIds.size ||
+		[...actualOpenOperationIds].some((operationId) => !suppliedOpenOperationIds.has(operationId))
+	) {
+		corrupt("open_operations_mismatch", `Lane ${input.lane} open operation index disagrees with its records`);
 	}
 }
 

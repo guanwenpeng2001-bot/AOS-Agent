@@ -1,4 +1,5 @@
 export * from "./context.ts";
+export * from "./durable/index.ts";
 export type {
 	JsonlSessionCreateOptions,
 	JsonlSessionListOptions,

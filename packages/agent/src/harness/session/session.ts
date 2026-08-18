@@ -20,6 +20,7 @@ import type {
 	SessionTree,
 } from "./types.ts";
 import { SessionError } from "./types.ts";
+import { isDurableLedgerStorage, type DurableLedgerApi, type AcquireWriterLeaseOptionsV1, type AppendFoundationRecordResultV1, type FoundationObjectResultV1, type FoundationRecordQueryV1, type FoundationRecordV1, type FoundationRetentionPolicyV1, type LedgerWriterLeaseV1, type ProvisionedFoundationRecordV1, type ReleaseWriterLeaseOptionsV1, type RenewWriterLeaseOptionsV1, type SetRetentionPolicyOptionsV1 } from "./durable/types.ts";
 
 type JsonValidationFrame = { value: unknown } | { exit: object };
 
@@ -146,7 +147,6 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 	async getName(): Promise<string | undefined> {
 		return this.storage.getName();
 	}
-
 	async setName(name: string | undefined): Promise<void> {
 		await this.storage.setName(name);
 	}
@@ -206,6 +206,58 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.commitRecord(record);
 	}
 
+	async acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+		return this.durable().acquireWriterLease(options);
+	}
+
+	async renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+		return this.durable().renewWriterLease(options);
+	}
+
+	async releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+		return this.durable().releaseWriterLease(options);
+	}
+
+	async getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+		return this.durable().getWriterLease();
+	}
+
+	async getLedgerRevision(): Promise<number> {
+		return this.durable().getLedgerRevision();
+	}
+
+	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+		return this.durable().appendFoundationRecord(record);
+	}
+
+	async setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): Promise<AppendFoundationRecordResultV1> {
+		return this.durable().setRetentionPolicy(policy, options);
+	}
+
+	async findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+		return this.durable().findFoundationRecords(query);
+	}
+
+	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+		return this.durable().getFoundationObject(objectType, objectId);
+	}
+
+	async getFoundationRevision(objectType: string, objectId: string): Promise<number> {
+		return this.durable().getFoundationRevision(objectType, objectId);
+	}
+
+	async isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
+		return this.durable().isObjectTombstoned(objectType, objectId);
+	}
+
+	async getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+		return this.durable().getRetentionPolicy();
+	}
+
+	async prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+		return this.durable().prunableFoundationRecords();
+	}
+
 	async findRecords<K extends LaneRecord["type"]>(
 		query: RecordQuery & { type: K },
 	): Promise<Extract<LaneRecord, { type: K }>[]>;
@@ -223,11 +275,22 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.queryLog(options);
 	}
 
+	/** Wait until an asynchronous storage backend has published all queued writes. */
+	async drain(): Promise<void> {
+		const storage = this.storage as SessionStorage<TMetadata> & { drain?: () => Promise<void> };
+		if (storage.drain !== undefined) await storage.drain();
+	}
+
 	/** Returns the lane's current leaf, or null when empty. Throws when the lane does not exist. */
 	private async getLeafIdForLane(lane: string): Promise<string | null> {
 		const pointer = (await this.getLanes()).find((candidate) => candidate.lane === lane);
 		if (!pointer) throw new SessionError("invalid_lane", `Lane not found: ${lane}`);
 		return pointer.leafId;
+	}
+
+	private durable(): DurableLedgerApi {
+		if (!isDurableLedgerStorage(this.storage)) throw new SessionError("storage", "Session storage does not support durable Foundation records");
+		return this.storage;
 	}
 
 	private async queryEntries(query: EntryQuery = {}, resultLimit = query.limit): Promise<Entry[]> {

@@ -7,6 +7,7 @@ import {
 	lstat,
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
 	realpath,
@@ -587,6 +588,55 @@ export class NodeExecutionEnv implements ExecutionEnv {
 			await appendFile(resolved, content);
 			return ok(undefined);
 		} catch (error) {
+			return err(toFileError(error, resolved));
+		}
+	}
+
+	async createExclusive(path: string, content: string): Promise<Result<void, FileError>> {
+		const resolved = resolvePath(this.cwd, path);
+		try {
+			await mkdir(resolve(resolved, ".."), { recursive: true });
+			await writeFile(resolved, content, { flag: "wx" });
+			return ok(undefined);
+		} catch (error) {
+			return err(toFileError(error, resolved));
+		}
+	}
+
+	async syncFile(path: string): Promise<Result<void, FileError>> {
+		const resolved = resolvePath(this.cwd, path);
+		try {
+			const handle = await open(resolved, "r+");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+			return ok(undefined);
+		} catch (error) {
+			return err(toFileError(error, resolved));
+		}
+	}
+
+	async closeFile(_path: string): Promise<Result<void, FileError>> {
+		return ok(undefined);
+	}
+
+	async syncDirectory(path: string): Promise<Result<void, FileError>> {
+		const resolved = resolvePath(this.cwd, path);
+		try {
+			const handle = await open(resolved, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+			return ok(undefined);
+		} catch (error) {
+			const code = isNodeError(error) ? error.code : undefined;
+			// Windows does not expose directory handles for fsync. The rename still
+			// completed; retain the barrier on platforms that support it.
+			if (code === "EISDIR" || code === "EINVAL" || code === "EPERM") return ok(undefined);
 			return err(toFileError(error, resolved));
 		}
 	}

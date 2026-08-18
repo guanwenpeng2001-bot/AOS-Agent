@@ -17,9 +17,20 @@ export type CustomEntryContextMessageProjector = (
 	entries: readonly Entry[],
 ) => readonly AgentMessage[] | undefined;
 
+export type AsyncCustomEntryContextMessageProjector = (
+	entry: CustomEntry,
+	index: number,
+	entries: readonly Entry[],
+) => readonly AgentMessage[] | Promise<readonly AgentMessage[] | undefined> | undefined;
+
 export interface SessionContextBuildOptions {
 	entryTransforms?: readonly ContextEntryTransform[];
 	entryProjectors?: Readonly<Record<string, CustomEntryContextMessageProjector>>;
+}
+
+export interface AsyncSessionContextBuildOptions {
+	entryTransforms?: readonly ContextEntryTransform[];
+	entryProjectors?: Readonly<Record<string, AsyncCustomEntryContextMessageProjector>>;
 }
 
 function deriveSessionContextState(pathEntries: readonly Entry[]): Omit<SessionContext, "messages"> {
@@ -97,4 +108,19 @@ export function buildSessionContext(
 		sessionEntryToContextMessages(entry, index, contextEntries, options),
 	);
 	return { ...state, messages };
+}
+
+export async function buildSessionContextAsync(
+	pathEntries: readonly Entry[],
+	options: AsyncSessionContextBuildOptions = {},
+): Promise<SessionContext> {
+	const state = deriveSessionContextState(pathEntries);
+	const contextEntries = buildContextEntries(pathEntries, { entryTransforms: options.entryTransforms });
+	const messageGroups = await Promise.all(
+		contextEntries.map(async (entry, index) => {
+			if (entry.type !== "custom") return sessionEntryToContextMessages(entry, index, contextEntries);
+			return (await options.entryProjectors?.[entry.customType]?.(entry, index, contextEntries)) ?? [];
+		}),
+	);
+	return { ...state, messages: messageGroups.flat() };
 }

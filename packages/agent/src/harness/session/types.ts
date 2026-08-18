@@ -2,6 +2,8 @@ import type { StopReason, Usage } from "@aos-agent/ai";
 import "../messages.ts";
 import type { AgentMessage } from "../../types.ts";
 import type { Session } from "./session.ts";
+import type { FoundationRecordV1 } from "./durable/types.ts";
+import type { ExecutionCorrelationV1 } from "../foundation/identity.ts";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -82,6 +84,8 @@ export interface RecordBase {
 	seq: number;
 	lane: string;
 	timestamp: number;
+	/** Optional Foundation correlation for records that are part of an execution. */
+	correlation?: ExecutionCorrelationV1;
 }
 
 export interface OperationStartedRecord extends RecordBase {
@@ -278,6 +282,7 @@ export interface LanePointer {
 export type LogItem =
 	| { kind: "entry"; seq: number; entry: Entry }
 	| { kind: "record"; seq: number; record: LaneRecord }
+	| { kind: "foundation"; seq: number; record: FoundationRecordV1 }
 	| { kind: "lane"; seq: number; lane: string; leafId: string | null }
 	| { kind: "fact"; seq: number; fact: "name"; name: string | undefined }
 	| { kind: "fact"; seq: number; fact: "label"; targetId: string; label: string | undefined };

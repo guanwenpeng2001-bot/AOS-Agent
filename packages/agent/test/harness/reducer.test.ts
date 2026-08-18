@@ -321,6 +321,25 @@ interface CorruptionCase {
 
 const corruptionCases: CorruptionCase[] = [
 	{
+		name: "record sequence moves backwards",
+		reason: "non_monotonic_sequence",
+		input: recoverySlice([runStarted(1), attempt(1, "run-1", "assistant", 1, "assistant-1")]),
+	},
+	{
+		name: "record ids are duplicated",
+		reason: "duplicate_record_id",
+		input: recoverySlice([
+			runStarted(1),
+			attempt(2, "run-1", "assistant", 1, "assistant-1"),
+			{ ...attempt(3, "run-1", "assistant", 2, "assistant-2"), id: "attempt-2" },
+		]),
+	},
+	{
+		name: "supplied open operation index disagrees with records",
+		reason: "open_operations_mismatch",
+		input: { ...recoverySlice([runStarted(1)]), openOperations: [] },
+	},
+	{
 		name: "multiple operations are open",
 		reason: "multiple_open_operations",
 		input: recoverySlice([runStarted(1), runStarted(2, { id: "run-2" })]),
