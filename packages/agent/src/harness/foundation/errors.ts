@@ -1,0 +1,226 @@
+import type { JsonValue } from "../session/types.ts";
+
+export type FoundationErrorCode =
+	| "foundation_schema_unsupported_version"
+	| "foundation_schema_invalid_shape"
+	| "foundation_schema_unknown_record"
+	| "invalid_identifier"
+	| "invalid_timestamp"
+	| "invalid_correlation"
+	| "unsupported_schema_version"
+	| "invalid_shape"
+	| "protocol_incompatible"
+	| "unsupported_feature"
+	| "serialization_failed"
+	| "event_cursor_gap"
+	| "event_cursor_expired"
+	| "event_cursor_invalid_sequence"
+	| "session_writer_lease_lost"
+	| "session_writer_fencing_token"
+	| "session_writer_stale_revision"
+	| "goal_not_found"
+	| "goal_conflict"
+	| "goal_invalid_transition"
+	| "structure_schema_invalid"
+	| "structure_retry_exhausted"
+	| "budget_exhausted"
+	| "quota_exceeded"
+	| "quota_attribution_error"
+	| "tool_guard_denied"
+	| "side_effect_unknown"
+	| "role_not_found"
+	| "role_slug_conflict"
+	| "role_revision_immutable"
+	| "model_profile_not_found"
+	| "role_resolver_task_required"
+	| "role_resolver_order_invalid"
+	| "role_resolver_scope_widened"
+	| "role_resolver_conflict"
+	| "binding_task_before_binding"
+	| "binding_epoch_invalid_ordinal"
+	| "binding_epoch_missing_previous"
+	| "binding_epoch_mismatch"
+	| "agent_instance_not_agent_provider"
+	| "agent_instance_required_for_agent_provider"
+	| "agent_instance_forbidden_for_provider"
+	| "task_executor_invalid_provider_class"
+	| "task_result_no_source_receipts"
+	| "task_result_receipt_task_mismatch"
+	| "task_result_acceptance_unverified"
+	| "task_result_validation_failed"
+	| "task_result_terminal_requires_task_result"
+	| "run_terminal_authority_required"
+	| "run_terminal_authority_invalid"
+	| "worker_receipt_invalid_producer"
+	| "profile_conflict"
+	| "service_cycle"
+	| "plugin_rollback_failed"
+	| "transport_not_authorized"
+	| "protocol_unsupported_version"
+	| "protocol_invalid_envelope"
+	| "observer_cursor_gap"
+	| (string & {});
+
+export const FOUNDATION_ERROR_CODES = Object.freeze([
+	"foundation_schema_unsupported_version",
+	"foundation_schema_invalid_shape",
+	"foundation_schema_unknown_record",
+	"invalid_identifier",
+	"invalid_timestamp",
+	"invalid_correlation",
+	"unsupported_schema_version",
+	"invalid_shape",
+	"protocol_incompatible",
+	"unsupported_feature",
+	"serialization_failed",
+	"binding_task_before_binding",
+	"agent_instance_forbidden_for_provider",
+	"task_result_acceptance_unverified",
+	"transport_not_authorized",
+] as const);
+export interface StableErrorRecord { _tag: string; code: string; message: string; category?: string; retryable?: boolean; }
+
+export type FoundationErrorCategory = "schema" | "concurrency" | "not_found" | "conflict" | "validation" | "budget" | "permission" | "provider" | "unknown";
+
+export function foundationErrorCategory(code: FoundationErrorCode): FoundationErrorCategory {
+	if (code.startsWith("foundation_schema") || code.startsWith("structure") || code === "invalid_shape" || code === "unsupported_schema_version") return "schema";
+	if (code.includes("cursor") || code.startsWith("session_writer") || code.startsWith("binding_epoch")) return "concurrency";
+	if (code.endsWith("_not_found")) return "not_found";
+	if (code.endsWith("_conflict")) return "conflict";
+	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
+	if (code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
+	return "validation";
+}
+export const REDACTED = "[redacted]";
+export const REDACTED_URL = "[redacted-url]";
+export const REDACTED_PATH = "[redacted-path]";
+export const FOUNDATION_FORBIDDEN_KEYS = Object.freeze([
+	"data",
+	"raw",
+	"message",
+	"messages",
+	"finalText",
+	"command",
+	"args",
+	"body",
+	"content",
+	"stack",
+	"cause",
+	"authorization",
+	"cookie",
+	"credential",
+	"password",
+	"secret",
+	"token",
+	"apiKey",
+	"headers",
+	"prompt",
+	"workspace",
+	"path",
+	"url",
+]);
+
+function forbiddenKey(key: string): boolean {
+	const normalized = key.toLowerCase();
+	return FOUNDATION_FORBIDDEN_KEYS.some((candidate) => normalized.includes(candidate.toLowerCase()));
+}
+
+export function redactText(text: string): string {
+	return text
+		.replace(/(prompt|payload|originalArguments|translatedConfig|input)\s*[:=]\s*[^\n]+/gi, `$1=${REDACTED}`)
+		.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, REDACTED)
+		.replace(/bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
+		.replace(/(password|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, `$1=${REDACTED}`)
+		.replace(/https?:\/\/[^\s]+/gi, REDACTED_URL)
+		.replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|tmp|var|workspace|mnt|private)\/)[^\s,;]+/g, REDACTED_PATH);
+}
+
+export function redactProjection(value: unknown): unknown {
+	if (typeof value === "string") return redactText(value);
+	if (Array.isArray(value)) return value.map((item) => redactProjection(item));
+	if (value !== null && typeof value === "object") {
+		const result: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value)) result[key] = forbiddenKey(key) ? REDACTED : redactProjection(item);
+		return result;
+	}
+	return value;
+}
+
+export interface FoundationPublicErrorV1 {
+	code: FoundationErrorCode | string;
+	category: FoundationErrorCategory;
+	message: string;
+}
+
+export type PublicExecutionErrorCategory = "permission" | "parameter" | "transient" | "deadline" | "cancelled" | "side_effect_unknown" | "unknown";
+export interface PublicExecutionErrorV1 {
+	code: string;
+	message: string;
+	category?: PublicExecutionErrorCategory;
+	retryable: boolean;
+}
+
+export class FoundationError extends Error {
+	readonly _tag: "FoundationError" | "FoundationContractError" = "FoundationError";
+	readonly code: FoundationErrorCode;
+	readonly category: FoundationErrorCategory;
+	readonly details?: JsonValue;
+	readonly retryable: boolean;
+
+	constructor(code: FoundationErrorCode, message: string, options: { details?: JsonValue; retryable?: boolean; cause?: unknown } = {}) {
+		super(redactText(message));
+		this.name = "FoundationError";
+		this.code = code;
+		this.category = foundationErrorCategory(code);
+		this.retryable = options.retryable ?? false;
+		this.details = options.details === undefined ? undefined : (redactProjection(options.details) as JsonValue);
+		if (options.cause !== undefined) this.cause = options.cause;
+	}
+
+	static is(value: unknown): value is FoundationError {
+		return value instanceof FoundationError || (typeof value === "object" && value !== null && ((value as { _tag?: unknown })._tag === "FoundationError" || (value as { _tag?: unknown })._tag === "FoundationContractError"));
+	}
+
+	redact(): FoundationPublicErrorV1 {
+		return { code: this.code, category: this.category, message: this.message };
+	}
+
+	toPublicExecutionError(): PublicExecutionErrorV1 {
+		return { code: this.code, message: this.message, retryable: this.retryable };
+	}
+
+	toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationError" | "FoundationContractError" } {
+		return { _tag: "FoundationError", ...this.redact() };
+	}
+}
+
+/** Compatibility constructor for callers using the object-shaped tagged error contract. */
+export class FoundationContractError extends FoundationError {
+	readonly _tag = "FoundationContractError" as const;
+
+	constructor(props: { code: FoundationErrorCode; message: string; details?: JsonValue; retryable?: boolean; cause?: unknown } & Record<string, unknown>) {
+		super(props.code, props.message, props);
+		this.name = "FoundationContractError";
+	}
+
+	static is(value: unknown): value is FoundationContractError {
+		return value instanceof FoundationContractError;
+	}
+
+	override toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationContractError" } {
+		return { _tag: "FoundationContractError", ...this.redact() };
+	}
+}
+
+export function toFoundationError(error: unknown, fallbackCode: FoundationErrorCode = "foundation_schema_unknown_record"): FoundationError {
+	if (error instanceof FoundationError) return error;
+	return new FoundationError(fallbackCode, error instanceof Error ? error.message : String(error), { cause: error });
+}
+
+export function publicExecutionError(code: FoundationErrorCode | string, message: string, options: { retryable?: boolean; category?: PublicExecutionErrorCategory } = {}): PublicExecutionErrorV1 {
+	return { code, message: redactText(message), ...(options.category === undefined ? {} : { category: options.category }), retryable: options.retryable ?? false };
+}
+
+export function redactFoundationError(error: FoundationError): FoundationPublicErrorV1 {
+	return error.redact();
+}
