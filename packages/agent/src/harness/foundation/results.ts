@@ -33,9 +33,22 @@ export const WorkerReceiptV1Schema = Type.Object({ schemaVersion: Type.Literal(1
 export type AttemptReceiptV1Shape = AttemptReceiptV1; export type WorkerReceiptV1Shape = WorkerReceiptV1;
 export const isAttemptReceiptV1Shape = makeExactShapeGuard<AttemptReceiptV1>(AttemptReceiptV1Schema, "attempt_receipt");
 export const isWorkerReceiptV1Shape = makeExactShapeGuard<WorkerReceiptV1>(WorkerReceiptV1Schema, "worker_receipt");
+function requireResultCorrelation(provenance: ResultProvenanceV1, required: readonly (keyof ExecutionCorrelationV1)[], objectId: string): ResultValue<ExecutionCorrelationV1, FoundationError> {
+	const correlation = provenance.correlation;
+	if (correlation === undefined || typeof correlation.sessionId !== "string" || correlation.sessionId.length === 0 || typeof correlation.laneId !== "string" || correlation.laneId.length === 0 || !Number.isSafeInteger(correlation.revision) || correlation.revision < 0) return Result.err(new FoundationError("invalid_correlation", "Result provenance requires a complete ExecutionCorrelation", { details: { objectId } }));
+	for (const field of required) {
+		const value = correlation[field];
+		const valid = field === "revision" ? Number.isSafeInteger(value) && (value as number) >= 0 : typeof value === "string" && value.length > 0;
+		if (!valid) return Result.err(new FoundationError("invalid_correlation", "Result provenance is missing a required identity field", { details: { objectId, field } }));
+	}
+	return Result.ok(correlation);
+}
 export function validateAttemptReceipt(value: unknown, options: { agentProvider?: boolean; providerClass?: AttemptProviderClassV1 } = {}): ResultValue<AttemptReceiptV1, FoundationError> {
 	if (!isAttemptReceiptV1Shape(value)) return Result.err(new FoundationError("foundation_schema_invalid_shape", "attempt_receipt failed exact-shape validation", { details: { issues: exactShapeIssues(AttemptReceiptV1Schema, value) } }));
 	const receipt = value as AttemptReceiptV1;
+	const correlation = requireResultCorrelation(receipt.provenance, ["sessionId", "laneId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"], receipt.attemptReceiptId);
+	if (!correlation.ok) return Result.err(correlation.error);
+	if (correlation.value.taskId !== receipt.taskId || correlation.value.dispatchId !== receipt.dispatchId || correlation.value.attemptId !== receipt.attemptId || correlation.value.bindingId !== receipt.bindingId || receipt.bindingEpochIds.length === 0 || correlation.value.bindingEpochId !== receipt.bindingEpochIds[0]) return Result.err(new FoundationError("invalid_correlation", "AttemptReceipt provenance does not match its immutable execution identity", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if (receipt.provenance.providerId !== receipt.providerId) return Result.err(new FoundationError("worker_receipt_invalid_producer", "AttemptReceipt provider identity must match provenance", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if (options.agentProvider === true && receipt.agentInstanceId === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent-class providers require an AgentInstance", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if (options.agentProvider === false && receipt.agentInstanceId !== undefined) return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Non-agent providers cannot carry an AgentInstance", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
@@ -51,6 +64,11 @@ export function validateAttemptReceipt(value: unknown, options: { agentProvider?
 export function validateWorkerReceipt(value: unknown): ResultValue<WorkerReceiptV1, FoundationError> {
 	if (!isWorkerReceiptV1Shape(value)) return Result.err(new FoundationError("foundation_schema_invalid_shape", "worker_receipt failed exact-shape validation", { details: { issues: exactShapeIssues(WorkerReceiptV1Schema, value) } }));
 	const receipt = value as WorkerReceiptV1;
+	const correlation = requireResultCorrelation(receipt.provenance, ["sessionId", "laneId"], receipt.workerReceiptId);
+	if (!correlation.ok) return Result.err(correlation.error);
+	for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
+		if (receipt[field] !== undefined && correlation.value[field] !== receipt[field]) return Result.err(new FoundationError("invalid_correlation", "WorkerReceipt provenance does not match its operation identity", { details: { workerReceiptId: receipt.workerReceiptId, field } }));
+	}
 	if (receipt.provenance.producerKind !== "operation_worker" || receipt.provenance.providerId !== receipt.sandboxProviderId) return Result.err(new FoundationError("worker_receipt_invalid_producer", "WorkerReceipt provenance must identify its operation worker", { details: { workerReceiptId: receipt.workerReceiptId } }));
 	return Result.ok(receipt);
 }
@@ -58,6 +76,9 @@ export interface SettleTaskResultInput { taskResultId: string; task: TaskEnvelop
 export function settleTaskResult(input: SettleTaskResultInput): ResultValue<TaskResultV1, FoundationError> {
 	if (input.taskResultId.length === 0) return Result.err(new FoundationError("task_result_validation_failed", "TaskResult requires a stable id"));
 	if (input.producer.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Only the Host settlement gate may produce a TaskResult", { details: { taskResultId: input.taskResultId } }));
+	const producerCorrelation = requireResultCorrelation(input.producer, ["sessionId", "laneId", "taskId", "taskResultId"], input.taskResultId);
+	if (!producerCorrelation.ok) return Result.err(producerCorrelation.error);
+	if (producerCorrelation.value.taskId !== input.task.taskId || producerCorrelation.value.taskResultId !== input.taskResultId) return Result.err(new FoundationError("invalid_correlation", "Host TaskResult provenance does not match its task identity", { details: { taskResultId: input.taskResultId } }));
 	if (input.receipts.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Task settlement requires AttemptReceipt sources", { details: { taskResultId: input.taskResultId } }));
 	const receiptIds = input.receipts.map((receipt) => receipt.attemptReceiptId);
 	if (new Set(receiptIds).size !== receiptIds.length) return Result.err(new FoundationError("task_result_validation_failed", "TaskResult sources must not repeat an AttemptReceipt", { details: { taskResultId: input.taskResultId } }));
@@ -101,6 +122,7 @@ export function serializeHostTerminalGateAuthorityV1(value: HostTerminalGateAuth
 export function parseHostTerminalGateAuthorityV1(text: string): ResultValue<HostTerminalGateAuthorityV1, FoundationError> { return parseExactShape(HostTerminalGateAuthorityV1Schema, text, "host_terminal_gate_authority"); }
 export interface FinalizeRunReceiptInput { runReceiptId: string; runId: string; terminalStatus: RunTerminalStatusV1; authority: HostTerminalGateAuthorityV1; taskResult?: TaskResultV1; attemptReceiptIds: readonly string[]; terminalErrorCode?: string; completedAt?: string; }
 export function finalizeRunReceipt(input: FinalizeRunReceiptInput): ResultValue<RunReceiptV1, FoundationError> {
+	if (input.runReceiptId.length === 0 || input.runId.length === 0) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run receipt finalization requires stable run and receipt ids", { details: { runId: input.runId } }));
 	if (input.authority === undefined) return Result.err(new FoundationError("run_terminal_authority_required", "Run receipt finalization requires an explicit Host terminal-gate authority", { details: { runId: input.runId } }));
 	const authority = validateHostTerminalGateAuthorityV1(input.authority);
 	if (!authority.ok) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run receipt finalization requires a valid Host terminal-gate authority", { details: { runId: input.runId } }));
@@ -128,7 +150,13 @@ export function serializeWorkerReceipt(value: WorkerReceiptV1): string { return 
 export function parseWorkerReceipt(text: string): ResultValue<WorkerReceiptV1, FoundationError> { return parseExactShape(WorkerReceiptV1Schema, text, "worker_receipt"); }
 export function serializeAttemptReceiptV1(value: AttemptReceiptV1): string { return serializeExactShape(AttemptReceiptV1Schema, value, "attempt_receipt"); }
 export function parseAttemptReceiptV1(text: string): ResultValue<AttemptReceiptV1, FoundationError> { return parseExactShape(AttemptReceiptV1Schema, text, "attempt_receipt"); }
-export function validateTaskResultV1(value: unknown): ResultValue<TaskResultV1, FoundationError> { return validateExactShape<TaskResultV1>(TaskResultV1Schema, value, "task_result"); }
+export function validateTaskResultV1(value: unknown): ResultValue<TaskResultV1, FoundationError> {
+	const checked = validateExactShape<TaskResultV1>(TaskResultV1Schema, value, "task_result");
+	if (!checked.ok) return checked;
+	const correlation = requireResultCorrelation(checked.value.provenance, ["sessionId", "laneId", "taskId", "taskResultId"], checked.value.taskResultId);
+	if (!correlation.ok) return Result.err(correlation.error);
+	return correlation.value.taskId === checked.value.taskId && correlation.value.taskResultId === checked.value.taskResultId ? checked : Result.err(new FoundationError("invalid_correlation", "TaskResult provenance does not match its task identity", { details: { taskResultId: checked.value.taskResultId } }));
+}
 export function serializeTaskResultV1(value: TaskResultV1): string { return serializeExactShape(TaskResultV1Schema, value, "task_result"); }
 export function parseTaskResultV1(text: string): ResultValue<TaskResultV1, FoundationError> { return parseExactShape(TaskResultV1Schema, text, "task_result"); }
 export function validateRunReceiptV1(value: unknown): ResultValue<RunReceiptV1, FoundationError> { return validateExactShape<RunReceiptV1>(RunReceiptV1Schema, value, "run_receipt"); }

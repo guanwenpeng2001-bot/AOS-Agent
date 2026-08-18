@@ -8,7 +8,7 @@ import { AgentBindingV1Schema, AgentInstanceV1Schema, BindingEpochV1Schema, Mode
 import { AttemptV1Schema, type AttemptV1, type DispatchV1, SpawnAgentIntentV1Schema, type SpawnAgentIntentV1, TaskEnvelopeV1Schema, type TaskEnvelopeV1 } from "./task.ts";
 import { PublicExecutionErrorV1Schema, type AttemptReceiptV1, type WorkerReceiptV1 } from "./results.ts";
 import type { FoundationEventEnvelopeV1, FoundationJsonValue } from "./event-catalog.ts";
-import { canonicalFoundationJson } from "./identity.ts";
+import { canonicalFoundationJson, type ExecutionCorrelationV1 } from "./identity.ts";
 import { FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 export type FoundationProviderClassV1 = "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector" | "gateway" | "store" | "quota" | "transport" | "observer";
@@ -16,6 +16,8 @@ export const PROVIDER_KINDS = ["model", "tool", "sandbox", "operation", "externa
 export interface ExecutionProviderDescriptorV1 { schemaVersion: 1; providerId: string; providerClass: "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector"; }
 export interface FoundationProviderCapabilityV1 { schemaVersion: 1; id: string; version: number; }
 export interface FoundationProviderV1 { readonly schemaVersion: 1; readonly providerId: string; readonly providerClass: FoundationProviderClassV1; capabilities(): Promise<readonly FoundationProviderCapabilityV1[]>; dispose(): Promise<void>; }
+/** Correlation carried by a provider consumer; credential material is never part of it. */
+export interface FoundationProviderExecutionOptionsV1 { readonly correlation?: ExecutionCorrelationV1; readonly signal?: AbortSignal; }
 export interface SandboxOperationRequestV1 {
 	schemaVersion: 1;
 	operationId: string;
@@ -34,16 +36,16 @@ export interface SandboxOperationRequestV1 {
 	workspace?: string;
 	deadlineAt?: number;
 }
-export interface SandboxOperationProvider extends FoundationProviderV1 { readonly providerClass: "operation_worker"; start(request: SandboxOperationRequestV1, options?: { signal?: AbortSignal }): Promise<Result<WorkerReceiptV1, FoundationError>>; cancel(operationId: string): Promise<Result<void, FoundationError>>; }
+export interface SandboxOperationProvider extends FoundationProviderV1 { readonly providerClass: "operation_worker"; start(request: SandboxOperationRequestV1, options?: FoundationProviderExecutionOptionsV1): Promise<Result<WorkerReceiptV1, FoundationError>>; cancel(operationId: string): Promise<Result<void, FoundationError>>; }
 export type OperationWorkerProviderV1 = SandboxOperationProvider;
 export interface ChildSpawnRequestV1 { schemaVersion: 1; spawnId: string; parentSpawn?: SpawnAgentIntentV1; taskEnvelope: TaskEnvelopeV1; roleRevision: RoleRevisionV1; modelProfile: ModelProfileV1; parentAttemptId?: string; parentAgentInstanceId?: string; forkScope: "none" | "all" | "recent_n" | "task_package"; recentN?: number; taskPackageRef?: string; }
 export interface ChildSpawnResultV1 { schemaVersion: 1; attempt: AttemptV1; agentInstance: AgentInstanceV1; initialBindingEpoch: BindingEpochV1; }
-export interface ChildAgentProvider extends FoundationProviderV1 { readonly providerClass: "agent"; spawn(request: ChildSpawnRequestV1, options?: { signal?: AbortSignal }): Promise<Result<ChildSpawnResultV1, FoundationError>>; resume(attemptId: string, options?: { signal?: AbortSignal }): Promise<Result<AttemptReceiptV1, FoundationError>>; cancel(attemptId: string): Promise<Result<void, FoundationError>>; }
+export interface ChildAgentProvider extends FoundationProviderV1 { readonly providerClass: "agent"; spawn(request: ChildSpawnRequestV1, options?: FoundationProviderExecutionOptionsV1): Promise<Result<ChildSpawnResultV1, FoundationError>>; resume(attemptId: string, options?: { signal?: AbortSignal }): Promise<Result<AttemptReceiptV1, FoundationError>>; cancel(attemptId: string): Promise<Result<void, FoundationError>>; }
 export type AgentProviderV1 = ChildAgentProvider;
 /** Context supplied by the Dispatch consumer; providers must use it when creating the first Attempt. */
-export interface TaskExecutorAttemptContextV1 { readonly initialBindingEpoch: BindingEpochV1; readonly signal?: AbortSignal; }
+export interface TaskExecutorAttemptContextV1 { readonly initialBindingEpoch: BindingEpochV1; readonly correlation?: ExecutionCorrelationV1; readonly signal?: AbortSignal; }
 /** A TaskExecutor creates Attempts and settles AttemptReceipts; Operation Workers are excluded. */
-export interface TaskExecutorProvider extends FoundationProviderV1 { readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector"; createAttempt(dispatch: DispatchV1, binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1): Promise<Result<AttemptV1, FoundationError>>; runAttempt(attempt: AttemptV1, options?: { signal?: AbortSignal }): Promise<Result<AttemptReceiptV1, FoundationError>>; cancelAttempt(attemptId: string): Promise<Result<void, FoundationError>>; }
+export interface TaskExecutorProvider extends FoundationProviderV1 { readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector"; createAttempt(dispatch: DispatchV1, binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1): Promise<Result<AttemptV1, FoundationError>>; runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1): Promise<Result<AttemptReceiptV1, FoundationError>>; cancelAttempt(attemptId: string): Promise<Result<void, FoundationError>>; }
 /** Explicit line-12B non-agent scheduler surface. It cannot carry an AgentInstance. */
 export interface SchedulerTaskExecutorProvider extends TaskExecutorProvider { readonly providerClass: "scheduler" | "task_executor"; }
 export interface ConnectorCapabilitySnapshotV1 { schemaVersion: 1; providerId: string; protocol: string; capabilityVersion: number; resumeSupported: boolean; modelAccess: "none" | "agent_owned" | "aos_gateway"; toolAccess?: readonly string[]; }

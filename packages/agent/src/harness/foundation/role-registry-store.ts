@@ -1,12 +1,11 @@
-import { Type } from "typebox";
 import { Result, type Result as ResultValue } from "../result.ts";
-import type { Entry, EntryQuery } from "../session/types.ts";
+import type { Session } from "../session/session.ts";
+import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
-import { validateExactShape } from "./schema.ts";
+import { SessionLedgerV1 } from "./session-ledger.ts";
 import {
 	InMemoryRoleRegistryV1,
-	RoleRegistryRecordV1Schema,
 	type RoleRegistryCreateInputV1,
 	type RoleRegistryCopyInputV1,
 	type RoleRegistryDeleteInputV1,
@@ -21,126 +20,174 @@ import {
 	type RoleResolveInputV1,
 	type RoleResolutionPreviewV1,
 	type RoleTombstoneV1,
+	validateRoleRegistryRecordV1,
 } from "./role-registry.ts";
-import { ModelProfileV1Schema, type ModelProfileV1 } from "./role.ts";
+import type { ModelProfileV1 } from "./role.ts";
 import { validateSecretFreeModelProfileV1 } from "./model-profile.ts";
+import { fingerprintFoundationValue } from "./identity.ts";
 
-/** Custom Session entry used for the latest immutable Role Registry snapshot. */
-export const ROLE_REGISTRY_CUSTOM_TYPE_V1 = "foundation.role_registry.v1";
-
-export interface RoleRegistrySession {
-	findEntries(query: EntryQuery): Promise<readonly Entry[]>;
-	appendCustomEntry(customType: string, data?: unknown): Promise<string>;
-}
+/** Durable object kinds. Role/profile history remains in the object payload; Session is the authority. */
+export const ROLE_REGISTRY_OBJECT_TYPE_V1 = "role_registry";
+export const MODEL_PROFILE_OBJECT_TYPE_V1 = "model_profile";
 
 export interface DurableRoleRegistryOptions {
 	readonly now?: () => string;
+	readonly ownerId?: string;
 }
 
-interface RoleRegistrySnapshotV1 {
-	schemaVersion: 1;
-	type: "snapshot";
-	records: readonly RoleRegistryRecordV1[];
+function roleObjectId(roleId: string, scope: "global" | "project"): string {
+	return `${scope}:${roleId}`;
 }
 
-const RoleRegistrySnapshotV1Schema = Type.Object(
-	{
-		schemaVersion: Type.Literal(1),
-		type: Type.Literal("snapshot"),
-		records: Type.Array(RoleRegistryRecordV1Schema),
-	},
-	{ additionalProperties: false },
-);
+function resultError<T>(error: unknown, fallback: string): ResultValue<T, FoundationError> {
+	return Result.err(error instanceof DurableLedgerError ? new FoundationError(error.code, error.message, { cause: error }) : toFoundationError(error, fallback));
+}
+
+interface StoredRoleRecordV1 {
+	readonly payload: RoleRegistryRecordV1;
+	readonly revision: number;
+}
 
 /**
- * Session-backed Role Registry facade. Mutations are serialized and persisted before they
- * resolve, so a later harness opening the same Session sees revisions and tombstones.
+ * Session-backed Role Registry. A transient resolver is rebuilt per operation, but
+ * no retained Map or snapshot is authoritative; every read starts at the Session
+ * ledger and every mutation is an object-level CAS append under writer fencing.
  */
 export class DurableRoleRegistryV1 {
-	private readonly session: RoleRegistrySession;
-	private readonly registry: InMemoryRoleRegistryV1;
 	private readonly now: () => string;
+	private readonly ledger: SessionLedgerV1;
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	private constructor(session: RoleRegistrySession, registry: InMemoryRoleRegistryV1, options: DurableRoleRegistryOptions) {
-		this.session = session;
-		this.registry = registry;
+	private constructor(session: Session, options: DurableRoleRegistryOptions) {
 		this.now = options.now ?? (() => new Date().toISOString());
+		this.ledger = new SessionLedgerV1(session, { ownerId: options.ownerId });
 	}
 
-	static async create(session: RoleRegistrySession, options: DurableRoleRegistryOptions = {}): Promise<DurableRoleRegistryV1> {
-		const now = options.now ?? (() => new Date().toISOString());
+	static async create(session: Session, options: DurableRoleRegistryOptions = {}): Promise<DurableRoleRegistryV1> {
+		const store = new DurableRoleRegistryV1(session, options);
 		try {
-			const registry = new InMemoryRoleRegistryV1({ now });
-			const entries = await session.findEntries({ customType: ROLE_REGISTRY_CUSTOM_TYPE_V1, order: "oldestFirst" });
-			let records: readonly RoleRegistryRecordV1[] | undefined;
-			for (const entry of entries) {
-				if (entry.type !== "custom" || entry.customType !== ROLE_REGISTRY_CUSTOM_TYPE_V1) continue;
-				const snapshot = validateExactShape<RoleRegistrySnapshotV1>(RoleRegistrySnapshotV1Schema, entry.data, "role_registry_snapshot", "role_registry_persistence_invalid");
-				if (!snapshot.ok) throw snapshot.error;
-				records = snapshot.value.records;
-			}
-			if (records !== undefined) {
-				const imported = registry.import({ schemaVersion: 1, exportedAt: now(), records });
-				if (!imported.ok) throw imported.error;
-			}
-			return new DurableRoleRegistryV1(session, registry, options);
+			await store.loadRecords();
+			return store;
 		} catch (error) {
-			throw toFoundationError(error, "role_registry_persistence_invalid");
+			throw error instanceof DurableLedgerError ? new FoundationError(error.code, error.message, { cause: error }) : toFoundationError(error, "role_registry_persistence_invalid");
 		}
 	}
 
-	async create(input: RoleRegistryCreateInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> { return this.mutate(() => this.registry.create(input)); }
-	async get(query: RoleRegistryGetQueryV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> { return this.read(() => this.registry.get(query)); }
-	async list(query: RoleRegistryListQueryV1 = {}): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> { return this.read(() => this.registry.list(query)); }
-	async search(query: RoleRegistrySearchQueryV1): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> { return this.read(() => this.registry.search(query)); }
-	async edit(input: RoleRegistryEditInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> { return this.mutate(() => this.registry.edit(input)); }
-	async copy(input: RoleRegistryCopyInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> { return this.mutate(() => this.registry.copy(input)); }
-	async delete(input: RoleRegistryDeleteInputV1): Promise<ResultValue<RoleTombstoneV1, FoundationError>> { return this.mutate(() => this.registry.delete(input)); }
-	async import(input: RoleRegistryImportV1): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> { return this.mutate(() => this.registry.import(input)); }
-	async export(query: RoleRegistryExportQueryV1 = {}): Promise<ResultValue<RoleRegistryExportV1, FoundationError>> { return this.read(() => this.registry.export(query)); }
-	async resolve(input: RoleResolveInputV1): Promise<ResultValue<RoleResolutionPreviewV1, FoundationError>> { return this.read(() => this.registry.resolve(input)); }
-
-	private async read<T>(operation: () => ResultValue<T, FoundationError>): Promise<ResultValue<T, FoundationError>> {
-		await this.mutationTail;
-		return operation();
+	async create(input: RoleRegistryCreateInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> {
+		return this.mutate((registry) => registry.create(input));
 	}
 
-	private mutate<T>(operation: () => ResultValue<T, FoundationError>): Promise<ResultValue<T, FoundationError>> {
+	async get(query: RoleRegistryGetQueryV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> {
+		return this.read((registry) => registry.get(query));
+	}
+
+	async list(query: RoleRegistryListQueryV1 = {}): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> {
+		return this.read((registry) => registry.list(query));
+	}
+
+	async search(query: RoleRegistrySearchQueryV1): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> {
+		return this.read((registry) => registry.search(query));
+	}
+
+	async edit(input: RoleRegistryEditInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> {
+		return this.mutate((registry) => registry.edit(input));
+	}
+
+	async copy(input: RoleRegistryCopyInputV1): Promise<ResultValue<RoleRegistryRecordV1, FoundationError>> {
+		return this.mutate((registry) => registry.copy(input));
+	}
+
+	async delete(input: RoleRegistryDeleteInputV1): Promise<ResultValue<RoleTombstoneV1, FoundationError>> {
+		return this.mutate((registry) => registry.delete(input));
+	}
+
+	async import(input: RoleRegistryImportV1): Promise<ResultValue<readonly RoleRegistryRecordV1[], FoundationError>> {
+		return this.mutate((registry) => registry.import(input));
+	}
+
+	async export(query: RoleRegistryExportQueryV1 = {}): Promise<ResultValue<RoleRegistryExportV1, FoundationError>> {
+		return this.read((registry) => registry.export(query));
+	}
+
+	async resolve(input: RoleResolveInputV1): Promise<ResultValue<RoleResolutionPreviewV1, FoundationError>> {
+		return this.read((registry) => registry.resolve(input));
+	}
+
+	async release(): Promise<void> { await this.ledger.release(); }
+
+	private async read<T>(operation: (registry: InMemoryRoleRegistryV1) => ResultValue<T, FoundationError>): Promise<ResultValue<T, FoundationError>> {
+		await this.mutationTail;
+		try {
+			const registry = await this.loadRegistry();
+			return operation(registry);
+		} catch (error) {
+			return resultError(error, "role_registry_persistence_invalid");
+		}
+	}
+
+	private mutate<T>(operation: (registry: InMemoryRoleRegistryV1) => ResultValue<T, FoundationError>): Promise<ResultValue<T, FoundationError>> {
 		const result = this.mutationTail.then(async () => {
-			const previous = this.registry.list({ includeTombstones: true });
-			if (!previous.ok) return previous as ResultValue<T, FoundationError>;
-			const next = operation();
-			if (!next.ok) return next;
 			try {
-				await this.persist();
+				const beforeFacts = await this.loadRecordFacts();
+				const before = beforeFacts.map((fact) => fact.payload);
+				const registry = new InMemoryRoleRegistryV1({ now: this.now });
+				const imported = registry.import({ schemaVersion: 1, exportedAt: this.now(), records: before });
+				if (!imported.ok) return imported as ResultValue<T, FoundationError>;
+				const next = operation(registry);
+				if (!next.ok) return next;
+				const after = registry.list({ includeTombstones: true });
+				if (!after.ok) return after as ResultValue<T, FoundationError>;
+				await this.persistChanged(beforeFacts, after.value);
 				return next;
 			} catch (error) {
-				this.registry.import({ schemaVersion: 1, exportedAt: this.now(), records: previous.value });
-				return Result.err(toFoundationError(error, "role_registry_persistence_failed"));
+				return resultError<T>(error, "role_registry_persistence_failed");
 			}
 		});
 		this.mutationTail = result.then(() => undefined, () => undefined);
 		return result;
 	}
 
-	private async persist(): Promise<void> {
-		const records = this.registry.list({ includeTombstones: true });
-		if (!records.ok) throw records.error;
-		const snapshot: RoleRegistrySnapshotV1 = { schemaVersion: 1, type: "snapshot", records: records.value };
-		await this.session.appendCustomEntry(ROLE_REGISTRY_CUSTOM_TYPE_V1, snapshot);
+	private async loadRegistry(): Promise<InMemoryRoleRegistryV1> {
+		const registry = new InMemoryRoleRegistryV1({ now: this.now });
+		const records = await this.loadRecords();
+		const imported = registry.import({ schemaVersion: 1, exportedAt: this.now(), records });
+		if (!imported.ok) throw imported.error;
+		return registry;
+	}
+
+	private async loadRecords(): Promise<readonly RoleRegistryRecordV1[]> {
+		return (await this.loadRecordFacts()).map((fact) => fact.payload);
+	}
+
+	private async loadRecordFacts(): Promise<readonly StoredRoleRecordV1[]> {
+		const records = await this.ledger.find({ kind: "fact", objectType: ROLE_REGISTRY_OBJECT_TYPE_V1, order: "oldestFirst" });
+		const latest: StoredRoleRecordV1[] = [];
+		for (const record of records) {
+			if (record.kind !== "fact") continue;
+			const checked = validateRoleRegistryRecordV1(record.payload);
+			if (!checked.ok) throw checked.error;
+			const existing = latest.findIndex((candidate) => candidate.payload.roleId === checked.value.roleId && candidate.payload.scope === checked.value.scope);
+			const stored = { payload: checked.value, revision: record.revision };
+			if (existing >= 0) latest[existing] = stored;
+			else latest.push(stored);
+		}
+		return latest;
+	}
+
+	private async persistChanged(before: readonly StoredRoleRecordV1[], after: readonly RoleRegistryRecordV1[]): Promise<void> {
+		for (const record of after) {
+			const previous = before.find((candidate) => candidate.payload.roleId === record.roleId && candidate.payload.scope === record.scope);
+			if (previous !== undefined && fingerprintFoundationValue(previous.payload).value === fingerprintFoundationValue(record).value) continue;
+			await this.ledger.appendFact(ROLE_REGISTRY_OBJECT_TYPE_V1, roleObjectId(record.roleId, record.scope), record, {
+				clientRequestId: `role-registry:${record.scope}:${record.roleId}:${record.currentRevision.revision}:${record.tombstone?.deletedRevision ?? "active"}`,
+				expectedRevision: previous?.revision ?? 0,
+				correlation: { roleId: record.roleId, roleRevisionId: record.currentRevision.roleRevisionId },
+			});
+		}
 	}
 }
 
 export const DurableRoleRegistry = DurableRoleRegistryV1;
-
-/** Custom Session entry used for the latest immutable Model Profile snapshot. */
-export const MODEL_PROFILE_CUSTOM_TYPE_V1 = "foundation.model_profile.v1";
-
-export interface ModelProfileSession {
-	findEntries(query: EntryQuery): Promise<readonly Entry[]>;
-	appendCustomEntry(customType: string, data?: unknown): Promise<string>;
-}
 
 export interface ModelProfileRecordV1 {
 	schemaVersion: 1;
@@ -152,98 +199,122 @@ export interface ModelProfileRecordV1 {
 export interface ModelProfilePutInputV1 { profile: ModelProfileV1; }
 export interface ModelProfileGetQueryV1 { modelProfileId: string; revision?: number; }
 
-const ModelProfileRecordV1Schema = Type.Object({ schemaVersion: Type.Literal(1), modelProfileId: Type.String({ minLength: 1 }), currentRevision: ModelProfileV1Schema, revisions: Type.Array(ModelProfileV1Schema) }, { additionalProperties: false });
-const ModelProfileSnapshotV1Schema = Type.Object({ schemaVersion: Type.Literal(1), type: Type.Literal("snapshot"), records: Type.Array(ModelProfileRecordV1Schema) }, { additionalProperties: false });
-interface ModelProfileSnapshotV1 { schemaVersion: 1; type: "snapshot"; records: readonly ModelProfileRecordV1[]; }
-
 /** Session-backed storage for secret-free, independently versioned ModelProfile revisions. */
 export class DurableModelProfileStoreV1 {
-	private readonly session: ModelProfileSession;
-	private readonly records = new Map<string, ModelProfileRecordV1>();
+	private readonly ledger: SessionLedgerV1;
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	private constructor(session: ModelProfileSession) { this.session = session; }
+	private constructor(session: Session, options: DurableRoleRegistryOptions) {
+		this.ledger = new SessionLedgerV1(session, { ownerId: options.ownerId });
+	}
 
-	static async create(session: ModelProfileSession): Promise<DurableModelProfileStoreV1> {
+	static async create(session: Session, options: DurableRoleRegistryOptions = {}): Promise<DurableModelProfileStoreV1> {
+		const store = new DurableModelProfileStoreV1(session, options);
 		try {
-			const store = new DurableModelProfileStoreV1(session);
-			const entries = await session.findEntries({ customType: MODEL_PROFILE_CUSTOM_TYPE_V1, order: "oldestFirst" });
-			for (const entry of entries) {
-				if (entry.type !== "custom" || entry.customType !== MODEL_PROFILE_CUSTOM_TYPE_V1) continue;
-				const snapshot = validateExactShape<ModelProfileSnapshotV1>(ModelProfileSnapshotV1Schema, entry.data, "model_profile_snapshot", "model_profile_persistence_invalid");
-				if (!snapshot.ok) throw snapshot.error;
-				store.records.clear();
-				for (const record of snapshot.value.records) {
-					const current = validateSecretFreeModelProfileV1(record.currentRevision);
-					if (!current.ok || current.value.modelProfileId !== record.modelProfileId) throw new FoundationError("model_profile_persistence_invalid", "Model Profile snapshot identity is invalid");
-					for (const revision of record.revisions) {
-						const checked = validateSecretFreeModelProfileV1(revision);
-						if (!checked.ok || checked.value.modelProfileId !== record.modelProfileId) throw new FoundationError("model_profile_persistence_invalid", "Model Profile snapshot revision is invalid");
-					}
-					store.records.set(record.modelProfileId, cloneDeepFrozen(record));
-				}
-			}
+			await store.loadRecords();
 			return store;
 		} catch (error) {
-			throw toFoundationError(error, "model_profile_persistence_invalid");
+			throw error instanceof DurableLedgerError ? new FoundationError(error.code, error.message, { cause: error }) : toFoundationError(error, "model_profile_persistence_invalid");
 		}
 	}
 
 	async register(input: ModelProfilePutInputV1): Promise<ResultValue<ModelProfileV1, FoundationError>> {
-		return this.mutate(() => {
-			const checked = validateSecretFreeModelProfileV1(input.profile);
-			if (!checked.ok) return checked;
-			const profile = checked.value;
-			const existing = this.records.get(profile.modelProfileId);
-			if (existing === undefined) {
-				this.records.set(profile.modelProfileId, cloneDeepFrozen({ schemaVersion: 1, modelProfileId: profile.modelProfileId, currentRevision: profile, revisions: [profile] }));
-				return Result.ok(profile);
-			}
-			const same = existing.revisions.find((revision) => revision.revision === profile.revision);
-			if (same !== undefined) return same.fingerprint.value === profile.fingerprint.value ? Result.ok(cloneDeepFrozen(same)) : Result.err(new FoundationError("profile_conflict", "Model Profile revision is immutable", { details: { modelProfileId: profile.modelProfileId, revision: profile.revision } }));
-			if (profile.revision !== existing.currentRevision.revision + 1) return Result.err(new FoundationError("role_revision_immutable", "Model Profile revisions must be appended in order", { details: { modelProfileId: profile.modelProfileId, revision: profile.revision } }));
-			const next = cloneDeepFrozen({ ...existing, currentRevision: profile, revisions: [...existing.revisions, profile] });
-			this.records.set(profile.modelProfileId, next);
-			return Result.ok(profile);
-		});
-	}
-
-	async get(query: ModelProfileGetQueryV1): Promise<ResultValue<ModelProfileV1, FoundationError>> {
-		await this.mutationTail;
-		const record = this.records.get(query.modelProfileId);
-		if (record === undefined) return Result.err(new FoundationError("model_profile_not_found", "Model Profile is not registered", { details: { modelProfileId: query.modelProfileId } }));
-		if (query.revision === undefined) return Result.ok(cloneDeepFrozen(record.currentRevision));
-		const revision = record.revisions.find((candidate) => candidate.revision === query.revision);
-		return revision === undefined ? Result.err(new FoundationError("model_profile_not_found", "Model Profile revision is not registered", { details: { modelProfileId: query.modelProfileId, revision: query.revision } })) : Result.ok(cloneDeepFrozen(revision));
-	}
-
-	async list(): Promise<readonly ModelProfileRecordV1[]> {
-		await this.mutationTail;
-		return [...this.records.values()].sort((left, right) => left.modelProfileId.localeCompare(right.modelProfileId)).map((record) => cloneDeepFrozen(record));
-	}
-
-	private mutate<T>(operation: () => ResultValue<T, FoundationError>): Promise<ResultValue<T, FoundationError>> {
 		const result = this.mutationTail.then(async () => {
-			const previous = new Map(this.records);
-			const next = operation();
-			if (!next.ok) return next;
 			try {
-				await this.persist();
-				return next;
+				const existingFact = await this.loadRecordFact(input.profile.modelProfileId);
+				const existing = existingFact?.payload;
+				const checked = validateSecretFreeModelProfileV1(input.profile);
+				if (!checked.ok) return checked;
+				const profile = checked.value;
+				if (existing === undefined) {
+					const record: ModelProfileRecordV1 = { schemaVersion: 1, modelProfileId: profile.modelProfileId, currentRevision: profile, revisions: [profile] };
+					await this.persist(record, 0);
+					return Result.ok(profile);
+				}
+				const same = existing.revisions.find((revision) => revision.revision === profile.revision);
+				if (same !== undefined) return same.fingerprint.value === profile.fingerprint.value ? Result.ok(cloneDeepFrozen(same)) : Result.err(new FoundationError("profile_conflict", "Model Profile revision is immutable", { details: { modelProfileId: profile.modelProfileId, revision: profile.revision } }));
+				if (profile.revision !== existing.currentRevision.revision + 1) return Result.err(new FoundationError("role_revision_immutable", "Model Profile revisions must be appended in order", { details: { modelProfileId: profile.modelProfileId, revision: profile.revision } }));
+				const next: ModelProfileRecordV1 = { ...existing, currentRevision: profile, revisions: [...existing.revisions, profile] };
+				await this.persist(next, existingFact?.revision ?? 0);
+				return Result.ok(profile);
 			} catch (error) {
-				this.records.clear();
-				for (const [key, record] of previous) this.records.set(key, record);
-				return Result.err(toFoundationError(error, "model_profile_persistence_failed"));
+				return resultError<ModelProfileV1>(error, "model_profile_persistence_failed");
 			}
 		});
 		this.mutationTail = result.then(() => undefined, () => undefined);
 		return result;
 	}
 
-	private async persist(): Promise<void> {
-		const snapshot: ModelProfileSnapshotV1 = { schemaVersion: 1, type: "snapshot", records: [...this.records.values()].sort((left, right) => left.modelProfileId.localeCompare(right.modelProfileId)) };
-		await this.session.appendCustomEntry(MODEL_PROFILE_CUSTOM_TYPE_V1, snapshot);
+	async get(query: ModelProfileGetQueryV1): Promise<ResultValue<ModelProfileV1, FoundationError>> {
+		await this.mutationTail;
+		try {
+			const record = await this.loadRecord(query.modelProfileId);
+			if (record === undefined) return Result.err(new FoundationError("model_profile_not_found", "Model Profile is not registered", { details: { modelProfileId: query.modelProfileId } }));
+			if (query.revision === undefined) return Result.ok(cloneDeepFrozen(record.currentRevision));
+			const revision = record.revisions.find((candidate) => candidate.revision === query.revision);
+			return revision === undefined ? Result.err(new FoundationError("model_profile_not_found", "Model Profile revision is not registered", { details: { modelProfileId: query.modelProfileId, revision: query.revision } })) : Result.ok(cloneDeepFrozen(revision));
+		} catch (error) {
+			return resultError(error, "model_profile_persistence_invalid");
+		}
 	}
+
+	async list(): Promise<readonly ModelProfileRecordV1[]> {
+		await this.mutationTail;
+		const records = await this.loadRecords();
+		return records.sort((left, right) => left.modelProfileId.localeCompare(right.modelProfileId)).map((record) => cloneDeepFrozen(record));
+	}
+
+	async release(): Promise<void> { await this.ledger.release(); }
+
+	private async loadRecord(modelProfileId: string): Promise<ModelProfileRecordV1 | undefined> {
+		return (await this.loadRecordFact(modelProfileId))?.payload;
+	}
+
+	private async loadRecords(): Promise<ModelProfileRecordV1[]> {
+		return (await this.loadRecordFacts()).map((fact) => fact.payload);
+	}
+
+	private async loadRecordFacts(): Promise<readonly { readonly payload: ModelProfileRecordV1; readonly revision: number }[]> {
+		const facts = await this.ledger.find({ kind: "fact", objectType: MODEL_PROFILE_OBJECT_TYPE_V1, order: "oldestFirst" });
+		const records: { readonly payload: ModelProfileRecordV1; readonly revision: number }[] = [];
+		for (const fact of facts) {
+			if (fact.kind !== "fact") continue;
+			const checked = validateModelProfileRecord(fact.payload);
+			const existing = records.findIndex((record) => record.payload.modelProfileId === checked.modelProfileId);
+			const stored = { payload: checked, revision: fact.revision };
+			if (existing >= 0) records[existing] = stored;
+			else records.push(stored);
+		}
+		return records;
+	}
+
+	private async loadRecordFact(modelProfileId: string): Promise<{ readonly payload: ModelProfileRecordV1; readonly revision: number } | undefined> {
+		const records = await this.loadRecordFacts();
+		return records.find((record) => record.payload.modelProfileId === modelProfileId);
+	}
+
+	private async persist(record: ModelProfileRecordV1, expectedRevision: number): Promise<void> {
+		await this.ledger.appendFact(MODEL_PROFILE_OBJECT_TYPE_V1, record.modelProfileId, record, {
+			clientRequestId: `model-profile:${record.modelProfileId}:${record.currentRevision.revision}`,
+			expectedRevision,
+			correlation: { modelProfileId: record.modelProfileId, modelProfileRevisionId: record.currentRevision.modelProfileId },
+		});
+	}
+}
+
+function validateModelProfileRecord(payload: unknown): ModelProfileRecordV1 {
+	if (typeof payload !== "object" || payload === null) throw new FoundationError("model_profile_persistence_invalid", "Model Profile record is not an object");
+	const candidate = payload as Record<string, unknown>;
+	if (candidate.schemaVersion !== 1 || typeof candidate.modelProfileId !== "string" || !Array.isArray(candidate.revisions)) throw new FoundationError("model_profile_persistence_invalid", "Model Profile record shape is invalid");
+	const current = validateSecretFreeModelProfileV1(candidate.currentRevision);
+	if (!current.ok || current.value.modelProfileId !== candidate.modelProfileId) throw new FoundationError("model_profile_persistence_invalid", "Model Profile record identity is invalid");
+	const revisions: ModelProfileV1[] = [];
+	for (const revision of candidate.revisions) {
+		const checked = validateSecretFreeModelProfileV1(revision);
+		if (!checked.ok || checked.value.modelProfileId !== candidate.modelProfileId) throw new FoundationError("model_profile_persistence_invalid", "Model Profile revision identity is invalid");
+		revisions.push(checked.value);
+	}
+	return { schemaVersion: 1, modelProfileId: candidate.modelProfileId, currentRevision: current.value, revisions };
 }
 
 export const DurableModelProfileStore = DurableModelProfileStoreV1;

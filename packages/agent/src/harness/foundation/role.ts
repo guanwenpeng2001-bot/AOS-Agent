@@ -4,7 +4,7 @@ import type { BudgetV1 } from "./budget.ts";
 import { FoundationError } from "./errors.ts";
 import { CapabilitySelectorV1Schema, ResourceSelectorV1Schema, RevisionReferenceV1Schema, VersionedReferenceV1Schema, type CapabilitySelectorV1, type ResourceSelectorV1, type RevisionReferenceV1, type VersionedReferenceV1 } from "./reference.ts";
 import { LineageV1Schema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
-import { FOUNDATION_SCHEMA_VERSION, type FingerprintV1, fingerprintFoundationValue, type FoundationLineageV1 } from "./identity.ts";
+import { FOUNDATION_SCHEMA_VERSION, canonicalFoundationJson, type FingerprintV1, fingerprintFoundationValue, type FoundationLineageV1 } from "./identity.ts";
 import type { TaskEnvelopeV1 } from "./task.ts";
 
 export type RoleScopeV1 = "global" | "project";
@@ -39,9 +39,13 @@ export type SourceTraceV1 = BindingSourceTraceV1;
 export interface BindingConflictV1 { field: string; source: BindingSourceTraceV1; conflictsWith: BindingSourceTraceV1; }
 export interface AgentBindingV1 {
 	schemaVersion: 1; bindingId: string; taskId: string; goalId?: string;
-	/** All revision references below are required so a binding never points at mutable defaults. */
+	/** All four runtime binding facts are immutable references; none has a synthetic fallback. */
 	roleRevision: RevisionReferenceV1; modelProfileRevision: RevisionReferenceV1; modelRoute: ModelRouteV1;
-	contextRevision: RevisionReferenceV1; capabilityRevision: RevisionReferenceV1; policyRevision: RevisionReferenceV1;
+	/** External-Agent Binding is retained under the historical contextRevision field for wire stability. */
+	contextRevision: RevisionReferenceV1;
+	capabilityRevision: RevisionReferenceV1;
+	modelBrokerBindingRevision: RevisionReferenceV1;
+	policyRevision: RevisionReferenceV1;
 	capabilitySelector: CapabilitySelectorV1; budget: BudgetV1; sourceTrace: readonly BindingSourceTraceV1[]; conflicts: readonly BindingConflictV1[]; fingerprint: FingerprintV1; resolvedAt: string;
 }
 export type AgentBinding = AgentBindingV1;
@@ -84,19 +88,67 @@ export function createRoleRevision(input: CreateRoleRevisionInput): RoleRevision
 	return deepFreeze({ ...snapshot, fingerprint: fingerprintFoundationValue(snapshot) });
 }
 
-export interface ResolveAgentBindingInput { task: TaskEnvelopeV1; roleRevision: RoleRevisionV1; modelProfile: ModelProfileV1; modelRoute?: ModelRouteV1; contextRevision?: RevisionReferenceV1; capabilityRevision?: RevisionReferenceV1; policyRevision?: RevisionReferenceV1; policyRevisionIds?: readonly string[]; sourceTrace?: readonly BindingSourceTraceV1[]; conflicts?: readonly BindingConflictV1[]; goalId?: string; newBindingId: string; now?: () => string; }
+export interface ResolveAgentBindingInput {
+	task: TaskEnvelopeV1;
+	roleRevision: RoleRevisionV1;
+	modelProfile: ModelProfileV1;
+	modelRoute?: ModelRouteV1;
+	/** Existing External-Agent Binding revision (historically named contextRevision). */
+	contextRevision?: RevisionReferenceV1;
+	capabilityRevision?: RevisionReferenceV1;
+	modelBrokerBindingRevision?: RevisionReferenceV1;
+	policyRevision?: RevisionReferenceV1;
+	/** Explicit alias used by callers that use the entity name rather than the legacy field. */
+	externalAgentBindingRevision?: RevisionReferenceV1;
+	sourceTrace?: readonly BindingSourceTraceV1[];
+	conflicts?: readonly BindingConflictV1[];
+	goalId?: string;
+	newBindingId: string;
+	now?: () => string;
+}
+
+const REQUIRED_BINDING_FACTS = [
+	["contextRevision", "external_agent_binding"],
+	["capabilityRevision", "capability_binding"],
+	["modelBrokerBindingRevision", "model_broker_binding"],
+	["policyRevision", "policy_binding"],
+] as const;
+
+function requireBindingFact(reference: RevisionReferenceV1 | undefined, field: string, type: string): ResultValue<RevisionReferenceV1, FoundationError> {
+	if (reference === undefined || reference.id.length === 0 || reference.revision < 1 || reference.fingerprint === undefined) {
+		return Result.err(new FoundationError("binding_required_fact", `AgentBinding requires an existing immutable ${field} revision`, { details: { field, type } }));
+	}
+	if (reference.type !== type) {
+		return Result.err(new FoundationError("binding_required_fact", `AgentBinding ${field} reference has the wrong immutable fact type`, { details: { field, expectedType: type, actualType: reference.type } }));
+	}
+	return Result.ok({ ...reference });
+}
+
 export function resolveAgentBinding(input: ResolveAgentBindingInput): ResultValue<AgentBindingV1, FoundationError> {
 	if (!input.task?.taskId) return Result.err(new FoundationError("role_resolver_task_required", "AgentBinding resolution requires a persisted task envelope", { details: { newBindingId: input.newBindingId } }));
-	const toRevisionReference = (reference: VersionedReferenceV1, fallbackType: string): RevisionReferenceV1 => ({ schemaVersion: 1, type: reference.type || fallbackType, id: reference.id, revision: reference.revision ?? 1, ...(reference.fingerprint === undefined ? {} : { fingerprint: reference.fingerprint }), ...(reference.providerId === undefined ? {} : { providerId: reference.providerId }) });
-	const contextRevision = input.contextRevision ?? (input.roleRevision.contextPolicyRef === undefined ? { schemaVersion: 1 as const, type: "context_revision", id: `context:none:${input.task.taskId}`, revision: 1 } : toRevisionReference(input.roleRevision.contextPolicyRef, "context_revision"));
-	const capabilityRevision = input.capabilityRevision ?? { schemaVersion: 1 as const, type: "capability_revision", id: `capability:${input.task.taskId}`, revision: 1, fingerprint: fingerprintFoundationValue(input.task.capabilityRefs) };
-	const policyRevision = input.policyRevision ?? (input.policyRevisionIds?.[0] === undefined ? (input.roleRevision.executionPolicyRef === undefined ? { schemaVersion: 1 as const, type: "policy_revision", id: `policy:none:${input.task.taskId}`, revision: 1 } : toRevisionReference(input.roleRevision.executionPolicyRef, "policy_revision")) : { schemaVersion: 1 as const, type: "policy_revision", id: input.policyRevisionIds[0], revision: input.roleRevision.revision });
+	if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return Result.err(new FoundationError("binding_required_fact", "AgentBinding received conflicting External-Agent Binding aliases", { details: { newBindingId: input.newBindingId } }));
+	const contextRevision = input.externalAgentBindingRevision ?? input.contextRevision;
+	const requiredFacts: Record<(typeof REQUIRED_BINDING_FACTS)[number][0], RevisionReferenceV1 | undefined> = {
+		contextRevision,
+		capabilityRevision: input.capabilityRevision,
+		modelBrokerBindingRevision: input.modelBrokerBindingRevision,
+		policyRevision: input.policyRevision,
+	};
+	const resolvedFacts: Partial<Record<(typeof REQUIRED_BINDING_FACTS)[number][0], RevisionReferenceV1>> = {};
+	for (const [field, type] of REQUIRED_BINDING_FACTS) {
+		const checked = requireBindingFact(requiredFacts[field], field, type);
+		if (!checked.ok) return checked;
+		resolvedFacts[field] = checked.value;
+	}
 	const base = {
 		schemaVersion: 1 as const, bindingId: input.newBindingId, taskId: input.task.taskId, goalId: input.goalId ?? input.task.goalId,
 		roleRevision: { schemaVersion: 1 as const, type: "role_revision", id: input.roleRevision.roleRevisionId, revision: input.roleRevision.revision, fingerprint: input.roleRevision.fingerprint },
 		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision", id: input.modelProfile.modelProfileId, revision: input.modelProfile.revision, fingerprint: input.modelProfile.fingerprint },
 		modelRoute: input.modelRoute ?? { provider: input.modelProfile.provider, model: input.modelProfile.model, ...(input.modelProfile.effort === undefined ? {} : { effort: input.modelProfile.effort }), ...(input.modelProfile.serviceTier === undefined ? {} : { serviceTier: input.modelProfile.serviceTier }) },
-		contextRevision, capabilityRevision, policyRevision,
+		contextRevision: resolvedFacts.contextRevision!,
+		capabilityRevision: resolvedFacts.capabilityRevision!,
+		modelBrokerBindingRevision: resolvedFacts.modelBrokerBindingRevision!,
+		policyRevision: resolvedFacts.policyRevision!,
 		capabilitySelector: { ...input.roleRevision.capabilitySelector }, budget: { ...input.task.budget }, sourceTrace: [...(input.sourceTrace ?? [])], conflicts: [...(input.conflicts ?? [])], resolvedAt: (input.now ?? (() => new Date().toISOString()))(),
 	};
 	return Result.ok(deepFreeze({ ...base, fingerprint: fingerprintFoundationValue(base) }));
@@ -131,7 +183,7 @@ export const RoleDefinitionV1Schema = Type.Object({ schemaVersion: Type.Literal(
 export const RoleRevisionV1Schema = Type.Object({ schemaVersion: Type.Literal(1), roleRevisionId: Type.String({ minLength: 1 }), roleId: Type.String({ minLength: 1 }), scope: Type.Union([Type.Literal("global"), Type.Literal("project")]), revision: Type.Integer({ minimum: 0 }), slug: Type.String({ minLength: 1 }), name: Type.String(), description: Type.String(), whenToUse: Type.Optional(Type.String()), persona: Type.String(), customInstructions: Type.Optional(Type.String()), modelProfileRef: VersionedReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, skillSelector: ResourceSelectorV1Schema, mcpSelector: ResourceSelectorV1Schema, contextPolicyRef: Type.Optional(VersionedReferenceV1Schema), memoryPolicyRef: Type.Optional(VersionedReferenceV1Schema), executionPolicyRef: Type.Optional(VersionedReferenceV1Schema), resultPolicyRef: Type.Optional(VersionedReferenceV1Schema), overridesRoleId: Type.Optional(Type.String({ minLength: 1 })), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }), createdAt: Type.String({ minLength: 1 }), previousRoleRevisionId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ModelProfileV1Schema = Type.Object({ schemaVersion: Type.Literal(1), modelProfileId: Type.String({ minLength: 1 }), name: Type.Optional(Type.String()), provider: Type.String({ minLength: 1 }), model: Type.String({ minLength: 1 }), effort: Type.Optional(Type.String({ minLength: 1 })), serviceTier: Type.Optional(Type.String({ minLength: 1 })), fallback: Type.Optional(Type.Array(Type.Object({ provider: Type.String({ minLength: 1 }), model: Type.String({ minLength: 1 }) }, { additionalProperties: false }))), budget: budgetSchema, revision: Type.Integer({ minimum: 0 }), createdAt: Type.String({ minLength: 1 }), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
 export const ModelRouteV1Schema = Type.Object({ provider: Type.String({ minLength: 1 }), model: Type.String({ minLength: 1 }), effort: Type.Optional(Type.String({ minLength: 1 })), serviceTier: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
-export const AgentBindingV1Schema = Type.Object({ schemaVersion: Type.Literal(1), bindingId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), goalId: Type.Optional(Type.String({ minLength: 1 })), roleRevision: RevisionReferenceV1Schema, modelProfileRevision: RevisionReferenceV1Schema, modelRoute: ModelRouteV1Schema, contextRevision: RevisionReferenceV1Schema, capabilityRevision: RevisionReferenceV1Schema, policyRevision: RevisionReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, budget: budgetSchema, sourceTrace: Type.Array(traceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: traceSchema, conflictsWith: traceSchema }, { additionalProperties: false })), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }), resolvedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+export const AgentBindingV1Schema = Type.Object({ schemaVersion: Type.Literal(1), bindingId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), goalId: Type.Optional(Type.String({ minLength: 1 })), roleRevision: RevisionReferenceV1Schema, modelProfileRevision: RevisionReferenceV1Schema, modelRoute: ModelRouteV1Schema, contextRevision: RevisionReferenceV1Schema, capabilityRevision: RevisionReferenceV1Schema, modelBrokerBindingRevision: RevisionReferenceV1Schema, policyRevision: RevisionReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, budget: budgetSchema, sourceTrace: Type.Array(traceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: traceSchema, conflictsWith: traceSchema }, { additionalProperties: false })), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }), resolvedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
 export const BindingEpochV1Schema = Type.Object({ schemaVersion: Type.Literal(1), bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), attemptId: Type.String({ minLength: 1 }), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), bindingId: Type.String({ minLength: 1 }), ordinal: Type.Integer({ minimum: 0 }), previousBindingEpochId: Type.Optional(Type.String({ minLength: 1 })), activationReason: Type.Union([Type.Literal("attempt_started"), Type.Literal("mode_switch"), Type.Literal("policy_rebind")]), activatedByCommandId: Type.String({ minLength: 1 }), activatedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
 export const AgentInstanceV1Schema = Type.Object({ schemaVersion: Type.Literal(1), agentInstanceId: Type.String({ minLength: 1 }), providerId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), roleRevision: VersionedReferenceV1Schema, bindingEpochIds: Type.Array(Type.String({ minLength: 1 })), status: Type.Union([Type.Literal("starting"), Type.Literal("active"), Type.Literal("suspended"), Type.Literal("stopped")]), lineage: LineageV1Schema, createdAt: Type.String({ minLength: 1 }), updatedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
 export function validateRoleDefinitionV1(value: unknown): ResultValue<RoleDefinitionV1, FoundationError> { return validateExactShape<RoleDefinitionV1>(RoleDefinitionV1Schema, value, "role_definition"); }
@@ -143,7 +195,26 @@ export function parseRoleRevisionV1(text: string): ResultValue<RoleRevisionV1, F
 export function validateModelProfileV1(value: unknown): ResultValue<ModelProfileV1, FoundationError> { return validateExactShape<ModelProfileV1>(ModelProfileV1Schema, value, "model_profile"); }
 export function serializeModelProfileV1(value: ModelProfileV1): string { return serializeExactShape(ModelProfileV1Schema, value, "model_profile"); }
 export function parseModelProfileV1(text: string): ResultValue<ModelProfileV1, FoundationError> { return parseExactShape(ModelProfileV1Schema, text, "model_profile"); }
-export function validateAgentBindingV1(value: unknown): ResultValue<AgentBindingV1, FoundationError> { return validateExactShape<AgentBindingV1>(AgentBindingV1Schema, value, "agent_binding"); }
+export function validateAgentBindingV1(value: unknown): ResultValue<AgentBindingV1, FoundationError> {
+	const checked = validateExactShape<AgentBindingV1>(AgentBindingV1Schema, value, "agent_binding");
+	if (!checked.ok) return checked;
+	const binding = checked.value;
+	const facts: readonly [string, RevisionReferenceV1, string][] = [
+		["roleRevision", binding.roleRevision, "role_revision"],
+		["modelProfileRevision", binding.modelProfileRevision, "model_profile_revision"],
+		["contextRevision", binding.contextRevision, "external_agent_binding"],
+		["capabilityRevision", binding.capabilityRevision, "capability_binding"],
+		["modelBrokerBindingRevision", binding.modelBrokerBindingRevision, "model_broker_binding"],
+		["policyRevision", binding.policyRevision, "policy_binding"],
+	];
+	for (const [field, reference, type] of facts) {
+		const fact = requireBindingFact(reference, field, type);
+		if (!fact.ok) return fact;
+	}
+	const { fingerprint, ...snapshot } = binding;
+	if (fingerprintFoundationValue(snapshot).value !== fingerprint.value) return Result.err(new FoundationError("profile_conflict", "AgentBinding fingerprint does not match immutable fields", { details: { bindingId: binding.bindingId } }));
+	return Result.ok(deepFreeze(binding));
+}
 export function serializeAgentBindingV1(value: AgentBindingV1): string { return serializeExactShape(AgentBindingV1Schema, value, "agent_binding"); }
 export function parseAgentBindingV1(text: string): ResultValue<AgentBindingV1, FoundationError> { return parseExactShape(AgentBindingV1Schema, text, "agent_binding"); }
 export function validateBindingEpochV1(value: unknown): ResultValue<BindingEpochV1, FoundationError> { return validateExactShape<BindingEpochV1>(BindingEpochV1Schema, value, "binding_epoch"); }

@@ -32,6 +32,7 @@ import {
 	redactProjection,
 	redactFoundationError,
 	resolveAgentBinding,
+	resolveRoleResolutionV1,
 	settleTaskResult,
 	validateAttemptReceipt,
 	validateAgentBindingV1,
@@ -90,6 +91,7 @@ import {
 	type SandboxOperationProvider,
 	type SandboxOperationRequestV1,
 	type ModelProfileV1,
+	type RevisionReferenceV1,
 	type TaskEnvelopeV1,
 	type TaskExecutorProvider,
 	type SchedulerTaskExecutorProvider,
@@ -158,6 +160,20 @@ function roleRevision() {
 	});
 }
 
+function immutableBindingFact(type: string, id: string, revision = 1): RevisionReferenceV1 {
+	const payload = { schemaVersion: 1 as const, type, id, revision };
+	return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
+}
+
+function bindingFacts(): { contextRevision: RevisionReferenceV1; capabilityRevision: RevisionReferenceV1; modelBrokerBindingRevision: RevisionReferenceV1; policyRevision: RevisionReferenceV1 } {
+	return {
+		contextRevision: immutableBindingFact("external_agent_binding", "external-1"),
+		capabilityRevision: immutableBindingFact("capability_binding", "capability-1"),
+		modelBrokerBindingRevision: immutableBindingFact("model_broker_binding", "model-broker-1"),
+		policyRevision: immutableBindingFact("policy_binding", "policy-1"),
+	};
+}
+
 function receipt(status: AttemptReceiptV1["status"] = "succeeded"): AttemptReceiptV1 {
 	return {
 		schemaVersion: 1,
@@ -172,7 +188,7 @@ function receipt(status: AttemptReceiptV1["status"] = "succeeded"): AttemptRecei
 		status,
 		workerReceiptRefs: [],
 		artifacts: [artifact],
-		provenance: { producerKind: "agent_executor", providerId: "agent-provider", producedAt: "2026-01-01T00:00:00.000Z" },
+		provenance: { producerKind: "agent_executor", providerId: "agent-provider", producedAt: "2026-01-01T00:00:00.000Z", correlation: { sessionId: "session-1", laneId: "main", taskId: "task-1", dispatchId: "dispatch-1", attemptId: "attempt-1", bindingId: "binding-1", bindingEpochId: "epoch-1", attemptReceiptId: "attempt-receipt-1", revision: 1 } },
 		sideEffectState: "none",
 	};
 }
@@ -320,7 +336,7 @@ describe("Foundation events, protocol, and observer continuity", () => {
 describe("task, binding, provider, and result invariants", () => {
 	it("requires a persisted task before binding resolution and freezes role revisions", () => {
 		const revision = roleRevision();
-		const binding = resolveAgentBinding({ task, roleRevision: revision, modelProfile: fakeModelProfile(), newBindingId: "binding-1" });
+		const binding = resolveAgentBinding({ task, roleRevision: revision, modelProfile: fakeModelProfile(), ...bindingFacts(), newBindingId: "binding-1" });
 		expect(binding.ok).toBe(true);
 		if (binding.ok) expect(Object.isFrozen(binding.value)).toBe(true);
 		const next = createRoleRevision({ definition: { schemaVersion: 1, roleId: "role-1", scope: "project", slug: "worker", name: "Worker", description: "Runs the task", revision: 1, persona: "You run the task.", modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile-1", revision: 1 }, capabilitySelector: { policy: "all" }, skillSelector: { policy: "none" }, mcpSelector: { policy: "none" } }, previous: revision, now: () => "2026-01-01T00:00:01.000Z" });
@@ -335,11 +351,11 @@ describe("task, binding, provider, and result invariants", () => {
 	});
 
 	it("keeps WorkerReceipt, AttemptReceipt, TaskResult, and RunReceipt as four authorities", () => {
-		const worker: WorkerReceiptV1 = { schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "none", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: "2026-01-01T00:00:00.000Z" }, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z" };
+		const worker: WorkerReceiptV1 = { schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "none", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: "2026-01-01T00:00:00.000Z", correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z" };
 		expect(validateWorkerReceipt({ ...worker, agentInstanceId: "not-allowed" })).toMatchObject({ ok: false });
 		expect(validateWorkerReceipt(worker)).toMatchObject({ ok: true });
 		expect(validateAttemptReceipt(receipt(), { agentProvider: true })).toMatchObject({ ok: true });
-		const result = settleTaskResult({ task, taskResultId: "task-result-1", receipts: [receipt()], summary: "done", artifacts: [artifact], tests: [{ name: "contract", required: true, status: "passed", evidenceRefs: [artifact] }], evidence: [{ schemaVersion: 1, factId: "fact-1", criterionId: "criterion-1", outcome: "satisfied", evidenceRefs: [artifact], recordedAt: "2026-01-01T00:00:00.000Z" }], producer: { producerKind: "host", providerId: "host", producedAt: "2026-01-01T00:00:00.000Z" } });
+		const result = settleTaskResult({ task, taskResultId: "task-result-1", receipts: [receipt()], summary: "done", artifacts: [artifact], tests: [{ name: "contract", required: true, status: "passed", evidenceRefs: [artifact] }], evidence: [{ schemaVersion: 1, factId: "fact-1", criterionId: "criterion-1", outcome: "satisfied", evidenceRefs: [artifact], recordedAt: "2026-01-01T00:00:00.000Z" }], producer: { producerKind: "host", providerId: "host", producedAt: "2026-01-01T00:00:00.000Z", correlation: { sessionId: "session-1", laneId: "main", taskId: "task-1", taskResultId: "task-result-1", revision: 1 } } });
 		expect(result).toMatchObject({ ok: true, value: { taskResultId: "task-result-1" } });
 		if (result.ok) expect(finalizeRunReceipt({ runReceiptId: "run-1", runId: "run-1", terminalStatus: "completed", authority: createHostTerminalGateAuthorityV1("host"), taskResult: result.value, attemptReceiptIds: [receipt().attemptReceiptId] })).toMatchObject({ ok: true, value: { taskResultId: "task-result-1" } });
 	});
@@ -353,7 +369,7 @@ describe("task, binding, provider, and result invariants", () => {
 			artifacts: [artifact],
 			tests: [{ name: "required", required: true, status: "passed" as const, evidenceRefs: [artifact] }],
 			evidence: [{ schemaVersion: 1 as const, factId: "fact-1", criterionId: "criterion-1", outcome: "satisfied" as const, evidenceRefs: [artifact], recordedAt: fakeNow }],
-			producer: { producerKind: "host" as const, providerId: "host", producedAt: fakeNow },
+			producer: { producerKind: "host" as const, providerId: "host", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", taskId: "task-1", taskResultId: "task-result-strict", revision: 1 } },
 		};
 		expect(settleTaskResult({ ...validInput, receipts: [] }).ok).toBe(false);
 		expect(settleTaskResult({ ...validInput, artifacts: [] }).ok).toBe(false);
@@ -390,7 +406,7 @@ function fakeModelProfile(): ModelProfileV1 {
 }
 
 function fakeBinding(): AgentBindingV1 {
-	const result = resolveAgentBinding({ task, roleRevision: roleRevision(), modelProfile: fakeModelProfile(), newBindingId: "binding-1", now: () => fakeNow });
+	const result = resolveAgentBinding({ task, roleRevision: roleRevision(), modelProfile: fakeModelProfile(), ...bindingFacts(), newBindingId: "binding-1", now: () => fakeNow });
 	if (!result.ok) throw result.error;
 	return result.value;
 }
@@ -413,7 +429,7 @@ class FakeSandboxOperationProvider implements SandboxOperationProvider {
 	readonly providerClass = "operation_worker" as const;
 	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [fakeProviderCapability]; }
 	async start(request: SandboxOperationRequestV1) {
-		return { ok: true as const, value: { schemaVersion: 1 as const, workerReceiptId: "worker-receipt-11", sandboxProviderId: this.providerId, operationId: request.operationId, status: "succeeded" as const, sideEffectState: "none" as const, provenance: { producerKind: "operation_worker" as const, providerId: this.providerId, producedAt: fakeNow }, startedAt: fakeNow, completedAt: fakeNow } satisfies WorkerReceiptV1 };
+		return { ok: true as const, value: { schemaVersion: 1 as const, workerReceiptId: "worker-receipt-11", sandboxProviderId: this.providerId, operationId: request.operationId, status: "succeeded" as const, sideEffectState: "none" as const, provenance: { producerKind: "operation_worker" as const, providerId: this.providerId, producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow } satisfies WorkerReceiptV1 };
 	}
 	async cancel(_operationId: string) { return Result.ok(undefined); }
 	async dispose() {}
@@ -442,7 +458,7 @@ class FakeSchedulerTaskExecutor implements SchedulerTaskExecutorProvider {
 		return Result.ok(fakeAgentAttempt(this.providerId, dispatch.taskId, dispatch.bindingId, undefined, "scheduler").attempt);
 	}
 	async runAttempt(attempt: AttemptV1) {
-		return Result.ok<AttemptReceiptV1>({ schemaVersion: 1, attemptReceiptId: "attempt-receipt-12b", taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, ...(attempt.agentInstanceId === undefined ? {} : { agentInstanceId: attempt.agentInstanceId }), bindingId: attempt.bindingId, bindingEpochIds: attempt.bindingEpochIds, status: "succeeded", workerReceiptRefs: [], artifacts: [artifact], provenance: { producerKind: "scheduler", providerId: this.providerId, producedAt: fakeNow }, sideEffectState: "none" });
+		return Result.ok<AttemptReceiptV1>({ schemaVersion: 1, attemptReceiptId: "attempt-receipt-12b", taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, ...(attempt.agentInstanceId === undefined ? {} : { agentInstanceId: attempt.agentInstanceId }), bindingId: attempt.bindingId, bindingEpochIds: attempt.bindingEpochIds, status: "succeeded", workerReceiptRefs: [], artifacts: [artifact], provenance: { producerKind: "scheduler", providerId: this.providerId, producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: "attempt-receipt-12b", revision: 1 } }, sideEffectState: "none" });
 	}
 	async cancelAttempt(_attemptId: string) { return Result.ok(undefined); }
 	async dispose() {}
@@ -616,6 +632,24 @@ describe("T1 registry and identity query contracts", () => {
 		expect(validateRoleScopeTightening({ capabilitySelector: exceptAB, policySelector: exceptAB }, { capabilitySelector: exceptABC, policySelector: exceptABC }).ok).toBe(true);
 		expect(validateRoleScopeTightening({ capabilitySelector: exceptAB, policySelector: exceptAB }, { capabilitySelector: exceptAB, policySelector: { policy: "all" } }).ok).toBe(false);
 	});
+
+	it("applies managed/global selectors before a project role and binds project override sources", () => {
+		const projectRole = createRoleRevision({
+			definition: {
+				...roleRevision(),
+				capabilitySelector: { policy: "named", named: ["a"] },
+			},
+			now: () => fakeNow,
+		});
+		const layers = ROLE_RESOLUTION_ORDER_V1.map((layer, ordinal) => ({ schemaVersion: 1 as const, layer, ordinal, referenceId: `${layer}-ref`, revision: 1, overrideReason: "resolver-test" }));
+		const baseInput = { schemaVersion: 1 as const, task, roleId: "role-1", scope: "project" as const, modelProfile: fakeModelProfile(), orderedLayers: layers, ...bindingFacts(), roleRevision: projectRole };
+		const managedNarrowing = resolveRoleResolutionV1({ ...baseInput, overrides: [{ schemaVersion: 1, layer: "managed_lock", referenceId: "managed-lock", revision: 1, overrideReason: "lock", capabilitySelector: { policy: "named", named: ["a", "b"] } }] });
+		expect(managedNarrowing).toMatchObject({ ok: true, value: { capabilitySelector: { policy: "named", named: ["a"] } } });
+		const widenedProject = resolveRoleResolutionV1({ ...baseInput, overrides: [{ schemaVersion: 1, layer: "project", referenceId: "project-override", revision: 1, overrideReason: "widen", capabilitySelector: { policy: "all" } }] });
+		expect(widenedProject).toMatchObject({ ok: false, error: { code: "role_resolver_scope_widened" } });
+		const wrongProjectSource = resolveRoleResolutionV1({ ...baseInput, overrides: [{ schemaVersion: 1, layer: "project", referenceId: "wrong-role", revision: 1, overrideReason: "source", roleRevision: projectRole }] });
+		expect(wrongProjectSource).toMatchObject({ ok: false, error: { code: "role_resolver_conflict" } });
+	});
 });
 
 describe("provider-neutral compilation contracts", () => {
@@ -630,7 +664,7 @@ describe("provider-neutral compilation contracts", () => {
 		const requiredTaskFields = ["schemaVersion", "taskId", "goalId", "goal", "workspace", "capabilityRefs", "inputs", "expectedOutputs", "budget", "acceptanceCriteria", "status", "createdAt", "updatedAt"];
 		for (const field of requiredTaskFields) expect(validateTaskEnvelope(omit(task, field)).ok, `TaskEnvelope field ${field}`).toBe(false);
 		const binding = fakeBinding();
-		const requiredBindingFields = ["schemaVersion", "bindingId", "taskId", "roleRevision", "modelProfileRevision", "modelRoute", "contextRevision", "capabilityRevision", "policyRevision", "capabilitySelector", "budget", "sourceTrace", "conflicts", "fingerprint", "resolvedAt"];
+		const requiredBindingFields = ["schemaVersion", "bindingId", "taskId", "roleRevision", "modelProfileRevision", "modelRoute", "contextRevision", "capabilityRevision", "modelBrokerBindingRevision", "policyRevision", "capabilitySelector", "budget", "sourceTrace", "conflicts", "fingerprint", "resolvedAt"];
 		for (const field of requiredBindingFields) expect(validateAgentBindingV1(omit(binding, field)).ok, `AgentBinding field ${field}`).toBe(false);
 		const epoch = fakeAgentAttempt("shape", task.taskId, "binding-1").epoch;
 		const requiredEpochFields = ["schemaVersion", "bindingEpochId", "taskId", "attemptId", "bindingId", "ordinal", "activationReason", "activatedByCommandId", "activatedAt"];
@@ -644,7 +678,7 @@ describe("provider-neutral compilation contracts", () => {
 		expect(validateTaskEnvelope(omit(task, "description")).ok).toBe(true);
 		expect(validateTaskEnvelope(omit(task, "payload")).ok).toBe(true);
 		expect(validateTaskEnvelope(omit(task, "attempts")).ok).toBe(true);
-		expect(validateAgentBindingV1(omit(binding, "goalId")).ok).toBe(true);
+		expect(validateAgentBindingV1(omit(binding, "goalId")).ok).toBe(false);
 		expect(validateBindingEpochV1(omit(epoch, "agentInstanceId")).ok).toBe(true);
 		expect(validateAttemptReceipt(omit(receipt(), "error")).ok).toBe(true);
 	});
@@ -734,7 +768,7 @@ describe("provider-neutral compilation contracts", () => {
 		expect(isSideEffectRetryable("unknown", "idempotent")).toBe(true);
 		expect(isSideEffectRetryable("unknown", "non_idempotent")).toBe(false);
 		expect(isSideEffectRetryable("side_effect_unknown", "idempotent")).toBe(false);
-		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "side_effect_unknown", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(true);
-		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "idempotent", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(false);
+		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "side_effect_unknown", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(true);
+		expect(validateWorkerReceipt({ schemaVersion: 1, workerReceiptId: "worker-1", sandboxProviderId: "sandbox", operationId: "op-1", status: "succeeded", sideEffectState: "idempotent", provenance: { producerKind: "operation_worker", providerId: "sandbox", producedAt: fakeNow, correlation: { sessionId: "session-1", laneId: "main", revision: 1 } }, startedAt: fakeNow, completedAt: fakeNow }).ok).toBe(false);
 	});
 });

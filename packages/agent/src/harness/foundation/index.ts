@@ -21,6 +21,7 @@ export * from "./results.ts";
 export * from "./role.ts";
 export * from "./role-registry.ts";
 export * from "./role-registry-store.ts";
+export * from "./session-ledger.ts";
 export * from "./schema.ts";
 export * from "./settlement.ts";
 export * from "./service.ts";

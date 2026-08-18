@@ -2,7 +2,7 @@ import { Result, type Result as ResultValue } from "../result.ts";
 import { Type } from "typebox";
 import type { JsonValue } from "../session/types.ts";
 import { FoundationError, redactProjection } from "./errors.ts";
-import { fingerprintFoundationValue, newFoundationId, type FingerprintV1 } from "./identity.ts";
+import { canonicalFoundationJson, fingerprintFoundationValue, newFoundationId, type FingerprintV1 } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { AgentBindingV1Schema, ModelProfileV1Schema, ModelRouteV1Schema, RoleDefinitionV1Schema, RoleRevisionV1Schema, createRoleRevision, resolveAgentBinding, validateRoleDefinitionV1, type ModelProfileV1, type AgentBindingV1, type BindingConflictV1, type BindingSourceTraceV1, type RoleDefinitionV1, type RoleRevisionV1, type RoleScopeV1, type ModelRouteV1 } from "./role.ts";
 import { CapabilitySelectorV1Schema, ResourceSelectorV1Schema, RevisionReferenceV1Schema, selectorsNarrow, type CapabilitySelectorV1, type ResourceSelectorV1, type RevisionReferenceV1, type VersionedReferenceV1, VersionedReferenceV1Schema } from "./reference.ts";
@@ -22,6 +22,8 @@ export interface RoleResolutionOverrideV1 {
 	capabilitySelector?: CapabilitySelectorV1;
 	budget?: TaskEnvelopeV1["budget"];
 	contextRevision?: RevisionReferenceV1;
+	externalAgentBindingRevision?: RevisionReferenceV1;
+	modelBrokerBindingRevision?: RevisionReferenceV1;
 	policyRevision?: RevisionReferenceV1;
 }
 
@@ -59,6 +61,7 @@ export interface RoleResolutionPreviewV1 {
 	modelRoute: ModelRouteV1;
 	contextRevision: RevisionReferenceV1;
 	capabilityRevision: RevisionReferenceV1;
+	modelBrokerBindingRevision: RevisionReferenceV1;
 	policyRevision: RevisionReferenceV1;
 	capabilitySelector: CapabilitySelectorV1;
 	budget: TaskEnvelopeV1["budget"];
@@ -127,7 +130,9 @@ export interface RoleResolveInputV1 {
 	modelProfile: ModelProfileV1;
 	orderedLayers: readonly RoleResolutionLayerV1[];
 	contextRevision?: RevisionReferenceV1;
+	externalAgentBindingRevision?: RevisionReferenceV1;
 	capabilityRevision?: RevisionReferenceV1;
+	modelBrokerBindingRevision?: RevisionReferenceV1;
 	policyRevision?: RevisionReferenceV1;
 	overrides?: readonly RoleResolutionOverrideV1[];
 	bindingId?: string;
@@ -174,9 +179,9 @@ export const RoleRegistryDeleteInputV1Schema = Type.Object({ roleId: Type.String
 export const RoleRegistryImportV1Schema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordV1Schema) }, { additionalProperties: false });
 export const RoleRegistryExportQueryV1Schema = Type.Object({ scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
 export const RoleRegistryExportV1Schema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordV1Schema), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
-export const RoleResolutionOverrideV1Schema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER_V1.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), roleRevision: Type.Optional(RoleRevisionV1Schema), modelProfile: Type.Optional(ModelProfileV1Schema), modelRoute: Type.Optional(ModelRouteV1Schema), capabilitySelector: Type.Optional(CapabilitySelectorV1Schema), budget: Type.Optional(BudgetV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema) }, { additionalProperties: false });
-export const RoleResolveInputV1Schema = Type.Object({ schemaVersion: Type.Literal(1), task: TaskEnvelopeV1Schema, roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, modelProfile: ModelProfileV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), capabilityRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema), overrides: Type.Optional(Type.Array(RoleResolutionOverrideV1Schema)), bindingId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
-export const RoleResolutionPreviewV1Schema = Type.Object({ schemaVersion: Type.Literal(1), taskId: Type.String({ minLength: 1 }), roleId: Type.String({ minLength: 1 }), roleRevision: RevisionReferenceV1Schema, modelProfileRevision: RevisionReferenceV1Schema, modelRoute: ModelRouteV1Schema, contextRevision: RevisionReferenceV1Schema, capabilityRevision: RevisionReferenceV1Schema, policyRevision: RevisionReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, budget: BudgetV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), fields: Type.Array(RoleResolvedFieldV1Schema), sourceTrace: Type.Array(roleTraceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })), binding: AgentBindingV1Schema, fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
+export const RoleResolutionOverrideV1Schema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER_V1.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), roleRevision: Type.Optional(RoleRevisionV1Schema), modelProfile: Type.Optional(ModelProfileV1Schema), modelRoute: Type.Optional(ModelRouteV1Schema), capabilitySelector: Type.Optional(CapabilitySelectorV1Schema), budget: Type.Optional(BudgetV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), externalAgentBindingRevision: Type.Optional(RevisionReferenceV1Schema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema) }, { additionalProperties: false });
+export const RoleResolveInputV1Schema = Type.Object({ schemaVersion: Type.Literal(1), task: TaskEnvelopeV1Schema, roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, modelProfile: ModelProfileV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), externalAgentBindingRevision: Type.Optional(RevisionReferenceV1Schema), capabilityRevision: Type.Optional(RevisionReferenceV1Schema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema), overrides: Type.Optional(Type.Array(RoleResolutionOverrideV1Schema)), bindingId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
+export const RoleResolutionPreviewV1Schema = Type.Object({ schemaVersion: Type.Literal(1), taskId: Type.String({ minLength: 1 }), roleId: Type.String({ minLength: 1 }), roleRevision: RevisionReferenceV1Schema, modelProfileRevision: RevisionReferenceV1Schema, modelRoute: ModelRouteV1Schema, contextRevision: RevisionReferenceV1Schema, capabilityRevision: RevisionReferenceV1Schema, modelBrokerBindingRevision: RevisionReferenceV1Schema, policyRevision: RevisionReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, budget: BudgetV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), fields: Type.Array(RoleResolvedFieldV1Schema), sourceTrace: Type.Array(roleTraceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })), binding: AgentBindingV1Schema, fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
 export function validateRoleResolutionLayerV1(value: unknown): ResultValue<RoleResolutionLayerV1, FoundationError> { return validateExactShape<RoleResolutionLayerV1>(RoleResolutionLayerV1Schema, value, "role_resolution_layer"); }
 export function serializeRoleResolutionLayerV1(value: RoleResolutionLayerV1): string { return serializeExactShape(RoleResolutionLayerV1Schema, value, "role_resolution_layer"); }
 export function parseRoleResolutionLayerV1(text: string): ResultValue<RoleResolutionLayerV1, FoundationError> { return parseExactShape(RoleResolutionLayerV1Schema, text, "role_resolution_layer"); }
@@ -385,18 +390,24 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	if (!order.ok) return order;
 	const role = input.roleRevision;
 	if (role === undefined) return registryFailure("role_not_found", "Role resolution requires a role revision", { roleId: input.roleId });
+	if (role.roleId !== input.roleId) return registryFailure("role_resolver_conflict", "Role revision source does not match the requested role", { roleId: input.roleId });
 	const model = input.modelProfile;
 	const overrides = input.overrides ?? [];
 	const overrideByLayer = new Map(overrides.map((override) => [override.layer, override]));
 	if (new Set(overrides.map((override) => override.layer)).size !== overrides.length) return registryFailure("role_resolver_conflict", "Role resolution cannot apply a layer twice", { roleId: input.roleId });
 	let effectiveRole = role;
 	let effectiveModel = model;
-	let effectiveSelector = role.capabilitySelector;
+	let effectiveSelector: CapabilitySelectorV1 = { policy: "all" };
 	let effectiveBudget = { ...task.value.budget };
 	let effectiveRoute: ModelRouteV1 = routeFromModel(model);
-	let effectiveContext = input.contextRevision ?? defaultRevision("context_revision", `context:none:${task.value.taskId}`);
-	const effectiveCapability = input.capabilityRevision ?? { schemaVersion: 1 as const, type: "capability_revision", id: `capability:${task.value.taskId}`, revision: 1, fingerprint: fingerprintFoundationValue(task.value.capabilityRefs) };
-	let effectivePolicy = input.policyRevision ?? defaultRevision("policy_revision", `policy:none:${task.value.taskId}`);
+	if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return registryFailure("binding_required_fact", "Role resolution received conflicting External-Agent Binding aliases", { roleId: input.roleId });
+	let effectiveContext = input.externalAgentBindingRevision ?? input.contextRevision;
+	const effectiveCapability = input.capabilityRevision;
+	let effectiveModelBroker = input.modelBrokerBindingRevision;
+	let effectivePolicy = input.policyRevision;
+	if (effectiveContext === undefined || effectiveCapability === undefined || effectiveModelBroker === undefined || effectivePolicy === undefined) {
+		return registryFailure("binding_required_fact", "Role resolution requires all four existing immutable binding facts", { roleId: input.roleId, taskId: task.value.taskId });
+	}
 	const values = new Map<string, { value: unknown; source: BindingSourceTraceV1 }>();
 	const conflicts: BindingConflictV1[] = [];
 	const trace: BindingSourceTraceV1[] = [];
@@ -410,17 +421,41 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	addValue("roleRevision", { id: role.roleRevisionId, revision: role.revision }, baseSource("roleRevision"));
 	addValue("modelProfileRevision", { id: model.modelProfileId, revision: model.revision }, { field: "modelProfileRevision", layer: baseLayer, referenceId: model.modelProfileId, revision: model.revision });
 	addValue("modelRoute", effectiveRoute, baseSource("modelRoute"));
-	addValue("capabilitySelector", effectiveSelector, baseSource("capabilitySelector"));
 	addValue("budget", effectiveBudget, { field: "budget", layer: "task", referenceId: task.value.taskId });
 	addValue("contextRevision", effectiveContext, baseSource("contextRevision"));
 	addValue("capabilityRevision", effectiveCapability, { field: "capabilityRevision", layer: "task", referenceId: task.value.taskId, revision: effectiveCapability.revision });
+	addValue("modelBrokerBindingRevision", effectiveModelBroker, { field: "modelBrokerBindingRevision", layer: baseLayer, referenceId: effectiveModelBroker.id, revision: effectiveModelBroker.revision });
 	addValue("policyRevision", effectivePolicy, baseSource("policyRevision"));
+	let roleSelectorApplied = false;
 	for (const layer of order.value) {
+		if (layer.layer === baseLayer) {
+			const narrowed = validateRoleSelectorTightening(effectiveSelector, role.capabilitySelector);
+			if (!narrowed.ok) return narrowed;
+			effectiveSelector = narrowed.value;
+			addValue("capabilitySelector", effectiveSelector, baseSource("capabilitySelector"));
+			roleSelectorApplied = true;
+		}
 		const override = overrideByLayer.get(layer.layer);
 		if (override === undefined) continue;
 		const source = (field: string): BindingSourceTraceV1 => ({ field, layer: override.layer, referenceId: override.referenceId, revision: override.revision, overrideReason: override.overrideReason });
-		if (override.roleRevision !== undefined) { effectiveRole = override.roleRevision; addValue("roleRevision", { id: effectiveRole.roleRevisionId, revision: effectiveRole.revision }, source("roleRevision")); }
-		if (override.modelProfile !== undefined) { effectiveModel = override.modelProfile; effectiveRoute = routeFromModel(effectiveModel); addValue("modelProfileRevision", { id: effectiveModel.modelProfileId, revision: effectiveModel.revision }, source("modelProfileRevision")); addValue("modelRoute", effectiveRoute, source("modelRoute")); }
+		if (override.roleRevision !== undefined) {
+			const scopedRoleOverride = override.layer === "global" || override.layer === "project";
+			if (override.roleRevision.roleId !== input.roleId || scopedRoleOverride && override.roleRevision.scope !== override.layer || override.roleRevision.roleRevisionId !== override.referenceId || override.roleRevision.revision !== override.revision) return registryFailure("role_resolver_conflict", "Role override source must identify the immutable RoleRevision for its layer", { roleId: input.roleId });
+			const narrowed = validateRoleSelectorTightening(effectiveSelector, override.roleRevision.capabilitySelector);
+			if (!narrowed.ok) return narrowed;
+			effectiveSelector = narrowed.value;
+			roleSelectorApplied = true;
+			effectiveRole = override.roleRevision;
+			addValue("roleRevision", { id: effectiveRole.roleRevisionId, revision: effectiveRole.revision }, source("roleRevision"));
+			addValue("capabilitySelector", effectiveSelector, source("capabilitySelector"));
+		}
+		if (override.modelProfile !== undefined) {
+			if (override.modelProfile.modelProfileId !== override.referenceId || override.modelProfile.revision !== override.revision) return registryFailure("role_resolver_conflict", "Model Profile override source must identify its immutable revision", { roleId: input.roleId });
+			effectiveModel = override.modelProfile;
+			effectiveRoute = routeFromModel(effectiveModel);
+			addValue("modelProfileRevision", { id: effectiveModel.modelProfileId, revision: effectiveModel.revision }, source("modelProfileRevision"));
+			addValue("modelRoute", effectiveRoute, source("modelRoute"));
+		}
 		if (override.modelRoute !== undefined) { effectiveRoute = { ...override.modelRoute }; addValue("modelRoute", effectiveRoute, source("modelRoute")); }
 		if (override.capabilitySelector !== undefined) {
 			const narrowed = validateRoleSelectorTightening(effectiveSelector, override.capabilitySelector);
@@ -429,23 +464,36 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 			addValue("capabilitySelector", effectiveSelector, source("capabilitySelector"));
 		}
 		if (override.budget !== undefined) { effectiveBudget = mergeBudget(effectiveBudget, override.budget); addValue("budget", effectiveBudget, source("budget")); }
-		if (override.contextRevision !== undefined) { effectiveContext = override.contextRevision; addValue("contextRevision", effectiveContext, source("contextRevision")); }
-		if (override.policyRevision !== undefined) { effectivePolicy = override.policyRevision; addValue("policyRevision", effectivePolicy, source("policyRevision")); }
+		if (override.externalAgentBindingRevision !== undefined && override.contextRevision !== undefined && canonicalFoundationJson(override.externalAgentBindingRevision) !== canonicalFoundationJson(override.contextRevision)) return registryFailure("role_resolver_conflict", "External-Agent Binding override aliases conflict", { roleId: input.roleId });
+		const externalAgentBindingRevision = override.externalAgentBindingRevision ?? override.contextRevision;
+		if (externalAgentBindingRevision !== undefined) {
+			if (externalAgentBindingRevision.type !== "external_agent_binding" || externalAgentBindingRevision.id !== override.referenceId || externalAgentBindingRevision.revision !== override.revision || externalAgentBindingRevision.fingerprint === undefined) return registryFailure("role_resolver_conflict", "External-Agent Binding override must identify its immutable source revision", { roleId: input.roleId });
+			effectiveContext = externalAgentBindingRevision;
+			addValue("contextRevision", effectiveContext, source("contextRevision"));
+		}
+		if (override.modelBrokerBindingRevision !== undefined) {
+			if (override.modelBrokerBindingRevision.type !== "model_broker_binding" || override.modelBrokerBindingRevision.id !== override.referenceId || override.modelBrokerBindingRevision.revision !== override.revision || override.modelBrokerBindingRevision.fingerprint === undefined) return registryFailure("role_resolver_conflict", "ModelBroker Binding override must identify its immutable source revision", { roleId: input.roleId });
+			effectiveModelBroker = override.modelBrokerBindingRevision;
+			addValue("modelBrokerBindingRevision", effectiveModelBroker, source("modelBrokerBindingRevision"));
+		}
+		if (override.policyRevision !== undefined) {
+			if (override.policyRevision.type !== "policy_binding" || override.policyRevision.id !== override.referenceId || override.policyRevision.revision !== override.revision || override.policyRevision.fingerprint === undefined) return registryFailure("role_resolver_conflict", "Policy Binding override must identify its immutable source revision", { roleId: input.roleId });
+			effectivePolicy = override.policyRevision;
+			addValue("policyRevision", effectivePolicy, source("policyRevision"));
+		}
 	}
+	if (!roleSelectorApplied) return registryFailure("role_resolver_conflict", "Role resolution did not apply its immutable RoleRevision selector", { roleId: input.roleId });
+	if (effectiveContext === undefined || effectiveModelBroker === undefined || effectivePolicy === undefined) return registryFailure("binding_required_fact", "Role resolution lost a required immutable binding fact", { roleId: input.roleId });
 	for (const item of values.values()) trace.push(item.source);
-	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, policyRevision: effectivePolicy, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
+	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, modelBrokerBindingRevision: effectiveModelBroker, policyRevision: effectivePolicy, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
 	if (!binding.ok) return binding;
 	const fields = [...values.entries()].map(([field, item]) => ({ schemaVersion: 1 as const, field, source: item.source, revision: item.source.revision ?? 1, overrideReason: item.source.overrideReason ?? "resolved", safeValue: redactRoleResolutionValue(item.value as JsonValue) }));
-	const previewBase: Omit<RoleResolutionPreviewV1, "fingerprint"> = { schemaVersion: 1, taskId: task.value.taskId, roleId: effectiveRole.roleId, roleRevision: binding.value.roleRevision, modelProfileRevision: binding.value.modelProfileRevision, modelRoute: binding.value.modelRoute, contextRevision: binding.value.contextRevision, capabilityRevision: binding.value.capabilityRevision, policyRevision: binding.value.policyRevision, capabilitySelector: binding.value.capabilitySelector, budget: binding.value.budget, orderedLayers: order.value, fields, sourceTrace: binding.value.sourceTrace, conflicts: binding.value.conflicts, binding: binding.value };
+	const previewBase: Omit<RoleResolutionPreviewV1, "fingerprint"> = { schemaVersion: 1, taskId: task.value.taskId, roleId: effectiveRole.roleId, roleRevision: binding.value.roleRevision, modelProfileRevision: binding.value.modelProfileRevision, modelRoute: binding.value.modelRoute, contextRevision: binding.value.contextRevision, capabilityRevision: binding.value.capabilityRevision, modelBrokerBindingRevision: binding.value.modelBrokerBindingRevision, policyRevision: binding.value.policyRevision, capabilitySelector: binding.value.capabilitySelector, budget: binding.value.budget, orderedLayers: order.value, fields, sourceTrace: binding.value.sourceTrace, conflicts: binding.value.conflicts, binding: binding.value };
 	return Result.ok(cloneDeepFrozen({ ...previewBase, fingerprint: fingerprintRoleResolutionPreview(previewBase) }));
 }
 
 function routeFromModel(model: ModelProfileV1): ModelRouteV1 {
 	return { provider: model.provider, model: model.model, ...(model.effort === undefined ? {} : { effort: model.effort }), ...(model.serviceTier === undefined ? {} : { serviceTier: model.serviceTier }) };
-}
-
-function defaultRevision(type: string, id: string): RevisionReferenceV1 {
-	return { schemaVersion: 1, type, id, revision: 1 };
 }
 
 function mergeBudget(left: TaskEnvelopeV1["budget"], right: TaskEnvelopeV1["budget"]): TaskEnvelopeV1["budget"] {

@@ -1,15 +1,17 @@
 import { createAssistantMessageEventStream, createModels, type Api, type AssistantMessage, type DeferredHandle, type Model, type Models } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { describe, expect, it } from "vitest";
+import { Result } from "../../src/harness/result.ts";
 import {
 	AgentHarness,
+	type AgentHarnessOptions,
 	type AgentHarnessFoundationExecution,
 	type HarnessTool,
 	type Resources,
 	type StreamOptions,
 } from "../../src/harness/agent-harness.ts";
 import { InMemoryArtifactBlobStore } from "../../src/harness/artifacts.ts";
-import { createHostTerminalGateAuthorityV1, fingerprintFoundationValue, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
+import { createAttempt, createHostTerminalGateAuthorityV1, fingerprintFoundationValue, FoundationError, LayeredResultSettlementV1, SessionLedgerV1, type AgentBindingV1, type AttemptReceiptV1, type AttemptV1, type DispatchV1, type ExecutionCorrelationV1, type FoundationJsonValue, type FoundationProviderCapabilityV1, type FoundationProviderExecutionOptionsV1, type SideEffectStateV1, type TaskExecutorAttemptContextV1, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
 import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
@@ -65,19 +67,30 @@ async function facts(session: Session): Promise<Extract<FoundationRecordV1, { ki
 	return records.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact");
 }
 
+const RESULT_FACT_TYPES = new Set(["attempt_receipt", "task_result", "run_receipt"]);
+
+async function resultFacts(session: Session): Promise<Extract<FoundationRecordV1, { kind: "fact" }>[]> {
+	return (await facts(session)).filter((record) => RESULT_FACT_TYPES.has(record.objectType));
+}
+
 function createFoundationExecution(): AgentHarnessFoundationExecution {
 	const taskId = "task-harness-runtime";
 	const bindingId = "binding-harness-runtime";
+	const immutableRef = (type: string, id: string) => {
+		const payload = { schemaVersion: 1 as const, type, id, revision: 1 };
+		return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
+	};
 	const binding = {
 		schemaVersion: 1 as const,
 		bindingId,
 		taskId,
-		roleRevision: { schemaVersion: 1 as const, type: "role_revision" as const, id: "role-revision", revision: 1 },
-		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision" as const, id: "model-profile", revision: 1 },
+		roleRevision: immutableRef("role_revision", "role-revision"),
+		modelProfileRevision: immutableRef("model_profile_revision", "model-profile"),
 		modelRoute: { provider: "google", model: "gemini-2.5-flash" },
-		contextRevision: { schemaVersion: 1 as const, type: "context_revision" as const, id: "context", revision: 1 },
-		capabilityRevision: { schemaVersion: 1 as const, type: "capability_revision" as const, id: "capability", revision: 1 },
-		policyRevision: { schemaVersion: 1 as const, type: "policy_revision" as const, id: "policy", revision: 1 },
+		contextRevision: immutableRef("external_agent_binding", "external-agent"),
+		capabilityRevision: immutableRef("capability_binding", "capability"),
+		modelBrokerBindingRevision: immutableRef("model_broker_binding", "model-broker"),
+		policyRevision: immutableRef("policy_binding", "policy"),
 		capabilitySelector: { policy: "none" as const },
 		budget: {},
 		sourceTrace: [],
@@ -112,6 +125,8 @@ function createFoundationExecution(): AgentHarnessFoundationExecution {
 		binding: { ...binding, fingerprint: fingerprintFoundationValue(binding) },
 		providerId: "agent-harness-provider",
 		agentInstanceId: "agent-instance-harness-runtime",
+		initialBindingEpoch: { schemaVersion: 1, bindingEpochId: "binding-epoch-harness-runtime", taskId, attemptId: "attempt-harness-runtime", agentInstanceId: "agent-instance-harness-runtime", bindingId, ordinal: 0, activationReason: "attempt_started", activatedByCommandId: "command-harness-runtime", activatedAt: "2026-01-01T00:00:00.000Z" },
+		agentInstance: { schemaVersion: 1, agentInstanceId: "agent-instance-harness-runtime", providerId: "agent-harness-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: "role-revision", revision: 1 }, bindingEpochIds: ["binding-epoch-harness-runtime"], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: "agent-instance-harness-runtime", depth: 0 }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
 		bindingEpochIds: ["binding-epoch-harness-runtime"],
 		settlement: {
 			tests: [{ name: "harness runtime", required: true, status: "passed" }],
@@ -119,6 +134,63 @@ function createFoundationExecution(): AgentHarnessFoundationExecution {
 		},
 		hostAuthority: createHostTerminalGateAuthorityV1("host-harness-runtime"),
 	};
+}
+
+const harnessProviderCapability: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.harness", version: 1 };
+
+class HarnessFoundationProvider implements TaskExecutorProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId: string;
+	readonly providerClass = "agent" as const;
+	private readonly session: Session | undefined;
+
+	constructor(providerId = "agent-harness-provider", session?: Session) {
+		this.providerId = providerId;
+		this.session = session;
+	}
+
+	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [harnessProviderCapability]; }
+
+	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider requires provider attempt context"));
+		return createAttempt({ attemptId: context.initialBindingEpoch.attemptId, dispatch, providerId: this.providerId, initialBindingEpoch: context.initialBindingEpoch, providerClass: this.providerClass, agentInstanceId: context.initialBindingEpoch.agentInstanceId });
+	}
+
+	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider requires provider execution correlation"));
+		const correlation = { ...options.correlation, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: `attempt_receipt_${attempt.attemptId}` };
+		const sideEffectState = await this.sideEffectState(correlation);
+		const receipt: AttemptReceiptV1 = { schemaVersion: 1, attemptReceiptId: `attempt_receipt_${attempt.attemptId}`, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: "2026-01-01T00:00:00.000Z", correlation }, sideEffectState };
+		return Result.ok(receipt);
+	}
+
+	private async sideEffectState(correlation: ExecutionCorrelationV1): Promise<SideEffectStateV1> {
+		if (this.session === undefined || correlation.runId === undefined) return "none";
+		const starts = await this.session.findRecords({ lane: correlation.laneId, runId: correlation.runId, type: "tool_started", order: "oldestFirst" });
+		if (starts.length === 0) return "none";
+		for (const start of starts) {
+			const result = await this.session.getEntry(start.resultEntryId);
+			if (result?.type !== "message" || result.message.role !== "toolResult") return "side_effect_unknown";
+		}
+		return "unknown";
+	}
+
+	async cancelAttempt(_attemptId: string) { return Result.ok(undefined); }
+	async dispose() {}
+}
+
+async function seedFoundationBindingFacts(session: Session, execution: AgentHarnessFoundationExecution): Promise<void> {
+	const ledger = new SessionLedgerV1(session, { ownerId: `harness-seed:${execution.binding.bindingId}` });
+	for (const [objectType, reference] of [["external_agent_binding", execution.binding.contextRevision], ["capability_binding", execution.binding.capabilityRevision], ["model_broker_binding", execution.binding.modelBrokerBindingRevision], ["policy_binding", execution.binding.policyRevision]] as const) {
+		const payload = { schemaVersion: 1 as const, type: reference.type, id: reference.id, revision: reference.revision };
+		await ledger.appendFact(objectType, reference.id, payload, { clientRequestId: `harness-seed:${objectType}:${reference.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
+	}
+	await ledger.release();
+}
+
+async function createFoundationHarness(options: AgentHarnessOptions & { foundationExecution: AgentHarnessFoundationExecution }): Promise<Awaited<ReturnType<typeof AgentHarness.create>>> {
+	await seedFoundationBindingFacts(options.session, options.foundationExecution);
+	return AgentHarness.create({ ...options, foundationProvider: new HarnessFoundationProvider(options.foundationExecution.providerId, options.session) });
 }
 
 function injectFoundationFault(
@@ -146,20 +218,21 @@ describe("AgentHarness runtime", () => {
 	it("drives a public prompt and persists correlated receipts", async () => {
 		const session = createSession();
 		const { models, model } = createModelsWithResponse();
-		const { harness } = await AgentHarness.create({ session, models, model, foundationExecution: createFoundationExecution() });
+		const { harness } = await createFoundationHarness({ session, models, model, foundationExecution: createFoundationExecution() });
 		expect(harness.context).toBe(harness.t5);
 		expect(harness.memory).toBe(harness.t5.memory);
 		expect(harness.artifacts).toBe(harness.t5.artifacts);
 
 		const result = await harness.prompt("hello");
 		expect(result.ok).toBe(true);
-		const facts = (await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" })).filter((record) => record.kind === "fact");
-		expect(facts.map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
-		expect(facts.every((record) => record.correlation.sessionId === "session" && record.correlation.taskId === "task-harness-runtime")).toBe(true);
-		expect((facts[0]?.payload as { attemptReceiptId: string }).attemptReceiptId).toContain("attempt_receipt_");
-		expect((facts[1]?.payload as { sourceAttemptReceiptIds: string[] }).sourceAttemptReceiptIds).toHaveLength(1);
-		expect((facts[2]?.payload as { taskResultId?: string }).taskResultId).toContain("task_result_");
-		expect((facts[1]?.payload as { provenance: { providerId: string } }).provenance.providerId).toBe("host-harness-runtime");
+		const persistedFacts = await facts(session);
+		const persistedResultFacts = persistedFacts.filter((record) => RESULT_FACT_TYPES.has(record.objectType));
+		expect(persistedResultFacts.map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
+		expect(persistedResultFacts.every((record) => record.correlation.sessionId === "session" && record.correlation.taskId === "task-harness-runtime")).toBe(true);
+		expect((persistedResultFacts[0]?.payload as { attemptReceiptId: string }).attemptReceiptId).toContain("attempt_receipt_");
+		expect((persistedResultFacts[1]?.payload as { sourceAttemptReceiptIds: string[] }).sourceAttemptReceiptIds).toHaveLength(1);
+		expect((persistedResultFacts[2]?.payload as { taskResultId?: string }).taskResultId).toContain("task_result_");
+		expect((persistedResultFacts[1]?.payload as { provenance: { providerId: string } }).provenance.providerId).toBe("host-harness-runtime");
 		await harness.close();
 	});
 
@@ -168,7 +241,7 @@ describe("AgentHarness runtime", () => {
 		const blobStore = new InMemoryArtifactBlobStore();
 		const execution = createFoundationExecution();
 		const options = { t5Options: { ownerId: "shared-public-writer", artifactBlobStore: blobStore } } as const;
-		const first = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
+		const first = await createFoundationHarness({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
 		expect(first.harness.t5.writer).toBe(first.harness.context.writer);
 		expect(first.harness.t5.writer).toBe(first.harness.memory.writer);
 		expect(first.harness.t5.writer).toBe(first.harness.artifacts.writer);
@@ -188,7 +261,7 @@ describe("AgentHarness runtime", () => {
 		await first.harness.close();
 		expect(await session.getWriterLease()).toBeNull();
 
-		const second = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
+		const second = await createFoundationHarness({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
 		const secondMemory = await second.harness.memory.get(firstMemory.id, "system");
 		expect(secondMemory?.content).toBe("first");
 		const secondLease = await session.getWriterLease();
@@ -303,7 +376,7 @@ describe("AgentHarness runtime", () => {
 		const execution = createFoundationExecution();
 		const callerSnapshot = structuredClone(execution);
 		const runtime = createModelsWithResponse();
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		expect(execution).toEqual(callerSnapshot);
 		const result = await harness.prompt("timestamp evidence");
 		expect(result.ok).toBe(true);
@@ -324,7 +397,7 @@ describe("AgentHarness runtime", () => {
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
 		const callerSnapshot = structuredClone(execution);
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		(execution.bindingEpochIds as string[]).push("caller-only-epoch");
 		(execution.settlement!.tests as { name: string; required: boolean; status: "passed" | "failed" }[])[0]!.status = "failed";
 		const result = await harness.prompt("detached inputs");
@@ -397,11 +470,11 @@ describe("AgentHarness runtime", () => {
 			intent: { kind: "run", originalPrompt: [user], initialMessages: [target] },
 		} satisfies NewRecord<OperationStartedRecord>);
 		const execution = createFoundationExecution();
-		const { harness } = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution });
+		const { harness } = await createFoundationHarness({ session, ...createModelsWithResponse(), foundationExecution: execution });
 		const intents = await session.findFoundationRecords({ kind: "intent", objectType: "attempt", objectId: `attempt_${runId}`, order: "oldestFirst" });
 		expect(intents).toHaveLength(1);
 		await harness.close();
-		const reopened = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution });
+		const reopened = await createFoundationHarness({ session, ...createModelsWithResponse(), foundationExecution: execution });
 		const replayedIntents = await session.findFoundationRecords({ kind: "intent", objectType: "attempt", objectId: `attempt_${runId}`, order: "oldestFirst" });
 		expect(replayedIntents).toHaveLength(1);
 		await reopened.harness.close();
@@ -476,7 +549,7 @@ describe("AgentHarness runtime", () => {
 			stream.push({ type: "error", reason: "aborted", error: response });
 			return stream;
 		};
-		const { harness } = await AgentHarness.create({ session, models, model: runtime.model, foundationExecution: createFoundationExecution() });
+		const { harness } = await createFoundationHarness({ session, models, model: runtime.model, foundationExecution: createFoundationExecution() });
 		const result = await harness.prompt("deadline");
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw result.error;
@@ -497,7 +570,7 @@ describe("AgentHarness runtime", () => {
 			acquireCalls += 1;
 			return originalAcquire(options);
 		};
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
 		const initialAcquireCalls = acquireCalls;
 		const originalRenew = session.renewWriterLease.bind(session);
 		let renewCalls = 0;
@@ -510,14 +583,14 @@ describe("AgentHarness runtime", () => {
 		expect(result.ok).toBe(true);
 		expect(acquireCalls).toBeGreaterThan(initialAcquireCalls);
 		expect(renewCalls).toBeGreaterThan(0);
-		expect((await facts(session)).map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
+		expect((await resultFacts(session)).map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
 		await harness.close();
 	});
 
 	it("does not reacquire or continue after a non-lease Foundation storage fault", async () => {
 		const session = createSession("foundation-lease-storage-fault");
 		const runtime = createModelsWithResponse();
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
 		const originalAcquire = session.acquireWriterLease.bind(session);
 		let acquireCalls = 0;
 		session.acquireWriterLease = async (options) => {
@@ -591,7 +664,7 @@ describe("AgentHarness runtime", () => {
 		await session.appendEntry(assistantEntry, "main");
 		await session.appendRecord({ type: "tool_started", id: "missing-tool-start", lane: "main", runId, assistantEntryId: assistantEntry.id, toolIndex: 0, toolCallId: "missing-call", toolName: "missing-tool", effectiveArgs: {}, resultEntryId: "missing-tool-result", replay: "never" });
 		const runtime = createModelsWithResponse();
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: createFoundationExecution() });
 		await harness.runToCompletion();
 		const attempt = (await facts(session)).find((record) => record.objectType === "attempt_receipt");
 		expect((attempt?.payload as { sideEffectState: string }).sideEffectState).toBe("side_effect_unknown");
@@ -851,20 +924,20 @@ describe("AgentHarness runtime", () => {
 		const session = createSession("receipt-partial-task");
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
-		const first = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const first = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		injectFoundationFault(session, "task_result", "before");
 		await expect(first.harness.prompt("partial task receipt")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
 		await expect(first.harness.prompt("faulted harness must reject")).rejects.toThrow("AgentHarness is faulted");
 		const before = await facts(session);
-		expect(before.map((record) => record.objectType)).toEqual(["attempt_receipt"]);
+		expect(before.filter((record) => RESULT_FACT_TYPES.has(record.objectType)).map((record) => record.objectType)).toEqual(["attempt_receipt"]);
 		await first.harness.close().catch(() => undefined);
 
-		const restored = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const restored = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		const resumed = await restored.harness.resume();
 		expect(resumed.ok).toBe(true);
 		const after = await facts(session);
-		expect(after.map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
-		expect(after.find((record) => record.objectType === "attempt_receipt")?.payload).toEqual(before[0]?.payload);
+		expect(after.filter((record) => RESULT_FACT_TYPES.has(record.objectType)).map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
+		expect(after.find((record) => record.objectType === "attempt_receipt")?.payload).toEqual(before.find((record) => record.objectType === "attempt_receipt")?.payload);
 		await restored.harness.close();
 	});
 
@@ -872,7 +945,7 @@ describe("AgentHarness runtime", () => {
 		const session = createSession("receipt-conflict");
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
-		const first = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const first = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		injectFoundationFault(session, "task_result", "before");
 		await expect(first.harness.prompt("receipt conflict")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
 		const before = await facts(session);
@@ -882,7 +955,8 @@ describe("AgentHarness runtime", () => {
 		const conflicting = createFoundationExecution();
 		conflicting.providerId = "conflicting-agent-provider";
 		conflicting.dispatch.taskExecutorProviderId = "conflicting-agent-provider";
-		await expect(AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: conflicting })).rejects.toThrow("Existing Foundation intent conflicts with its deterministic reconstruction");
+		conflicting.agentInstance!.providerId = "conflicting-agent-provider";
+		await expect(createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: conflicting })).rejects.toThrow("An immutable Foundation fact already exists with different content");
 		expect(await facts(session)).toEqual(before);
 		expect(await session.getLedgerRevision()).toBe(revision);
 	});
@@ -891,7 +965,7 @@ describe("AgentHarness runtime", () => {
 		const session = createSession("receipt-correlation-conflict");
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
-		const first = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const first = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		injectFoundationFault(session, "task_result", "before");
 		await expect(first.harness.prompt("receipt correlation conflict")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
 		await first.harness.close().catch(() => undefined);
@@ -907,7 +981,7 @@ describe("AgentHarness runtime", () => {
 			return { ...object, payload: payload as FoundationJsonValue };
 		};
 		try {
-			const restored = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const restored = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 			await expect(restored.harness.resume()).rejects.toThrow("Existing AttemptReceipt conflicts with its deterministic reconstruction");
 			await restored.harness.close().catch(() => undefined);
 		} finally {
@@ -919,18 +993,18 @@ describe("AgentHarness runtime", () => {
 		const session = createSession("receipt-partial-run");
 		const runtime = createModelsWithResponse();
 		const execution = createFoundationExecution();
-		const first = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const first = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		injectFoundationFault(session, "run_receipt", "after");
 		await expect(first.harness.prompt("partial run receipt")).rejects.toMatchObject({ name: "DurableLedgerError", code: "session_ledger_storage" });
 		const before = await facts(session);
-		expect(before.map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
+		expect(before.filter((record) => RESULT_FACT_TYPES.has(record.objectType)).map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
 		await first.harness.close().catch(() => undefined);
 
-		const restored = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
+		const restored = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: execution });
 		const resumed = await restored.harness.resume();
 		expect(resumed.ok).toBe(true);
 		const after = await facts(session);
-		expect(after.map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
+		expect(after.filter((record) => RESULT_FACT_TYPES.has(record.objectType)).map((record) => record.objectType)).toEqual(["attempt_receipt", "task_result", "run_receipt"]);
 		for (const objectType of ["attempt_receipt", "task_result", "run_receipt"] as const) {
 			expect(after.find((record) => record.objectType === objectType)?.payload).toEqual(before.find((record) => record.objectType === objectType)?.payload);
 		}
@@ -982,7 +1056,7 @@ describe("AgentHarness runtime", () => {
 		const base = createFoundationExecution();
 		const { settlement: _settlement, hostAuthority: _authority, ...executorOnly } = base;
 		const session = createSession("executor-only");
-		const { harness } = await AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: executorOnly });
+		const { harness } = await createFoundationHarness({ session, models: runtime.models, model: runtime.model, foundationExecution: executorOnly });
 		const run = await harness.prompt("executor only");
 		expect(run.ok).toBe(true);
 		expect((await session.findFoundationRecords({ kind: "fact" })).filter((record) => record.kind === "fact").map((record) => record.objectType)).toEqual(["attempt_receipt"]);
@@ -990,9 +1064,9 @@ describe("AgentHarness runtime", () => {
 
 		const invalid = structuredClone(base);
 		(invalid.binding as { fingerprint: { algorithm: string; value: string } }).fingerprint.value = "invalid";
-		await expect(AgentHarness.create({ session: createSession("invalid-binding"), models: runtime.models, model: runtime.model, foundationExecution: invalid })).rejects.toThrow("established immutable AgentBinding");
+		await expect(createFoundationHarness({ session: createSession("invalid-binding"), models: runtime.models, model: runtime.model, foundationExecution: invalid })).rejects.toThrow("established immutable AgentBinding");
 		const mismatch = structuredClone(base);
 		mismatch.providerId = "other-provider";
-		await expect(AgentHarness.create({ session: createSession("provider-mismatch"), models: runtime.models, model: runtime.model, foundationExecution: mismatch })).rejects.toThrow("provider does not match");
+		await expect(createFoundationHarness({ session: createSession("provider-mismatch"), models: runtime.models, model: runtime.model, foundationExecution: mismatch })).rejects.toThrow("provider does not match");
 	});
 });

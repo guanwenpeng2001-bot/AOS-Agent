@@ -16,7 +16,6 @@ import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool
 import {
 	canonicalFoundationJson,
 	createExecutionCorrelation,
-	finalizeRunReceipt,
 	redactProjection,
 	redactText,
 	sha256HexValue,
@@ -24,15 +23,15 @@ import {
 	validateArtifactDescriptorV1,
 	validateArtifactPutResultV1,
 	validateArtifactVerifyResultV1,
-	settleTaskResult,
-	validateAttemptReceipt,
 	validateDispatchV1,
 	validateHostTerminalGateAuthorityV1,
 	validateImmutableAgentBindingV1,
 	validateTaskEnvelopeV1,
-	validateRunReceiptV1,
-	validateTaskResultV1,
+	LayeredResultSettlementV1,
+	validateAgentInstanceV1,
+	validateBindingEpochV1,
 	type AcceptanceFactV1,
+	type AgentInstanceV1,
 	type AgentBindingV1,
 	type ArtifactRefV1,
 	type ArtifactDescriptorV1,
@@ -42,7 +41,7 @@ import {
 	type ExecutionCorrelationV1,
 	type FoundationJsonValue,
 	type HostTerminalGateAuthorityV1,
-	type ResultStatusV1,
+	type TaskExecutorProvider,
 	type RunReceiptV1,
 	type SideEffectStateV1,
 	type TaskEnvelopeV1,
@@ -103,7 +102,6 @@ import {
 	type WriteDeferredRecord,
 	SessionError,
 	DurableLedgerError,
-	type FoundationFactRecordV1,
 	type FoundationRecordV1,
 	type ProvisionedFoundationRecordV1,
 } from "./session/index.ts";
@@ -371,7 +369,9 @@ export interface AgentHarnessFoundationExecution {
 	dispatch: DispatchV1;
 	binding: AgentBindingV1;
 	providerId: string;
-	agentInstanceId: string;
+	initialBindingEpoch: BindingEpochV1;
+	agentInstanceId?: string;
+	agentInstance?: AgentInstanceV1;
 	bindingEpochIds: readonly string[];
 	settlement?: {
 		summary?: string;
@@ -409,6 +409,8 @@ export interface AgentHarnessOptions {
 	t5Options?: SessionT5LedgerOptions;
 	/** Optional explicit product execution graph; omitted prompts remain session-only. */
 	foundationExecution?: AgentHarnessFoundationExecution;
+	/** Trusted provider consumer. Receipts may only be obtained by consuming this provider. */
+	foundationProvider?: TaskExecutorProvider;
 	/** Host-owned artifact provider; method-bearing providers never enter durable execution state. */
 	artifactStore?: ArtifactStoreProvider;
 	/** Optional pipeline override; when Foundation execution is configured, storage defaults to the Session ledger. */
@@ -848,7 +850,8 @@ export class AgentHarness implements AgentLane {
 	private foundationSessionId?: string;
 	private toolPipeline?: FoundationToolPipelineV1;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
-	private readonly foundationReceipts = new Map<string, FoundationReceiptBundle>();
+	private readonly foundationProvider?: TaskExecutorProvider;
+	private readonly foundationOwnerId?: string;
 	private readonly terminalToolFailureOperations = new Set<string>();
 	private readonly eventBus = new HarnessEventBus();
 	private readonly hookRegistry = new HookRegistry();
@@ -873,6 +876,7 @@ export class AgentHarness implements AgentLane {
 			options.foundationExecution === undefined
 				? undefined
 				: options.t5Options?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
+		this.foundationOwnerId = foundationOwnerId;
 		const t5Options =
 			foundationOwnerId === undefined || options.t5Options?.ownerId !== undefined
 				? options.t5Options
@@ -907,6 +911,7 @@ export class AgentHarness implements AgentLane {
 		this.entryProjectors = { ...(options.entryProjectors ?? {}) };
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
+		this.foundationProvider = options.foundationProvider;
 		this.artifactStore = options.artifactStore;
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
@@ -968,6 +973,13 @@ export class AgentHarness implements AgentLane {
 		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
 		const checkedBinding = validateImmutableAgentBindingV1(execution.binding);
 		if (!checkedBinding.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", checkedBinding.error);
+		const checkedEpoch = validateBindingEpochV1(execution.initialBindingEpoch);
+		if (!checkedEpoch.ok) throw new HarnessFault("Foundation execution epoch is not an established BindingEpoch", checkedEpoch.error);
+		const checkedAgent = execution.agentInstance === undefined ? undefined : validateAgentInstanceV1(execution.agentInstance);
+		if (checkedAgent !== undefined && !checkedAgent.ok) throw new HarnessFault("Foundation execution AgentInstance is not established", checkedAgent.error);
+		const provider = this.foundationProvider;
+		if (provider === undefined) throw new HarnessFault("Foundation execution requires a trusted provider consumer", undefined);
+		if (provider.providerId !== execution.providerId) throw new HarnessFault("Foundation execution provider consumer does not match providerId", undefined);
 		if ((execution.hostAuthority === undefined) !== (execution.settlement === undefined)) {
 			throw new HarnessFault("Foundation hostAuthority and settlement must be supplied together", undefined);
 		}
@@ -987,7 +999,9 @@ export class AgentHarness implements AgentLane {
 			task: structuredClone(checkedTask.value),
 			dispatch: structuredClone(checkedDispatch.value),
 			binding: structuredClone(checkedBinding.value),
+			initialBindingEpoch: structuredClone(checkedEpoch.value),
 			bindingEpochIds: [...execution.bindingEpochIds],
+			...(execution.agentInstance === undefined ? {} : { agentInstance: structuredClone(execution.agentInstance) }),
 			...(checkedAuthority === undefined ? {} : { hostAuthority: structuredClone(checkedAuthority.value) }),
 			...(execution.settlement === undefined ? {} : { settlement: structuredClone(execution.settlement) }),
 		};
@@ -998,12 +1012,18 @@ export class AgentHarness implements AgentLane {
 		if (normalizedExecution.dispatch.bindingId !== normalizedExecution.binding.bindingId) {
 			throw new HarnessFault("Foundation execution binding identity does not match the dispatch", undefined);
 		}
-		if (normalizedExecution.bindingEpochIds.length === 0 || normalizedExecution.bindingEpochIds.some((id) => id.length === 0)) {
+		if (normalizedExecution.bindingEpochIds.length === 0 || normalizedExecution.bindingEpochIds.some((id) => id.length === 0) || !normalizedExecution.bindingEpochIds.includes(normalizedExecution.initialBindingEpoch.bindingEpochId)) {
 			throw new HarnessFault("Foundation execution requires at least one binding epoch", undefined);
 		}
-		if (normalizedExecution.providerId.length === 0 || normalizedExecution.agentInstanceId.length === 0) {
-			throw new HarnessFault("Foundation execution requires provider and AgentInstance identities", undefined);
+		if (normalizedExecution.providerId.length === 0) throw new HarnessFault("Foundation execution requires a provider identity", undefined);
+		if (provider.providerClass === "agent") {
+			if (normalizedExecution.agentInstanceId === undefined || normalizedExecution.agentInstanceId.length === 0 || normalizedExecution.agentInstance === undefined) throw new HarnessFault("Agent provider execution requires a durable AgentInstance", undefined);
+			if (normalizedExecution.initialBindingEpoch.agentInstanceId !== normalizedExecution.agentInstanceId) throw new HarnessFault("Foundation execution epoch does not match its AgentInstance", undefined);
+			if (checkedAgent === undefined || !checkedAgent.ok || checkedAgent.value.agentInstanceId !== normalizedExecution.agentInstanceId || checkedAgent.value.taskId !== normalizedExecution.task.taskId || checkedAgent.value.providerId !== normalizedExecution.providerId) throw new HarnessFault("Foundation execution AgentInstance does not match its provider, task, or epoch", undefined);
+		} else if (normalizedExecution.agentInstanceId !== undefined || normalizedExecution.agentInstance !== undefined || normalizedExecution.initialBindingEpoch.agentInstanceId !== undefined) {
+			throw new HarnessFault("Operation/non-agent provider execution cannot carry an AgentInstance", undefined);
 		}
+		if (normalizedExecution.initialBindingEpoch.taskId !== normalizedExecution.task.taskId || normalizedExecution.initialBindingEpoch.bindingId !== normalizedExecution.binding.bindingId || normalizedExecution.initialBindingEpoch.attemptId.length === 0) throw new HarnessFault("Foundation execution epoch does not match its task or binding", undefined);
 		const metadata = await this.durableSession.getMetadata();
 		this.foundationSessionId = metadata.id;
 		try {
@@ -1036,8 +1056,8 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || this.foundationSessionId === undefined) return undefined;
 		return createExecutionCorrelation(this.foundationSessionId, lane, {
 			bindingId: execution.binding.bindingId,
-			bindingEpochId: execution.bindingEpochIds[0],
-			agentInstanceId: execution.agentInstanceId,
+			bindingEpochId: execution.initialBindingEpoch.bindingEpochId,
+			...(execution.agentInstanceId === undefined ? {} : { agentInstanceId: execution.agentInstanceId }),
 			goalId: execution.task.goalId,
 			taskId: execution.task.taskId,
 			dispatchId: execution.dispatch.dispatchId,
@@ -1093,41 +1113,6 @@ export class AgentHarness implements AgentLane {
 		return result.record;
 	}
 
-	private async appendFoundationFact(
-		lane: string,
-		objectType: string,
-		objectId: string,
-		clientRequestId: string,
-		payload: FoundationJsonValue,
-		correlation: ExecutionCorrelationV1,
-	): Promise<FoundationFactRecordV1> {
-		const existing = await this.durableSession.getFoundationObject(objectType, objectId);
-		if (existing !== undefined) {
-			if (existing.kind !== "fact") throw new HarnessFault(`Foundation object ${objectType}/${objectId} is not a fact`, undefined);
-			try {
-				if (existing.clientRequestId !== clientRequestId || canonicalFoundationJson(existing.payload) !== canonicalFoundationJson(payload)) {
-					throw new HarnessFault(`Foundation object ${objectType}/${objectId} conflicts with the replay payload`, undefined);
-				}
-			} catch (error) {
-				if (error instanceof HarnessFault) throw error;
-				throw new HarnessFault(`Foundation object ${objectType}/${objectId} is not canonical JSON`, error);
-			}
-		}
-		const record = await this.appendFoundation({
-			schemaVersion: 1,
-			kind: "fact",
-			id: `${objectType}:${objectId}`,
-			lane,
-			objectType,
-			objectId,
-			clientRequestId,
-			payload,
-			correlation,
-		});
-		if (record.kind !== "fact") throw new HarnessFault(`Foundation fact ${objectType}/${objectId} was not accepted`, undefined);
-		return record;
-	}
-
 	private async persistFoundationIntent(lane: string, runId: string): Promise<void> {
 		if (this.foundationExecution === undefined) return;
 		const ids = this.foundationIds(runId);
@@ -1138,10 +1123,10 @@ export class AgentHarness implements AgentLane {
 			schemaVersion: 1,
 			attemptId: ids.attemptId,
 			taskId: this.foundationExecution.task.taskId,
-			dispatchId: this.foundationExecution.dispatch.dispatchId,
-			bindingId: this.foundationExecution.binding.bindingId,
-			bindingEpochIds: [...this.foundationExecution.bindingEpochIds],
-			agentInstanceId: this.foundationExecution.agentInstanceId,
+				dispatchId: this.foundationExecution.dispatch.dispatchId,
+				bindingId: this.foundationExecution.binding.bindingId,
+				bindingEpochIds: [...this.foundationExecution.bindingEpochIds],
+				...(this.foundationExecution.agentInstanceId === undefined ? {} : { agentInstanceId: this.foundationExecution.agentInstanceId }),
 			runId,
 		}, "intent payload");
 		const existing = (await this.durableSession.findFoundationRecords({ kind: "intent", includePruned: true, order: "oldestFirst" }))
@@ -1186,15 +1171,6 @@ export class AgentHarness implements AgentLane {
 		if (payload === undefined || asRecord(payload)?.runId !== runId) throw new HarnessFault(`Foundation intent is invalid for operation ${runId}`, undefined);
 	}
 
-	private foundationPublicError(error: OperationError | undefined, fallbackCode: string, fallbackMessage: string): NonNullable<AttemptReceiptV1["error"]> {
-		return {
-			code: error?.code ?? fallbackCode,
-			message: error?.message ?? fallbackMessage,
-			category: "unknown",
-			retryable: false,
-		};
-	}
-
 	private async persistFoundationReceipts(
 		lane: string,
 		runId: string,
@@ -1202,110 +1178,26 @@ export class AgentHarness implements AgentLane {
 		error?: OperationError,
 	): Promise<FoundationReceiptBundle | undefined> {
 		if (this.foundationExecution === undefined) return undefined;
-		const prior = this.foundationReceipts.get(runId);
-		if (prior !== undefined) return prior;
 		const execution = this.foundationExecution;
-		const ids = this.foundationIds(runId);
-		const now = await this.foundationReceiptTimestamp(lane, runId);
-		const toolOutcome = await this.foundationToolOutcome(lane, runId);
-		const effectiveOutcome = outcome === "completed" && toolOutcome.failed ? "failed" : outcome;
-		const effectiveError = error ?? toolOutcome.error;
-		const terminalStatus: ResultStatusV1 = effectiveOutcome === "completed" ? "succeeded" : effectiveOutcome === "aborted" ? "cancelled" : "failed";
-		const candidate: AttemptReceiptV1 = {
-			schemaVersion: 1,
-			attemptReceiptId: ids.attemptReceiptId,
-			taskId: execution.task.taskId,
-			dispatchId: execution.dispatch.dispatchId,
-			attemptId: ids.attemptId,
-			providerId: execution.providerId,
-			agentInstanceId: execution.agentInstanceId,
-			bindingId: execution.binding.bindingId,
-			bindingEpochIds: [...execution.bindingEpochIds],
-			status: terminalStatus,
-			workerReceiptRefs: [],
-			artifacts: [...(execution.settlement?.artifacts ?? [])],
-			provenance: { producerKind: "agent_executor", providerId: execution.providerId, producedAt: now },
-			sideEffectState: toolOutcome.sideEffectState,
-			...(terminalStatus === "failed" ? { error: this.foundationPublicError(effectiveError, "agent_run_failed", "Agent run failed") } : {}),
-		};
-		const existingAttempt = await this.durableSession.getFoundationObject("attempt_receipt", ids.attemptReceiptId);
-		let attemptReceipt = candidate;
-		if (existingAttempt !== undefined) {
-			if (existingAttempt.kind !== "fact") throw new HarnessFault("AttemptReceipt object is not a fact", undefined);
-			if (canonicalFoundationJson(existingAttempt.payload) !== canonicalFoundationJson(candidate)) throw new HarnessFault("Existing AttemptReceipt conflicts with its deterministic reconstruction", undefined);
-			attemptReceipt = existingAttempt.payload as unknown as AttemptReceiptV1;
-		}
-		const checkedAttempt = validateAttemptReceipt(attemptReceipt, { agentProvider: true, providerClass: "agent" });
-		if (!checkedAttempt.ok) throw new HarnessFault("AgentHarness produced an invalid AttemptReceipt", checkedAttempt.error);
-		attemptReceipt = checkedAttempt.value;
-		const attemptCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId });
-		if (attemptCorrelation === undefined) throw new HarnessFault("Missing execution correlation for Foundation AttemptReceipt", undefined);
-		const attemptFact = await this.appendFoundationFact(lane, "attempt_receipt", attemptReceipt.attemptReceiptId, `harness:attempt_receipt:${runId}`, this.foundationJson(attemptReceipt, "AttemptReceipt"), attemptCorrelation);
-		const checkedAttemptFact = validateAttemptReceipt(attemptFact.payload, { agentProvider: true, providerClass: "agent" });
-		if (!checkedAttemptFact.ok) throw new HarnessFault("Persisted AttemptReceipt is invalid", checkedAttemptFact.error);
-		attemptReceipt = checkedAttemptFact.value;
-
-		const settlement = execution.settlement;
+		const provider = this.foundationProvider;
+		if (provider === undefined) throw new HarnessFault("Foundation execution requires a trusted provider consumer", undefined);
+		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
+		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for provider consumption", undefined);
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const executed = await settlement.executeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
+		if (!executed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Dispatch: ${executed.error.message}`, executed.error);
+		const attemptReceipt = executed.value.receipt;
 		const authority = execution.hostAuthority;
-		if (settlement === undefined || authority === undefined) {
-			const bundle: FoundationReceiptBundle = { attemptId: ids.attemptId, attemptReceipt, correlation: attemptFact.correlation };
-			this.foundationReceipts.set(runId, bundle);
-			return bundle;
-		}
-		const settleInput = {
-			taskResultId: ids.taskResultId,
-			task: execution.task,
-			receipts: [attemptReceipt],
-			summary: settlement?.summary ?? (effectiveOutcome === "completed" ? "Agent run completed; awaiting host settlement evidence" : "Agent run did not complete successfully"),
-			artifacts: settlement?.artifacts,
-			diff: settlement?.diff,
-			tests: settlement?.tests ?? [],
-			evidence: settlement?.evidence ?? [],
-			producer: { producerKind: "host" as const, providerId: authority.authorityId, producedAt: now },
-		};
-		let settled = settleTaskResult(settleInput);
-		if (!settled.ok && effectiveOutcome === "completed" && attemptReceipt.status === "succeeded") {
-			attemptReceipt = {
-				...attemptReceipt,
-				status: "suspended",
-				error: this.foundationPublicError(undefined, "awaiting_host_settlement", "Host acceptance evidence is required before task settlement"),
-			};
-			settled = settleTaskResult({ ...settleInput, receipts: [attemptReceipt] });
-		}
-		if (!settled.ok) throw new HarnessFault("AgentHarness could not settle TaskResult", settled.error);
-		let taskResult = settled.value;
-		if (effectiveError !== undefined && taskResult.error === undefined) {
-			taskResult = { ...taskResult, error: this.foundationPublicError(effectiveError, "agent_run_failed", "Agent run failed") };
-		}
-		const checkedTaskResult = validateTaskResultV1(taskResult);
-		if (!checkedTaskResult.ok) throw new HarnessFault("AgentHarness produced an invalid TaskResult", checkedTaskResult.error);
-		const finalStatus = effectiveOutcome === "completed" && taskResult.status === "succeeded" ? "completed" : effectiveOutcome === "aborted" ? "cancelled" : "failed";
-		const finalized = finalizeRunReceipt({
-			runReceiptId: ids.runReceiptId,
-			runId,
-			terminalStatus: finalStatus,
-			taskResult,
-			attemptReceiptIds: [attemptReceipt.attemptReceiptId],
-			authority,
-			...(finalStatus === "completed" ? {} : { terminalErrorCode: effectiveError?.code ?? (taskResult.status === "suspended" ? "awaiting_host_settlement" : "agent_run_failed") }),
-			completedAt: now,
-		});
-		if (!finalized.ok) throw new HarnessFault("AgentHarness produced an invalid RunReceipt", finalized.error);
-		const checkedRunReceipt = validateRunReceiptV1(finalized.value);
-		if (!checkedRunReceipt.ok) throw new HarnessFault("AgentHarness produced an invalid RunReceipt", checkedRunReceipt.error);
-		const taskCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId, taskResultId: taskResult.taskResultId });
-		const runCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId, taskResultId: taskResult.taskResultId, runReceiptId: finalized.value.runReceiptId });
-		if (taskCorrelation === undefined || runCorrelation === undefined) throw new HarnessFault("Missing execution correlation for Foundation receipts", undefined);
-		const taskFact = await this.appendFoundationFact(lane, "task_result", taskResult.taskResultId, `harness:task_result:${runId}`, this.foundationJson(taskResult, "TaskResult"), taskCorrelation);
-		const checkedTaskFact = validateTaskResultV1(taskFact.payload);
-		if (!checkedTaskFact.ok) throw new HarnessFault("Persisted TaskResult is invalid", checkedTaskFact.error);
-		taskResult = checkedTaskFact.value;
-		const runFact = await this.appendFoundationFact(lane, "run_receipt", checkedRunReceipt.value.runReceiptId, `harness:run_receipt:${runId}`, this.foundationJson(checkedRunReceipt.value, "RunReceipt"), runCorrelation);
-		const checkedRunFact = validateRunReceiptV1(runFact.payload);
-		if (!checkedRunFact.ok) throw new HarnessFault("Persisted RunReceipt is invalid", checkedRunFact.error);
-		const bundle: FoundationReceiptBundle = { attemptId: ids.attemptId, attemptReceipt, taskResult, runReceipt: checkedRunFact.value, correlation: runFact.correlation };
-		this.foundationReceipts.set(runId, bundle);
-		return bundle;
+		const settlementInput = execution.settlement;
+		if (settlementInput === undefined || authority === undefined) return { attemptId: executed.value.attempt.attemptId, attemptReceipt, correlation };
+		const taskResultId = `task_result_${runId}`;
+		const producedAt = await this.foundationReceiptTimestamp(lane, runId);
+		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: settlementInput.summary ?? (outcome === "completed" ? "Agent run completed" : "Agent run did not complete successfully"), artifacts: settlementInput.artifacts, diff: settlementInput.diff, tests: settlementInput.tests ?? [], evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
+		if (!settled.ok) throw new HarnessFault("Host settlement rejected provider TaskResult", settled.error);
+		const finalStatus = outcome === "completed" && settled.value.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
+		const finalized = await settlement.finalize({ runReceiptId: `run_receipt_${runId}`, runId, terminalStatus: finalStatus, authority, attemptReceiptIds: [attemptReceipt.attemptReceiptId], taskResultId: settled.value.taskResultId, ...(finalStatus === "completed" ? {} : { terminalErrorCode: error?.code ?? "agent_run_failed" }), completedAt: producedAt });
+		if (!finalized.ok) throw new HarnessFault("Host terminal gate rejected provider RunReceipt", finalized.error);
+		return { attemptId: executed.value.attempt.attemptId, attemptReceipt, taskResult: settled.value, runReceipt: finalized.value, correlation };
 	}
 
 	private async foundationToolOutcome(lane: string, runId: string): Promise<FoundationToolOutcome> {
