@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Result } from "../../src/harness/result.ts";
+import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 import {
@@ -17,6 +17,7 @@ import {
 	LayeredResultSettlementV1,
 	SessionLedgerV1,
 	resolveAgentBinding,
+	ROLE_RESOLUTION_ORDER_V1,
 	switchAgentModeV1,
 	type AgentBindingV1,
 	type AttemptReceiptV1,
@@ -27,6 +28,9 @@ import {
 	type FoundationProviderExecutionOptionsV1,
 	type ModelProfileV1,
 	type RevisionReferenceV1,
+	type ChildAgentProvider,
+	type ChildSpawnRequestV1,
+	type ChildSpawnResultV1,
 	type SandboxOperationProvider,
 	type SandboxOperationRequestV1,
 	type SchedulerTaskExecutorProvider,
@@ -39,8 +43,8 @@ const now = "2026-01-01T00:00:00.000Z";
 const artifact = { schemaVersion: 1 as const, artifactId: "artifact-1", mediaType: "text/plain", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
 const capability = { schemaVersion: 1 as const, artifactId: "capability-1", mediaType: "application/json", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
 
-function task(): TaskEnvelopeV1 {
-	return { schemaVersion: 1, taskId: "task-t6", goalId: "goal-t6", goal: "exercise the T6 provider consumer", workspace: "workspace-t6", capabilityRefs: [capability], inputs: [], expectedOutputs: [artifact], budget: {}, acceptanceCriteria: [{ schemaVersion: 1, criterionId: "criterion-t6", description: "provider output is accepted", satisfiedBy: "evidence", required: true }], status: "ready", createdAt: now, updatedAt: now };
+function task(taskId = "task-t6"): TaskEnvelopeV1 {
+	return { schemaVersion: 1, taskId, goalId: taskId === "task-t6" ? "goal-t6" : `${taskId}-goal`, goal: "exercise the T6 provider consumer", workspace: "workspace-t6", capabilityRefs: [capability], inputs: [], expectedOutputs: [artifact], budget: {}, acceptanceCriteria: [{ schemaVersion: 1, criterionId: "criterion-t6", description: "provider output is accepted", satisfiedBy: "evidence", required: true }], status: "ready", createdAt: now, updatedAt: now };
 }
 
 function roleRevision() {
@@ -60,14 +64,17 @@ function modelProfile(revision = 1): ModelProfileV1 {
 	return createModelProfileRevision({ schemaVersion: 1, modelProfileId: "profile-t6", provider: "fake", model: "fake-model", budget: {}, revision, createdAt: now });
 }
 
-function binding(id = "binding-t6"): AgentBindingV1 {
-	const result = resolveAgentBinding({ task: task(), roleRevision: roleRevision(), modelProfile: modelProfile(), contextRevision: immutableFact("external_agent_binding", "external-existing", 1), capabilityRevision: immutableFact("capability_binding", "capability-existing", 1), modelBrokerBindingRevision: immutableFact("model_broker_binding", "model-broker-existing", 1), policyRevision: immutableFact("policy_binding", "policy-existing", 1), newBindingId: id, now: () => now });
+function binding(id = "binding-t6", taskValue = task()): AgentBindingV1 {
+	const result = resolveAgentBinding({ task: taskValue, roleRevision: roleRevision(), modelProfile: modelProfile(), contextRevision: immutableFact("external_agent_binding", "external-existing", 1), capabilityRevision: immutableFact("capability_binding", "capability-existing", 1), modelBrokerBindingRevision: immutableFact("model_broker_binding", "model-broker-existing", 1), policyRevision: immutableFact("policy_binding", "policy-existing", 1), newBindingId: id, now: () => now });
 	if (!result.ok) throw result.error;
 	return result.value;
 }
 
 async function seedBindingFacts(session: Session, value: AgentBindingV1): Promise<void> {
 	const ledger = new SessionLedgerV1(session, { ownerId: `seed-${value.bindingId}` });
+	await ledger.appendFact("task", value.taskId, task(value.taskId), { clientRequestId: `seed:task:${value.taskId}`, expectedRevision: 0, correlation: { taskId: value.taskId } });
+	await ledger.appendFact("role_revision", value.roleRevision.id, roleRevision(), { clientRequestId: `seed:role:${value.roleRevision.id}`, expectedRevision: 0, correlation: { taskId: value.taskId, bindingId: value.bindingId } });
+	await ledger.appendFact("model_profile_revision", value.modelProfileRevision.id, modelProfile(), { clientRequestId: `seed:model:${value.modelProfileRevision.id}`, expectedRevision: 0, correlation: { taskId: value.taskId, bindingId: value.bindingId } });
 	for (const [objectType, reference] of [["external_agent_binding", value.contextRevision], ["capability_binding", value.capabilityRevision], ["model_broker_binding", value.modelBrokerBindingRevision], ["policy_binding", value.policyRevision]] as const) {
 		const payload = { schemaVersion: 1 as const, type: reference.type, id: reference.id, revision: reference.revision };
 		await ledger.appendFact(objectType, reference.id, payload, { clientRequestId: `seed:${objectType}:${reference.id}`, correlation: { taskId: value.taskId, bindingId: value.bindingId } });
@@ -75,8 +82,8 @@ async function seedBindingFacts(session: Session, value: AgentBindingV1): Promis
 	await ledger.release();
 }
 
-function dispatch(providerId: string, bindingId = "binding-t6"): DispatchV1 {
-	return { schemaVersion: 1, dispatchId: `dispatch-${providerId}`, taskId: "task-t6", bindingId, taskExecutorProviderId: providerId, status: "pending", createdAt: now };
+function dispatch(providerId: string, bindingId = "binding-t6", taskId = "task-t6"): DispatchV1 {
+	return { schemaVersion: 1, dispatchId: `dispatch-${providerId}`, taskId, bindingId, taskExecutorProviderId: providerId, status: "pending", createdAt: now };
 }
 
 function epoch(providerId: string, providerClass: "scheduler" | "agent" = "scheduler", agentInstanceId?: string): BindingEpochV1 {
@@ -127,10 +134,46 @@ class BrokenSchedulerProvider extends SchedulerProvider {
 	}
 }
 
+class UnknownSideEffectSchedulerProvider extends SchedulerProvider {
+	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+		const result = await super.runAttempt(attempt, options);
+		if (!result.ok) return result;
+		return Result.ok({ ...result.value, sideEffectState: "unknown" as const });
+	}
+}
+
+class ChildProvider implements ChildAgentProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId = "agent-child-t6";
+	readonly providerClass = "agent" as const;
+	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [providerCapability]; }
+	async spawn(request: ChildSpawnRequestV1, _options: FoundationProviderExecutionOptionsV1): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+		const childTaskId = request.taskEnvelope.taskId;
+		const childBindingId = `binding-${childTaskId}`;
+		const child = createAgentInstance({ agentInstanceId: `child-instance-${childTaskId}`, providerId: this.providerId, providerDeclaredAgent: true, roleRevision: request.roleRevision, taskId: childTaskId, now: () => now });
+		if (!child.ok) return child;
+		const childEpoch = createBindingEpoch({ bindingEpochId: `child-epoch-${childTaskId}`, taskId: childTaskId, attemptId: `child-attempt-${childTaskId}`, bindingId: childBindingId, agentInstanceId: child.value.agentInstanceId, activationReason: "attempt_started", activatedByCommandId: `child-command-${childTaskId}`, now: () => now });
+		if (!childEpoch.ok) return childEpoch;
+		const childDispatch = dispatch(this.providerId, childBindingId, childTaskId);
+		const childAttempt = createAttempt({ attemptId: `child-attempt-${childTaskId}`, dispatch: childDispatch, providerId: this.providerId, initialBindingEpoch: childEpoch.value, providerClass: "agent", agentInstanceId: child.value.agentInstanceId, now: () => now });
+		if (!childAttempt.ok) return childAttempt;
+		return Result.ok({ schemaVersion: 1, attempt: childAttempt.value, agentInstance: child.value, initialBindingEpoch: childEpoch.value });
+	}
+	async resume(_attemptId: string) { return Result.err(new FoundationError("foundation_schema_unknown_record", "child resume is not implemented")); }
+	async cancel(_attemptId: string) { return Result.ok(undefined); }
+	async dispose() {}
+}
+
 describe("T6 provider-driven role binding and result settlement", () => {
 	it("fails closed without all four existing binding facts", () => {
 		const result = resolveAgentBinding({ task: task(), roleRevision: roleRevision(), modelProfile: modelProfile(), newBindingId: "missing-facts", now: () => now });
 		expect(result).toMatchObject({ ok: false, error: { code: "binding_required_fact" } });
+	});
+
+	it("rejects a succeeded provider receipt with unresolved side effects", async () => {
+		const provider = new UnknownSideEffectSchedulerProvider();
+		const result = await executeDispatchV1({ provider, dispatch: dispatch(provider.providerId), binding: binding(), initialBindingEpoch: epoch(provider.providerId), correlation: { sessionId: "session-t6", laneId: "main", taskId: "task-t6", dispatchId: "dispatch-scheduler-t6", attemptId: "attempt-scheduler-t6", bindingId: "binding-t6", bindingEpochId: "epoch-scheduler-t6", revision: 1 } });
+		expect(result).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 	});
 
 	it("restores Role and ModelProfile revisions from the Session ledger and fences writers", async () => {
@@ -155,6 +198,34 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		await restartedProfiles.release();
 	});
 
+	it("resolves only Task, Role, ModelProfile, and binding sources from durable facts", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "resolver-session", createdAt: 1 }));
+		const roles = await DurableRoleRegistryV1.create(session, { now: () => now, ownerId: "resolver-roles" });
+		expect(await roles.create({ definition: roleDefinition() })).toMatchObject({ ok: true });
+		await roles.release();
+		const profiles = await DurableModelProfileStoreV1.create(session, { ownerId: "resolver-profiles" });
+		expect(await profiles.register({ profile: modelProfile() })).toMatchObject({ ok: true });
+		await profiles.release();
+		const value = binding("resolver-binding");
+		const layers = ROLE_RESOLUTION_ORDER_V1.map((layer, ordinal) => ({ schemaVersion: 1 as const, layer, ordinal, referenceId: `${layer}-resolver`, revision: 1, overrideReason: "durable-resolver" }));
+		const input = { schemaVersion: 1 as const, task: task(), roleId: "role-t6", scope: "project" as const, modelProfile: modelProfile(), orderedLayers: layers, contextRevision: value.contextRevision, capabilityRevision: value.capabilityRevision, modelBrokerBindingRevision: value.modelBrokerBindingRevision, policyRevision: value.policyRevision, bindingId: "resolver-binding" };
+		expect(await roles.resolve(input)).toMatchObject({ ok: false, error: { code: "role_resolver_task_required" } });
+		const seed = new SessionLedgerV1(session, { ownerId: "resolver-seed" });
+		await seed.appendFact("task", value.taskId, task(), { clientRequestId: "resolver:task", expectedRevision: 0, correlation: { taskId: value.taskId } });
+		for (const [objectType, reference] of [["external_agent_binding", value.contextRevision], ["capability_binding", value.capabilityRevision], ["model_broker_binding", value.modelBrokerBindingRevision], ["policy_binding", value.policyRevision]] as const) {
+			const payload = { schemaVersion: 1 as const, type: reference.type, id: reference.id, revision: reference.revision };
+			await seed.appendFact(objectType, reference.id, payload, { clientRequestId: `resolver:${objectType}`, correlation: { taskId: value.taskId } });
+		}
+		await seed.release();
+		const resolved = await roles.resolve(input);
+		if (!resolved.ok) throw resolved.error;
+		expect(resolved).toMatchObject({ ok: true, value: { binding: { bindingId: "resolver-binding" } } });
+		const { fingerprint: _fingerprint, ...fabricatedBase } = modelProfile();
+		const fabricatedModel = createModelProfileRevision({ ...fabricatedBase, model: "caller-shaped-model" });
+		expect(await roles.resolve({ ...input, modelProfile: fabricatedModel })).toMatchObject({ ok: false, error: { code: "binding_required_fact" } });
+		await roles.release();
+	});
+
 	it("composes only immutable Capability/ModelBroker/Policy/External-Agent Binding references", () => {
 		const value = binding("binding-existing");
 		expect(value).toMatchObject({ contextRevision: { type: "external_agent_binding" }, capabilityRevision: { type: "capability_binding" }, modelBrokerBindingRevision: { type: "model_broker_binding" }, policyRevision: { type: "policy_binding" } });
@@ -173,8 +244,7 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const ledger = new LayeredResultSettlementV1(session, { ownerId: "settlement-t6" });
 		const correlation = { sessionId: "session-t6", laneId: "main", taskId: currentDispatch.taskId, dispatchId: currentDispatch.dispatchId, attemptId: currentEpoch.attemptId, bindingId: currentBinding.bindingId, bindingEpochId: currentEpoch.bindingEpochId, revision: 1 };
 		const executed = await ledger.executeDispatch({ provider: executor, dispatch: currentDispatch, binding: currentBinding, initialBindingEpoch: currentEpoch, correlation });
-		expect(executed.ok).toBe(true);
-		if (!executed.ok) return;
+		if (!executed.ok) throw executed.error;
 		const persisted = await session.getFoundationObject("attempt_receipt", executed.value.receipt.attemptReceiptId);
 		expect(persisted?.kind).toBe("fact");
 		expect(executor.runCount).toBe(1);
@@ -190,6 +260,8 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		expect(run).toMatchObject({ ok: true, value: { taskResultId: "task-result-t6", terminalStatus: "completed" } });
 		const conflicting = await restarted.finalize({ runReceiptId: "run-receipt-conflict", runId: "run-t6", terminalStatus: "failed", authority: createHostTerminalGateAuthorityV1("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], terminalErrorCode: "replay-conflict", completedAt: now });
 		expect(conflicting).toMatchObject({ ok: false, error: { code: "run_terminal_authority_invalid" } });
+		const reusedReceiptId = await restarted.finalize({ runReceiptId: "run-receipt-t6", runId: "run-other", terminalStatus: "failed", authority: createHostTerminalGateAuthorityV1("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], terminalErrorCode: "receipt-id-reuse", completedAt: now });
+		expect(reusedReceiptId).toMatchObject({ ok: false, error: { code: "run_terminal_authority_invalid" } });
 	});
 
 	it("does not expose a structured receipt acceptance escape hatch and rejects runId conflicts", async () => {
@@ -208,6 +280,23 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const operation = await executeOperationV1({ provider: worker, request: { schemaVersion: 1, operationId: "operation-t6", taskId: "task-t6", dispatchId: "dispatch-worker-t6", attemptId: "attempt-worker-t6" }, correlation: { sessionId: "session-t6", laneId: "main", taskId: "task-t6", dispatchId: "dispatch-worker-t6", attemptId: "attempt-worker-t6", revision: 1 } });
 		expect(operation).toMatchObject({ ok: true, value: { sandboxProviderId: worker.providerId } });
 		if (operation.ok) expect("agentInstanceId" in operation.value).toBe(false);
+	});
+
+	it("persists child Task, Context, Dispatch, AgentInstance, and Attempt identities without lease inheritance", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "spawn-session", createdAt: 1 }));
+		const childTask = task("child-task-t6");
+		const childBinding = binding("binding-child-task-t6", childTask);
+		await seedBindingFacts(session, childBinding);
+		const seed = new SessionLedgerV1(session, { ownerId: "spawn-binding-seed" });
+		await seed.appendFact("agent_binding", childBinding.bindingId, childBinding, { clientRequestId: "spawn:binding", correlation: { taskId: childBinding.taskId, bindingId: childBinding.bindingId } });
+		await seed.release();
+		const provider = new ChildProvider();
+		const settlement = new LayeredResultSettlementV1(session, { ownerId: "spawn-settlement" });
+		const spawned = await settlement.executeAgentSpawn({ provider, request: { schemaVersion: 1, spawnId: "spawn-t6", taskEnvelope: childTask, roleRevision: roleRevision(), modelProfile: modelProfile(), forkScope: "none" }, correlation: { sessionId: "spawn-session", laneId: "main", taskId: childTask.taskId, agentInstanceId: `child-instance-${childTask.taskId}`, revision: 1 } });
+		if (!spawned.ok) throw spawned.error;
+		expect(spawned).toMatchObject({ ok: true, value: { attempt: { attemptId: `child-attempt-${childTask.taskId}`, taskId: childTask.taskId } } });
+		for (const objectType of ["task", "context", "dispatch", "agent_instance", "binding_epoch", "attempt"] as const) expect((await session.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" })).length).toBeGreaterThan(0);
+		await settlement.release();
 	});
 
 	it("requires the next immutable Binding and safe boundary for mode switch", () => {
@@ -238,6 +327,9 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		await seed.appendFact("agent_binding", currentBinding.bindingId, currentBinding, { clientRequestId: "mode:binding", correlation: { taskId: currentBinding.taskId, bindingId: currentBinding.bindingId } });
 		await seed.appendFact("binding_epoch", currentEpoch.bindingEpochId, currentEpoch, { clientRequestId: "mode:epoch", correlation: { taskId: currentEpoch.taskId, attemptId: currentEpoch.attemptId, bindingId: currentEpoch.bindingId, bindingEpochId: currentEpoch.bindingEpochId, agentInstanceId: currentEpoch.agentInstanceId } });
 		await seed.appendFact("agent_instance", agent.value.agentInstanceId, agent.value, { clientRequestId: "mode:agent", correlation: { taskId: agent.value.taskId, agentInstanceId: agent.value.agentInstanceId } });
+		const currentAttempt = createAttempt({ attemptId: currentEpoch.attemptId, dispatch: dispatch("agent-t6"), providerId: "agent-t6", initialBindingEpoch: currentEpoch, providerClass: "agent", agentInstanceId: agent.value.agentInstanceId, now: () => now });
+		if (!currentAttempt.ok) throw currentAttempt.error;
+		await seed.appendFact("attempt", currentAttempt.value.attemptId, currentAttempt.value, { clientRequestId: "mode:attempt", correlation: { taskId: currentAttempt.value.taskId, dispatchId: currentAttempt.value.dispatchId, attemptId: currentAttempt.value.attemptId, bindingId: currentAttempt.value.bindingId, bindingEpochId: currentEpoch.bindingEpochId, agentInstanceId: currentAttempt.value.agentInstanceId } });
 		await seed.release();
 		const nextBase = { ...currentBinding, bindingId: "binding-next" };
 		const { fingerprint: _oldFingerprint, ...nextSnapshot } = nextBase;
@@ -247,6 +339,7 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const switched = await settlement.switchAgentMode({ intent: { schemaVersion: 1, type: "role.switch", modeSwitchId: "mode-durable", taskId: currentEpoch.taskId, attemptId: currentEpoch.attemptId, agentInstanceId: "agent-instance-t6", bindingId: currentEpoch.bindingId, newBindingId: nextBinding.bindingId, activationReason: "mode_switch", activatedByCommandId: "mode-command", createdAt: now }, currentEpoch, correlation, nextBinding, nextBindingId: nextBinding.bindingId, safeBoundary: "checkpoint", now: () => now });
 		expect(switched).toMatchObject({ ok: true, value: { bindingId: "binding-next", ordinal: 1 } });
 		expect(await session.getFoundationObject("binding.activated", switched.ok ? switched.value.bindingEpochId : "missing")).toMatchObject({ kind: "fact", objectType: "binding.activated" });
+		expect(await session.getFoundationObject("attempt", currentEpoch.attemptId)).toMatchObject({ kind: "fact", payload: { bindingEpochIds: [currentEpoch.bindingEpochId, "binding_epoch_mode-durable"] } });
 		await settlement.release();
 	});
 });

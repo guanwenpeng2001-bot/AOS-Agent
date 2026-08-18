@@ -22,9 +22,10 @@ import {
 	type RoleTombstoneV1,
 	validateRoleRegistryRecordV1,
 } from "./role-registry.ts";
-import type { ModelProfileV1 } from "./role.ts";
+import { validateRoleRevisionV1, type ModelProfileV1, type RoleRevisionV1 } from "./role.ts";
 import { validateSecretFreeModelProfileV1 } from "./model-profile.ts";
-import { fingerprintFoundationValue } from "./identity.ts";
+import { canonicalFoundationJson, fingerprintFoundationValue } from "./identity.ts";
+import { validateTaskEnvelope } from "./task.ts";
 
 /** Durable object kinds. Role/profile history remains in the object payload; Session is the authority. */
 export const ROLE_REGISTRY_OBJECT_TYPE_V1 = "role_registry";
@@ -46,6 +47,40 @@ function resultError<T>(error: unknown, fallback: string): ResultValue<T, Founda
 interface StoredRoleRecordV1 {
 	readonly payload: RoleRegistryRecordV1;
 	readonly revision: number;
+}
+
+function durableReferenceMatches(reference: { readonly id: string; readonly revision: number; readonly fingerprint?: { readonly value: string } }, payload: unknown): boolean {
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload) || reference.fingerprint === undefined) return false;
+	const record = payload as Record<string, unknown>;
+	return record.revision === reference.revision && fingerprintFoundationValue(payload).value === reference.fingerprint.value;
+}
+
+function immutableRoleRevisionValid(value: RoleRevisionV1): boolean {
+	const { fingerprint, ...base } = value;
+	return fingerprint.value === fingerprintFoundationValue(base).value;
+}
+
+function findRoleRevision(records: readonly RoleRegistryRecordV1[], reference: RoleRevisionV1): RoleRevisionV1 | undefined {
+	for (const record of records) {
+		for (const candidate of record.revisions) {
+			const checked = validateRoleRevisionV1(candidate);
+			if (checked.ok && immutableRoleRevisionValid(checked.value) && canonicalFoundationJson(checked.value) === canonicalFoundationJson(reference)) return checked.value;
+		}
+	}
+	return undefined;
+}
+
+function modelProfileFromPayload(payload: unknown, modelProfileId: string, revision: number, fingerprint: string): ModelProfileV1 | undefined {
+	const direct = validateSecretFreeModelProfileV1(payload);
+	if (direct.ok && direct.value.modelProfileId === modelProfileId && direct.value.revision === revision && direct.value.fingerprint.value === fingerprint) return direct.value;
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+	const record = payload as Record<string, unknown>;
+	if (record.modelProfileId !== modelProfileId || !Array.isArray(record.revisions)) return undefined;
+	for (const candidate of record.revisions) {
+		const checked = validateSecretFreeModelProfileV1(candidate);
+		if (checked.ok && checked.value.modelProfileId === modelProfileId && checked.value.revision === revision && checked.value.fingerprint.value === fingerprint) return checked.value;
+	}
+	return undefined;
 }
 
 /**
@@ -110,7 +145,15 @@ export class DurableRoleRegistryV1 {
 	}
 
 	async resolve(input: RoleResolveInputV1): Promise<ResultValue<RoleResolutionPreviewV1, FoundationError>> {
-		return this.read((registry) => registry.resolve(input));
+		await this.mutationTail;
+		try {
+			const checked = await this.validateDurableResolutionInput(input);
+			if (!checked.ok) return checked;
+			const registry = await this.loadRegistry();
+			return registry.resolve(checked.value);
+		} catch (error) {
+			return resultError(error, "role_registry_persistence_invalid");
+		}
 	}
 
 	async release(): Promise<void> { await this.ledger.release(); }
@@ -172,6 +215,62 @@ export class DurableRoleRegistryV1 {
 			else latest.push(stored);
 		}
 		return latest;
+	}
+
+	private async validateDurableResolutionInput(input: RoleResolveInputV1): Promise<ResultValue<RoleResolveInputV1, FoundationError>> {
+		const taskRecord = await this.ledger.get("task", input.task.taskId);
+		if (taskRecord === undefined || taskRecord.kind !== "fact") return Result.err(new FoundationError("role_resolver_task_required", "Role resolution requires a TaskEnvelope that is durable in Session", { details: { taskId: input.task.taskId } }));
+		const task = validateTaskEnvelope(taskRecord.payload);
+		if (!task.ok) return Result.err(new FoundationError("role_resolver_task_required", "Role resolution requires an exact durable TaskEnvelope", { details: { taskId: input.task.taskId } }));
+		if (canonicalFoundationJson(task.value) !== canonicalFoundationJson(input.task)) return Result.err(new FoundationError("role_resolver_task_required", "Role resolution must consume the durable TaskEnvelope", { details: { taskId: input.task.taskId } }));
+		const modelProfile = await this.findDurableModelProfile(input.modelProfile.modelProfileId, input.modelProfile.revision, input.modelProfile.fingerprint.value);
+		if (modelProfile === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile must resolve from a durable registry fact", { details: { modelProfileId: input.modelProfile.modelProfileId, revision: input.modelProfile.revision } }));
+		const records = await this.loadRecords();
+		for (const override of input.overrides ?? []) {
+			if (override.roleRevision !== undefined && findRoleRevision(records, override.roleRevision) === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution RoleRevision override must resolve from a durable registry fact", { details: { roleRevisionId: override.roleRevision.roleRevisionId, revision: override.roleRevision.revision } }));
+			if (override.modelProfile !== undefined) {
+				const durableOverride = await this.findDurableModelProfile(override.modelProfile.modelProfileId, override.modelProfile.revision, override.modelProfile.fingerprint.value);
+				if (durableOverride === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile override must resolve from a durable registry fact", { details: { modelProfileId: override.modelProfile.modelProfileId, revision: override.modelProfile.revision } }));
+			}
+		}
+		const context = input.externalAgentBindingRevision ?? input.contextRevision;
+		if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return Result.err(new FoundationError("binding_required_fact", "Role resolution received conflicting External-Agent Binding aliases"));
+		const sources: readonly [string, typeof context][] = [
+			["external_agent_binding", context],
+			["capability_binding", input.capabilityRevision],
+			["model_broker_binding", input.modelBrokerBindingRevision],
+			["policy_binding", input.policyRevision],
+		];
+		for (const [objectType, reference] of sources) {
+			if (reference === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution requires all four durable binding source facts", { details: { objectType, taskId: task.value.taskId } }));
+			const source = await this.ledger.get(objectType, reference.id);
+			if (source === undefined || source.kind !== "fact" || !durableReferenceMatches(reference, source.payload)) return Result.err(new FoundationError("binding_required_fact", "Role resolution binding source does not match its durable Session fact", { details: { objectType, objectId: reference.id, revision: reference.revision } }));
+		}
+		for (const override of input.overrides ?? []) {
+			const external = override.externalAgentBindingRevision ?? override.contextRevision;
+			const overrideSources: readonly [string, typeof external][] = [["external_agent_binding", external], ["model_broker_binding", override.modelBrokerBindingRevision], ["policy_binding", override.policyRevision]];
+			for (const [objectType, reference] of overrideSources) {
+				if (reference === undefined) continue;
+				const source = await this.ledger.get(objectType, reference.id);
+				if (source === undefined || source.kind !== "fact" || !durableReferenceMatches(reference, source.payload)) return Result.err(new FoundationError("binding_required_fact", "Role resolution override source does not match its durable Session fact", { details: { objectType, objectId: reference.id, revision: reference.revision } }));
+			}
+		}
+		return Result.ok({ ...input, task: task.value, modelProfile });
+	}
+
+	private async findDurableModelProfile(modelProfileId: string, revision: number, fingerprint: string): Promise<ModelProfileV1 | undefined> {
+		const direct = await this.ledger.get("model_profile_revision", modelProfileId);
+		if (direct?.kind === "fact") {
+			const profile = modelProfileFromPayload(direct.payload, modelProfileId, revision, fingerprint);
+			if (profile !== undefined) return profile;
+		}
+		const records = await this.ledger.find({ kind: "fact", objectType: MODEL_PROFILE_OBJECT_TYPE_V1, order: "oldestFirst" });
+		for (const record of records) {
+			if (record.kind !== "fact") continue;
+			const profile = modelProfileFromPayload(record.payload, modelProfileId, revision, fingerprint);
+			if (profile !== undefined) return profile;
+		}
+		return undefined;
 	}
 
 	private async persistChanged(before: readonly StoredRoleRecordV1[], after: readonly RoleRegistryRecordV1[]): Promise<void> {

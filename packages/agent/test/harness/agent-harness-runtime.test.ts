@@ -73,6 +73,31 @@ async function resultFacts(session: Session): Promise<Extract<FoundationRecordV1
 	return (await facts(session)).filter((record) => RESULT_FACT_TYPES.has(record.objectType));
 }
 
+function foundationRoleRevision() {
+	const base = {
+		schemaVersion: 1 as const,
+		roleRevisionId: "role-revision",
+		roleId: "role-harness-runtime",
+		scope: "project" as const,
+		revision: 1,
+		slug: "harness-runtime",
+		name: "Harness Runtime",
+		description: "Harness runtime role",
+		persona: "Execute the harness runtime",
+		modelProfileRef: { schemaVersion: 1 as const, type: "model_profile", id: "model-profile", revision: 1 },
+		capabilitySelector: { policy: "none" as const },
+		skillSelector: { policy: "none" as const },
+		mcpSelector: { policy: "none" as const },
+		createdAt: "2026-01-01T00:00:00.000Z",
+	};
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
+function foundationModelProfile() {
+	const base = { schemaVersion: 1 as const, modelProfileId: "model-profile", provider: "google", model: "gemini-2.5-flash", budget: {}, revision: 1, createdAt: "2026-01-01T00:00:00.000Z" };
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
 function createFoundationExecution(): AgentHarnessFoundationExecution {
 	const taskId = "task-harness-runtime";
 	const bindingId = "binding-harness-runtime";
@@ -80,12 +105,15 @@ function createFoundationExecution(): AgentHarnessFoundationExecution {
 		const payload = { schemaVersion: 1 as const, type, id, revision: 1 };
 		return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
 	};
+	const durableRoleRevision = foundationRoleRevision();
+	const durableModelProfile = foundationModelProfile();
 	const binding = {
 		schemaVersion: 1 as const,
 		bindingId,
 		taskId,
-		roleRevision: immutableRef("role_revision", "role-revision"),
-		modelProfileRevision: immutableRef("model_profile_revision", "model-profile"),
+		goalId: "goal-harness-runtime",
+		roleRevision: { schemaVersion: 1 as const, type: "role_revision", id: durableRoleRevision.roleRevisionId, revision: durableRoleRevision.revision, fingerprint: durableRoleRevision.fingerprint },
+		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision", id: durableModelProfile.modelProfileId, revision: durableModelProfile.revision, fingerprint: durableModelProfile.fingerprint },
 		modelRoute: { provider: "google", model: "gemini-2.5-flash" },
 		contextRevision: immutableRef("external_agent_binding", "external-agent"),
 		capabilityRevision: immutableRef("capability_binding", "capability"),
@@ -126,7 +154,7 @@ function createFoundationExecution(): AgentHarnessFoundationExecution {
 		providerId: "agent-harness-provider",
 		agentInstanceId: "agent-instance-harness-runtime",
 		initialBindingEpoch: { schemaVersion: 1, bindingEpochId: "binding-epoch-harness-runtime", taskId, attemptId: "attempt-harness-runtime", agentInstanceId: "agent-instance-harness-runtime", bindingId, ordinal: 0, activationReason: "attempt_started", activatedByCommandId: "command-harness-runtime", activatedAt: "2026-01-01T00:00:00.000Z" },
-		agentInstance: { schemaVersion: 1, agentInstanceId: "agent-instance-harness-runtime", providerId: "agent-harness-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: "role-revision", revision: 1 }, bindingEpochIds: ["binding-epoch-harness-runtime"], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: "agent-instance-harness-runtime", depth: 0 }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+		agentInstance: { schemaVersion: 1, agentInstanceId: "agent-instance-harness-runtime", providerId: "agent-harness-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: durableRoleRevision.roleRevisionId, revision: durableRoleRevision.revision }, bindingEpochIds: ["binding-epoch-harness-runtime"], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: "agent-instance-harness-runtime", depth: 0 }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
 		bindingEpochIds: ["binding-epoch-harness-runtime"],
 		settlement: {
 			tests: [{ name: "harness runtime", required: true, status: "passed" }],
@@ -181,6 +209,8 @@ class HarnessFoundationProvider implements TaskExecutorProvider {
 
 async function seedFoundationBindingFacts(session: Session, execution: AgentHarnessFoundationExecution): Promise<void> {
 	const ledger = new SessionLedgerV1(session, { ownerId: `harness-seed:${execution.binding.bindingId}` });
+	await ledger.appendFact("role_revision", execution.binding.roleRevision.id, foundationRoleRevision(), { clientRequestId: `harness-seed:role:${execution.binding.roleRevision.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
+	await ledger.appendFact("model_profile_revision", execution.binding.modelProfileRevision.id, foundationModelProfile(), { clientRequestId: `harness-seed:model:${execution.binding.modelProfileRevision.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
 	for (const [objectType, reference] of [["external_agent_binding", execution.binding.contextRevision], ["capability_binding", execution.binding.capabilityRevision], ["model_broker_binding", execution.binding.modelBrokerBindingRevision], ["policy_binding", execution.binding.policyRevision]] as const) {
 		const payload = { schemaVersion: 1 as const, type: reference.type, id: reference.id, revision: reference.revision };
 		await ledger.appendFact(objectType, reference.id, payload, { clientRequestId: `harness-seed:${objectType}:${reference.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
@@ -215,6 +245,14 @@ function injectFoundationFault(
 }
 
 describe("AgentHarness runtime", () => {
+	it("persists the TaskEnvelope before rejecting caller-shaped binding sources", async () => {
+		const session = createSession("task-before-resolver");
+		const runtime = createModelsWithResponse();
+		const execution = createFoundationExecution();
+		await expect(AgentHarness.create({ session, models: runtime.models, model: runtime.model, foundationExecution: execution, foundationProvider: new HarnessFoundationProvider(execution.providerId, session) })).rejects.toThrow("durable registry and source facts");
+		expect(await session.getFoundationObject("task", execution.task.taskId)).toMatchObject({ kind: "fact", objectType: "task", payload: { taskId: execution.task.taskId } });
+	});
+
 	it("drives a public prompt and persists correlated receipts", async () => {
 		const session = createSession();
 		const { models, model } = createModelsWithResponse();

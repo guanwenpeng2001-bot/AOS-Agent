@@ -28,6 +28,8 @@ import {
 	validateImmutableAgentBindingV1,
 	validateTaskEnvelopeV1,
 	LayeredResultSettlementV1,
+	persistTaskEnvelopeBeforeResolverV1,
+	validateDurableBindingSourcesV1,
 	validateAgentInstanceV1,
 	validateBindingEpochV1,
 	type AcceptanceFactV1,
@@ -969,10 +971,14 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined) return;
 		const checkedTask = validateTaskEnvelopeV1(execution.task);
 		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
+		const persistedTask = await persistTaskEnvelopeBeforeResolverV1(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId });
+		if (!persistedTask.ok) throw new HarnessFault("Foundation execution TaskEnvelope could not be durably established before binding resolution", persistedTask.error);
 		const checkedDispatch = validateDispatchV1(execution.dispatch);
 		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
 		const checkedBinding = validateImmutableAgentBindingV1(execution.binding);
 		if (!checkedBinding.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", checkedBinding.error);
+		const durableBinding = await validateDurableBindingSourcesV1(this.durableSession, checkedBinding.value, persistedTask.value);
+		if (!durableBinding.ok) throw new HarnessFault("Foundation execution binding does not resolve from durable registry and source facts", durableBinding.error);
 		const checkedEpoch = validateBindingEpochV1(execution.initialBindingEpoch);
 		if (!checkedEpoch.ok) throw new HarnessFault("Foundation execution epoch is not an established BindingEpoch", checkedEpoch.error);
 		const checkedAgent = execution.agentInstance === undefined ? undefined : validateAgentInstanceV1(execution.agentInstance);
@@ -998,7 +1004,7 @@ export class AgentHarness implements AgentLane {
 			...execution,
 			task: structuredClone(checkedTask.value),
 			dispatch: structuredClone(checkedDispatch.value),
-			binding: structuredClone(checkedBinding.value),
+			binding: structuredClone(durableBinding.value),
 			initialBindingEpoch: structuredClone(checkedEpoch.value),
 			bindingEpochIds: [...execution.bindingEpochIds],
 			...(execution.agentInstance === undefined ? {} : { agentInstance: structuredClone(execution.agentInstance) }),
