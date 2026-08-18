@@ -170,7 +170,7 @@ export interface PublicExecutionErrorV1 {
 }
 
 export class FoundationError extends Error {
-	readonly _tag: "FoundationError" | "FoundationContractError" = "FoundationError";
+	readonly _tag = "FoundationError" as const;
 	readonly code: FoundationErrorCode;
 	readonly category: FoundationErrorCategory;
 	readonly details?: JsonValue;
@@ -187,7 +187,7 @@ export class FoundationError extends Error {
 	}
 
 	static is(value: unknown): value is FoundationError {
-		return value instanceof FoundationError || (typeof value === "object" && value !== null && ((value as { _tag?: unknown })._tag === "FoundationError" || (value as { _tag?: unknown })._tag === "FoundationContractError"));
+		return value instanceof FoundationError || (typeof value === "object" && value !== null && (value as { _tag?: unknown })._tag === "FoundationError");
 	}
 
 	redact(): FoundationPublicErrorV1 {
@@ -198,26 +198,8 @@ export class FoundationError extends Error {
 		return { code: this.code, message: this.message, retryable: this.retryable };
 	}
 
-	toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationError" | "FoundationContractError" } {
+	toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationError" } {
 		return { _tag: "FoundationError", ...this.redact() };
-	}
-}
-
-/** Compatibility constructor for callers using the object-shaped tagged error contract. */
-export class FoundationContractError extends FoundationError {
-	readonly _tag = "FoundationContractError" as const;
-
-	constructor(props: { code: FoundationErrorCode; message: string; details?: JsonValue; retryable?: boolean; cause?: unknown } & Record<string, unknown>) {
-		super(props.code, props.message, props);
-		this.name = "FoundationContractError";
-	}
-
-	static is(value: unknown): value is FoundationContractError {
-		return value instanceof FoundationContractError;
-	}
-
-	override toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationContractError" } {
-		return { _tag: "FoundationContractError", ...this.redact() };
 	}
 }
 

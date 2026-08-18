@@ -217,6 +217,12 @@ describe("Foundation identity, schemas, and redaction", () => {
 		expect(redacted.message).not.toContain("sk-1234567890abcdef");
 	});
 
+	it("accepts only the canonical FoundationError tag", () => {
+		expect(FoundationError.is({ _tag: "FoundationError" })).toBe(true);
+		expect(FoundationError.is({ _tag: "FoundationContractError" })).toBe(false);
+		expect(new FoundationError("foundation_schema_unknown_record", "unknown record").toJSON()).toMatchObject({ _tag: "FoundationError" });
+	});
+
 	it("keeps the Foundation envelope versioned and correlated", () => {
 		const envelope = createFoundationEnvelope("task.created", "event-1", correlation, { taskId: task.taskId }, { sequence: 4, timestamp: "2026-01-01T00:00:00.000Z" });
 		expect(envelope.schemaVersion).toBe(1);
