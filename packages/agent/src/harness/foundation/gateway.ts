@@ -1,7 +1,7 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import { InMemoryBudgetLedger, type BudgetLedgerV1, type BudgetScopeV1, type BudgetUsageV1, type BudgetV1 } from "./budget.ts";
-import { FoundationError } from "./errors.ts";
-import { validateScopedModelRequestV1, validateToolGatewayRequestV1, type ScopedModelGateway, type ScopedModelRequestV1, type ScopedModelResultV1, type ToolExecutionResultV1, type ToolGateway, type ToolGatewayRequestV1 } from "./providers.ts";
+import { FoundationError, toFoundationError } from "./errors.ts";
+import { validateScopedModelRequestV1, validateScopedModelResultV1, validateToolExecutionResultV1, validateToolGatewayRequestV1, type ScopedModelGateway, type ScopedModelRequestV1, type ScopedModelResultV1, type ToolExecutionResultV1, type ToolGateway, type ToolGatewayRequestV1 } from "./providers.ts";
 import type { AgentBindingV1, BindingEpochV1 } from "./role.ts";
 
 export type ScopedExecutorProviderClassV1 = "scheduler" | "task_executor" | "agent" | "external_connector";
@@ -29,6 +29,7 @@ export class ScopedExecutionGatewayV1 {
 	private readonly ledger: BudgetLedgerV1;
 	private readonly budget: BudgetV1;
 	private readonly boundModelProfileId: string;
+	private readonly boundModelProfileRevision: number;
 	private readonly initializationError?: FoundationError;
 
 	constructor(options: ScopedExecutionGatewayOptionsV1) {
@@ -36,6 +37,7 @@ export class ScopedExecutionGatewayV1 {
 		this.tool = options.tool;
 		this.ledger = options.ledger ?? new InMemoryBudgetLedger();
 		this.boundModelProfileId = options.binding.modelProfileRevision.id;
+		this.boundModelProfileRevision = options.binding.modelProfileRevision.revision;
 		this.scope = {
 			taskId: options.binding.taskId,
 			goalId: options.binding.goalId,
@@ -60,13 +62,19 @@ export class ScopedExecutionGatewayV1 {
 		if (!checked.ok) return checked;
 		const counted = this.ledger.record(this.scope, { modelCalls: 1 });
 		if (!counted.ok) return counted;
-		const response = await this.model.stream(checked.value, options);
-		if (response.ok) {
-			const usage = withoutCallCount(response.value.usage, "modelCalls");
+		try {
+			const response = await this.model.stream(checked.value, options);
+			if (!response.ok) return response;
+			const validResponse = validateScopedModelResultV1(response.value);
+			if (!validResponse.ok) return validResponse;
+			if (validResponse.value.requestId !== checked.value.requestId) return Result.err(new FoundationError("invalid_correlation", "Model gateway response does not match its request", { details: { requestId: checked.value.requestId } }));
+			const usage = withoutCallCount(validResponse.value.usage, "modelCalls");
 			const recorded = this.ledger.record(this.scope, usage);
 			if (!recorded.ok) return recorded;
+			return validResponse;
+		} catch (error) {
+			return Result.err(toFoundationError(error, "tool_guard_denied"));
 		}
-		return response;
 	}
 
 	async execute(request: ToolGatewayRequestV1, options?: { signal?: AbortSignal }): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
@@ -78,8 +86,16 @@ export class ScopedExecutionGatewayV1 {
 		if (!scopeCheck.ok) return scopeCheck;
 		const counted = this.ledger.record(this.scope, { toolCalls: 1 });
 		if (!counted.ok) return counted;
-		const response = await this.tool.execute(checked.value, options);
-		return response;
+		try {
+			const response = await this.tool.execute(checked.value, options);
+			if (!response.ok) return response;
+			const validResponse = validateToolExecutionResultV1(response.value);
+			if (!validResponse.ok) return validResponse;
+			if (validResponse.value.toolCallId !== checked.value.toolCallId || validResponse.value.toolName !== checked.value.toolName) return Result.err(new FoundationError("invalid_correlation", "Tool gateway response does not match its request", { details: { toolCallId: checked.value.toolCallId } }));
+			return validResponse;
+		} catch (error) {
+			return Result.err(toFoundationError(error, "tool_guard_denied"));
+		}
 	}
 
 	usage(): BudgetUsageV1 { return this.ledger.usage(this.scope); }
@@ -91,7 +107,7 @@ export class ScopedExecutionGatewayV1 {
 		if (!checked.ok) return checked;
 		const scopeCheck = checkScope(this.scope, checked.value.taskId, this.scope.bindingId, checked.value.bindingEpochId, checked.value.attemptId, checked.value.agentInstanceId);
 		if (!scopeCheck.ok) return scopeCheck;
-		if (checked.value.modelProfileRevision.id !== this.boundModelProfileId) return Result.err(new FoundationError("binding_task_before_binding", "Model request does not use the bound ModelProfile"));
+		if (checked.value.modelProfileRevision.id !== this.boundModelProfileId || checked.value.modelProfileRevision.revision !== this.boundModelProfileRevision) return Result.err(new FoundationError("binding_task_before_binding", "Model request does not use the bound ModelProfile revision"));
 		return checked;
 	}
 

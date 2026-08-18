@@ -19,7 +19,6 @@ export function validateImmutableAgentBindingV1(value: unknown): ResultValue<Age
 export function createOrderedBindingEpochV1(input: CreateBindingEpochInput): ResultValue<BindingEpochV1, FoundationError> {
 	if (input.previous !== undefined) {
 		if (input.activationReason === "attempt_started") return Result.err(new FoundationError("binding_epoch_invalid_ordinal", "Only the first BindingEpoch may use attempt_started", { details: { bindingEpochId: input.bindingEpochId } }));
-		if (input.previous.bindingId !== input.bindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "BindingEpoch cannot change binding identity inside an attempt", { details: { bindingEpochId: input.bindingEpochId } }));
 		if (input.previous.agentInstanceId !== input.agentInstanceId) return Result.err(new FoundationError("binding_epoch_mismatch", "BindingEpoch cannot change AgentInstance inside an attempt", { details: { bindingEpochId: input.bindingEpochId } }));
 	}
 	return createBindingEpoch(input);

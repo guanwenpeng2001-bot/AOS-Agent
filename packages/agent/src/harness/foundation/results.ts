@@ -1,15 +1,15 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import type { AcceptanceFactV1 } from "./goal.ts";
 import { FoundationError, type PublicExecutionErrorV1 } from "./errors.ts";
-import { fingerprintFoundationValue, type FingerprintV1, type FoundationLineageV1 } from "./identity.ts";
+import { fingerprintFoundationValue, type ExecutionCorrelationV1, type FingerprintV1, type FoundationLineageV1 } from "./identity.ts";
 import { ArtifactRefV1Schema, FOUNDATION_SHA256_DIGEST_PATTERN_V1, WorkerReceiptRefV1Schema, type ArtifactRefV1, type WorkerReceiptRefV1 } from "./reference.ts";
 import type { AttemptProviderClassV1, TaskEnvelopeV1 } from "./task.ts";
 import { SideEffectStateV1Schema, type SideEffectStateV1 } from "./side-effect.ts";
 import { Type } from "typebox";
-import { exactShapeIssues, LineageV1Schema, makeExactShapeGuard, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
+import { ExecutionCorrelationV1Schema, exactShapeIssues, LineageV1Schema, makeExactShapeGuard, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 export type ResultProducerKindV1 = "operation_worker" | "scheduler" | "agent_executor" | "external_connector" | "host";
-export interface ResultProvenanceV1 { producerKind: ResultProducerKindV1; providerId: string; producedAt: string; lineage?: FoundationLineageV1; }
+export interface ResultProvenanceV1 { producerKind: ResultProducerKindV1; providerId: string; producedAt: string; lineage?: FoundationLineageV1; /** Correlation is optional for legacy records but required by provider consumers when an expectation is supplied. */ correlation?: ExecutionCorrelationV1; }
 export type ResultStatusV1 = "succeeded" | "failed" | "cancelled" | "suspended";
 export interface WorkerReceiptV1 { schemaVersion: 1; workerReceiptId: string; sandboxProviderId: string; operationId: string; taskId?: string; dispatchId?: string; attemptId?: string; status: ResultStatusV1; sideEffectState: SideEffectStateV1; artifacts?: readonly ArtifactRefV1[]; error?: PublicExecutionErrorV1; provenance: ResultProvenanceV1; startedAt: string; completedAt: string; }
 export type WorkerReceipt = WorkerReceiptV1;
@@ -24,7 +24,7 @@ export interface RunReceiptV1 { schemaVersion: 1; runReceiptId: string; runId: s
 export type RunReceipt = RunReceiptV1;
 export interface HostTerminalGateAuthorityV1 { schemaVersion: 1; type: "host_terminal_gate"; authorityId: string; revision: number; fingerprint: FingerprintV1; }
 
-const provenanceSchema = Type.Object({ producerKind: Type.Union([Type.Literal("operation_worker"), Type.Literal("scheduler"), Type.Literal("agent_executor"), Type.Literal("external_connector"), Type.Literal("host")]), providerId: Type.String({ minLength: 1 }), producedAt: Type.String({ minLength: 1 }), lineage: Type.Optional(LineageV1Schema) }, { additionalProperties: false });
+const provenanceSchema = Type.Object({ producerKind: Type.Union([Type.Literal("operation_worker"), Type.Literal("scheduler"), Type.Literal("agent_executor"), Type.Literal("external_connector"), Type.Literal("host")]), providerId: Type.String({ minLength: 1 }), producedAt: Type.String({ minLength: 1 }), lineage: Type.Optional(LineageV1Schema), correlation: Type.Optional(ExecutionCorrelationV1Schema) }, { additionalProperties: false });
 const artifactSchema = ArtifactRefV1Schema;
 const publicErrorSchema = Type.Object({ code: Type.String({ minLength: 1 }), message: Type.String({ minLength: 1 }), category: Type.Optional(Type.String()), retryable: Type.Boolean() }, { additionalProperties: false });
 export const PublicExecutionErrorV1Schema = publicErrorSchema;
@@ -57,6 +57,7 @@ export function validateWorkerReceipt(value: unknown): ResultValue<WorkerReceipt
 export interface SettleTaskResultInput { taskResultId: string; task: TaskEnvelopeV1; receipts: readonly AttemptReceiptV1[]; summary: string; artifacts?: readonly ArtifactRefV1[]; diff?: ArtifactRefV1; tests: readonly ValidationResultV1[]; evidence: readonly AcceptanceFactV1[]; producer: ResultProvenanceV1; validation?: ResultValidationV1; }
 export function settleTaskResult(input: SettleTaskResultInput): ResultValue<TaskResultV1, FoundationError> {
 	if (input.taskResultId.length === 0) return Result.err(new FoundationError("task_result_validation_failed", "TaskResult requires a stable id"));
+	if (input.producer.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Only the Host settlement gate may produce a TaskResult", { details: { taskResultId: input.taskResultId } }));
 	if (input.receipts.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Task settlement requires AttemptReceipt sources", { details: { taskResultId: input.taskResultId } }));
 	const receiptIds = input.receipts.map((receipt) => receipt.attemptReceiptId);
 	if (new Set(receiptIds).size !== receiptIds.length) return Result.err(new FoundationError("task_result_validation_failed", "TaskResult sources must not repeat an AttemptReceipt", { details: { taskResultId: input.taskResultId } }));
