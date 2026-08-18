@@ -3,24 +3,27 @@ import type { ArtifactReference, SessionArtifactStore } from "../artifacts.ts";
 import type { Session } from "../session/session.ts";
 import { SessionLedgerBindingError, type SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
 
-export type MemoryScope = "session" | "project" | "task" | "agent";
-export const MEMORY_SCOPES: readonly MemoryScope[] = ["session", "project", "task", "agent"];
+export const MEMORY_SCHEMA_VERSION = 1 as const;
+export type MemoryScopeKindV1 = "session" | "project" | "goal" | "child";
+export type MemoryScope = MemoryScopeKindV1;
+export const MEMORY_SCOPES: readonly MemoryScope[] = ["session", "project", "goal", "child"];
 export type MemoryKind = "fact" | "note" | "decision" | "requirement" | "error";
 export const MEMORY_KINDS: readonly MemoryKind[] = ["fact", "note", "decision", "requirement", "error"];
 export type MemoryTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project" | "user" | "tool" | "model" | "external" | "untrusted";
 
 export interface MemoryRetentionPolicy {
-	readonly policy: "session" | "task" | "project" | "indefinite";
-	readonly expiresAt?: number;
+	readonly policy: "session" | "goal" | "project" | "indefinite";
+	readonly expiresAt?: number | string;
+	readonly purgeOnScopeClose: boolean;
 }
-export const DEFAULT_MEMORY_RETENTION: MemoryRetentionPolicy = { policy: "session" };
+export type MemoryRetentionInput = Omit<MemoryRetentionPolicy, "purgeOnScopeClose"> & { readonly purgeOnScopeClose?: boolean };
+export const DEFAULT_MEMORY_RETENTION: MemoryRetentionPolicy = { policy: "session", purgeOnScopeClose: true };
 
 export interface MemoryProvenance {
 	readonly source: string;
 	readonly sourceDigest?: string;
 	readonly sourceId?: string;
 	readonly snapshotId?: string;
-	readonly taskId?: string;
 	readonly runId?: string;
 	readonly ownerId?: string;
 	readonly parentId?: string;
@@ -30,12 +33,21 @@ export interface MemoryProvenance {
 
 /** Identity boundary for one independent memory scope. */
 export interface MemoryScopeDescriptor {
+	readonly kind: MemoryScope;
 	readonly scopeId: string;
 	readonly ownerId: string;
 	readonly parentId?: string;
 }
 
-export type MemoryProvenanceBoundary = Partial<Pick<MemoryProvenance, "sourceDigest" | "sourceId" | "snapshotId" | "taskId" | "runId" | "ownerId" | "parentId" | "scopeId" | "createdBy">>;
+/** Stable public scope identity used by the memory contract. */
+export interface MemoryScopeV1 {
+	readonly kind: MemoryScopeKindV1;
+	readonly ownerId: string;
+	readonly parentScopeId?: string;
+	readonly scopeId: string;
+}
+
+export type MemoryProvenanceBoundary = Partial<Pick<MemoryProvenance, "sourceDigest" | "sourceId" | "snapshotId" | "runId" | "ownerId" | "parentId" | "scopeId" | "createdBy">>;
 
 export interface MemoryPolicy {
 	readonly allowedTrust?: readonly MemoryTrust[];
@@ -43,7 +55,7 @@ export interface MemoryPolicy {
 	readonly kinds?: readonly MemoryKind[];
 	readonly maxEntries?: number;
 	readonly maxTokens?: number;
-	readonly retention?: MemoryRetentionPolicy | MemoryRetentionPolicy["policy"];
+	readonly retention?: MemoryRetentionInput | MemoryRetentionPolicy["policy"];
 }
 
 /** Durable memory record. Content is only an artifact reference. */
@@ -82,7 +94,7 @@ export type NewMemoryEntry = {
 	readonly ownerId?: string;
 	readonly parentId?: string;
 	readonly provenance?: Partial<MemoryProvenance>;
-	readonly retention?: MemoryRetentionPolicy | MemoryRetentionPolicy["policy"];
+	readonly retention?: MemoryRetentionInput | MemoryRetentionPolicy["policy"];
 	readonly principal?: string;
 	readonly clientRequestId?: string;
 };
@@ -154,11 +166,48 @@ function redact(text: string): { text: string; changed: boolean } {
 	return { text: result, changed: result !== text };
 }
 
-function normalizeRetention(value: NewMemoryEntry["retention"], fallback: MemoryRetentionPolicy): MemoryRetentionPolicy {
+const MEMORY_RETENTION_POLICIES: readonly MemoryRetentionPolicy["policy"][] = ["session", "goal", "project", "indefinite"];
+
+export function defaultMemoryRetention(scope: MemoryScope): MemoryRetentionPolicy {
+	if (scope === "session" || scope === "child") return { policy: "session", purgeOnScopeClose: true };
+	if (scope === "goal") return { policy: "goal", purgeOnScopeClose: true };
+	return { policy: "project", purgeOnScopeClose: false };
+}
+
+function retentionExpiry(retention: Pick<MemoryRetentionPolicy, "expiresAt">): number | undefined {
+	if (retention.expiresAt === undefined) return undefined;
+	return typeof retention.expiresAt === "number" ? retention.expiresAt : Date.parse(retention.expiresAt);
+}
+
+function retentionExpired(retention: Pick<MemoryRetentionPolicy, "expiresAt">, at: number): boolean {
+	const expiry = retentionExpiry(retention);
+	return expiry !== undefined && Number.isFinite(expiry) && expiry <= at;
+}
+
+function normalizeRetention(value: NewMemoryEntry["retention"], fallback: MemoryRetentionInput, scope: MemoryScope): MemoryRetentionPolicy {
 	const retention = typeof value === "string" ? { policy: value } : value ?? fallback;
-	if (!("session|task|project|indefinite" as const).split("|").includes(retention.policy)) throw new MemoryError("invalid_entry", "Invalid memory retention policy");
-	if (retention.expiresAt !== undefined && (!Number.isFinite(retention.expiresAt) || retention.expiresAt < 0)) throw new MemoryError("invalid_entry", "Invalid memory expiry");
-	return { policy: retention.policy, ...(retention.expiresAt === undefined ? {} : { expiresAt: retention.expiresAt }) };
+	if (!MEMORY_RETENTION_POLICIES.includes(retention.policy)) throw new MemoryError("invalid_entry", "Invalid memory retention policy");
+	if (retention.expiresAt !== undefined) {
+		const expiry = retentionExpiry(retention);
+		if (expiry === undefined || !Number.isFinite(expiry) || expiry < 0 || (typeof retention.expiresAt === "string" && retention.expiresAt.trim().length === 0)) {
+			throw new MemoryError("invalid_entry", "Invalid memory expiry");
+		}
+	}
+	const defaultPolicy = defaultMemoryRetention(scope);
+	return {
+		policy: retention.policy,
+		...(retention.expiresAt === undefined ? {} : { expiresAt: retention.expiresAt }),
+		purgeOnScopeClose: retention.purgeOnScopeClose ?? defaultPolicy.purgeOnScopeClose,
+	};
+}
+
+function hasValidRetention(retention: unknown): retention is MemoryRetentionPolicy {
+	if (retention === null || typeof retention !== "object") return false;
+	const value = retention as Partial<MemoryRetentionPolicy>;
+	if (!MEMORY_RETENTION_POLICIES.includes(value.policy as MemoryRetentionPolicy["policy"]) || typeof value.purgeOnScopeClose !== "boolean") return false;
+	if (value.expiresAt === undefined) return true;
+	const expiry = retentionExpiry(value);
+	return expiry !== undefined && Number.isFinite(expiry) && expiry >= 0 && (typeof value.expiresAt !== "string" || value.expiresAt.trim().length > 0);
 }
 
 function allowed(policy: MemoryPolicy | undefined, value: Pick<MemoryRecordV1, "kind" | "trust" | "scope">): boolean {
@@ -182,7 +231,7 @@ function identityMatches(left: string | undefined, right: string | undefined): b
 }
 
 function provenanceMatchesBoundary(provenance: Partial<MemoryProvenance>, boundary: MemoryProvenanceBoundary): boolean {
-	for (const key of ["sourceDigest", "sourceId", "snapshotId", "taskId", "runId", "ownerId", "parentId", "scopeId", "createdBy"] as const) {
+	for (const key of ["sourceDigest", "sourceId", "snapshotId", "runId", "ownerId", "parentId", "scopeId", "createdBy"] as const) {
 		if (boundary[key] !== undefined && provenance[key] !== undefined && provenance[key] !== boundary[key]) return false;
 	}
 	return true;
@@ -190,7 +239,7 @@ function provenanceMatchesBoundary(provenance: Partial<MemoryProvenance>, bounda
 
 function provenanceMatchesQuery(provenance: MemoryProvenance, query: MemoryProvenanceBoundary | undefined): boolean {
 	if (query === undefined) return true;
-	for (const key of ["sourceDigest", "sourceId", "snapshotId", "taskId", "runId", "ownerId", "parentId", "scopeId", "createdBy"] as const) {
+	for (const key of ["sourceDigest", "sourceId", "snapshotId", "runId", "ownerId", "parentId", "scopeId", "createdBy"] as const) {
 		if (query[key] !== undefined && provenance[key] !== query[key]) return false;
 	}
 	return true;
@@ -217,6 +266,10 @@ function hasValidRecordProvenance(record: MemoryRecordV1): boolean {
 		record.provenance.scopeId === record.scopeId &&
 		record.provenance.parentId === record.parentId
 	);
+}
+
+function hasValidRecordSchema(record: MemoryRecordV1): boolean {
+	return record.schemaVersion === MEMORY_SCHEMA_VERSION && MEMORY_SCOPES.includes(record.scope) && hasValidRetention(record.retention);
 }
 
 /** A durable memory view. It never keeps a second in-memory authority. */
@@ -260,13 +313,15 @@ export class SessionMemoryStore implements MemoryStore {
 		const scopeId = options.memoryScopeId ?? options.scopeId ?? "session";
 		const ownerId = options.memoryOwnerId ?? "session";
 		const parentId = options.memoryParentId ?? options.parentId;
+		const kind = options.memoryScope ?? "session";
 		this.scope = {
+			kind,
 			scopeId: requireIdentity(scopeId, "scopeId"),
 			ownerId: requireIdentity(ownerId, "ownerId"),
 			...(parentId === undefined ? {} : { parentId: requireIdentity(parentId, "parentId") }),
 		};
 		if (this.scope.parentId === this.scope.scopeId) throw new MemoryError("invalid_entry", "Memory scope cannot parent itself");
-		this.enforcedScope = options.enforceMemoryScope === true ? options.memoryScope ?? "agent" : undefined;
+		this.enforcedScope = options.enforceMemoryScope === true ? kind : undefined;
 		if (
 			!identityMatches(options.memoryProvenance?.ownerId, this.scope.ownerId) ||
 			!identityMatches(options.memoryProvenance?.scopeId, this.scope.scopeId) ||
@@ -289,7 +344,7 @@ export class SessionMemoryStore implements MemoryStore {
 		}
 		const scopeId = requireIdentity(options.scopeId ?? `${this.scope.scopeId}/child`, "scopeId");
 		const ownerId = requireIdentity(options.ownerId ?? `${this.scope.ownerId}/child`, "ownerId");
-		const scope = options.scope ?? "agent";
+		const scope = options.scope ?? "child";
 		if (scopeId === this.scope.scopeId) throw new MemoryError("invalid_entry", "Memory child scope must be independent");
 		if (
 			!identityMatches(options.provenance?.ownerId, ownerId) ||
@@ -357,7 +412,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const existing = await this.list({ scope });
 		if (this.policy?.maxEntries !== undefined && existing.length >= this.policy.maxEntries) throw new MemoryError("limit_reached", "Memory entry limit reached");
 		const retentionValue = typeof this.policy?.retention === "string" ? { policy: this.policy.retention } : this.policy?.retention;
-		const retention = normalizeRetention(entry.retention, retentionValue ?? DEFAULT_MEMORY_RETENTION);
+		const retention = normalizeRetention(entry.retention, retentionValue ?? defaultMemoryRetention(scope), scope);
 		const contentRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(redacted.text), {
 			mediaType: "text/plain",
 			principal: entry.principal ?? "system",
@@ -371,7 +426,7 @@ export class SessionMemoryStore implements MemoryStore {
 			referenceId: `memory:${id}`,
 			consumerType: T5_LEDGER_OBJECT_TYPES.memory,
 			consumerId: id,
-			...(retention.expiresAt === undefined ? {} : { expiresAt: retention.expiresAt }),
+			...(retentionExpiry(retention) === undefined ? {} : { expiresAt: retentionExpiry(retention) }),
 		});
 		const record: MemoryRecordV1 = {
 			schemaVersion: 1,
@@ -392,7 +447,6 @@ export class SessionMemoryStore implements MemoryStore {
 				...(this.scope.parentId === undefined ? {} : { parentId: this.scope.parentId }),
 				...(entry.provenance?.sourceId === undefined ? {} : { sourceId: entry.provenance.sourceId }),
 				...(entry.provenance?.snapshotId === undefined ? {} : { snapshotId: entry.provenance.snapshotId }),
-				...(entry.provenance?.taskId === undefined ? {} : { taskId: entry.provenance.taskId }),
 				...(entry.provenance?.runId === undefined ? {} : { runId: entry.provenance.runId }),
 				createdBy: entry.provenance?.createdBy ?? this.provenanceBoundary.createdBy ?? "explicit",
 			},
@@ -429,13 +483,14 @@ export class SessionMemoryStore implements MemoryStore {
 		) {
 			throw new MemoryError("storage", `Memory ${id} has an invalid content reference`);
 		}
+		if (!hasValidRecordSchema(record)) throw new MemoryError("storage", `Memory ${id} has an invalid scope or retention policy`);
 		if (!hasValidRecordProvenance(record)) throw new MemoryError("storage", `Memory ${id} has invalid provenance`);
 		if (
 			!scopeMatchesBoundary(record, this.scope) ||
 			(this.enforcedScope !== undefined && record.scope !== this.enforcedScope) ||
 			!provenanceMatchesBoundary(record.provenance, this.provenanceBoundary)
 		) return undefined;
-		if (!allowed(this.policy, record) || (record.retention.expiresAt !== undefined && record.retention.expiresAt <= this.now())) return undefined;
+		if (!allowed(this.policy, record) || retentionExpired(record.retention, this.now())) return undefined;
 		try {
 			const artifact = await this.artifacts.get(record.contentRef.artifactId, principal);
 			const content = new TextDecoder().decode(artifact.content);
@@ -455,14 +510,15 @@ export class SessionMemoryStore implements MemoryStore {
 		const result: MemoryEntry[] = [];
 		for (const fact of records) {
 			const record = fact.payload as unknown as MemoryRecordV1;
+			if (!hasValidRecordSchema(record)) throw new MemoryError("storage", `Memory ${record.id} has an invalid scope or retention policy`);
 			if (query.kind !== undefined && record.kind !== query.kind) continue;
 			if (query.trust !== undefined && record.trust !== query.trust) continue;
 			if (!scopeMatchesQuery(record, query) || !scopeMatchesBoundary(record, this.scope)) continue;
 			if (this.enforcedScope !== undefined && record.scope !== this.enforcedScope) continue;
 			if (!provenanceMatchesQuery(record.provenance, query.provenance)) continue;
 			if (query.sourceId !== undefined && record.provenance.sourceId !== query.sourceId) continue;
-			if (query.activeAt !== undefined && record.retention.expiresAt !== undefined && record.retention.expiresAt <= query.activeAt) continue;
-			if (!query.includeExpired && record.retention.expiresAt !== undefined && record.retention.expiresAt <= this.now()) continue;
+			if (query.activeAt !== undefined && retentionExpired(record.retention, query.activeAt)) continue;
+			if (!query.includeExpired && retentionExpired(record.retention, this.now())) continue;
 			if (!allowed(this.policy, record)) continue;
 			const entry = await this.get(record.id, principal);
 			if (entry !== undefined) result.push(entry);
@@ -488,11 +544,11 @@ export class SessionMemoryStore implements MemoryStore {
 		let removed = 0;
 		for (const fact of records) {
 			const record = fact.payload as unknown as MemoryRecordV1;
+			if (!hasValidRecordSchema(record)) throw new MemoryError("storage", `Memory ${record.id} has an invalid scope or retention policy`);
 			if (
 				scopeMatchesBoundary(record, this.scope) &&
 				(this.enforcedScope === undefined || record.scope === this.enforcedScope) &&
-				record.retention.expiresAt !== undefined &&
-				record.retention.expiresAt <= now
+				retentionExpired(record.retention, now)
 			) {
 				await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.memory, objectId: record.id, reason: "memory_expired" });
 				await this.artifacts.releaseReference(`memory:${record.id}`);
@@ -580,7 +636,7 @@ export class ScopedMemoryStore implements MemoryStore {
 		});
 		let removed = 0;
 		for (const entry of entries) {
-			if (entry.retention.expiresAt !== undefined && entry.retention.expiresAt <= now && await this.delegate.delete(entry.id, "system")) removed += 1;
+			if (retentionExpired(entry.retention, now) && await this.delegate.delete(entry.id, "system")) removed += 1;
 		}
 		return removed;
 	}
@@ -589,7 +645,7 @@ export class ScopedMemoryStore implements MemoryStore {
 	fork(options: MemoryChildScopeOptions = {}): ScopedMemoryStore {
 		const scopeId = options.scopeId ?? `${this.scopeId}/child`;
 		const ownerId = options.ownerId ?? `${this.ownerId}/child`;
-		return new ScopedMemoryStore(this.delegate, options.scope ?? "agent", {
+		return new ScopedMemoryStore(this.delegate, options.scope ?? "child", {
 			...this.provenance,
 			...(options.provenance ?? {}),
 			ownerId,

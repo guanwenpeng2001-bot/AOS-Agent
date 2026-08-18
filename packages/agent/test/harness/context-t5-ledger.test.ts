@@ -45,24 +45,25 @@ describe("T5 Session ledger recovery", () => {
 		const ledger = new SessionT5Ledger(session, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "t5-ledger" });
 		const artifacts = ledger.artifacts;
 		const snapshot = await ledger.captureContextSnapshot("main", { id: "snapshot-recovery", bindingEpochId: "binding-epoch-recovery" });
-		const memory = await ledger.putMemory({ id: "memory-recovery", kind: "fact", trust: "user_owned", content: "durable memory", source: "test", scope: "task", principal: "alice" });
+		const memory = await ledger.putMemory({ id: "memory-recovery", kind: "fact", trust: "user_owned", content: "durable memory", source: "test", scope: "goal", principal: "alice" });
 		const instruction = await ledger.putInstructionSource({ sourceId: "instruction-recovery", scope: "managed", trust: "builtin", content: "Do not widen scope", priority: 10 });
 		const lock = await ledger.lockInstruction(instruction.sourceId, { reason: "managed policy", lockedBy: "test" });
 		const compaction = await ledger.recordCompaction({ snapshotId: snapshot.snapshotId, retainEntries: 1 });
-		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-recovery", { known: true, digest: "workspace-1" });
+		const workspace = { known: true, digest: "workspace-1", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
+		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-recovery", workspace);
 		const cacheKey = createContextCacheKey({ prefixDigest: snapshot.digest, modelId: "model-a", policyDigest: "policy-a", bindingEpochId: "binding-a", cacheEpoch: 2 });
 		const cacheRecord = await ledger.recordPromptCache({ cacheKey: cacheKey.key, snapshotId: snapshot.snapshotId, modelId: cacheKey.modelId, policyDigest: cacheKey.policyDigest, bindingEpochId: cacheKey.bindingEpochId, cacheEpoch: cacheKey.cacheEpoch, value: new TextEncoder().encode("cached") });
 		const artifact = await artifacts.putAttachment(new TextEncoder().encode("attachment"), { principal: "alice", permissions: ["alice"] });
 		const targetEntry = await session.getEntry(firstEntryId);
 		expect(targetEntry).toBeDefined();
-		const plan = await ledger.planRewind({ planId: "rewind-recovery", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: firstEntryId, workspace: { known: true, digest: "workspace-1" } });
+		const plan = await ledger.planRewind({ planId: "rewind-recovery", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: firstEntryId, workspace });
 		await ledger.writer.releaseLease();
 
 		const reopened = await repo.open(metadata);
 		const recovered = new SessionT5Ledger(reopened, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "t5-ledger-reopen" });
 		expect(await recovered.getContextSnapshot(snapshot.snapshotId)).toMatchObject({ snapshotId: snapshot.snapshotId, digest: snapshot.digest });
 		expect((await recovered.loadContextSnapshot(snapshot.snapshotId)).entries()).toHaveLength(2);
-		expect(await recovered.getMemory(memory.id, "alice")).toMatchObject({ id: memory.id, content: "durable memory", scope: "task" });
+		expect(await recovered.getMemory(memory.id, "alice")).toMatchObject({ id: memory.id, content: "durable memory", scope: "goal", retention: { policy: "goal", purgeOnScopeClose: true } });
 		expect(await recovered.getCompaction(compaction.compactionId)).toMatchObject({ summaryRef: { type: "artifact" } });
 		expect(await recovered.resolveInstructions()).toMatchObject({ locks: [expect.objectContaining({ sourceId: instruction.sourceId, locked: true })] });
 		expect(lock.locked).toBe(true);
@@ -78,7 +79,7 @@ describe("T5 Session ledger recovery", () => {
 		expect(durableText).not.toContain("attachment");
 		expect((await recovered.getRewindPlan(plan.planId))?.planId).toBe(plan.planId);
 
-		await recovered.applyRewind(plan.planId, { known: true, digest: "workspace-1" });
+		await recovered.applyRewind(plan.planId, workspace);
 		const planAndExecution = await reopened.findFoundationRecords({ order: "oldestFirst" });
 		const planFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === "t5.rewind_plan");
 		const executionFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === "t5.rewind_execution");

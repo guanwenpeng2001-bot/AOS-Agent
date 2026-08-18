@@ -25,6 +25,7 @@ export interface TranscriptCheckpointImpact {
 }
 
 export interface WorkspaceCheckpointImpact {
+	readonly known: boolean;
 	readonly digest?: string;
 	readonly readFiles: readonly string[];
 	readonly modifiedFiles: readonly string[];
@@ -104,6 +105,7 @@ function workspaceImpact(state: WorkspaceCheckpointState | undefined): Workspace
 	const pendingFiles = [...new Set(state?.pendingFiles ?? [])].sort();
 	const unknownFiles = [...new Set(state?.unknownFiles ?? [])].sort();
 	return {
+		known: state?.known === true,
 		...(state?.digest === undefined ? {} : { digest: state.digest }),
 		readFiles,
 		modifiedFiles,
@@ -113,8 +115,26 @@ function workspaceImpact(state: WorkspaceCheckpointState | undefined): Workspace
 	};
 }
 
+function workspaceEvidenceComplete(state: WorkspaceCheckpointState | undefined): boolean {
+	if (state?.known !== true || typeof state.digest !== "string" || state.digest.length === 0) return false;
+	return [state.readFiles, state.modifiedFiles, state.pendingFiles, state.unknownFiles].every(
+		(files) => Array.isArray(files) && files.every((file) => typeof file === "string"),
+	);
+}
+
+function workspaceImpactEvidenceComplete(impact: WorkspaceCheckpointImpact): boolean {
+	return (
+		impact.known === true &&
+		typeof impact.digest === "string" &&
+		impact.digest.length > 0 &&
+		[impact.readFiles, impact.modifiedFiles, impact.pendingFiles, impact.unknownFiles].every(
+			(files) => Array.isArray(files) && files.every((file) => typeof file === "string"),
+		)
+	);
+}
+
 function workspaceUnknown(state: WorkspaceCheckpointState | undefined): boolean {
-	return state === undefined || state.known !== true;
+	return !workspaceEvidenceComplete(state);
 }
 
 /**
@@ -142,16 +162,15 @@ export function planCheckpointRewind(snapshot: ContextSnapshot, options: Checkpo
 	};
 	const workspace = workspaceImpact(options.workspace);
 	let reason: CheckpointRewindReason = "ok";
-	if (!targetExists) reason = "target_not_found";
+	if (workspaceUnknown(options.workspace) || workspace.unknownFiles.length > 0) reason = "workspace_unknown";
+	else if (!targetExists) reason = "target_not_found";
 	else if (options.checkpointTranscriptDigest !== undefined && options.checkpointTranscriptDigest !== beforeDigest) reason = "checkpoint_mismatch";
 	else if (options.expectedLaneLeafId !== undefined && options.currentLaneLeafId !== options.expectedLaneLeafId) reason = "lane_changed";
 	else if (options.expectedTranscriptDigest !== undefined && options.expectedTranscriptDigest !== beforeDigest) reason = "transcript_changed";
 	else if (options.checkpointWorkspaceDigest !== undefined && options.checkpointWorkspaceDigest !== workspace.digest) reason = "digest_mismatch";
 	else if (options.expectedWorkspaceDigest !== undefined && options.expectedWorkspaceDigest !== workspace.digest) reason = "digest_mismatch";
-	else if (workspaceUnknown(options.workspace)) reason = "workspace_unknown";
 	else if (workspace.modifiedFiles.length > 0) reason = "workspace_modified";
 	else if (workspace.pendingFiles.length > 0) reason = "workspace_pending";
-	else if (workspace.unknownFiles.length > 0) reason = "workspace_unknown";
 	const boundary: ContextRecoveryBoundary = {
 		transcriptDigest: beforeDigest,
 		...(workspace.digest === undefined ? {} : { workspaceDigest: workspace.digest }),
@@ -195,6 +214,8 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 
 export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlanV1): ContextSnapshot | undefined {
 	if (plan.status !== "approved" || plan.failClosed !== true || plan.sourceSnapshotId !== snapshot.snapshotId) return undefined;
+	if (plan.reason !== "ok" || plan.workspace.known !== true || !workspaceImpactEvidenceComplete(plan.workspace) || plan.workspace.hasUncommittedImpact) return undefined;
+	if (plan.boundary.workspaceDigest !== plan.workspace.digest) return undefined;
 	if (plan.boundary.transcriptDigest !== digestCheckpointTranscript(snapshot.entries())) return undefined;
 	if (plan.targetEntryId === null) return snapshot.fork({ mode: "none", checkpointId: plan.checkpointId });
 	return snapshot.rewindTo(plan.targetEntryId);
@@ -207,6 +228,7 @@ export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snaps
 	if (digest(planBody) !== planDigest) return false;
 	if (plan.transcript.beforeDigest !== digestCheckpointTranscript(snapshot.entries())) return false;
 	if (plan.currentLaneLeafId !== undefined && plan.currentLaneLeafId !== snapshot.headEntryId) return false;
-	if (plan.workspace.digest !== undefined && plan.workspace.digest !== workspace?.digest) return false;
+	if (workspace === undefined || plan.workspace.known !== true || !workspaceImpactEvidenceComplete(plan.workspace) || !workspaceEvidenceComplete(workspace)) return false;
+	if (plan.workspace.digest !== workspace.digest) return false;
 	return !workspaceImpact(workspace).hasUncommittedImpact;
 }

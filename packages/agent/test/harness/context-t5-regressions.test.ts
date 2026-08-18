@@ -13,6 +13,7 @@ import {
 	T5_LEDGER_OBJECT_TYPES,
 } from "../../src/index.ts";
 import { resolveInstructionSources, type InstructionLockV1 } from "../../src/harness/context/instruction.ts";
+import { applyCheckpointRewind } from "../../src/harness/context/checkpoint.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
@@ -87,8 +88,9 @@ describe("T5 authority and CAS regressions", () => {
 		const snapshot = await ledger.captureContextSnapshot("main", { bindingEpochId: "epoch-replay" });
 		const compaction = await ledger.recordCompaction({ compactionId: "compaction-replay", snapshotId: snapshot.snapshotId, retainEntries: 1 });
 		expect(await ledger.recordCompaction({ compactionId: compaction.compactionId, snapshotId: snapshot.snapshotId, retainEntries: 1 })).toEqual(compaction);
-		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-replay", { known: true, digest: "workspace-replay" });
-		expect(await ledger.createCheckpoint(snapshot.snapshotId, "main", checkpoint.checkpointId, { known: true, digest: "workspace-replay" })).toEqual(checkpoint);
+		const workspace = { known: true, digest: "workspace-replay", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
+		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-replay", workspace);
+		expect(await ledger.createCheckpoint(snapshot.snapshotId, "main", checkpoint.checkpointId, workspace)).toEqual(checkpoint);
 		const cache = await ledger.recordPromptCache({ cacheEntryId: "cache-replay", cacheKey: "cache-replay", snapshotId: snapshot.snapshotId, modelId: "model", policyDigest: "policy", bindingEpochId: "epoch-replay", cacheEpoch: 1, value: new TextEncoder().encode("value") });
 		expect(await ledger.recordPromptCache({ cacheEntryId: cache.cacheEntryId, cacheKey: cache.cacheKey, snapshotId: cache.snapshotId, modelId: cache.modelId, policyDigest: cache.policyDigest, bindingEpochId: cache.bindingEpochId, cacheEpoch: cache.cacheEpoch, value: new TextEncoder().encode("value") })).toEqual(cache);
 	});
@@ -143,9 +145,9 @@ describe("T5 authority and CAS regressions", () => {
 			memoryOwnerId: "root-owner",
 			artifactBlobStore: new InMemoryArtifactBlobStore(),
 		});
-		const root = await ledger.putMemory({ id: "root-memory", kind: "fact", trust: "user_owned", content: "root", source: "root-source", provenance: { taskId: "root-task" }, principal: "system" });
-		const child = ledger.memory.fork({ scope: "agent", scopeId: "child-scope", ownerId: "child-owner", provenance: { taskId: "child-task" } });
-		const childEntry = await child.put({ id: "child-memory", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { taskId: "child-task" }, principal: "system" });
+		const root = await ledger.putMemory({ id: "root-memory", kind: "fact", trust: "user_owned", content: "root", source: "root-source", principal: "system" });
+		const child = ledger.memory.fork({ scope: "child", scopeId: "child-scope", ownerId: "child-owner", provenance: { sourceId: "child-source" } });
+		const childEntry = await child.put({ id: "child-memory", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { sourceId: "child-source" }, principal: "system" });
 
 		expect(await ledger.memory.get(childEntry.id, "system")).toBeUndefined();
 		expect(await child.get(root.id, "system")).toBeUndefined();
@@ -155,26 +157,52 @@ describe("T5 authority and CAS regressions", () => {
 		expect(await otherParent.get(childEntry.id, "system")).toBeUndefined();
 		expect(await child.list({ ownerId: "other-owner" }, "system")).toEqual([]);
 		await expect(child.put({ id: "unauthorized-owner", kind: "fact", trust: "user_owned", content: "bad", source: "bad", ownerId: "other-owner", principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
-		await expect(child.put({ id: "unauthorized-provenance", kind: "fact", trust: "user_owned", content: "bad", source: "bad", provenance: { taskId: "other-task" }, principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
+		await expect(child.put({ id: "unauthorized-provenance", kind: "fact", trust: "user_owned", content: "bad", source: "bad", provenance: { sourceId: "other-source" }, principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
 		await expect(child.put({ id: "unauthorized-principal", kind: "fact", trust: "user_owned", content: "bad", source: "bad", provenance: { createdBy: "system" }, principal: "alice" })).rejects.toMatchObject({ code: "policy_denied" });
 		await expect(child.put({ id: "invalid-child-parent", kind: "fact", trust: "user_owned", content: "bad", source: "bad", parentId: "other-parent", principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
 	});
 });
 
 describe("T5 durable reopen and recovery regressions", () => {
+	it("fails closed for unknown or incomplete workspace evidence at both plan and apply", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "t5-workspace-evidence", createdAt: 1 }));
+		const entryId = await session.appendMessage({ role: "user", content: [{ type: "text", text: "workspace evidence" }], timestamp: 1 });
+		const ledger = new SessionT5Ledger(session, { ownerId: "workspace-evidence", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const snapshot = await ledger.captureContextSnapshot("main", { bindingEpochId: "epoch-workspace" });
+		const workspace = { known: true, digest: "workspace-evidence", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
+		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-workspace", workspace);
+		const unknownWorkspace = { known: false, digest: "workspace-evidence", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
+		const unknownPlan = await ledger.planRewind({ planId: "plan-workspace-unknown", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: entryId, workspace: unknownWorkspace });
+		expect(unknownPlan).toMatchObject({ status: "rejected", reason: "workspace_unknown" });
+		await expect(ledger.applyRewind(unknownPlan.planId, unknownWorkspace)).rejects.toThrow("not safe to apply");
+
+		const incompleteWorkspace = { known: true, digest: "workspace-evidence", readFiles: [] } as const;
+		const incompletePlan = await ledger.planRewind({ planId: "plan-workspace-incomplete", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: entryId, workspace: incompleteWorkspace });
+		expect(incompletePlan).toMatchObject({ status: "rejected", reason: "workspace_unknown" });
+		await expect(ledger.applyRewind(incompletePlan.planId, incompleteWorkspace)).rejects.toThrow("not safe to apply");
+
+		const approvedPlan = await ledger.planRewind({ planId: "plan-workspace-approved", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: entryId, workspace });
+		expect(approvedPlan.status).toBe("approved");
+		await expect(ledger.applyRewind(approvedPlan.planId, unknownWorkspace)).rejects.toThrow("not safe to apply");
+		const forgedUnknownPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, known: false } };
+		expect(applyCheckpointRewind(snapshot, forgedUnknownPlan)).toBeUndefined();
+		expect((await session.getLanes()).find((lane) => lane.lane === "main")?.leafId).toBe(snapshot.headEntryId);
+		await ledger.writer.releaseLease();
+	});
+
 	it("reopens memory with a new lease writer while preserving child boundaries", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "t5-memory-reopen", createdAt: 1 }));
 		const blobStore = new InMemoryArtifactBlobStore();
 		const first = new SessionT5Ledger(session, { ownerId: "lease-first", artifactBlobStore: blobStore });
 		const root = await first.putMemory({ id: "root-reopen", kind: "fact", trust: "user_owned", content: "root", source: "root-source", principal: "system" });
-		const childStore = first.memory.fork({ scope: "agent", scopeId: "agent-reopen", ownerId: "agent-owner", provenance: { taskId: "task-reopen" } });
-		const child = await childStore.put({ id: "child-reopen", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { taskId: "task-reopen" }, principal: "system" });
+		const childStore = first.memory.fork({ scope: "child", scopeId: "child-reopen", ownerId: "child-owner", provenance: { sourceId: "child-reopen-source" } });
+		const child = await childStore.put({ id: "child-reopen", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { sourceId: "child-reopen-source" }, principal: "system" });
 		await first.writer.releaseLease();
 
 		const reopened = new SessionT5Ledger(session, { ownerId: "lease-second", artifactBlobStore: blobStore });
 		expect(await reopened.getMemory(root.id, "system")).toMatchObject({ id: root.id, content: "root" });
 		expect(await reopened.memory.get(child.id, "system")).toBeUndefined();
-		const reopenedChild = reopened.memory.fork({ scope: "agent", scopeId: "agent-reopen", ownerId: "agent-owner", provenance: { taskId: "task-reopen" } });
+		const reopenedChild = reopened.memory.fork({ scope: "child", scopeId: "child-reopen", ownerId: "child-owner", provenance: { sourceId: "child-reopen-source" } });
 		expect(await reopenedChild.get(root.id, "system")).toBeUndefined();
 		expect(await reopenedChild.get(child.id, "system")).toMatchObject({ id: child.id, content: "child" });
 	});
@@ -216,8 +244,9 @@ describe("T5 durable reopen and recovery regressions", () => {
 		await session.appendMessage({ role: "user", content: [{ type: "text", text: "second" }], timestamp: 2 });
 		const ledger = new SessionT5Ledger(session, { ownerId: "rewind-crash", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const snapshot = await ledger.captureContextSnapshot("main", { bindingEpochId: "epoch-rewind" });
-		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-crash", { known: true, digest: "workspace-crash" });
-		const plan = await ledger.planRewind({ planId: "plan-crash", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: firstEntryId, workspace: { known: true, digest: "workspace-crash" } });
+		const workspace = { known: true, digest: "workspace-crash", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
+		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-crash", workspace);
+		const plan = await ledger.planRewind({ planId: "plan-crash", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: firstEntryId, workspace });
 		const moveLane = session.moveLane.bind(session);
 		let injected = true;
 		session.moveLane = async (lane: string, target: string | null): Promise<void> => {
@@ -227,8 +256,8 @@ describe("T5 durable reopen and recovery regressions", () => {
 				throw new Error("injected crash");
 			}
 		};
-		await expect(ledger.applyRewind(plan.planId, { known: true, digest: "workspace-crash" })).rejects.toThrow("injected crash");
-		expect(await ledger.recoverRewind(plan.planId, { known: true, digest: "workspace-crash" })).toMatchObject({ status: "applied" });
+		await expect(ledger.applyRewind(plan.planId, workspace)).rejects.toThrow("injected crash");
+		expect(await ledger.recoverRewind(plan.planId, workspace)).toMatchObject({ status: "applied" });
 		expect((await session.getLanes()).find((lane) => lane.lane === "main")?.leafId).toBe(firstEntryId);
 	});
 });

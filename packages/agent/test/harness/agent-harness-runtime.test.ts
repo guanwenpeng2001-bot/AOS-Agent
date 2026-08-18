@@ -163,6 +163,49 @@ describe("AgentHarness runtime", () => {
 		await harness.close();
 	});
 
+	it("shares one Session writer across public T5 memory, Foundation settlement, and reopen", async () => {
+		const session = createSession("shared-public-writer");
+		const blobStore = new InMemoryArtifactBlobStore();
+		const execution = createFoundationExecution();
+		const options = { t5Options: { ownerId: "shared-public-writer", artifactBlobStore: blobStore } } as const;
+		const first = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
+		expect(first.harness.t5.writer).toBe(first.harness.context.writer);
+		expect(first.harness.t5.writer).toBe(first.harness.memory.writer);
+		expect(first.harness.t5.writer).toBe(first.harness.artifacts.writer);
+
+		const firstMemory = await first.harness.memory.put({ id: "public-memory-first", kind: "fact", trust: "user_owned", content: "first", source: "public-test", principal: "system" });
+		const firstLease = await session.getWriterLease();
+		expect(firstLease?.ownerId).toBe("shared-public-writer");
+		expect(firstMemory.retention).toEqual({ policy: "session", purgeOnScopeClose: true });
+		const firstResult = await first.harness.prompt("first public write");
+		expect(firstResult.ok).toBe(true);
+		if (!firstResult.ok) throw firstResult.error;
+		const firstRecords = await session.findFoundationRecords({ order: "oldestFirst" });
+		const firstFoundationRecords = firstRecords.filter((record) => record.correlation.runId === firstResult.value.runId && record.kind !== "retention" && (record.kind === "intent" || record.objectType === "attempt_receipt" || record.objectType === "task_result" || record.objectType === "run_receipt"));
+		expect(firstFoundationRecords.length).toBeGreaterThanOrEqual(4);
+		expect(new Set(firstFoundationRecords.map((record) => record.fencingToken))).toEqual(new Set([firstLease?.fencingToken]));
+		expect((await session.getWriterLease())?.fencingToken).toBe(firstLease?.fencingToken);
+		await first.harness.close();
+		expect(await session.getWriterLease()).toBeNull();
+
+		const second = await AgentHarness.create({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
+		const secondMemory = await second.harness.memory.get(firstMemory.id, "system");
+		expect(secondMemory?.content).toBe("first");
+		const secondLease = await session.getWriterLease();
+		expect(secondLease?.ownerId).toBe("shared-public-writer");
+		const secondWrite = await second.harness.memory.put({ id: "public-memory-second", kind: "fact", trust: "user_owned", content: "second", source: "public-test", principal: "system" });
+		expect(secondWrite.retention).toEqual({ policy: "session", purgeOnScopeClose: true });
+		const secondResult = await second.harness.prompt("second public write");
+		expect(secondResult.ok).toBe(true);
+		if (!secondResult.ok) throw secondResult.error;
+		const reopenedRecords = await session.findFoundationRecords({ order: "oldestFirst" });
+		const secondFoundationRecords = reopenedRecords.filter((record) => record.correlation.runId === secondResult.value.runId && record.kind !== "retention" && (record.kind === "intent" || record.objectType === "attempt_receipt" || record.objectType === "task_result" || record.objectType === "run_receipt"));
+		expect(new Set(secondFoundationRecords.map((record) => record.fencingToken))).toEqual(new Set([secondLease?.fencingToken]));
+		expect((await session.getWriterLease())?.fencingToken).toBe(secondLease?.fencingToken);
+		await second.harness.close();
+		expect(await session.getWriterLease()).toBeNull();
+	});
+
 	it("selects an in-memory artifact backend without an unhandled root rejection", async () => {
 		const session = createSession("in-memory-artifacts");
 		const unhandled: unknown[] = [];

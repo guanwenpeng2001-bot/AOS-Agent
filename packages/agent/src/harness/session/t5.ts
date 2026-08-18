@@ -9,8 +9,10 @@ import type {
 	FoundationRecordQueryV1,
 	FoundationRecordV1,
 	LedgerWriterLeaseV1,
+	AppendFoundationRecordResultV1,
 	ProvisionedFoundationRecordV1,
 } from "./durable/types.ts";
+import { DurableLedgerError } from "./durable/errors.ts";
 import type { Session } from "./session.ts";
 
 /** Object names reserved by the Session-backed T5 projection. */
@@ -95,9 +97,10 @@ export class SessionLedgerWriter {
 		}
 	}
 
-	async ensureLease(): Promise<LedgerWriterLeaseV1> {
+	async ensureLease(refresh = false): Promise<LedgerWriterLeaseV1> {
 		const current = await this.session.getWriterLease();
 		if (
+			!refresh &&
 			this.lease !== undefined &&
 			current?.fencingToken === this.lease.fencingToken &&
 			current.expiresAt > this.now() + Math.min(1000, Math.floor(this.leaseTtlMs / 4))
@@ -105,11 +108,21 @@ export class SessionLedgerWriter {
 			return this.lease;
 		}
 		if (current?.ownerId === this.ownerId && current.expiresAt > this.now()) {
-			this.lease = await this.session.renewWriterLease({
-				fencingToken: current.fencingToken,
-				ttlMs: this.leaseTtlMs,
-			});
-			return this.lease;
+			try {
+				this.lease = await this.session.renewWriterLease({
+					fencingToken: current.fencingToken,
+					ttlMs: this.leaseTtlMs,
+				});
+				return this.lease;
+			} catch (error) {
+				if (
+					!(error instanceof DurableLedgerError) ||
+					(error.code !== "session_writer_lease_expired" &&
+						error.code !== "session_writer_fencing_token" &&
+						error.code !== "session_writer_lease_lost")
+				) throw error;
+				this.lease = undefined;
+			}
 		}
 		this.lease = await this.session.acquireWriterLease({ ownerId: this.ownerId, ttlMs: this.leaseTtlMs });
 		return this.lease;
@@ -119,6 +132,16 @@ export class SessionLedgerWriter {
 		if (this.lease === undefined) return;
 		await this.session.releaseWriterLease({ fencingToken: this.lease.fencingToken });
 		this.lease = undefined;
+	}
+
+	/** Append a Foundation record under this writer's lease authority. */
+	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+		const lease = await this.ensureLease(true);
+		return this.session.appendFoundationRecord({
+			...record,
+			fencingToken: lease.fencingToken,
+			correlation: { ...record.correlation, fencingToken: lease.fencingToken },
+		});
 	}
 
 	async writeFact<TPayload extends FoundationJsonValue>(

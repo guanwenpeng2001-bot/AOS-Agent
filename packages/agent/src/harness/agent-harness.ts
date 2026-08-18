@@ -105,7 +105,6 @@ import {
 	DurableLedgerError,
 	type FoundationFactRecordV1,
 	type FoundationRecordV1,
-	type LedgerWriterLeaseV1,
 	type ProvisionedFoundationRecordV1,
 } from "./session/index.ts";
 import type { TelemetryContext } from "./telemetry.ts";
@@ -872,14 +871,14 @@ export class AgentHarness implements AgentLane {
 		if (options.t5 !== undefined && options.t5.session !== options.session) {
 			throw new SessionLedgerBindingError("AgentHarness T5 authority must use the supplied Session");
 		}
-		this.foundationOwnerId =
+		const foundationOwnerId =
 			options.foundationExecution === undefined
 				? undefined
 				: options.t5Options?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
 		const t5Options =
-			this.foundationOwnerId === undefined || options.t5Options?.ownerId !== undefined
+			foundationOwnerId === undefined || options.t5Options?.ownerId !== undefined
 				? options.t5Options
-				: { ...(options.t5Options ?? {}), ownerId: this.foundationOwnerId };
+				: { ...(options.t5Options ?? {}), ownerId: foundationOwnerId };
 		this.t5 = options.t5 ?? new SessionT5Ledger(options.session, t5Options);
 		this.context = this.t5;
 		this.memory = this.t5.memory;
@@ -926,7 +925,7 @@ export class AgentHarness implements AgentLane {
 			const suspended = await harness.restore();
 			return { harness, suspended };
 		} catch (error) {
-			await harness.releaseFoundationLease();
+			await harness.releaseOwnedT5Lease();
 			throw error;
 		}
 	}
@@ -1010,7 +1009,7 @@ export class AgentHarness implements AgentLane {
 		const metadata = await this.durableSession.getMetadata();
 		this.foundationSessionId = metadata.id;
 		try {
-			this.foundationLease = await this.durableSession.acquireWriterLease({ ownerId: this.foundationOwnerId! });
+			await this.t5.writer.ensureLease();
 		} catch (error) {
 			throw new HarnessFault("Failed to acquire the Foundation session writer lease", error);
 		}
@@ -1030,39 +1029,8 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	private async releaseFoundationLease(): Promise<void> {
-		const lease = this.foundationLease;
-		if (lease === undefined) return;
-		this.foundationLease = undefined;
-		await this.durableSession.releaseWriterLease({ fencingToken: lease.fencingToken });
-	}
-
-	private async ensureFoundationLease(): Promise<LedgerWriterLeaseV1> {
-		const ownerId = this.foundationOwnerId;
-		if (ownerId === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
-		const current = this.foundationLease;
-		if (current !== undefined) {
-			try {
-				const renewed = await this.durableSession.renewWriterLease({ fencingToken: current.fencingToken });
-				this.foundationLease = renewed;
-				return renewed;
-			} catch (error) {
-				if (
-					!(error instanceof DurableLedgerError) ||
-					(error.code !== "session_writer_lease_expired" &&
-						error.code !== "session_writer_fencing_token" &&
-						error.code !== "session_writer_lease_lost")
-				) {
-					throw error;
-				}
-				// Expiry or fencing must be followed by an ownership acquisition. A
-				// competing live owner is rejected by acquireWriterLease.
-				this.foundationLease = undefined;
-			}
-		}
-		const acquired = await this.durableSession.acquireWriterLease({ ownerId });
-		this.foundationLease = acquired;
-		return acquired;
+	private async releaseOwnedT5Lease(): Promise<void> {
+		if (this.ownsT5) await this.t5.writer.releaseLease();
 	}
 
 	private foundationCorrelation(lane: string, runId: string, fields: Partial<ExecutionCorrelationV1> = {}): ExecutionCorrelationV1 | undefined {
@@ -1123,10 +1091,7 @@ export class AgentHarness implements AgentLane {
 
 	private async appendFoundation(record: ProvisionedFoundationRecordV1): Promise<FoundationRecordV1> {
 		if (this.foundationExecution === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
-		const lease = await this.ensureFoundationLease();
-		const fencingToken = lease.fencingToken;
-		const correlation = { ...record.correlation, fencingToken };
-		const result = await this.durableSession.appendFoundationRecord({ ...record, fencingToken, correlation });
+		const result = await this.t5.writer.appendFoundationRecord(record);
 		return result.record;
 	}
 
@@ -3594,16 +3559,9 @@ export class AgentHarness implements AgentLane {
 				failure ??= error;
 			} finally {
 				try {
-					await this.releaseFoundationLease();
+					await this.releaseOwnedT5Lease();
 				} catch (error) {
 					failure ??= error;
-				}
-				if (this.ownsT5) {
-					try {
-						await this.t5.writer.releaseLease();
-					} catch (error) {
-						failure ??= error;
-					}
 				}
 				this.closed = true;
 				this.closing = false;
