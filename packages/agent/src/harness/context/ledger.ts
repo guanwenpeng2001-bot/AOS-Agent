@@ -37,6 +37,7 @@ import {
 	validateCheckpointImpactPlan,
 	type CheckpointImpactPlanV1,
 	type CheckpointPlanOptions,
+	type CheckpointRewindAuthority,
 	type CheckpointV1,
 	type WorkspaceCheckpointState,
 } from "./checkpoint.ts";
@@ -785,8 +786,12 @@ export class SessionT5Ledger {
 	/** Apply only a previously persisted approved plan; the plan fact is always first. */
 	async applyRewind(planId: string, workspace: WorkspaceCheckpointState): Promise<RewindExecutionV1> {
 		const plan = requireRecord(await this.getRewindPlan(planId), `Rewind plan not found: ${planId}`);
-		if (plan.status !== "approved" || !validateCheckpointImpactPlan(plan, await this.loadContextSnapshot(plan.sourceSnapshotId), workspace)) throw new Error(`Rewind plan ${planId} is not safe to apply`);
+		const snapshot = await this.loadContextSnapshot(plan.sourceSnapshotId);
+		const checkpoint = requireRecord(await this.getCheckpoint(plan.checkpointId), `Checkpoint not found: ${plan.checkpointId}`);
+		if (checkpoint.snapshotId !== snapshot.snapshotId || checkpoint.lane !== plan.lane) throw new Error(`Rewind plan ${planId} checkpoint authority changed`);
 		const currentLaneLeafId = (await this.session.getLanes()).find((lane) => lane.lane === plan.lane)?.leafId;
+		const authority: CheckpointRewindAuthority = { checkpoint, targetEntryId: plan.targetEntryId, workspace, planId, lane: plan.lane };
+		if (currentLaneLeafId === undefined || !validateCheckpointImpactPlan(plan, snapshot, authority)) throw new Error(`Rewind plan ${planId} is not safe to apply`);
 		if (currentLaneLeafId === undefined || (plan.currentLaneLeafId !== undefined && currentLaneLeafId !== plan.currentLaneLeafId && currentLaneLeafId !== plan.targetEntryId)) {
 			throw new Error(`Rewind plan ${planId} lane changed before execution`);
 		}

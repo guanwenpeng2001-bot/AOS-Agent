@@ -87,6 +87,19 @@ export interface CheckpointV1 {
 	readonly currentLaneLeafId?: string | null;
 }
 
+export interface CheckpointRewindAuthority {
+	readonly checkpoint: CheckpointV1;
+	readonly targetEntryId: string | null;
+	readonly workspace: WorkspaceCheckpointState;
+	readonly planId?: string;
+	readonly lane?: string;
+}
+
+type CheckpointImpactPlanWithSessionFields = CheckpointImpactPlanV1 & {
+	readonly planId?: string;
+	readonly lane?: string;
+};
+
 function digest(value: unknown): string {
 	return `sha256:${sha256HexValue(canonicalFoundationJson(value))}`;
 }
@@ -119,17 +132,6 @@ function workspaceEvidenceComplete(state: WorkspaceCheckpointState | undefined):
 	if (state?.known !== true || typeof state.digest !== "string" || state.digest.length === 0) return false;
 	return [state.readFiles, state.modifiedFiles, state.pendingFiles, state.unknownFiles].every(
 		(files) => Array.isArray(files) && files.every((file) => typeof file === "string"),
-	);
-}
-
-function workspaceImpactEvidenceComplete(impact: WorkspaceCheckpointImpact): boolean {
-	return (
-		impact.known === true &&
-		typeof impact.digest === "string" &&
-		impact.digest.length > 0 &&
-		[impact.readFiles, impact.modifiedFiles, impact.pendingFiles, impact.unknownFiles].every(
-			(files) => Array.isArray(files) && files.every((file) => typeof file === "string"),
-		)
 	);
 }
 
@@ -212,40 +214,51 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 	};
 }
 
-export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlanV1): ContextSnapshot | undefined {
-	const workspace: WorkspaceCheckpointState = {
-		known: plan.workspace.known,
-		...(plan.workspace.digest === undefined ? {} : { digest: plan.workspace.digest }),
-		readFiles: plan.workspace.readFiles,
-		modifiedFiles: plan.workspace.modifiedFiles,
-		pendingFiles: plan.workspace.pendingFiles,
-		unknownFiles: plan.workspace.unknownFiles,
+function checkpointMatchesSnapshot(checkpoint: CheckpointV1, snapshot: ContextSnapshot): boolean {
+	return (
+		checkpoint.schemaVersion === CHECKPOINT_SCHEMA_VERSION &&
+		checkpoint.failClosed === true &&
+		checkpoint.snapshotId === snapshot.snapshotId &&
+		checkpoint.entryId === snapshot.headEntryId &&
+		checkpoint.transcriptDigest === digestCheckpointTranscript(snapshot.entries()) &&
+		(checkpoint.currentLaneLeafId ?? checkpoint.entryId) === snapshot.headEntryId
+	);
+}
+
+function expectedCheckpointImpactPlan(snapshot: ContextSnapshot, authority: CheckpointRewindAuthority): CheckpointImpactPlanWithSessionFields | undefined {
+	if (!checkpointMatchesSnapshot(authority.checkpoint, snapshot)) return undefined;
+	if (authority.lane !== undefined && authority.lane !== authority.checkpoint.lane) return undefined;
+	const expected = planCheckpointRewind(snapshot, {
+		checkpointId: authority.checkpoint.checkpointId,
+		targetEntryId: authority.targetEntryId,
+		workspace: authority.workspace,
+		checkpointTranscriptDigest: authority.checkpoint.transcriptDigest,
+		checkpointWorkspaceDigest: authority.checkpoint.workspaceDigest,
+		currentLaneLeafId: authority.checkpoint.currentLaneLeafId ?? authority.checkpoint.entryId,
+		expectedLaneLeafId: snapshot.headEntryId,
+	});
+	return {
+		...expected,
+		...(authority.planId === undefined ? {} : { planId: authority.planId }),
+		...(authority.lane === undefined ? {} : { lane: authority.lane }),
 	};
-	if (!validateCheckpointImpactPlan(plan, snapshot, workspace)) return undefined;
+}
+
+function exactCheckpointImpactPlanMatch(plan: CheckpointImpactPlanWithSessionFields, expected: CheckpointImpactPlanWithSessionFields): boolean {
+	try {
+		return canonicalFoundationJson(plan) === canonicalFoundationJson(expected);
+	} catch {
+		return false;
+	}
+}
+
+export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlanV1, authority: CheckpointRewindAuthority): ContextSnapshot | undefined {
+	if (!validateCheckpointImpactPlan(plan, snapshot, authority)) return undefined;
 	if (plan.targetEntryId === null) return snapshot.fork({ mode: "none", checkpointId: plan.checkpointId });
 	return snapshot.rewindTo(plan.targetEntryId);
 }
 
-export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snapshot: ContextSnapshot, workspace?: WorkspaceCheckpointState): boolean {
-	if (
-		plan.schemaVersion !== CHECKPOINT_SCHEMA_VERSION ||
-		plan.status !== "approved" ||
-		plan.reason !== "ok" ||
-		plan.failClosed !== true ||
-		plan.sourceSnapshotId !== snapshot.snapshotId
-	) return false;
-	const planWithSessionFields = plan as CheckpointImpactPlanV1 & { readonly lane?: string; readonly planId?: string };
-	const { lane: _lane, planId: _planId, digest: planDigest, ...planBody } = planWithSessionFields;
-	if (digest(planBody) !== planDigest) return false;
-	if (plan.transcript.beforeDigest !== digestCheckpointTranscript(snapshot.entries())) return false;
-	if (plan.currentLaneLeafId !== undefined && plan.currentLaneLeafId !== snapshot.headEntryId) return false;
-	if (
-		plan.boundary.failClosed !== true ||
-		plan.boundary.entryId !== plan.targetEntryId ||
-		plan.boundary.transcriptDigest !== plan.transcript.beforeDigest ||
-		plan.boundary.workspaceDigest !== plan.workspace.digest
-	) return false;
-	if (workspace === undefined || plan.workspace.known !== true || !workspaceImpactEvidenceComplete(plan.workspace) || !workspaceEvidenceComplete(workspace)) return false;
-	if (plan.workspace.digest !== workspace.digest) return false;
-	return !workspaceImpact(workspace).hasUncommittedImpact;
+export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snapshot: ContextSnapshot, authority: CheckpointRewindAuthority): boolean {
+	const expected = expectedCheckpointImpactPlan(snapshot, authority);
+	return expected !== undefined && expected.status === "approved" && exactCheckpointImpactPlanMatch(plan, expected);
 }

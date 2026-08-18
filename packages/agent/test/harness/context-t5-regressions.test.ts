@@ -11,6 +11,9 @@ import {
 	SessionT5Ledger,
 	JsonlSessionRepo,
 	T5_LEDGER_OBJECT_TYPES,
+	canonicalFoundationJson,
+	sha256HexValue,
+	type SessionRewindPlanV1,
 } from "../../src/index.ts";
 import { resolveInstructionSources, type InstructionLockV1 } from "../../src/harness/context/instruction.ts";
 import { applyCheckpointRewind } from "../../src/harness/context/checkpoint.ts";
@@ -18,6 +21,11 @@ import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 const environments: NodeExecutionEnv[] = [];
+
+function resignRewindPlan(plan: SessionRewindPlanV1): SessionRewindPlanV1 {
+	const { digest: _digest, planId: _planId, lane: _lane, ...body } = plan;
+	return { ...plan, digest: `sha256:${sha256HexValue(canonicalFoundationJson(body))}` };
+}
 
 afterEach(async () => {
 	while (environments.length > 0) await environments.pop()!.cleanup();
@@ -184,12 +192,17 @@ describe("T5 durable reopen and recovery regressions", () => {
 		const approvedPlan = await ledger.planRewind({ planId: "plan-workspace-approved", lane: "main", checkpointId: checkpoint.checkpointId, snapshotId: snapshot.snapshotId, targetEntryId: entryId, workspace });
 		expect(approvedPlan.status).toBe("approved");
 		await expect(ledger.applyRewind(approvedPlan.planId, unknownWorkspace)).rejects.toThrow("not safe to apply");
-		const forgedUnknownPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, known: false } };
-		expect(applyCheckpointRewind(snapshot, forgedUnknownPlan)).toBeUndefined();
 		const rewindTo = vi.spyOn(snapshot, "rewindTo");
-		const forgedModifiedFilesPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, modifiedFiles: ["forged.ts"] } };
-		expect(applyCheckpointRewind(snapshot, forgedModifiedFilesPlan)).toBeUndefined();
-		expect(rewindTo).not.toHaveBeenCalled();
+		const authority = { checkpoint, targetEntryId: approvedPlan.targetEntryId, workspace, planId: approvedPlan.planId, lane: "main" } as const;
+		const forgedUnknownPlan = { ...approvedPlan, workspace: { ...approvedPlan.workspace, known: false } };
+		expect(applyCheckpointRewind(snapshot, resignRewindPlan(forgedUnknownPlan), authority)).toBeUndefined();
+		const forgedAfterDigestPlan = resignRewindPlan({ ...approvedPlan, transcript: { ...approvedPlan.transcript, afterDigest: "sha256:forged-after" } });
+		expect(applyCheckpointRewind(snapshot, forgedAfterDigestPlan, authority)).toBeUndefined();
+		const forgedMessageCountPlan = resignRewindPlan({ ...approvedPlan, transcript: { ...approvedPlan.transcript, removedMessageCount: approvedPlan.transcript.removedMessageCount + 1 } });
+		expect(applyCheckpointRewind(snapshot, forgedMessageCountPlan, authority)).toBeUndefined();
+		const applied = applyCheckpointRewind(snapshot, approvedPlan, authority);
+		expect(applied?.headEntryId).toBe(entryId);
+		expect(rewindTo).toHaveBeenCalledTimes(1);
 		expect((await session.getLanes()).find((lane) => lane.lane === "main")?.leafId).toBe(snapshot.headEntryId);
 		await ledger.writer.releaseLease();
 	});
