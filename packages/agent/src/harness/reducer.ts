@@ -34,7 +34,8 @@ export type RecordLogCorruptionReason =
 	| "tool_call_mismatch"
 	| "duplicate_tool_invocation"
 	| "provisioned_entry_mismatch"
-	| "invalid_deferred_handle";
+	| "invalid_deferred_handle"
+	| "invalid_deferred_fetch";
 
 export class RecordLogCorruption extends Error {
 	readonly reason: RecordLogCorruptionReason;
@@ -77,6 +78,23 @@ export interface ToolBatchState {
 	}[];
 	truncated: boolean;
 	unresolved: boolean;
+}
+
+/** Durable redemption prefix for one provider-deferred assistant response. */
+export const DEFERRED_FETCH_INTENT_CUSTOM_TYPE = "harness.deferred_fetch.intent";
+export const DEFERRED_FETCH_RESULT_CUSTOM_TYPE = "harness.deferred_fetch.result";
+
+export type DeferredFetchResultStatus = "succeeded" | "failed" | "unknown";
+
+export interface DeferredFetchState {
+	intent: { entryId: string; runId: string; handle: DeferredHandle; responseEntryId: string };
+	result?: {
+		entryId: string;
+		status: DeferredFetchResultStatus;
+		responseEntryId?: string;
+		response?: AssistantMessage;
+		error?: { code: string; message: string };
+	};
 }
 
 /** Why a loop must stop before another provider turn is started. */
@@ -159,6 +177,7 @@ export interface LaneState {
 		pendingFollowUp: ProvisionedEntry[];
 		pendingWrites: ProvisionedEntry[];
 		deferred: DeferredHandle | null;
+		deferredFetch: DeferredFetchState | null;
 		overflowRecoveryUsed: boolean;
 		newestOwn: null | {
 			entryId: string;
@@ -442,6 +461,130 @@ function validateDeferredHandles(entries: Iterable<Entry>): void {
 	}
 }
 
+function isJsonValue(value: unknown): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	if (typeof value !== "object") return false;
+	return Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(isJsonValue);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function parseDeferredHandle(value: unknown): DeferredHandle | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.provider !== "string" || record.provider.length === 0 ||
+		typeof record.modelId !== "string" || record.modelId.length === 0 ||
+		typeof record.api !== "string" || record.api.length === 0 ||
+		typeof record.id !== "string" || record.id.length === 0
+	) return undefined;
+	if (record.expiresAt !== undefined && (!Number.isSafeInteger(record.expiresAt) || (record.expiresAt as number) < 0)) return undefined;
+	if (record.pollAfterMs !== undefined && (!Number.isSafeInteger(record.pollAfterMs) || (record.pollAfterMs as number) < 0)) return undefined;
+	if (record.data !== undefined && !isJsonValue(record.data)) return undefined;
+	return structuredClone(record) as unknown as DeferredHandle;
+}
+
+function parseDeferredFetchIntent(entry: Entry): DeferredFetchState["intent"] | undefined {
+	if (entry.type !== "custom" || entry.customType !== DEFERRED_FETCH_INTENT_CUSTOM_TYPE) return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} is not an object`);
+	const record = data as Record<string, unknown>;
+	if (record.schemaVersion !== 1 || record.status !== "pending" || typeof record.runId !== "string" || record.runId.length === 0) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has an invalid prefix`);
+	}
+	if (typeof record.responseEntryId !== "string" || record.responseEntryId.length === 0) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has no response association`);
+	const handle = parseDeferredHandle(record.handle);
+	if (!handle) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has an invalid handle`);
+	return { entryId: entry.id, runId: record.runId as string, handle, responseEntryId: record.responseEntryId as string };
+}
+
+function parseDeferredFetchResult(entry: Entry): DeferredFetchState["result"] | undefined {
+	if (entry.type !== "custom" || entry.customType !== DEFERRED_FETCH_RESULT_CUSTOM_TYPE) return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} is not an object`);
+	const record = data as Record<string, unknown>;
+	if (record.schemaVersion !== 1 || typeof record.runId !== "string" || record.runId.length === 0) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid prefix`);
+	}
+	if (record.status !== "succeeded" && record.status !== "failed" && record.status !== "unknown") {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid status`);
+	}
+	if (record.responseEntryId !== undefined && (typeof record.responseEntryId !== "string" || record.responseEntryId.length === 0)) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid response entry id`);
+	}
+	if (record.error !== undefined) {
+		if (typeof record.error !== "object" || record.error === null || Array.isArray(record.error)) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid error`);
+		const error = record.error as Record<string, unknown>;
+		if (typeof error.code !== "string" || error.code.length === 0 || typeof error.message !== "string" || error.message.length === 0) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid error`);
+	}
+	if (record.response !== undefined) {
+		if (typeof record.response !== "object" || record.response === null || Array.isArray(record.response) || (record.response as Record<string, unknown>).role !== "assistant") {
+			corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid response`);
+		}
+	}
+	if (record.status === "succeeded" && (record.response === undefined || record.responseEntryId === undefined)) {
+		corrupt("invalid_deferred_fetch", `Successful deferred fetch result ${entry.id} is missing its response association`);
+	}
+	return {
+		entryId: entry.id,
+		status: record.status as DeferredFetchResultStatus,
+		...(record.responseEntryId === undefined ? {} : { responseEntryId: record.responseEntryId as string }),
+		...(record.response === undefined ? {} : { response: structuredClone(record.response) as AssistantMessage }),
+		...(record.error === undefined ? {} : { error: structuredClone(record.error) as { code: string; message: string } }),
+	};
+}
+
+function validateDeferredFetchEntries(entries: Iterable<Entry>): void {
+	const intents = new Map<string, { entry: Entry; value: DeferredFetchState["intent"] }>();
+	const results = new Map<string, { entry: Entry; value: NonNullable<DeferredFetchState["result"]> }>();
+	const allEntries = [...entries];
+	for (const entry of allEntries) {
+		const intent = parseDeferredFetchIntent(entry);
+		if (intent) {
+			if (intents.has(intent.runId)) corrupt("invalid_deferred_fetch", `Deferred fetch run ${intent.runId} has duplicate intents`);
+			intents.set(intent.runId, { entry, value: intent });
+		}
+		const result = parseDeferredFetchResult(entry);
+		if (result) {
+			if (entry.type !== "custom") corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} is not a custom entry`);
+			const data = entry.data as Record<string, unknown>;
+			const runId = data.runId as string;
+			if (results.has(runId)) corrupt("invalid_deferred_fetch", `Deferred fetch run ${runId} has duplicate results`);
+			results.set(runId, { entry, value: result });
+		}
+	}
+	for (const [runId, result] of results) {
+		const intent = intents.get(runId);
+		if (!intent || intent.entry.seq >= result.entry.seq) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} has no preceding intent`);
+		if (result.value.responseEntryId !== undefined && result.value.responseEntryId !== intent.value.responseEntryId) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} changes its response association`);
+		if (result.value.responseEntryId !== undefined) {
+			const response = allEntries.find((candidate) => candidate.id === result.value.responseEntryId);
+			if (response && (response.type !== "message" || response.message.role !== "assistant")) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} references a non-assistant response`);
+		}
+	}
+}
+
+function deriveDeferredFetchState(operationId: string, entries: readonly Entry[]): DeferredFetchState | null {
+	const ordered = bySequence(entries);
+	const intentEntry = ordered.find((entry) => {
+		const value = parseDeferredFetchIntent(entry);
+		return value?.runId === operationId;
+	});
+	if (!intentEntry) return null;
+	const intent = parseDeferredFetchIntent(intentEntry);
+	if (!intent) return null;
+	const resultEntry = ordered.find((entry) => {
+		const data = entry.type === "custom" && entry.customType === DEFERRED_FETCH_RESULT_CUSTOM_TYPE ? asRecord(entry.data) : undefined;
+		return data?.runId === operationId;
+	});
+	const result = resultEntry ? parseDeferredFetchResult(resultEntry) : undefined;
+	return { intent, ...(result === undefined ? {} : { result }) };
+}
+
 function validateOperationResult(entriesById: ReadonlyMap<string, Entry>, record: OperationStartedRecord): void {
 	switch (record.intent.kind) {
 		case "run":
@@ -476,6 +619,7 @@ export function validateRecordLog(input: RecordLogSlice): void {
 
 	const entriesById = new Map(input.entries.map((entry) => [entry.id, entry]));
 	validateDeferredHandles(entriesById.values());
+	validateDeferredFetchEntries(entriesById.values());
 	const starts = new Map<string, OperationStartedRecord>();
 	const finishedAt = new Map<string, number>();
 	const abortedAt = new Map<string, number>();
@@ -819,7 +963,10 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 			record.seq > newestConsumedInputSequence,
 	);
 
-	const newestOwnEntry = ownEntries.at(-1);
+	// Custom entries include configuration and harness lifecycle markers that
+	// are not operation output. They must not hide the last assistant/tool or
+	// compaction entry during recovery.
+	const newestOwnEntry = [...ownEntries].reverse().find((entry) => entry.type !== "custom");
 	const newestOwn = deriveNewestOwn(newestOwnEntry);
 	const deferred =
 		newestOwnEntry?.type === "message" &&
@@ -838,6 +985,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 	const deferredWriteIds = new Set(
 		operationRecords.filter((record) => record.type === "write_deferred").map((record) => record.target.id),
 	);
+	const deferredFetch = deriveDeferredFetchState(started.id, ownEntries);
 	const toolBatch = deriveToolBatch(started.id, operationRecords, ownEntries, entriesById, deferredWriteIds);
 	let terminalFailure: TerminalFailureState | null = null;
 	if (
@@ -895,6 +1043,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 				pendingFollowUp,
 				pendingWrites,
 				deferred,
+				deferredFetch,
 				overflowRecoveryUsed,
 				newestOwn,
 				targets,

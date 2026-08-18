@@ -14,11 +14,15 @@ import type {
 import { runAgentLoopContinue } from "../agent-loop.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../types.ts";
 import {
+	canonicalFoundationJson,
 	createExecutionCorrelation,
-	createHostTerminalGateAuthorityV1,
 	finalizeRunReceipt,
 	settleTaskResult,
 	validateAttemptReceipt,
+	validateDispatchV1,
+	validateHostTerminalGateAuthorityV1,
+	validateImmutableAgentBindingV1,
+	validateTaskEnvelopeV1,
 	validateRunReceiptV1,
 	validateTaskResultV1,
 	type AcceptanceFactV1,
@@ -31,6 +35,7 @@ import {
 	type HostTerminalGateAuthorityV1,
 	type ResultStatusV1,
 	type RunReceiptV1,
+	type SideEffectStateV1,
 	type TaskEnvelopeV1,
 	type TaskResultV1,
 	type ValidationResultV1,
@@ -60,6 +65,7 @@ import {
 	type ToolStartedRecord,
 	type WriteDeferredRecord,
 	SessionError,
+	DurableLedgerError,
 	type FoundationFactRecordV1,
 	type FoundationRecordV1,
 	type LedgerWriterLeaseV1,
@@ -67,7 +73,14 @@ import {
 } from "./session/index.ts";
 import type { TelemetryContext } from "./telemetry.ts";
 import { type AgentHarnessResources, type PromptTemplate, type Skill, toError } from "./types.ts";
-import { RecordLogCorruption, type LaneReductionResult, reduceLaneState } from "./reducer.ts";
+import {
+	DEFERRED_FETCH_INTENT_CUSTOM_TYPE,
+	DEFERRED_FETCH_RESULT_CUSTOM_TYPE,
+	RecordLogCorruption,
+	type DeferredFetchState,
+	type LaneReductionResult,
+	reduceLaneState,
+} from "./reducer.ts";
 
 export class LaneBusy extends TaggedError("LaneBusy")<{
 	lane: string;
@@ -118,6 +131,18 @@ export class HarnessClosed extends Error {
 export interface OperationError {
 	code: string;
 	message: string;
+}
+
+const USER_ABORT_ERROR: OperationError = {
+	code: "user_aborted",
+	message: "Agent run was aborted by the user",
+};
+
+function providerAbortError(message: string | undefined): OperationError {
+	const stableMessage = message ?? "Provider aborted the request";
+	return /deadline/i.test(stableMessage)
+		? { code: "deadline_exceeded", message: stableMessage }
+		: { code: "provider_aborted", message: stableMessage };
 }
 
 export type RunOutcome =
@@ -219,14 +244,15 @@ export interface SessionSnapshot {
 export type ActionInfo =
 	| { kind: "append_entry"; entryType: Entry["type"]; entryId: string }
 	| { kind: "move_lane"; to: string | null }
-	| { kind: "try_finish_run"; outcome: "completed" | "failed" | "aborted" }
+	| { kind: "try_finish_run"; outcome: "completed" | "failed" | "aborted"; error?: OperationError }
 	| { kind: "finish_operation"; outcome: "completed" | "declined" | "failed" | "aborted" }
 	| { kind: "commit_follow_up" }
 	| { kind: "consume_queue_item"; queue: "steer" | "followUp"; entryId: string }
 	| { kind: "apply_pending_write"; entryId: string }
 	| { kind: "stream_assistant"; step: "assistant" | "compaction" | "branch_summary"; attempt: number }
 	| { kind: "execute_tool"; toolCallId: string; toolName: string }
-	| { kind: "fetch_deferred"; provider: string; id: string };
+	| { kind: "fetch_deferred"; provider: string; id: string }
+	| { kind: "apply_deferred_fetch_result" };
 
 export type HookName =
 	| "before_run"
@@ -357,8 +383,8 @@ interface ActiveOperation {
 interface FoundationReceiptBundle {
 	attemptId: string;
 	attemptReceipt: AttemptReceiptV1;
-	taskResult: TaskResultV1;
-	runReceipt: RunReceiptV1;
+	taskResult?: TaskResultV1;
+	runReceipt?: RunReceiptV1;
 	correlation: ExecutionCorrelationV1;
 }
 
@@ -392,6 +418,14 @@ function operationError(error: unknown): OperationError {
 	return { code, message: normalized.message };
 }
 
+function isHarnessInfrastructureFault(error: unknown): boolean {
+	if (error instanceof HarnessFault || error instanceof DurableLedgerError) return true;
+	// A SessionError crossing an active-operation boundary is a ledger or
+	// persistence invariant failure. User input is validated before an active
+	// operation starts, so it must not be converted into a model failure here.
+	return error instanceof SessionError;
+}
+
 export class AgentHarness implements AgentLane {
 	readonly name = "main";
 	readonly session: SessionTree;
@@ -415,7 +449,7 @@ export class AgentHarness implements AgentLane {
 	private readonly toProviderMessages: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	private readonly entryProjectors: Record<string, EntryProjector>;
 	private readonly toolExecution: "sequential" | "parallel";
-	private readonly foundationExecution?: AgentHarnessFoundationExecution;
+	private foundationExecution?: AgentHarnessFoundationExecution;
 	private readonly foundationOwnerId?: string;
 	private foundationSessionId?: string;
 	private foundationLease?: LedgerWriterLeaseV1;
@@ -460,7 +494,7 @@ export class AgentHarness implements AgentLane {
 		this.toProviderMessages = options.toProviderMessages ?? convertToLlm;
 		this.entryProjectors = { ...(options.entryProjectors ?? {}) };
 		this.toolExecution = options.toolExecution ?? "parallel";
-		this.foundationExecution = options.foundationExecution;
+		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
 		this.foundationOwnerId = options.foundationExecution === undefined ? undefined : `agent-harness:${options.session.idGenerator.next()}`;
 		this.hooks = this.hookRegistry;
 		this.events = new EventsFacade(this.eventBus);
@@ -514,16 +548,46 @@ export class AgentHarness implements AgentLane {
 	private async initializeFoundationExecution(): Promise<void> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) return;
-		if (execution.task.taskId !== execution.dispatch.taskId || execution.task.taskId !== execution.binding.taskId) {
+		const checkedTask = validateTaskEnvelopeV1(execution.task);
+		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
+		const checkedDispatch = validateDispatchV1(execution.dispatch);
+		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
+		const checkedBinding = validateImmutableAgentBindingV1(execution.binding);
+		if (!checkedBinding.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", checkedBinding.error);
+		if ((execution.hostAuthority === undefined) !== (execution.settlement === undefined)) {
+			throw new HarnessFault("Foundation hostAuthority and settlement must be supplied together", undefined);
+		}
+		const checkedAuthority = execution.hostAuthority === undefined ? undefined : validateHostTerminalGateAuthorityV1(execution.hostAuthority);
+		if (checkedAuthority !== undefined && !checkedAuthority.ok) throw new HarnessFault("Foundation host authority is not an established terminal gate", checkedAuthority.error);
+		if (execution.providerId !== checkedDispatch.value.taskExecutorProviderId) {
+			throw new HarnessFault("Foundation execution provider does not match the Dispatch executor", undefined);
+		}
+		if (checkedDispatch.value.taskId !== checkedTask.value.taskId || checkedDispatch.value.bindingId !== checkedBinding.value.bindingId) {
+			throw new HarnessFault("Foundation execution Dispatch does not match its Task or Binding", undefined);
+		}
+		if (checkedBinding.value.taskId !== checkedTask.value.taskId) {
+			throw new HarnessFault("Foundation execution Binding does not match its Task", undefined);
+		}
+		const normalizedExecution: AgentHarnessFoundationExecution = {
+			...execution,
+			task: structuredClone(checkedTask.value),
+			dispatch: structuredClone(checkedDispatch.value),
+			binding: structuredClone(checkedBinding.value),
+			bindingEpochIds: [...execution.bindingEpochIds],
+			...(checkedAuthority === undefined ? {} : { hostAuthority: structuredClone(checkedAuthority.value) }),
+			...(execution.settlement === undefined ? {} : { settlement: structuredClone(execution.settlement) }),
+		};
+		this.foundationExecution = normalizedExecution;
+		if (normalizedExecution.task.taskId !== normalizedExecution.dispatch.taskId || normalizedExecution.task.taskId !== normalizedExecution.binding.taskId) {
 			throw new HarnessFault("Foundation execution task identity does not match the prompt context", undefined);
 		}
-		if (execution.dispatch.bindingId !== execution.binding.bindingId) {
+		if (normalizedExecution.dispatch.bindingId !== normalizedExecution.binding.bindingId) {
 			throw new HarnessFault("Foundation execution binding identity does not match the dispatch", undefined);
 		}
-		if (execution.bindingEpochIds.length === 0 || execution.bindingEpochIds.some((id) => id.length === 0)) {
+		if (normalizedExecution.bindingEpochIds.length === 0 || normalizedExecution.bindingEpochIds.some((id) => id.length === 0)) {
 			throw new HarnessFault("Foundation execution requires at least one binding epoch", undefined);
 		}
-		if (execution.providerId.length === 0 || execution.agentInstanceId.length === 0) {
+		if (normalizedExecution.providerId.length === 0 || normalizedExecution.agentInstanceId.length === 0) {
 			throw new HarnessFault("Foundation execution requires provider and AgentInstance identities", undefined);
 		}
 		const metadata = await this.durableSession.getMetadata();
@@ -540,6 +604,34 @@ export class AgentHarness implements AgentLane {
 		if (lease === undefined) return;
 		this.foundationLease = undefined;
 		await this.durableSession.releaseWriterLease({ fencingToken: lease.fencingToken });
+	}
+
+	private async ensureFoundationLease(): Promise<LedgerWriterLeaseV1> {
+		const ownerId = this.foundationOwnerId;
+		if (ownerId === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
+		const current = this.foundationLease;
+		if (current !== undefined) {
+			try {
+				const renewed = await this.durableSession.renewWriterLease({ fencingToken: current.fencingToken });
+				this.foundationLease = renewed;
+				return renewed;
+			} catch (error) {
+				if (
+					!(error instanceof DurableLedgerError) ||
+					(error.code !== "session_writer_lease_expired" &&
+						error.code !== "session_writer_fencing_token" &&
+						error.code !== "session_writer_lease_lost")
+				) {
+					throw error;
+				}
+				// Expiry or fencing must be followed by an ownership acquisition. A
+				// competing live owner is rejected by acquireWriterLease.
+				this.foundationLease = undefined;
+			}
+		}
+		const acquired = await this.durableSession.acquireWriterLease({ ownerId });
+		this.foundationLease = acquired;
+		return acquired;
 	}
 
 	private foundationCorrelation(lane: string, runId: string, fields: Partial<ExecutionCorrelationV1> = {}): ExecutionCorrelationV1 | undefined {
@@ -577,10 +669,9 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async appendFoundation(record: ProvisionedFoundationRecordV1): Promise<FoundationRecordV1> {
-		if (this.foundationExecution === undefined || this.foundationLease === undefined) {
-			throw new HarnessFault("Foundation execution is not initialized", undefined);
-		}
-		const fencingToken = this.foundationLease.fencingToken;
+		if (this.foundationExecution === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
+		const lease = await this.ensureFoundationLease();
+		const fencingToken = lease.fencingToken;
 		const correlation = { ...record.correlation, fencingToken };
 		const result = await this.durableSession.appendFoundationRecord({ ...record, fencingToken, correlation });
 		return result.record;
@@ -597,7 +688,14 @@ export class AgentHarness implements AgentLane {
 		const existing = await this.durableSession.getFoundationObject(objectType, objectId);
 		if (existing !== undefined) {
 			if (existing.kind !== "fact") throw new HarnessFault(`Foundation object ${objectType}/${objectId} is not a fact`, undefined);
-			return existing;
+			try {
+				if (existing.clientRequestId !== clientRequestId || canonicalFoundationJson(existing.payload) !== canonicalFoundationJson(payload)) {
+					throw new HarnessFault(`Foundation object ${objectType}/${objectId} conflicts with the replay payload`, undefined);
+				}
+			} catch (error) {
+				if (error instanceof HarnessFault) throw error;
+				throw new HarnessFault(`Foundation object ${objectType}/${objectId} is not canonical JSON`, error);
+			}
 		}
 		const record = await this.appendFoundation({
 			schemaVersion: 1,
@@ -617,8 +715,6 @@ export class AgentHarness implements AgentLane {
 	private async persistFoundationIntent(lane: string, runId: string): Promise<void> {
 		if (this.foundationExecution === undefined) return;
 		const ids = this.foundationIds(runId);
-		const existing = await this.durableSession.findFoundationRecords({ kind: "intent", objectType: "attempt", objectId: ids.attemptId, includePruned: true });
-		if (existing.length > 0) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for Foundation intent", undefined);
 		await this.appendFoundation({
@@ -644,6 +740,17 @@ export class AgentHarness implements AgentLane {
 		});
 	}
 
+	private async ensureFoundationIntentForOperation(lane: string, runId: string): Promise<void> {
+		await this.persistFoundationIntent(lane, runId);
+		if (this.foundationExecution === undefined) return;
+		const ids = this.foundationIds(runId);
+		const records = await this.durableSession.findFoundationRecords({ kind: "intent", objectType: "attempt", objectId: ids.attemptId, includePruned: true, order: "oldestFirst" });
+		const intent = records.find((record) => record.kind === "intent" && record.clientRequestId === `harness:intent:${runId}`);
+		if (intent === undefined || intent.kind !== "intent") throw new HarnessFault(`Foundation intent is missing for operation ${runId}`, undefined);
+		const payload = intent.payload;
+		if (payload === undefined || asRecord(payload)?.runId !== runId) throw new HarnessFault(`Foundation intent is invalid for operation ${runId}`, undefined);
+	}
+
 	private foundationPublicError(error: OperationError | undefined, fallbackCode: string, fallbackMessage: string): NonNullable<AttemptReceiptV1["error"]> {
 		return {
 			code: error?.code ?? fallbackCode,
@@ -664,7 +771,7 @@ export class AgentHarness implements AgentLane {
 		if (prior !== undefined) return prior;
 		const execution = this.foundationExecution;
 		const ids = this.foundationIds(runId);
-		const now = new Date().toISOString();
+		const now = await this.foundationReceiptTimestamp(lane, runId);
 		const terminalStatus: ResultStatusV1 = outcome === "completed" ? "succeeded" : outcome === "aborted" ? "cancelled" : "failed";
 		const candidate: AttemptReceiptV1 = {
 			schemaVersion: 1,
@@ -680,20 +787,33 @@ export class AgentHarness implements AgentLane {
 			workerReceiptRefs: [],
 			artifacts: [...(execution.settlement?.artifacts ?? [])],
 			provenance: { producerKind: "agent_executor", providerId: execution.providerId, producedAt: now },
-			sideEffectState: "none",
+			sideEffectState: await this.foundationSideEffectState(lane, runId),
 			...(terminalStatus === "failed" ? { error: this.foundationPublicError(error, "agent_run_failed", "Agent run failed") } : {}),
 		};
 		const existingAttempt = await this.durableSession.getFoundationObject("attempt_receipt", ids.attemptReceiptId);
 		let attemptReceipt = candidate;
 		if (existingAttempt !== undefined) {
 			if (existingAttempt.kind !== "fact") throw new HarnessFault("AttemptReceipt object is not a fact", undefined);
+			if (canonicalFoundationJson(existingAttempt.payload) !== canonicalFoundationJson(candidate)) throw new HarnessFault("Existing AttemptReceipt conflicts with its deterministic reconstruction", undefined);
 			attemptReceipt = existingAttempt.payload as unknown as AttemptReceiptV1;
 		}
 		const checkedAttempt = validateAttemptReceipt(attemptReceipt, { agentProvider: true, providerClass: "agent" });
 		if (!checkedAttempt.ok) throw new HarnessFault("AgentHarness produced an invalid AttemptReceipt", checkedAttempt.error);
 		attemptReceipt = checkedAttempt.value;
+		const attemptCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId });
+		if (attemptCorrelation === undefined) throw new HarnessFault("Missing execution correlation for Foundation AttemptReceipt", undefined);
+		const attemptFact = await this.appendFoundationFact(lane, "attempt_receipt", attemptReceipt.attemptReceiptId, `harness:attempt_receipt:${runId}`, this.foundationJson(attemptReceipt, "AttemptReceipt"), attemptCorrelation);
+		const checkedAttemptFact = validateAttemptReceipt(attemptFact.payload, { agentProvider: true, providerClass: "agent" });
+		if (!checkedAttemptFact.ok) throw new HarnessFault("Persisted AttemptReceipt is invalid", checkedAttemptFact.error);
+		attemptReceipt = checkedAttemptFact.value;
 
 		const settlement = execution.settlement;
+		const authority = execution.hostAuthority;
+		if (settlement === undefined || authority === undefined) {
+			const bundle: FoundationReceiptBundle = { attemptId: ids.attemptId, attemptReceipt, correlation: attemptFact.correlation };
+			this.foundationReceipts.set(runId, bundle);
+			return bundle;
+		}
 		const settleInput = {
 			taskResultId: ids.taskResultId,
 			task: execution.task,
@@ -703,7 +823,7 @@ export class AgentHarness implements AgentLane {
 			diff: settlement?.diff,
 			tests: settlement?.tests ?? [],
 			evidence: settlement?.evidence ?? [],
-			producer: { producerKind: "host" as const, providerId: "agent-harness-host", producedAt: now },
+			producer: { producerKind: "host" as const, providerId: authority.authorityId, producedAt: now },
 		};
 		let settled = settleTaskResult(settleInput);
 		if (!settled.ok && outcome === "completed" && attemptReceipt.status === "succeeded") {
@@ -722,7 +842,6 @@ export class AgentHarness implements AgentLane {
 		const checkedTaskResult = validateTaskResultV1(taskResult);
 		if (!checkedTaskResult.ok) throw new HarnessFault("AgentHarness produced an invalid TaskResult", checkedTaskResult.error);
 		const finalStatus = outcome === "completed" && taskResult.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
-		const authority = execution.hostAuthority ?? createHostTerminalGateAuthorityV1("agent-harness-host");
 		const finalized = finalizeRunReceipt({
 			runReceiptId: ids.runReceiptId,
 			runId,
@@ -736,16 +855,49 @@ export class AgentHarness implements AgentLane {
 		if (!finalized.ok) throw new HarnessFault("AgentHarness produced an invalid RunReceipt", finalized.error);
 		const checkedRunReceipt = validateRunReceiptV1(finalized.value);
 		if (!checkedRunReceipt.ok) throw new HarnessFault("AgentHarness produced an invalid RunReceipt", checkedRunReceipt.error);
-		const attemptCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId });
 		const taskCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId, taskResultId: taskResult.taskResultId });
 		const runCorrelation = this.foundationCorrelation(lane, runId, { attemptId: ids.attemptId, attemptReceiptId: attemptReceipt.attemptReceiptId, taskResultId: taskResult.taskResultId, runReceiptId: finalized.value.runReceiptId });
-		if (attemptCorrelation === undefined || taskCorrelation === undefined || runCorrelation === undefined) throw new HarnessFault("Missing execution correlation for Foundation receipts", undefined);
-		await this.appendFoundationFact(lane, "attempt_receipt", attemptReceipt.attemptReceiptId, `harness:attempt_receipt:${runId}`, this.foundationJson(attemptReceipt, "AttemptReceipt"), attemptCorrelation);
-		await this.appendFoundationFact(lane, "task_result", taskResult.taskResultId, `harness:task_result:${runId}`, this.foundationJson(taskResult, "TaskResult"), taskCorrelation);
-		await this.appendFoundationFact(lane, "run_receipt", checkedRunReceipt.value.runReceiptId, `harness:run_receipt:${runId}`, this.foundationJson(checkedRunReceipt.value, "RunReceipt"), runCorrelation);
-		const bundle: FoundationReceiptBundle = { attemptId: ids.attemptId, attemptReceipt, taskResult, runReceipt: checkedRunReceipt.value, correlation: runCorrelation };
+		if (taskCorrelation === undefined || runCorrelation === undefined) throw new HarnessFault("Missing execution correlation for Foundation receipts", undefined);
+		const taskFact = await this.appendFoundationFact(lane, "task_result", taskResult.taskResultId, `harness:task_result:${runId}`, this.foundationJson(taskResult, "TaskResult"), taskCorrelation);
+		const checkedTaskFact = validateTaskResultV1(taskFact.payload);
+		if (!checkedTaskFact.ok) throw new HarnessFault("Persisted TaskResult is invalid", checkedTaskFact.error);
+		taskResult = checkedTaskFact.value;
+		const runFact = await this.appendFoundationFact(lane, "run_receipt", checkedRunReceipt.value.runReceiptId, `harness:run_receipt:${runId}`, this.foundationJson(checkedRunReceipt.value, "RunReceipt"), runCorrelation);
+		const checkedRunFact = validateRunReceiptV1(runFact.payload);
+		if (!checkedRunFact.ok) throw new HarnessFault("Persisted RunReceipt is invalid", checkedRunFact.error);
+		const bundle: FoundationReceiptBundle = { attemptId: ids.attemptId, attemptReceipt, taskResult, runReceipt: checkedRunFact.value, correlation: runFact.correlation };
 		this.foundationReceipts.set(runId, bundle);
 		return bundle;
+	}
+
+	private async foundationSideEffectState(lane: string, runId: string): Promise<SideEffectStateV1> {
+		const starts = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
+		if (starts.length === 0) return "none";
+		for (const start of starts) {
+			const result = await this.durableSession.getEntry(start.resultEntryId);
+			if (result?.type !== "message" || result.message.role !== "toolResult") return "side_effect_unknown";
+		}
+		return "unknown";
+	}
+
+	private async foundationReceiptTimestamp(lane: string, runId: string): Promise<string> {
+		const started = await this.operationStarted(runId);
+		if (started === undefined) throw new HarnessFault(`Missing durable operation start for Foundation run ${runId}`, undefined);
+		let latest = started.timestamp;
+		const records = await this.durableSession.findRecords({ lane, runId, order: "oldestFirst" });
+		for (const record of records) latest = Math.max(latest, record.timestamp);
+		const entries = await this.getLaneEntries(lane);
+		for (const entry of entries) {
+			if (entry.seq < started.seq) continue;
+			const data = entry.type === "custom" ? asRecord(entry.data) : undefined;
+			const operationEvidence =
+				(entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")) ||
+				entry.type === "compaction" ||
+				entry.type === "branch_summary" ||
+				(entry.type === "custom" && data?.runId === runId);
+			if (operationEvidence) latest = Math.max(latest, entry.timestamp);
+		}
+		return new Date(latest).toISOString();
 	}
 
 	private async persistConfiguration(lane: string, customType: string, data: JsonValue): Promise<void> {
@@ -796,6 +948,7 @@ export class AgentHarness implements AgentLane {
 				const reduction = this.laneReductions.get(pointer.lane);
 				const operation = reduction?.laneState.operation;
 				if (!operation) continue;
+				await this.ensureFoundationIntentForOperation(pointer.lane, operation.id);
 				const missingTools = this.missingTools(reduction.effectiveConfiguration.activeToolNames);
 				const missingModels = this.missingModels(reduction.effectiveConfiguration.model);
 				const prompt = operation.intent.kind === "run" ? [...operation.intent.originalPrompt] : undefined;
@@ -1012,9 +1165,9 @@ export class AgentHarness implements AgentLane {
 					skipInitialSteeringPoll = false;
 					return [];
 				}
-				return this.consumeQueueMessages(lane, operationId, "steer", this.steeringMode);
+				return this.enqueue(lane, () => this.consumeQueueMessages(lane, operationId, "steer", this.steeringMode));
 			},
-			getFollowUpMessages: async () => this.consumeQueueMessages(lane, operationId, "followUp", this.followUpMode),
+			getFollowUpMessages: async () => this.enqueue(lane, () => this.consumeQueueMessages(lane, operationId, "followUp", this.followUpMode)),
 			transformContext: async (messages) => messages,
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),
@@ -1082,7 +1235,10 @@ export class AgentHarness implements AgentLane {
 				return Result.ok<string>(id);
 			} catch (error) {
 				if (error instanceof HarnessClosed) return Result.err<RunRejected>(new Closed({ message: error.message }));
-				if (error instanceof HarnessFault) throw error;
+				if (isHarnessInfrastructureFault(error)) {
+					this.faulted = true;
+					throw error;
+				}
 				throw new HarnessFault("Failed to durably start run", error);
 			}
 		});
@@ -1274,12 +1430,30 @@ export class AgentHarness implements AgentLane {
 			case "agent_end": {
 				const finalMessage = [...event.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 				if (!finalMessage || finalMessage.stopReason === "deferred") break;
+				if (event.terminationReason !== undefined) {
+					const message = `Agent loop terminated due to ${event.terminationReason}`;
+					await this.finishOperation(lane, runId, "failed", { code: `agent_loop_${event.terminationReason}`, message });
+					break;
+				}
+				if (finalMessage.stopReason === "aborted" && !signal.aborted) {
+					await this.finishOperation(lane, runId, "failed", providerAbortError(finalMessage.errorMessage));
+					break;
+				}
 				const outcome = signal.aborted || finalMessage.stopReason === "aborted"
 					? "aborted"
 					: finalMessage.stopReason === "error"
 						? "failed"
 						: "completed";
-				await this.finishOperation(lane, runId, outcome, finalMessage.stopReason === "error" ? operationError(finalMessage.errorMessage ?? "Agent loop failed") : undefined);
+				await this.finishOperation(
+					lane,
+					runId,
+					outcome,
+					signal.aborted
+						? USER_ABORT_ERROR
+						: finalMessage.stopReason === "error"
+							? operationError(finalMessage.errorMessage ?? "Agent loop failed")
+							: undefined,
+				);
 				break;
 			}
 		}
@@ -1306,11 +1480,15 @@ export class AgentHarness implements AgentLane {
 				await runAgentLoopContinue(
 					prepared.context,
 					config,
-					(event) => this.processAgentEvent(lane, runId, event, controller.signal),
+					(event) => this.enqueue(lane, () => this.processAgentEvent(lane, runId, event, controller.signal)),
 					controller.signal,
 					(model, context, options) => this.models.streamSimple(model, context, options),
 				);
 			} catch (error) {
+				if (isHarnessInfrastructureFault(error)) {
+					this.faulted = true;
+					throw error;
+				}
 				const message: AssistantMessage = {
 					role: "assistant",
 					content: [{ type: "text", text: "" }],
@@ -1330,10 +1508,18 @@ export class AgentHarness implements AgentLane {
 					timestamp: Date.now(),
 				};
 				try {
-					await this.appendAssistantEntry(lane, runId, message);
-					await this.finishOperation(lane, runId, controller.signal.aborted ? "aborted" : "failed", operationError(error));
+					await this.enqueue(lane, async () => {
+						await this.appendAssistantEntry(lane, runId, message);
+						await this.finishOperation(
+							lane,
+							runId,
+							controller.signal.aborted ? "aborted" : "failed",
+							controller.signal.aborted ? USER_ABORT_ERROR : operationError(error),
+						);
+					});
 				} catch (persistenceError) {
 					this.faulted = true;
+					if (isHarnessInfrastructureFault(persistenceError)) throw persistenceError;
 					throw new HarnessFault("Harness failed closed after operation error", persistenceError);
 				}
 			} finally {
@@ -1341,127 +1527,211 @@ export class AgentHarness implements AgentLane {
 				await this.refreshSnapshots();
 			}
 		})();
+		void promise.catch(() => undefined);
 		operation.promise = promise;
 		this.activeOperations.set(runId, operation);
 		return promise;
 	}
 
-	private async executeCompaction(lane: string, runId: string): Promise<void> {
-		const reduction = await this.getLaneReduction(lane);
+	private startActiveOperation(
+		lane: string,
+		runId: string,
+		work: (signal: AbortSignal) => Promise<void>,
+		onFailure: (error: unknown, signal: AbortSignal) => Promise<void>,
+	): void {
+		if (this.activeOperations.has(runId)) return;
+		const controller = new AbortController();
+		const operation: ActiveOperation = { id: runId, lane, controller, promise: Promise.resolve() };
+		const promise = (async () => {
+			try {
+				await work(controller.signal);
+			} catch (error) {
+				if (isHarnessInfrastructureFault(error)) {
+					this.faulted = true;
+					throw error;
+				}
+				try {
+					await this.enqueue(lane, () => onFailure(error, controller.signal));
+				} catch (persistenceError) {
+					this.faulted = true;
+					if (isHarnessInfrastructureFault(persistenceError)) throw persistenceError;
+					throw new HarnessFault("Harness failed closed after active operation error", persistenceError);
+				}
+			} finally {
+				this.activeOperations.delete(runId);
+				await this.refreshSnapshots();
+			}
+		})();
+		void promise.catch(() => undefined);
+		operation.promise = promise;
+		this.activeOperations.set(runId, operation);
+	}
+
+	private async startCompactionOperation(lane: string, reduction: LaneReductionResult): Promise<void> {
 		const operation = reduction.laneState.operation;
-		if (!operation || operation.id !== runId || operation.intent.kind !== "compaction") return;
+		if (!operation || operation.kind !== "compaction" || operation.intent.kind !== "compaction") return;
+		const intent = operation.intent;
+		await this.ensureFoundationIntentForOperation(lane, operation.id);
 		const preparationResult = prepareCompaction(await this.getLaneEntries(lane), this.compactionSettings);
 		if (!preparationResult.ok || preparationResult.value === undefined) {
-			await this.finishOperation(lane, runId, "declined");
+			await this.finishOperation(lane, operation.id, "declined");
 			return;
 		}
 		const prepared = await this.contextForOperation(lane);
 		const step = await this.ensureStep(lane, reduction, "compaction", "manual");
-		const result = await generateCompaction(
-			preparationResult.value,
-			this.models,
-			prepared.model,
-			operation.intent.customInstructions,
-			undefined,
-			prepared.thinkingLevel,
-			this.retryPolicy,
+		this.startActiveOperation(
+			lane,
+			operation.id,
+			async (signal) => {
+				const result = await generateCompaction(
+					preparationResult.value!,
+					this.models,
+					prepared.model,
+					intent.customInstructions,
+					signal,
+					prepared.thinkingLevel,
+					this.retryPolicy,
+				);
+				await this.enqueue(lane, async () => {
+					if (!result.ok) {
+						const aborted = result.error.code === "aborted";
+						await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(result.error.message)) : operationError(result.error));
+						return;
+					}
+					const entry: ProvisionedEntry = {
+						type: "compaction",
+						id: step.resultEntryId,
+						summary: result.value.summary,
+						retainedTail: result.value.retainedTail,
+						tokensBefore: result.value.tokensBefore,
+						...(result.value.details !== undefined ? { details: result.value.details } : {}),
+						...(result.value.usage ? { usage: result.value.usage } : {}),
+					};
+					await this.persistOperationEntry(lane, operation.id, entry);
+					if (result.value.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "compaction", runId: operation.id, entryId: entry.id, attempt: step.attempt, stopReason: "stop", usage: result.value.usage });
+					await this.finishOperation(lane, operation.id, "completed");
+				});
+			},
+			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
 		);
-		if (!result.ok) {
-			await this.finishOperation(lane, runId, result.error.code === "aborted" ? "aborted" : "failed", operationError(result.error));
-			return;
-		}
-		const entry: ProvisionedEntry = {
-			type: "compaction",
-			id: step.resultEntryId,
-			summary: result.value.summary,
-			retainedTail: result.value.retainedTail,
-			tokensBefore: result.value.tokensBefore,
-			...(result.value.details !== undefined ? { details: result.value.details } : {}),
-			...(result.value.usage ? { usage: result.value.usage } : {}),
-		};
-		await this.persistOperationEntry(lane, runId, entry);
-		if (result.value.usage) {
-			await this.durableSession.appendRecord({
-				type: "usage",
-				id: this.durableSession.idGenerator.next(),
-				lane,
-				cause: "compaction",
-				runId,
-				entryId: entry.id,
-				attempt: step.attempt,
-				stopReason: "stop",
-				usage: result.value.usage,
-			});
-		}
-		await this.finishOperation(lane, runId, "completed");
 	}
 
-	private async executeNavigation(lane: string, runId: string): Promise<void> {
-		const reduction = await this.getLaneReduction(lane);
+	private async startNavigationOperation(lane: string, reduction: LaneReductionResult): Promise<void> {
 		const operation = reduction.laneState.operation;
-		if (!operation || operation.id !== runId || operation.intent.kind !== "navigation") return;
+		if (!operation || operation.kind !== "navigation" || operation.intent.kind !== "navigation") return;
+		await this.ensureFoundationIntentForOperation(lane, operation.id);
 		const intent = operation.intent;
 		if (!intent.summarize) {
 			await this.durableSession.moveLane(lane, intent.targetId);
-			await this.finishOperation(lane, runId, "completed");
+			await this.finishOperation(lane, operation.id, "completed");
 			return;
 		}
 		const step = await this.ensureStep(lane, reduction, "branch_summary");
 		const sourceEntries = operation.resumeBoundary.branchId
 			? await this.durableSession.findEntriesOnBranch({ start: operation.resumeBoundary.branchId, stopAtId: intent.targetId ?? undefined, order: "oldestFirst" })
 			: [];
-		const result = await generateBranchSummary(sourceEntries, {
-			models: this.models,
-			model: (await this.contextForOperation(lane)).model,
-			signal: this.activeOperations.get(runId)?.controller.signal ?? new AbortController().signal,
-			customInstructions: intent.customInstructions,
-		});
-		if (!result.ok) {
-			await this.finishOperation(lane, runId, result.error.code === "aborted" ? "aborted" : "failed", operationError(result.error));
-			return;
-		}
-		await this.durableSession.moveLane(lane, intent.targetId);
-		const summaryEntry: ProvisionedEntry = {
-			type: "branch_summary",
-			id: step.resultEntryId,
-			fromId: operation.resumeBoundary.branchId ?? intent.targetId ?? "root",
-			summary: result.value.summary,
-			...(result.value.usage ? { usage: result.value.usage } : {}),
-		};
-		await this.persistOperationEntry(lane, runId, summaryEntry);
-		if (result.value.usage) {
-			await this.durableSession.appendRecord({
-				type: "usage",
-				id: this.durableSession.idGenerator.next(),
-				lane,
-				cause: "branch_summary",
-				runId,
-				entryId: summaryEntry.id,
-				attempt: step.attempt,
-				stopReason: "stop",
-				usage: result.value.usage,
-			});
-		}
-		await this.finishOperation(lane, runId, "completed");
+		const prepared = await this.contextForOperation(lane);
+		this.startActiveOperation(
+			lane,
+			operation.id,
+			async (signal) => {
+				const result = await generateBranchSummary(sourceEntries, { models: this.models, model: prepared.model, signal, customInstructions: intent.customInstructions });
+				await this.enqueue(lane, async () => {
+					if (!result.ok) {
+						const aborted = result.error.code === "aborted";
+						await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(result.error.message)) : operationError(result.error));
+						return;
+					}
+					await this.durableSession.moveLane(lane, intent.targetId);
+					const summaryEntry: ProvisionedEntry = { type: "branch_summary", id: step.resultEntryId, fromId: operation.resumeBoundary.branchId ?? intent.targetId ?? "root", summary: result.value.summary, ...(result.value.usage ? { usage: result.value.usage } : {}) };
+					await this.persistOperationEntry(lane, operation.id, summaryEntry);
+					if (result.value.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "branch_summary", runId: operation.id, entryId: summaryEntry.id, attempt: step.attempt, stopReason: "stop", usage: result.value.usage });
+					await this.finishOperation(lane, operation.id, "completed");
+				});
+			},
+			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
+		);
 	}
 
-	private async executeDeferred(lane: string, runId: string, handle: DeferredHandle): Promise<void> {
-		const model = (await this.contextForOperation(lane)).model;
-		const response = await this.models.fetchDeferred(model, handle, { signal: undefined });
-		const target: ProvisionedEntry = { type: "message", id: this.durableSession.idGenerator.next(), message: response };
-		await this.persistOperationEntry(lane, runId, target);
-		await this.durableSession.appendRecord({
-			type: "usage",
-			id: this.durableSession.idGenerator.next(),
-			lane,
-			cause: "deferred_fetch",
-			runId,
-			entryId: target.id,
-			attempt: 1,
-			stopReason: sessionStopReason(response),
-			usage: response.usage,
+	private async ensureDeferredFetchIntent(lane: string, runId: string, handle: DeferredHandle): Promise<DeferredFetchState> {
+		const reduction = await this.getLaneReduction(lane);
+		const existing = reduction.laneState.operation?.deferredFetch;
+		if (existing !== null && existing !== undefined) {
+			if (existing.intent.handle.provider !== handle.provider || existing.intent.handle.id !== handle.id) throw new HarnessFault("Deferred fetch intent does not match its assistant handle", undefined);
+			return existing;
+		}
+		const responseEntryId = this.durableSession.idGenerator.next();
+		await this.durableSession.view(lane).appendCustomEntry(DEFERRED_FETCH_INTENT_CUSTOM_TYPE, { schemaVersion: 1, runId, status: "pending", handle: structuredClone(handle), responseEntryId });
+		await this.refreshSnapshots();
+		const refreshed = (await this.getLaneReduction(lane)).laneState.operation?.deferredFetch;
+		if (refreshed === null || refreshed === undefined) throw new HarnessFault("Deferred fetch intent was not durably recorded", undefined);
+		return refreshed;
+	}
+
+	private async persistDeferredFetchResult(lane: string, runId: string, state: DeferredFetchState, status: "succeeded" | "failed" | "unknown", response?: AssistantMessage, error?: OperationError): Promise<void> {
+		const data = { schemaVersion: 1, runId, status, responseEntryId: state.intent.responseEntryId, ...(response === undefined ? {} : { response: structuredClone(response) }), ...(error === undefined ? {} : { error: structuredClone(error) }) };
+		const entries = await this.getLaneEntries(lane);
+		const existing = entries.find((entry) => {
+			if (entry.type !== "custom" || entry.customType !== DEFERRED_FETCH_RESULT_CUSTOM_TYPE) return false;
+			return asRecord(entry.data)?.runId === runId;
 		});
-		await this.finishOperation(lane, runId, response.stopReason === "error" ? "failed" : "completed", response.stopReason === "error" ? operationError(response.errorMessage ?? "Deferred fetch failed") : undefined);
+		if (existing !== undefined) {
+			if (existing.type !== "custom" || canonicalFoundationJson(existing.data) !== canonicalFoundationJson(data)) throw new HarnessFault("Deferred fetch result conflicts with its replay payload", undefined);
+			return;
+		}
+		await this.durableSession.view(lane).appendCustomEntry(DEFERRED_FETCH_RESULT_CUSTOM_TYPE, data);
+	}
+
+	private async applyDeferredFetchResult(lane: string, operation: NonNullable<LaneReductionResult["laneState"]["operation"]>): Promise<void> {
+		const deferred = operation.deferredFetch;
+		if (!deferred?.result) return;
+		if (deferred.result.status !== "succeeded" || deferred.result.response === undefined) {
+			await this.finishOperation(lane, operation.id, "failed", deferred.result.error ?? { code: "deferred_fetch_side_effect_unknown", message: "Deferred fetch execution state is unknown" });
+			return;
+		}
+		const response = deferred.result.response;
+		const target: ProvisionedEntry = { type: "message", id: deferred.intent.responseEntryId, message: response };
+		await this.persistOperationEntry(lane, operation.id, target);
+		const usageRecords = await this.durableSession.findRecords({ lane, runId: operation.id, type: "usage", order: "oldestFirst" });
+		if (!usageRecords.some((record) => record.type === "usage" && record.cause === "deferred_fetch" && record.entryId === target.id)) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "deferred_fetch", runId: operation.id, entryId: target.id, attempt: 1, stopReason: sessionStopReason(response), usage: response.usage });
+		await this.finishOperation(lane, operation.id, response.stopReason === "error" ? "failed" : "completed", response.stopReason === "error" ? operationError(response.errorMessage ?? "Deferred fetch failed") : undefined);
+	}
+
+	private async startDeferredOperation(lane: string, reduction: LaneReductionResult): Promise<void> {
+		const operation = reduction.laneState.operation;
+		if (!operation || operation.kind !== "run" || !operation.deferred) return;
+		await this.ensureFoundationIntentForOperation(lane, operation.id);
+		const fetchState = await this.ensureDeferredFetchIntent(lane, operation.id, operation.deferred);
+		if (fetchState.result) {
+			await this.applyDeferredFetchResult(lane, operation);
+			return;
+		}
+		const model = (await this.contextForOperation(lane)).model;
+		this.startActiveOperation(
+			lane,
+			operation.id,
+			async (signal) => {
+				try {
+					const response = await this.models.fetchDeferred(model, operation.deferred!, { signal });
+					await this.enqueue(lane, async () => {
+						const unknown = response.stopReason === "aborted";
+						const responseError = unknown
+							? { code: "deferred_fetch_side_effect_unknown", message: "Deferred fetch execution state is unknown" }
+							: response.stopReason === "error"
+								? operationError(response.errorMessage ?? "Deferred fetch failed")
+								: undefined;
+						await this.persistDeferredFetchResult(lane, operation.id, fetchState, unknown ? "unknown" : response.stopReason === "error" ? "failed" : "succeeded", unknown ? undefined : response, responseError);
+						await this.applyDeferredFetchResult(lane, (await this.getLaneReduction(lane)).laneState.operation!);
+					});
+				} catch (error) {
+					await this.enqueue(lane, async () => {
+						await this.persistDeferredFetchResult(lane, operation.id, fetchState, "unknown", undefined, { code: "deferred_fetch_side_effect_unknown", message: "Deferred fetch execution state is unknown" });
+						throw error;
+					});
+				}
+			},
+			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? { code: "deferred_fetch_side_effect_unknown", message: "Deferred fetch execution state is unknown" } : operationError(error)),
+		);
 	}
 
 	private async finishOperation(lane: string, runId: string, outcome: "completed" | "declined" | "failed" | "aborted", error?: OperationError): Promise<void> {
@@ -1474,8 +1744,8 @@ export class AgentHarness implements AgentLane {
 			...(foundationBundle === undefined ? {} : {
 				attemptId: foundationBundle.attemptId,
 				attemptReceiptId: foundationBundle.attemptReceipt.attemptReceiptId,
-				taskResultId: foundationBundle.taskResult.taskResultId,
-				runReceiptId: foundationBundle.runReceipt.runReceiptId,
+				...(foundationBundle.taskResult === undefined ? {} : { taskResultId: foundationBundle.taskResult.taskResultId }),
+				...(foundationBundle.runReceipt === undefined ? {} : { runReceiptId: foundationBundle.runReceipt.runReceiptId }),
 			}),
 		});
 		await this.durableSession.appendRecord({
@@ -1509,9 +1779,12 @@ export class AgentHarness implements AgentLane {
 			return { kind: "append_entry", entryType: operation.missingInitialMessages[0].type, entryId: operation.missingInitialMessages[0].id };
 		}
 		if (operation.pendingWrites[0]) return { kind: "apply_pending_write", entryId: operation.pendingWrites[0].id };
-		if (operation.aborting) return { kind: "try_finish_run", outcome: "aborted" };
+		if (operation.aborting) return { kind: "try_finish_run", outcome: "aborted", error: USER_ABORT_ERROR };
 		if (reduction.terminalFailure) return { kind: "try_finish_run", outcome: "failed" };
 		if (operation.deferred) {
+			if (operation.deferredFetch?.result?.status === "succeeded" && operation.deferredFetch.result.response !== undefined) return { kind: "apply_deferred_fetch_result" };
+			if (operation.deferredFetch?.result !== undefined) return { kind: "try_finish_run", outcome: "failed" };
+			if (operation.deferredFetch !== null) return { kind: "try_finish_run", outcome: "failed" };
 			return { kind: "fetch_deferred", provider: operation.deferred.provider, id: operation.deferred.id };
 		}
 		if (operation.toolBatch?.unresolved) {
@@ -1520,6 +1793,16 @@ export class AgentHarness implements AgentLane {
 		}
 		if (operation.pendingSteer[0]) return { kind: "consume_queue_item", queue: "steer", entryId: operation.pendingSteer[0].id };
 		if (operation.pendingFollowUp[0]) return { kind: "commit_follow_up" };
+		if (operation.kind === "run") {
+			if (operation.newestOwn?.role === "assistant") {
+				const stopReason = operation.newestOwn.stopReason;
+				if (stopReason === "aborted") return { kind: "try_finish_run", outcome: "aborted", error: { code: "aborted_recovered", message: "Recovered an aborted assistant outcome" } };
+				if (stopReason === "error") return { kind: "try_finish_run", outcome: "failed" };
+				if (operation.toolBatch && !operation.toolBatch.unresolved) return { kind: "stream_assistant", step: "assistant", attempt: 1 };
+				return { kind: "finish_operation", outcome: "completed" };
+			}
+			return { kind: "stream_assistant", step: "assistant", attempt: 1 };
+		}
 		if (operation.step) return { kind: "stream_assistant", step: operation.step.kind, attempt: operation.step.attempts };
 		if (operation.kind === "compaction" && operation.intent.kind === "compaction" && !operation.targets.result) {
 			return { kind: "stream_assistant", step: "compaction", attempt: 1 };
@@ -1528,16 +1811,6 @@ export class AgentHarness implements AgentLane {
 			if (operation.intent.summarize && !operation.targets.summary) return { kind: "stream_assistant", step: "branch_summary", attempt: 1 };
 			if (!operation.intent.summarize && reduction.laneState.leafId !== operation.intent.targetId) return { kind: "move_lane", to: operation.intent.targetId };
 		}
-		if (operation.kind === "run") {
-			if (operation.newestOwn?.role === "assistant") {
-				const stopReason = operation.newestOwn.stopReason;
-				if (stopReason === "aborted") return { kind: "try_finish_run", outcome: "failed" };
-				if (stopReason === "error") return { kind: "try_finish_run", outcome: "failed" };
-				if (operation.toolBatch && !operation.toolBatch.unresolved) return { kind: "stream_assistant", step: "assistant", attempt: 1 };
-				return { kind: "finish_operation", outcome: "completed" };
-			}
-			return { kind: "stream_assistant", step: "assistant", attempt: 1 };
-		}
 		return { kind: "finish_operation", outcome: "completed" };
 	}
 
@@ -1545,7 +1818,7 @@ export class AgentHarness implements AgentLane {
 		const reduction = await this.getLaneReduction(lane);
 		const operation = reduction.laneState.operation;
 		if (!operation) return;
-			switch (action.kind) {
+		switch (action.kind) {
 			case "append_entry":
 				if (operation.intent.kind === "run") await this.ensureInitialMessage(lane, reduction);
 				break;
@@ -1560,11 +1833,12 @@ export class AgentHarness implements AgentLane {
 				break;
 			case "stream_assistant":
 				if (operation.kind === "run") {
+					await this.ensureFoundationIntentForOperation(lane, operation.id);
 					await this.ensureStep(lane, reduction, "assistant");
 					this.eventBus.emit({ type: "run_start", lane, runId: operation.id, operationId: operation.id });
-					void this.runAgentOperation(lane, operation.id);
-				} else if (operation.kind === "compaction") await this.executeCompaction(lane, operation.id);
-				else await this.executeNavigation(lane, operation.id);
+					void this.runAgentOperation(lane, operation.id).catch(() => undefined);
+				} else if (operation.kind === "compaction") await this.startCompactionOperation(lane, reduction);
+				else await this.startNavigationOperation(lane, reduction);
 				break;
 			case "execute_tool":
 				{
@@ -1580,14 +1854,28 @@ export class AgentHarness implements AgentLane {
 				}
 				break;
 			case "fetch_deferred":
-				if (operation.deferred) await this.executeDeferred(lane, operation.id, operation.deferred);
+				await this.startDeferredOperation(lane, reduction);
+				break;
+			case "apply_deferred_fetch_result":
+				await this.applyDeferredFetchResult(lane, operation);
 				break;
 			case "move_lane":
 				await this.durableSession.moveLane(lane, action.to);
 				await this.finishOperation(lane, operation.id, "completed");
 				break;
 			case "try_finish_run":
-				await this.finishOperation(lane, operation.id, action.outcome === "failed" ? "failed" : action.outcome === "aborted" ? "aborted" : "completed");
+				await this.finishOperation(
+					lane,
+					operation.id,
+					action.outcome === "failed" ? "failed" : action.outcome === "aborted" ? "aborted" : "completed",
+					action.outcome === "failed"
+						? reduction.terminalFailure
+							? operationError(reduction.terminalFailure.message.errorMessage ?? "Agent run failed")
+							: operation.deferredFetch?.result && operation.deferredFetch.result.status !== "succeeded"
+								? operation.deferredFetch.result.error ?? { code: "deferred_fetch_side_effect_unknown", message: "Deferred fetch execution state is unknown" }
+								: undefined
+						: action.error,
+				);
 				break;
 			case "finish_operation":
 				await this.finishOperation(lane, operation.id, action.outcome);
@@ -1600,7 +1888,10 @@ export class AgentHarness implements AgentLane {
 		const records = await this.durableSession.findRecords({ lane, runId, order: "oldestFirst" });
 		const finish = records.find((record) => record.type === "operation_finished");
 		const leafId = await this.durableSession.view(lane).getLeafId();
-		const finalEntry = leafId ? await this.durableSession.view(lane).findEntryOnBranch({ start: leafId, type: "message" }) : undefined;
+		const branchMessages = leafId
+			? await this.durableSession.view(lane).findEntriesOnBranch({ start: leafId, type: "message", order: "newestFirst" })
+			: [];
+		const finalEntry = branchMessages.find((entry) => entry.type === "message" && entry.message.role === "assistant");
 		const finalMessage = finalEntry?.type === "message" && finalEntry.message.role === "assistant" ? finalEntry.message : undefined;
 		if (!finish || !finalEntry || !finalMessage) {
 			return Result.ok({ runId, kind: "failed", leafId: leafId ?? "", error: { code: "suspended", message: "Run is not finished" }, ...(finalEntry ? { finalEntryId: finalEntry.id } : {}) });
@@ -2030,7 +2321,10 @@ export class AgentHarness implements AgentLane {
 			if (!action) {
 				const active = [...this.activeOperations.values()].filter((operation) => operation.lane === lane);
 				if (active.length === 0) return;
-				await Promise.all(active.map((operation) => operation.promise.catch(() => undefined)));
+				// An active operation owns the provider-to-ledger boundary. Its
+				// rejection must reach the caller so a durable storage/lease fault is
+				// not replaced by a generic failed outcome on the next loop.
+				await Promise.all(active.map((operation) => operation.promise));
 			}
 		}
 		throw new HarnessFault("Harness action loop exceeded its deterministic bound", undefined);
@@ -2297,7 +2591,9 @@ export class AgentHarness implements AgentLane {
 				await Promise.all([...this.activeOperations.values()].map((operation) => operation.promise.catch((error) => { failure ??= error; })));
 				await this.drainMutations();
 				if (failure === undefined) {
-					await this.durableSession.appendCustomEntry("harness.closed", { closedAt: Date.now() });
+					await this.refreshSnapshots();
+					const hasOpenOperation = this.sessionSnapshot.lanes.some((lane) => lane.operation !== null);
+					if (!this.faulted && !hasOpenOperation) await this.durableSession.appendCustomEntry("harness.closed", { closedAt: Date.now() });
 					await this.durableSession.drain();
 				}
 			} catch (error) {

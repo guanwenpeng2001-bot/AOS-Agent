@@ -73,6 +73,25 @@ describe("T2 single Session ledger", () => {
 		expect(await session.getLedgerRevision()).toBe(1);
 		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
 	});
+
+	it("rejects a conflicting same-client replay without advancing the ledger", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "duplicate-replay", createdAt: 1 }));
+		const lease = await session.acquireWriterLease({ ownerId: "duplicate-replay-test" });
+		const first = foundationFact("duplicate-replay", "task-fact", "task-duplicate");
+		await session.appendFoundationRecord({ ...first, fencingToken: lease.fencingToken });
+		const revision = await session.getLedgerRevision();
+		const rows = (await session.getLog({})).length;
+		const conflicting = {
+			...first,
+			id: "task-fact-conflict",
+			payload: { schemaVersion: 1, taskId: "task-duplicate", status: "running" },
+			fencingToken: lease.fencingToken,
+		};
+		await expect(session.appendFoundationRecord(conflicting)).rejects.toMatchObject({ code: "session_writer_duplicate_request" });
+		expect(await session.getLedgerRevision()).toBe(revision);
+		expect((await session.getLog({})).length).toBe(rows);
+		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
+	});
 });
 
 describe("T2 JSONL recovery and writer fencing", () => {
