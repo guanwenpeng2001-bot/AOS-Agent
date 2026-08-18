@@ -1,0 +1,384 @@
+{
+  "bedrock-converse-stream": {
+    "amazon.nova-2-lite-v1:0": {
+      "id": "amazon.nova-2-lite-v1:0",
+      "name": "fixture/amazon-bedrock/amazon.nova-2-lite-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "amazon.nova-lite-v1:0": {
+      "id": "amazon.nova-lite-v1:0",
+      "name": "fixture/amazon-bedrock/amazon.nova-lite-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic.claude-fable-5": {
+      "id": "anthropic.claude-fable-5",
+      "name": "fixture/amazon-bedrock/anthropic.claude-fable-5",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic.claude-opus-4-8": {
+      "id": "anthropic.claude-opus-4-8",
+      "name": "fixture/amazon-bedrock/anthropic.claude-opus-4-8",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic.claude-sonnet-5": {
+      "id": "anthropic.claude-sonnet-5",
+      "name": "fixture/amazon-bedrock/anthropic.claude-sonnet-5",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek.v3.2": {
+      "id": "deepseek.v3.2",
+      "name": "fixture/amazon-bedrock/deepseek.v3.2",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "id": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "name": "fixture/amazon-bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-fable-5": {
+      "id": "global.anthropic.claude-fable-5",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-fable-5",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": {
+      "id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-opus-4-6-v1": {
+      "id": "global.anthropic.claude-opus-4-6-v1",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-opus-4-6-v1",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-opus-5": {
+      "id": "global.anthropic.claude-opus-5",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-opus-5",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-sonnet-4-6": {
+      "id": "global.anthropic.claude-sonnet-4-6",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-sonnet-4-6",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "global.anthropic.claude-sonnet-5": {
+      "id": "global.anthropic.claude-sonnet-5",
+      "name": "fixture/amazon-bedrock/global.anthropic.claude-sonnet-5",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai.gpt-oss-120b": {
+      "id": "openai.gpt-oss-120b",
+      "name": "fixture/amazon-bedrock/openai.gpt-oss-120b",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai.gpt-oss-20b": {
+      "id": "openai.gpt-oss-20b",
+      "name": "fixture/amazon-bedrock/openai.gpt-oss-20b",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "us.anthropic.claude-opus-4-8": {
+      "id": "us.anthropic.claude-opus-4-8",
+      "name": "fixture/amazon-bedrock/us.anthropic.claude-opus-4-8",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "name": "fixture/amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "xai.grok-4.3": {
+      "id": "xai.grok-4.3",
+      "name": "fixture/amazon-bedrock/xai.grok-4.3",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "zai.glm-4.7": {
+      "id": "zai.glm-4.7",
+      "name": "fixture/amazon-bedrock/zai.glm-4.7",
+      "api": "bedrock-converse-stream",
+      "provider": "amazon-bedrock",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

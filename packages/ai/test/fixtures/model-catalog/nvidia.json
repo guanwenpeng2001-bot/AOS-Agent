@@ -1,0 +1,99 @@
+{
+  "openai-completions": {
+    "google/gemma-3-12b-it": {
+      "id": "google/gemma-3-12b-it",
+      "name": "fixture/nvidia/google/gemma-3-12b-it",
+      "api": "openai-completions",
+      "provider": "nvidia",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/kimi-k2.6": {
+      "id": "moonshotai/kimi-k2.6",
+      "name": "fixture/nvidia/moonshotai/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "nvidia",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "nvidia/nemotron-3-super-120b-a12b": {
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "fixture/nvidia/nvidia/nemotron-3-super-120b-a12b",
+      "api": "openai-completions",
+      "provider": "nvidia",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-oss-120b": {
+      "id": "openai/gpt-oss-120b",
+      "name": "fixture/nvidia/openai/gpt-oss-120b",
+      "api": "openai-completions",
+      "provider": "nvidia",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-oss-20b": {
+      "id": "openai/gpt-oss-20b",
+      "name": "fixture/nvidia/openai/gpt-oss-20b",
+      "api": "openai-completions",
+      "provider": "nvidia",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

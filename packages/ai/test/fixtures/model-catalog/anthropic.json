@@ -1,0 +1,242 @@
+{
+  "anthropic-messages": {
+    "claude-fable-5": {
+      "id": "claude-fable-5",
+      "name": "fixture/anthropic/claude-fable-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "claude-haiku-4-5": {
+      "id": "claude-haiku-4-5",
+      "name": "fixture/anthropic/claude-haiku-4-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4-5": {
+      "id": "claude-opus-4-5",
+      "name": "fixture/anthropic/claude-opus-4-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4-6": {
+      "id": "claude-opus-4-6",
+      "name": "fixture/anthropic/claude-opus-4-6",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      },
+      "thinkingLevelMap": {
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "claude-opus-4-7": {
+      "id": "claude-opus-4-7",
+      "name": "fixture/anthropic/claude-opus-4-7",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-4-8": {
+      "id": "claude-opus-4-8",
+      "name": "fixture/anthropic/claude-opus-4-8",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "thinkingLevelMap": {
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "claude-opus-5": {
+      "id": "claude-opus-5",
+      "name": "fixture/anthropic/claude-opus-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    },
+    "claude-sonnet-4-5": {
+      "id": "claude-sonnet-4-5",
+      "name": "fixture/anthropic/claude-sonnet-4-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-sonnet-4-6": {
+      "id": "claude-sonnet-4-6",
+      "name": "fixture/anthropic/claude-sonnet-4-6",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      },
+      "thinkingLevelMap": {
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "claude-sonnet-5": {
+      "id": "claude-sonnet-5",
+      "name": "fixture/anthropic/claude-sonnet-5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh",
+        "max": "max"
+      }
+    }
+  }
+}

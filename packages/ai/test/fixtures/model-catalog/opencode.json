@@ -1,0 +1,848 @@
+{
+  "openai-completions": {
+    "big-pickle": {
+      "id": "big-pickle",
+      "name": "fixture/opencode/big-pickle",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-v4-flash": {
+      "id": "deepseek-v4-flash",
+      "name": "fixture/opencode/deepseek-v4-flash",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-v4-pro": {
+      "id": "deepseek-v4-pro",
+      "name": "fixture/opencode/deepseek-v4-pro",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "glm-5": {
+      "id": "glm-5",
+      "name": "fixture/opencode/glm-5",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "glm-5.1": {
+      "id": "glm-5.1",
+      "name": "fixture/opencode/glm-5.1",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "glm-5.2": {
+      "id": "glm-5.2",
+      "name": "fixture/opencode/glm-5.2",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.5": {
+      "id": "kimi-k2.5",
+      "name": "fixture/opencode/kimi-k2.5",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.6": {
+      "id": "kimi-k2.6",
+      "name": "fixture/opencode/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.7-code": {
+      "id": "kimi-k2.7-code",
+      "name": "fixture/opencode/kimi-k2.7-code",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k3": {
+      "id": "kimi-k3",
+      "name": "fixture/opencode/kimi-k3",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "minimax-m2.5": {
+      "id": "minimax-m2.5",
+      "name": "fixture/opencode/minimax-m2.5",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "minimax-m2.7": {
+      "id": "minimax-m2.7",
+      "name": "fixture/opencode/minimax-m2.7",
+      "api": "openai-completions",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "anthropic-messages": {
+    "claude-fable-5": {
+      "id": "claude-fable-5",
+      "name": "fixture/opencode/claude-fable-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-haiku-4-5": {
+      "id": "claude-haiku-4-5",
+      "name": "fixture/opencode/claude-haiku-4-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4-5": {
+      "id": "claude-opus-4-5",
+      "name": "fixture/opencode/claude-opus-4-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4-6": {
+      "id": "claude-opus-4-6",
+      "name": "fixture/opencode/claude-opus-4-6",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-4-7": {
+      "id": "claude-opus-4-7",
+      "name": "fixture/opencode/claude-opus-4-7",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-4-8": {
+      "id": "claude-opus-4-8",
+      "name": "fixture/opencode/claude-opus-4-8",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      }
+    },
+    "claude-opus-5": {
+      "id": "claude-opus-5",
+      "name": "fixture/opencode/claude-opus-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": true
+      }
+    },
+    "claude-sonnet-4-5": {
+      "id": "claude-sonnet-4-5",
+      "name": "fixture/opencode/claude-sonnet-4-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-sonnet-4-6": {
+      "id": "claude-sonnet-4-6",
+      "name": "fixture/opencode/claude-sonnet-4-6",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-sonnet-5": {
+      "id": "claude-sonnet-5",
+      "name": "fixture/opencode/claude-sonnet-5",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "qwen3.6-plus": {
+      "id": "qwen3.6-plus",
+      "name": "fixture/opencode/qwen3.6-plus",
+      "api": "anthropic-messages",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "google-generative-ai": {
+    "gemini-3-flash": {
+      "id": "gemini-3-flash",
+      "name": "fixture/opencode/gemini-3-flash",
+      "api": "google-generative-ai",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gemini-3.6-flash": {
+      "id": "gemini-3.6-flash",
+      "name": "fixture/opencode/gemini-3.6-flash",
+      "api": "google-generative-ai",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "openai-responses": {
+    "gpt-5": {
+      "id": "gpt-5",
+      "name": "fixture/opencode/gpt-5",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-nano": {
+      "id": "gpt-5-nano",
+      "name": "fixture/opencode/gpt-5-nano",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.1": {
+      "id": "gpt-5.1",
+      "name": "fixture/opencode/gpt-5.1",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.1-codex": {
+      "id": "gpt-5.1-codex",
+      "name": "fixture/opencode/gpt-5.1-codex",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2": {
+      "id": "gpt-5.2",
+      "name": "fixture/opencode/gpt-5.2",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2-codex": {
+      "id": "gpt-5.2-codex",
+      "name": "fixture/opencode/gpt-5.2-codex",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex": {
+      "id": "gpt-5.3-codex",
+      "name": "fixture/opencode/gpt-5.3-codex",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "fixture/opencode/gpt-5.4",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "fixture/opencode/gpt-5.4-mini",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-nano": {
+      "id": "gpt-5.4-nano",
+      "name": "fixture/opencode/gpt-5.4-nano",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-pro": {
+      "id": "gpt-5.4-pro",
+      "name": "fixture/opencode/gpt-5.4-pro",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "fixture/opencode/gpt-5.5",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5-pro": {
+      "id": "gpt-5.5-pro",
+      "name": "fixture/opencode/gpt-5.5-pro",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/opencode/gpt-5.6-luna",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-sol": {
+      "id": "gpt-5.6-sol",
+      "name": "fixture/opencode/gpt-5.6-sol",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-terra": {
+      "id": "gpt-5.6-terra",
+      "name": "fixture/opencode/gpt-5.6-terra",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "grok-4.5": {
+      "id": "grok-4.5",
+      "name": "fixture/opencode/grok-4.5",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "grok-build-0.1": {
+      "id": "grok-build-0.1",
+      "name": "fixture/opencode/grok-build-0.1",
+      "api": "openai-responses",
+      "provider": "opencode",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

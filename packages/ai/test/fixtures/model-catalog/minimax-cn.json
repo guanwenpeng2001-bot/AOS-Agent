@@ -1,0 +1,23 @@
+{
+  "anthropic-messages": {
+    "MiniMax-M2.7": {
+      "id": "MiniMax-M2.7",
+      "name": "fixture/minimax-cn/MiniMax-M2.7",
+      "api": "anthropic-messages",
+      "provider": "minimax-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

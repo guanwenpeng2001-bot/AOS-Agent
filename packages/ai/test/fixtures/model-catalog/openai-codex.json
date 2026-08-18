@@ -1,0 +1,137 @@
+{
+  "openai-codex-responses": {
+    "gpt-5.3-codex-spark": {
+      "id": "gpt-5.3-codex-spark",
+      "name": "fixture/openai-codex/gpt-5.3-codex-spark",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "fixture/openai-codex/gpt-5.4",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "fixture/openai-codex/gpt-5.4-mini",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "fixture/openai-codex/gpt-5.5",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/openai-codex/gpt-5.6-luna",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-sol": {
+      "id": "gpt-5.6-sol",
+      "name": "fixture/openai-codex/gpt-5.6-sol",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-terra": {
+      "id": "gpt-5.6-terra",
+      "name": "fixture/openai-codex/gpt-5.6-terra",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "openai-completions": {
+    "@cf/deepseek-ai/deepseek-v4-flash-0731": {
+      "id": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+      "name": "fixture/cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4-flash-0731",
+      "api": "openai-completions",
+      "provider": "cloudflare-workers-ai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "@cf/moonshotai/kimi-k2.6": {
+      "id": "@cf/moonshotai/kimi-k2.6",
+      "name": "fixture/cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "cloudflare-workers-ai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

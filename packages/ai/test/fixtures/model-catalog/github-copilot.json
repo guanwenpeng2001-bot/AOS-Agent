@@ -1,0 +1,539 @@
+{
+  "openai-completions": {
+    "claude-fable-5": {
+      "id": "claude-fable-5",
+      "name": "fixture/github-copilot/claude-fable-5",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gemini-3.1-pro-preview": {
+      "id": "gemini-3.1-pro-preview",
+      "name": "fixture/github-copilot/gemini-3.1-pro-preview",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gemini-3.6-flash": {
+      "id": "gemini-3.6-flash",
+      "name": "fixture/github-copilot/gemini-3.6-flash",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4.1": {
+      "id": "gpt-4.1",
+      "name": "fixture/github-copilot/gpt-4.1",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.7-code": {
+      "id": "kimi-k2.7-code",
+      "name": "fixture/github-copilot/kimi-k2.7-code",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k3": {
+      "id": "kimi-k3",
+      "name": "fixture/github-copilot/kimi-k3",
+      "api": "openai-completions",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "anthropic-messages": {
+    "claude-haiku-4.5": {
+      "id": "claude-haiku-4.5",
+      "name": "fixture/github-copilot/claude-haiku-4.5",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4.5": {
+      "id": "claude-opus-4.5",
+      "name": "fixture/github-copilot/claude-opus-4.5",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-opus-4.6": {
+      "id": "claude-opus-4.6",
+      "name": "fixture/github-copilot/claude-opus-4.6",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-4.7": {
+      "id": "claude-opus-4.7",
+      "name": "fixture/github-copilot/claude-opus-4.7",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-4.8": {
+      "id": "claude-opus-4.8",
+      "name": "fixture/github-copilot/claude-opus-4.8",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-opus-5": {
+      "id": "claude-opus-5",
+      "name": "fixture/github-copilot/claude-opus-5",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-sonnet-4.5": {
+      "id": "claude-sonnet-4.5",
+      "name": "fixture/github-copilot/claude-sonnet-4.5",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "claude-sonnet-4.6": {
+      "id": "claude-sonnet-4.6",
+      "name": "fixture/github-copilot/claude-sonnet-4.6",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    },
+    "claude-sonnet-5": {
+      "id": "claude-sonnet-5",
+      "name": "fixture/github-copilot/claude-sonnet-5",
+      "api": "anthropic-messages",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "forceAdaptiveThinking": false
+      }
+    }
+  },
+  "openai-responses": {
+    "gpt-5-mini": {
+      "id": "gpt-5-mini",
+      "name": "fixture/github-copilot/gpt-5-mini",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2": {
+      "id": "gpt-5.2",
+      "name": "fixture/github-copilot/gpt-5.2",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2-codex": {
+      "id": "gpt-5.2-codex",
+      "name": "fixture/github-copilot/gpt-5.2-codex",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex": {
+      "id": "gpt-5.3-codex",
+      "name": "fixture/github-copilot/gpt-5.3-codex",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "fixture/github-copilot/gpt-5.4",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "fixture/github-copilot/gpt-5.4-mini",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-nano": {
+      "id": "gpt-5.4-nano",
+      "name": "fixture/github-copilot/gpt-5.4-nano",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "fixture/github-copilot/gpt-5.5",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/github-copilot/gpt-5.6-luna",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-sol": {
+      "id": "gpt-5.6-sol",
+      "name": "fixture/github-copilot/gpt-5.6-sol",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-terra": {
+      "id": "gpt-5.6-terra",
+      "name": "fixture/github-copilot/gpt-5.6-terra",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "grok-4.5": {
+      "id": "grok-4.5",
+      "name": "fixture/github-copilot/grok-4.5",
+      "api": "openai-responses",
+      "provider": "github-copilot",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

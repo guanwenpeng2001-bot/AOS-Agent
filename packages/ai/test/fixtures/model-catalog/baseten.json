@@ -1,0 +1,166 @@
+{
+  "openai-completions": {
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "name": "fixture/baseten/deepseek-ai/DeepSeek-V4-Flash-0731",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-ai/DeepSeek-V4-Pro": {
+      "id": "deepseek-ai/DeepSeek-V4-Pro",
+      "name": "fixture/baseten/deepseek-ai/DeepSeek-V4-Pro",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/Kimi-K2.5": {
+      "id": "moonshotai/Kimi-K2.5",
+      "name": "fixture/baseten/moonshotai/Kimi-K2.5",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/Kimi-K2.6": {
+      "id": "moonshotai/Kimi-K2.6",
+      "name": "fixture/baseten/moonshotai/Kimi-K2.6",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://inference.baseten.co/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": "off",
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": null
+      },
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens",
+        "supportsStrictMode": true,
+        "supportsLongCacheRetention": false,
+        "thinkingFormat": "baseten",
+        "chatTemplateArgs": {
+          "enable_thinking": {
+            "$var": "thinking.enabled"
+          }
+        }
+      }
+    },
+    "openai/gpt-oss-120b": {
+      "id": "openai/gpt-oss-120b",
+      "name": "fixture/baseten/openai/gpt-oss-120b",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "zai-org/GLM-5.2": {
+      "id": "zai-org/GLM-5.2",
+      "name": "fixture/baseten/zai-org/GLM-5.2",
+      "api": "openai-completions",
+      "provider": "baseten",
+      "baseUrl": "https://inference.baseten.co/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1.4,
+        "output": 4.4,
+        "cacheRead": 0.3,
+        "cacheWrite": 0
+      },
+      "contextWindow": 1048576,
+      "maxTokens": 262144,
+      "thinkingLevelMap": {
+        "off": "none",
+        "minimal": null,
+        "low": null,
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      },
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens",
+        "supportsStrictMode": true,
+        "supportsLongCacheRetention": false,
+        "thinkingFormat": "baseten",
+        "chatTemplateArgs": {
+          "enable_thinking": {
+            "$var": "thinking.enabled"
+          }
+        }
+      }
+    }
+  }
+}

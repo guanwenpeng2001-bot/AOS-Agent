@@ -1,0 +1,75 @@
+{
+  "openai-completions": {
+    "grok-4.3": {
+      "id": "grok-4.3",
+      "name": "fixture/xai/grok-4.3",
+      "api": "openai-completions",
+      "provider": "xai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "grok-build-0.1": {
+      "id": "grok-build-0.1",
+      "name": "fixture/xai/grok-build-0.1",
+      "api": "openai-completions",
+      "provider": "xai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "openai-responses": {
+    "grok-4.5": {
+      "id": "grok-4.5",
+      "name": "fixture/xai/grok-4.5",
+      "api": "openai-responses",
+      "provider": "xai",
+      "baseUrl": "https://api.x.ai/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": null,
+        "max": null
+      },
+      "compat": {
+        "supportsLongCacheRetention": false
+      }
+    }
+  }
+}

@@ -1,0 +1,195 @@
+{
+  "anthropic-messages": {
+    "accounts/fireworks/models/deepseek-v4-flash": {
+      "id": "accounts/fireworks/models/deepseek-v4-flash",
+      "name": "fixture/fireworks/accounts/fireworks/models/deepseek-v4-flash",
+      "api": "anthropic-messages",
+      "provider": "fireworks",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "accounts/fireworks/models/kimi-k2p6": {
+      "id": "accounts/fireworks/models/kimi-k2p6",
+      "name": "fixture/fireworks/accounts/fireworks/models/kimi-k2p6",
+      "api": "anthropic-messages",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.16,
+        "cacheWrite": 0
+      },
+      "contextWindow": 262000,
+      "maxTokens": 262000,
+      "compat": {
+        "sendSessionAffinityHeaders": true,
+        "supportsEagerToolInputStreaming": false,
+        "supportsCacheControlOnTools": false,
+        "supportsLongCacheRetention": false
+      }
+    },
+    "accounts/fireworks/routers/kimi-k2p6-turbo": {
+      "id": "accounts/fireworks/routers/kimi-k2p6-turbo",
+      "name": "fixture/fireworks/accounts/fireworks/routers/kimi-k2p6-turbo",
+      "api": "anthropic-messages",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "sendSessionAffinityHeaders": true,
+        "supportsEagerToolInputStreaming": false,
+        "supportsCacheControlOnTools": false,
+        "supportsLongCacheRetention": false
+      }
+    }
+  },
+  "openai-completions": {
+    "accounts/fireworks/models/glm-5p2": {
+      "id": "accounts/fireworks/models/glm-5p2",
+      "name": "fixture/fireworks/accounts/fireworks/models/glm-5p2",
+      "api": "openai-completions",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "supportsLongCacheRetention": false
+      }
+    },
+    "accounts/fireworks/models/kimi-k3": {
+      "id": "accounts/fireworks/models/kimi-k3",
+      "name": "fixture/fireworks/accounts/fireworks/models/kimi-k3",
+      "api": "openai-completions",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "requiresReasoningContentOnAssistantMessages": true,
+        "thinkingFormat": "openai",
+        "deferredToolsMode": "kimi",
+        "sendSessionAffinityHeaders": true,
+        "supportsLongCacheRetention": false
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    },
+    "accounts/fireworks/routers/glm-5p2-fast": {
+      "id": "accounts/fireworks/routers/glm-5p2-fast",
+      "name": "fixture/fireworks/accounts/fireworks/routers/glm-5p2-fast",
+      "api": "openai-completions",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "supportsLongCacheRetention": false
+      }
+    },
+    "accounts/fireworks/routers/kimi-k3-fast": {
+      "id": "accounts/fireworks/routers/kimi-k3-fast",
+      "name": "fixture/fireworks/accounts/fireworks/routers/kimi-k3-fast",
+      "api": "openai-completions",
+      "provider": "fireworks",
+      "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "requiresReasoningContentOnAssistantMessages": true,
+        "thinkingFormat": "openai",
+        "deferredToolsMode": "kimi",
+        "sendSessionAffinityHeaders": true,
+        "supportsLongCacheRetention": false
+      },
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    }
+  }
+}

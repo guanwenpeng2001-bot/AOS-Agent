@@ -1,0 +1,2689 @@
+{
+  "openai-completions": {
+    "ai21/jamba-large-1.7": {
+      "id": "ai21/jamba-large-1.7",
+      "name": "fixture/openrouter/ai21/jamba-large-1.7",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-fable-5": {
+      "id": "anthropic/claude-fable-5",
+      "name": "fixture/openrouter/anthropic/claude-fable-5",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-opus-4.5": {
+      "id": "anthropic/claude-opus-4.5",
+      "name": "fixture/openrouter/anthropic/claude-opus-4.5",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-opus-4.6": {
+      "id": "anthropic/claude-opus-4.6",
+      "name": "fixture/openrouter/anthropic/claude-opus-4.6",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-opus-4.8": {
+      "id": "anthropic/claude-opus-4.8",
+      "name": "fixture/openrouter/anthropic/claude-opus-4.8",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-opus-5": {
+      "id": "anthropic/claude-opus-5",
+      "name": "fixture/openrouter/anthropic/claude-opus-5",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-sonnet-4": {
+      "id": "anthropic/claude-sonnet-4",
+      "name": "fixture/openrouter/anthropic/claude-sonnet-4",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-sonnet-4.5": {
+      "id": "anthropic/claude-sonnet-4.5",
+      "name": "fixture/openrouter/anthropic/claude-sonnet-4.5",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "anthropic/claude-sonnet-5": {
+      "id": "anthropic/claude-sonnet-5",
+      "name": "fixture/openrouter/anthropic/claude-sonnet-5",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "auto": {
+      "id": "auto",
+      "name": "fixture/openrouter/auto",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek/deepseek-chat": {
+      "id": "deepseek/deepseek-chat",
+      "name": "fixture/openrouter/deepseek/deepseek-chat",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek/deepseek-r1": {
+      "id": "deepseek/deepseek-r1",
+      "name": "fixture/openrouter/deepseek/deepseek-r1",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek/deepseek-v3.2": {
+      "id": "deepseek/deepseek-v3.2",
+      "name": "fixture/openrouter/deepseek/deepseek-v3.2",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek/deepseek-v4-flash": {
+      "id": "deepseek/deepseek-v4-flash",
+      "name": "fixture/openrouter/deepseek/deepseek-v4-flash",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek/deepseek-v4-pro": {
+      "id": "deepseek/deepseek-v4-pro",
+      "name": "fixture/openrouter/deepseek/deepseek-v4-pro",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "google/gemini-2.5-flash": {
+      "id": "google/gemini-2.5-flash",
+      "name": "fixture/openrouter/google/gemini-2.5-flash",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "meta-llama/llama-4-scout": {
+      "id": "meta-llama/llama-4-scout",
+      "name": "fixture/openrouter/meta-llama/llama-4-scout",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mistralai/mistral-large-2512": {
+      "id": "mistralai/mistral-large-2512",
+      "name": "fixture/openrouter/mistralai/mistral-large-2512",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mistralai/mistral-small-3.2-24b-instruct": {
+      "id": "mistralai/mistral-small-3.2-24b-instruct",
+      "name": "fixture/openrouter/mistralai/mistral-small-3.2-24b-instruct",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/kimi-k2.6": {
+      "id": "moonshotai/kimi-k2.6",
+      "name": "fixture/openrouter/moonshotai/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "nvidia/nemotron-3-super-120b-a12b": {
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "fixture/openrouter/nvidia/nemotron-3-super-120b-a12b",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-5.1-codex-max": {
+      "id": "openai/gpt-5.1-codex-max",
+      "name": "fixture/openrouter/openai/gpt-5.1-codex-max",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-5.2-codex": {
+      "id": "openai/gpt-5.2-codex",
+      "name": "fixture/openrouter/openai/gpt-5.2-codex",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-5.5-pro": {
+      "id": "openai/gpt-5.5-pro",
+      "name": "fixture/openrouter/openai/gpt-5.5-pro",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": null,
+        "xhigh": "xhigh"
+      }
+    },
+    "openai/gpt-oss-120b": {
+      "id": "openai/gpt-oss-120b",
+      "name": "fixture/openrouter/openai/gpt-oss-120b",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-oss-20b": {
+      "id": "openai/gpt-oss-20b",
+      "name": "fixture/openrouter/openai/gpt-oss-20b",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openrouter/auto": {
+      "id": "openrouter/auto",
+      "name": "fixture/openrouter/openrouter/auto",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "qwen/qwen3.5-plus-02-15": {
+      "id": "qwen/qwen3.5-plus-02-15",
+      "name": "fixture/openrouter/qwen/qwen3.5-plus-02-15",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "qwen/qwen3.6-27b": {
+      "id": "qwen/qwen3.6-27b",
+      "name": "fixture/openrouter/qwen/qwen3.6-27b",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "z-ai/glm-4.5v": {
+      "id": "z-ai/glm-4.5v",
+      "name": "fixture/openrouter/z-ai/glm-4.5v",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "~anthropic/claude-fable-latest": {
+      "id": "~anthropic/claude-fable-latest",
+      "name": "fixture/openrouter/~anthropic/claude-fable-latest",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "~anthropic/claude-haiku-latest": {
+      "id": "~anthropic/claude-haiku-latest",
+      "name": "fixture/openrouter/~anthropic/claude-haiku-latest",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "~anthropic/claude-opus-latest": {
+      "id": "~anthropic/claude-opus-latest",
+      "name": "fixture/openrouter/~anthropic/claude-opus-latest",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "~anthropic/claude-sonnet-latest": {
+      "id": "~anthropic/claude-sonnet-latest",
+      "name": "fixture/openrouter/~anthropic/claude-sonnet-latest",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-001": {
+      "id": "fixture-count-001",
+      "name": "fixture/openrouter/fixture-count-001",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-002": {
+      "id": "fixture-count-002",
+      "name": "fixture/openrouter/fixture-count-002",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-003": {
+      "id": "fixture-count-003",
+      "name": "fixture/openrouter/fixture-count-003",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-004": {
+      "id": "fixture-count-004",
+      "name": "fixture/openrouter/fixture-count-004",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-005": {
+      "id": "fixture-count-005",
+      "name": "fixture/openrouter/fixture-count-005",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-006": {
+      "id": "fixture-count-006",
+      "name": "fixture/openrouter/fixture-count-006",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-007": {
+      "id": "fixture-count-007",
+      "name": "fixture/openrouter/fixture-count-007",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-008": {
+      "id": "fixture-count-008",
+      "name": "fixture/openrouter/fixture-count-008",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-009": {
+      "id": "fixture-count-009",
+      "name": "fixture/openrouter/fixture-count-009",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-010": {
+      "id": "fixture-count-010",
+      "name": "fixture/openrouter/fixture-count-010",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-011": {
+      "id": "fixture-count-011",
+      "name": "fixture/openrouter/fixture-count-011",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-012": {
+      "id": "fixture-count-012",
+      "name": "fixture/openrouter/fixture-count-012",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-013": {
+      "id": "fixture-count-013",
+      "name": "fixture/openrouter/fixture-count-013",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-014": {
+      "id": "fixture-count-014",
+      "name": "fixture/openrouter/fixture-count-014",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-015": {
+      "id": "fixture-count-015",
+      "name": "fixture/openrouter/fixture-count-015",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-016": {
+      "id": "fixture-count-016",
+      "name": "fixture/openrouter/fixture-count-016",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-017": {
+      "id": "fixture-count-017",
+      "name": "fixture/openrouter/fixture-count-017",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-018": {
+      "id": "fixture-count-018",
+      "name": "fixture/openrouter/fixture-count-018",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-019": {
+      "id": "fixture-count-019",
+      "name": "fixture/openrouter/fixture-count-019",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-020": {
+      "id": "fixture-count-020",
+      "name": "fixture/openrouter/fixture-count-020",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-021": {
+      "id": "fixture-count-021",
+      "name": "fixture/openrouter/fixture-count-021",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-022": {
+      "id": "fixture-count-022",
+      "name": "fixture/openrouter/fixture-count-022",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-023": {
+      "id": "fixture-count-023",
+      "name": "fixture/openrouter/fixture-count-023",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-024": {
+      "id": "fixture-count-024",
+      "name": "fixture/openrouter/fixture-count-024",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-025": {
+      "id": "fixture-count-025",
+      "name": "fixture/openrouter/fixture-count-025",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-026": {
+      "id": "fixture-count-026",
+      "name": "fixture/openrouter/fixture-count-026",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-027": {
+      "id": "fixture-count-027",
+      "name": "fixture/openrouter/fixture-count-027",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-028": {
+      "id": "fixture-count-028",
+      "name": "fixture/openrouter/fixture-count-028",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-029": {
+      "id": "fixture-count-029",
+      "name": "fixture/openrouter/fixture-count-029",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-030": {
+      "id": "fixture-count-030",
+      "name": "fixture/openrouter/fixture-count-030",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-031": {
+      "id": "fixture-count-031",
+      "name": "fixture/openrouter/fixture-count-031",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-032": {
+      "id": "fixture-count-032",
+      "name": "fixture/openrouter/fixture-count-032",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-033": {
+      "id": "fixture-count-033",
+      "name": "fixture/openrouter/fixture-count-033",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-034": {
+      "id": "fixture-count-034",
+      "name": "fixture/openrouter/fixture-count-034",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-035": {
+      "id": "fixture-count-035",
+      "name": "fixture/openrouter/fixture-count-035",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-036": {
+      "id": "fixture-count-036",
+      "name": "fixture/openrouter/fixture-count-036",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-037": {
+      "id": "fixture-count-037",
+      "name": "fixture/openrouter/fixture-count-037",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-038": {
+      "id": "fixture-count-038",
+      "name": "fixture/openrouter/fixture-count-038",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-039": {
+      "id": "fixture-count-039",
+      "name": "fixture/openrouter/fixture-count-039",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-040": {
+      "id": "fixture-count-040",
+      "name": "fixture/openrouter/fixture-count-040",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-041": {
+      "id": "fixture-count-041",
+      "name": "fixture/openrouter/fixture-count-041",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-042": {
+      "id": "fixture-count-042",
+      "name": "fixture/openrouter/fixture-count-042",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-043": {
+      "id": "fixture-count-043",
+      "name": "fixture/openrouter/fixture-count-043",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-044": {
+      "id": "fixture-count-044",
+      "name": "fixture/openrouter/fixture-count-044",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-045": {
+      "id": "fixture-count-045",
+      "name": "fixture/openrouter/fixture-count-045",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-046": {
+      "id": "fixture-count-046",
+      "name": "fixture/openrouter/fixture-count-046",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-047": {
+      "id": "fixture-count-047",
+      "name": "fixture/openrouter/fixture-count-047",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-048": {
+      "id": "fixture-count-048",
+      "name": "fixture/openrouter/fixture-count-048",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-049": {
+      "id": "fixture-count-049",
+      "name": "fixture/openrouter/fixture-count-049",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-050": {
+      "id": "fixture-count-050",
+      "name": "fixture/openrouter/fixture-count-050",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-051": {
+      "id": "fixture-count-051",
+      "name": "fixture/openrouter/fixture-count-051",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-052": {
+      "id": "fixture-count-052",
+      "name": "fixture/openrouter/fixture-count-052",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-053": {
+      "id": "fixture-count-053",
+      "name": "fixture/openrouter/fixture-count-053",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-054": {
+      "id": "fixture-count-054",
+      "name": "fixture/openrouter/fixture-count-054",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-055": {
+      "id": "fixture-count-055",
+      "name": "fixture/openrouter/fixture-count-055",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-056": {
+      "id": "fixture-count-056",
+      "name": "fixture/openrouter/fixture-count-056",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-057": {
+      "id": "fixture-count-057",
+      "name": "fixture/openrouter/fixture-count-057",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-058": {
+      "id": "fixture-count-058",
+      "name": "fixture/openrouter/fixture-count-058",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-059": {
+      "id": "fixture-count-059",
+      "name": "fixture/openrouter/fixture-count-059",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-060": {
+      "id": "fixture-count-060",
+      "name": "fixture/openrouter/fixture-count-060",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-061": {
+      "id": "fixture-count-061",
+      "name": "fixture/openrouter/fixture-count-061",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-062": {
+      "id": "fixture-count-062",
+      "name": "fixture/openrouter/fixture-count-062",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-063": {
+      "id": "fixture-count-063",
+      "name": "fixture/openrouter/fixture-count-063",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-064": {
+      "id": "fixture-count-064",
+      "name": "fixture/openrouter/fixture-count-064",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-065": {
+      "id": "fixture-count-065",
+      "name": "fixture/openrouter/fixture-count-065",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-066": {
+      "id": "fixture-count-066",
+      "name": "fixture/openrouter/fixture-count-066",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-067": {
+      "id": "fixture-count-067",
+      "name": "fixture/openrouter/fixture-count-067",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-068": {
+      "id": "fixture-count-068",
+      "name": "fixture/openrouter/fixture-count-068",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-069": {
+      "id": "fixture-count-069",
+      "name": "fixture/openrouter/fixture-count-069",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-070": {
+      "id": "fixture-count-070",
+      "name": "fixture/openrouter/fixture-count-070",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-071": {
+      "id": "fixture-count-071",
+      "name": "fixture/openrouter/fixture-count-071",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-072": {
+      "id": "fixture-count-072",
+      "name": "fixture/openrouter/fixture-count-072",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-073": {
+      "id": "fixture-count-073",
+      "name": "fixture/openrouter/fixture-count-073",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-074": {
+      "id": "fixture-count-074",
+      "name": "fixture/openrouter/fixture-count-074",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-075": {
+      "id": "fixture-count-075",
+      "name": "fixture/openrouter/fixture-count-075",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-076": {
+      "id": "fixture-count-076",
+      "name": "fixture/openrouter/fixture-count-076",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-077": {
+      "id": "fixture-count-077",
+      "name": "fixture/openrouter/fixture-count-077",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-078": {
+      "id": "fixture-count-078",
+      "name": "fixture/openrouter/fixture-count-078",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-079": {
+      "id": "fixture-count-079",
+      "name": "fixture/openrouter/fixture-count-079",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-080": {
+      "id": "fixture-count-080",
+      "name": "fixture/openrouter/fixture-count-080",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-081": {
+      "id": "fixture-count-081",
+      "name": "fixture/openrouter/fixture-count-081",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-082": {
+      "id": "fixture-count-082",
+      "name": "fixture/openrouter/fixture-count-082",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-083": {
+      "id": "fixture-count-083",
+      "name": "fixture/openrouter/fixture-count-083",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-084": {
+      "id": "fixture-count-084",
+      "name": "fixture/openrouter/fixture-count-084",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-085": {
+      "id": "fixture-count-085",
+      "name": "fixture/openrouter/fixture-count-085",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-086": {
+      "id": "fixture-count-086",
+      "name": "fixture/openrouter/fixture-count-086",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-087": {
+      "id": "fixture-count-087",
+      "name": "fixture/openrouter/fixture-count-087",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-088": {
+      "id": "fixture-count-088",
+      "name": "fixture/openrouter/fixture-count-088",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-089": {
+      "id": "fixture-count-089",
+      "name": "fixture/openrouter/fixture-count-089",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-090": {
+      "id": "fixture-count-090",
+      "name": "fixture/openrouter/fixture-count-090",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-091": {
+      "id": "fixture-count-091",
+      "name": "fixture/openrouter/fixture-count-091",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-092": {
+      "id": "fixture-count-092",
+      "name": "fixture/openrouter/fixture-count-092",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-093": {
+      "id": "fixture-count-093",
+      "name": "fixture/openrouter/fixture-count-093",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-094": {
+      "id": "fixture-count-094",
+      "name": "fixture/openrouter/fixture-count-094",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-095": {
+      "id": "fixture-count-095",
+      "name": "fixture/openrouter/fixture-count-095",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-096": {
+      "id": "fixture-count-096",
+      "name": "fixture/openrouter/fixture-count-096",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-097": {
+      "id": "fixture-count-097",
+      "name": "fixture/openrouter/fixture-count-097",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-098": {
+      "id": "fixture-count-098",
+      "name": "fixture/openrouter/fixture-count-098",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-099": {
+      "id": "fixture-count-099",
+      "name": "fixture/openrouter/fixture-count-099",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-100": {
+      "id": "fixture-count-100",
+      "name": "fixture/openrouter/fixture-count-100",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-101": {
+      "id": "fixture-count-101",
+      "name": "fixture/openrouter/fixture-count-101",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-102": {
+      "id": "fixture-count-102",
+      "name": "fixture/openrouter/fixture-count-102",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-103": {
+      "id": "fixture-count-103",
+      "name": "fixture/openrouter/fixture-count-103",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-104": {
+      "id": "fixture-count-104",
+      "name": "fixture/openrouter/fixture-count-104",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-105": {
+      "id": "fixture-count-105",
+      "name": "fixture/openrouter/fixture-count-105",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-106": {
+      "id": "fixture-count-106",
+      "name": "fixture/openrouter/fixture-count-106",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "fixture-count-107": {
+      "id": "fixture-count-107",
+      "name": "fixture/openrouter/fixture-count-107",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

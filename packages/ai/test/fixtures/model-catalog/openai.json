@@ -1,0 +1,434 @@
+{
+  "openai-responses": {
+    "gpt-4": {
+      "id": "gpt-4",
+      "name": "fixture/openai/gpt-4",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4.1": {
+      "id": "gpt-4.1",
+      "name": "fixture/openai/gpt-4.1",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4o": {
+      "id": "gpt-4o",
+      "name": "fixture/openai/gpt-4o",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4o-mini": {
+      "id": "gpt-4o-mini",
+      "name": "fixture/openai/gpt-4o-mini",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5": {
+      "id": "gpt-5",
+      "name": "fixture/openai/gpt-5",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-mini": {
+      "id": "gpt-5-mini",
+      "name": "fixture/openai/gpt-5-mini",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-nano": {
+      "id": "gpt-5-nano",
+      "name": "fixture/openai/gpt-5-nano",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-pro": {
+      "id": "gpt-5-pro",
+      "name": "fixture/openai/gpt-5-pro",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.1": {
+      "id": "gpt-5.1",
+      "name": "fixture/openai/gpt-5.1",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2": {
+      "id": "gpt-5.2",
+      "name": "fixture/openai/gpt-5.2",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2-pro": {
+      "id": "gpt-5.2-pro",
+      "name": "fixture/openai/gpt-5.2-pro",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex": {
+      "id": "gpt-5.3-codex",
+      "name": "fixture/openai/gpt-5.3-codex",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex-spark": {
+      "id": "gpt-5.3-codex-spark",
+      "name": "fixture/openai/gpt-5.3-codex-spark",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "fixture/openai/gpt-5.4",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "fixture/openai/gpt-5.4-mini",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-nano": {
+      "id": "gpt-5.4-nano",
+      "name": "fixture/openai/gpt-5.4-nano",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-pro": {
+      "id": "gpt-5.4-pro",
+      "name": "fixture/openai/gpt-5.4-pro",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "fixture/openai/gpt-5.5",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5-pro": {
+      "id": "gpt-5.5-pro",
+      "name": "fixture/openai/gpt-5.5-pro",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/openai/gpt-5.6-luna",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null
+      }
+    },
+    "gpt-5.6-sol": {
+      "id": "gpt-5.6-sol",
+      "name": "fixture/openai/gpt-5.6-sol",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null
+      }
+    },
+    "gpt-5.6-terra": {
+      "id": "gpt-5.6-terra",
+      "name": "fixture/openai/gpt-5.6-terra",
+      "api": "openai-responses",
+      "provider": "openai",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null
+      }
+    }
+  }
+}

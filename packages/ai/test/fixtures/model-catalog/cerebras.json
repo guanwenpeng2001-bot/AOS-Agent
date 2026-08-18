@@ -1,0 +1,61 @@
+{
+  "openai-completions": {
+    "gemma-4-31b": {
+      "id": "gemma-4-31b",
+      "name": "fixture/cerebras/gemma-4-31b",
+      "api": "openai-completions",
+      "provider": "cerebras",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-oss-120b": {
+      "id": "gpt-oss-120b",
+      "name": "fixture/cerebras/gpt-oss-120b",
+      "api": "openai-completions",
+      "provider": "cerebras",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "zai-glm-4.7": {
+      "id": "zai-glm-4.7",
+      "name": "fixture/cerebras/zai-glm-4.7",
+      "api": "openai-completions",
+      "provider": "cerebras",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

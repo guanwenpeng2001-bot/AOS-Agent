@@ -1,0 +1,293 @@
+{
+  "openai-completions": {
+    "deepseek-v4-flash": {
+      "id": "deepseek-v4-flash",
+      "name": "fixture/opencode-go/deepseek-v4-flash",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-v4-pro": {
+      "id": "deepseek-v4-pro",
+      "name": "fixture/opencode-go/deepseek-v4-pro",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "glm-5.1": {
+      "id": "glm-5.1",
+      "name": "fixture/opencode-go/glm-5.1",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "glm-5.2": {
+      "id": "glm-5.2",
+      "name": "fixture/opencode-go/glm-5.2",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.6": {
+      "id": "kimi-k2.6",
+      "name": "fixture/opencode-go/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.7-code": {
+      "id": "kimi-k2.7-code",
+      "name": "fixture/opencode-go/kimi-k2.7-code",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k3": {
+      "id": "kimi-k3",
+      "name": "fixture/opencode-go/kimi-k3",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mimo-v2.5-pro": {
+      "id": "mimo-v2.5-pro",
+      "name": "fixture/opencode-go/mimo-v2.5-pro",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "minimax-m2.7": {
+      "id": "minimax-m2.7",
+      "name": "fixture/opencode-go/minimax-m2.7",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "qwen3.6-plus": {
+      "id": "qwen3.6-plus",
+      "name": "fixture/opencode-go/qwen3.6-plus",
+      "api": "openai-completions",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "openai-responses": {
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/opencode-go/gpt-5.6-luna",
+      "api": "openai-responses",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "grok-4.5": {
+      "id": "grok-4.5",
+      "name": "fixture/opencode-go/grok-4.5",
+      "api": "openai-responses",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  },
+  "anthropic-messages": {
+    "qwen3.7-max": {
+      "id": "qwen3.7-max",
+      "name": "fixture/opencode-go/qwen3.7-max",
+      "api": "anthropic-messages",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "qwen3.7-plus": {
+      "id": "qwen3.7-plus",
+      "name": "fixture/opencode-go/qwen3.7-plus",
+      "api": "anthropic-messages",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "qwen3.8-max": {
+      "id": "qwen3.8-max",
+      "name": "fixture/opencode-go/qwen3.8-max",
+      "api": "anthropic-messages",
+      "provider": "opencode-go",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

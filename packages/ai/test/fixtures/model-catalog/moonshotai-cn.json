@@ -1,0 +1,108 @@
+{
+  "openai-completions": {
+    "kimi-k2-0711-preview": {
+      "id": "kimi-k2-0711-preview",
+      "name": "fixture/moonshotai-cn/kimi-k2-0711-preview",
+      "api": "openai-completions",
+      "provider": "moonshotai-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.5": {
+      "id": "kimi-k2.5",
+      "name": "fixture/moonshotai-cn/kimi-k2.5",
+      "api": "openai-completions",
+      "provider": "moonshotai-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.6": {
+      "id": "kimi-k2.6",
+      "name": "fixture/moonshotai-cn/kimi-k2.6",
+      "api": "openai-completions",
+      "provider": "moonshotai-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k2.7-code": {
+      "id": "kimi-k2.7-code",
+      "name": "fixture/moonshotai-cn/kimi-k2.7-code",
+      "api": "openai-completions",
+      "provider": "moonshotai-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "kimi-k3": {
+      "id": "kimi-k3",
+      "name": "fixture/moonshotai-cn/kimi-k3",
+      "api": "openai-completions",
+      "provider": "moonshotai-cn",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 3,
+        "output": 15,
+        "cacheRead": 0.3,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024,
+      "thinkingLevelMap": {
+        "off": null,
+        "minimal": null,
+        "low": "low",
+        "medium": null,
+        "high": "high",
+        "xhigh": null,
+        "max": "max"
+      }
+    }
+  }
+}

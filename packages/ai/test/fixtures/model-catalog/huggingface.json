@@ -1,0 +1,175 @@
+{
+  "openai-completions": {
+    "MiniMaxAI/MiniMax-M2": {
+      "id": "MiniMaxAI/MiniMax-M2",
+      "name": "fixture/huggingface/MiniMaxAI/MiniMax-M2",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "MiniMaxAI/MiniMax-M2.7": {
+      "id": "MiniMaxAI/MiniMax-M2.7",
+      "name": "fixture/huggingface/MiniMaxAI/MiniMax-M2.7",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-ai/DeepSeek-V3.1": {
+      "id": "deepseek-ai/DeepSeek-V3.1",
+      "name": "fixture/huggingface/deepseek-ai/DeepSeek-V3.1",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-ai/DeepSeek-V4-Pro": {
+      "id": "deepseek-ai/DeepSeek-V4-Pro",
+      "name": "fixture/huggingface/deepseek-ai/DeepSeek-V4-Pro",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/Kimi-K2.5": {
+      "id": "moonshotai/Kimi-K2.5",
+      "name": "fixture/huggingface/moonshotai/Kimi-K2.5",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "moonshotai/Kimi-K2.6": {
+      "id": "moonshotai/Kimi-K2.6",
+      "name": "fixture/huggingface/moonshotai/Kimi-K2.6",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-oss-120b": {
+      "id": "openai/gpt-oss-120b",
+      "name": "fixture/huggingface/openai/gpt-oss-120b",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "openai/gpt-oss-20b": {
+      "id": "openai/gpt-oss-20b",
+      "name": "fixture/huggingface/openai/gpt-oss-20b",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "zai-org/GLM-5.2": {
+      "id": "zai-org/GLM-5.2",
+      "name": "fixture/huggingface/zai-org/GLM-5.2",
+      "api": "openai-completions",
+      "provider": "huggingface",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

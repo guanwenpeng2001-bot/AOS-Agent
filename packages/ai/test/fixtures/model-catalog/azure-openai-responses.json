@@ -1,0 +1,422 @@
+{
+  "azure-openai-responses": {
+    "gpt-4": {
+      "id": "gpt-4",
+      "name": "fixture/azure-openai-responses/gpt-4",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4.1": {
+      "id": "gpt-4.1",
+      "name": "fixture/azure-openai-responses/gpt-4.1",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4o": {
+      "id": "gpt-4o",
+      "name": "fixture/azure-openai-responses/gpt-4o",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-4o-mini": {
+      "id": "gpt-4o-mini",
+      "name": "fixture/azure-openai-responses/gpt-4o-mini",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5": {
+      "id": "gpt-5",
+      "name": "fixture/azure-openai-responses/gpt-5",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-mini": {
+      "id": "gpt-5-mini",
+      "name": "fixture/azure-openai-responses/gpt-5-mini",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-nano": {
+      "id": "gpt-5-nano",
+      "name": "fixture/azure-openai-responses/gpt-5-nano",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5-pro": {
+      "id": "gpt-5-pro",
+      "name": "fixture/azure-openai-responses/gpt-5-pro",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.1": {
+      "id": "gpt-5.1",
+      "name": "fixture/azure-openai-responses/gpt-5.1",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2": {
+      "id": "gpt-5.2",
+      "name": "fixture/azure-openai-responses/gpt-5.2",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.2-pro": {
+      "id": "gpt-5.2-pro",
+      "name": "fixture/azure-openai-responses/gpt-5.2-pro",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex": {
+      "id": "gpt-5.3-codex",
+      "name": "fixture/azure-openai-responses/gpt-5.3-codex",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.3-codex-spark": {
+      "id": "gpt-5.3-codex-spark",
+      "name": "fixture/azure-openai-responses/gpt-5.3-codex-spark",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4": {
+      "id": "gpt-5.4",
+      "name": "fixture/azure-openai-responses/gpt-5.4",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-mini": {
+      "id": "gpt-5.4-mini",
+      "name": "fixture/azure-openai-responses/gpt-5.4-mini",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-nano": {
+      "id": "gpt-5.4-nano",
+      "name": "fixture/azure-openai-responses/gpt-5.4-nano",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.4-pro": {
+      "id": "gpt-5.4-pro",
+      "name": "fixture/azure-openai-responses/gpt-5.4-pro",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5": {
+      "id": "gpt-5.5",
+      "name": "fixture/azure-openai-responses/gpt-5.5",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.5-pro": {
+      "id": "gpt-5.5-pro",
+      "name": "fixture/azure-openai-responses/gpt-5.5-pro",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-luna": {
+      "id": "gpt-5.6-luna",
+      "name": "fixture/azure-openai-responses/gpt-5.6-luna",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-sol": {
+      "id": "gpt-5.6-sol",
+      "name": "fixture/azure-openai-responses/gpt-5.6-sol",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "gpt-5.6-terra": {
+      "id": "gpt-5.6-terra",
+      "name": "fixture/azure-openai-responses/gpt-5.6-terra",
+      "api": "azure-openai-responses",
+      "provider": "azure-openai-responses",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

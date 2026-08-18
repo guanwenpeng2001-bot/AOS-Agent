@@ -1,0 +1,42 @@
+{
+  "openai-completions": {
+    "deepseek-v4-flash": {
+      "id": "deepseek-v4-flash",
+      "name": "fixture/deepseek/deepseek-v4-flash",
+      "api": "openai-completions",
+      "provider": "deepseek",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "deepseek-v4-pro": {
+      "id": "deepseek-v4-pro",
+      "name": "fixture/deepseek/deepseek-v4-pro",
+      "api": "openai-completions",
+      "provider": "deepseek",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

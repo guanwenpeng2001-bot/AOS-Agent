@@ -1,0 +1,137 @@
+{
+  "mistral-conversations": {
+    "codestral-latest": {
+      "id": "codestral-latest",
+      "name": "fixture/mistral/codestral-latest",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "devstral-medium-latest": {
+      "id": "devstral-medium-latest",
+      "name": "fixture/mistral/devstral-medium-latest",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "magistral-medium-latest": {
+      "id": "magistral-medium-latest",
+      "name": "fixture/mistral/magistral-medium-latest",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mistral-large-latest": {
+      "id": "mistral-large-latest",
+      "name": "fixture/mistral/mistral-large-latest",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mistral-medium-3.5": {
+      "id": "mistral-medium-3.5",
+      "name": "fixture/mistral/mistral-medium-3.5",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "mistral-small-2603": {
+      "id": "mistral-small-2603",
+      "name": "fixture/mistral/mistral-small-2603",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "pixtral-12b": {
+      "id": "pixtral-12b",
+      "name": "fixture/mistral/pixtral-12b",
+      "api": "mistral-conversations",
+      "provider": "mistral",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

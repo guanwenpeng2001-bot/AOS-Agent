@@ -1,0 +1,61 @@
+{
+  "openai-completions": {
+    "Ling-2.6-1T": {
+      "id": "Ling-2.6-1T",
+      "name": "fixture/ant-ling/Ling-2.6-1T",
+      "api": "openai-completions",
+      "provider": "ant-ling",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "Ling-2.6-flash": {
+      "id": "Ling-2.6-flash",
+      "name": "fixture/ant-ling/Ling-2.6-flash",
+      "api": "openai-completions",
+      "provider": "ant-ling",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    },
+    "Ring-2.6-1T": {
+      "id": "Ring-2.6-1T",
+      "name": "fixture/ant-ling/Ring-2.6-1T",
+      "api": "openai-completions",
+      "provider": "ant-ling",
+      "baseUrl": "https://example.test/v1",
+      "reasoning": false,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 8192,
+      "maxTokens": 1024
+    }
+  }
+}

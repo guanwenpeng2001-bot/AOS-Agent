@@ -1,0 +1,41 @@
+[
+  {
+    "id": "test-model",
+    "name": "fixture-image/test-model",
+    "api": "openrouter-images",
+    "provider": "openrouter",
+    "baseUrl": "https://example.test/v1",
+    "input": [
+      "text"
+    ],
+    "output": [
+      "image"
+    ],
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    }
+  },
+  {
+    "id": "google/gemini-2.5-flash-image",
+    "name": "fixture-image/google/gemini-2.5-flash-image",
+    "api": "openrouter-images",
+    "provider": "openrouter",
+    "baseUrl": "https://example.test/v1",
+    "input": [
+      "text",
+      "image"
+    ],
+    "output": [
+      "image"
+    ],
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0
+    }
+  }
+]
