@@ -49,7 +49,7 @@ import { formatSkillInvocation } from "./skills.ts";
 import { formatSkillsForSystemPrompt } from "./system-prompt.ts";
 import { HarnessEventBus, type HarnessEventListener } from "./events.ts";
 import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
-import { FoundationError } from "./foundation/errors.ts";
+import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import {
 	FoundationToolPipelineV1,
 	SessionToolPipelineStorageV1,
@@ -57,6 +57,7 @@ import {
 	validateToolReceiptV1,
 	type ToolDefinitionRegistryV1,
 	type ToolDefinitionV1,
+	type ToolExecutionV1,
 	type ToolIntentV1,
 	type ToolPipelineContextV1,
 	type ToolPipelineOptionsV1,
@@ -330,7 +331,7 @@ class EventsFacade implements Events {
 	}
 }
 
-export type HarnessTool = AgentTool & { replay?: "never" | "safe" };
+export type HarnessTool = AgentTool & { replay?: "never" | "safe"; sideEffectState?: SideEffectStateV1 };
 export type Resources = AgentHarnessResources<Skill, PromptTemplate>;
 export type StreamOptions = SimpleStreamOptions;
 export type StreamOptionsPatch = Partial<SimpleStreamOptions>;
@@ -405,6 +406,12 @@ interface FoundationReceiptBundle {
 	correlation: ExecutionCorrelationV1;
 }
 
+interface FoundationToolOutcome {
+	failed: boolean;
+	sideEffectState: SideEffectStateV1;
+	error?: OperationError;
+}
+
 const HARNESS_CONFIGURATION_TYPES = {
 	resources: "harness.config.resources",
 	streamOptions: "harness.config.stream_options",
@@ -433,6 +440,20 @@ function operationError(error: unknown): OperationError {
 	const normalized = toError(error);
 	const code = error instanceof SessionError && error.code ? error.code : error instanceof Error ? error.name : "error";
 	return { code, message: normalized.message };
+}
+
+function foundationToolUsage(usage: Usage): NonNullable<ToolExecutionV1["usage"]> {
+	return { tokens: usage.totalTokens, costUsd: usage.cost.total, toolCalls: 1 };
+}
+
+class HarnessToolPipelineError extends Error {
+	readonly sideEffectState: SideEffectStateV1;
+
+	constructor(message: string, sideEffectState: SideEffectStateV1) {
+		super(message);
+		this.name = "HarnessToolPipelineError";
+		this.sideEffectState = sideEffectState;
+	}
 }
 
 function isHarnessInfrastructureFault(error: unknown): boolean {
@@ -849,7 +870,10 @@ export class AgentHarness implements AgentLane {
 		const execution = this.foundationExecution;
 		const ids = this.foundationIds(runId);
 		const now = await this.foundationReceiptTimestamp(lane, runId);
-		const terminalStatus: ResultStatusV1 = outcome === "completed" ? "succeeded" : outcome === "aborted" ? "cancelled" : "failed";
+		const toolOutcome = await this.foundationToolOutcome(lane, runId);
+		const effectiveOutcome = outcome === "completed" && toolOutcome.failed ? "failed" : outcome;
+		const effectiveError = error ?? toolOutcome.error;
+		const terminalStatus: ResultStatusV1 = effectiveOutcome === "completed" ? "succeeded" : effectiveOutcome === "aborted" ? "cancelled" : "failed";
 		const candidate: AttemptReceiptV1 = {
 			schemaVersion: 1,
 			attemptReceiptId: ids.attemptReceiptId,
@@ -864,8 +888,8 @@ export class AgentHarness implements AgentLane {
 			workerReceiptRefs: [],
 			artifacts: [...(execution.settlement?.artifacts ?? [])],
 			provenance: { producerKind: "agent_executor", providerId: execution.providerId, producedAt: now },
-			sideEffectState: await this.foundationSideEffectState(lane, runId),
-			...(terminalStatus === "failed" ? { error: this.foundationPublicError(error, "agent_run_failed", "Agent run failed") } : {}),
+			sideEffectState: toolOutcome.sideEffectState,
+			...(terminalStatus === "failed" ? { error: this.foundationPublicError(effectiveError, "agent_run_failed", "Agent run failed") } : {}),
 		};
 		const existingAttempt = await this.durableSession.getFoundationObject("attempt_receipt", ids.attemptReceiptId);
 		let attemptReceipt = candidate;
@@ -895,7 +919,7 @@ export class AgentHarness implements AgentLane {
 			taskResultId: ids.taskResultId,
 			task: execution.task,
 			receipts: [attemptReceipt],
-			summary: settlement?.summary ?? (outcome === "completed" ? "Agent run completed; awaiting host settlement evidence" : "Agent run did not complete successfully"),
+			summary: settlement?.summary ?? (effectiveOutcome === "completed" ? "Agent run completed; awaiting host settlement evidence" : "Agent run did not complete successfully"),
 			artifacts: settlement?.artifacts,
 			diff: settlement?.diff,
 			tests: settlement?.tests ?? [],
@@ -903,7 +927,7 @@ export class AgentHarness implements AgentLane {
 			producer: { producerKind: "host" as const, providerId: authority.authorityId, producedAt: now },
 		};
 		let settled = settleTaskResult(settleInput);
-		if (!settled.ok && outcome === "completed" && attemptReceipt.status === "succeeded") {
+		if (!settled.ok && effectiveOutcome === "completed" && attemptReceipt.status === "succeeded") {
 			attemptReceipt = {
 				...attemptReceipt,
 				status: "suspended",
@@ -913,12 +937,12 @@ export class AgentHarness implements AgentLane {
 		}
 		if (!settled.ok) throw new HarnessFault("AgentHarness could not settle TaskResult", settled.error);
 		let taskResult = settled.value;
-		if (error !== undefined && taskResult.error === undefined) {
-			taskResult = { ...taskResult, error: this.foundationPublicError(error, "agent_run_failed", "Agent run failed") };
+		if (effectiveError !== undefined && taskResult.error === undefined) {
+			taskResult = { ...taskResult, error: this.foundationPublicError(effectiveError, "agent_run_failed", "Agent run failed") };
 		}
 		const checkedTaskResult = validateTaskResultV1(taskResult);
 		if (!checkedTaskResult.ok) throw new HarnessFault("AgentHarness produced an invalid TaskResult", checkedTaskResult.error);
-		const finalStatus = outcome === "completed" && taskResult.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
+		const finalStatus = effectiveOutcome === "completed" && taskResult.status === "succeeded" ? "completed" : effectiveOutcome === "aborted" ? "cancelled" : "failed";
 		const finalized = finalizeRunReceipt({
 			runReceiptId: ids.runReceiptId,
 			runId,
@@ -926,7 +950,7 @@ export class AgentHarness implements AgentLane {
 			taskResult,
 			attemptReceiptIds: [attemptReceipt.attemptReceiptId],
 			authority,
-			...(finalStatus === "completed" ? {} : { terminalErrorCode: error?.code ?? (taskResult.status === "suspended" ? "awaiting_host_settlement" : "agent_run_failed") }),
+			...(finalStatus === "completed" ? {} : { terminalErrorCode: effectiveError?.code ?? (taskResult.status === "suspended" ? "awaiting_host_settlement" : "agent_run_failed") }),
 			completedAt: now,
 		});
 		if (!finalized.ok) throw new HarnessFault("AgentHarness produced an invalid RunReceipt", finalized.error);
@@ -947,14 +971,58 @@ export class AgentHarness implements AgentLane {
 		return bundle;
 	}
 
-	private async foundationSideEffectState(lane: string, runId: string): Promise<SideEffectStateV1> {
+	private async foundationToolOutcome(lane: string, runId: string): Promise<FoundationToolOutcome> {
 		const starts = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
-		if (starts.length === 0) return "none";
-		for (const start of starts) {
-			const result = await this.durableSession.getEntry(start.resultEntryId);
-			if (result?.type !== "message" || result.message.role !== "toolResult") return "side_effect_unknown";
+		if (starts.length === 0) return { failed: false, sideEffectState: "none" };
+		const receipts = new Map<string, ToolReceiptV1>();
+		const correlation = this.foundationCorrelation(lane, runId);
+		if (correlation !== undefined) {
+			const startedToolCallIds = new Set(starts.map((start) => start.toolCallId));
+			const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
+			const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
+			for (const record of records) {
+				if (record.kind !== "fact") continue;
+				const checked = validateToolReceiptV1(record.payload);
+				if (!checked.ok) throw new HarnessFault("Persisted tool receipt failed validation", checked.error);
+				if (!startedToolCallIds.has(checked.value.toolCallId)) throw new HarnessFault(`Persisted tool receipt ${checked.value.toolCallId} is not part of operation ${runId}`, undefined);
+				receipts.set(checked.value.toolCallId, checked.value);
+			}
 		}
-		return "unknown";
+		let failed = false;
+		let sideEffectState: SideEffectStateV1 = "none";
+		let firstError: OperationError | undefined;
+		const mergeSideEffectState = (state: SideEffectStateV1): void => {
+			if (state === "side_effect_unknown") sideEffectState = state;
+			else if (state === "unknown" && sideEffectState === "none") sideEffectState = state;
+		};
+		const recordError = (candidate: OperationError): void => {
+			if (firstError === undefined) firstError = candidate;
+		};
+		for (const start of starts) {
+			const receipt = receipts.get(start.toolCallId);
+			if (receipt === undefined) {
+				failed = true;
+				mergeSideEffectState("side_effect_unknown");
+				recordError({ code: "side_effect_unknown", message: `Tool receipt is missing for ${start.toolCallId}` });
+			} else {
+				mergeSideEffectState(receipt.sideEffectState);
+				if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") {
+					failed = true;
+					recordError({ code: receipt.error?.code ?? (receipt.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"), message: receipt.error?.message ?? `Tool ${start.toolName} did not complete successfully` });
+				}
+			}
+			const result = await this.durableSession.getEntry(start.resultEntryId);
+			if (result?.type !== "message" || result.message.role !== "toolResult") {
+				failed = true;
+				mergeSideEffectState("side_effect_unknown");
+				recordError({ code: "side_effect_unknown", message: `Tool result is missing for ${start.toolCallId}` });
+			} else if (result.message.isError) {
+				failed = true;
+				const textContent = result.message.content.find((content) => content.type === "text");
+				recordError({ code: receipts.get(start.toolCallId)?.error?.code ?? "tool_execution_failed", message: receipts.get(start.toolCallId)?.error?.message ?? (textContent?.type === "text" ? textContent.text : `Tool ${start.toolName} failed`) });
+			}
+		}
+		return { failed, sideEffectState, ...(firstError === undefined ? {} : { error: firstError }) };
 	}
 
 	private async foundationReceiptTimestamp(lane: string, runId: string): Promise<string> {
@@ -1304,13 +1372,24 @@ export class AgentHarness implements AgentLane {
 			...(metadata.conflictKeys === undefined ? {} : { conflictKeys: metadata.conflictKeys }),
 			...(metadata.idempotency === undefined ? {} : { idempotency: metadata.idempotency }),
 			execute: async (args, options) => {
-				const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
-				this.pipelineResults.set(this.pipelineResultKey(options.context, options.toolCallId), result as AgentToolResult<unknown>);
-				return {
-					ok: true,
-					sideEffectState: "none" as const,
-					...(result.usage === undefined ? {} : { usage: { toolCalls: 1 } }),
-				};
+				try {
+					const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
+					this.pipelineResults.set(this.pipelineResultKey(options.context, options.toolCallId), result as AgentToolResult<unknown>);
+					return {
+						ok: true,
+						sideEffectState: tool.sideEffectState === "none" ? "none" : "side_effect_unknown",
+						...(result.usage === undefined ? {} : { usage: foundationToolUsage(result.usage) }),
+					};
+				} catch (error) {
+					const normalized = toFoundationError(error, "tool_execution_failed");
+					const publicError = normalized.toPublicExecutionError();
+					const sideEffectState = tool.sideEffectState === "none" ? "none" : "side_effect_unknown";
+					return {
+						ok: false,
+						sideEffectState,
+						error: sideEffectState === "none" ? publicError : { ...publicError, category: "side_effect_unknown" as const, retryable: false },
+					};
+				}
 			},
 		};
 	}
@@ -1333,10 +1412,13 @@ export class AgentHarness implements AgentLane {
 				const actual = this.pipelineResults.get(resultKey);
 				this.pipelineResults.delete(resultKey);
 				if (execution.ok && execution.value.outcome === "succeeded" && actual !== undefined) return actual as AgentToolResult<never>;
-				return {
-					content: [{ type: "text", text: execution.ok ? execution.value.error?.message ?? execution.value.outcome : execution.error.message }],
-					details: {},
-				};
+				if (execution.ok && execution.value.outcome === "succeeded") {
+					return { content: [{ type: "text", text: "Tool execution was already completed" }], details: {} };
+				}
+				throw new HarnessToolPipelineError(
+					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
+					execution.ok && execution.value.sideEffectState === "none" ? "none" : "side_effect_unknown",
+				);
 			},
 		} as HarnessTool;
 	}
@@ -2004,8 +2086,11 @@ export class AgentHarness implements AgentLane {
 	private async finishOperation(lane: string, runId: string, outcome: "completed" | "declined" | "failed" | "aborted", error?: OperationError): Promise<void> {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "operation_finished", order: "oldestFirst" });
 		if (records.length > 0) return;
-		await this.hookRegistry.emit("before_run_end", { lane, runId, outcome });
-		const foundationBundle = await this.persistFoundationReceipts(lane, runId, outcome, error);
+		const toolOutcome = this.foundationExecution === undefined ? undefined : await this.foundationToolOutcome(lane, runId);
+		const effectiveOutcome = outcome === "completed" && toolOutcome?.failed === true ? "failed" : outcome;
+		const effectiveError = error ?? toolOutcome?.error;
+		await this.hookRegistry.emit("before_run_end", { lane, runId, outcome: effectiveOutcome });
+		const foundationBundle = await this.persistFoundationReceipts(lane, runId, effectiveOutcome, effectiveError);
 		const correlation = this.foundationCorrelation(lane, runId, {
 			runId,
 			...(foundationBundle === undefined ? {} : {
@@ -2020,9 +2105,9 @@ export class AgentHarness implements AgentLane {
 			id: this.durableSession.idGenerator.next(),
 			lane,
 			runId,
-			outcome,
+			outcome: effectiveOutcome,
 			...(correlation === undefined ? {} : { correlation }),
-			...(error ? { error } : {}),
+			...(effectiveError ? { error: effectiveError } : {}),
 		});
 		const leafId = await this.durableSession.view(lane).getLeafId();
 		const finalEntry = leafId ? await this.durableSession.view(lane).findEntryOnBranch({ start: leafId, type: "message" }) : undefined;
@@ -2031,7 +2116,7 @@ export class AgentHarness implements AgentLane {
 			type: "run_end",
 			lane,
 			runId,
-			outcome: outcome === "declined" ? "failed" : outcome,
+			outcome: effectiveOutcome === "declined" ? "failed" : effectiveOutcome,
 			leafId: leafId ?? "",
 			...(checkpointId ? { checkpointId } : {}),
 		});

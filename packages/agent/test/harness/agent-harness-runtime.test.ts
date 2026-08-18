@@ -277,6 +277,7 @@ describe("AgentHarness runtime", () => {
 			label: "Loop tool",
 			description: "Returns a deterministic result",
 			parameters: { type: "object", properties: {}, additionalProperties: false } as HarnessTool["parameters"],
+			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {}, usage: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }),
 		};
 		models.streamSimple = (requestModel) => {
@@ -312,7 +313,7 @@ describe("AgentHarness runtime", () => {
 		expect(finished?.outcome).toBe("failed");
 		expect(finished?.error?.code).toBe("agent_loop_max_iterations");
 		const attempt = (await facts(session)).find((record) => record.objectType === "attempt_receipt");
-		expect((attempt?.payload as { sideEffectState: string }).sideEffectState).toBe("unknown");
+		expect((attempt?.payload as { sideEffectState: string }).sideEffectState).toBe("none");
 		await harness.close();
 	});
 

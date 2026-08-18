@@ -1234,7 +1234,7 @@ export class FoundationToolPipelineV1 {
 			retried += 1;
 		}
 		await this.onStage?.({ stage: "post", toolCallId: prepared.call.toolCallId });
-		const sideEffectState: SideEffectStateV1 = execution?.ok === true && execution.sideEffectState === "none"
+		const sideEffectState: SideEffectStateV1 = execution?.sideEffectState === "none"
 			? "none"
 			: "side_effect_unknown";
 		const outcome: ToolReceiptOutcomeV1 =

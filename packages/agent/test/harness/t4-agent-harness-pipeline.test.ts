@@ -44,6 +44,24 @@ function allowAllGuards(): FoundationToolGuardV1 {
 	return new FoundationToolGuardV1({ capability: { check: allow("capability") }, policy: { check: allow("policy") }, approval: { check: allow("approval") }, sandbox: { check: allow("sandbox") }, quota: { check: allow("quota") }, conflictLock: { check: allow("conflict_lock") } });
 }
 
+function consumerModels(toolName: string): { model: Model<"openai-responses">; models: Models } {
+	const model = { id: "tool-consumer-model", name: "Tool Consumer Model", api: "openai-responses" as const, provider: "openai" as const, baseUrl: "", reasoning: false, input: ["text"] as ("text")[], cost: { input: 0, output: 0 }, contextWindow: 1000, maxTokens: 1000 } as Model<"openai-responses">;
+	let requests = 0;
+	const models = {
+		getModel: () => model,
+		streamSimple: () => {
+			const stream = createAssistantMessageEventStream();
+			requests += 1;
+			const message: AssistantMessage = requests === 1
+				? { role: "assistant", content: [{ type: "toolCall", id: "consumer-call", name: toolName, arguments: {} }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() }
+				: { role: "assistant", content: [{ type: "text", text: "done" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
+			stream.push({ type: "done", reason: message.stopReason === "toolUse" ? "toolUse" : "stop", message });
+			return stream;
+		},
+	} as unknown as Models;
+	return { model, models };
+}
+
 describe("T4 public AgentHarness tool consumer", () => {
 	it("routes a public AgentTool through the durable pipeline and replays it after a harness restart", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "public-tool-session", createdAt: 1 }));
@@ -62,7 +80,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			},
 		} as unknown as Models;
 		let sideEffects = 0;
-		const write: HarnessTool = { name: "write", label: "Write", description: "write", parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }), execute: async () => { sideEffects += 1; return { content: [{ type: "text", text: "written" }], details: {} }; } };
+		const write: HarnessTool = { name: "write", label: "Write", description: "write", parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }), sideEffectState: "none", execute: async () => { sideEffects += 1; return { content: [{ type: "text", text: "written" }], details: {} }; } };
 		const foundation = execution();
 		const { harness } = await AgentHarness.create({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("invoke write");
@@ -128,5 +146,63 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(sideEffects).toBe(1);
 		expect((await session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" })).length).toBe(2);
 		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
+	});
+
+	it("preserves consumer AgentTool outcomes, usage, side effects, and terminal receipts", async () => {
+		const cases = [
+			{ name: "known no side effect", sideEffectState: "none" as const, throws: false, expectedOutcome: "succeeded", expectedStatus: "succeeded", expectedRunStatus: "completed", usage: true },
+			{ name: "unknown side effect", sideEffectState: undefined, throws: false, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
+			{ name: "underlying failure with known no side effect", sideEffectState: "none" as const, throws: true, expectedOutcome: "failed", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
+			{ name: "underlying throw with non-none side effect", sideEffectState: "unknown" as const, throws: true, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
+			{ name: "underlying throw with unknown side effect", sideEffectState: undefined, throws: true, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
+		] as const;
+		for (const current of cases) {
+			const session = new Session(new InMemorySessionStorage({ id: `consumer-${current.name}`, createdAt: 1 }));
+			const { model, models } = consumerModels("consumer-tool");
+			const foundation = { ...execution(), settlement: { tests: [{ name: "consumer receipt", required: true, status: "passed" as const }], evidence: [] } };
+			let calls = 0;
+			const tool: HarnessTool = {
+				name: "consumer-tool",
+				label: "Consumer tool",
+				description: "consumer outcome fixture",
+				parameters: Type.Object({}, { additionalProperties: false }),
+				...(current.sideEffectState === undefined ? {} : { sideEffectState: current.sideEffectState }),
+				execute: async () => {
+					calls += 1;
+					if (current.throws) throw new Error(`${current.name} failed`);
+					return {
+						content: [{ type: "text" as const, text: "consumer result" }],
+						details: {},
+						...(current.usage ? { usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } } } : {}),
+					};
+				},
+			};
+			const { harness } = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+			const result = await harness.prompt(current.name);
+			expect(result.ok, current.name).toBe(true);
+			expect(calls, `${current.name} must not retry unknown execution`).toBe(1);
+			const facts = await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" });
+			const factPayload = (objectType: string): unknown => {
+				const record = facts.find((candidate) => candidate.kind === "fact" && candidate.objectType === objectType);
+				return record?.kind === "fact" ? record.payload : undefined;
+			};
+			const toolReceipt = factPayload("tool_receipt");
+			const attemptReceipt = factPayload("attempt_receipt");
+			const taskResult = factPayload("task_result");
+			const runReceipt = factPayload("run_receipt");
+			const expectedSideEffectState = current.sideEffectState === "none" ? "none" : "side_effect_unknown";
+			expect(toolReceipt).toMatchObject({ outcome: current.expectedOutcome, sideEffectState: expectedSideEffectState });
+			if (current.usage) expect(toolReceipt).toMatchObject({ usage: { tokens: 5, costUsd: 0.3, toolCalls: 1 } });
+			expect(attemptReceipt).toMatchObject({ status: current.expectedStatus, sideEffectState: expectedSideEffectState });
+			expect(taskResult).toMatchObject({ status: current.expectedStatus });
+			expect(runReceipt).toMatchObject({ terminalStatus: current.expectedRunStatus });
+			if (current.throws) {
+				const error = (toolReceipt as { error?: { code?: string; category?: string; retryable?: boolean } }).error;
+				expect(error?.code).toBe("tool_execution_failed");
+				expect(error?.retryable).toBe(false);
+				expect(error?.category).toBe(current.sideEffectState === "none" ? undefined : "side_effect_unknown");
+			}
+			await harness.close();
+		}
 	});
 });
