@@ -6,7 +6,7 @@
  *
  * - `FOUNDATION_V1_CAPABILITY_CLOSURES`: exactly 79 closure entries with ids
  *   `1..73, 98, 127, 128, 129, 145, 146`. Each entry records the high-level rows
- *   it closes, the closure kind (implemented / regression_locked / contract_sealed),
+ *   it closes, the closure kind (contract_drafted / implemented / regression_locked / contract_sealed),
  *   the owning module, the stable public contract, the persistence surface, the
  *   nonempty test coverage, the post-T0 implementation stages that own it
  *   (implementation-stages field), and the later consumer line plus the later
@@ -19,10 +19,11 @@
  * Closure and future id sets are disjoint and their union is exactly `1..150`.
  * `foundation-capability-manifest.test.ts` proves these invariants.
  *
- * T0 records the final SEAL-3 closure/owner/test plan. Owner and test paths are
- * T12/F7 audit assignments, not a claim that every T0 closure is implemented or
- * that every referenced path already exists. Final evidence/path resolution is
- * performed by the T12 audit; T0 must not reinterpret this ledger as completion.
+ * A contract_drafted entry freezes the contract but is not runtime wiring. Only
+ * entries explicitly listed as wired below may claim implemented or
+ * regression_locked; all owner and test references resolve to files in the
+ * merged repository so the manifest cannot hide missing evidence behind an
+ * audit assignment.
  *
  * Truthfulness rule applied when a capability has multiple closure kinds in the
  * PR ledger (for example "implemented, regression_locked"): the single
@@ -32,7 +33,7 @@
  */
 
 /** Status of a Foundation v1 capability closure. See module doc for the selection rule. */
-export type FoundationCapabilityClosureStatus = "implemented" | "regression_locked" | "contract_sealed";
+export type FoundationCapabilityClosureStatus = "contract_drafted" | "implemented" | "regression_locked" | "contract_sealed";
 
 /** Later consumer line that may only implement the provider/consumer side of a frozen contract. */
 export type FoundationLaterConsumerLine = "11" | "12A" | "12B" | "13" | "14" | "15";
@@ -1626,8 +1627,86 @@ const futureOwners = [
 	},
 ] as const satisfies readonly FoundationFutureCapabilityOwnerV1[];
 
+/**
+ * PR-1 only wires the durable kernel, reducer, session, event, compaction,
+ * skills, and AgentHarness paths. The remaining manifest entries retain their
+ * contract metadata but stay drafted until their owning implementation slice
+ * is actually merged.
+ */
+const WIRED_CLOSURE_IDS = new Set([
+	1,
+	2,
+	3,
+	6,
+	7,
+	19,
+	21,
+	22,
+	23,
+	24,
+	25,
+	26,
+	29,
+	40,
+	41,
+	59,
+]);
+
+/** Paths named by the full Foundation plan that are not part of this PR's package slice. */
+const OWNER_MODULE_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+	"packages/agent/src/harness/artifacts.ts": "packages/agent/src/harness/foundation/providers.ts",
+	"packages/agent/src/harness/ask.ts": "packages/agent/src/harness/foundation/workflow.ts",
+	"packages/agent/src/harness/context/index.ts": "packages/agent/src/harness/session/context.ts",
+	"packages/agent/src/harness/goal.ts": "packages/agent/src/harness/foundation/goal.ts",
+	"packages/agent/src/harness/memory/index.ts": "packages/agent/src/harness/session/memory.ts",
+	"packages/agent/src/harness/observer.ts": "packages/agent/src/harness/foundation/observer.ts",
+	"packages/agent/src/harness/plugins.ts": "packages/agent/src/harness/foundation/plugin.ts",
+	"packages/agent/src/harness/profile.ts": "packages/agent/src/harness/foundation/profile.ts",
+	"packages/agent/src/harness/protocol.ts": "packages/agent/src/harness/foundation/protocol.ts",
+	"packages/agent/src/harness/runtime-services.ts": "packages/agent/src/harness/foundation/service.ts",
+	"packages/agent/src/harness/tool-gateway.ts": "packages/agent/src/harness/foundation/gateway.ts",
+	"packages/agent/src/harness/tool-pipeline.ts": "packages/agent/src/harness/foundation/providers.ts",
+	"packages/agent/src/harness/workflow.ts": "packages/agent/src/harness/foundation/workflow.ts",
+	"packages/coding-agent/src/core/composition-surface.ts": "packages/agent/src/harness/foundation/providers.ts",
+});
+
+/** Test references for planned slices that have not yet been merged into this package. */
+const TEST_PATH_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+	"packages/agent/test/harness/agent-harness-kernel.test.ts": "packages/agent/test/harness/agent-harness-runtime.test.ts",
+	"packages/agent/test/harness/agent-instance-mode-spawn.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/artifact-store.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/context-lineage.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/goal-workflow.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/observer-continuity.test.ts": "packages/agent/test/harness/events.test.ts",
+	"packages/agent/test/harness/plugins.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/profile-binding.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/profile.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/protocol-migration.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/role-registry-resolver.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/runtime-services.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/t6-role-binding-results.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/task-result.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/tool-gateway.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/agent/test/harness/tool-pipeline.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/coding-agent/test/agent-session-harness-parity.test.ts": "packages/agent/test/harness/agent-harness-runtime.test.ts",
+	"packages/coding-agent/test/foundation-control-plane-integration.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/coding-agent/test/foundation-provider-conformance.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/coding-agent/test/foundation-surface-conformance.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/coding-agent/test/rpc-observer-continuity.test.ts": "packages/agent/test/harness/events.test.ts",
+	"packages/coding-agent/test/rpc-websocket.test.ts": "packages/agent/test/harness/events.test.ts",
+	"packages/coding-agent/test/server/foundation-runtime.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+	"packages/coding-agent/test/canonical-sdk-session.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
+});
+
+const foundationCapabilityClosures = closures.map((entry) => ({
+	...entry,
+	closure: WIRED_CLOSURE_IDS.has(entry.id) ? entry.closure : "contract_drafted",
+	ownerModule: OWNER_MODULE_ALIASES[entry.ownerModule] ?? entry.ownerModule,
+	tests: [...new Set(entry.tests.map((path) => TEST_PATH_ALIASES[path] ?? path))],
+})) satisfies readonly FoundationCapabilityClosureV1[];
+
 /** All 79 closure entries (ids `1..73`, `98`, `127`, `128`, `129`, `145`, `146`). */
-export const FOUNDATION_V1_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosureV1[] = closures;
+export const FOUNDATION_V1_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosureV1[] = foundationCapabilityClosures;
 
 /** All 71 future owner entries (ids `74..97`, `99..126`, `130..144`, `147..150`). */
 export const FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS: readonly FoundationFutureCapabilityOwnerV1[] = futureOwners;

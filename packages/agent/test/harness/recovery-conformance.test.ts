@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createExecutionCorrelation } from "../../../src/harness/foundation/index.ts";
-import { NodeExecutionEnv } from "../../../src/harness/env/nodejs.ts";
-import { InMemorySessionStorage, JsonlSessionRepo, Session } from "../../../src/harness/session/index.ts";
+import { createExecutionCorrelation } from "../../src/harness/foundation/index.ts";
+import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
+import { InMemorySessionStorage, JsonlSessionRepo, Session } from "../../src/harness/session/index.ts";
 
 const tempDirs: string[] = [];
 
@@ -32,6 +32,58 @@ function foundationFact(sessionId: string, id: string, objectId: string) {
 		payload: { schemaVersion: 1, taskId: objectId, status: "ready" },
 		correlation: correlation(sessionId, { taskId: objectId }),
 	};
+}
+
+function forkFact(sessionId: string) {
+	return {
+		...foundationFact(sessionId, "fork-fact", "task-fork"),
+		payload: {
+			schemaVersion: 1,
+			taskId: "task-fork",
+			status: "ready",
+			artifactRefs: [{ schemaVersion: 1, artifactId: "artifact-fork", mediaType: "text/plain", digest: "sha256:artifact-fork" }],
+		},
+		correlation: createExecutionCorrelation(sessionId, "main", {
+			taskId: "task-fork",
+			parentId: "lineage-parent",
+			ancestorIds: ["lineage-root", "lineage-parent"],
+		}),
+	};
+}
+
+async function appendForkFixture(session: Session): Promise<void> {
+	await session.appendCustomEntry("legacy.anchor", { value: 1 });
+	const lease = await session.acquireWriterLease({ ownerId: "fork-source" });
+	await session.appendFoundationRecord({ ...forkFact((await session.getMetadata()).id), fencingToken: lease.fencingToken });
+	await session.appendFoundationRecord({
+		schemaVersion: 1,
+		kind: "intent",
+		id: "fork-intent",
+		lane: "main",
+		objectType: "task",
+		objectId: "task-fork",
+		intent: "update",
+		payload: { schemaVersion: 1, taskId: "task-fork", status: "running" },
+		clientRequestId: "request:fork-intent",
+		correlation: createExecutionCorrelation((await session.getMetadata()).id, "main", { taskId: "task-fork", parentId: "lineage-parent", ancestorIds: ["lineage-root", "lineage-parent"] }),
+		fencingToken: lease.fencingToken,
+	});
+}
+
+async function expectForkDurableSemantics(source: Session, child: Session, childId: string): Promise<void> {
+	const sourceRecords = await source.findFoundationRecords({ order: "oldestFirst", includePruned: true });
+	const childRecords = await child.findFoundationRecords({ order: "oldestFirst", includePruned: true });
+		expect(sourceRecords.map((record) => record.id)).toEqual(["fork-fact", "fork-intent"]);
+		expect(childRecords.map((record) => record.id)).toEqual(["fork-fact", "fork-intent"]);
+		expect(childRecords.map((record) => record.seq)).toEqual([3, 4]);
+		expect(childRecords.map((record) => record.clientRequestId)).toEqual(sourceRecords.map((record) => record.clientRequestId));
+		expect(childRecords.every((record) => record.correlation.sessionId === childId)).toBe(true);
+		expect(childRecords.map((record) => record.correlation.parentId)).toEqual(["lineage-parent", "lineage-parent"]);
+		expect(childRecords.map((record) => record.correlation.ancestorIds)).toEqual([["lineage-root", "lineage-parent"], ["lineage-root", "lineage-parent"]]);
+		expect(childRecords[0]).toMatchObject({ kind: "fact", payload: { artifactRefs: [{ artifactId: "artifact-fork" }] } });
+		expect(await child.getFoundationRevision("task", "task-fork")).toBe(2);
+		expect(await source.getWriterLease()).not.toBeNull();
+		expect(await child.getWriterLease()).toBeNull();
 }
 
 afterEach(() => {
@@ -92,9 +144,27 @@ describe("T2 single Session ledger", () => {
 		expect((await session.getLog({})).length).toBe(rows);
 		await session.releaseWriterLease({ fencingToken: lease.fencingToken });
 	});
+
+	it("forks durable facts and intents while preserving lineage and Artifact associations", async () => {
+		const sourceStorage = new InMemorySessionStorage({ id: "fork-source", createdAt: 1 });
+		const source = new Session(sourceStorage);
+		await appendForkFixture(source);
+		const child = new Session(sourceStorage.fork({ id: "fork-child", createdAt: 2, parentSessionId: "fork-source" }, { scope: "tree" }));
+		await expectForkDurableSemantics(source, child, "fork-child");
+	});
 });
 
 describe("T2 JSONL recovery and writer fencing", () => {
+	it("forks durable facts and intents without inheriting the writer lease", async () => {
+		const root = tempRoot();
+		const env = new NodeExecutionEnv({ cwd: root });
+		const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: root });
+		const source = await repo.create({ id: "jsonl-fork-source", cwd: root });
+		await appendForkFixture(source);
+		const child = await repo.fork(await source.getMetadata(), { scope: "tree", id: "jsonl-fork-child", cwd: root });
+		await expectForkDurableSemantics(source, child, "jsonl-fork-child");
+	});
+
 	it("migrates v4, removes a torn tail, and rejects complete corruption", async () => {
 		const root = tempRoot();
 		const env = new NodeExecutionEnv({ cwd: root });
@@ -121,7 +191,7 @@ describe("T2 JSONL recovery and writer fencing", () => {
 		const tornPath = join(root, "recovery-busy.jsonl");
 		writeFileSync(tornPath, `${JSON.stringify({ kind: "header", version: 4, id: "recovery-busy", createdAt: 1, cwd: root })}\n{"kind":"entry","seq":99`);
 		const lockPath = `${tornPath}.lease-lock`;
-		const lock = await env.createExclusive(lockPath, JSON.stringify({ ownerId: `process-${process.pid}`, token: randomUUID(), expiresAt: Date.now() + 60_000 }));
+		const lock = await env.createExclusive(lockPath, JSON.stringify({ ownerId: "recovery-contender", token: randomUUID(), expiresAt: Date.now() + 60_000 }));
 		expect(lock.ok).toBe(true);
 		await expect(repo.open({ id: "recovery-busy", createdAt: 1, cwd: root, path: tornPath, modifiedAt: 1, sourceFormat: 4 })).rejects.toMatchObject({ code: "session_writer_busy" });
 		await env.remove(lockPath, { force: true });
@@ -130,7 +200,7 @@ describe("T2 JSONL recovery and writer fencing", () => {
 		writeFileSync(migrationPath, `${JSON.stringify({ kind: "header", version: 4, id: "migration-busy", createdAt: 1, cwd: root })}\n`);
 		const migrationSession = await repo.open({ id: "migration-busy", createdAt: 1, cwd: root, path: migrationPath, modifiedAt: 1, sourceFormat: 4 });
 		const migrationLockPath = `${migrationPath}.lease-lock`;
-		const migrationLock = await env.createExclusive(migrationLockPath, JSON.stringify({ ownerId: `process-${process.pid}`, token: randomUUID(), expiresAt: Date.now() + 60_000 }));
+		const migrationLock = await env.createExclusive(migrationLockPath, JSON.stringify({ ownerId: "migration-contender", token: randomUUID(), expiresAt: Date.now() + 60_000 }));
 		expect(migrationLock.ok).toBe(true);
 		await expect(migrationSession.getLedgerRevision()).rejects.toMatchObject({ code: "session_writer_busy" });
 		await env.remove(migrationLockPath, { force: true });
@@ -173,7 +243,7 @@ describe("T2 JSONL recovery and writer fencing", () => {
 
 		const locked = await env.createExclusive(
 			`${metadata.path}.lease-lock`,
-			JSON.stringify({ ownerId: `process-${process.pid}`, token: randomUUID(), expiresAt: Date.now() + 60_000 }),
+			JSON.stringify({ ownerId: "race-contender", token: randomUUID(), expiresAt: Date.now() + 60_000 }),
 		);
 		expect(locked.ok).toBe(true);
 		await expect(reopened.appendMessage({ role: "user", content: [{ type: "text", text: "blocked" }], timestamp: 1 })).rejects.toMatchObject({ code: "session_writer_busy" });
@@ -188,7 +258,7 @@ describe("T2 JSONL recovery and writer fencing", () => {
 		const metadata = await session.getMetadata();
 		const lockPath = `${metadata.path}.lease-lock`;
 		const staleToken = randomUUID();
-		const staleLock = JSON.stringify({ ownerId: "process-999999999", token: staleToken, expiresAt: Date.now() - 1 });
+		const staleLock = JSON.stringify({ ownerId: "stale-contender", token: staleToken, expiresAt: Date.now() - 1 });
 		expect((await env.createExclusive(lockPath, staleLock)).ok).toBe(true);
 
 		const results = await Promise.allSettled([
@@ -255,7 +325,7 @@ describe("T2 JSONL recovery and writer fencing", () => {
 		await env.remove(lockPath, { force: true });
 		const replacement = await env.createExclusive(
 			lockPath,
-			JSON.stringify({ ownerId: `process-${process.pid}`, token: replacementToken, expiresAt: Date.now() + 60_000 }),
+			JSON.stringify({ ownerId: "replacement-contender", token: replacementToken, expiresAt: Date.now() + 60_000 }),
 		);
 		expect(replacement.ok).toBe(true);
 		allowAppend();

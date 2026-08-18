@@ -1,4 +1,5 @@
 import type { ExecutionCorrelationV1, FoundationJsonValue } from "../../foundation/index.ts";
+import type { DurableLedgerErrorCode } from "../../foundation/errors.ts";
 
 /** Version carried by every durable ledger fact/intent/tombstone/retention record. */
 export const FOUNDATION_LEDGER_SCHEMA_VERSION = 1 as const;
@@ -177,19 +178,9 @@ export interface FoundationRecordQueryV1 {
 	includePruned?: boolean;
 }
 
-/** Stable error codes introduced by the durable ledger (constructed via FoundationError's open code union). */
-export const FOUNDATION_LEDGER_ERROR_CODES = Object.freeze([
-	"session_writer_lease_lost",
-	"session_writer_fencing_token",
-	"session_writer_stale_revision",
-	"session_writer_duplicate_request",
-	"session_ledger_tombstoned",
-	"session_ledger_conflict",
-	"session_ledger_missing_intent",
-	"session_ledger_unknown_format",
-	"session_ledger_migrating",
-] as const);
-export type FoundationLedgerErrorCode = (typeof FOUNDATION_LEDGER_ERROR_CODES)[number];
+/** Compatibility aliases for the canonical durable-ledger catalog. */
+export { DURABLE_LEDGER_ERROR_CODES as FOUNDATION_LEDGER_ERROR_CODES } from "../../foundation/errors.ts";
+export type FoundationLedgerErrorCode = DurableLedgerErrorCode;
 
 /**
  * Durable-ledger capability implemented by both session backends. Kept as a

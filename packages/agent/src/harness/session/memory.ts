@@ -1,7 +1,7 @@
 import { uuidv7 } from "@aos-agent/ai";
 import { Session } from "./session.ts";
 import { SessionState } from "./state.ts";
-import { FoundationLedgerState } from "./durable/state.ts";
+import { FoundationLedgerState, prepareForkFoundationRecords } from "./durable/state.ts";
 import type {
 	AcquireWriterLeaseOptionsV1,
 	AppendFoundationRecordResultV1,
@@ -49,10 +49,16 @@ export class InMemorySessionStorage implements SessionStorage, DurableLedgerApi 
 
 	fork(metadata: SessionMetadata, options: ForkOptions & SessionCreateOptions): InMemorySessionStorage {
 		const storage = new InMemorySessionStorage(metadata);
-		for (const mutation of this.state.createForkMutations(options)) {
+		const mutations = this.state.createForkMutations(options);
+		for (const mutation of mutations) {
 			storage.state.applyMutation(mutation);
 			const sequence = mutation.kind === "entry" ? mutation.entry.seq : mutation.kind === "record" ? mutation.record.seq : mutation.seq;
 			storage.durableState.observeExternalSequence(sequence);
+		}
+		const lanes = options.scope === "tree" ? new Set(this.state.getLanes().map((pointer) => pointer.lane)) : new Set(["main"]);
+		for (const record of prepareForkFoundationRecords(this.durableState.getRecords(), { targetSessionId: metadata.id, laneIds: lanes, firstSequence: mutations.length })) {
+			storage.durableState.applyPersistedRecord(record);
+			storage.state.observeExternalSequence(record.seq, record.id, record);
 		}
 		return storage;
 	}

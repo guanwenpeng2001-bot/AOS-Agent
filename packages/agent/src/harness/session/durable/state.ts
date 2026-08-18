@@ -29,6 +29,13 @@ export interface FoundationLedgerStateOptions {
 	clock?: () => number;
 }
 
+export interface FoundationForkRecordOptions {
+	targetSessionId: string;
+	laneIds: ReadonlySet<string>;
+	/** Shared sequence already occupied by the copied legacy Session mutations. */
+	firstSequence: number;
+}
+
 interface IdempotencyRecord {
 	fingerprint: string;
 	record: FoundationRecordV1;
@@ -42,6 +49,38 @@ interface PreparedAppend {
 
 function clone<T>(value: T): T {
 	return structuredClone(value);
+}
+
+/**
+ * C022 fork semantics for durable records:
+ * facts, intents, and tombstones from the selected lanes are copied in their
+ * original order. Record/object ids, client request ids, lineage fields, and
+ * JSON payloads (including Artifact references) remain stable; only the child
+ * Session correlation and shared sequence are rebound. A writer lease and
+ * retention policy are destination-local and are deliberately not inherited.
+ */
+export function prepareForkFoundationRecords(
+	records: readonly FoundationRecordV1[],
+	options: FoundationForkRecordOptions,
+): FoundationRecordV1[] {
+	const targetSessionId = requireNonEmptyString(options.targetSessionId, "targetSessionId");
+	const firstSequence = requireNonNegativeInteger(options.firstSequence, "firstSequence");
+	let sequence = firstSequence;
+	const copied: FoundationRecordV1[] = [];
+	for (const source of records) {
+		if (source.kind === "retention" || !options.laneIds.has(source.lane)) continue;
+		sequence += 1;
+		copied.push({
+			...clone(source),
+			seq: sequence,
+			correlation: {
+				...clone(source.correlation),
+				sessionId: targetSessionId,
+				fencingToken: source.fencingToken,
+			},
+		} as FoundationRecordV1);
+	}
+	return copied;
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {

@@ -1,22 +1,8 @@
+import { DURABLE_LEDGER_ERROR_CODES, type DurableLedgerErrorCode } from "../../foundation/errors.ts";
 import { SessionError } from "../types.ts";
 
-export type DurableLedgerErrorCode =
-	| "session_writer_lease_lost"
-	| "session_writer_fencing_token"
-	| "session_writer_stale_revision"
-	| "session_writer_duplicate_request"
-	| "session_writer_busy"
-	| "session_writer_lease_expired"
-	| "session_ledger_tombstoned"
-	| "session_ledger_conflict"
-	| "session_ledger_missing_intent"
-	| "session_ledger_unknown_format"
-	| "session_ledger_corrupt"
-	| "session_ledger_truncated"
-	| "session_ledger_invalid_record"
-	| "session_ledger_invalid_query"
-	| "session_ledger_migrating"
-	| "session_ledger_storage";
+export { DURABLE_LEDGER_ERROR_CODES };
+export type { DurableLedgerErrorCode };
 
 /** Stable errors for durable Foundation writes and replay. */
 export class DurableLedgerError extends Error {

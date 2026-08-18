@@ -16,7 +16,7 @@ import type {
 } from "../durable/types.ts";
 import { DurableLedgerError } from "../durable/errors.ts";
 import { encodeFoundationMutation, isFoundationMutationLine, parseFoundationMutation } from "../durable/codec.ts";
-import { FoundationLedgerState } from "../durable/state.ts";
+import { FoundationLedgerState, prepareForkFoundationRecords } from "../durable/state.ts";
 import {
 	type BranchBounds,
 	type Entry,
@@ -229,11 +229,21 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 
 	async fork(path: string, header: JsonlV4Header, options: ForkOptions): Promise<JsonlSessionStorage> {
 		const mutations = this.state.createForkMutations(options);
+		const lanes = options.scope === "tree" ? new Set(this.state.getLanes().map((pointer) => pointer.lane)) : new Set(["main"]);
+		const foundationRecords = prepareForkFoundationRecords(this.durableState.getRecords(), {
+			targetSessionId: header.id,
+			laneIds: lanes,
+			firstSequence: mutations.length,
+		});
 		await publishFileAtomically(this.fs, path, async (tempPath) => {
 			const targetStorage = await JsonlSessionStorage.create(this.fs, tempPath, header);
 			for (const mutation of mutations) {
 				await targetStorage.appendMutation(() => mutation);
 			}
+			for (const record of foundationRecords) {
+				fileResult(await this.fs.appendFile(tempPath, encodeFoundationMutation(record)), `Failed to append fork durable ledger ${tempPath}`);
+			}
+			if (foundationRecords.length > 0) await targetStorage.syncPublishedFile(tempPath, `fork durable ledger ${tempPath}`);
 		});
 		return JsonlSessionStorage.load(this.fs, path);
 	}
@@ -769,7 +779,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		if (this.fs.createExclusive === undefined) {
 			throw new DurableLedgerError("session_writer_busy", `Session writer lock capability is unavailable: ${this.metadata.path}`);
 		}
-		const ownerId = `process-${process.pid}`;
+		const ownerId = `session:${this.metadata.id}`;
 		const token = uuidv7();
 		const lock = JSON.stringify({ ownerId, token, expiresAt: Date.now() + WRITER_LOCK_TTL_MS });
 		// A failed exclusive create is fail-closed. Reading an expired lock and

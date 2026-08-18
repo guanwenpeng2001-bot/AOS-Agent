@@ -1,67 +1,7 @@
 import type { JsonValue } from "../session/types.ts";
 
-export type FoundationErrorCode =
-	| "foundation_schema_unsupported_version"
-	| "foundation_schema_invalid_shape"
-	| "foundation_schema_unknown_record"
-	| "invalid_identifier"
-	| "invalid_timestamp"
-	| "invalid_correlation"
-	| "unsupported_schema_version"
-	| "invalid_shape"
-	| "protocol_incompatible"
-	| "unsupported_feature"
-	| "serialization_failed"
-	| "event_cursor_gap"
-	| "event_cursor_expired"
-	| "event_cursor_invalid_sequence"
-	| "session_writer_lease_lost"
-	| "session_writer_fencing_token"
-	| "session_writer_stale_revision"
-	| "goal_not_found"
-	| "goal_conflict"
-	| "goal_invalid_transition"
-	| "structure_schema_invalid"
-	| "structure_retry_exhausted"
-	| "budget_exhausted"
-	| "quota_exceeded"
-	| "quota_attribution_error"
-	| "tool_guard_denied"
-	| "side_effect_unknown"
-	| "role_not_found"
-	| "role_slug_conflict"
-	| "role_revision_immutable"
-	| "model_profile_not_found"
-	| "role_resolver_task_required"
-	| "role_resolver_order_invalid"
-	| "role_resolver_scope_widened"
-	| "role_resolver_conflict"
-	| "binding_task_before_binding"
-	| "binding_epoch_invalid_ordinal"
-	| "binding_epoch_missing_previous"
-	| "binding_epoch_mismatch"
-	| "agent_instance_not_agent_provider"
-	| "agent_instance_required_for_agent_provider"
-	| "agent_instance_forbidden_for_provider"
-	| "task_executor_invalid_provider_class"
-	| "task_result_no_source_receipts"
-	| "task_result_receipt_task_mismatch"
-	| "task_result_acceptance_unverified"
-	| "task_result_validation_failed"
-	| "task_result_terminal_requires_task_result"
-	| "run_terminal_authority_required"
-	| "run_terminal_authority_invalid"
-	| "worker_receipt_invalid_producer"
-	| "profile_conflict"
-	| "service_cycle"
-	| "plugin_rollback_failed"
-	| "transport_not_authorized"
-	| "protocol_unsupported_version"
-	| "protocol_invalid_envelope"
-	| "observer_cursor_gap"
-	| (string & {});
-
-export const FOUNDATION_ERROR_CODES = Object.freeze([
+/** Foundation-owned errors. Durable-ledger codes are appended below from the same catalog source. */
+const FOUNDATION_CORE_ERROR_CODES = [
 	"foundation_schema_unsupported_version",
 	"foundation_schema_invalid_shape",
 	"foundation_schema_unknown_record",
@@ -73,11 +13,80 @@ export const FOUNDATION_ERROR_CODES = Object.freeze([
 	"protocol_incompatible",
 	"unsupported_feature",
 	"serialization_failed",
+	"event_cursor_gap",
+	"event_cursor_expired",
+	"event_cursor_invalid_sequence",
+	"goal_not_found",
+	"goal_conflict",
+	"goal_invalid_transition",
+	"structure_schema_invalid",
+	"structure_retry_exhausted",
+	"budget_exhausted",
+	"quota_exceeded",
+	"quota_attribution_error",
+	"tool_guard_denied",
+	"side_effect_unknown",
+	"role_not_found",
+	"role_slug_conflict",
+	"role_revision_immutable",
+	"model_profile_not_found",
+	"role_resolver_task_required",
+	"role_resolver_order_invalid",
+	"role_resolver_scope_widened",
+	"role_resolver_conflict",
 	"binding_task_before_binding",
+	"binding_epoch_invalid_ordinal",
+	"binding_epoch_missing_previous",
+	"binding_epoch_mismatch",
+	"agent_instance_not_agent_provider",
+	"agent_instance_required_for_agent_provider",
 	"agent_instance_forbidden_for_provider",
+	"task_executor_invalid_provider_class",
+	"task_result_no_source_receipts",
+	"task_result_receipt_task_mismatch",
 	"task_result_acceptance_unverified",
+	"task_result_validation_failed",
+	"task_result_terminal_requires_task_result",
+	"run_terminal_authority_required",
+	"run_terminal_authority_invalid",
+	"worker_receipt_invalid_producer",
+	"profile_conflict",
+	"service_cycle",
+	"plugin_rollback_failed",
 	"transport_not_authorized",
+	"protocol_unsupported_version",
+	"protocol_invalid_envelope",
+	"observer_cursor_gap",
+] as const;
+
+/** Canonical durable-ledger error catalog. Keep this tuple as the only source for its union. */
+export const DURABLE_LEDGER_ERROR_CODES = Object.freeze([
+	"session_writer_lease_lost",
+	"session_writer_fencing_token",
+	"session_writer_stale_revision",
+	"session_writer_duplicate_request",
+	"session_writer_busy",
+	"session_writer_lease_expired",
+	"session_ledger_tombstoned",
+	"session_ledger_conflict",
+	"session_ledger_missing_intent",
+	"session_ledger_unknown_format",
+	"session_ledger_corrupt",
+	"session_ledger_truncated",
+	"session_ledger_invalid_record",
+	"session_ledger_invalid_query",
+	"session_ledger_migrating",
+	"session_ledger_storage",
 ] as const);
+
+/** Exhaustive Foundation and durable-ledger error catalog. */
+export const FOUNDATION_ERROR_CODES = Object.freeze([
+	...FOUNDATION_CORE_ERROR_CODES,
+	...DURABLE_LEDGER_ERROR_CODES,
+] as const);
+export type FoundationErrorCode = (typeof FOUNDATION_ERROR_CODES)[number];
+export type DurableLedgerErrorCode = (typeof DURABLE_LEDGER_ERROR_CODES)[number];
+
 export interface StableErrorRecord { _tag: string; code: string; message: string; category?: string; retryable?: boolean; }
 
 export type FoundationErrorCategory = "schema" | "concurrency" | "not_found" | "conflict" | "validation" | "budget" | "permission" | "provider" | "unknown";

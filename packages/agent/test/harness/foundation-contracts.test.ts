@@ -3,7 +3,9 @@ import { Result } from "../../src/harness/result.ts";
 import type { Result as ResultValue } from "../../src/harness/result.ts";
 import {
 	ArtifactRefV1Schema,
+	DURABLE_LEDGER_ERROR_CODES,
 	FoundationError,
+	FOUNDATION_ERROR_CODES,
 	FoundationObserverV1,
 	FOUNDATION_ENTITY_KINDS_V1,
 	PROTOCOL_FEATURE_MATRIX_V1,
@@ -114,6 +116,7 @@ import {
 	type RoleTombstoneV1,
 	requireRoleResolutionTask,
 } from "../../src/harness/foundation/index.ts";
+import { FOUNDATION_LEDGER_ERROR_CODES } from "../../src/harness/session/durable/types.ts";
 
 const correlation = createExecutionCorrelation("session-1", "main", { revision: 1 });
 const artifact = { schemaVersion: 1 as const, artifactId: "artifact-1", mediaType: "text/plain", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
@@ -174,6 +177,13 @@ function receipt(status: AttemptReceiptV1["status"] = "succeeded"): AttemptRecei
 }
 
 describe("Foundation identity, schemas, and redaction", () => {
+	it("keeps Foundation and durable-ledger error catalogs exhaustive and single-source", () => {
+		expect(new Set(FOUNDATION_ERROR_CODES).size).toBe(FOUNDATION_ERROR_CODES.length);
+		expect(new Set(DURABLE_LEDGER_ERROR_CODES).size).toBe(DURABLE_LEDGER_ERROR_CODES.length);
+		expect([...FOUNDATION_LEDGER_ERROR_CODES]).toEqual([...DURABLE_LEDGER_ERROR_CODES]);
+		expect([...FOUNDATION_ERROR_CODES].filter((code) => code.startsWith("session_")).sort()).toEqual([...DURABLE_LEDGER_ERROR_CODES].sort());
+	});
+
 	it("canonicalizes key order and fingerprints content deterministically", () => {
 		expect(canonicalFoundationJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
 		expect(fingerprintFoundationValue({ a: 1, b: 2 })).toEqual(fingerprintFoundationValue({ b: 2, a: 1 }));

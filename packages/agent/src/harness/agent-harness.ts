@@ -1703,7 +1703,12 @@ export class AgentHarness implements AgentLane {
 		const target: ProvisionedEntry = { type: "message", id: deferred.intent.responseEntryId, message: response };
 		await this.persistOperationEntry(lane, operation.id, target);
 		const usageRecords = await this.durableSession.findRecords({ lane, runId: operation.id, type: "usage", order: "oldestFirst" });
-		if (!usageRecords.some((record) => record.type === "usage" && record.cause === "deferred_fetch" && record.entryId === target.id)) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "deferred_fetch", runId: operation.id, entryId: target.id, attempt: 1, stopReason: sessionStopReason(response), usage: response.usage });
+		if (!usageRecords.some((record) => record.type === "usage" && record.cause === "deferred_fetch" && record.entryId === target.id)) {
+			const stepAttempts = await this.durableSession.findRecords({ lane, runId: operation.id, type: "step_attempt", order: "oldestFirst" });
+			const deferredAttempt = [...stepAttempts].reverse().find((record) => record.step === "assistant");
+			if (deferredAttempt === undefined) throw new HarnessFault("Deferred fetch result has no assistant step attempt", undefined);
+			await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "deferred_fetch", runId: operation.id, entryId: target.id, attempt: deferredAttempt.attempt, stopReason: sessionStopReason(response), usage: response.usage });
+		}
 		await this.finishOperation(lane, operation.id, response.stopReason === "error" ? "failed" : "completed", response.stopReason === "error" ? operationError(response.errorMessage ?? "Deferred fetch failed") : undefined);
 	}
 

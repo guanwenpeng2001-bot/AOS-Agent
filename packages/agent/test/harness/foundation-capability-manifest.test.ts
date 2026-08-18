@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	FOUNDATION_V1_CAPABILITY_CLOSURES,
@@ -10,7 +13,7 @@ import {
 	type FoundationLaterConsumerLine,
 } from "../../src/harness/foundation-v1-capabilities.ts";
 
-const CLOSURE_STATUSES: readonly FoundationCapabilityClosureStatus[] = ["implemented", "regression_locked", "contract_sealed"];
+const CLOSURE_STATUSES: readonly FoundationCapabilityClosureStatus[] = ["contract_drafted", "implemented", "regression_locked", "contract_sealed"];
 const HIGH_LEVEL_ROWS: readonly FoundationHighLevelRow[] = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "10A"];
 const LATER_LINES: readonly FoundationLaterConsumerLine[] = ["11", "12A", "12B", "13", "14", "15"];
 const STAGES: readonly FoundationImplementationStage[] = [
@@ -178,6 +181,8 @@ const ROLE_CONTRACT_TOKENS = ["RoleDefinition", "RoleRevision", "ModelProfile", 
 
 const RESULT_CONTRACT_TOKENS = ["AttemptReceipt", "TaskResult", "RunReceipt", "Artifact"];
 
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
 function range(start: number, end: number): number[] {
 	const ids: number[] = [];
 	for (let id = start; id <= end; id++) ids.push(id);
@@ -258,6 +263,13 @@ describe("Foundation v1 capability manifest", () => {
 			for (const contract of entry.consumedFoundationContracts) {
 				expect(contract.trim(), `future ${entry.id} has an empty consumed contract`).not.toBe("");
 			}
+		}
+	});
+
+	it("resolves every ownerModule and test reference to an existing repository path", () => {
+		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+			expect(existsSync(resolve(REPOSITORY_ROOT, entry.ownerModule)), `closure ${entry.id} ownerModule is missing: ${entry.ownerModule}`).toBe(true);
+			for (const test of entry.tests) expect(existsSync(resolve(REPOSITORY_ROOT, test)), `closure ${entry.id} test path is missing: ${test}`).toBe(true);
 		}
 	});
 
