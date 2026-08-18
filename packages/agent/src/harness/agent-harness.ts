@@ -118,6 +118,10 @@ import {
 	type LaneReductionResult,
 	reduceLaneState,
 } from "./reducer.ts";
+import { SessionT5Ledger, type SessionT5LedgerOptions } from "./context/ledger.ts";
+import type { SessionArtifactStore } from "./artifacts.ts";
+import type { SessionMemoryStore } from "./memory/memory.ts";
+import { SessionLedgerBindingError } from "./session/t5.ts";
 
 export class LaneBusy extends TaggedError("LaneBusy")<{
 	lane: string;
@@ -400,6 +404,10 @@ export interface AgentHarnessOptions {
 	toProviderMessages?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	entryProjectors?: Record<string, EntryProjector>;
 	context?: TelemetryContext;
+	/** Optional T5 authority; omitted harnesses create one bound to this Session. */
+	t5?: SessionT5Ledger;
+	/** Options for the harness-owned T5 authority. */
+	t5Options?: SessionT5LedgerOptions;
 	/** Optional explicit product execution graph; omitted prompts remain session-only. */
 	foundationExecution?: AgentHarnessFoundationExecution;
 	/** Host-owned artifact provider; method-bearing providers never enter durable execution state. */
@@ -794,6 +802,11 @@ function isHarnessInfrastructureFault(error: unknown): boolean {
 export class AgentHarness implements AgentLane {
 	readonly name = "main";
 	readonly session: SessionTree;
+	readonly t5: SessionT5Ledger;
+	/** Context operations are served by the same T5 authority as memory and artifacts. */
+	readonly context: SessionT5Ledger;
+	readonly memory: SessionMemoryStore;
+	readonly artifacts: SessionArtifactStore;
 	readonly hooks: Hooks;
 	readonly events: Events;
 	private readonly durableSession: Session;
@@ -801,6 +814,7 @@ export class AgentHarness implements AgentLane {
 	private readonly defaultModel: Model<Api>;
 	private readonly defaultThinkingLevel: ThinkingLevel;
 	private readonly defaultActiveToolNames: string[];
+	private readonly ownsT5: boolean;
 	private tools: HarnessTool[];
 	private resources: Resources;
 	private streamOptions: StreamOptions;
@@ -839,6 +853,14 @@ export class AgentHarness implements AgentLane {
 	private constructor(options: AgentHarnessOptions) {
 		this.durableSession = options.session;
 		this.session = options.session;
+		if (options.t5 !== undefined && options.t5.session !== options.session) {
+			throw new SessionLedgerBindingError("AgentHarness T5 authority must use the supplied Session");
+		}
+		this.t5 = options.t5 ?? new SessionT5Ledger(options.session, options.t5Options);
+		this.context = this.t5;
+		this.memory = this.t5.memory;
+		this.artifacts = this.t5.artifacts;
+		this.ownsT5 = options.t5 === undefined;
 		this.models = options.models;
 		this.defaultModel = options.model;
 		this.defaultThinkingLevel = options.thinkingLevel ?? "off";
@@ -3549,6 +3571,13 @@ export class AgentHarness implements AgentLane {
 					await this.releaseFoundationLease();
 				} catch (error) {
 					failure ??= error;
+				}
+				if (this.ownsT5) {
+					try {
+						await this.t5.writer.releaseLease();
+					} catch (error) {
+						failure ??= error;
+					}
 				}
 				this.closed = true;
 				this.closing = false;

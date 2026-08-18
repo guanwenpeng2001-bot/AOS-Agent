@@ -18,6 +18,7 @@ export const T5_LEDGER_OBJECT_TYPES = Object.freeze({
 	contextSnapshot: "t5.context_snapshot",
 	instructionSource: "t5.instruction_source",
 	instructionLock: "t5.instruction_lock",
+	instructionResolution: "t5.instruction_resolution",
 	memory: "t5.memory",
 	compaction: "t5.compaction",
 	promptCache: "t5.prompt_cache",

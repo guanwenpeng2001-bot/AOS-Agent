@@ -146,6 +146,9 @@ describe("AgentHarness runtime", () => {
 		const session = createSession();
 		const { models, model } = createModelsWithResponse();
 		const { harness } = await AgentHarness.create({ session, models, model, foundationExecution: createFoundationExecution() });
+		expect(harness.context).toBe(harness.t5);
+		expect(harness.memory).toBe(harness.t5.memory);
+		expect(harness.artifacts).toBe(harness.t5.artifacts);
 
 		const result = await harness.prompt("hello");
 		expect(result.ok).toBe(true);

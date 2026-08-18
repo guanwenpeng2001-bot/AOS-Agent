@@ -10,7 +10,9 @@ import {
 	SessionMemoryStore,
 	SessionT5Ledger,
 	JsonlSessionRepo,
+	T5_LEDGER_OBJECT_TYPES,
 } from "../../src/index.ts";
+import { resolveInstructionSources, type InstructionLockV1 } from "../../src/harness/context/instruction.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
@@ -89,6 +91,73 @@ describe("T5 authority and CAS regressions", () => {
 		expect(await ledger.createCheckpoint(snapshot.snapshotId, "main", checkpoint.checkpointId, { known: true, digest: "workspace-replay" })).toEqual(checkpoint);
 		const cache = await ledger.recordPromptCache({ cacheEntryId: "cache-replay", cacheKey: "cache-replay", snapshotId: snapshot.snapshotId, modelId: "model", policyDigest: "policy", bindingEpochId: "epoch-replay", cacheEpoch: 1, value: new TextEncoder().encode("value") });
 		expect(await ledger.recordPromptCache({ cacheEntryId: cache.cacheEntryId, cacheKey: cache.cacheKey, snapshotId: cache.snapshotId, modelId: cache.modelId, policyDigest: cache.policyDigest, bindingEpochId: cache.bindingEpochId, cacheEpoch: cache.cacheEpoch, value: new TextEncoder().encode("value") })).toEqual(cache);
+	});
+
+	it("resolves inherited instructions executablely and records every decision", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "t5-instruction-inheritance", createdAt: 1 }));
+		const ledger = new SessionT5Ledger(session, { ownerId: "instruction-inheritance", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const parent = await ledger.putInstructionSource({ sourceId: "parent", scope: "project", trust: "user", path: "/repo/AGENTS.md", content: "parent", priority: 1 });
+		const child = await ledger.putInstructionSource({ sourceId: "child", scope: "task", trust: "user", parentSourceId: parent.sourceId, inherited: true, content: "child", priority: 10 });
+		const managed = await ledger.putInstructionSource({ sourceId: "managed-disabled", scope: "managed", trust: "builtin", path: "/repo/locked.md", enabled: false, content: "managed", priority: 0 });
+		await ledger.lockInstruction(managed.sourceId, { reason: "organization policy", lockedBy: "policy" });
+		const excludedParent = await ledger.putInstructionSource({ sourceId: "disabled-parent", scope: "project", trust: "user", enabled: false, content: "disabled parent" });
+		const excludedChild = await ledger.putInstructionSource({ sourceId: "disabled-child", scope: "task", trust: "user", parentSourceId: excludedParent.sourceId, inherited: true, content: "disabled child" });
+
+		const resolution = await ledger.resolveInstructions({ path: "/repo/project/file.ts" });
+		expect(resolution.sources.map((source) => source.sourceId)).toEqual([managed.sourceId, parent.sourceId, child.sourceId]);
+		expect(resolution.decisions.find((decision) => decision.sourceId === child.sourceId)).toMatchObject({
+			selected: true,
+			parentSourceId: parent.sourceId,
+			parentSelected: true,
+			reason: "inherited_source",
+		});
+		expect(resolution.decisions.find((decision) => decision.sourceId === managed.sourceId)).toMatchObject({
+			selected: true,
+			managedLock: true,
+			reason: "managed_lock_preserved",
+		});
+		expect(resolution.decisions.find((decision) => decision.sourceId === excludedChild.sourceId)).toMatchObject({
+			selected: false,
+			parentSelected: false,
+			reason: "parent_excluded",
+		});
+		expect(resolution.decisions.every((decision, index) => decision.precedence === index)).toBe(true);
+
+		const reversed = resolveInstructionSources(
+			[child, parent, managed, excludedChild, excludedParent],
+			(await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionLock })).filter((record): record is Extract<typeof record, { kind: "fact" }> => record.kind === "fact").map((record) => record.payload as unknown as InstructionLockV1),
+			{ path: "/repo/project/file.ts" },
+		);
+		expect(reversed.digest).toBe(resolution.digest);
+
+		const records = await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionResolution });
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({ objectType: T5_LEDGER_OBJECT_TYPES.instructionResolution, payload: { selectedSourceIds: [managed.sourceId, parent.sourceId, child.sourceId] } });
+	});
+
+	it("keeps memory child scopes independent across owners, parents, and provenance", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "t5-memory-scope", createdAt: 1 }));
+		const ledger = new SessionT5Ledger(session, {
+			ownerId: "memory-scope",
+			memoryScopeId: "root-scope",
+			memoryOwnerId: "root-owner",
+			artifactBlobStore: new InMemoryArtifactBlobStore(),
+		});
+		const root = await ledger.putMemory({ id: "root-memory", kind: "fact", trust: "user_owned", content: "root", source: "root-source", provenance: { taskId: "root-task" }, principal: "system" });
+		const child = ledger.memory.fork({ scope: "agent", scopeId: "child-scope", ownerId: "child-owner", provenance: { taskId: "child-task" } });
+		const childEntry = await child.put({ id: "child-memory", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { taskId: "child-task" }, principal: "system" });
+
+		expect(await ledger.memory.get(childEntry.id, "system")).toBeUndefined();
+		expect(await child.get(root.id, "system")).toBeUndefined();
+		const otherOwner = new SessionMemoryStore(session, ledger.artifacts, { writer: ledger.writer, memoryScopeId: "child-scope", memoryOwnerId: "other-owner", memoryParentId: "root-scope" });
+		const otherParent = new SessionMemoryStore(session, ledger.artifacts, { writer: ledger.writer, memoryScopeId: "child-scope", memoryOwnerId: "child-owner", memoryParentId: "other-parent" });
+		expect(await otherOwner.get(childEntry.id, "system")).toBeUndefined();
+		expect(await otherParent.get(childEntry.id, "system")).toBeUndefined();
+		expect(await child.list({ ownerId: "other-owner" }, "system")).toEqual([]);
+		await expect(child.put({ id: "unauthorized-owner", kind: "fact", trust: "user_owned", content: "bad", source: "bad", ownerId: "other-owner", principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
+		await expect(child.put({ id: "unauthorized-provenance", kind: "fact", trust: "user_owned", content: "bad", source: "bad", provenance: { taskId: "other-task" }, principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
+		await expect(child.put({ id: "unauthorized-principal", kind: "fact", trust: "user_owned", content: "bad", source: "bad", provenance: { createdBy: "system" }, principal: "alice" })).rejects.toMatchObject({ code: "policy_denied" });
+		await expect(child.put({ id: "invalid-child-parent", kind: "fact", trust: "user_owned", content: "bad", source: "bad", parentId: "other-parent", principal: "system" })).rejects.toMatchObject({ code: "policy_denied" });
 	});
 });
 

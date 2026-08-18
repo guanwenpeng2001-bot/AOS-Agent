@@ -10,6 +10,7 @@ import {
 	SessionMemoryStore,
 	type MemoryEntry,
 	type MemoryPolicy,
+	type MemoryProvenanceBoundary,
 	type MemoryQuery,
 	type NewMemoryEntry,
 } from "../memory/memory.ts";
@@ -40,6 +41,7 @@ import {
 	resolveInstructionSources,
 	type InstructionLockV1,
 	type InstructionResolution,
+	type InstructionResolutionRecordV1,
 	type InstructionSourceInput,
 	type InstructionSourceV1,
 } from "./instruction.ts";
@@ -55,6 +57,10 @@ export interface SessionT5LedgerOptions extends SessionLedgerWriterOptions {
 	readonly fs?: FileSystem;
 	readonly artifactRoot?: string;
 	readonly bindingEpochId?: string;
+	readonly memoryScopeId?: string;
+	readonly memoryOwnerId?: string;
+	readonly memoryParentId?: string;
+	readonly memoryProvenance?: MemoryProvenanceBoundary;
 }
 
 export interface PromptCacheRecordV1 {
@@ -196,7 +202,15 @@ export class SessionT5Ledger {
 			if (options.artifacts.writer !== this.writer) throw new SessionLedgerBindingError("SessionT5Ledger and ArtifactStore must share one SessionLedgerWriter");
 		}
 		this.artifacts = options.artifacts ?? new SessionArtifactStore(session, { ...options, writer: this.writer, blobStore: options.artifactBlobStore });
-		this.memory = new SessionMemoryStore(session, this.artifacts, { ...options, policy: options.memoryPolicy, writer: this.writer });
+		this.memory = new SessionMemoryStore(session, this.artifacts, {
+			...options,
+			policy: options.memoryPolicy,
+			writer: this.writer,
+			memoryScopeId: options.memoryScopeId,
+			memoryOwnerId: options.memoryOwnerId,
+			memoryParentId: options.memoryParentId,
+			memoryProvenance: options.memoryProvenance,
+		});
 		this.now = options.now ?? Date.now;
 		this.defaultBindingEpochId = options.bindingEpochId;
 	}
@@ -392,11 +406,38 @@ export class SessionT5Ledger {
 	async resolveInstructions(options: { readonly path?: string } = {}): Promise<InstructionResolution> {
 		const sourceFacts = latestFacts(await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.instructionSource }));
 		const lockFacts = latestFacts(await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.instructionLock }));
-		return resolveInstructionSources(
+		const resolution = resolveInstructionSources(
 			sourceFacts.map((fact) => fact.payload as unknown as InstructionSourceV1),
 			lockFacts.map((fact) => fact.payload as unknown as InstructionLockV1),
 			options,
 		);
+		const resolutionId = `instruction-resolution:${resolution.digest.replace(/[^a-zA-Z0-9:_-]/g, "_")}`;
+		const record: InstructionResolutionRecordV1 = {
+			schemaVersion: 1,
+			resolutionId,
+			...(resolution.path === undefined ? {} : { path: resolution.path }),
+			sourceIds: sourceFacts.map((fact) => fact.objectId).sort((left, right) => left.localeCompare(right)),
+			selectedSourceIds: resolution.sources.map((source) => source.sourceId),
+			decisions: resolution.decisions,
+			locks: resolution.locks,
+			digest: resolution.digest,
+			createdAt: this.now(),
+		};
+		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.instructionResolution, resolutionId);
+		if (existing !== undefined) {
+			const stored = existing.payload as unknown as InstructionResolutionRecordV1;
+			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, record as unknown as Record<string, unknown>)) {
+				throw new Error(`Instruction resolution ${resolutionId} is immutable`);
+			}
+			return { ...resolution, resolutionId };
+		}
+		await this.writer.writeFact({
+			objectType: T5_LEDGER_OBJECT_TYPES.instructionResolution,
+			objectId: resolutionId,
+			clientRequestId: `instruction-resolution:${resolutionId}`,
+			payload: asFoundationJson(record),
+		});
+		return { ...resolution, resolutionId };
 	}
 
 	putMemory(entry: NewMemoryEntry): Promise<MemoryEntry> {
@@ -613,5 +654,5 @@ export class SessionT5Ledger {
 	}
 }
 
-/** Naming alias used by callers that treat this as the context ledger. */
-export class ContextSnapshotLedger extends SessionT5Ledger {}
+/** Type-only compatibility alias; SessionT5Ledger remains the sole runtime authority. */
+export type ContextSnapshotLedger = SessionT5Ledger;
