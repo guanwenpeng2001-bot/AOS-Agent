@@ -25,6 +25,9 @@ export const T5_LEDGER_OBJECT_TYPES = Object.freeze({
 	rewindPlan: "t5.rewind_plan",
 	rewindExecution: "t5.rewind_execution",
 	artifactManifest: "t5.artifact_manifest",
+	artifactReference: "t5.artifact_reference",
+	contextBuild: "t5.context_build",
+	taskContextPackage: "t5.task_context_package",
 } as const);
 
 export type T5LedgerObjectType = (typeof T5_LEDGER_OBJECT_TYPES)[keyof typeof T5_LEDGER_OBJECT_TYPES];
@@ -34,6 +37,23 @@ export interface SessionLedgerWriterOptions {
 	readonly ownerId?: string;
 	readonly leaseTtlMs?: number;
 	readonly now?: () => number;
+}
+
+/** Raised when one T5 projection is accidentally wired to another Session. */
+export class SessionLedgerBindingError extends Error {
+	readonly code = "session_binding_mismatch" as const;
+
+	constructor(message: string) {
+		super(message);
+		this.name = "SessionLedgerBindingError";
+	}
+}
+
+/** Keep all projections on the exact Session authority supplied by the caller. */
+export function assertSessionLedgerWriterSession(session: Session, writer: SessionLedgerWriter, role: string): void {
+	if (writer.session !== session) {
+		throw new SessionLedgerBindingError(`${role} must use the supplied SessionLedgerWriter's Session`);
+	}
 }
 
 export interface T5FactWriteOptions {
@@ -64,6 +84,13 @@ export class SessionLedgerWriter {
 		this.ownerId = options.ownerId ?? `t5-writer-${session.idGenerator.next()}`;
 		this.leaseTtlMs = options.leaseTtlMs ?? 15 * 60 * 1000;
 		this.now = options.now ?? Date.now;
+	}
+
+	/** Fail closed when a caller tries to compose two Session authorities. */
+	assertSession(session: Session, role = "T5 projection"): void {
+		if (this.session !== session) {
+			throw new SessionLedgerBindingError(`${role} is bound to a different Session`);
+		}
 	}
 
 	async ensureLease(): Promise<LedgerWriterLeaseV1> {

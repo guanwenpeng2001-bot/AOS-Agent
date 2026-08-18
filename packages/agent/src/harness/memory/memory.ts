@@ -1,7 +1,7 @@
 import { newFoundationId, sha256HexValue, type FoundationJsonValue } from "../foundation/index.ts";
 import type { ArtifactReference, SessionArtifactStore } from "../artifacts.ts";
 import type { Session } from "../session/session.ts";
-import { SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, type SessionLedgerWriterOptions } from "../session/t5.ts";
+import { SessionLedgerBindingError, type SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
 
 export type MemoryScope = "session" | "project" | "task" | "agent";
 export const MEMORY_SCOPES: readonly MemoryScope[] = ["session", "project", "task", "agent"];
@@ -17,6 +17,7 @@ export const DEFAULT_MEMORY_RETENTION: MemoryRetentionPolicy = { policy: "sessio
 
 export interface MemoryProvenance {
 	readonly source: string;
+	readonly sourceDigest?: string;
 	readonly sourceId?: string;
 	readonly snapshotId?: string;
 	readonly taskId?: string;
@@ -145,7 +146,10 @@ export class SessionMemoryStore implements MemoryStore {
 
 	constructor(session: Session, artifacts: SessionArtifactStore, options: SessionLedgerWriterOptions & { readonly policy?: MemoryPolicy; readonly now?: () => number; readonly writer?: SessionLedgerWriter } = {}) {
 		this.session = session;
-		this.writer = options.writer ?? new SessionLedgerWriter(session, options);
+		this.writer = options.writer ?? artifacts.writer;
+		assertSessionLedgerWriterSession(session, this.writer, "MemoryStore");
+		if (artifacts.session !== session) throw new SessionLedgerBindingError("MemoryStore and ArtifactStore must use the same Session");
+		if (artifacts.writer !== this.writer) throw new SessionLedgerBindingError("MemoryStore and ArtifactStore must share one SessionLedgerWriter");
 		this.artifacts = artifacts;
 		this.policy = options.policy;
 		this.now = options.now ?? Date.now;
@@ -156,10 +160,21 @@ export class SessionMemoryStore implements MemoryStore {
 		const scope = entry.scope ?? "session";
 		const candidate = { kind: entry.kind, trust: entry.trust, scope };
 		if (!allowed(this.policy, candidate)) throw new MemoryError("policy_denied", "Memory policy rejected this entry");
-		const existing = await this.list({ scope });
-		if (this.policy?.maxEntries !== undefined && existing.length >= this.policy.maxEntries) throw new MemoryError("limit_reached", "Memory entry limit reached");
 		const redacted = redact(entry.content);
 		const source = redact(entry.source).text;
+		const sourceDigest = `sha256:${sha256HexValue(new TextEncoder().encode(source))}`;
+		const id = entry.id ?? newFoundationId("memory");
+		const existingFact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
+		if (existingFact !== undefined) {
+			const existing = existingFact.payload as unknown as MemoryRecordV1;
+			const contentDigest = `sha256:${sha256HexValue(new TextEncoder().encode(redacted.text))}`;
+			if (existing.contentDigest !== contentDigest || existing.kind !== entry.kind || existing.scope !== scope) throw new MemoryError("invalid_entry", `Memory ${id} is immutable`);
+			const replayed = await this.get(id, entry.principal ?? "system");
+			if (replayed === undefined) throw new MemoryError("storage", `Memory ${id} is unavailable for replay`);
+			return replayed;
+		}
+		const existing = await this.list({ scope });
+		if (this.policy?.maxEntries !== undefined && existing.length >= this.policy.maxEntries) throw new MemoryError("limit_reached", "Memory entry limit reached");
 		const retentionValue = typeof this.policy?.retention === "string" ? { policy: this.policy.retention } : this.policy?.retention;
 		const retention = normalizeRetention(entry.retention, retentionValue ?? DEFAULT_MEMORY_RETENTION);
 		const contentRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(redacted.text), {
@@ -168,17 +183,25 @@ export class SessionMemoryStore implements MemoryStore {
 			permissions: [entry.principal ?? "system"],
 			retention,
 			producer: "t5-memory",
+			clientRequestId: `memory-content:${id}`,
 		});
-		const id = entry.id ?? newFoundationId("memory");
+		await this.artifacts.retainReference({
+			artifactId: contentRef.artifactId,
+			referenceId: `memory:${id}`,
+			consumerType: T5_LEDGER_OBJECT_TYPES.memory,
+			consumerId: id,
+			...(retention.expiresAt === undefined ? {} : { expiresAt: retention.expiresAt }),
+		});
 		const record: MemoryRecordV1 = {
 			schemaVersion: 1,
 			id,
 			kind: entry.kind,
 			trust: entry.trust,
-			source,
+			source: sourceDigest,
 			scope,
 			provenance: {
-				source: entry.provenance?.source ?? source,
+				source: sourceDigest,
+				sourceDigest,
 				...(entry.provenance?.sourceId === undefined ? {} : { sourceId: entry.provenance.sourceId }),
 				...(entry.provenance?.snapshotId === undefined ? {} : { snapshotId: entry.provenance.snapshotId }),
 				...(entry.provenance?.taskId === undefined ? {} : { taskId: entry.provenance.taskId }),
@@ -206,10 +229,25 @@ export class SessionMemoryStore implements MemoryStore {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
 		if (fact === undefined) return undefined;
 		const record = fact.payload as unknown as MemoryRecordV1;
+		const contentRef = record?.contentRef;
+		if (
+			record === null ||
+			typeof record !== "object" ||
+			typeof record.contentDigest !== "string" ||
+			contentRef === undefined ||
+			contentRef.artifactId !== contentRef.id ||
+			contentRef.digest !== record.contentDigest
+		) {
+			throw new MemoryError("storage", `Memory ${id} has an invalid content reference`);
+		}
 		if (!allowed(this.policy, record) || (record.retention.expiresAt !== undefined && record.retention.expiresAt <= this.now())) return undefined;
 		try {
 			const artifact = await this.artifacts.get(record.contentRef.artifactId, principal);
-			return cloneEntry({ ...record, content: new TextDecoder().decode(artifact.content) });
+			const content = new TextDecoder().decode(artifact.content);
+			if (`sha256:${sha256HexValue(new TextEncoder().encode(content))}` !== record.contentDigest) {
+				throw new MemoryError("storage", `Memory ${id} content digest does not match its ledger record`);
+			}
+			return cloneEntry({ ...record, content });
 		} catch (error) {
 			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "forbidden") return undefined;
 			throw error;
@@ -240,7 +278,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const entry = await this.get(id, principal);
 		if (entry === undefined) return false;
 		await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.memory, objectId: id, reason: "memory_deleted" });
-		await this.artifacts.remove(entry.contentRef.artifactId, principal);
+		await this.artifacts.releaseReference(`memory:${id}`);
 		return true;
 	}
 
@@ -255,7 +293,7 @@ export class SessionMemoryStore implements MemoryStore {
 			const record = fact.payload as unknown as MemoryRecordV1;
 			if (record.retention.expiresAt !== undefined && record.retention.expiresAt <= now) {
 				await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.memory, objectId: record.id, reason: "memory_expired" });
-				await this.artifacts.blobs.remove(record.contentRef.artifactId);
+				await this.artifacts.releaseReference(`memory:${record.id}`);
 				removed += 1;
 			}
 		}

@@ -1,5 +1,5 @@
 import { canonicalFoundationJson, sha256HexValue } from "../foundation/index.ts";
-import type { PromptCacheLookup, PromptCacheRecordV1, PromptCacheWriteOptions, SessionT5Ledger } from "./ledger.ts";
+import type { PromptCacheInvalidationOptions, PromptCacheLookup, PromptCacheRecordV1, PromptCacheWriteOptions, SessionT5Ledger } from "./ledger.ts";
 
 export const CONTEXT_CACHE_SCHEMA_VERSION = 1 as const;
 
@@ -30,6 +30,9 @@ export interface ContextCacheStats {
 	readonly bytes: number;
 	readonly hits: number;
 	readonly misses: number;
+	readonly invalidations: number;
+	readonly invalidationCost: number;
+	readonly lastInvalidationReason?: string;
 }
 
 export interface ContextCacheOptions {
@@ -71,6 +74,9 @@ export class ContextCache<TValue = unknown> {
 	private totalBytes = 0;
 	private hitTotal = 0;
 	private missTotal = 0;
+	private invalidationTotal = 0;
+	private invalidationCostTotal = 0;
+	private lastInvalidationReason: string | undefined;
 
 	constructor(options: ContextCacheOptions = {}) {
 		this.maxEntries = options.maxEntries ?? 256;
@@ -127,7 +133,7 @@ export class ContextCache<TValue = unknown> {
 	}
 
 	/** Invalidate by snapshot, binding epoch, or an explicit key predicate. */
-	invalidate(options: { readonly snapshotId?: string; readonly bindingEpochId?: string; readonly predicate?: (entry: ContextCacheEntry<TValue>) => boolean } = {}): number {
+	invalidate(options: { readonly snapshotId?: string; readonly bindingEpochId?: string; readonly predicate?: (entry: ContextCacheEntry<TValue>) => boolean; readonly reason?: string; readonly cost?: number } = {}): number {
 		let removed = 0;
 		for (const entry of [...this.entries.values()]) {
 			const matches =
@@ -136,6 +142,9 @@ export class ContextCache<TValue = unknown> {
 				(options.predicate?.(entry) ?? false);
 			if (matches && this.delete(entry.key.key)) removed += 1;
 		}
+		this.invalidationTotal += removed;
+		this.invalidationCostTotal += options.cost ?? 0;
+		if (removed > 0) this.lastInvalidationReason = options.reason ?? "explicit";
 		return removed;
 	}
 
@@ -145,7 +154,7 @@ export class ContextCache<TValue = unknown> {
 	}
 
 	stats(): ContextCacheStats {
-		return { entries: this.entries.size, bytes: this.totalBytes, hits: this.hitTotal, misses: this.missTotal };
+		return { entries: this.entries.size, bytes: this.totalBytes, hits: this.hitTotal, misses: this.missTotal, invalidations: this.invalidationTotal, invalidationCost: this.invalidationCostTotal, ...(this.lastInvalidationReason === undefined ? {} : { lastInvalidationReason: this.lastInvalidationReason }) };
 	}
 
 	entriesSnapshot(): readonly ContextCacheEntry<TValue>[] {
@@ -177,7 +186,7 @@ export class SessionPromptCache {
 		return this.ledger.lookupPromptCache(cacheKey);
 	}
 
-	invalidate(cacheKey: string): Promise<number> {
-		return this.ledger.invalidatePromptCache(cacheKey);
+	invalidate(cacheKey: string, options?: PromptCacheInvalidationOptions): Promise<number> {
+		return this.ledger.invalidatePromptCache(cacheKey, options);
 	}
 }

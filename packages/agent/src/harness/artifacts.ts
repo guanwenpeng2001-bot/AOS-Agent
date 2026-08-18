@@ -1,7 +1,12 @@
 import { sha256HexValue, type FoundationJsonValue } from "./foundation/index.ts";
 import type { FileSystem } from "./types.ts";
 import type { Session } from "./session/session.ts";
-import { SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, type SessionLedgerWriterOptions } from "./session/t5.ts";
+import {
+	SessionLedgerWriter,
+	T5_LEDGER_OBJECT_TYPES,
+	assertSessionLedgerWriterSession,
+	type SessionLedgerWriterOptions,
+} from "./session/t5.ts";
 
 export type ArtifactId = string;
 export type ArtifactDigest = `sha256:${string}`;
@@ -88,6 +93,8 @@ export interface ArtifactPutOptions {
 	readonly retention?: ArtifactRetentionPolicy;
 	readonly validation?: ArtifactManifestV1["validation"];
 	readonly producer?: string;
+	/** Stable idempotency key for a caller-owned manifest mutation. */
+	readonly clientRequestId?: string;
 }
 
 export interface ArtifactBlobStore {
@@ -100,6 +107,11 @@ export interface ArtifactBlobStore {
 export interface ArtifactStoreOptions extends SessionLedgerWriterOptions {
 	readonly blobStore?: ArtifactBlobStore;
 	readonly writer?: SessionLedgerWriter;
+	/** Filesystem capability and root for an explicitly selected blob backend. */
+	readonly fs?: FileSystem;
+	readonly artifactRoot?: string;
+	/** In-memory blobs are test-only and must be opted into explicitly. */
+	readonly allowInMemory?: boolean;
 }
 
 export type ArtifactStoreErrorCode =
@@ -112,6 +124,7 @@ export type ArtifactStoreErrorCode =
 	| "corrupt"
 	| "missing"
 	| "not_found"
+	| "in_use"
 	| "storage";
 
 export class ArtifactStoreError extends Error {
@@ -152,7 +165,14 @@ export function verifyArtifact(content: Uint8Array, id: ArtifactId): boolean {
 
 export function redactArtifactReference(value: ArtifactMetadata | ArtifactReference): ArtifactReference {
 	const artifactId = value.artifactId;
-	if (!isValidArtifactId(artifactId) || !isValidArtifactDigest(value.digest)) throw new ArtifactStoreError("invalid_manifest", "Invalid artifact reference");
+	if (
+		!isValidArtifactId(artifactId) ||
+		!isValidArtifactDigest(value.digest) ||
+		value.digest !== artifactDigestFromId(artifactId) ||
+		typeof value.mediaType !== "string" ||
+		value.mediaType.length === 0 ||
+		(!Number.isSafeInteger("size" in value ? value.size : value.sizeBytes) || ("size" in value ? value.size : value.sizeBytes) < 0)
+	) throw new ArtifactStoreError("invalid_manifest", "Invalid artifact reference");
 	return {
 		type: "artifact",
 		artifactId,
@@ -250,21 +270,69 @@ function manifestPayload(options: {
 	};
 }
 
+function validateManifest(value: ArtifactManifestV1): ArtifactManifestV1 {
+	if (value === null || typeof value !== "object") throw new ArtifactStoreError("invalid_manifest", "Artifact manifest must be an object");
+	if (value.schemaVersion !== 1 || !isValidArtifactId(value.artifactId) || value.sha256 !== value.artifactId || value.digest !== artifactDigestFromId(value.artifactId)) {
+		throw new ArtifactStoreError("invalid_manifest", "Artifact manifest digest identity is invalid");
+	}
+	if (!Number.isSafeInteger(value.sizeBytes) || value.sizeBytes < 0 || typeof value.mediaType !== "string" || value.mediaType.length === 0) {
+		throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${value.artifactId} has invalid metadata`);
+	}
+	const retention = value.retention;
+	const validRetention =
+		retention !== undefined &&
+		retention !== null &&
+		typeof retention === "object" &&
+		("session|task|goal|project|indefinite" as const).split("|").includes(retention.policy) &&
+		(retention.expiresAt === undefined ||
+			(typeof retention.expiresAt === "number" && Number.isFinite(retention.expiresAt) && retention.expiresAt >= 0) ||
+			(typeof retention.expiresAt === "string" && Number.isFinite(Date.parse(retention.expiresAt))));
+	const acl = value.acl;
+	const validAcl =
+		acl !== undefined &&
+		acl !== null &&
+		typeof acl === "object" &&
+		typeof acl.owner === "string" &&
+		acl.owner.length > 0 &&
+		Array.isArray(acl.readers) &&
+		acl.readers.length > 0 &&
+		acl.readers.every((principal) => typeof principal === "string" && principal.length > 0) &&
+		Array.isArray(acl.writers) &&
+		acl.writers.length > 0 &&
+		acl.writers.every((principal) => typeof principal === "string" && principal.length > 0);
+	const validation = value.validation;
+	const validValidation =
+		validation !== undefined &&
+		validation !== null &&
+		typeof validation === "object" &&
+		("verified|pending|corrupt|unknown|missing" as const).split("|").includes(validation.state) &&
+		(validation.validatedAt === undefined || Number.isFinite(validation.validatedAt));
+	if (!validAcl || !validRetention || !validValidation || !Array.isArray(value.permissions) || value.permissions.some((principal) => typeof principal !== "string")) {
+		throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${value.artifactId} has an invalid ACL`);
+	}
+	return value;
+}
+
 /** Blob-only backend. It cannot create a reference or a manifest by itself. */
 export class InMemoryArtifactBlobStore implements ArtifactBlobStore {
 	private readonly blobs = new Map<ArtifactId, Uint8Array>();
 
 	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
+		if (!verifyArtifact(content, id)) throw new ArtifactStoreError("corrupt", `Blob content does not match artifact id: ${id}`);
 		this.blobs.set(id, cloneBytes(content));
 	}
 	async get(id: ArtifactId): Promise<Uint8Array | undefined> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		const content = this.blobs.get(id);
 		return content === undefined ? undefined : cloneBytes(content);
 	}
 	async has(id: ArtifactId): Promise<boolean> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		return this.blobs.has(id);
 	}
 	async remove(id: ArtifactId): Promise<boolean> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		return this.blobs.delete(id);
 	}
 	/** Test/recovery hook; the manifest remains in Session and exposes corruption. */
@@ -289,10 +357,13 @@ export class FileSystemArtifactBlobStore implements ArtifactBlobStore {
 	}
 
 	private async path(id: ArtifactId): Promise<string> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		return unwrap(await this.fs.joinPath([this.root, "blobs", id.slice(0, 2), id.slice(2)]));
 	}
 
 	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
+		if (!verifyArtifact(content, id)) throw new ArtifactStoreError("corrupt", `Blob content does not match artifact id: ${id}`);
 		const path = await this.path(id);
 		const directory = unwrap(await this.fs.joinPath([this.root, "blobs", id.slice(0, 2)]));
 		unwrap(await this.fs.createDir(directory, { recursive: true }));
@@ -314,6 +385,135 @@ export class FileSystemArtifactBlobStore implements ArtifactBlobStore {
 	}
 }
 
+/** Durable reference fact used to protect shared CAS content from early deletion. */
+export interface ArtifactReferenceRecordV1 {
+	readonly schemaVersion: 1;
+	readonly referenceId: string;
+	readonly artifactId: ArtifactId;
+	readonly consumerType: string;
+	readonly consumerId: string;
+	readonly createdAt: number;
+	readonly expiresAt?: number;
+}
+
+function validateReference(value: ArtifactReferenceRecordV1): ArtifactReferenceRecordV1 {
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		value.schemaVersion !== 1 ||
+		typeof value.referenceId !== "string" ||
+		value.referenceId.length === 0 ||
+		!isValidArtifactId(value.artifactId) ||
+		typeof value.consumerType !== "string" ||
+		value.consumerType.length === 0 ||
+		typeof value.consumerId !== "string" ||
+		value.consumerId.length === 0 ||
+		!Number.isFinite(value.createdAt) ||
+		(value.expiresAt !== undefined && (!Number.isFinite(value.expiresAt) || value.expiresAt < 0))
+	) {
+		throw new ArtifactStoreError("invalid_manifest", "Artifact reference is invalid");
+	}
+	return value;
+}
+
+/**
+ * Default Node backend for a persistent Session. The blob root is derived
+ * from the JSONL session path, so reopening the same Session metadata finds
+ * the same bytes. In-memory Sessions must pass an explicit blobStore (or the
+ * test-only allowInMemory option) instead of silently losing artifacts.
+ */
+class SessionFileArtifactBlobStore implements ArtifactBlobStore {
+	private readonly rootPromise: Promise<string>;
+	private readonly session: Session;
+
+	constructor(session: Session, root?: string) {
+		this.session = session;
+		this.rootPromise = root === undefined ? this.deriveRoot() : Promise.resolve(root);
+	}
+
+	private async deriveRoot(): Promise<string> {
+		const metadata = await this.session.getMetadata();
+		const path = (metadata as SessionMetadataWithPath).path;
+		if (typeof path !== "string" || path.length === 0) {
+			throw new ArtifactStoreError(
+				"storage",
+				"A persistent artifact root is unavailable for this Session; pass an explicit blobStore for tests",
+			);
+		}
+		return `${path}.t5-artifacts`;
+	}
+
+	private async path(id: ArtifactId): Promise<string> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
+		return joinArtifactPath(await this.rootPromise, "blobs", id.slice(0, 2), id.slice(2));
+	}
+
+	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
+		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
+		if (!verifyArtifact(content, id)) throw new ArtifactStoreError("corrupt", `Blob content does not match artifact id: ${id}`);
+		const path = await this.path(id);
+		const fs = nodeFileSystemPromises();
+		await fs.mkdir(joinArtifactPath(await this.rootPromise, "blobs", id.slice(0, 2)), { recursive: true });
+		await fs.writeFile(path, content);
+	}
+
+	async get(id: ArtifactId): Promise<Uint8Array | undefined> {
+		const fs = nodeFileSystemPromises();
+		try {
+			return Uint8Array.from(await fs.readFile(await this.path(id)));
+		} catch (error) {
+			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return undefined;
+			throw new ArtifactStoreError("storage", `Failed to read artifact blob ${id}`, error instanceof Error ? error : undefined);
+		}
+	}
+
+	async has(id: ArtifactId): Promise<boolean> {
+		const fs = nodeFileSystemPromises();
+		try {
+			await fs.access(await this.path(id));
+			return true;
+		} catch (error) {
+			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return false;
+			throw new ArtifactStoreError("storage", `Failed to inspect artifact blob ${id}`, error instanceof Error ? error : undefined);
+		}
+	}
+
+	async remove(id: ArtifactId): Promise<boolean> {
+		const fs = nodeFileSystemPromises();
+		try {
+			await fs.unlink(await this.path(id));
+			return true;
+		} catch (error) {
+			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return false;
+			throw new ArtifactStoreError("storage", `Failed to remove artifact blob ${id}`, error instanceof Error ? error : undefined);
+		}
+	}
+}
+
+interface SessionMetadataWithPath {
+	readonly path?: string;
+}
+
+interface NodeFileSystemPromises {
+	access(path: string): Promise<void>;
+	mkdir(path: string, options: { readonly recursive: true }): Promise<string | undefined>;
+	readFile(path: string): Promise<Uint8Array>;
+	unlink(path: string): Promise<void>;
+	writeFile(path: string, content: Uint8Array): Promise<void>;
+}
+
+function nodeFileSystemPromises(): NodeFileSystemPromises {
+	const processValue = (globalThis as { readonly process?: { readonly getBuiltinModule?: (name: string) => unknown } }).process;
+	const module = processValue?.getBuiltinModule?.("node:fs/promises") as NodeFileSystemPromises | undefined;
+	if (module === undefined) throw new ArtifactStoreError("storage", "The default persistent artifact backend requires Node filesystem capabilities");
+	return module;
+}
+
+function joinArtifactPath(root: string, ...parts: string[]): string {
+	const separator = root.includes("\\") ? "\\" : "/";
+	return [root.replace(/[\\/]$/, ""), ...parts].join(separator);
+}
+
 /**
  * Session-backed content-addressed artifact store. The blob backend is only
  * a recoverable cache; manifest, ACL, retention, and validation authority are
@@ -328,7 +528,14 @@ export class SessionArtifactStore {
 	constructor(session: Session, options: ArtifactStoreOptions = {}) {
 		this.session = session;
 		this.writer = options.writer ?? new SessionLedgerWriter(session, options);
-		this.blobs = options.blobStore ?? new InMemoryArtifactBlobStore();
+		if (options.writer !== undefined) assertSessionLedgerWriterSession(session, options.writer, "ArtifactStore");
+		this.blobs =
+			options.blobStore ??
+			(options.fs !== undefined && options.artifactRoot !== undefined
+				? new FileSystemArtifactBlobStore(options.fs, options.artifactRoot)
+				: options.allowInMemory === true
+					? new InMemoryArtifactBlobStore()
+					: new SessionFileArtifactBlobStore(session, options.artifactRoot));
 		this.now = options.now ?? Date.now;
 	}
 
@@ -337,7 +544,8 @@ export class SessionArtifactStore {
 		const existing = await this.manifest(id);
 		if (existing !== undefined) {
 			if (existing.sizeBytes !== content.byteLength || existing.digest !== artifactDigestFromId(id)) throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${id} does not match content`);
-			if (!(await this.blobs.has(id))) await this.blobs.put(id, content);
+			const stored = await this.blobs.get(id);
+			if (stored === undefined || !verifyArtifact(stored, id) || stored.byteLength !== content.byteLength) await this.blobs.put(id, content);
 			return metadataFromManifest(existing);
 		}
 		const manifest = manifestPayload({ id, size: content.byteLength, put: options, now: this.now() });
@@ -345,6 +553,7 @@ export class SessionArtifactStore {
 		const accepted = await this.writer.writeFact({
 			objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest,
 			objectId: id,
+			clientRequestId: options?.clientRequestId ?? `artifact-manifest:${id}`,
 			payload: manifest as unknown as FoundationJsonValue,
 		});
 		return metadataFromManifest(accepted.payload as unknown as ArtifactManifestV1);
@@ -376,7 +585,7 @@ export class SessionArtifactStore {
 	async verify(id: ArtifactId): Promise<ArtifactValidationState> {
 		const manifest = await this.manifest(id);
 		if (manifest === undefined) return "unknown";
-		if (expired(manifest.retention, this.now())) return "unknown";
+		if (expired(manifest.retention, this.now()) && !(await this.hasLiveReference(id))) return "unknown";
 		const content = await this.blobs.get(id);
 		if (content === undefined) return "missing";
 		return content.byteLength === manifest.sizeBytes && verifyArtifact(content, id) ? "verified" : "corrupt";
@@ -390,6 +599,9 @@ export class SessionArtifactStore {
 		const manifest = await this.manifest(id);
 		if (manifest === undefined) return false;
 		if (!manifest.acl.writers.includes("*") && !manifest.acl.writers.includes(principal)) throw new ArtifactStoreError("forbidden", `Principal ${principal} cannot remove artifact ${id}`);
+		if ((await this.listReferences(id)).length > 0) {
+			throw new ArtifactStoreError("in_use", `Artifact ${id} is still referenced by live Session objects`);
+		}
 		await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest, objectId: id, reason: "artifact_removed" });
 		await this.blobs.remove(id);
 		return true;
@@ -397,19 +609,103 @@ export class SessionArtifactStore {
 
 	async list(): Promise<ArtifactMetadata[]> {
 		const facts = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest });
-		return facts.map((fact) => metadataFromManifest(fact.payload as unknown as ArtifactManifestV1));
+		const current = new Map<string, ArtifactMetadata>();
+		for (const fact of facts) {
+			const object = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactManifest, fact.objectId);
+			if (object !== undefined) {
+				const manifest = validateManifest(object.payload as unknown as ArtifactManifestV1);
+				if (manifest.artifactId !== fact.objectId) throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${fact.objectId} has a mismatched identity`);
+				current.set(fact.objectId, metadataFromManifest(manifest));
+			}
+		}
+		return [...current.values()].sort((left, right) => left.id.localeCompare(right.id));
+	}
+
+	/** Add one durable owner reference; repeating the same reference is a replay. */
+	async retainReference(options: {
+		readonly artifactId: ArtifactId;
+		readonly referenceId: string;
+		readonly consumerType: string;
+		readonly consumerId: string;
+		readonly expiresAt?: number;
+	}): Promise<ArtifactReferenceRecordV1> {
+		const manifest = await this.manifest(options.artifactId);
+		if (manifest === undefined) throw new ArtifactStoreError("not_found", `Artifact manifest not found: ${options.artifactId}`);
+		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, options.referenceId);
+		if (existing !== undefined) {
+			const stored = validateReference(existing.payload as unknown as ArtifactReferenceRecordV1);
+			if (
+				stored.referenceId !== options.referenceId ||
+				stored.artifactId !== options.artifactId ||
+				stored.consumerType !== options.consumerType ||
+				stored.consumerId !== options.consumerId
+			) {
+				throw new ArtifactStoreError("invalid_manifest", `Artifact reference ${options.referenceId} is immutable`);
+			}
+			return stored;
+		}
+		const reference: ArtifactReferenceRecordV1 = {
+			schemaVersion: 1,
+			referenceId: options.referenceId,
+			artifactId: options.artifactId,
+			consumerType: options.consumerType,
+			consumerId: options.consumerId,
+			createdAt: this.now(),
+			...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
+		};
+		const accepted = await this.writer.writeFact({
+			objectType: T5_LEDGER_OBJECT_TYPES.artifactReference,
+			objectId: options.referenceId,
+			clientRequestId: `artifact-reference:${options.referenceId}`,
+			payload: reference as unknown as FoundationJsonValue,
+		});
+		return accepted.payload as unknown as ArtifactReferenceRecordV1;
+	}
+
+	/** Release one owner reference. The manifest/blob remain while another owner exists. */
+	async releaseReference(referenceId: string): Promise<boolean> {
+		const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, referenceId);
+		if (current === undefined) return false;
+		await this.writer.tombstone({
+			objectType: T5_LEDGER_OBJECT_TYPES.artifactReference,
+			objectId: referenceId,
+			clientRequestId: `artifact-reference-release:${referenceId}`,
+			reason: "artifact_reference_released",
+		});
+		return true;
+	}
+
+	async listReferences(artifactId?: ArtifactId): Promise<ArtifactReferenceRecordV1[]> {
+		const facts = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.artifactReference });
+		const references: ArtifactReferenceRecordV1[] = [];
+		for (const fact of facts) {
+			const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, fact.objectId);
+			if (current === undefined) continue;
+			const reference = validateReference(current.payload as unknown as ArtifactReferenceRecordV1);
+			if (reference.referenceId !== fact.objectId) throw new ArtifactStoreError("invalid_manifest", `Artifact reference ${fact.objectId} has a mismatched identity`);
+			if (reference.expiresAt !== undefined && reference.expiresAt <= this.now()) continue;
+			if (artifactId === undefined || reference.artifactId === artifactId) references.push(reference);
+		}
+		return references;
+	}
+
+	private async hasLiveReference(artifactId: ArtifactId): Promise<boolean> {
+		return (await this.listReferences(artifactId)).length > 0;
 	}
 
 	private async manifest(id: ArtifactId): Promise<ArtifactManifestV1 | undefined> {
 		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		const result = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactManifest, id);
-		return result === undefined ? undefined : result.payload as unknown as ArtifactManifestV1;
+		if (result === undefined) return undefined;
+		const manifest = validateManifest(result.payload as unknown as ArtifactManifestV1);
+		if (manifest.artifactId !== id) throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${id} has a mismatched identity`);
+		return manifest;
 	}
 
 	private async requireManifest(id: ArtifactId): Promise<ArtifactManifestV1> {
 		const manifest = await this.manifest(id);
 		if (manifest === undefined) throw new ArtifactStoreError("not_found", `Artifact manifest not found: ${id}`);
-		if (expired(manifest.retention, this.now())) throw new ArtifactStoreError("expired", `Artifact retention expired: ${id}`);
+		if (expired(manifest.retention, this.now()) && !(await this.hasLiveReference(id))) throw new ArtifactStoreError("expired", `Artifact retention expired: ${id}`);
 		return manifest;
 	}
 

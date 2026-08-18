@@ -35,6 +35,8 @@ export interface WorkspaceCheckpointImpact {
 
 export type CheckpointRewindReason =
 	| "ok"
+	| "checkpoint_mismatch"
+	| "lane_changed"
 	| "target_not_found"
 	| "transcript_changed"
 	| "digest_mismatch"
@@ -54,6 +56,9 @@ export interface CheckpointImpactPlanV1 {
 	readonly transcript: TranscriptCheckpointImpact;
 	readonly workspace: WorkspaceCheckpointImpact;
 	readonly boundary: ContextRecoveryBoundary;
+	readonly checkpointTranscriptDigest?: string;
+	readonly checkpointWorkspaceDigest?: string;
+	readonly currentLaneLeafId?: string | null;
 }
 
 export interface CheckpointPlanOptions {
@@ -62,6 +67,10 @@ export interface CheckpointPlanOptions {
 	readonly workspace?: WorkspaceCheckpointState;
 	readonly expectedTranscriptDigest?: string;
 	readonly expectedWorkspaceDigest?: string;
+	readonly checkpointTranscriptDigest?: string;
+	readonly checkpointWorkspaceDigest?: string;
+	readonly currentLaneLeafId?: string | null;
+	readonly expectedLaneLeafId?: string | null;
 }
 
 export interface CheckpointV1 {
@@ -74,6 +83,7 @@ export interface CheckpointV1 {
 	readonly workspaceDigest?: string;
 	readonly createdAt: number;
 	readonly failClosed: true;
+	readonly currentLaneLeafId?: string | null;
 }
 
 function digest(value: unknown): string {
@@ -133,7 +143,10 @@ export function planCheckpointRewind(snapshot: ContextSnapshot, options: Checkpo
 	const workspace = workspaceImpact(options.workspace);
 	let reason: CheckpointRewindReason = "ok";
 	if (!targetExists) reason = "target_not_found";
+	else if (options.checkpointTranscriptDigest !== undefined && options.checkpointTranscriptDigest !== beforeDigest) reason = "checkpoint_mismatch";
+	else if (options.expectedLaneLeafId !== undefined && options.currentLaneLeafId !== options.expectedLaneLeafId) reason = "lane_changed";
 	else if (options.expectedTranscriptDigest !== undefined && options.expectedTranscriptDigest !== beforeDigest) reason = "transcript_changed";
+	else if (options.checkpointWorkspaceDigest !== undefined && options.checkpointWorkspaceDigest !== workspace.digest) reason = "digest_mismatch";
 	else if (options.expectedWorkspaceDigest !== undefined && options.expectedWorkspaceDigest !== workspace.digest) reason = "digest_mismatch";
 	else if (workspaceUnknown(options.workspace)) reason = "workspace_unknown";
 	else if (workspace.modifiedFiles.length > 0) reason = "workspace_modified";
@@ -156,6 +169,9 @@ export function planCheckpointRewind(snapshot: ContextSnapshot, options: Checkpo
 		transcript,
 		workspace,
 		boundary,
+		...(options.checkpointTranscriptDigest === undefined ? {} : { checkpointTranscriptDigest: options.checkpointTranscriptDigest }),
+		...(options.checkpointWorkspaceDigest === undefined ? {} : { checkpointWorkspaceDigest: options.checkpointWorkspaceDigest }),
+		...(options.currentLaneLeafId === undefined ? {} : { currentLaneLeafId: options.currentLaneLeafId }),
 	};
 	return Object.freeze({ ...body, digest: digest(body) });
 }
@@ -173,6 +189,7 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 		...(workspace?.digest === undefined ? {} : { workspaceDigest: workspace.digest }),
 		createdAt: now(),
 		failClosed: true,
+		...(snapshot.headEntryId === undefined ? {} : { currentLaneLeafId: snapshot.headEntryId }),
 	};
 }
 
@@ -185,7 +202,11 @@ export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: Checkpoin
 
 export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snapshot: ContextSnapshot, workspace?: WorkspaceCheckpointState): boolean {
 	if (plan.status !== "approved" || plan.failClosed !== true || plan.sourceSnapshotId !== snapshot.snapshotId) return false;
+	const planWithSessionFields = plan as CheckpointImpactPlanV1 & { readonly lane?: string; readonly planId?: string };
+	const { lane: _lane, planId: _planId, digest: planDigest, ...planBody } = planWithSessionFields;
+	if (digest(planBody) !== planDigest) return false;
 	if (plan.transcript.beforeDigest !== digestCheckpointTranscript(snapshot.entries())) return false;
+	if (plan.currentLaneLeafId !== undefined && plan.currentLaneLeafId !== snapshot.headEntryId) return false;
 	if (plan.workspace.digest !== undefined && plan.workspace.digest !== workspace?.digest) return false;
 	return !workspaceImpact(workspace).hasUncommittedImpact;
 }

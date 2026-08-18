@@ -4,6 +4,7 @@ import { canonicalFoundationJson, sha256HexValue } from "../foundation/index.ts"
 import { estimateTokens } from "../compaction/compaction.ts";
 import { buildSessionContext, type SessionContextBuildOptions } from "../session/context.ts";
 import type { Entry } from "../session/types.ts";
+import { redactArtifactReference, type ArtifactReference } from "../artifacts.ts";
 
 export const CONTEXT_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 
@@ -89,17 +90,38 @@ export interface ContextInheritanceOptions {
 	readonly managedLocks?: readonly ContextResourceKind[];
 }
 
-/** Runtime-only package input. Persisted forks contain only entry and artifact references. */
+/** Metadata-only build fact; the actual context is reconstructed from Session entries. */
+export interface ContextBuildFactV1 {
+	readonly schemaVersion: 1;
+	readonly buildId: string;
+	readonly bindingEpochId: string;
+	readonly taskId?: string;
+	readonly lane?: string;
+	readonly entryIds: readonly string[];
+	readonly sourceIds: readonly string[];
+	readonly contextDigest: string;
+	readonly createdAt: number;
+}
+
+/** Persistable task package metadata. Package bodies remain Session/artifact refs. */
 export interface TaskContextPackageV1 {
 	readonly schemaVersion: 1;
+	readonly packageId?: string;
 	readonly taskId: string;
+	readonly bindingEpochId?: string;
+	/** Runtime-only goal input. Persisted packages carry only goalDigest. */
 	readonly goal?: string;
 	readonly entryIds?: readonly string[];
+	/** Runtime-only input accepted by task-package forks; never emitted to ledger. */
 	readonly entries?: readonly Entry[];
 	readonly artifactRefs?: readonly string[];
 	readonly budget?: Partial<ContextSnapshotBudget>;
+	readonly packageDigest?: string;
+	readonly createdAt?: number;
+	readonly goalDigest?: string;
 }
 export type TaskContextPackage = TaskContextPackageV1;
+export type PersistedTaskContextPackageV1 = Omit<TaskContextPackageV1, "entries" | "goal"> & { readonly goalDigest?: string };
 
 export interface ContextSnapshotState {
 	readonly thinkingLevel: string;
@@ -124,12 +146,17 @@ export interface ContextSnapshotV1 {
 	readonly parentSnapshotId: string | null;
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
+	readonly bindingEpochId: string;
+	readonly buildFact?: ContextBuildFactV1;
+	readonly taskPackage?: PersistedTaskContextPackageV1;
 	readonly source: ContextSnapshotSource;
 	readonly sources: readonly ContextSnapshotSource[];
 	readonly trust: ContextTrust;
 	readonly budget: ContextSnapshotBudget;
 	readonly digest: string;
-	readonly summary?: string;
+	/** Summary body is an artifact; only its redacted reference is durable. */
+	readonly summaryRef?: ArtifactReference;
+	readonly summaryDigest?: string;
 	readonly forkMode: ContextForkMode;
 	readonly inheritance: ContextInheritanceMatrix;
 	readonly recoveryBoundary?: ContextRecoveryBoundary;
@@ -148,6 +175,10 @@ export interface ContextSnapshotForkOptions {
 	readonly taskPackage?: TaskContextPackageV1;
 	readonly inheritance?: ContextInheritanceOptions;
 	readonly summary?: string;
+	readonly summaryRef?: ArtifactReference;
+	readonly summaryDigest?: string;
+	readonly bindingEpochId?: string;
+	readonly buildFact?: ContextBuildFactV1;
 	readonly source?: Partial<ContextSnapshotSource> | string;
 	readonly budget?: Partial<ContextSnapshotBudget> | number;
 }
@@ -161,11 +192,16 @@ export interface ContextSnapshotOptions {
 	readonly checkpointId?: string | null;
 	readonly createdAt?: number;
 	readonly revision?: number;
+	readonly bindingEpochId?: string;
+	readonly buildFact?: ContextBuildFactV1;
+	readonly taskPackage?: TaskContextPackageV1;
 	readonly source?: Partial<ContextSnapshotSource> | string;
 	readonly sources?: readonly ContextSnapshotSource[];
 	readonly trust?: ContextTrust;
 	readonly budget?: Partial<ContextSnapshotBudget> | number;
 	readonly summary?: string;
+	readonly summaryRef?: ArtifactReference;
+	readonly summaryDigest?: string;
 	readonly forkMode?: ContextForkMode;
 	readonly inheritance?: ContextInheritanceOptions;
 	readonly recoveryBoundary?: ContextRecoveryBoundary;
@@ -180,18 +216,24 @@ export interface ContextSnapshot {
 	readonly parentSnapshotId: string | null;
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
+	readonly bindingEpochId: string;
+	readonly buildFact?: ContextBuildFactV1;
+	readonly taskPackage?: PersistedTaskContextPackageV1;
 	readonly source: ContextSnapshotSource;
 	readonly headEntryId: string | null;
 	sources(): readonly ContextSnapshotSource[];
 	readonly trust: ContextTrust;
 	readonly budget: ContextSnapshotBudget;
 	readonly digest: string;
+	readonly summaryRef?: ArtifactReference;
 	readonly forkMode: ContextForkMode;
 	readonly inheritance: ContextInheritanceMatrix;
 	readonly recoveryBoundary?: ContextRecoveryBoundary;
 	entries(): readonly Entry[];
 	messages(): readonly AgentMessage[];
 	state(): ContextSnapshotState;
+	/** Returns the transient summary body; it is never emitted by toJSON(). */
+	summary(): string | undefined;
 	toJSON(): ContextSnapshotV1;
 	fork(options?: ContextSnapshotForkOptions): ContextSnapshot;
 	rewindTo(entryId: string): ContextSnapshot | undefined;
@@ -216,6 +258,21 @@ function digest(value: unknown): string {
 	return `sha256:${sha256HexValue(canonicalFoundationJson(value))}`;
 }
 
+function normalizeDigest(value: string): string {
+	return /^sha256:[0-9a-f]{64}$/.test(value) ? value : digest(value);
+}
+
+function persistedTaskPackage(value: TaskContextPackageV1 | PersistedTaskContextPackageV1): PersistedTaskContextPackageV1 {
+	const runtime = value as TaskContextPackageV1;
+	const { goal: _goal, entries: _entries, ...metadata } = runtime;
+	return {
+		...metadata,
+		...(runtime.goal === undefined && runtime.goalDigest === undefined
+			? {}
+			: { goalDigest: runtime.goalDigest ?? digest(runtime.goal) }),
+	};
+}
+
 function selector(value: ContextResourceSelector | undefined): ContextResourceSelector {
 	if (value === undefined) return { policy: "all" };
 	if (value.policy === "all" || value.policy === "none") return { policy: value.policy };
@@ -228,14 +285,25 @@ function equalSelector(left: ContextResourceSelector, right: ContextResourceSele
 
 /** Return true when child is equal to or narrower than parent. */
 export function contextSelectorNarrower(parent: ContextResourceSelector, child: ContextResourceSelector): boolean {
+	const parentNames = new Set(parent.named ?? []);
+	const childNames = new Set(child.named ?? []);
 	if (parent.policy === "none") return child.policy === "none";
 	if (child.policy === "none") return true;
 	if (parent.policy === "all") return true;
 	if (child.policy === "all") return false;
-	const parentNames = new Set(parent.named ?? []);
-	const childNames = new Set(child.named ?? []);
-	if (parent.policy === "named") return child.policy === "named" && [...childNames].every((name) => parentNames.has(name));
-	if (child.policy === "named") return [...childNames].every((name) => !parentNames.has(name));
+	if (parent.policy === "named") {
+		// A named parent can only be narrowed by another named subset. An
+		// except selector describes an open universe and is therefore a widen.
+		return child.policy === "named" && [...childNames].every((name) => parentNames.has(name));
+	}
+	if (child.policy === "named") {
+		// Parent except X permits every name outside X. A named child is safe
+		// only when it contains no excluded name.
+		return [...childNames].every((name) => !parentNames.has(name));
+	}
+	// except X -> except Y is narrower exactly when Y excludes every name
+	// already excluded by X. The previous implementation accidentally treated
+	// an except selector as named in some mixed-policy cases.
 	return [...parentNames].every((name) => childNames.has(name));
 }
 
@@ -281,7 +349,7 @@ function snapshotSource(options: ContextSnapshotOptions, messages: readonly Agen
 		sourceId,
 		kind,
 		trust,
-		digest: value.digest ?? digest({ sourceId, kind, trust, messages }),
+		digest: value.digest === undefined ? digest({ sourceId, kind, trust, messages }) : normalizeDigest(value.digest),
 		estimatedTokens: value.estimatedTokens ?? messages.reduce((sum, message) => sum + estimateTokens(message), 0),
 		disposition: value.disposition ?? "included",
 		...(value.scope === undefined ? {} : { scope: value.scope }),
@@ -317,10 +385,14 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 	readonly parentSnapshotId: string | null;
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
+	readonly bindingEpochId: string;
+	readonly buildFact?: ContextBuildFactV1;
+	readonly taskPackage?: PersistedTaskContextPackageV1;
 	readonly source: ContextSnapshotSource;
 	readonly trust: ContextTrust;
 	readonly budget: ContextSnapshotBudget;
 	readonly digest: string;
+	readonly summaryRef?: ArtifactReference;
 	readonly forkMode: ContextForkMode;
 	readonly inheritance: ContextInheritanceMatrix;
 	readonly recoveryBoundary?: ContextRecoveryBoundary;
@@ -328,7 +400,8 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 	private readonly contextMessages: readonly AgentMessage[];
 	private readonly sourceList: readonly ContextSnapshotSource[];
 	private readonly contextState: ContextSnapshotState;
-	private readonly summary?: string;
+	private readonly summaryTextValue?: string;
+	private readonly summaryDigestValue?: string;
 
 	constructor(pathEntries: readonly Entry[], options: ContextSnapshotOptions = {}) {
 		this.id = options.id ?? options.snapshotId ?? uuidv7();
@@ -338,6 +411,12 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 		this.parentSnapshotId = options.parentSnapshotId ?? options.parentId ?? null;
 		this.checkpointId = options.checkpointId ?? null;
 		this.createdAt = options.createdAt ?? Date.now();
+		if (options.bindingEpochId === undefined || options.bindingEpochId.length === 0) {
+			throw new RangeError("Context snapshot bindingEpochId is required");
+		}
+		this.bindingEpochId = options.bindingEpochId;
+		this.buildFact = options.buildFact === undefined ? undefined : deepFreeze(clone(options.buildFact));
+		this.taskPackage = options.taskPackage === undefined ? undefined : deepFreeze(persistedTaskPackage(options.taskPackage));
 		this.pathEntries = deepFreeze(pathEntries.map(clone));
 		const context = buildSessionContext(this.pathEntries, options.build);
 		this.contextMessages = deepFreeze(context.messages.map(clone));
@@ -353,19 +432,28 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 		this.forkMode = options.forkMode ?? "all";
 		this.inheritance = resolveContextInheritance(options.inheritance);
 		this.recoveryBoundary = options.recoveryBoundary === undefined ? undefined : deepFreeze(clone(options.recoveryBoundary));
-		this.summary = options.summary;
+		this.summaryTextValue = options.summary;
+		this.summaryDigestValue =
+			options.summaryDigest ??
+			(options.summaryRef === undefined ? undefined : options.summaryRef.digest) ??
+			(options.summary === undefined ? undefined : `sha256:${sha256HexValue(new TextEncoder().encode(options.summary))}`);
+		this.summaryRef = options.summaryRef === undefined ? undefined : deepFreeze(redactArtifactReference(options.summaryRef));
 		this.digest = digest({
 			schemaVersion: CONTEXT_SNAPSHOT_SCHEMA_VERSION,
 			snapshotId: this.snapshotId,
 			revision: this.revision,
 			parentSnapshotId: this.parentSnapshotId,
 			checkpointId: this.checkpointId,
+			bindingEpochId: this.bindingEpochId,
+			...(this.buildFact === undefined ? {} : { buildFact: this.buildFact }),
+			...(this.taskPackage === undefined ? {} : { taskPackage: this.taskPackage }),
 			source: this.source,
 			sources: this.sourceList,
 			trust: this.trust,
 			budget: this.budget,
 			forkMode: this.forkMode,
 			inheritance: this.inheritance,
+			...(this.summaryDigestValue === undefined ? {} : { summaryDigest: this.summaryDigestValue }),
 			entryIds: this.pathEntries.map((entry) => entry.id),
 			messages: this.contextMessages,
 		});
@@ -387,6 +475,10 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 	state(): ContextSnapshotState {
 		return this.contextState;
 	}
+
+	summary(): string | undefined {
+		return this.summaryTextValue;
+	}
 	toJSON(): ContextSnapshotV1 {
 		return deepFreeze({
 			schemaVersion: CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -397,12 +489,16 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 			parentSnapshotId: this.parentSnapshotId,
 			checkpointId: this.checkpointId,
 			createdAt: this.createdAt,
+			bindingEpochId: this.bindingEpochId,
+			...(this.buildFact === undefined ? {} : { buildFact: this.buildFact }),
+			...(this.taskPackage === undefined ? {} : { taskPackage: this.taskPackage }),
 			source: this.source,
 			sources: this.sourceList,
 			trust: this.trust,
 			budget: this.budget,
 			digest: this.digest,
-			...(this.summary === undefined ? {} : { summary: this.summary }),
+			...(this.summaryRef === undefined ? {} : { summaryRef: this.summaryRef }),
+			...(this.summaryDigestValue === undefined ? {} : { summaryDigest: this.summaryDigestValue }),
 			forkMode: this.forkMode,
 			inheritance: this.inheritance,
 			...(this.recoveryBoundary === undefined ? {} : { recoveryBoundary: this.recoveryBoundary }),
@@ -422,12 +518,17 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 			parentSnapshotId: this.snapshotId,
 			checkpointId: options.checkpointId,
 			createdAt: options.createdAt,
+			bindingEpochId: options.bindingEpochId ?? this.bindingEpochId,
+			buildFact: options.buildFact,
+			taskPackage: options.taskPackage === undefined ? undefined : { ...options.taskPackage },
 			source: source ?? { sourceId: this.source.sourceId, kind: this.source.kind, trust: this.trust },
 			trust: this.trust,
 			budget: options.budget ?? this.budget,
 			forkMode: mode,
 			inheritance: options.inheritance ?? { parent: Object.fromEntries(CONTEXT_RESOURCE_KINDS.map((kind) => [kind, this.inheritance[kind]!.child])) },
 			summary: options.summary,
+			summaryRef: options.summaryRef,
+			summaryDigest: options.summaryDigest,
 		});
 	}
 
@@ -438,11 +539,16 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 			parentId: this.id,
 			parentSnapshotId: this.snapshotId,
 			checkpointId: this.checkpointId,
+			bindingEpochId: this.bindingEpochId,
+			buildFact: this.buildFact,
+			taskPackage: this.taskPackage,
 			source: this.source,
 			trust: this.trust,
 			budget: this.budget,
 			forkMode: "all",
 			inheritance: { parent: Object.fromEntries(CONTEXT_RESOURCE_KINDS.map((kind) => [kind, this.inheritance[kind]!.child])) },
+			summaryRef: this.summaryRef,
+			summaryDigest: this.summaryDigestValue,
 		});
 	}
 }
@@ -452,6 +558,11 @@ export function createContextSnapshot(entries: readonly Entry[], options: Contex
 }
 
 export function contextSnapshotFromJSON(record: ContextSnapshotV1, entries: readonly Entry[]): ContextSnapshot {
+	if (record.bindingEpochId.length === 0) throw new Error(`Context snapshot ${record.snapshotId} has no BindingEpoch`);
+	if (record.buildFact !== undefined && record.buildFact.bindingEpochId !== record.bindingEpochId) throw new Error(`Context snapshot ${record.snapshotId} has a mismatched build BindingEpoch`);
+	if (record.taskPackage?.bindingEpochId !== undefined && record.taskPackage.bindingEpochId !== record.bindingEpochId) throw new Error(`Context snapshot ${record.snapshotId} has a mismatched task package BindingEpoch`);
+	if (record.summaryRef !== undefined && record.summaryDigest !== record.summaryRef.digest) throw new Error(`Context snapshot ${record.snapshotId} has a mismatched summary digest`);
+	if (record.entryIds.length !== entries.length || record.entryIds.some((entryId, index) => entryId !== entries[index]?.id)) throw new Error(`Context snapshot ${record.snapshotId} entry ids failed recovery`);
 	const snapshot = new ImmutableContextSnapshot(entries, {
 		id: record.id,
 		snapshotId: record.snapshotId,
@@ -460,11 +571,15 @@ export function contextSnapshotFromJSON(record: ContextSnapshotV1, entries: read
 		parentSnapshotId: record.parentSnapshotId,
 		checkpointId: record.checkpointId,
 		createdAt: record.createdAt,
+		bindingEpochId: record.bindingEpochId,
+		buildFact: record.buildFact,
+		taskPackage: record.taskPackage,
 		source: record.source,
 		sources: record.sources,
 		trust: record.trust,
 		budget: record.budget,
-		summary: record.summary,
+		summaryRef: record.summaryRef,
+		summaryDigest: record.summaryDigest,
 		forkMode: record.forkMode,
 		inheritance: { parent: Object.fromEntries(CONTEXT_RESOURCE_KINDS.map((kind) => [kind, record.inheritance[kind]!.parent])) },
 		recoveryBoundary: record.recoveryBoundary,

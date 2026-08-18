@@ -141,7 +141,12 @@ function matchesCorrelation(
 
 function inputFingerprint(input: ProvisionedFoundationRecordV1, _fencingToken: string): string {
 	const value = { ...input } as Record<string, unknown>;
-	if (value.expectedRevision === undefined) delete value.expectedRevision;
+	// expectedRevision is an optimistic-concurrency guard, not part of the
+	// caller's idempotency identity. A retry of one immutable command can see a
+	// newer legal revision after another projection has replayed it; including
+	// that guard in the fingerprint would incorrectly reject the replay as a
+	// duplicate request with different content.
+	delete value.expectedRevision;
 	delete value.fencingToken;
 	if (value.correlation !== undefined && typeof value.correlation === "object" && value.correlation !== null) {
 		const correlation: Record<string, unknown> = { ...(value.correlation as Record<string, unknown>), revision: 0 };

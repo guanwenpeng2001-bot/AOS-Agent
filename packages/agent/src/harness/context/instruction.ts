@@ -13,6 +13,9 @@ export interface InstructionSourceV1 {
 	readonly trust: ContextTrust;
 	readonly contentDigest: string;
 	readonly contentRef?: ArtifactReference;
+	readonly path?: string;
+	readonly parentSourceId?: string;
+	readonly inherited?: boolean;
 	readonly enabled: boolean;
 	readonly priority: number;
 	readonly createdAt: number;
@@ -25,6 +28,7 @@ export interface InstructionLockV1 {
 	readonly managed: boolean;
 	readonly reason: string;
 	readonly sourceDigest: string;
+	readonly path?: string;
 	readonly lockedBy: string;
 	readonly createdAt: number;
 }
@@ -36,6 +40,9 @@ export interface InstructionSourceInput {
 	readonly content?: string;
 	readonly contentDigest?: string;
 	readonly contentRef?: ArtifactReference;
+	readonly path?: string;
+	readonly parentSourceId?: string;
+	readonly inherited?: boolean;
 	readonly enabled?: boolean;
 	readonly priority?: number;
 	readonly createdAt?: number;
@@ -47,13 +54,26 @@ export interface InstructionResolution {
 	readonly digest: string;
 }
 
+export interface InstructionResolutionOptions {
+	readonly path?: string;
+}
+
+function pathContains(parent: string | undefined, child: string | undefined): boolean {
+	if (parent === undefined || child === undefined) return true;
+	const normalizedParent = parent.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+	const normalizedChild = child.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+	return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
 export function resolveInstructionSources(
 	sources: readonly InstructionSourceV1[],
 	locks: readonly InstructionLockV1[],
+	options: InstructionResolutionOptions = {},
 ): InstructionResolution {
 	const lockBySource = new Map(locks.map((lock) => [lock.sourceId, lock]));
 	const selected = sources
 		.filter((source) => source.enabled)
+		.filter((source) => pathContains(source.path, options.path))
 		.filter((source) => lockBySource.get(source.sourceId)?.locked !== true)
 		.sort((left, right) => right.priority - left.priority || left.sourceId.localeCompare(right.sourceId));
 	const serialized = JSON.stringify({ sources: selected, locks: locks.slice().sort((left, right) => left.sourceId.localeCompare(right.sourceId)) });
