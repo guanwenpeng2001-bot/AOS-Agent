@@ -17,6 +17,13 @@ import {
 	canonicalFoundationJson,
 	createExecutionCorrelation,
 	finalizeRunReceipt,
+	redactProjection,
+	redactText,
+	sha256HexValue,
+	validateArtifactRef,
+	validateArtifactDescriptorV1,
+	validateArtifactPutResultV1,
+	validateArtifactVerifyResultV1,
 	settleTaskResult,
 	validateAttemptReceipt,
 	validateDispatchV1,
@@ -28,6 +35,8 @@ import {
 	type AcceptanceFactV1,
 	type AgentBindingV1,
 	type ArtifactRefV1,
+	type ArtifactDescriptorV1,
+	type ArtifactStoreProvider,
 	type AttemptReceiptV1,
 	type DispatchV1,
 	type ExecutionCorrelationV1,
@@ -52,9 +61,14 @@ import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import {
 	FoundationToolPipelineV1,
+	FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
 	SessionToolPipelineStorageV1,
+	projectToolReceiptExecutionSemanticsV1,
+	validateAndVerifyToolReceiptV1,
+	validateFoundationToolResultEntryV1,
 	validateToolIntentV1,
 	validateToolReceiptV1,
+	validateToolResultPayloadV1,
 	type ToolDefinitionRegistryV1,
 	type ToolDefinitionV1,
 	type ToolExecutionV1,
@@ -62,12 +76,18 @@ import {
 	type ToolPipelineContextV1,
 	type ToolPipelineOptionsV1,
 	type ToolReceiptV1,
+	type ToolReceiptOutcomeV1,
+	type FoundationToolResultEntryV1,
+	type ToolResultPayloadV1,
+	type ToolResultContentV1,
+	type ToolResultUsageV1,
 	type ToolRevisionV1,
 } from "./tool-pipeline.ts";
 import {
 	assertJsonSerializable,
 	type BranchSummaryEntry,
 	type CompactionEntry,
+	type CustomEntry,
 	type Entry,
 	type JsonValue,
 	type NewRecord,
@@ -380,6 +400,8 @@ export interface AgentHarnessOptions {
 	context?: TelemetryContext;
 	/** Optional explicit product execution graph; omitted prompts remain session-only. */
 	foundationExecution?: AgentHarnessFoundationExecution;
+	/** Host-owned artifact provider; method-bearing providers never enter durable execution state. */
+	artifactStore?: ArtifactStoreProvider;
 	/** Optional pipeline override; when Foundation execution is configured, storage defaults to the Session ledger. */
 	toolPipeline?: FoundationToolPipelineV1;
 	toolPipelineOptions?: Omit<ToolPipelineOptionsV1, "registry" | "storage">;
@@ -438,12 +460,249 @@ function sessionStopReason(message: AssistantMessage): SessionStopReason {
 
 function operationError(error: unknown): OperationError {
 	const normalized = toError(error);
-	const code = error instanceof SessionError && error.code ? error.code : error instanceof Error ? error.name : "error";
+	const code = error instanceof HarnessToolPipelineError
+		? error.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"
+		: error instanceof SessionError && error.code ? error.code : error instanceof Error ? error.name : "error";
 	return { code, message: normalized.message };
 }
 
 function foundationToolUsage(usage: Usage): NonNullable<ToolExecutionV1["usage"]> {
 	return { tokens: usage.totalTokens, costUsd: usage.cost.total, toolCalls: 1 };
+}
+
+function agentUsageFromToolResultUsage(usage: ToolResultUsageV1): Usage {
+	return {
+		input: usage.input,
+		output: usage.output,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
+		...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
+		...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
+		totalTokens: usage.totalTokens,
+		cost: {
+			input: usage.cost.input,
+			output: usage.cost.output,
+			cacheRead: usage.cost.cacheRead,
+			cacheWrite: usage.cost.cacheWrite,
+			total: usage.cost.total,
+		},
+	};
+}
+
+function foundationJsonValue(value: unknown): FoundationJsonValue {
+	assertJsonSerializable(value);
+	if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") return value;
+	if (Array.isArray(value)) return value.map((item) => foundationJsonValue(item));
+	const record: Record<string, FoundationJsonValue> = {};
+	const objectValue = value as Record<string, unknown>;
+	for (const [key, item] of Object.entries(objectValue)) record[key] = foundationJsonValue(item);
+	return record;
+}
+
+function toolStartedExecutionSemantics(start: ToolStartedRecord): string {
+	try {
+		return canonicalFoundationJson({
+			type: start.type,
+			runId: start.runId,
+		assistantEntryId: start.assistantEntryId,
+			toolIndex: start.toolIndex,
+			toolCallId: start.toolCallId,
+			toolName: start.toolName,
+			effectiveArgs: start.effectiveArgs,
+			resultEntryId: start.resultEntryId,
+			replay: start.replay,
+		});
+	} catch (_error) {
+		return "invalid_tool_started_execution_semantics";
+	}
+}
+
+async function foundationToolResultPayload(
+	result: AgentToolResult<unknown>,
+	artifactStore: ArtifactStoreProvider | undefined,
+	producerId: string | undefined,
+	toolCallId: string,
+): Promise<ResultValue<{ result: ToolResultPayloadV1; artifacts: readonly ArtifactRefV1[] }, FoundationError>> {
+	const content: ToolResultContentV1[] = [];
+	for (const item of result.content) {
+		if (item.type === "text") {
+			const safeText = redactText(item.text);
+			if (safeText !== item.text) return Result.err(new FoundationError("side_effect_unknown", "tool text cannot be safely persisted without changing its meaning"));
+			content.push({ type: "text", text: safeText });
+			continue;
+		}
+		if (artifactStore === undefined) return Result.err(new FoundationError("side_effect_unknown", "image tool result requires a durable ArtifactStore"));
+		if (producerId === undefined) return Result.err(new FoundationError("side_effect_unknown", "image tool result has no durable provider identity"));
+		if (!item.mimeType.startsWith("image/")) return Result.err(new FoundationError("side_effect_unknown", "image tool result has an invalid media type"));
+		let bytes: Uint8Array;
+		try {
+			bytes = decodeBase64(item.data);
+		} catch (_error) {
+			return Result.err(new FoundationError("side_effect_unknown", "image tool result is not valid base64"));
+		}
+		const digest = rawSha256(bytes);
+		const descriptor: ArtifactDescriptorV1 = {
+			schemaVersion: 1,
+			artifactId: `tool-result-image:${toolCallId}:${digest}`,
+			name: `tool-result-image:${toolCallId}`,
+			mediaType: item.mimeType,
+			digest: `sha256:${digest}`,
+			producer: producerId,
+			permissions: [],
+			retention: { policy: "session" },
+			validationState: "pending",
+			sizeBytes: bytes.byteLength,
+		};
+		const checkedDescriptor = validateArtifactDescriptorV1(descriptor);
+		if (!checkedDescriptor.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore descriptor is invalid"));
+		let stored: Awaited<ReturnType<ArtifactStoreProvider["put"]>>;
+		try {
+			stored = await artifactStore.put(checkedDescriptor.value, bytes);
+		} catch (_error) {
+			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
+		}
+		if (!stored.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
+		const checkedPut = validateArtifactPutResultV1(stored.value);
+		if (!checkedPut.ok || checkedPut.value.ref !== checkedDescriptor.value.artifactId || checkedPut.value.sizeBytes !== bytes.byteLength) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put returned an unverifiable reference"));
+		let verified: Awaited<ReturnType<ArtifactStoreProvider["verify"]>>;
+		try {
+			verified = await artifactStore.verify(stored.value.ref);
+		} catch (_error) {
+			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
+		}
+		if (!verified.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
+		const checkedVerify = validateArtifactVerifyResultV1(verified.value);
+		if (!checkedVerify.ok || !checkedVerify.value.digestValid) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
+		const checkedArtifact = validateArtifactRef({ schemaVersion: 1, artifactId: checkedPut.value.ref, mediaType: item.mimeType, digest: checkedDescriptor.value.digest, producer: producerId, sizeBytes: bytes.byteLength });
+		if (!checkedArtifact.ok) {
+			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore returned an unverifiable ArtifactRef"));
+		}
+		content.push({ type: "image", artifact: checkedArtifact.value });
+	}
+	const payload: ToolResultPayloadV1 = {
+		schemaVersion: 1,
+		content,
+		...(result.details === undefined ? {} : { details: foundationJsonValue(redactProjection(result.details)) }),
+		...(result.usage === undefined ? {} : {
+			usage: {
+				input: result.usage.input,
+				output: result.usage.output,
+				cacheRead: result.usage.cacheRead,
+				cacheWrite: result.usage.cacheWrite,
+				...(result.usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: result.usage.cacheWrite1h }),
+				...(result.usage.reasoning === undefined ? {} : { reasoning: result.usage.reasoning }),
+				totalTokens: result.usage.totalTokens,
+				cost: {
+					input: result.usage.cost.input,
+					output: result.usage.cost.output,
+					cacheRead: result.usage.cost.cacheRead,
+					cacheWrite: result.usage.cost.cacheWrite,
+					total: result.usage.cost.total,
+				},
+			} satisfies ToolResultUsageV1,
+		}),
+		...(result.addedToolNames === undefined ? {} : { addedToolNames: [...result.addedToolNames] }),
+		...(result.terminate === undefined ? {} : { terminate: result.terminate }),
+	};
+	const checkedPayload = validateToolResultPayloadV1(payload);
+	if (!checkedPayload.ok) return checkedPayload;
+	return Result.ok({ result: checkedPayload.value, artifacts: foundationToolResultArtifacts(checkedPayload.value) });
+}
+
+async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefined, artifactStore: ArtifactStoreProvider | undefined): Promise<ResultValue<AgentToolResult<unknown>, FoundationError>> {
+	if (payload === undefined) return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload is missing or unrecoverable"));
+	const checked = validateToolResultPayloadV1(payload);
+	if (!checked.ok) return checked;
+	const content: AgentToolResult<unknown>["content"] = [];
+	for (const item of checked.value.content) {
+		if (item.type === "text") {
+			content.push({ type: "text", text: item.text });
+			continue;
+		}
+		if (artifactStore === undefined) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
+		let fetched: Awaited<ReturnType<ArtifactStoreProvider["get"]>>;
+		try {
+			fetched = await artifactStore.get(item.artifact.artifactId);
+		} catch (_error) {
+			return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
+		}
+		if (fetched === null || typeof fetched !== "object" || !("ok" in fetched) || fetched.ok !== true || !("value" in fetched) || !(fetched.value instanceof Uint8Array)) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
+		let verified: Awaited<ReturnType<ArtifactStoreProvider["verify"]>>;
+		try {
+			verified = await artifactStore.verify(item.artifact.artifactId);
+		} catch (_error) {
+			return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+		}
+		if (verified === null || typeof verified !== "object" || !("ok" in verified) || verified.ok !== true || !("value" in verified)) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+		const checkedVerify = validateArtifactVerifyResultV1(verified.value);
+		if (!checkedVerify.ok || !checkedVerify.value.digestValid || item.artifact.digest !== `sha256:${rawSha256(fetched.value)}` || item.artifact.sizeBytes !== fetched.value.byteLength) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+		const restoredImage: ImageContent & { artifact: ArtifactRefV1 } = {
+			type: "image",
+			data: encodeBase64(fetched.value),
+			mimeType: item.artifact.mediaType,
+			artifact: item.artifact,
+		};
+		content.push(restoredImage);
+	}
+	return Result.ok({
+		content,
+		details: checked.value.details,
+		...(checked.value.usage === undefined ? {} : {
+			usage: {
+				input: checked.value.usage.input,
+				output: checked.value.usage.output,
+				cacheRead: checked.value.usage.cacheRead,
+				cacheWrite: checked.value.usage.cacheWrite,
+				...(checked.value.usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: checked.value.usage.cacheWrite1h }),
+				...(checked.value.usage.reasoning === undefined ? {} : { reasoning: checked.value.usage.reasoning }),
+				totalTokens: checked.value.usage.totalTokens,
+				cost: {
+					input: checked.value.usage.cost.input,
+					output: checked.value.usage.cost.output,
+					cacheRead: checked.value.usage.cost.cacheRead,
+					cacheWrite: checked.value.usage.cost.cacheWrite,
+					total: checked.value.usage.cost.total,
+				},
+			} satisfies Usage,
+		}),
+		...(checked.value.addedToolNames === undefined ? {} : { addedToolNames: [...checked.value.addedToolNames] }),
+		...(checked.value.terminate === undefined ? {} : { terminate: checked.value.terminate }),
+	});
+}
+
+function foundationToolResultArtifacts(payload: ToolResultPayloadV1): readonly ArtifactRefV1[] {
+	return payload.content.flatMap((item) => item.type === "image" ? [item.artifact] : []);
+}
+
+interface FoundationReceiptFoldV1 {
+	representative: ToolReceiptV1;
+	outcome: ToolReceiptOutcomeV1;
+	sideEffectState: SideEffectStateV1;
+	result?: ToolResultPayloadV1;
+}
+
+function toolReceiptSeverity(receipt: ToolReceiptV1): 1 | 2 | 3 {
+	if (receipt.outcome === "side_effect_unknown" || receipt.sideEffectState === "side_effect_unknown") return 3;
+	if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") return 2;
+	return 1;
+}
+
+function decodeBase64(value: string): Uint8Array {
+	if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new TypeError("invalid base64");
+	const binary = atob(value);
+	const bytes = new Uint8Array(binary.length);
+	for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+	return bytes;
+}
+
+function encodeBase64(value: Uint8Array): string {
+	let binary = "";
+	for (const byte of value) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+function rawSha256(value: Uint8Array): string {
+	return sha256HexValue(value);
 }
 
 class HarnessToolPipelineError extends Error {
@@ -488,13 +747,13 @@ export class AgentHarness implements AgentLane {
 	private readonly entryProjectors: Record<string, EntryProjector>;
 	private readonly toolExecution: "sequential" | "parallel";
 	private foundationExecution?: AgentHarnessFoundationExecution;
+	private readonly artifactStore?: ArtifactStoreProvider;
 	private readonly foundationOwnerId?: string;
 	private foundationSessionId?: string;
 	private foundationLease?: LedgerWriterLeaseV1;
 	private toolPipeline?: FoundationToolPipelineV1;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
 	private readonly foundationReceipts = new Map<string, FoundationReceiptBundle>();
-	private readonly pipelineResults = new Map<string, AgentToolResult<unknown>>();
 	private readonly eventBus = new HarnessEventBus();
 	private readonly hookRegistry = new HookRegistry();
 	private readonly activeOperations = new Map<string, ActiveOperation>();
@@ -536,6 +795,7 @@ export class AgentHarness implements AgentLane {
 		this.entryProjectors = { ...(options.entryProjectors ?? {}) };
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
+		this.artifactStore = options.artifactStore;
 		this.foundationOwnerId = options.foundationExecution === undefined ? undefined : `agent-harness:${options.session.idGenerator.next()}`;
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
@@ -974,18 +1234,33 @@ export class AgentHarness implements AgentLane {
 	private async foundationToolOutcome(lane: string, runId: string): Promise<FoundationToolOutcome> {
 		const starts = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
 		if (starts.length === 0) return { failed: false, sideEffectState: "none" };
+		const startsByToolCallId = new Map<string, ToolStartedRecord>();
+		let ledgerConflict = false;
+		for (const start of starts) {
+			const existing = startsByToolCallId.get(start.toolCallId);
+			if (existing === undefined) {
+				startsByToolCallId.set(start.toolCallId, start);
+				continue;
+			}
+			if (toolStartedExecutionSemantics(existing) !== toolStartedExecutionSemantics(start)) ledgerConflict = true;
+		}
 		const receipts = new Map<string, ToolReceiptV1>();
 		const correlation = this.foundationCorrelation(lane, runId);
 		if (correlation !== undefined) {
-			const startedToolCallIds = new Set(starts.map((start) => start.toolCallId));
+			const startedToolCallIds = new Set(startsByToolCallId.keys());
 			const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
 			const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
 			for (const record of records) {
 				if (record.kind !== "fact") continue;
-				const checked = validateToolReceiptV1(record.payload);
+				const checked = validateAndVerifyToolReceiptV1(record.payload);
 				if (!checked.ok) throw new HarnessFault("Persisted tool receipt failed validation", checked.error);
 				if (!startedToolCallIds.has(checked.value.toolCallId)) throw new HarnessFault(`Persisted tool receipt ${checked.value.toolCallId} is not part of operation ${runId}`, undefined);
-				receipts.set(checked.value.toolCallId, checked.value);
+				const existing = receipts.get(checked.value.toolCallId);
+				if (existing === undefined) {
+					receipts.set(checked.value.toolCallId, checked.value);
+					continue;
+				}
+				if (projectToolReceiptExecutionSemanticsV1(existing) !== projectToolReceiptExecutionSemanticsV1(checked.value)) ledgerConflict = true;
 			}
 		}
 		let failed = false;
@@ -998,28 +1273,63 @@ export class AgentHarness implements AgentLane {
 		const recordError = (candidate: OperationError): void => {
 			if (firstError === undefined) firstError = candidate;
 		};
-		for (const start of starts) {
+		const markLedgerConflict = (): void => {
+			ledgerConflict = true;
+			failed = true;
+			mergeSideEffectState("side_effect_unknown");
+			firstError = { code: "session_ledger_conflict", message: "Durable tool execution records conflict for one operation and tool call" };
+		};
+		if (ledgerConflict) {
+			markLedgerConflict();
+		}
+		for (const start of startsByToolCallId.values()) {
 			const receipt = receipts.get(start.toolCallId);
 			if (receipt === undefined) {
 				failed = true;
 				mergeSideEffectState("side_effect_unknown");
-				recordError({ code: "side_effect_unknown", message: `Tool receipt is missing for ${start.toolCallId}` });
+				recordError({ code: "side_effect_unknown", message: "Durable tool receipt is missing" });
 			} else {
 				mergeSideEffectState(receipt.sideEffectState);
-				if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") {
+				if (receipt.outcome === "succeeded" && receipt.result === undefined) {
+					failed = true;
+					mergeSideEffectState("side_effect_unknown");
+					recordError({ code: "side_effect_unknown", message: "Durable tool result payload is missing" });
+				} else if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") {
 					failed = true;
 					recordError({ code: receipt.error?.code ?? (receipt.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"), message: receipt.error?.message ?? `Tool ${start.toolName} did not complete successfully` });
 				}
 			}
 			const result = await this.durableSession.getEntry(start.resultEntryId);
+			const durableResult = receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" ? receipt.result : undefined;
+			if (durableResult !== undefined) {
+				if (result?.type !== "custom" || result.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) {
+					markLedgerConflict();
+					continue;
+				}
+				const checkedEntry = validateFoundationToolResultEntryV1(result.data);
+				if (!checkedEntry.ok || checkedEntry.value.runId !== runId || checkedEntry.value.operationId !== runId || checkedEntry.value.toolCallId !== start.toolCallId || checkedEntry.value.toolName !== start.toolName || checkedEntry.value.isError || canonicalFoundationJson(checkedEntry.value.result) !== canonicalFoundationJson(durableResult)) {
+					markLedgerConflict();
+				}
+				continue;
+			}
+			if (result?.type === "custom" && result.customType === FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) {
+				const checkedEntry = validateFoundationToolResultEntryV1(result.data);
+				if (!checkedEntry.ok || receipt?.outcome !== "succeeded" || receipt.result === undefined) markLedgerConflict();
+				continue;
+			}
 			if (result?.type !== "message" || result.message.role !== "toolResult") {
 				failed = true;
 				mergeSideEffectState("side_effect_unknown");
-				recordError({ code: "side_effect_unknown", message: `Tool result is missing for ${start.toolCallId}` });
+				recordError({ code: "side_effect_unknown", message: "Durable tool result message is missing" });
+			} else if (result.message.content.some((content) => content.type === "image")) {
+				failed = true;
+				mergeSideEffectState("side_effect_unknown");
+				recordError({ code: "side_effect_unknown", message: "Durable image tool result is not ArtifactRef-backed" });
 			} else if (result.message.isError) {
 				failed = true;
+				if (receipt?.outcome === "succeeded" && receipt.result === undefined) mergeSideEffectState("side_effect_unknown");
 				const textContent = result.message.content.find((content) => content.type === "text");
-				recordError({ code: receipts.get(start.toolCallId)?.error?.code ?? "tool_execution_failed", message: receipts.get(start.toolCallId)?.error?.message ?? (textContent?.type === "text" ? textContent.text : `Tool ${start.toolName} failed`) });
+				recordError({ code: receipt?.error?.code ?? "tool_execution_failed", message: receipt?.error?.message ?? (textContent?.type === "text" ? textContent.text : `Tool ${start.toolName} failed`) });
 			}
 		}
 		return { failed, sideEffectState, ...(firstError === undefined ? {} : { error: firstError }) };
@@ -1039,7 +1349,7 @@ export class AgentHarness implements AgentLane {
 				(entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")) ||
 				entry.type === "compaction" ||
 				entry.type === "branch_summary" ||
-				(entry.type === "custom" && data?.runId === runId);
+				(entry.type === "custom" && entry.customType === FOUNDATION_TOOL_RESULT_CUSTOM_TYPE && data?.runId === runId && data?.operationId === runId);
 			if (operationEvidence) latest = Math.max(latest, entry.timestamp);
 		}
 		return new Date(latest).toISOString();
@@ -1307,17 +1617,49 @@ export class AgentHarness implements AgentLane {
 		return [base, skills].filter((part) => part.length > 0).join("\n\n");
 	}
 
-	private projectorMap(): Record<string, AsyncCustomEntryContextMessageProjector> {
+	private projectorMap(lane: string): Record<string, AsyncCustomEntryContextMessageProjector> {
 		const projectors: Record<string, AsyncCustomEntryContextMessageProjector> = {};
 		for (const [customType, projector] of Object.entries(this.entryProjectors)) {
 			projectors[customType] = (entry) => projector(entry);
 		}
+		// This type is reserved by the Foundation harness. Install it after
+		// caller projectors so the durable result cannot be overridden or read
+		// without ArtifactStore verification.
+		projectors[FOUNDATION_TOOL_RESULT_CUSTOM_TYPE] = (entry) => this.projectFoundationToolResultEntry(lane, entry);
 		return projectors;
+	}
+
+	private async projectFoundationToolResultEntry(lane: string, entry: CustomEntry): Promise<readonly AgentMessage[]> {
+		const checked = validateFoundationToolResultEntryV1(entry.data);
+		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
+		if (this.foundationExecution === undefined) throw new HarnessToolPipelineError("Foundation tool result has no execution authority", "side_effect_unknown");
+		const starts = await this.durableSession.findRecords({ lane, runId: checked.value.runId, type: "tool_started", order: "oldestFirst" });
+		const matchingStarts = starts.filter((start) => start.resultEntryId === entry.id && start.toolCallId === checked.value.toolCallId && start.toolName === checked.value.toolName);
+		if (matchingStarts.length !== 1) throw new HarnessToolPipelineError("Durable tool result entry is not authorized by a unique tool start", "side_effect_unknown");
+		if (checked.value.operationId !== checked.value.runId) throw new HarnessToolPipelineError("Durable tool result entry has an invalid operation identity", "side_effect_unknown");
+		const folded = await this.foundationReceiptForToolCall(lane, checked.value.runId, checked.value.toolCallId);
+		if (!folded.ok || folded.value.outcome !== "succeeded" || folded.value.sideEffectState !== "none" || folded.value.result === undefined || checked.value.isError || canonicalFoundationJson(folded.value.result) !== canonicalFoundationJson(checked.value.result)) {
+			throw new HarnessToolPipelineError("Durable tool result entry does not match its authorized receipt", "side_effect_unknown");
+		}
+		const restored = await restoreFoundationToolResult(checked.value.result, this.artifactStore);
+		if (!restored.ok) throw new HarnessToolPipelineError(restored.error.message, "side_effect_unknown");
+		return [{
+			role: "toolResult",
+			toolCallId: checked.value.toolCallId,
+			toolName: checked.value.toolName,
+			content: restored.value.content,
+			...(restored.value.details === undefined ? {} : { details: restored.value.details }),
+			...(restored.value.usage === undefined ? {} : { usage: restored.value.usage }),
+			...(restored.value.addedToolNames === undefined ? {} : { addedToolNames: [...restored.value.addedToolNames] }),
+			isError: checked.value.isError,
+			timestamp: entry.timestamp,
+		}];
 	}
 
 	private async contextForOperation(lane: string, operationId?: string): Promise<{ context: AgentContext; reduction: LaneReductionResult; model: Model<Api>; thinkingLevel: ThinkingLevel; activeToolNames: string[] }> {
 		const reduction = await this.getLaneReduction(lane);
-		const context = await buildSessionContextAsync(await this.getLaneEntries(lane), { entryProjectors: this.projectorMap() });
+		const laneEntries = await this.getLaneEntries(lane);
+		const context = await buildSessionContextAsync(laneEntries, { entryProjectors: this.projectorMap(lane) });
 		const model = this.models.getModel(reduction.effectiveConfiguration.model.provider, reduction.effectiveConfiguration.model.modelId);
 		if (!model) throw new MissingIdentities({ lane, tools: [], models: [`${reduction.effectiveConfiguration.model.provider}/${reduction.effectiveConfiguration.model.modelId}`,], message: "Configured model is unavailable" });
 		const thinkingLevel = isThinkingLevel(reduction.effectiveConfiguration.thinkingLevel) ? reduction.effectiveConfiguration.thinkingLevel : this.defaultThinkingLevel;
@@ -1374,11 +1716,20 @@ export class AgentHarness implements AgentLane {
 			execute: async (args, options) => {
 				try {
 					const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
-					this.pipelineResults.set(this.pipelineResultKey(options.context, options.toolCallId), result as AgentToolResult<unknown>);
+					const durableResult = await foundationToolResultPayload(result as AgentToolResult<unknown>, this.artifactStore, this.foundationExecution?.providerId, options.toolCallId);
+					if (!durableResult.ok) {
+						return {
+							ok: false,
+							sideEffectState: "side_effect_unknown" as const,
+							error: durableResult.error.toPublicExecutionError(),
+						};
+					}
 					return {
 						ok: true,
 						sideEffectState: tool.sideEffectState === "none" ? "none" : "side_effect_unknown",
 						...(result.usage === undefined ? {} : { usage: foundationToolUsage(result.usage) }),
+						...(durableResult.value.artifacts.length === 0 ? {} : { artifacts: durableResult.value.artifacts }),
+						result: durableResult.value.result,
 					};
 				} catch (error) {
 					const normalized = toFoundationError(error, "tool_execution_failed");
@@ -1408,12 +1759,10 @@ export class AgentHarness implements AgentLane {
 					context,
 					{ signal, onUpdate: onUpdate === undefined ? undefined : (partial) => onUpdate(partial as AgentToolResult<unknown>) },
 				);
-				const resultKey = this.pipelineResultKey(context, toolCallId);
-				const actual = this.pipelineResults.get(resultKey);
-				this.pipelineResults.delete(resultKey);
-				if (execution.ok && execution.value.outcome === "succeeded" && actual !== undefined) return actual as AgentToolResult<never>;
 				if (execution.ok && execution.value.outcome === "succeeded") {
-					return { content: [{ type: "text", text: "Tool execution was already completed" }], details: {} };
+					const restored = await restoreFoundationToolResult(execution.value.result, this.artifactStore);
+					if (restored.ok) return restored.value as AgentToolResult<never>;
+					throw new HarnessToolPipelineError(restored.error.message, "side_effect_unknown");
 				}
 				throw new HarnessToolPipelineError(
 					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
@@ -1590,11 +1939,38 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
+	private async ensureToolResultUsageRecord(lane: string, runId: string, target: ProvisionedEntry): Promise<void> {
+		if (target.type !== "custom" || target.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return;
+		const checked = validateFoundationToolResultEntryV1(target.data);
+		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
+		const usage = checked.value.result.usage;
+		if (usage === undefined) return;
+		const records = await this.durableSession.findRecords({ lane, runId, type: "usage", order: "oldestFirst" });
+		type ToolUsageRecord = Extract<(typeof records)[number], { type: "usage"; cause: "tool" }>;
+		const existing = records.find((record): record is ToolUsageRecord => record.type === "usage" && record.cause === "tool" && record.entryId === target.id);
+		if (existing !== undefined) {
+			if (existing.toolCallId !== checked.value.toolCallId) throw new HarnessFault("Durable tool usage record references a different tool call", undefined);
+			return;
+		}
+		await this.durableSession.appendRecord({
+			type: "usage",
+			id: this.durableSession.idGenerator.next(),
+			lane,
+			cause: "tool",
+			runId,
+			entryId: target.id,
+			toolCallId: checked.value.toolCallId,
+			usage: agentUsageFromToolResultUsage(usage),
+		});
+	}
+
 	private async persistOperationEntry(lane: string, runId: string, target: ProvisionedEntry): Promise<void> {
 		const existing = await this.durableSession.getEntry(target.id);
-		if (existing) return;
-		await this.appendWriteDeferred(lane, runId, target);
-		await this.durableSession.appendEntry(target, lane);
+		if (!existing) {
+			await this.appendWriteDeferred(lane, runId, target);
+			await this.durableSession.appendEntry(target, lane);
+		}
+		await this.ensureToolResultUsageRecord(lane, runId, target);
 	}
 
 	private async ensureInitialMessage(lane: string, reduction: LaneReductionResult): Promise<void> {
@@ -1716,11 +2092,61 @@ export class AgentHarness implements AgentLane {
 		return this.durableSession.appendRecord(target) as Promise<ToolStartedRecord>;
 	}
 
+	private async foundationReceiptForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<FoundationReceiptFoldV1, FoundationError>> {
+		const correlation = this.foundationCorrelation(lane, runId, { toolCallId });
+		if (correlation === undefined) return Result.err(new FoundationError("side_effect_unknown", "Foundation tool result has no execution correlation"));
+		const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
+		const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
+		const receipts: ToolReceiptV1[] = [];
+		for (const record of records) {
+			if (record.kind !== "fact") continue;
+			const checked = validateAndVerifyToolReceiptV1(record.payload);
+			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool receipt failed validation"));
+			if (checked.value.toolCallId !== toolCallId) continue;
+			if (checked.value.binding.runId !== runId || checked.value.binding.operationId !== runId) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipt identity does not match its operation"));
+			receipts.push(checked.value);
+		}
+		if (receipts.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool receipt is missing"));
+		const semantic = projectToolReceiptExecutionSemanticsV1(receipts[0]!);
+		if (receipts.some((receipt) => projectToolReceiptExecutionSemanticsV1(receipt) !== semantic)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipts conflict for one execution identity"));
+		const ordered = [...receipts].sort((left, right) => projectToolReceiptExecutionSemanticsV1(left).localeCompare(projectToolReceiptExecutionSemanticsV1(right)));
+		const representative = ordered[0]!;
+		const worstSeverity = receipts.reduce<1 | 2 | 3>((worst, receipt) => Math.max(worst, toolReceiptSeverity(receipt)) as 1 | 2 | 3, 1);
+		if (worstSeverity === 1) return Result.ok({ representative, outcome: "succeeded", sideEffectState: "none", ...(representative.result === undefined ? {} : { result: representative.result }) });
+		const worst = receipts.find((receipt) => toolReceiptSeverity(receipt) === worstSeverity) ?? representative;
+		return Result.ok({ representative, outcome: worst.outcome, sideEffectState: worst.sideEffectState });
+	}
+
 	private async appendToolResult(lane: string, runId: string, message: ToolResultMessage): Promise<void> {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
 		const started = records.find((record) => record.toolCallId === message.toolCallId);
 		if (!started) throw new HarnessFault(`Tool result ${message.toolCallId} has no durable start`, undefined);
-		const target: ProvisionedEntry = { type: "message", id: started.resultEntryId, message: structuredClone(message) };
+		const folded = this.foundationExecution === undefined ? undefined : await this.foundationReceiptForToolCall(lane, runId, message.toolCallId);
+		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, folded.error.code === "session_ledger_conflict" ? "side_effect_unknown" : "side_effect_unknown");
+		const receipt = folded?.ok === true ? folded.value : undefined;
+		let target: ProvisionedEntry;
+		if (receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined) {
+			const resultEntry: FoundationToolResultEntryV1 = {
+				schemaVersion: 1,
+				runId,
+				operationId: runId,
+				toolCallId: message.toolCallId,
+				toolName: message.toolName,
+				isError: false,
+				result: receipt.result,
+			};
+			target = {
+				type: "custom",
+				id: started.resultEntryId,
+				customType: FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
+				data: this.foundationJson(resultEntry, "tool result entry"),
+			};
+		} else {
+			if (message.content.some((item) => item.type === "image")) {
+				throw new HarnessToolPipelineError("Image tool result has no recoverable durable ArtifactRef", "side_effect_unknown");
+			}
+			target = { type: "message", id: started.resultEntryId, message: structuredClone(message) };
+		}
 		await this.persistOperationEntry(lane, runId, target);
 		if (message.usage) {
 			const usageRecords = await this.durableSession.findRecords({ lane, runId, type: "usage", order: "oldestFirst" });

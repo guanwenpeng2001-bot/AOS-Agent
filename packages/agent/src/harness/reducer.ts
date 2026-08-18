@@ -12,7 +12,7 @@ import type {
 	WriteDeferredRecord,
 } from "./session/types.ts";
 import type { ExecutionCorrelationV1 } from "./foundation/identity.ts";
-import type { ToolBindingRefV1, ToolIntentV1, ToolReceiptV1 } from "./tool-pipeline.ts";
+import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, validateFoundationToolResultEntryV1, type ToolBindingRefV1, type ToolIntentV1, type ToolReceiptV1 } from "./tool-pipeline.ts";
 
 /**
  * Machine-readable category for a contradiction in a lane's durable recovery
@@ -449,11 +449,12 @@ function validateToolStart(
 	validateResultEntry(
 		entriesById,
 		record.resultEntryId,
-		(entry) =>
-			entry.type === "message" &&
-			entry.message.role === "toolResult" &&
-			entry.message.toolCallId === record.toolCallId &&
-			entry.message.toolName === record.toolName,
+		(entry) => {
+			if (entry.type === "message") return entry.message.role === "toolResult" && entry.message.toolCallId === record.toolCallId && entry.message.toolName === record.toolName;
+			if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
+			const checked = validateFoundationToolResultEntryV1(entry.data);
+			return checked.ok && checked.value.runId === record.runId && checked.value.operationId === record.runId && checked.value.toolCallId === record.toolCallId && checked.value.toolName === record.toolName;
+		},
 		"tool result",
 	);
 }
@@ -849,17 +850,26 @@ function deriveToolBatch(
 			starts.set(record.toolIndex, record);
 		}
 	}
+	const isMatchingToolResultEntry = (entry: Entry | undefined, toolCallId: string, toolName: string, expectedRunId?: string): boolean => {
+		if (entry === undefined) return false;
+		if (entry.type === "message") {
+			return entry.message.role === "toolResult" && entry.message.toolCallId === toolCallId && entry.message.toolName === toolName;
+		}
+		if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
+		const checked = validateFoundationToolResultEntryV1(entry.data);
+		return checked.ok && (expectedRunId === undefined || (checked.value.runId === expectedRunId && checked.value.operationId === expectedRunId)) && checked.value.toolCallId === toolCallId && checked.value.toolName === toolName;
+	};
 
 	const calls = toolCalls.map((toolCall, toolIndex) => {
 		const started = starts.get(toolIndex);
-		const startedResult = started ? entriesById.get(started.resultEntryId) : undefined;
+		const startedResult = started && isMatchingToolResultEntry(entriesById.get(started.resultEntryId), toolCall.id, toolCall.name, started.runId)
+			? entriesById.get(started.resultEntryId)
+			: undefined;
 		const blockedResult = ownEntries.find(
 			(entry) =>
 				entry.seq > assistantEntry.seq &&
 				!deferredWriteIds.has(entry.id) &&
-				entry.type === "message" &&
-				entry.message.role === "toolResult" &&
-				entry.message.toolCallId === toolCall.id,
+				isMatchingToolResultEntry(entry, toolCall.id, toolCall.name),
 		);
 		const result = startedResult ?? blockedResult;
 		return {

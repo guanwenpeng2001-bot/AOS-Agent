@@ -14,6 +14,7 @@
 - Caller cancellation and deadline expiry are classified before uncertain model-output side effects, preserving the `aborted` terminal state.
 - Kept retry and terminal diagnostics on stable redacted categories, while recognizing wrapped DNS transport failures as retryable only when the caller has not cancelled the operation.
 - Tool receipts now preserve AgentTool failures, usage, and side-effect state through AttemptReceipt, TaskResult, and RunReceipt settlement.
+- Tool receipt deduplication now validates every durable receipt, aggregates the worst side-effect state, and replays only bounded safe results with verified image artifacts.
 
 ## [0.84.3] - 2026-08-10
 

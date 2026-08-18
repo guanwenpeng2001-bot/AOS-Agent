@@ -5,6 +5,9 @@ import {
 	FoundationToolPipelineV1,
 	InMemoryToolPipelineStorageV1,
 	SessionToolPipelineStorageV1,
+	finalizeToolReceiptV1,
+	validateToolResultPayloadV1,
+	validateToolReceiptV1,
 	type ToolDefinitionRegistryV1,
 	type ToolDefinitionV1,
 	type ToolGateCheckV1,
@@ -459,6 +462,89 @@ describe("T4 fixed tool runtime", () => {
 		], context());
 		expect(batch.ok).toBe(true);
 		expect(peak).toBe(2);
+	});
+
+	it("folds identical durable receipt replays and rejects an unknown state hidden by a later success", async () => {
+		const durable = new InMemoryToolPipelineStorageV1();
+		let executions = 0;
+		const registryWithResult = registry([tool("durable", async () => {
+			executions += 1;
+			return { ok: true, sideEffectState: "none" as const, result: { schemaVersion: 1 as const, content: [{ type: "text" as const, text: "durable result" }] } };
+		})]);
+		const firstPipeline = new FoundationToolPipelineV1({ registry: registryWithResult, storage: durable, guard: allowAllGuards(), idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })() });
+		const first = await firstPipeline.execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
+		if (!first.ok) throw first.error;
+		const { digest: _digest, ...withoutDigest } = first.value;
+		const envelopeReplay = finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: "envelope-replay", completedAt: "later" });
+		const replayStorage: ToolPipelineStorageV1 = {
+			writeIntent: (intent) => durable.writeIntent(intent),
+			finalizeReceipt: (receipt) => durable.finalizeReceipt(receipt),
+			listIntents: () => durable.listIntents(),
+			listReceipts: async () => [first.value, envelopeReplay],
+		};
+		const replay = await new FoundationToolPipelineV1({ registry: registryWithResult, storage: replayStorage, guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-replay` }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
+		expect(replay).toMatchObject({ ok: true, value: { outcome: "succeeded", deduplicatedFrom: expect.any(String), result: { content: [{ type: "text", text: "durable result" }] } } });
+		expect(executions).toBe(1);
+
+		const { result: _unknownResult, artifacts: _unknownArtifacts, ...withoutResult } = withoutDigest;
+		const unknownReplay = finalizeToolReceiptV1({ ...withoutResult, toolReceiptId: "unknown-replay", outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: { code: "side_effect_unknown", message: "outcome unknown", retryable: false } });
+		const successAfterUnknown = finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: "success-after-unknown", completedAt: "latest" });
+		const conflictStorage: ToolPipelineStorageV1 = {
+			writeIntent: (intent) => durable.writeIntent(intent),
+			finalizeReceipt: (receipt) => durable.finalizeReceipt(receipt),
+			listIntents: () => durable.listIntents(),
+			listReceipts: async () => [first.value, unknownReplay, successAfterUnknown],
+		};
+		const conflict = await new FoundationToolPipelineV1({ registry: registryWithResult, storage: conflictStorage, guard: allowAllGuards() }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
+		expect(conflict).toMatchObject({ ok: false, error: { code: "session_ledger_conflict" } });
+	});
+
+	it("rejects duplicate receipts whose error or gate semantics differ in either order", async () => {
+		const firstPipeline = new FoundationToolPipelineV1({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-first` });
+		const first = await firstPipeline.execute({ toolCallId: "semantic-call", toolName: "semantic", idempotencyKey: "semantic-key", args: { value: "x" } }, context());
+		if (!first.ok) throw first.error;
+		const { digest: _digest, result: _result, artifacts: _artifacts, ...withoutSuccess } = first.value;
+		const failedOne = finalizeToolReceiptV1({ ...withoutSuccess, toolReceiptId: "semantic-failed-one", outcome: "failed", sideEffectState: "none", error: { code: "failed-one", message: "first failure", retryable: false } });
+		const changedGates = failedOne.gates.map((gate, index) => index === 0 ? { ...gate, reason: "different gate reason" } : gate);
+		const failedTwo = finalizeToolReceiptV1({ ...withoutSuccess, toolReceiptId: "semantic-failed-two", outcome: "failed", sideEffectState: "none", gates: changedGates, error: { code: "failed-two", message: "second failure", retryable: false } });
+		for (const receipts of [[failedOne, failedTwo], [failedTwo, failedOne]]) {
+			const storage: ToolPipelineStorageV1 = {
+				writeIntent: async (intent) => Result.ok(intent),
+				finalizeReceipt: async (receipt) => Result.ok({ toolReceiptRef: receipt.toolReceiptId }),
+				listIntents: async () => [],
+				listReceipts: async () => receipts,
+			};
+			const replay = await new FoundationToolPipelineV1({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), storage, guard: allowAllGuards() }).execute({ toolCallId: "semantic-call", toolName: "semantic", idempotencyKey: "semantic-key", args: { value: "x" } }, context());
+			expect(replay).toMatchObject({ ok: false, error: { code: "session_ledger_conflict" } });
+		}
+	});
+
+	it("requires exact image ArtifactRef equality between result content and receipt artifacts", async () => {
+		const artifact = (artifactId: string) => ({ schemaVersion: 1 as const, artifactId, mediaType: "image/png", digest: `sha256:${"a".repeat(64)}`, producer: "provider-1", sizeBytes: 3 });
+		const firstArtifact = artifact("artifact-one");
+		const secondArtifact = artifact("artifact-two");
+		const extraArtifact = artifact("artifact-extra");
+		const durable = new InMemoryToolPipelineStorageV1();
+		const pipeline = new FoundationToolPipelineV1({
+			registry: registry([tool("image", async () => ({ ok: true, sideEffectState: "none" as const, artifacts: [firstArtifact, secondArtifact], result: { schemaVersion: 1 as const, content: [{ type: "image" as const, artifact: firstArtifact }, { type: "image" as const, artifact: secondArtifact }] } }))]),
+			storage: durable,
+			guard: allowAllGuards(),
+			idGenerator: (prefix) => `${prefix}-image`,
+		});
+		const first = await pipeline.execute({ toolCallId: "image-call", toolName: "image", args: { value: "x" } }, context());
+		if (!first.ok) throw first.error;
+		expect(validateToolReceiptV1(first.value).ok).toBe(true);
+		const { digest: _digest, ...withoutDigest } = first.value;
+		for (const artifacts of [[firstArtifact, secondArtifact, extraArtifact], [firstArtifact, firstArtifact], [firstArtifact]]) {
+			const invalid = validateToolReceiptV1(finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: `invalid-${artifacts.length}`, artifacts }));
+			expect(invalid).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		}
+	});
+
+	it("rejects forged text/plain image ArtifactRefs before any provider execution", async () => {
+		const artifact = { schemaVersion: 1 as const, artifactId: "forged-image", mediaType: "text/plain", digest: `sha256:${"a".repeat(64)}`, producer: "provider-1", sizeBytes: 3 };
+		const payload = { schemaVersion: 1 as const, content: [{ type: "image" as const, artifact }] };
+		expect(validateToolResultPayloadV1(payload)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 	});
 
 	it("keeps the same toolCallId separate across operations and fails closed on key conflicts", async () => {

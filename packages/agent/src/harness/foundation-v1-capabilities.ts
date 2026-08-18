@@ -773,7 +773,7 @@ const closures = [
 		id: 51,
 		highLevelRows: rows("02", "09"),
 		implementationStages: stages("T4", "T6", "T8", "T12"),
-		closure: "contract_sealed",
+		closure: "contract_drafted",
 		ownerModule: "packages/coding-agent/src/core/capability-registry.ts",
 		publicContract: "Unified capability descriptor/registry consumed by Role selectors, Worker, Subagent and External executors",
 		persistence: "Capability registration and resolution records",
@@ -785,7 +785,7 @@ const closures = [
 		id: 52,
 		highLevelRows: rows("02", "05", "06", "09", "10"),
 		implementationStages: stages("T4", "T6", "T8", "T12"),
-		closure: "regression_locked",
+		closure: "contract_drafted",
 		ownerModule: "packages/coding-agent/src/core/execution-policy.ts",
 		publicContract: "Policy/Sandbox inheritance, organization lock and unified review border fixed",
 		persistence: "Execution policy ledger records",
@@ -1632,14 +1632,17 @@ const futureOwners = [
 
 /**
  * PR-1 wires the durable kernel, reducer, session, event, compaction, skills,
- * and AgentHarness paths. T4 additionally wires only its own runtime closure
- * range (29-46); all other entries retain contract metadata and stay drafted
- * until their owning implementation slice is actually merged.
+ * and AgentHarness paths. T4 wires its complete manifest set
+ * (4-7, 29-46, 51-52, 61), while C051/C052 intentionally retain their
+ * contract-drafted closure state until their owning implementation slice is
+ * merged.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
 	2,
 	3,
+	4,
+	5,
 	6,
 	7,
 	19,
@@ -1668,6 +1671,7 @@ const WIRED_CLOSURE_IDS = new Set([
 	45,
 	46,
 	59,
+	61,
 ]);
 
 const foundationCapabilityClosures = closures.map((entry) => ({

@@ -3,6 +3,8 @@ import type { TSchema } from "typebox";
 import {
 	FoundationError,
 	publicExecutionError,
+	redactProjection,
+	redactText,
 	toFoundationError,
 	type FoundationErrorCode,
 	type PublicExecutionErrorV1,
@@ -42,6 +44,7 @@ import {
 	parseExactShape,
 	serializeExactShape,
 	validateExactShape,
+	FoundationJsonValueSchema,
 } from "./foundation/schema.ts";
 
 /** Schema version carried by every tool-pipeline durable fact. */
@@ -164,10 +167,79 @@ export interface ToolReceiptV1 {
 	outcome: ToolReceiptOutcomeV1;
 	artifacts?: readonly ArtifactRefV1[];
 	usage?: BudgetUsageV1;
+	/** Provider-neutral, JSON-safe result retained for durable dedup replay. */
+	result?: ToolResultPayloadV1;
 	error?: PublicExecutionErrorV1;
 	/** Set when this receipt replays an earlier receipt with the same key. */
 	deduplicatedFrom?: string;
 	digest: FingerprintV1;
+}
+
+/**
+ * Durable projection of an AgentToolResult. It intentionally contains only
+ * provider-neutral JSON fields; credentials are rejected before persistence.
+ */
+export interface ToolResultPayloadV1 {
+	schemaVersion: 1;
+	content: readonly ToolResultContentV1[];
+	details?: FoundationJsonValue;
+	usage?: ToolResultUsageV1;
+	addedToolNames?: readonly string[];
+	terminate?: boolean;
+}
+
+export interface ToolResultTextContentV1 {
+	type: "text";
+	text: string;
+}
+
+export interface ToolResultImageContentV1 {
+	type: "image";
+	artifact: ArtifactRefV1;
+}
+
+export type ToolResultContentV1 = ToolResultTextContentV1 | ToolResultImageContentV1;
+
+/** Exact provider-neutral projection of the runtime Usage shape. */
+export interface ToolResultUsageV1 {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cacheWrite1h?: number;
+	reasoning?: number;
+	totalTokens: number;
+	cost: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+}
+
+/** Reserved Session custom entry carrying the canonical durable tool result. */
+export const FOUNDATION_TOOL_RESULT_CUSTOM_TYPE = "foundation.tool_result";
+
+export interface FoundationToolResultEntryV1 {
+	schemaVersion: 1;
+	runId: string;
+	operationId: string;
+	toolCallId: string;
+	toolName: string;
+	isError: boolean;
+	result: ToolResultPayloadV1;
+}
+
+/** Maximum canonical size of a durable tool result projection. */
+export const TOOL_RESULT_PAYLOAD_MAX_BYTES_V1 = 1024 * 1024;
+
+function isDurableResultProjectionSafe(value: unknown): boolean {
+	try {
+		return canonicalFoundationJson(redactProjection(value)) === canonicalFoundationJson(value);
+	} catch (_error) {
+		return false;
+	}
 }
 
 /** One overlapping conflict-key group in a batch. */
@@ -225,6 +297,7 @@ export interface ToolExecutionV1 {
 	sideEffectState: SideEffectStateV1;
 	artifacts?: readonly ArtifactRefV1[];
 	usage?: BudgetUsageV1;
+	result?: ToolResultPayloadV1;
 	error?: PublicExecutionErrorV1;
 }
 
@@ -369,6 +442,8 @@ export class SessionToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 
 	async finalizeReceipt(receipt: ToolReceiptV1): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
 		try {
+			const checkedReceipt = validateAndVerifyToolReceiptV1(receipt);
+			if (!checkedReceipt.ok) return checkedReceipt;
 			const correlation = validateToolCorrelation(receipt, this.correlationFor("receipt", receipt), this.laneId);
 			if (!correlation.ok) return correlation;
 			const fencingToken = this.fencingToken === undefined ? undefined : await this.fencingToken();
@@ -562,6 +637,8 @@ export class InMemoryToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 	}
 
 	async finalizeReceipt(receipt: ToolReceiptV1): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
+		const checkedReceipt = validateAndVerifyToolReceiptV1(receipt);
+		if (!checkedReceipt.ok) return checkedReceipt;
 		const existing = this.receiptsById.get(receipt.toolReceiptId);
 		if (existing !== undefined) {
 			return canonicalFoundationJson(existing) === canonicalFoundationJson(receipt)
@@ -772,7 +849,7 @@ export class FoundationToolPipelineV1 {
 	private readonly canonicalizeConflictKey: (key: string) => string;
 	private readonly quotaAccount: ToolQuotaAccountV1;
 	private readonly onStage: ((event: ToolPipelineStageEventV1) => void | Promise<void>) | undefined;
-	private readonly completedByKey = new Map<string, { receipt: ToolReceiptV1; signature: string }>();
+	private readonly completedByKey = new Map<string, { receipt: ToolReceiptV1; signature: string; semantic: string }>();
 	private readonly persistedIntents = new Map<string, ToolIntentV1>();
 	private readonly persistedReceipts = new Map<string, ToolReceiptV1>();
 	private readonly recoveredScopes = new Set<string>();
@@ -854,8 +931,8 @@ export class FoundationToolPipelineV1 {
 				attempt: intent.attempt,
 				retried: 0,
 				completedAt: this.now(),
-				outcome: "side_effect_unknown",
-				error: publicExecutionError("side_effect_unknown", "tool outcome is unknown after a possible side effect", { category: "side_effect_unknown" }),
+							outcome: "side_effect_unknown",
+							 error: publicExecutionError("side_effect_unknown", "tool outcome is unknown after a possible side effect", { category: "side_effect_unknown" }),
 			});
 			let stored: ResultValue<{ toolReceiptRef: string }, FoundationError>;
 			try {
@@ -1107,6 +1184,9 @@ export class FoundationToolPipelineV1 {
 		if (replay !== undefined && replay.signature !== signature) {
 			return Result.err(new FoundationError("goal_conflict", "idempotency key was already used for different frozen tool arguments"));
 		}
+		if (dedupKey !== undefined && this.persistentConflicts.has(dedupKey)) {
+			return Result.err(new FoundationError("session_ledger_conflict", "durable tool receipts conflict for one execution identity"));
+		}
 		return Result.ok({
 			call: freeze({ ...call, args: original }),
 			tool,
@@ -1118,7 +1198,8 @@ export class FoundationToolPipelineV1 {
 		});
 	}
 
-	private readonly persistentByKey = new Map<string, { receipt: ToolReceiptV1; signature: string }>();
+	private readonly persistentByKey = new Map<string, { receipt: ToolReceiptV1; signature: string; semantic: string }>();
+	private readonly persistentConflicts = new Set<string>();
 
 	private async loadPersistentState(context: ToolPipelineContextV1): Promise<void> {
 		const query = toolStorageQuery(context);
@@ -1137,9 +1218,14 @@ export class FoundationToolPipelineV1 {
 				if (receipt.idempotencyKey !== undefined) {
 					const key = idempotencyScopeKeyFromBinding(receipt.binding, receipt.idempotencyKey);
 					const signature = invocationSignatureFromReceipt(checked.value);
+					const semantic = projectToolReceiptExecutionSemanticsV1(checked.value);
 					const existing = this.persistentByKey.get(key);
 					if (existing !== undefined && existing.signature !== signature) throw new FoundationError("goal_conflict", "durable receipts disagree for one idempotency identity");
-					this.persistentByKey.set(key, { receipt: checked.value, signature });
+					if (existing !== undefined && existing.semantic !== semantic) {
+						this.persistentConflicts.add(key);
+						continue;
+					}
+					this.persistentByKey.set(key, { receipt: checked.value, signature, semantic });
 				}
 			}
 		}
@@ -1248,6 +1334,7 @@ export class FoundationToolPipelineV1 {
 			sideEffectState,
 			error: execution?.ok === false ? execution.error : undefined,
 			usage: execution?.usage,
+			result: execution?.result,
 			artifacts: execution?.artifacts,
 			startedAt,
 			retried,
@@ -1262,11 +1349,22 @@ export class FoundationToolPipelineV1 {
 			sideEffectState: SideEffectStateV1;
 			error?: PublicExecutionErrorV1;
 			usage?: BudgetUsageV1;
+			result?: ToolResultPayloadV1;
 			artifacts?: readonly ArtifactRefV1[];
 			startedAt?: string;
 			retried?: number;
 		},
 	): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
+		let durableResult: ToolResultPayloadV1 | undefined;
+		const persistResult = state.outcome === "succeeded" && state.sideEffectState === "none";
+		const durableArtifacts = persistResult ? state.artifacts : undefined;
+		if (persistResult && state.result !== undefined) {
+			const checkedResult = validateToolResultPayloadV1(state.result);
+			if (!checkedResult.ok) return checkedResult;
+			durableResult = checkedResult.value;
+		}
+		const artifactCheck = validateDurableResultArtifacts(durableResult, durableArtifacts);
+		if (!artifactCheck.ok) return artifactCheck;
 		await this.onStage?.({ stage: "finalize", toolCallId: prepared.call.toolCallId });
 		const receipt = finalizeToolReceiptV1({
 			schemaVersion: 1,
@@ -1287,8 +1385,9 @@ export class FoundationToolPipelineV1 {
 			...(state.startedAt === undefined ? {} : { startedAt: state.startedAt }),
 			completedAt: this.now(),
 			outcome: state.outcome,
-			...(state.artifacts === undefined ? {} : { artifacts: [...state.artifacts] }),
+			...(durableArtifacts === undefined ? {} : { artifacts: [...durableArtifacts] }),
 			...(state.usage === undefined ? {} : { usage: { ...state.usage } }),
+			...(durableResult === undefined ? {} : { result: durableResult }),
 			...(state.error === undefined ? {} : { error: state.error }),
 		});
 		let stored: ResultValue<{ toolReceiptRef: string }, FoundationError>;
@@ -1299,12 +1398,18 @@ export class FoundationToolPipelineV1 {
 		}
 		if (!stored.ok) return Result.err(sideEffectUnknownError(stored.error));
 		const key = prepared.intent.idempotencyKey === undefined ? undefined : idempotencyScopeKey(context, prepared.intent.idempotencyKey);
-		if (key !== undefined) this.completedByKey.set(key, { receipt, signature: invocationSignature(prepared.intent) });
+		if (key !== undefined) this.completedByKey.set(key, { receipt, signature: invocationSignature(prepared.intent), semantic: projectToolReceiptExecutionSemanticsV1(receipt) });
 		this.quotaAccount.settle(receipt);
 		return Result.ok(receipt);
 	}
 
 	private async withDedup(prepared: PreparedCallV1, source: ToolReceiptV1): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
+		const replayMissingResult = source.outcome === "succeeded" && source.result === undefined;
+		const replayOutcome: ToolReceiptOutcomeV1 = replayMissingResult ? "side_effect_unknown" : source.outcome;
+		const replaySideEffectState: SideEffectStateV1 = replayMissingResult ? "side_effect_unknown" : source.sideEffectState;
+		const replayError = replayMissingResult
+			? publicExecutionError("side_effect_unknown", "durable tool result payload is missing or unrecoverable", { category: "side_effect_unknown", retryable: false })
+			: source.error;
 		const receipt = finalizeToolReceiptV1({
 			schemaVersion: 1,
 			toolReceiptId: this.idGenerator("tool_receipt"),
@@ -1317,16 +1422,17 @@ export class FoundationToolPipelineV1 {
 			argumentDigests: prepared.intent.argumentDigests,
 			transformProvenance: prepared.intent.transformProvenance,
 			gates: source.gates,
-			sideEffectState: source.sideEffectState,
+			sideEffectState: replaySideEffectState,
 			idempotency: source.idempotency,
 			attempt: prepared.intent.attempt,
 			retried: source.retried,
 			...(source.startedAt === undefined ? {} : { startedAt: source.startedAt }),
 			completedAt: this.now(),
-			outcome: source.outcome,
-			...(source.artifacts === undefined ? {} : { artifacts: source.artifacts }),
+			outcome: replayOutcome,
+			...(source.result === undefined || source.artifacts === undefined ? {} : { artifacts: source.artifacts }),
 			...(source.usage === undefined ? {} : { usage: source.usage }),
-			...(source.error === undefined ? {} : { error: source.error }),
+			...(source.result === undefined ? {} : { result: source.result }),
+			...(replayError === undefined ? {} : { error: replayError }),
 			deduplicatedFrom: source.toolReceiptId,
 		});
 		let stored: ResultValue<{ toolReceiptRef: string }, FoundationError>;
@@ -1551,6 +1657,87 @@ export function finalizeToolReceiptV1(receipt: Omit<ToolReceiptV1, "digest">): T
 	return freeze({ ...snapshot, digest: fingerprintFoundationValue(snapshot) } as ToolReceiptV1);
 }
 
+/**
+ * Projects the execution truth of a receipt for same-operation replay
+ * comparison. Receipt id, completedAt, deduplicatedFrom and digest are
+ * envelope fields and are excluded; every other execution field remains.
+ */
+export function projectToolReceiptExecutionSemanticsV1(receipt: ToolReceiptV1): string {
+	return canonicalFoundationJson({
+		schemaVersion: receipt.schemaVersion,
+		toolCallId: receipt.toolCallId,
+		toolName: receipt.toolName,
+		...(receipt.namespace === undefined ? {} : { namespace: receipt.namespace }),
+		toolRevision: receipt.toolRevision,
+		binding: receipt.binding,
+		...(receipt.idempotencyKey === undefined ? {} : { idempotencyKey: receipt.idempotencyKey }),
+		argumentDigests: receipt.argumentDigests,
+		transformProvenance: receipt.transformProvenance,
+		gates: receipt.gates,
+		sideEffectState: receipt.sideEffectState,
+		idempotency: receipt.idempotency,
+		attempt: receipt.attempt,
+		retried: receipt.retried,
+		...(receipt.startedAt === undefined ? {} : { startedAt: receipt.startedAt }),
+		outcome: receipt.outcome,
+		...(receipt.artifacts === undefined ? {} : { artifacts: receipt.artifacts }),
+		...(receipt.usage === undefined ? {} : { usage: receipt.usage }),
+		...(receipt.result === undefined ? {} : { result: receipt.result }),
+		...(receipt.error === undefined ? {} : { error: receipt.error }),
+	});
+}
+
+/** Validates the exact, bounded and credential-free durable result projection. */
+export function validateToolResultPayloadV1(value: unknown): ResultValue<ToolResultPayloadV1, FoundationError> {
+	const checked = validateExactShape<ToolResultPayloadV1>(toolResultPayloadSchema, value, "tool_result_payload");
+	if (!checked.ok) return checked;
+	try {
+		const canonical = canonicalFoundationJson(checked.value);
+		if (new TextEncoder().encode(canonical).byteLength > TOOL_RESULT_PAYLOAD_MAX_BYTES_V1) {
+			return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload exceeds the bounded replay limit"));
+		}
+		if (checked.value.details !== undefined && !isDurableResultProjectionSafe(checked.value.details)) {
+			return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload is not a safe projection"));
+		}
+		for (const content of checked.value.content) {
+			if (content.type === "text" && redactText(content.text) !== content.text) {
+				return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload contains credential material"));
+			}
+			if (content.type === "image" && !content.artifact.mediaType.startsWith("image/")) {
+				return Result.err(new FoundationError("side_effect_unknown", "durable image result has an invalid media type"));
+			}
+		}
+		return checked;
+	} catch (_error) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload is not safely recoverable"));
+	}
+}
+
+/** Validates the exact reserved Session entry used to project durable results. */
+export function validateFoundationToolResultEntryV1(value: unknown): ResultValue<FoundationToolResultEntryV1, FoundationError> {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return Result.err(new FoundationError("side_effect_unknown", "durable tool result entry is not an object"));
+	const record = value as Record<string, unknown>;
+	const expectedKeys = ["isError", "operationId", "result", "runId", "schemaVersion", "toolCallId", "toolName"];
+	const actualKeys = Object.keys(record).sort();
+	if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) return Result.err(new FoundationError("side_effect_unknown", "durable tool result entry has an invalid shape"));
+	if (record.schemaVersion !== 1 || typeof record.runId !== "string" || record.runId.length === 0 || typeof record.operationId !== "string" || record.operationId.length === 0 || typeof record.toolCallId !== "string" || record.toolCallId.length === 0 || typeof record.toolName !== "string" || record.toolName.length === 0 || typeof record.isError !== "boolean") {
+		return Result.err(new FoundationError("side_effect_unknown", "durable tool result entry has an invalid identity"));
+	}
+	const result = validateToolResultPayloadV1(record.result);
+	if (!result.ok) return result;
+	return Result.ok({ schemaVersion: 1, runId: record.runId, operationId: record.operationId, toolCallId: record.toolCallId, toolName: record.toolName, isError: record.isError, result: result.value });
+}
+
+function validateDurableResultArtifacts(result: ToolResultPayloadV1 | undefined, artifacts: readonly ArtifactRefV1[] | undefined): ResultValue<true, FoundationError> {
+	const expected = result === undefined ? [] : result.content.filter((content): content is ToolResultImageContentV1 => content.type === "image").map((content) => content.artifact);
+	const provided = artifacts ?? [];
+	if (provided.length !== expected.length) return Result.err(new FoundationError("side_effect_unknown", "tool result image artifacts do not exactly match the durable result payload"));
+	for (let index = 0; index < expected.length; index += 1) {
+		if (canonicalFoundationJson(provided[index]) !== canonicalFoundationJson(expected[index])) return Result.err(new FoundationError("side_effect_unknown", "tool result image artifacts do not exactly match the durable result payload"));
+	}
+	return Result.ok(true);
+}
+
 /** Stable digest of JSON-like tool arguments, excluding provider-side state. */
 export function digestToolArguments(value: unknown): string {
 	return fingerprintFoundationValue(value).value;
@@ -1718,7 +1905,7 @@ function invocationSignatureFromReceipt(receipt: ToolReceiptV1): string {
 	});
 }
 
-function validateAndVerifyToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> {
+export function validateAndVerifyToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> {
 	const checked = validateToolReceiptV1(value);
 	if (!checked.ok) return checked;
 	const { digest: _digest, ...withoutDigest } = checked.value;
@@ -1863,13 +2050,54 @@ const artifactRefSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), artifactId: Type.String({ minLength: 1 }), mediaType: Type.String({ minLength: 1 }), digest: Type.String({ pattern: "^sha256:[A-Fa-f0-9]{64}$" }), producer: Type.Optional(Type.String({ minLength: 1 })), sizeBytes: Type.Optional(Type.Integer({ minimum: 0 })) },
 	{ additionalProperties: false },
 );
+const toolResultTextContentSchema = Type.Object(
+	{ type: Type.Literal("text"), text: Type.String() },
+	{ additionalProperties: false },
+);
+const toolResultImageContentSchema = Type.Object(
+	{ type: Type.Literal("image"), artifact: artifactRefSchema },
+	{ additionalProperties: false },
+);
+const toolResultUsageSchema = Type.Object(
+	{
+		input: Type.Number({ minimum: 0 }),
+		output: Type.Number({ minimum: 0 }),
+		cacheRead: Type.Number({ minimum: 0 }),
+		cacheWrite: Type.Number({ minimum: 0 }),
+		cacheWrite1h: Type.Optional(Type.Number({ minimum: 0 })),
+		reasoning: Type.Optional(Type.Number({ minimum: 0 })),
+		totalTokens: Type.Number({ minimum: 0 }),
+		cost: Type.Object(
+			{
+				input: Type.Number({ minimum: 0 }),
+				output: Type.Number({ minimum: 0 }),
+				cacheRead: Type.Number({ minimum: 0 }),
+				cacheWrite: Type.Number({ minimum: 0 }),
+				total: Type.Number({ minimum: 0 }),
+			},
+			{ additionalProperties: false },
+		),
+	},
+	{ additionalProperties: false },
+);
+const toolResultPayloadSchema = Type.Object(
+	{
+		schemaVersion: Type.Literal(1),
+		content: Type.Array(Type.Union([toolResultTextContentSchema, toolResultImageContentSchema])),
+		details: Type.Optional(FoundationJsonValueSchema),
+		usage: Type.Optional(toolResultUsageSchema),
+		addedToolNames: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+		terminate: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: false },
+);
 
 export const ToolIntentV1Schema = Type.Object(
 	{ schemaVersion: Type.Literal(1), intentId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, fence: toolIntentFenceSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), attempt: Type.Integer({ minimum: 1 }), writtenAt: Type.String({ minLength: 1 }) },
 	{ additionalProperties: false },
 );
 export const ToolReceiptV1Schema = Type.Object(
-	{ schemaVersion: Type.Literal(1), toolReceiptId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), gates: Type.Array(toolGateRecordSchema), sideEffectState: Type.Union(SIDE_EFFECT_STATES.map((state) => Type.Literal(state))), idempotency: Type.Union(IDEMPOTENCY_STATES.map((state) => Type.Literal(state))), attempt: Type.Integer({ minimum: 1 }), retried: Type.Integer({ minimum: 0 }), startedAt: Type.Optional(Type.String({ minLength: 1 })), completedAt: Type.String({ minLength: 1 }), outcome: Type.Union(TOOL_RECEIPT_OUTCOMES_V1.map((outcome) => Type.Literal(outcome))), artifacts: Type.Optional(Type.Array(artifactRefSchema)), usage: Type.Optional(usageSchema), error: Type.Optional(publicErrorSchema), deduplicatedFrom: Type.Optional(Type.String({ minLength: 1 })), digest: FingerprintV1Schema },
+	{ schemaVersion: Type.Literal(1), toolReceiptId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), gates: Type.Array(toolGateRecordSchema), sideEffectState: Type.Union(SIDE_EFFECT_STATES.map((state) => Type.Literal(state))), idempotency: Type.Union(IDEMPOTENCY_STATES.map((state) => Type.Literal(state))), attempt: Type.Integer({ minimum: 1 }), retried: Type.Integer({ minimum: 0 }), startedAt: Type.Optional(Type.String({ minLength: 1 })), completedAt: Type.String({ minLength: 1 }), outcome: Type.Union(TOOL_RECEIPT_OUTCOMES_V1.map((outcome) => Type.Literal(outcome))), artifacts: Type.Optional(Type.Array(artifactRefSchema)), usage: Type.Optional(usageSchema), result: Type.Optional(toolResultPayloadSchema), error: Type.Optional(publicErrorSchema), deduplicatedFrom: Type.Optional(Type.String({ minLength: 1 })), digest: FingerprintV1Schema },
 	{ additionalProperties: false },
 );
 export const ToolBatchResultV1Schema = Type.Object(
@@ -1881,7 +2109,21 @@ export const isToolReceiptV1Shape = makeExactShapeGuard<ToolReceiptV1>(ToolRecei
 export function validateToolIntentV1(value: unknown): ResultValue<ToolIntentV1, FoundationError> { return validateExactShape<ToolIntentV1>(ToolIntentV1Schema, value, "tool_intent"); }
 export function serializeToolIntentV1(value: ToolIntentV1): string { return serializeExactShape(ToolIntentV1Schema, value, "tool_intent"); }
 export function parseToolIntentV1(text: string): ResultValue<ToolIntentV1, FoundationError> { return parseExactShape(ToolIntentV1Schema, text, "tool_intent"); }
-export function validateToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> { return validateExactShape<ToolReceiptV1>(ToolReceiptV1Schema, value, "tool_receipt"); }
+export function validateToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> {
+	const checked = validateExactShape<ToolReceiptV1>(ToolReceiptV1Schema, value, "tool_receipt");
+	if (!checked.ok) return checked;
+	if (checked.value.result === undefined) {
+		const artifactCheck = validateDurableResultArtifacts(undefined, checked.value.artifacts);
+		return artifactCheck.ok ? checked : Result.err(artifactCheck.error);
+	}
+	if (checked.value.outcome !== "succeeded" || checked.value.sideEffectState !== "none") {
+		return Result.err(new FoundationError("side_effect_unknown", "non-successful tool receipts cannot carry a durable result payload"));
+	}
+	const checkedResult = validateToolResultPayloadV1(checked.value.result);
+	if (!checkedResult.ok) return Result.err(checkedResult.error);
+	const artifactCheck = validateDurableResultArtifacts(checkedResult.value, checked.value.artifacts);
+	return artifactCheck.ok ? checked : Result.err(artifactCheck.error);
+}
 export function serializeToolReceiptV1(value: ToolReceiptV1): string { return serializeExactShape(ToolReceiptV1Schema, value, "tool_receipt"); }
 export function parseToolReceiptV1(text: string): ResultValue<ToolReceiptV1, FoundationError> { return parseExactShape(ToolReceiptV1Schema, text, "tool_receipt"); }
 export function validateToolBatchResultV1(value: unknown): ResultValue<ToolBatchResultV1, FoundationError> { return validateExactShape<ToolBatchResultV1>(ToolBatchResultV1Schema, value, "tool_batch_result"); }

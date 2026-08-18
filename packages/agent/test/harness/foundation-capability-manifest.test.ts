@@ -171,6 +171,36 @@ const EXPECTED_STAGE_SPECS: Readonly<Record<FoundationImplementationStage, strin
 	T12: "1–73、98、127–129、145–146",
 };
 
+const EXPECTED_T4_CLOSURE_IDS: readonly number[] = [4, 5, 6, 7, ...range(29, 46), 51, 52, 61];
+
+const EXPECTED_T4_CLOSURES: Readonly<Record<number, { closure: FoundationCapabilityClosureStatus; ownerModule: string; tests: readonly string[] }>> = {
+	4: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/tool-gateway.ts", tests: ["packages/agent/test/harness/t4-tool-gateway.test.ts", "packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
+	5: { closure: "implemented", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/coding-agent/test/rpc-task-graph.test.ts"] },
+	6: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/agent-harness.ts", tests: ["packages/agent/test/harness/agent-harness-runtime.test.ts", "packages/coding-agent/test/run-lifecycle.test.ts", "packages/coding-agent/test/rpc-tcp-cancel-idempotency.test.ts"] },
+	7: { closure: "regression_locked", ownerModule: "packages/agent/src/agent-errors.ts", tests: ["packages/agent/test/agent-loop-errors.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"] },
+	29: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/skills.ts", tests: ["packages/agent/test/harness/skills.test.ts", "packages/coding-agent/test/sdk-skills.test.ts"] },
+	30: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/coding-agent/test/agent-session-capabilities.test.ts"] },
+	31: { closure: "implemented", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/coding-agent/test/agent-session-dynamic-tools.test.ts"] },
+	32: { closure: "contract_sealed", ownerModule: "packages/coding-agent/src/core/mcp-tool-adapter.ts", tests: ["packages/coding-agent/test/mcp-lifecycle.test.ts", "packages/coding-agent/test/mcp-tool-adapter.test.ts"] },
+	33: { closure: "regression_locked", ownerModule: "packages/coding-agent/src/core/mcp-lifecycle.ts", tests: ["packages/coding-agent/test/mcp-auth.test.ts", "packages/coding-agent/test/mcp-resource-prompt.test.ts"] },
+	34: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/binding.ts", tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts", "packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	35: { closure: "implemented", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/t4-tool-gateway.test.ts", "packages/agent/test/harness/t4-agent-harness-pipeline.test.ts"] },
+	36: { closure: "implemented", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/t4-agent-harness-pipeline.test.ts"] },
+	37: { closure: "implemented", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	38: { closure: "implemented", ownerModule: "packages/agent/src/harness/profile.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	39: { closure: "implemented", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	40: { closure: "implemented", ownerModule: "packages/agent/src/harness/events.ts", tests: ["packages/agent/test/harness/events.test.ts"] },
+	41: { closure: "implemented", ownerModule: "packages/agent/src/harness/events.ts", tests: ["packages/agent/test/harness/events.test.ts"] },
+	42: { closure: "implemented", ownerModule: "packages/agent/src/harness/plugins.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	43: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/plugins.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	44: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/foundation/role-registry.ts", tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
+	45: { closure: "implemented", ownerModule: "packages/coding-agent/src/core/agent-session.ts", tests: ["packages/coding-agent/test/suite/agent-session-runtime.test.ts", "packages/coding-agent/test/agent-session-capabilities.test.ts"] },
+	46: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/agent/test/harness/events.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
+	51: { closure: "contract_drafted", ownerModule: "packages/coding-agent/src/core/capability-registry.ts", tests: ["packages/coding-agent/test/capability-registry.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
+	52: { closure: "contract_drafted", ownerModule: "packages/coding-agent/src/core/execution-policy.ts", tests: ["packages/coding-agent/test/execution-policy-contract.test.ts", "packages/coding-agent/test/execution-policy.test.ts"] },
+	61: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"] },
+};
+
 /** Future Role-related capabilities that must explicitly consume role contracts in their upstream list. */
 const FUTURE_ROLE_CONTRACT_IDS = [91, 96, 109, 110, 132, 138, 147];
 
@@ -291,14 +321,20 @@ describe("Foundation v1 capability manifest", () => {
 		}
 	});
 
-	it("resolves every T4 evidence path and does not overclaim implementation paths", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES.filter((candidate) => candidate.id >= 29 && candidate.id <= 46 && candidate.implementationStages.includes("T4"))) {
-			for (const test of entry.tests) {
-				expect(existsSync(resolve(REPO_ROOT, test)), `T4 closure ${entry.id} references missing test ${test}`).toBe(true);
-			}
-			if (entry.closure === "implemented" || entry.closure === "regression_locked") {
-				expect(existsSync(resolve(REPO_ROOT, entry.ownerModule)), `T4 closure ${entry.id} references missing owner ${entry.ownerModule}`).toBe(true);
-			}
+	it("matches the complete T4 status and evidence manifest", () => {
+		const actual = FOUNDATION_V1_CAPABILITY_CLOSURES
+			.filter((entry) => EXPECTED_T4_CLOSURE_IDS.includes(entry.id))
+			.sort((a, b) => a.id - b.id);
+		expect(actual.map((entry) => entry.id)).toEqual(EXPECTED_T4_CLOSURE_IDS);
+		for (const entry of actual) {
+			const expected = EXPECTED_T4_CLOSURES[entry.id];
+			expect(expected, `T4 closure ${entry.id} is missing its expected manifest row`).toBeDefined();
+			if (expected === undefined) continue;
+			expect(entry.closure, `T4 closure ${entry.id} status mismatch`).toBe(expected.closure);
+			expect(entry.ownerModule, `T4 closure ${entry.id} owner mismatch`).toBe(expected.ownerModule);
+			expect(entry.tests, `T4 closure ${entry.id} test evidence mismatch`).toEqual(expected.tests);
+			expect(existsSync(resolve(REPO_ROOT, expected.ownerModule)), `T4 closure ${entry.id} owner path is missing`).toBe(true);
+			for (const test of expected.tests) expect(existsSync(resolve(REPO_ROOT, test)), `T4 closure ${entry.id} test path is missing: ${test}`).toBe(true);
 		}
 	});
 
