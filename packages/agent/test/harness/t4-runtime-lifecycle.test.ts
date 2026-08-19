@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,8 @@ import {
 	InMemoryLocalPluginRegistryStorageV1,
 	createPluginContractV1,
 	pluginContentsDigestV1,
+	type LocalPluginRegistryFileSystemV1,
+	type LocalPluginRegistrySnapshotV1,
 	type LocalPluginPackageV1,
 	type PluginActivationContextV1,
 	validateLocalPluginPackageV1,
@@ -23,7 +25,8 @@ import {
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { applyProfilePatchV1, composeProfileBundleV1, resolveChildExecutorMcpSelectorsV1, selectResourcesV1 } from "../../src/harness/profile.ts";
-import { Result } from "../../src/harness/result.ts";
+import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
+import { FileError } from "../../src/harness/types.ts";
 import { Type } from "typebox";
 import { validateProfileContractV1, type LspExtensionContractV1, type MonitorExtensionContractV1 } from "../../src/harness/foundation/profile.ts";
 import type { ResourceSelectorV1 } from "../../src/harness/foundation/reference.ts";
@@ -47,14 +50,14 @@ const monitor: MonitorExtensionContractV1 = {
 	healthCheck: "local",
 };
 
-function pluginPackage(version = "1.0.0") {
-	const manifest = { name: "local-plugin", version, entrypoint: "./index.js", declaredCapabilities: ["hooks"] };
+function pluginPackage(version = "1.0.0", pluginId = "local-plugin", namespace = "local") {
+	const manifest = { name: pluginId, version, entrypoint: "./index.js", declaredCapabilities: ["hooks"] };
 	const contents = { lsp: [lsp], monitors: [monitor] };
 	return {
 		schemaVersion: 1 as const,
 		contract: createPluginContractV1({
-			namespace: "local",
-			pluginId: "local-plugin",
+			namespace,
+			pluginId,
 			version,
 			manifest,
 			signature: "local-signature",
@@ -63,6 +66,34 @@ function pluginPackage(version = "1.0.0") {
 		source: "local" as const,
 		sourcePath: "C:/workspace/local-plugin",
 		signatureMetadata: { algorithm: "test", keyId: "key", value: "signature", contentDigest: pluginContentsDigestV1(contents) },
+	};
+}
+
+type FaultOperation = "createExclusive" | "syncFile" | "renameFile" | "syncDirectory";
+type FaultTarget = "snapshot" | "pointer";
+
+function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperation, target: FaultTarget): LocalPluginRegistryFileSystemV1 {
+	let injected = false;
+	const matchesTarget = (path: string): boolean => {
+		const normalized = path.replaceAll("\\", "/");
+		if (target === "snapshot") return normalized.includes("/snapshots/");
+		return operation === "syncDirectory" ? !normalized.includes("/snapshots/") : normalized.includes("activation-pointer.json");
+	};
+	const shouldFail = (path: string): boolean => {
+		if (injected || !matchesTarget(path)) return false;
+		injected = true;
+		return true;
+	};
+	const injectedError = (path: string): ResultValue<never, FileError> => Result.err(new FileError("unknown", `injected ${operation} failure`, path));
+	return {
+		joinPath: (parts) => base.joinPath(parts),
+		readTextFile: (path) => base.readTextFile(path),
+		renameFile: async (sourcePath, destinationPath) => shouldFail(sourcePath) || shouldFail(destinationPath) ? injectedError(destinationPath) : base.renameFile(sourcePath, destinationPath),
+		createDir: (path, options) => base.createDir(path, options),
+		remove: (path, options) => base.remove(path, options),
+		createExclusive: async (path, content) => shouldFail(path) ? injectedError(path) : base.createExclusive(path, content),
+		syncFile: async (path) => shouldFail(path) ? injectedError(path) : base.syncFile(path),
+		syncDirectory: async (path) => shouldFail(path) ? injectedError(path) : base.syncDirectory(path),
 	};
 }
 
@@ -291,21 +322,154 @@ describe("T4 runtime service and extension lifecycle", () => {
 		}
 	});
 
-	it("rolls back recovered effect scopes when orphan-stage cleanup fails", async () => {
+	it("fails closed for corrupt durable JSON, schema, and cross-record correlations", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-corrupt-"));
+		try {
+			const registryDirectory = "registry";
+			const pkg = pluginPackage();
+			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const registry = new LocalPluginRegistry({ storage, now: () => "installed" });
+			expect(await registry.install(pkg)).toMatchObject({ ok: true });
+			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
+
+			const pointerPath = join(directory, registryDirectory, "activation-pointer.json");
+			const pointerText = await readFile(pointerPath, "utf8");
+			const pointer = JSON.parse(pointerText) as { generation: number; snapshotFile: string };
+			const snapshotPath = join(directory, registryDirectory, "snapshots", pointer.snapshotFile);
+			const snapshotText = await readFile(snapshotPath, "utf8");
+			const expectCorrupt = async (): Promise<void> => {
+				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+				expect(reopened).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+			};
+
+			await writeFile(pointerPath, "{", "utf8");
+			await expectCorrupt();
+			await writeFile(pointerPath, JSON.stringify({ schemaVersion: 2, generation: pointer.generation, snapshotFile: pointer.snapshotFile }), "utf8");
+			await expectCorrupt();
+			await writeFile(pointerPath, pointerText, "utf8");
+
+			const malformedSnapshot = JSON.parse(snapshotText) as { active: unknown[] };
+			malformedSnapshot.active[0] = null;
+			await writeFile(snapshotPath, JSON.stringify(malformedSnapshot), "utf8");
+			await expectCorrupt();
+			await writeFile(snapshotPath, snapshotText, "utf8");
+
+			const schemaSnapshot = JSON.parse(snapshotText) as Record<string, unknown>;
+			schemaSnapshot.schemaVersion = 2;
+			await writeFile(snapshotPath, JSON.stringify(schemaSnapshot), "utf8");
+			await expectCorrupt();
+			await writeFile(snapshotPath, snapshotText, "utf8");
+
+			const correlationMutations: Array<(snapshot: LocalPluginRegistrySnapshotV1) => void> = [
+				(snapshot) => { snapshot.active[0]!.record.pluginId = "tampered-plugin"; },
+				(snapshot) => { snapshot.active[0]!.record.namespace = "tampered-namespace"; },
+				(snapshot) => { snapshot.active[0]!.record.version = "9.9.9"; },
+				(snapshot) => { snapshot.active[0]!.record.digest = { algorithm: "sha256", value: "0".repeat(64) }; },
+				(snapshot) => { snapshot.active[0]!.record.contentDigest = { algorithm: "sha256", value: "0".repeat(64) }; },
+				(snapshot) => { snapshot.pointers[0]!.pluginId = "tampered-plugin"; },
+				(snapshot) => { snapshot.previous[0]!.record.version = "9.9.9"; },
+			];
+			for (const mutate of correlationMutations) {
+				const tampered = JSON.parse(snapshotText) as LocalPluginRegistrySnapshotV1;
+				mutate(tampered);
+				await writeFile(snapshotPath, JSON.stringify(tampered), "utf8");
+				await expectCorrupt();
+			}
+			await writeFile(snapshotPath, snapshotText, "utf8");
+
+			expect(await storage.stagePackage({
+				stageId: "orphan-stage",
+				operation: "update",
+				pluginId: pkg.contract.pluginId,
+				revision: 3,
+				package: pluginPackage("3.0.0"),
+				stagedAt: "before-crash",
+			})).toMatchObject({ ok: true });
+			const stagedPointer = JSON.parse(await readFile(pointerPath, "utf8")) as { snapshotFile: string };
+			const stagedPath = join(directory, registryDirectory, "snapshots", stagedPointer.snapshotFile);
+			const stagedSnapshot = JSON.parse(await readFile(stagedPath, "utf8")) as LocalPluginRegistrySnapshotV1;
+			stagedSnapshot.staged[0]!.pluginId = "tampered-plugin";
+			await writeFile(stagedPath, JSON.stringify(stagedSnapshot), "utf8");
+			await expectCorrupt();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the last committed pointer and snapshot after publication failures", async () => {
+		const failures: Array<{ operation: FaultOperation; target: FaultTarget }> = [
+			{ operation: "createExclusive", target: "snapshot" },
+			{ operation: "syncFile", target: "snapshot" },
+			{ operation: "renameFile", target: "snapshot" },
+			{ operation: "syncDirectory", target: "snapshot" },
+			{ operation: "createExclusive", target: "pointer" },
+			{ operation: "syncFile", target: "pointer" },
+			{ operation: "renameFile", target: "pointer" },
+			{ operation: "syncDirectory", target: "pointer" },
+		];
+		for (const failure of failures) {
+			const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-publication-"));
+			try {
+				const registryDirectory = "registry";
+				const pkg = pluginPackage();
+				const initialStorage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+				const registry = new LocalPluginRegistry({ storage: initialStorage, now: () => "installed" });
+				expect(await registry.install(pkg)).toMatchObject({ ok: true });
+				const active = registry.active(pkg.contract.pluginId);
+				expect(active).toBeDefined();
+				if (active === undefined) return;
+				const pointerPath = join(directory, registryDirectory, "activation-pointer.json");
+				const pointerBefore = await readFile(pointerPath, "utf8");
+				const pointer = JSON.parse(pointerBefore) as { snapshotFile: string };
+				const snapshotPath = join(directory, registryDirectory, "snapshots", pointer.snapshotFile);
+				const snapshotBefore = await readFile(snapshotPath, "utf8");
+
+				const failingStorage = new LocalFilePluginRegistryStorageV1(
+					faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), failure.operation, failure.target),
+					registryDirectory,
+				);
+				const switched = await failingStorage.atomicSwitch({ pluginId: pkg.contract.pluginId, active: { package: pkg, record: active }, state: "active" });
+				expect(switched).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+				expect(await readFile(pointerPath, "utf8")).toBe(pointerBefore);
+				expect(await readFile(snapshotPath, "utf8")).toBe(snapshotBefore);
+				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+				expect(reopened).toMatchObject({ ok: true });
+				if (!reopened.ok) return;
+				expect(reopened.value.active(pkg.contract.pluginId)).toMatchObject({ pluginId: pkg.contract.pluginId, revision: 1 });
+				const registryEntries = await readdir(join(directory, registryDirectory));
+				const snapshotEntries = await readdir(join(directory, registryDirectory, "snapshots"));
+				expect([...registryEntries, ...snapshotEntries].filter((entry) => entry.includes(".tmp"))).toEqual([]);
+			} finally {
+				await rm(directory, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("rolls back every recovered plugin scope in reverse order when orphan cleanup fails", async () => {
 		const storage = new InMemoryLocalPluginRegistryStorageV1();
-		const pkg = pluginPackage();
+		const first = pluginPackage("1.0.0", "first-plugin", "first");
+		const second = pluginPackage("1.0.0", "second-plugin", "second");
 		const registry = new LocalPluginRegistry({ storage });
-		expect(await registry.install(pkg)).toMatchObject({ ok: true });
+		expect(await registry.install(first)).toMatchObject({ ok: true });
+		expect(await registry.install(second)).toMatchObject({ ok: true });
 		expect(await storage.stagePackage({
-			stageId: "orphan-stage",
+			stageId: "first-orphan-stage",
 			operation: "update",
-			pluginId: pkg.contract.pluginId,
+			pluginId: first.contract.pluginId,
 			revision: 2,
-			package: pluginPackage("2.0.0"),
+			package: pluginPackage("2.0.0", first.contract.pluginId, first.contract.namespace),
+			stagedAt: "before-crash",
+		})).toMatchObject({ ok: true });
+		expect(await storage.stagePackage({
+			stageId: "second-orphan-stage",
+			operation: "update",
+			pluginId: second.contract.pluginId,
+			revision: 2,
+			package: pluginPackage("2.0.0", second.contract.pluginId, second.contract.namespace),
 			stagedAt: "before-crash",
 		})).toMatchObject({ ok: true });
 
-		let disposed = 0;
+		const disposed: string[] = [];
 		const failed = await LocalPluginRegistry.open({
 			storage: {
 				load: () => storage.load(),
@@ -313,12 +477,12 @@ describe("T4 runtime service and extension lifecycle", () => {
 				atomicSwitch: (change) => storage.atomicSwitch(change),
 				removeStage: async () => Result.err(new FoundationError("plugin_rollback_failed", "injected orphan cleanup failure")),
 			},
-			onActivate: async (_pkg, context) => {
-				context.register("listener", "recovered-listener", () => { disposed += 1; });
+			onActivate: async (pkg, context) => {
+				context.register("listener", `recovered-listener:${pkg.contract.pluginId}`, () => { disposed.push(pkg.contract.pluginId); });
 			},
 		});
 		expect(failed).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
-		expect(disposed).toBe(1);
+		expect(disposed).toEqual(["second-plugin", "first-plugin"]);
 	});
 
 	it("preserves the rollback point on disk when rollback cleanup fails", async () => {

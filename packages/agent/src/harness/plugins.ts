@@ -1,11 +1,12 @@
 /** Local-only Plugin v1 manifest, staging, activation, and rollback lifecycle. */
-import type { ExtensionContractV1, LspExtensionContractV1, MonitorExtensionContractV1 } from "./foundation/profile.ts";
-import { validateExtensionContractV1 } from "./foundation/profile.ts";
+import { Type, type TSchema } from "typebox";
+import { ExtensionContractV1Schema, validateExtensionContractV1, type ExtensionContractV1, type LspExtensionContractV1, type MonitorExtensionContractV1 } from "./foundation/profile.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import { FOUNDATION_SCHEMA_VERSION, canonicalFoundationJson, fingerprintFoundationValue, type FingerprintV1 } from "./foundation/identity.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
-import type { PluginContractV1, PluginHookV1, PluginLifecycleOperationV1, PluginLifecycleResultV1 } from "./foundation/plugin.ts";
-import type { ResourceSelectorV1 } from "./foundation/reference.ts";
+import { PluginContractV1Schema, type PluginContractV1, type PluginHookV1, type PluginLifecycleOperationV1, type PluginLifecycleResultV1 } from "./foundation/plugin.ts";
+import { ResourceSelectorV1Schema, type ResourceSelectorV1 } from "./foundation/reference.ts";
+import { FingerprintV1Schema, validateExactShape } from "./foundation/schema.ts";
 import { EffectScope, orderRuntimeHooksV1, type EffectDisposerV1, type EffectResourceKindV1, type RuntimeHookSpecV1 } from "./runtime-services.ts";
 import { validateMcpSelectorTighteningV1, validateSelectorV1 } from "./profile.ts";
 import { Result, type Result as ResultValue } from "./result.ts";
@@ -163,6 +164,97 @@ export interface PluginRegistryAtomicSwitchV1 {
 	state: "active" | "uninstalled";
 }
 
+const pluginSignatureMetadataSchema = Type.Object({
+	algorithm: Type.String({ minLength: 1 }),
+	keyId: Type.String({ minLength: 1 }),
+	value: Type.String({ minLength: 1 }),
+	signedAt: Type.Optional(Type.String()),
+	contentDigest: Type.Optional(FingerprintV1Schema),
+}, { additionalProperties: false });
+const pluginSkillRefSchema = Type.Object({ skillId: Type.String({ minLength: 1 }), mcpSelector: Type.Optional(ResourceSelectorV1Schema) }, { additionalProperties: false });
+const pluginMcpRefSchema = Type.Object({ mcpServerId: Type.String({ minLength: 1 }), selector: Type.Optional(ResourceSelectorV1Schema) }, { additionalProperties: false });
+const pluginAgentRefSchema = Type.Object({ agentId: Type.String({ minLength: 1 }), mcpSelector: Type.Optional(ResourceSelectorV1Schema) }, { additionalProperties: false });
+const pluginBinEntrySchema = Type.Object({ name: Type.String({ minLength: 1 }), command: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+const pluginSettingsPatchSchema = Type.Object({ values: Type.Record(Type.String({ minLength: 1 }), Type.Union([Type.String(), Type.Number(), Type.Boolean()])) }, { additionalProperties: false });
+const pluginLspExtensionSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	extensionId: Type.String({ minLength: 1 }),
+	kind: Type.Literal("lsp"),
+	version: Type.String({ minLength: 1 }),
+	languageIds: Type.Array(Type.String({ minLength: 1 })),
+	serverCommand: Type.String({ minLength: 1 }),
+	initializationOptionsRef: Type.Optional(Type.String({ minLength: 1 })),
+}, { additionalProperties: false });
+const pluginMonitorExtensionSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	extensionId: Type.String({ minLength: 1 }),
+	kind: Type.Literal("monitor"),
+	version: Type.String({ minLength: 1 }),
+	eventKinds: Type.Array(Type.String({ minLength: 1 })),
+	intervalMs: Type.Integer({ minimum: 1 }),
+	healthCheck: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+const pluginPackageContentsSchema = Type.Object({
+	skills: Type.Optional(Type.Array(pluginSkillRefSchema)),
+	extensions: Type.Optional(Type.Array(ExtensionContractV1Schema)),
+	mcpServers: Type.Optional(Type.Array(pluginMcpRefSchema)),
+	agents: Type.Optional(Type.Array(pluginAgentRefSchema)),
+	lsp: Type.Optional(Type.Array(pluginLspExtensionSchema)),
+	monitors: Type.Optional(Type.Array(pluginMonitorExtensionSchema)),
+	bin: Type.Optional(Type.Array(pluginBinEntrySchema)),
+	settings: Type.Optional(Type.Array(pluginSettingsPatchSchema)),
+}, { additionalProperties: false });
+const localPluginPackageSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	contract: PluginContractV1Schema,
+	contents: pluginPackageContentsSchema,
+	source: Type.Union([Type.Literal("local"), Type.Literal("remote"), Type.Literal("hosted")]),
+	sourcePath: Type.Optional(Type.String()),
+	signatureMetadata: Type.Optional(pluginSignatureMetadataSchema),
+	mcpSelector: Type.Optional(ResourceSelectorV1Schema),
+}, { additionalProperties: false });
+const pluginActivationRecordSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	pluginId: Type.String({ minLength: 1 }),
+	revision: Type.Integer({ minimum: 1 }),
+	namespace: Type.String({ minLength: 1 }),
+	version: Type.String({ minLength: 1 }),
+	digest: FingerprintV1Schema,
+	contentDigest: Type.Optional(FingerprintV1Schema),
+	signature: Type.String({ minLength: 1 }),
+	signatureMetadata: Type.Optional(pluginSignatureMetadataSchema),
+	activatedAt: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+const pluginStoredActivationSchema = Type.Object({ package: localPluginPackageSchema, record: pluginActivationRecordSchema }, { additionalProperties: false });
+const pluginLifecycleOperationSchema = Type.Union([Type.Literal("install"), Type.Literal("update"), Type.Literal("uninstall"), Type.Literal("rollback")]);
+const pluginStagedPackageSchema = Type.Object({
+	stageId: Type.String({ minLength: 1 }),
+	operation: pluginLifecycleOperationSchema,
+	pluginId: Type.String({ minLength: 1 }),
+	revision: Type.Integer({ minimum: 1 }),
+	package: localPluginPackageSchema,
+	stagedAt: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+const pluginActivationPointerSchema = Type.Object({
+	pluginId: Type.String({ minLength: 1 }),
+	state: Type.Union([Type.Literal("active"), Type.Literal("uninstalled")]),
+	stageId: Type.Optional(Type.String({ minLength: 1 })),
+	generation: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+const pluginRegistrySnapshotSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	generation: Type.Integer({ minimum: 0 }),
+	active: Type.Array(pluginStoredActivationSchema),
+	previous: Type.Array(pluginStoredActivationSchema),
+	staged: Type.Array(pluginStagedPackageSchema),
+	pointers: Type.Array(pluginActivationPointerSchema),
+}, { additionalProperties: false });
+const pluginRegistryDiskPointerSchema = Type.Object({
+	schemaVersion: Type.Literal(FOUNDATION_SCHEMA_VERSION),
+	generation: Type.Integer({ minimum: 1 }),
+	snapshotFile: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+
 /**
  * Storage deliberately exposes a single atomic pointer switch. A caller may
  * recover after a process restart by loading the last complete snapshot; an
@@ -237,31 +329,139 @@ function emptyPluginRegistrySnapshot(): LocalPluginRegistrySnapshotV1 {
 	return { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: 0, active: [], previous: [], staged: [], pointers: [] };
 }
 
-function parsePluginRegistrySnapshot(value: unknown, expectedGeneration: number): LocalPluginRegistrySnapshotV1 {
-	if (typeof value !== "object" || value === null) throw pluginError("plugin_rollback_failed", "plugin registry snapshot is invalid");
-	const candidate = value as Partial<LocalPluginRegistrySnapshotV1>;
-	if (
-		candidate.schemaVersion !== FOUNDATION_SCHEMA_VERSION
-		|| candidate.generation !== expectedGeneration
-		|| !Array.isArray(candidate.active)
-		|| !Array.isArray(candidate.previous)
-		|| !Array.isArray(candidate.staged)
-		|| !Array.isArray(candidate.pointers)
-	) throw pluginError("plugin_rollback_failed", "plugin registry snapshot is invalid");
-	return clonePluginPersistence(candidate as LocalPluginRegistrySnapshotV1);
+function fingerprintMatches(left: FingerprintV1 | undefined, right: FingerprintV1): boolean {
+	return left?.algorithm === right.algorithm && left.value === right.value;
 }
 
-function parsePluginRegistryPointer(value: unknown): PluginRegistryDiskPointerV1 {
-	if (typeof value !== "object" || value === null) throw pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid");
-	const candidate = value as Partial<PluginRegistryDiskPointerV1>;
+function durableRegistryShape<T>(schema: TSchema, value: unknown, kind: string): ResultValue<T, FoundationError> {
+	try {
+		return validateExactShape<T>(schema, value, kind, "plugin_rollback_failed");
+	} catch (error) {
+		return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+	}
+}
+
+function validateDurablePluginPackage(value: unknown, kind: string): ResultValue<LocalPluginPackageV1, FoundationError> {
+	const shape = durableRegistryShape<LocalPluginPackageV1>(localPluginPackageSchema, value, kind);
+	if (!shape.ok) return shape;
+	try {
+		const packageResult = validateLocalPluginPackageV1(shape.value);
+		if (!packageResult.ok) return packageResult;
+		const contentsDigest = pluginContentsDigestV1(shape.value.contents);
+		if (shape.value.signatureMetadata?.contentDigest !== undefined && !fingerprintMatches(shape.value.signatureMetadata.contentDigest, contentsDigest)) {
+			return Result.err(pluginError("plugin_rollback_failed", "durable plugin content digest does not match its package"));
+		}
+		return Result.ok(clonePluginPersistence(shape.value));
+	} catch (error) {
+		return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+	}
+}
+
+function validateDurableStoredActivation(value: unknown, kind: string): ResultValue<PluginRegistryStoredActivationV1, FoundationError> {
+	const shape = durableRegistryShape<PluginRegistryStoredActivationV1>(pluginStoredActivationSchema, value, kind);
+	if (!shape.ok) return shape;
+	const packageResult = validateDurablePluginPackage(shape.value.package, `${kind}.package`);
+	if (!packageResult.ok) return packageResult;
+	const record = shape.value.record;
+	const pkg = packageResult.value;
+	const expectedContentDigest = pluginContentsDigestV1(pkg.contents);
 	if (
-		candidate.schemaVersion !== FOUNDATION_SCHEMA_VERSION
-		|| !Number.isSafeInteger(candidate.generation)
-		|| (candidate.generation ?? -1) < 0
-		|| typeof candidate.snapshotFile !== "string"
-		|| !new RegExp(`^snapshot-${candidate.generation}-[0-9a-f-]+\\.json$`).test(candidate.snapshotFile)
-	) throw pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid");
-	return candidate as PluginRegistryDiskPointerV1;
+		!Number.isSafeInteger(record.revision)
+		|| record.pluginId !== pkg.contract.pluginId
+		|| record.namespace !== pkg.contract.namespace
+		|| record.version !== pkg.contract.version
+		|| !fingerprintMatches(record.digest, pkg.contract.digest)
+		|| record.contentDigest === undefined
+		|| !fingerprintMatches(record.contentDigest, expectedContentDigest)
+		|| record.signature !== pkg.contract.signature
+		|| canonicalFoundationJson(record.signatureMetadata ?? null) !== canonicalFoundationJson(pkg.signatureMetadata ?? null)
+	) return Result.err(pluginError("plugin_rollback_failed", "durable plugin activation record does not match its package"));
+	return Result.ok({ package: pkg, record: clonePluginPersistence(record) });
+}
+
+function validateDurableStagedPackage(value: unknown, kind: string): ResultValue<PluginRegistryStagedPackageV1, FoundationError> {
+	const shape = durableRegistryShape<PluginRegistryStagedPackageV1>(pluginStagedPackageSchema, value, kind);
+	if (!shape.ok) return shape;
+	const packageResult = validateDurablePluginPackage(shape.value.package, `${kind}.package`);
+	if (!packageResult.ok) return packageResult;
+	if (shape.value.pluginId !== packageResult.value.contract.pluginId || !Number.isSafeInteger(shape.value.revision)) {
+		return Result.err(pluginError("plugin_rollback_failed", "durable staged plugin identity does not match its package"));
+	}
+	return Result.ok({ ...shape.value, package: packageResult.value });
+}
+
+function validateDurableActivationPointer(value: unknown, kind: string): ResultValue<PluginRegistryActivationPointerV1, FoundationError> {
+	const shape = durableRegistryShape<PluginRegistryActivationPointerV1>(pluginActivationPointerSchema, value, kind);
+	if (!shape.ok) return shape;
+	return Number.isSafeInteger(shape.value.generation)
+		? Result.ok(shape.value)
+		: Result.err(pluginError("plugin_rollback_failed", "durable plugin activation pointer generation is invalid"));
+}
+
+function validatePluginRegistrySnapshot(value: unknown, expectedGeneration?: number): ResultValue<LocalPluginRegistrySnapshotV1, FoundationError> {
+	const shape = durableRegistryShape<LocalPluginRegistrySnapshotV1>(pluginRegistrySnapshotSchema, value, "plugin registry snapshot");
+	if (!shape.ok) return shape;
+	try {
+		if (!Number.isSafeInteger(shape.value.generation) || (expectedGeneration !== undefined && shape.value.generation !== expectedGeneration)) {
+			return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot generation is invalid"));
+		}
+		const active: PluginRegistryStoredActivationV1[] = [];
+		const previous: PluginRegistryStoredActivationV1[] = [];
+		const staged: PluginRegistryStagedPackageV1[] = [];
+		const activeIds = new Set<string>();
+		const previousIds = new Set<string>();
+		const stagedIds = new Set<string>();
+		for (const [index, entry] of shape.value.active.entries()) {
+			const validated = validateDurableStoredActivation(entry, `plugin registry snapshot active[${index}]`);
+			if (!validated.ok) return validated;
+			if (activeIds.has(validated.value.record.pluginId)) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot contains duplicate active plugin identities"));
+			activeIds.add(validated.value.record.pluginId);
+			active.push(validated.value);
+		}
+		for (const [index, entry] of shape.value.previous.entries()) {
+			const validated = validateDurableStoredActivation(entry, `plugin registry snapshot previous[${index}]`);
+			if (!validated.ok) return validated;
+			if (previousIds.has(validated.value.record.pluginId)) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot contains duplicate previous plugin identities"));
+			previousIds.add(validated.value.record.pluginId);
+			previous.push(validated.value);
+		}
+		for (const [index, entry] of shape.value.staged.entries()) {
+			const validated = validateDurableStagedPackage(entry, `plugin registry snapshot staged[${index}]`);
+			if (!validated.ok) return validated;
+			if (stagedIds.has(validated.value.stageId)) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot contains duplicate staged identities"));
+			stagedIds.add(validated.value.stageId);
+			staged.push(validated.value);
+		}
+		const pointers = new Map<string, PluginRegistryActivationPointerV1>();
+		for (const [index, entry] of shape.value.pointers.entries()) {
+			const validated = validateDurableActivationPointer(entry, `plugin registry snapshot pointers[${index}]`);
+			if (!validated.ok) return validated;
+			if (validated.value.generation > shape.value.generation || pointers.has(validated.value.pluginId)) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot contains an invalid activation pointer"));
+			pointers.set(validated.value.pluginId, validated.value);
+		}
+		const stateIds = new Set<string>([...activeIds, ...previousIds]);
+		if (stateIds.size !== pointers.size || [...stateIds].some((pluginId) => !pointers.has(pluginId))) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointers do not match plugin state"));
+		for (const [pluginId, pointer] of pointers) {
+			const isActive = activeIds.has(pluginId);
+			if ((pointer.state === "active" && !isActive) || (pointer.state === "uninstalled" && isActive) || (!isActive && !previousIds.has(pluginId))) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointer state is inconsistent"));
+		}
+		return Result.ok(clonePluginPersistence({ ...shape.value, active, previous, staged, pointers: [...pointers.values()] }));
+	} catch (error) {
+		return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+	}
+}
+
+function parsePluginRegistrySnapshot(value: unknown, expectedGeneration: number): ResultValue<LocalPluginRegistrySnapshotV1, FoundationError> {
+	return validatePluginRegistrySnapshot(value, expectedGeneration);
+}
+
+function parsePluginRegistryPointer(value: unknown): ResultValue<PluginRegistryDiskPointerV1, FoundationError> {
+	const shape = durableRegistryShape<PluginRegistryDiskPointerV1>(pluginRegistryDiskPointerSchema, value, "plugin registry activation pointer");
+	if (!shape.ok) return shape;
+	if (!Number.isSafeInteger(shape.value.generation) || !new RegExp(`^snapshot-${shape.value.generation}-[0-9a-f-]+\\.json$`).test(shape.value.snapshotFile)) {
+		return Result.err(pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid"));
+	}
+	return Result.ok(shape.value);
 }
 
 function unwrapPluginFileResult<T>(result: ResultValue<T, FileError>): T {
@@ -348,9 +548,10 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 			const pointerContents = await this.#fileSystem.readTextFile(pointerPath);
 			if (!pointerContents.ok && pointerContents.error.code === "not_found") return Result.ok(undefined);
 			const pointer = parsePluginRegistryPointer(JSON.parse(unwrapPluginFileResult(pointerContents)) as unknown);
-			const snapshotPath = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY, pointer.snapshotFile);
+			if (!pointer.ok) return pointer;
+			const snapshotPath = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY, pointer.value.snapshotFile);
 			const snapshotContents = unwrapPluginFileResult(await this.#fileSystem.readTextFile(snapshotPath));
-			return Result.ok(parsePluginRegistrySnapshot(JSON.parse(snapshotContents) as unknown, pointer.generation));
+			return parsePluginRegistrySnapshot(JSON.parse(snapshotContents) as unknown, pointer.value.generation);
 		} catch (error) {
 			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
 		}
@@ -365,20 +566,49 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 		const snapshotTemporaryPath = `${snapshotPath}.tmp`;
 		const pointerPath = await this.path(PLUGIN_REGISTRY_POINTER_FILE);
 		const pointerTemporaryPath = await this.path(`.${PLUGIN_REGISTRY_POINTER_FILE}.${nonce}.tmp`);
+		const pointerRestoreTemporaryPath = `${pointerTemporaryPath}.restore.tmp`;
+		const previousPointer = await this.#fileSystem.readTextFile(pointerPath);
+		const previousPointerContents = previousPointer.ok ? previousPointer.value : undefined;
+		if (!previousPointer.ok && previousPointer.error.code !== "not_found") unwrapPluginFileResult(previousPointer);
+		let pointerPublicationStarted = false;
 		try {
 			unwrapPluginFileResult(await this.#fileSystem.createExclusive(snapshotTemporaryPath, canonicalFoundationJson(snapshot)));
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(snapshotTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(snapshotTemporaryPath, snapshotPath));
 			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(snapshotDirectory));
 			const pointer: PluginRegistryDiskPointerV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: snapshot.generation, snapshotFile };
+			pointerPublicationStarted = true;
 			unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerTemporaryPath, canonicalFoundationJson(pointer)));
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerTemporaryPath, pointerPath));
 			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
 		} catch (error) {
-			await this.#fileSystem.remove(snapshotTemporaryPath, { force: true });
-			await this.#fileSystem.remove(pointerTemporaryPath, { force: true });
+			await this.removeBestEffort(snapshotTemporaryPath);
+			await this.removeBestEffort(pointerTemporaryPath);
+			await this.removeBestEffort(pointerRestoreTemporaryPath);
+			if (pointerPublicationStarted) {
+				if (previousPointerContents === undefined) {
+					await this.removeBestEffort(pointerPath);
+				} else {
+					try {
+						unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerRestoreTemporaryPath, previousPointerContents));
+						unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerRestoreTemporaryPath));
+						unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerRestoreTemporaryPath, pointerPath));
+						await this.#fileSystem.syncDirectory(this.#directory);
+					} catch {
+						await this.removeBestEffort(pointerRestoreTemporaryPath);
+					}
+				}
+			}
 			throw error;
+		}
+	}
+
+	private async removeBestEffort(path: string): Promise<void> {
+		try {
+			await this.#fileSystem.remove(path, { force: true });
+		} catch {
+			// Cleanup must not mask the publication failure.
 		}
 	}
 
@@ -584,21 +814,24 @@ export class LocalPluginRegistry {
 		this.#previous.clear();
 		this.#stageIds.clear();
 		if (loaded.value === undefined) return Result.ok(undefined);
+		const snapshotValidation = validatePluginRegistrySnapshot(loaded.value);
+		if (!snapshotValidation.ok) return snapshotValidation;
+		const snapshot = snapshotValidation.value;
 		const restored: Array<{ pluginId: string; value: { package: LocalPluginPackageV1; record: PluginActivationRecordV1; scope: EffectScope } }> = [];
-		for (const entry of loaded.value.active) {
+		for (const entry of snapshot.active) {
 			const validation = this.validatePackageWithSignature(entry.package);
 			if (!validation.ok) {
-				for (const item of restored) await item.value.scope.rollback();
+				for (const item of [...restored].reverse()) await item.value.scope.rollback();
 				return validation;
 			}
 			const activation = await this.createActivation(entry.package, entry.record.revision);
 			if (!activation.ok) {
-				for (const item of restored) await item.value.scope.rollback();
+				for (const item of [...restored].reverse()) await item.value.scope.rollback();
 				return activation;
 			}
 			restored.push({ pluginId: entry.record.pluginId, value: { ...activation.value, record: clonePluginPersistence(entry.record) } });
 		}
-		for (const staged of loaded.value.staged) {
+		for (const staged of snapshot.staged) {
 			const removed = await this.removeStageDurably(staged.stageId);
 			if (!removed.ok) {
 				for (const item of [...restored].reverse()) await item.value.scope.rollback();
@@ -606,7 +839,7 @@ export class LocalPluginRegistry {
 			}
 		}
 		for (const item of restored) this.#active.set(item.pluginId, item.value);
-		for (const entry of loaded.value.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
+		for (const entry of snapshot.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
 		return Result.ok(undefined);
 	}
 
