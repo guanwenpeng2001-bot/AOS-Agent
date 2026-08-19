@@ -10,6 +10,7 @@
 
 ### Added
 
+- Foundation v1 Prompt Task composition root: the single coding-agent adapter now persists the Task before resolving exact Context/Model/Capability/MCP/Policy/Sandbox/Audit/Run/Gate/Graph/Credential/External-Agent binding facts, then delegates the correlated Dispatch, Attempt, Harness run, and three-layer receipt chain to AgentHarness. Missing, mismatched, or unfingerprinted dependencies fail closed before provider execution.
 - Optional `gondolin-local` Isolated Runner: an explicitly registered Gondolin micro-VM `SandboxProvider` that consumes the existing Policy Binding / `prepare` / `execute` / `dispose` contract. Built-in filesystem and process tools stay on the guest `/workspace` mount, capabilities report `network: false` with no MCP transport, and cancel/deadline unknown side effects stay fail-closed. The adapter is an example package; default `legacy` installs do not gain a Gondolin or QEMU dependency.
 - Loopback TCP JSONL transport for Automation Host: `aos --mode rpc --rpc-listen tcp://127.0.0.1:<port>` binds `127.0.0.1` only, accepts one control connection, and reuses the existing RPC command, event, and receipt contract. `RpcClient` can connect with `{ transport: { type: "tcp", host: "127.0.0.1", port } }` without spawning a child process.
 - Remote-ready execution contracts: session-scoped idempotent run requests, durable lifecycle observations, reconnect-safe run event recovery, stable binding handles, serialized Session writes, and an in-process fake remote provider contract.

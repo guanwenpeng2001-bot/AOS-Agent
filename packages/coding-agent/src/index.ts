@@ -1,6 +1,24 @@
 // Core session management
 
 export { type Args, parseArgs } from "./cli/args.ts";
+export {
+	PROMPT_TASK_DEPENDENCY_NAMES,
+	PromptTaskCompositionError,
+	createPromptTaskAdapter,
+	type PromptTaskAdapterV1,
+	type PromptTaskCompositionDependenciesV1,
+	type PromptTaskCompositionErrorCodeV1,
+	type PromptTaskCompositionRootOptionsV1,
+	type PromptTaskDependencyContextV1,
+	type PromptTaskDependencyNameV1,
+	type PromptTaskDependencyResolutionV1,
+	type PromptTaskDependencyV1,
+	type PromptTaskEnvelopeInputV1,
+	type PromptTaskExecutionV1,
+	type PromptTaskIdentityV1,
+	type PromptTaskInputV1,
+	type PromptTaskSettlementV1,
+} from "./core/prompt-task-adapter.ts";
 
 // Config paths
 export {
