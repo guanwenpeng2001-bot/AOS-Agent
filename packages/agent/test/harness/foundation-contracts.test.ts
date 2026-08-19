@@ -584,8 +584,8 @@ describe("T1 registry and identity query contracts", () => {
 		const plan = { schemaVersion: 1 as const, planId: "plan-1", goalId: "goal-1", status: "draft" as const, revision: 1, stageIds: [], createdAt: fakeNow, updatedAt: fakeNow };
 		const stage = { schemaVersion: 1 as const, stageId: "stage-1", planId: "plan-1", status: "pending" as const, ordinal: 0, todoIds: [] };
 		const todo = { schemaVersion: 1 as const, todoId: "todo-1", stageId: "stage-1", status: "pending" as const, title: "todo", ordinal: 0 };
-		const ask = { schemaVersion: 1 as const, askId: "ask-1", status: "pending" as const, question: "continue?", createdAt: fakeNow, updatedAt: fakeNow };
-		const workflow = { schemaVersion: 1 as const, workflowId: "workflow-1", revision: 1, status: "draft" as const, steps: [{ schemaVersion: 1 as const, stepId: "step-1", ordinal: 0, status: "pending" as const, type: "agent" as const, taskId: task.taskId }], createdAt: fakeNow, updatedAt: fakeNow };
+		const ask = { schemaVersion: 1 as const, sessionId: "session-1", askId: "ask-1", status: "pending" as const, question: "continue?", revision: 1, createdAt: fakeNow, updatedAt: fakeNow };
+		const workflow = { schemaVersion: 1 as const, dslVersion: 1 as const, sessionId: "session-1", workflowId: "workflow-1", revision: 1, status: "draft" as const, steps: [{ schemaVersion: 1 as const, stepId: "step-1", ordinal: 0, revision: 1, status: "pending" as const, type: "agent" as const, taskId: task.taskId, roleRevision: { schemaVersion: 1 as const, type: "role_revision" as const, id: "role-1", revision: 1 }, executor: "local" as const, input: [{ schemaVersion: 1 as const, contractId: "input-none", kind: "none" as const, required: false }], output: [{ schemaVersion: 1 as const, contractId: "output-none", kind: "none" as const, required: false }] }], createdAt: fakeNow, updatedAt: fakeNow };
 		expect(validateGoalV1(goal).ok).toBe(true);
 		expect(validateGoalV1({ ...goal, sessionId: undefined }).ok).toBe(false);
 		expect(validatePlanV1(plan).ok).toBe(true);

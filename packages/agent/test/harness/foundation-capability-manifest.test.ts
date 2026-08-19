@@ -335,6 +335,15 @@ const EXPECTED_T5_CLOSURES: Readonly<Record<number, { closure: FoundationCapabil
 	},
 };
 
+const EXPECTED_T7_CLOSURES: Readonly<Record<number, { closure: FoundationCapabilityClosureStatus; ownerModule: string; tests: readonly string[] }>> = {
+	14: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/goal-store.ts", tests: ["packages/agent/test/harness/foundation-t7-goal-store.test.ts"] },
+	15: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/goal-store.ts", tests: ["packages/agent/test/harness/foundation-t7-goal-store.test.ts"] },
+	16: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/ask-store.ts", tests: ["packages/agent/test/harness/foundation-t7-ask-store.test.ts"] },
+	127: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/workflow.ts", tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"] },
+	128: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/workflow.ts", tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"] },
+	129: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/workflow-store.ts", tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"] },
+};
+
 /** Future Role-related capabilities that must explicitly consume role contracts in their upstream list. */
 const FUTURE_ROLE_CONTRACT_IDS = [91, 96, 109, 110, 132, 138, 147];
 
@@ -487,6 +496,17 @@ describe("Foundation v1 capability manifest", () => {
 			expect(existsSync(resolve(REPO_ROOT, expected.ownerModule)), `T5 closure ${entry.id} owner path is missing`).toBe(true);
 			for (const test of expected.tests) expect(existsSync(resolve(REPO_ROOT, test)), `T5 closure ${entry.id} test path is missing: ${test}`).toBe(true);
 		}
+	});
+
+	it("wires only the implemented T7 Goal, Ask, and Workflow closures", () => {
+		for (const [idText, expected] of Object.entries(EXPECTED_T7_CLOSURES)) {
+			const id = Number(idText);
+			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
+			expect(entry, `T7 closure ${id} is missing`).toBeDefined();
+			expect(entry).toMatchObject(expected);
+			expect(entry?.tests).toEqual(expected.tests);
+		}
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)?.closure).toBe("contract_drafted");
 	});
 
 	it("matches the seal PR high-level row mapping exactly", () => {

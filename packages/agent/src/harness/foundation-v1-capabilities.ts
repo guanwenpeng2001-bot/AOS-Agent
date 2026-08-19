@@ -307,10 +307,10 @@ const closures = [
 		highLevelRows: rows("02", "10A"),
 		implementationStages: stages("T2", "T7", "T9", "T12"),
 		closure: "implemented",
-		ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
+		ownerModule: "packages/agent/src/harness/foundation/goal-store.ts",
 		publicContract: "Plan/Stage/Todo as versioned durable objects with stable ids, order and state",
 		persistence: "Plan revision records in the Session ledger",
-		tests: ["packages/agent/test/harness/agent-harness-runtime.test.ts", "packages/agent/test/harness/foundation-contracts.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-goal-store.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147],
 	},
@@ -319,10 +319,10 @@ const closures = [
 		highLevelRows: rows("02", "10A"),
 		implementationStages: stages("T2", "T7", "T9", "T12"),
 		closure: "implemented",
-		ownerModule: "packages/agent/src/harness/foundation/goal.ts",
+		ownerModule: "packages/agent/src/harness/foundation/goal-store.ts",
 		publicContract: "GoalV1 create/edit/pause/resume/complete/clear with revision, idempotent commands and acceptance criteria",
 		persistence: "Durable Goal records with tombstone on clear; history never deleted",
-		tests: ["packages/agent/test/harness/agent-harness-runtime.test.ts", "packages/agent/test/harness/foundation-contracts.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-goal-store.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147],
 	},
@@ -331,10 +331,10 @@ const closures = [
 		highLevelRows: rows("02", "07", "10A"),
 		implementationStages: stages("T2", "T7", "T8", "T9", "T12"),
 		closure: "implemented",
-		ownerModule: "packages/agent/src/harness/foundation/goal.ts",
+		ownerModule: "packages/agent/src/harness/foundation/ask-store.ts",
 		publicContract: "Durable Ask/Reply with timeout, recovery, escalation and audit; Ask resolves without granting permissions",
 		persistence: "AskV1 records with pending/answered/expired/escalated/cancelled states",
-		tests: ["packages/agent/test/harness/agent-harness-runtime.test.ts", "packages/agent/test/harness/foundation-contracts.test.ts", "packages/coding-agent/test/task-gate.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-ask-store.test.ts"],
 		laterConsumer: "12B",
 		laterCapabilityIds: [125],
 	},
@@ -1123,7 +1123,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
 		publicContract: "Versioned Workflow DSL with a migration registry",
 		persistence: "Workflow DSL version records with forward-only migration",
-		tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"],
 		laterConsumer: "12B",
 		laterCapabilityIds: [130, 131],
 	},
@@ -1135,7 +1135,7 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
 		publicContract: "Unified Agent/Tool/Parallel/Gate/AwaitUser/Barrier/Acceptance Step types with input/output contracts",
 		persistence: "Step state records pending/ready/running/waiting_user/awaiting_dispatch/blocked/succeeded/failed/cancelled/skipped",
-		tests: ["packages/agent/test/harness/foundation-contracts.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"],
 		laterConsumer: "15",
 		laterCapabilityIds: [147],
 	},
@@ -1144,10 +1144,10 @@ const closures = [
 		highLevelRows: rows("08", "10A"),
 		implementationStages: stages("T2", "T7", "T11", "T12"),
 		closure: "implemented",
-		ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
+		ownerModule: "packages/agent/src/harness/foundation/workflow-store.ts",
 		publicContract: "Durable pause/resume/stop/barrier/budget; cross-session steps stop at awaiting_dispatch without pretending to run",
 		persistence: "Workflow terminal facts; recovery never restarts paused/stopped objects",
-		tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"],
+		tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"],
 		laterConsumer: "12B",
 		laterCapabilityIds: [120, 123, 131],
 	},
@@ -1693,6 +1693,8 @@ const futureOwners = [
  * retain their contract-drafted closure state until their owning
  * implementation slice is merged. T6 wires C011 and C050 through the
  * scoped gateway contract; later ModelBroker composition remains deferred.
+ * T7 wires only C014-C016 and C127-C129; C073 remains drafted because the
+ * evaluation dataset and regression runner are not implemented by this slice.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
@@ -1704,6 +1706,9 @@ const WIRED_CLOSURE_IDS = new Set([
 	7,
 	11,
 	12,
+	14,
+	15,
+	16,
 	17,
 	18,
 	19,
@@ -1741,6 +1746,9 @@ const WIRED_CLOSURE_IDS = new Set([
 	59,
 	61,
 	67,
+	127,
+	128,
+	129,
 ]);
 
 const foundationCapabilityClosures = closures.map((entry) => ({
