@@ -9,6 +9,7 @@ import type { ResourceSelectorV1 } from "./foundation/reference.ts";
 import { EffectScope, orderRuntimeHooksV1, type EffectDisposerV1, type EffectResourceKindV1, type RuntimeHookSpecV1 } from "./runtime-services.ts";
 import { validateMcpSelectorTighteningV1, validateSelectorV1 } from "./profile.ts";
 import { Result, type Result as ResultValue } from "./result.ts";
+import type { FileError, FileSystem } from "./types.ts";
 
 export type PluginPackageSourceV1 = "local" | "remote" | "hosted";
 
@@ -213,6 +214,176 @@ export class InMemoryLocalPluginRegistryStorageV1 implements LocalPluginRegistry
 	async removeStage(stageId: string): Promise<ResultValue<void, FoundationError>> {
 		this.#snapshot = { ...this.#snapshot, generation: this.#snapshot.generation + 1, staged: this.#snapshot.staged.filter((item) => item.stageId !== stageId) };
 		return Result.ok(undefined);
+	}
+}
+
+interface PluginRegistryDiskPointerV1 {
+	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
+	generation: number;
+	snapshotFile: string;
+}
+
+const PLUGIN_REGISTRY_POINTER_FILE = "activation-pointer.json";
+const PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY = "snapshots";
+
+/** Atomic local-file capabilities required by the durable Plugin v1 registry. */
+export interface LocalPluginRegistryFileSystemV1 extends Pick<FileSystem, "joinPath" | "readTextFile" | "renameFile" | "createDir" | "remove"> {
+	createExclusive(path: string, content: string): Promise<ResultValue<void, FileError>>;
+	syncFile(path: string): Promise<ResultValue<void, FileError>>;
+	syncDirectory(path: string): Promise<ResultValue<void, FileError>>;
+}
+
+function emptyPluginRegistrySnapshot(): LocalPluginRegistrySnapshotV1 {
+	return { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: 0, active: [], previous: [], staged: [], pointers: [] };
+}
+
+function parsePluginRegistrySnapshot(value: unknown, expectedGeneration: number): LocalPluginRegistrySnapshotV1 {
+	if (typeof value !== "object" || value === null) throw pluginError("plugin_rollback_failed", "plugin registry snapshot is invalid");
+	const candidate = value as Partial<LocalPluginRegistrySnapshotV1>;
+	if (
+		candidate.schemaVersion !== FOUNDATION_SCHEMA_VERSION
+		|| candidate.generation !== expectedGeneration
+		|| !Array.isArray(candidate.active)
+		|| !Array.isArray(candidate.previous)
+		|| !Array.isArray(candidate.staged)
+		|| !Array.isArray(candidate.pointers)
+	) throw pluginError("plugin_rollback_failed", "plugin registry snapshot is invalid");
+	return clonePluginPersistence(candidate as LocalPluginRegistrySnapshotV1);
+}
+
+function parsePluginRegistryPointer(value: unknown): PluginRegistryDiskPointerV1 {
+	if (typeof value !== "object" || value === null) throw pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid");
+	const candidate = value as Partial<PluginRegistryDiskPointerV1>;
+	if (
+		candidate.schemaVersion !== FOUNDATION_SCHEMA_VERSION
+		|| !Number.isSafeInteger(candidate.generation)
+		|| (candidate.generation ?? -1) < 0
+		|| typeof candidate.snapshotFile !== "string"
+		|| !new RegExp(`^snapshot-${candidate.generation}-[0-9a-f-]+\\.json$`).test(candidate.snapshotFile)
+	) throw pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid");
+	return candidate as PluginRegistryDiskPointerV1;
+}
+
+function unwrapPluginFileResult<T>(result: ResultValue<T, FileError>): T {
+	if (!result.ok) throw result.error;
+	return result.value;
+}
+
+/**
+ * Durable local Plugin v1 storage. Every mutation publishes an immutable
+ * snapshot, then atomically replaces the activation pointer as its commit.
+ * A crash can leave an unreferenced snapshot, but never a partial active view.
+ */
+export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStorageV1 {
+	readonly #fileSystem: LocalPluginRegistryFileSystemV1;
+	readonly #directory: string;
+	#tail: Promise<void> = Promise.resolve();
+	#nonce = 0;
+
+	constructor(fileSystem: LocalPluginRegistryFileSystemV1, directory: string) {
+		this.#fileSystem = fileSystem;
+		this.#directory = directory;
+	}
+
+	async load(): Promise<ResultValue<LocalPluginRegistrySnapshotV1 | undefined, FoundationError>> {
+		await this.#tail;
+		return this.loadCommittedSnapshot();
+	}
+
+	async stagePackage(record: PluginRegistryStagedPackageV1): Promise<ResultValue<void, FoundationError>> {
+		return this.mutate((snapshot) => ({
+			...snapshot,
+			generation: snapshot.generation + 1,
+			staged: [...snapshot.staged.filter((item) => item.stageId !== record.stageId), clonePluginPersistence(record)],
+		}));
+	}
+
+	async atomicSwitch(change: PluginRegistryAtomicSwitchV1): Promise<ResultValue<void, FoundationError>> {
+		return this.mutate((snapshot) => {
+			const active = snapshot.active.filter((item) => item.record.pluginId !== change.pluginId);
+			const previous = snapshot.previous.filter((item) => item.record.pluginId !== change.pluginId);
+			const generation = snapshot.generation + 1;
+			return {
+				...snapshot,
+				generation,
+				active: change.active === undefined ? active : [...active, clonePluginPersistence(change.active)],
+				previous: change.previous === undefined ? previous : [...previous, clonePluginPersistence(change.previous)],
+				staged: change.stageId === undefined ? snapshot.staged : snapshot.staged.filter((item) => item.stageId !== change.stageId),
+				pointers: [
+					...snapshot.pointers.filter((pointer) => pointer.pluginId !== change.pluginId),
+					{ pluginId: change.pluginId, state: change.state, ...(change.stageId === undefined ? {} : { stageId: change.stageId }), generation },
+				],
+			};
+		});
+	}
+
+	async removeStage(stageId: string): Promise<ResultValue<void, FoundationError>> {
+		return this.mutate((snapshot) => ({
+			...snapshot,
+			generation: snapshot.generation + 1,
+			staged: snapshot.staged.filter((item) => item.stageId !== stageId),
+		}));
+	}
+
+	private async mutate(update: (snapshot: LocalPluginRegistrySnapshotV1) => LocalPluginRegistrySnapshotV1): Promise<ResultValue<void, FoundationError>> {
+		let resolveTail: (() => void) | undefined;
+		const previousTail = this.#tail;
+		this.#tail = new Promise<void>((resolvePromise) => { resolveTail = resolvePromise; });
+		await previousTail;
+		try {
+			const loaded = await this.loadCommittedSnapshot();
+			if (!loaded.ok) return loaded;
+			await this.publishSnapshot(update(loaded.value ?? emptyPluginRegistrySnapshot()));
+			return Result.ok(undefined);
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		} finally {
+			resolveTail?.();
+		}
+	}
+
+	private async loadCommittedSnapshot(): Promise<ResultValue<LocalPluginRegistrySnapshotV1 | undefined, FoundationError>> {
+		try {
+			const pointerPath = await this.path(PLUGIN_REGISTRY_POINTER_FILE);
+			const pointerContents = await this.#fileSystem.readTextFile(pointerPath);
+			if (!pointerContents.ok && pointerContents.error.code === "not_found") return Result.ok(undefined);
+			const pointer = parsePluginRegistryPointer(JSON.parse(unwrapPluginFileResult(pointerContents)) as unknown);
+			const snapshotPath = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY, pointer.snapshotFile);
+			const snapshotContents = unwrapPluginFileResult(await this.#fileSystem.readTextFile(snapshotPath));
+			return Result.ok(parsePluginRegistrySnapshot(JSON.parse(snapshotContents) as unknown, pointer.generation));
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		}
+	}
+
+	private async publishSnapshot(snapshot: LocalPluginRegistrySnapshotV1): Promise<void> {
+		const snapshotDirectory = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY);
+		unwrapPluginFileResult(await this.#fileSystem.createDir(snapshotDirectory, { recursive: true }));
+		const nonce = `${Date.now().toString(16)}-${(this.#nonce++).toString(16)}-${Math.random().toString(16).slice(2)}`;
+		const snapshotFile = `snapshot-${snapshot.generation}-${nonce}.json`;
+		const snapshotPath = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY, snapshotFile);
+		const snapshotTemporaryPath = `${snapshotPath}.tmp`;
+		const pointerPath = await this.path(PLUGIN_REGISTRY_POINTER_FILE);
+		const pointerTemporaryPath = await this.path(`.${PLUGIN_REGISTRY_POINTER_FILE}.${nonce}.tmp`);
+		try {
+			unwrapPluginFileResult(await this.#fileSystem.createExclusive(snapshotTemporaryPath, canonicalFoundationJson(snapshot)));
+			unwrapPluginFileResult(await this.#fileSystem.syncFile(snapshotTemporaryPath));
+			unwrapPluginFileResult(await this.#fileSystem.renameFile(snapshotTemporaryPath, snapshotPath));
+			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(snapshotDirectory));
+			const pointer: PluginRegistryDiskPointerV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: snapshot.generation, snapshotFile };
+			unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerTemporaryPath, canonicalFoundationJson(pointer)));
+			unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerTemporaryPath));
+			unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerTemporaryPath, pointerPath));
+			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
+		} catch (error) {
+			await this.#fileSystem.remove(snapshotTemporaryPath, { force: true });
+			await this.#fileSystem.remove(pointerTemporaryPath, { force: true });
+			throw error;
+		}
+	}
+
+	private async path(...parts: string[]): Promise<string> {
+		return unwrapPluginFileResult(await this.#fileSystem.joinPath([this.#directory, ...parts]));
 	}
 }
 
@@ -427,12 +598,15 @@ export class LocalPluginRegistry {
 			}
 			restored.push({ pluginId: entry.record.pluginId, value: { ...activation.value, record: clonePluginPersistence(entry.record) } });
 		}
-		for (const item of restored) this.#active.set(item.pluginId, item.value);
-		for (const entry of loaded.value.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
 		for (const staged of loaded.value.staged) {
 			const removed = await this.removeStageDurably(staged.stageId);
-			if (!removed.ok) return removed;
+			if (!removed.ok) {
+				for (const item of [...restored].reverse()) await item.value.scope.rollback();
+				return removed;
+			}
 		}
+		for (const item of restored) this.#active.set(item.pluginId, item.value);
+		for (const entry of loaded.value.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
 		return Result.ok(undefined);
 	}
 
@@ -527,7 +701,13 @@ export class LocalPluginRegistry {
 			if (stageId !== undefined) await this.removeStageDurably(stageId);
 			return activated;
 		}
-		const switched = await this.atomicSwitchDurably({ pluginId, active: { package: previous.package, record: activated.value.record }, stageId, state: "active" });
+		const switched = await this.atomicSwitchDurably({
+			pluginId,
+			active: { package: previous.package, record: activated.value.record },
+			...(current === undefined ? {} : { previous: { package: current.package, record: current.record } }),
+			stageId,
+			state: "active",
+		});
 		if (!switched.ok) {
 			await activated.value.scope.rollback();
 			if (stageId !== undefined) await this.removeStageDurably(stageId);
@@ -542,12 +722,25 @@ export class LocalPluginRegistry {
 				this.#releaseReports.set(pluginId, failedActivationRelease);
 				const restored = await this.createActivation(current.package, current.record.revision);
 				if (restored.ok) {
-					const restoredDurably = await this.atomicSwitchDurably({ pluginId, active: { package: current.package, record: current.record }, state: "active" });
+					const restoredDurably = await this.atomicSwitchDurably({
+						pluginId,
+						active: { package: current.package, record: current.record },
+						previous,
+						state: "active",
+					});
 					if (restoredDurably.ok) this.#active.set(pluginId, { ...restored.value, record: current.record });
-					else await restored.value.scope.rollback();
+					else {
+						await restored.value.scope.rollback();
+						this.#active.delete(pluginId);
+					}
 				} else this.#active.delete(pluginId);
 				return Result.err(pluginError("plugin_rollback_failed", "plugin rollback cleanup failed", { pluginId }));
 			}
+		}
+		const clearedRollbackPoint = await this.atomicSwitchDurably({ pluginId, active: { package: previous.package, record: activated.value.record }, state: "active" });
+		if (!clearedRollbackPoint.ok) {
+			if (current !== undefined) this.#previous.set(pluginId, { package: current.package, record: current.record });
+			return clearedRollbackPoint;
 		}
 		this.#previous.delete(pluginId);
 		this.#stageIds.delete(this.stageKey(pluginId, nextRevision));

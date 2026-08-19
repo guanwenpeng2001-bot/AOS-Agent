@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	EffectScope,
@@ -9,11 +12,16 @@ import {
 } from "../../src/harness/runtime-services.ts";
 import {
 	LocalPluginRegistry,
+	LocalFilePluginRegistryStorageV1,
 	InMemoryLocalPluginRegistryStorageV1,
 	createPluginContractV1,
 	pluginContentsDigestV1,
+	type LocalPluginPackageV1,
+	type PluginActivationContextV1,
 	validateLocalPluginPackageV1,
 } from "../../src/harness/plugins.ts";
+import { FoundationError } from "../../src/harness/foundation/errors.ts";
+import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { applyProfilePatchV1, composeProfileBundleV1, resolveChildExecutorMcpSelectorsV1, selectResourcesV1 } from "../../src/harness/profile.ts";
 import { Result } from "../../src/harness/result.ts";
 import { Type } from "typebox";
@@ -254,5 +262,95 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(await failing.install(pkg)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
 		expect(failingStorage.snapshot.active).toHaveLength(0);
 		expect(failingStorage.snapshot.staged).toHaveLength(0);
+	});
+
+	it("reopens committed plugin activation from a fresh local filesystem storage instance", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-registry-"));
+		try {
+			const pkg = pluginPackage();
+			const registryDirectory = "registry";
+			const registry = new LocalPluginRegistry({
+				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				now: () => "installed",
+			});
+			expect(await registry.install(pkg)).toMatchObject({ ok: true });
+
+			const pointer = JSON.parse(await readFile(join(directory, registryDirectory, "activation-pointer.json"), "utf8")) as { generation: number; snapshotFile: string };
+			expect(pointer.generation).toBeGreaterThan(0);
+			expect(pointer.snapshotFile).toMatch(/^snapshot-\d+-[0-9a-f-]+\.json$/);
+
+			const reopened = await LocalPluginRegistry.open({
+				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				now: () => "reopened",
+			});
+			expect(reopened).toMatchObject({ ok: true });
+			if (!reopened.ok) return;
+			expect(reopened.value.active(pkg.contract.pluginId)).toMatchObject({ pluginId: pkg.contract.pluginId, revision: 1, activatedAt: "installed" });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("rolls back recovered effect scopes when orphan-stage cleanup fails", async () => {
+		const storage = new InMemoryLocalPluginRegistryStorageV1();
+		const pkg = pluginPackage();
+		const registry = new LocalPluginRegistry({ storage });
+		expect(await registry.install(pkg)).toMatchObject({ ok: true });
+		expect(await storage.stagePackage({
+			stageId: "orphan-stage",
+			operation: "update",
+			pluginId: pkg.contract.pluginId,
+			revision: 2,
+			package: pluginPackage("2.0.0"),
+			stagedAt: "before-crash",
+		})).toMatchObject({ ok: true });
+
+		let disposed = 0;
+		const failed = await LocalPluginRegistry.open({
+			storage: {
+				load: () => storage.load(),
+				stagePackage: (record) => storage.stagePackage(record),
+				atomicSwitch: (change) => storage.atomicSwitch(change),
+				removeStage: async () => Result.err(new FoundationError("plugin_rollback_failed", "injected orphan cleanup failure")),
+			},
+			onActivate: async (_pkg, context) => {
+				context.register("listener", "recovered-listener", () => { disposed += 1; });
+			},
+		});
+		expect(failed).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
+		expect(disposed).toBe(1);
+	});
+
+	it("preserves the rollback point on disk when rollback cleanup fails", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-rollback-"));
+		let failVersionTwoCleanup = true;
+		const onActivate = async (pkg: LocalPluginPackageV1, context: PluginActivationContextV1) => {
+			context.register("listener", `version:${pkg.contract.version}`, () => {
+				if (pkg.contract.version === "2.0.0" && failVersionTwoCleanup) {
+					failVersionTwoCleanup = false;
+					throw new Error("injected rollback cleanup failure");
+				}
+			});
+		};
+		try {
+			const registryDirectory = "registry";
+			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const registry = new LocalPluginRegistry({ storage, onActivate });
+			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
+			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
+			expect(await registry.rollback("local-plugin")).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
+
+			const reopened = await LocalPluginRegistry.open({
+				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				onActivate,
+			});
+			expect(reopened).toMatchObject({ ok: true });
+			if (!reopened.ok) return;
+			expect(reopened.value.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
+			expect(await reopened.value.rollback("local-plugin")).toMatchObject({ ok: true, value: { operation: "rollback" } });
+			expect(reopened.value.active("local-plugin")).toMatchObject({ version: "1.0.0", revision: 3 });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 });

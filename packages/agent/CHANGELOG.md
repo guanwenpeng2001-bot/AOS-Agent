@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Made local plugin activation truly durable across process restarts, including recovery cleanup and rollback-point preservation after cleanup failure.
 - Removed the compatibility-only Foundation contract barrel and legacy `FoundationContractError` tag; Foundation errors now expose only the canonical `FoundationError` shape.
 - Agent lifecycle state now remains active through caller-owned asynchronous preflight and prepared prompt execution, so `waitForIdle()` observes the complete run.
 - Caller cancellation and deadline expiry are classified before uncertain model-output side effects, preserving the `aborted` terminal state.
