@@ -69,8 +69,10 @@ import {
 	validateToolIntentV1,
 	validateToolReceiptV1,
 	validateToolResultPayloadV1,
+	digestToolArgumentsV1,
 	type ToolDefinitionRegistryV1,
 	type ToolDefinitionV1,
+	type ToolBindingRefV1,
 	type ToolExecutionV1,
 	type ToolIntentV1,
 	type ToolPipelineContextV1,
@@ -499,12 +501,17 @@ function foundationJsonValue(value: unknown): FoundationJsonValue {
 	return record;
 }
 
+function matchesProvisionedEntryCanonical(entry: Entry, target: ProvisionedEntry): boolean {
+	const { parentId: _parentId, seq: _seq, timestamp: _timestamp, ...payload } = entry;
+	return canonicalFoundationJson(payload) === canonicalFoundationJson(target);
+}
+
 function toolStartedExecutionSemantics(start: ToolStartedRecord): string {
 	try {
 		return canonicalFoundationJson({
 			type: start.type,
 			runId: start.runId,
-		assistantEntryId: start.assistantEntryId,
+			assistantEntryId: start.assistantEntryId,
 			toolIndex: start.toolIndex,
 			toolCallId: start.toolCallId,
 			toolName: start.toolName,
@@ -515,6 +522,49 @@ function toolStartedExecutionSemantics(start: ToolStartedRecord): string {
 	} catch (_error) {
 		return "invalid_tool_started_execution_semantics";
 	}
+}
+
+function foundationBindingMatchesCorrelation(binding: ToolBindingRefV1, correlation: ExecutionCorrelationV1): boolean {
+	for (const [field, expected] of [
+		["sessionId", correlation.sessionId],
+		["laneId", correlation.laneId],
+		["runId", correlation.runId],
+		["operationId", correlation.operationId],
+		["taskId", correlation.taskId],
+		["dispatchId", correlation.dispatchId],
+		["attemptId", correlation.attemptId],
+		["bindingId", correlation.bindingId],
+		["bindingEpochId", correlation.bindingEpochId],
+		["providerId", correlation.providerId],
+		["agentInstanceId", correlation.agentInstanceId],
+	] as const) {
+		if (expected !== undefined && binding[field] !== expected) return false;
+	}
+	return true;
+}
+
+function receiptMatchesIntentCanonical(receipt: ToolReceiptV1, intent: ToolIntentV1): boolean {
+	return canonicalFoundationJson({
+		toolCallId: receipt.toolCallId,
+		toolName: receipt.toolName,
+		...(receipt.namespace === undefined ? {} : { namespace: receipt.namespace }),
+		toolRevision: receipt.toolRevision,
+		binding: receipt.binding,
+		...(receipt.idempotencyKey === undefined ? {} : { idempotencyKey: receipt.idempotencyKey }),
+		argumentDigests: receipt.argumentDigests,
+		transformProvenance: receipt.transformProvenance,
+		attempt: receipt.attempt,
+	}) === canonicalFoundationJson({
+		toolCallId: intent.toolCallId,
+		toolName: intent.toolName,
+		...(intent.namespace === undefined ? {} : { namespace: intent.namespace }),
+		toolRevision: intent.toolRevision,
+		binding: intent.binding,
+		...(intent.idempotencyKey === undefined ? {} : { idempotencyKey: intent.idempotencyKey }),
+		argumentDigests: intent.argumentDigests,
+		transformProvenance: intent.transformProvenance,
+		attempt: intent.attempt,
+	});
 }
 
 async function foundationToolResultPayload(
@@ -564,19 +614,12 @@ async function foundationToolResultPayload(
 		if (!stored.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
 		const checkedPut = validateArtifactPutResultV1(stored.value);
 		if (!checkedPut.ok || checkedPut.value.ref !== checkedDescriptor.value.artifactId || checkedPut.value.sizeBytes !== bytes.byteLength) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put returned an unverifiable reference"));
-		let verified: Awaited<ReturnType<ArtifactStoreProvider["verify"]>>;
-		try {
-			verified = await artifactStore.verify(stored.value.ref);
-		} catch (_error) {
-			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
-		}
-		if (!verified.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
-		const checkedVerify = validateArtifactVerifyResultV1(verified.value);
-		if (!checkedVerify.ok || !checkedVerify.value.digestValid) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore verify failed"));
 		const checkedArtifact = validateArtifactRef({ schemaVersion: 1, artifactId: checkedPut.value.ref, mediaType: item.mimeType, digest: checkedDescriptor.value.digest, producer: producerId, sizeBytes: bytes.byteLength });
 		if (!checkedArtifact.ok) {
 			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore returned an unverifiable ArtifactRef"));
 		}
+		const integrity = await verifyArtifactStoreRef(artifactStore, checkedArtifact.value);
+		if (!integrity.ok) return integrity;
 		content.push({ type: "image", artifact: checkedArtifact.value });
 	}
 	const payload: ToolResultPayloadV1 = {
@@ -620,25 +663,11 @@ async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefi
 			continue;
 		}
 		if (artifactStore === undefined) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
-		let fetched: Awaited<ReturnType<ArtifactStoreProvider["get"]>>;
-		try {
-			fetched = await artifactStore.get(item.artifact.artifactId);
-		} catch (_error) {
-			return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
-		}
-		if (fetched === null || typeof fetched !== "object" || !("ok" in fetched) || fetched.ok !== true || !("value" in fetched) || !(fetched.value instanceof Uint8Array)) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
-		let verified: Awaited<ReturnType<ArtifactStoreProvider["verify"]>>;
-		try {
-			verified = await artifactStore.verify(item.artifact.artifactId);
-		} catch (_error) {
-			return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
-		}
-		if (verified === null || typeof verified !== "object" || !("ok" in verified) || verified.ok !== true || !("value" in verified)) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
-		const checkedVerify = validateArtifactVerifyResultV1(verified.value);
-		if (!checkedVerify.ok || !checkedVerify.value.digestValid || item.artifact.digest !== `sha256:${rawSha256(fetched.value)}` || item.artifact.sizeBytes !== fetched.value.byteLength) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+		const integrity = await verifyArtifactStoreRef(artifactStore, item.artifact);
+		if (!integrity.ok) return integrity;
 		const restoredImage: ImageContent & { artifact: ArtifactRefV1 } = {
 			type: "image",
-			data: encodeBase64(fetched.value),
+			data: encodeBase64(integrity.value),
 			mimeType: item.artifact.mediaType,
 			artifact: item.artifact,
 		};
@@ -668,6 +697,43 @@ async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefi
 		...(checked.value.addedToolNames === undefined ? {} : { addedToolNames: [...checked.value.addedToolNames] }),
 		...(checked.value.terminate === undefined ? {} : { terminate: checked.value.terminate }),
 	});
+}
+
+async function verifyArtifactStoreRef(
+	artifactStore: ArtifactStoreProvider,
+	artifact: ArtifactRefV1,
+): Promise<ResultValue<Uint8Array, FoundationError>> {
+	const checkedArtifact = validateArtifactRef(artifact);
+	if (!checkedArtifact.ok || checkedArtifact.value.sizeBytes === undefined) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact has no canonical size"));
+	}
+	let fetched: Awaited<ReturnType<ArtifactStoreProvider["get"]>>;
+	try {
+		fetched = await artifactStore.get(checkedArtifact.value.artifactId);
+	} catch (_error) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
+	}
+	if (fetched === null || typeof fetched !== "object" || !("ok" in fetched) || fetched.ok !== true || !("value" in fetched) || !(fetched.value instanceof Uint8Array)) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
+	}
+	const bytes = fetched.value;
+	if (bytes.byteLength !== checkedArtifact.value.sizeBytes || checkedArtifact.value.digest !== `sha256:${rawSha256(bytes)}`) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+	}
+	let verified: Awaited<ReturnType<ArtifactStoreProvider["verify"]>>;
+	try {
+		verified = await artifactStore.verify(checkedArtifact.value.artifactId);
+	} catch (_error) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+	}
+	if (verified === null || typeof verified !== "object" || !("ok" in verified) || verified.ok !== true || !("value" in verified)) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+	}
+	const checkedVerify = validateArtifactVerifyResultV1(verified.value);
+	if (!checkedVerify.ok || !checkedVerify.value.digestValid) {
+		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
+	}
+	return Result.ok(bytes);
 }
 
 function foundationToolResultArtifacts(payload: ToolResultPayloadV1): readonly ArtifactRefV1[] {
@@ -754,6 +820,7 @@ export class AgentHarness implements AgentLane {
 	private toolPipeline?: FoundationToolPipelineV1;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
 	private readonly foundationReceipts = new Map<string, FoundationReceiptBundle>();
+	private readonly terminalToolFailureOperations = new Set<string>();
 	private readonly eventBus = new HarnessEventBus();
 	private readonly hookRegistry = new HookRegistry();
 	private readonly activeOperations = new Map<string, ActiveOperation>();
@@ -1327,7 +1394,10 @@ export class AgentHarness implements AgentLane {
 				recordError({ code: "side_effect_unknown", message: "Durable image tool result is not ArtifactRef-backed" });
 			} else if (result.message.isError) {
 				failed = true;
-				if (receipt?.outcome === "succeeded" && receipt.result === undefined) mergeSideEffectState("side_effect_unknown");
+				if (receipt?.outcome === "succeeded") {
+					mergeSideEffectState("side_effect_unknown");
+					if (receipt.result !== undefined) markLedgerConflict();
+				}
 				const textContent = result.message.content.find((content) => content.type === "text");
 				recordError({ code: receipt?.error?.code ?? "tool_execution_failed", message: receipt?.error?.message ?? (textContent?.type === "text" ? textContent.text : `Tool ${start.toolName} failed`) });
 			}
@@ -1398,6 +1468,7 @@ export class AgentHarness implements AgentLane {
 		try {
 			await this.restoreRuntimeConfiguration();
 			await this.refreshSnapshots();
+			for (const pointer of await this.durableSession.getLanes()) await this.reconcileDeferredEntryWrites(pointer.lane);
 			const suspended: SuspendedOperation[] = [];
 			for (const pointer of await this.durableSession.getLanes()) {
 				const reduction = this.laneReductions.get(pointer.lane);
@@ -1429,6 +1500,16 @@ export class AgentHarness implements AgentLane {
 				throw new HarnessFault(`Harness recovery rejected corrupt record log (${error.reason})`, error);
 			}
 			throw new HarnessFault("Harness recovery failed closed", error);
+		}
+	}
+
+	private async reconcileDeferredEntryWrites(lane: string): Promise<void> {
+		const writes = await this.durableSession.findRecords({ lane, type: "write_deferred", order: "oldestFirst" });
+		for (const write of writes) {
+			const existing = await this.durableSession.getEntry(write.target.id);
+			if (existing === undefined) continue;
+			if (!matchesProvisionedEntryCanonical(existing, write.target)) throw new HarnessFault(`Durable entry ${write.target.id} conflicts with its write intent`, undefined);
+			await this.ensureToolResultUsageRecord(lane, write.runId, write.target);
 		}
 	}
 
@@ -1634,9 +1715,20 @@ export class AgentHarness implements AgentLane {
 		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
 		if (this.foundationExecution === undefined) throw new HarnessToolPipelineError("Foundation tool result has no execution authority", "side_effect_unknown");
 		const starts = await this.durableSession.findRecords({ lane, runId: checked.value.runId, type: "tool_started", order: "oldestFirst" });
-		const matchingStarts = starts.filter((start) => start.resultEntryId === entry.id && start.toolCallId === checked.value.toolCallId && start.toolName === checked.value.toolName);
+		const matchingStarts = starts.filter((start) => start.toolCallId === checked.value.toolCallId);
 		if (matchingStarts.length !== 1) throw new HarnessToolPipelineError("Durable tool result entry is not authorized by a unique tool start", "side_effect_unknown");
+		const start = matchingStarts[0]!;
+		if (start.resultEntryId !== entry.id || start.toolName !== checked.value.toolName) throw new HarnessToolPipelineError("Durable tool result entry is not bound to its tool start", "side_effect_unknown");
 		if (checked.value.operationId !== checked.value.runId) throw new HarnessToolPipelineError("Durable tool result entry has an invalid operation identity", "side_effect_unknown");
+		const intent = await this.foundationIntentForToolCall(lane, checked.value.runId, checked.value.toolCallId);
+		if (!intent.ok) throw new HarnessToolPipelineError(intent.error.message, "side_effect_unknown");
+		let acceptedDigest: ReturnType<typeof digestToolArgumentsV1>;
+		try {
+			acceptedDigest = digestToolArgumentsV1(start.effectiveArgs);
+		} catch (_error) {
+			throw new HarnessToolPipelineError("Durable tool start has an invalid accepted argument projection", "side_effect_unknown");
+		}
+		if (acceptedDigest.algorithm !== intent.value.argumentDigests.accepted.algorithm || acceptedDigest.value !== intent.value.argumentDigests.accepted.value) throw new HarnessToolPipelineError("Durable tool result entry has a mismatched accepted argument digest", "side_effect_unknown");
 		const folded = await this.foundationReceiptForToolCall(lane, checked.value.runId, checked.value.toolCallId);
 		if (!folded.ok || folded.value.outcome !== "succeeded" || folded.value.sideEffectState !== "none" || folded.value.result === undefined || checked.value.isError || canonicalFoundationJson(folded.value.result) !== canonicalFoundationJson(checked.value.result)) {
 			throw new HarnessToolPipelineError("Durable tool result entry does not match its authorized receipt", "side_effect_unknown");
@@ -1762,8 +1854,10 @@ export class AgentHarness implements AgentLane {
 				if (execution.ok && execution.value.outcome === "succeeded") {
 					const restored = await restoreFoundationToolResult(execution.value.result, this.artifactStore);
 					if (restored.ok) return restored.value as AgentToolResult<never>;
+					this.terminalToolFailureOperations.add(operationId);
 					throw new HarnessToolPipelineError(restored.error.message, "side_effect_unknown");
 				}
+				if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") this.terminalToolFailureOperations.add(operationId);
 				throw new HarnessToolPipelineError(
 					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
 					execution.ok && execution.value.sideEffectState === "none" ? "none" : "side_effect_unknown",
@@ -1852,6 +1946,7 @@ export class AgentHarness implements AgentLane {
 			},
 			getFollowUpMessages: async () => this.enqueue(lane, () => this.consumeQueueMessages(lane, operationId, "followUp", this.followUpMode)),
 			transformContext: async (messages) => messages,
+			shouldStopAfterTurn: () => this.terminalToolFailureOperations.has(operationId),
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),
 		};
@@ -1928,7 +2023,12 @@ export class AgentHarness implements AgentLane {
 	}
 	private async appendWriteDeferred(lane: string, runId: string, target: ProvisionedEntry): Promise<void> {
 		const records = await this.durableSession.findRecords({ lane, type: "write_deferred", runId, order: "oldestFirst" });
-		if (!records.some((record) => record.target.id === target.id)) {
+		const existing = records.find((record) => record.target.id === target.id);
+		if (existing !== undefined) {
+			if (canonicalFoundationJson(existing.target) !== canonicalFoundationJson(target)) throw new HarnessFault(`Durable write intent ${target.id} conflicts with its replay payload`, undefined);
+			return;
+		}
+		if (existing === undefined) {
 			await this.durableSession.appendRecord({
 				type: "write_deferred",
 				id: this.durableSession.idGenerator.next(),
@@ -1944,12 +2044,25 @@ export class AgentHarness implements AgentLane {
 		const checked = validateFoundationToolResultEntryV1(target.data);
 		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
 		const usage = checked.value.result.usage;
-		if (usage === undefined) return;
-		const records = await this.durableSession.findRecords({ lane, runId, type: "usage", order: "oldestFirst" });
+		const records = await this.durableSession.findRecords({ lane, type: "usage", order: "oldestFirst" });
 		type ToolUsageRecord = Extract<(typeof records)[number], { type: "usage"; cause: "tool" }>;
-		const existing = records.find((record): record is ToolUsageRecord => record.type === "usage" && record.cause === "tool" && record.entryId === target.id);
-		if (existing !== undefined) {
-			if (existing.toolCallId !== checked.value.toolCallId) throw new HarnessFault("Durable tool usage record references a different tool call", undefined);
+		const existing = records.filter((record): record is ToolUsageRecord => record.type === "usage" && record.cause === "tool" && record.entryId === target.id);
+		if (usage === undefined) {
+			if (existing.length > 0) throw new HarnessFault("Durable tool usage record exists for a result without usage", undefined);
+			return;
+		}
+		const expected = {
+			cause: "tool" as const,
+			runId,
+			entryId: target.id,
+			toolCallId: checked.value.toolCallId,
+			usage: agentUsageFromToolResultUsage(usage),
+		};
+		if (existing.length > 1) throw new HarnessFault("Durable tool result has duplicate usage records", undefined);
+		if (existing[0] !== undefined) {
+			if (canonicalFoundationJson({ cause: existing[0].cause, runId: existing[0].runId, entryId: existing[0].entryId, toolCallId: existing[0].toolCallId, usage: existing[0].usage }) !== canonicalFoundationJson(expected)) {
+				throw new HarnessFault("Durable tool usage record conflicts with its canonical result usage", undefined);
+			}
 			return;
 		}
 		await this.durableSession.appendRecord({
@@ -1960,7 +2073,7 @@ export class AgentHarness implements AgentLane {
 			runId,
 			entryId: target.id,
 			toolCallId: checked.value.toolCallId,
-			usage: agentUsageFromToolResultUsage(usage),
+			usage: expected.usage,
 		});
 	}
 
@@ -1969,6 +2082,8 @@ export class AgentHarness implements AgentLane {
 		if (!existing) {
 			await this.appendWriteDeferred(lane, runId, target);
 			await this.durableSession.appendEntry(target, lane);
+		} else if (!matchesProvisionedEntryCanonical(existing, target)) {
+			throw new HarnessFault(`Durable entry ${target.id} conflicts with its write intent`, undefined);
 		}
 		await this.ensureToolResultUsageRecord(lane, runId, target);
 	}
@@ -2085,16 +2200,51 @@ export class AgentHarness implements AgentLane {
 			toolIndex: this.toolIndex(lane, assistantEntryId, event.toolCallId),
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
-			effectiveArgs: asRecord(event.args) ?? {},
+			effectiveArgs: this.acceptedToolArguments(event.toolName, event.args),
 			resultEntryId: this.durableSession.idGenerator.next(),
 			replay: this.tools.find((tool) => tool.name === event.toolName)?.replay ?? "never",
 		};
 		return this.durableSession.appendRecord(target) as Promise<ToolStartedRecord>;
 	}
 
+	private acceptedToolArguments(toolName: string, value: unknown): { [key: string]: unknown } {
+		const original = asRecord(value) ?? {};
+		const tool = this.tools.find((candidate) => candidate.name === toolName);
+		if (tool?.prepareArguments === undefined) return structuredClone(original);
+		try {
+			const prepared = tool.prepareArguments(structuredClone(original));
+			return structuredClone(asRecord(prepared) ?? original);
+		} catch (error) {
+			throw new HarnessFault(`Tool ${toolName} arguments could not be canonically prepared`, error);
+		}
+	}
+
+	private async foundationIntentForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<ToolIntentV1, FoundationError>> {
+		const correlation = this.foundationCorrelation(lane, runId, { toolCallId });
+		if (correlation === undefined) return Result.err(new FoundationError("side_effect_unknown", "Foundation tool intent has no execution correlation"));
+		const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
+		const records = await this.durableSession.findFoundationRecords({ kind: "intent", objectType: "tool_intent", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
+		const intents: ToolIntentV1[] = [];
+		for (const record of records) {
+			if (record.kind !== "intent" || record.payload === undefined) continue;
+			const checked = validateToolIntentV1(record.payload);
+			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool intent failed validation"));
+			if (checked.value.toolCallId !== toolCallId) continue;
+			if (!foundationBindingMatchesCorrelation(checked.value.binding, correlation)) return Result.err(new FoundationError("invalid_correlation", "Durable tool intent identity does not match its operation"));
+			intents.push(checked.value);
+		}
+		if (intents.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool intent is missing"));
+		const canonicalIntents = intents.map((intent) => canonicalFoundationJson(intent));
+		if (canonicalIntents.some((value) => value !== canonicalIntents[0])) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool intents conflict for one execution identity"));
+		const ordered = [...intents].sort((left, right) => canonicalFoundationJson(left).localeCompare(canonicalFoundationJson(right)));
+		return Result.ok(ordered[0]!);
+	}
+
 	private async foundationReceiptForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<FoundationReceiptFoldV1, FoundationError>> {
 		const correlation = this.foundationCorrelation(lane, runId, { toolCallId });
 		if (correlation === undefined) return Result.err(new FoundationError("side_effect_unknown", "Foundation tool result has no execution correlation"));
+		const intent = await this.foundationIntentForToolCall(lane, runId, toolCallId);
+		if (!intent.ok) return intent;
 		const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
 		const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
 		const receipts: ToolReceiptV1[] = [];
@@ -2103,13 +2253,13 @@ export class AgentHarness implements AgentLane {
 			const checked = validateAndVerifyToolReceiptV1(record.payload);
 			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool receipt failed validation"));
 			if (checked.value.toolCallId !== toolCallId) continue;
-			if (checked.value.binding.runId !== runId || checked.value.binding.operationId !== runId) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipt identity does not match its operation"));
+			if (!foundationBindingMatchesCorrelation(checked.value.binding, correlation) || !receiptMatchesIntentCanonical(checked.value, intent.value)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipt identity does not match its intent"));
 			receipts.push(checked.value);
 		}
 		if (receipts.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool receipt is missing"));
 		const semantic = projectToolReceiptExecutionSemanticsV1(receipts[0]!);
 		if (receipts.some((receipt) => projectToolReceiptExecutionSemanticsV1(receipt) !== semantic)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipts conflict for one execution identity"));
-		const ordered = [...receipts].sort((left, right) => projectToolReceiptExecutionSemanticsV1(left).localeCompare(projectToolReceiptExecutionSemanticsV1(right)));
+		const ordered = [...receipts].sort((left, right) => canonicalFoundationJson(left).localeCompare(canonicalFoundationJson(right)));
 		const representative = ordered[0]!;
 		const worstSeverity = receipts.reduce<1 | 2 | 3>((worst, receipt) => Math.max(worst, toolReceiptSeverity(receipt)) as 1 | 2 | 3, 1);
 		if (worstSeverity === 1) return Result.ok({ representative, outcome: "succeeded", sideEffectState: "none", ...(representative.result === undefined ? {} : { result: representative.result }) });
@@ -2124,8 +2274,9 @@ export class AgentHarness implements AgentLane {
 		const folded = this.foundationExecution === undefined ? undefined : await this.foundationReceiptForToolCall(lane, runId, message.toolCallId);
 		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, folded.error.code === "session_ledger_conflict" ? "side_effect_unknown" : "side_effect_unknown");
 		const receipt = folded?.ok === true ? folded.value : undefined;
+		const terminalToolFailure = this.terminalToolFailureOperations.has(runId);
 		let target: ProvisionedEntry;
-		if (receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined) {
+		if (!terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined) {
 			const resultEntry: FoundationToolResultEntryV1 = {
 				schemaVersion: 1,
 				runId,
@@ -2511,7 +2662,10 @@ export class AgentHarness implements AgentLane {
 
 	private async finishOperation(lane: string, runId: string, outcome: "completed" | "declined" | "failed" | "aborted", error?: OperationError): Promise<void> {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "operation_finished", order: "oldestFirst" });
-		if (records.length > 0) return;
+		if (records.length > 0) {
+			this.terminalToolFailureOperations.delete(runId);
+			return;
+		}
 		const toolOutcome = this.foundationExecution === undefined ? undefined : await this.foundationToolOutcome(lane, runId);
 		const effectiveOutcome = outcome === "completed" && toolOutcome?.failed === true ? "failed" : outcome;
 		const effectiveError = error ?? toolOutcome?.error;
@@ -2547,6 +2701,7 @@ export class AgentHarness implements AgentLane {
 			...(checkpointId ? { checkpointId } : {}),
 		});
 		await this.refreshSnapshots();
+		this.terminalToolFailureOperations.delete(runId);
 	}
 
 	private async actionForReduction(lane: string, reduction: LaneReductionResult): Promise<ActionInfo | undefined> {
@@ -2564,6 +2719,9 @@ export class AgentHarness implements AgentLane {
 			if (operation.deferredFetch?.result !== undefined) return { kind: "try_finish_run", outcome: "failed" };
 			if (operation.deferredFetch !== null) return { kind: "try_finish_run", outcome: "failed" };
 			return { kind: "fetch_deferred", provider: operation.deferred.provider, id: operation.deferred.id };
+		}
+		if (operation.toolBatch?.receiptConflict) {
+			return { kind: "try_finish_run", outcome: "failed", error: { code: "session_ledger_conflict", message: "Durable tool receipts conflict for one execution identity" } };
 		}
 		if (operation.toolBatch?.unresolved) {
 			const call = operation.toolBatch.calls.find((candidate) => !candidate.resultExists);

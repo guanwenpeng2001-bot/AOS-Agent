@@ -2,14 +2,15 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Model, t
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { AgentHarness, type AgentHarnessFoundationExecution, type HarnessTool } from "../../src/harness/agent-harness.ts";
-import { fingerprintFoundationValue, createHostTerminalGateAuthorityV1, type ArtifactStoreProvider, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
+import { fingerprintFoundationValue, canonicalFoundationJson, createHostTerminalGateAuthorityV1, type ArtifactStoreProvider, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { FoundationToolGuardV1, FoundationToolPipelineV1, SessionToolPipelineStorageV1, finalizeToolReceiptV1, validateToolIntentV1, validateToolReceiptV1, type ToolDefinitionRegistryV1, type ToolPipelineContextV1 } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
+import type { AgentContext } from "../../src/types.ts";
 
-type ArtifactReadFailure = "none" | "missing" | "malformed" | "get_throw" | "verify_false" | "verify_throw";
+type ArtifactReadFailure = "none" | "missing" | "malformed" | "get_throw" | "verify_false" | "verify_throw" | "wrong_bytes" | "wrong_size";
 
 function artifactStore(): { store: ArtifactStoreProvider; puts: () => number; gets: () => number; verifies: () => number; clear: () => void; setReadFailure: (failure: ArtifactReadFailure) => void } {
 	const values = new Map<string, Uint8Array>();
@@ -34,7 +35,10 @@ function artifactStore(): { store: ArtifactStoreProvider; puts: () => number; ge
 			if (readFailure === "malformed") return { ok: true, value: "not bytes" } as never;
 			if (readFailure === "missing") return Result.err(new FoundationError("side_effect_unknown", "artifact is missing"));
 			const value = values.get(ref);
-			return value === undefined ? Result.err(new FoundationError("side_effect_unknown", "artifact is missing")) : Result.ok(new Uint8Array(value));
+			if (value === undefined) return Result.err(new FoundationError("side_effect_unknown", "artifact is missing"));
+			if (readFailure === "wrong_bytes") return Result.ok(new Uint8Array([9, 8, 7]));
+			if (readFailure === "wrong_size") return Result.ok(new Uint8Array([1, 2]));
+			return Result.ok(new Uint8Array(value));
 		},
 		verify: async (artifactId) => {
 			verifyCount += 1;
@@ -95,12 +99,18 @@ function allowAllGuards(): FoundationToolGuardV1 {
 	return new FoundationToolGuardV1({ capability: { check: allow("capability") }, policy: { check: allow("policy") }, approval: { check: allow("approval") }, sandbox: { check: allow("sandbox") }, quota: { check: allow("quota") }, conflictLock: { check: allow("conflict_lock") } });
 }
 
-function consumerModels(toolName: string): { model: Model<"openai-responses">; models: Models; requests: () => number } {
+function consumerModels(toolName: string): { model: Model<"openai-responses">; models: Models; requests: () => number; contexts: () => readonly AgentContext[] } {
 	const model = { id: "tool-consumer-model", name: "Tool Consumer Model", api: "openai-responses" as const, provider: "openai" as const, baseUrl: "", reasoning: false, input: ["text"] as ("text")[], cost: { input: 0, output: 0 }, contextWindow: 1000, maxTokens: 1000 } as Model<"openai-responses">;
 	let requests = 0;
+	const contexts: AgentContext[] = [];
 	const models = {
 		getModel: () => model,
-		streamSimple: () => {
+		streamSimple: (...args: unknown[]) => {
+			const context = args[1];
+			if (context !== null && typeof context === "object") {
+				const messages = (context as { messages?: unknown }).messages;
+				if (Array.isArray(messages)) contexts.push({ systemPrompt: "", messages: structuredClone(messages) as AgentContext["messages"], tools: [] });
+			}
 			const stream = createAssistantMessageEventStream();
 			requests += 1;
 			const message: AssistantMessage = requests === 1
@@ -110,7 +120,7 @@ function consumerModels(toolName: string): { model: Model<"openai-responses">; m
 			return stream;
 		},
 	} as unknown as Models;
-	return { model, models, requests: () => requests };
+	return { model, models, requests: () => requests, contexts: () => contexts };
 }
 
 describe("T4 public AgentHarness tool consumer", () => {
@@ -233,7 +243,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 	it("persists image tool results as verified ArtifactRefs and never writes base64 to the Session ledger", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "image-tool-session", createdAt: 1 }));
 		const artifacts = artifactStore();
-		const { model, models } = consumerModels("image-tool");
+		const { model, models, contexts } = consumerModels("image-tool");
 		let executions = 0;
 		const imageTool: HarnessTool = {
 			name: "image-tool",
@@ -282,6 +292,14 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(executions).toBe(1);
 		expect(artifacts.puts()).toBe(1);
 		expect(artifacts.gets()).toBeGreaterThan(1);
+		const toolResultMessages = contexts().flatMap((context) => context.messages.filter((message) => message.role === "toolResult"));
+		expect(toolResultMessages.length).toBeGreaterThanOrEqual(2);
+		const canonicalToolResult = (message: (typeof toolResultMessages)[number]): string => canonicalFoundationJson({ toolCallId: message.toolCallId, toolName: message.toolName, content: message.content, details: message.details, isError: message.isError, ...(message.usage === undefined ? {} : { usage: message.usage }) });
+		expect(canonicalToolResult(toolResultMessages[0]!)).toBe(canonicalToolResult(toolResultMessages.at(-1)!));
+		expect(JSON.stringify(contexts())).not.toContain("caller override");
+		const allEntries = await session.findEntries({ order: "oldestFirst" });
+		const allRecords = await session.findRecords({ order: "oldestFirst" });
+		expect(JSON.stringify({ entries: allEntries, records: allRecords })).not.toContain("AQID");
 		await restarted.harness.close();
 	});
 
@@ -313,6 +331,35 @@ describe("T4 public AgentHarness tool consumer", () => {
 			const runReceipts = facts.filter((record) => record.objectType === "run_receipt");
 			expect(runReceipts.at(-1)?.payload).toMatchObject({ terminalStatus: "failed", terminalErrorCode: "side_effect_unknown" });
 			await restarted.harness.close();
+		}
+	});
+
+	it("fails all receipt layers on first artifact read/integrity failure without another provider turn", async () => {
+		const failures: ArtifactReadFailure[] = ["missing", "malformed", "get_throw", "verify_false", "verify_throw", "wrong_bytes", "wrong_size"];
+		for (const failure of failures) {
+			const session = new Session(new InMemorySessionStorage({ id: `image-first-${failure}`, createdAt: 1 }));
+			const artifacts = artifactStore();
+			artifacts.setReadFailure(failure);
+			const { model, models, requests } = consumerModels(`image-first-${failure}`);
+			const imageTool: HarnessTool = {
+				name: `image-first-${failure}`,
+				label: "Image tool",
+				description: "Image tool",
+				parameters: Type.Object({}, { additionalProperties: false }),
+				sideEffectState: "none",
+				execute: async () => ({ content: [{ type: "image" as const, data: "AQID", mimeType: "image/png" }], details: {} }),
+			};
+			const { harness } = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
+			const result = await harness.prompt("fail closed while storing image");
+			expect(result).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
+			expect(requests()).toBe(1);
+			const facts = (await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" })).filter((record) => record.kind === "fact");
+			const payloadFor = (objectType: string): unknown => facts.find((record) => record.objectType === objectType)?.payload;
+			expect(payloadFor("tool_receipt")).toMatchObject({ outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown" });
+			expect(payloadFor("attempt_receipt")).toMatchObject({ status: "failed", sideEffectState: "side_effect_unknown" });
+			expect(payloadFor("task_result")).toMatchObject({ status: "failed" });
+			expect(payloadFor("run_receipt")).toMatchObject({ terminalStatus: "failed" });
+			await harness.close();
 		}
 	});
 
@@ -365,19 +412,19 @@ describe("T4 public AgentHarness tool consumer", () => {
 				},
 			},
 		};
-		await session.appendRecord({ type: "operation_started", id: "deferred-run", lane: "main", sourceLeafId: null, intent: { kind: "run", originalPrompt: [], initialMessages: [] } });
-		await session.appendEntry(target, "main");
+		await session.appendRecord({ type: "operation_started", id: "deferred-run", lane: "main", sourceLeafId: null, intent: { kind: "run", originalPrompt: [], initialMessages: [target] } });
 		await session.appendRecord({ type: "write_deferred", id: "deferred-write", lane: "main", runId: "deferred-run", target });
 		const { model, models } = consumerModels("deferred-tool");
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
-		type HarnessPersistence = { persistOperationEntry: (lane: string, runId: string, entry: typeof target) => Promise<void> };
-		const persistence = harness as unknown as HarnessPersistence;
-		await persistence.persistOperationEntry("main", "deferred-run", target);
-		await persistence.persistOperationEntry("main", "deferred-run", target);
+		const foundation = execution();
+		const first = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
+		await first.harness.close();
+		const reopened = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
+		const action = await reopened.harness.executeAction();
+		expect(action).toMatchObject({ kind: "append_entry", entryId: target.id });
 		const usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
 		expect(usage).toHaveLength(1);
 		expect(usage[0]).toMatchObject({ cause: "tool", entryId: target.id, toolCallId: "deferred-call", usage: { input: 2, output: 3, totalTokens: 5 } });
-		await harness.close();
+		await reopened.harness.close();
 	});
 
 	it("fails all public receipt layers when an image result has no ArtifactStore", async () => {

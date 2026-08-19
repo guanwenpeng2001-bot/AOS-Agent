@@ -11,8 +11,8 @@ import type {
 	ToolStartedRecord,
 	WriteDeferredRecord,
 } from "./session/types.ts";
-import type { ExecutionCorrelationV1 } from "./foundation/identity.ts";
-import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, validateFoundationToolResultEntryV1, type ToolBindingRefV1, type ToolIntentV1, type ToolReceiptV1 } from "./tool-pipeline.ts";
+import { canonicalFoundationJson, type ExecutionCorrelationV1 } from "./foundation/identity.ts";
+import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, projectToolReceiptExecutionSemanticsV1, validateFoundationToolResultEntryV1, type ToolBindingRefV1, type ToolIntentV1, type ToolReceiptV1 } from "./tool-pipeline.ts";
 
 /**
  * Machine-readable category for a contradiction in a lane's durable recovery
@@ -35,6 +35,7 @@ export type RecordLogCorruptionReason =
 	| "inconsistent_step"
 	| "tool_call_mismatch"
 	| "duplicate_tool_invocation"
+	| "tool_receipt_conflict"
 	| "provisioned_entry_mismatch"
 	| "invalid_deferred_handle"
 	| "invalid_deferred_fetch";
@@ -82,6 +83,7 @@ export interface ToolBatchState {
 	}[];
 	truncated: boolean;
 	unresolved: boolean;
+	receiptConflict?: boolean;
 }
 
 /** Durable redemption prefix for one provider-deferred assistant response. */
@@ -426,6 +428,7 @@ function validateToolStart(
 	record: Extract<LaneRecord, { type: "tool_started" }>,
 	entriesById: ReadonlyMap<string, Entry>,
 	invocations: Set<string>,
+	toolCallIds: Set<string>,
 ): void {
 	const invocation = `${record.assistantEntryId}\u0000${record.toolIndex}`;
 	if (invocations.has(invocation)) {
@@ -435,6 +438,14 @@ function validateToolStart(
 		);
 	}
 	invocations.add(invocation);
+	const callIdentity = `${record.runId}\u0000${record.toolCallId}`;
+	if (toolCallIds.has(callIdentity)) {
+		corrupt(
+			"duplicate_tool_invocation",
+			`Tool call ${record.toolCallId} has more than one durable tool start`,
+		);
+	}
+	toolCallIds.add(callIdentity);
 
 	const assistantEntry = entriesById.get(record.assistantEntryId);
 	if (!assistantEntry || assistantEntry.type !== "message" || assistantEntry.message.role !== "assistant") {
@@ -637,6 +648,7 @@ export function validateRecordLog(input: RecordLogSlice): void {
 	const queueEnqueues = new Map<string, Extract<LaneRecord, { type: "queue_enqueued" }>>();
 	const latestAttempt = new Map<string, AttemptSeries>();
 	const toolInvocations = new Set<string>();
+	const toolCallIds = new Set<string>();
 	const records = input.records;
 	let previousSequence = 0;
 	const recordIds = new Set<string>();
@@ -679,7 +691,7 @@ export function validateRecordLog(input: RecordLogSlice): void {
 				latestAttempt.set(record.runId, { record });
 				break;
 			case "tool_started":
-				validateToolStart(record, entriesById, toolInvocations);
+				validateToolStart(record, entriesById, toolInvocations, toolCallIds);
 				break;
 			case "queue_enqueued":
 				if (
@@ -800,6 +812,26 @@ function toolIdentityMatches(
 	return true;
 }
 
+function foldToolReceiptsByCallId(receipts: readonly ToolReceiptV1[], identity: Partial<ExecutionCorrelationV1>): { values: Map<string, ToolReceiptV1>; conflict: boolean } {
+	const folded = new Map<string, ToolReceiptV1>();
+	let conflict = false;
+	for (const receipt of receipts) {
+		if (!toolIdentityMatches(receipt.binding, identity)) continue;
+		const existing = folded.get(receipt.toolCallId);
+		if (existing === undefined) {
+			folded.set(receipt.toolCallId, receipt);
+			continue;
+		}
+		if (projectToolReceiptExecutionSemanticsV1(existing) !== projectToolReceiptExecutionSemanticsV1(receipt)) {
+			conflict = true;
+		}
+		const existingCanonical = canonicalFoundationJson(existing);
+		const candidateCanonical = canonicalFoundationJson(receipt);
+		if (candidateCanonical < existingCanonical) folded.set(receipt.toolCallId, receipt);
+	}
+	return { values: folded, conflict };
+}
+
 function deriveToolBatch(
 	sessionId: string | undefined,
 	laneId: string,
@@ -837,10 +869,8 @@ function deriveToolBatch(
 	for (const intent of toolIntents) {
 		if (toolIdentityMatches(intent.binding, identity)) intents.set(intent.toolCallId, intent);
 	}
-	const receipts = new Map<string, ToolReceiptV1>();
-	for (const receipt of toolReceipts) {
-		if (toolIdentityMatches(receipt.binding, identity)) receipts.set(receipt.toolCallId, receipt);
-	}
+	const foldedReceipts = foldToolReceiptsByCallId(toolReceipts, identity);
+	const receipts = foldedReceipts.values;
 	for (const record of records) {
 		if (
 			record.type === "tool_started" &&
@@ -887,7 +917,8 @@ function deriveToolBatch(
 		assistantEntryId: assistantEntry.id,
 		calls,
 		truncated: assistantEntry.message.stopReason === "length",
-		unresolved: calls.some((call) => !call.resultExists),
+		unresolved: foldedReceipts.conflict || calls.some((call) => !call.resultExists),
+		...(foldedReceipts.conflict ? { receiptConflict: true } : {}),
 	};
 }
 
