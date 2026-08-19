@@ -311,6 +311,12 @@ describe("T4 public AgentHarness tool consumer", () => {
 		const records = await session.findRecords({ order: "oldestFirst" });
 		const foundationRecords = await session.findFoundationRecords({ order: "oldestFirst", includePruned: true });
 		for (const ledgerPart of [entries, records, foundationRecords]) expect(JSON.stringify(ledgerPart)).not.toContain("plaintext-secret");
+		const t5ToolResults = foundationRecords.filter((record) => record.kind === "fact" && record.objectType === T5_LEDGER_OBJECT_TYPES.toolResult);
+		expect(t5ToolResults).toHaveLength(1);
+		for (const artifact of await harness.artifacts.list()) {
+			const stored = await harness.artifacts.get(artifact.artifactId);
+			expect(new TextDecoder().decode(stored.content)).not.toContain("plaintext-secret");
+		}
 		await harness.close();
 	});
 

@@ -1684,10 +1684,10 @@ const futureOwners = [
 
 /**
  * PR-1 wires the durable kernel, reducer, session, event, compaction, skills,
- * and AgentHarness paths. T4 wires its complete manifest set
- * (4-7, 29-46, 51-52, 61), while C051/C052 intentionally retain their
- * contract-drafted closure state until their owning implementation slice is
- * merged.
+ * and AgentHarness paths. T4 wires 4-7, 29-46, 51-52 and 61; T5 wires
+ * 12, 17-20, 22, 24-25, 28, 49, 53, 57-58 and 67. C051/C052 intentionally
+ * retain their contract-drafted closure state until their owning
+ * implementation slice is merged.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
@@ -1697,13 +1697,18 @@ const WIRED_CLOSURE_IDS = new Set([
 	5,
 	6,
 	7,
+	12,
+	17,
+	18,
 	19,
+	20,
 	21,
 	22,
 	23,
 	24,
 	25,
 	26,
+	28,
 	29,
 	30,
 	31,
@@ -1722,8 +1727,13 @@ const WIRED_CLOSURE_IDS = new Set([
 	44,
 	45,
 	46,
+	49,
+	53,
+	57,
+	58,
 	59,
 	61,
+	67,
 ]);
 
 const foundationCapabilityClosures = closures.map((entry) => ({

@@ -239,6 +239,67 @@ function decodeImageData(data: string): Uint8Array {
 	return bytes;
 }
 
+function serializeToolResultDetails(details: unknown): { serialized: string; validationState: ArtifactValidationState } {
+	try {
+		return { serialized: JSON.stringify(details) ?? "null", validationState: "verified" };
+	} catch {
+		return { serialized: "[unserializable tool details]", validationState: "unknown" };
+	}
+}
+
+function toolResultBytes(block: ToolResultMessage["content"][number]): Uint8Array {
+	return block.type === "image" ? decodeImageData(block.data) : new TextEncoder().encode(block.text);
+}
+
+function assertToolResultReplay(fact: ToolResultFactV1, message: ToolResultMessage, options: ToolResultPersistenceOptions, sessionId: string): void {
+	const immutableIdentityMatches =
+		fact.schemaVersion === 1 &&
+		fact.resultEntryId === options.resultEntryId &&
+		fact.toolCallId === message.toolCallId &&
+		fact.toolName === message.toolName &&
+		fact.isError === message.isError &&
+		fact.timestamp === message.timestamp &&
+		fact.provenance.producer === "agent-harness" &&
+		fact.provenance.sessionId === sessionId &&
+		fact.provenance.laneId === options.lane &&
+		fact.provenance.runId === options.runId &&
+		fact.provenance.resultEntryId === options.resultEntryId &&
+		fact.provenance.toolCallId === message.toolCallId &&
+		fact.provenance.toolName === message.toolName;
+	if (!immutableIdentityMatches || fact.content.length !== message.content.length) {
+		throw new SessionLedgerBindingError(`Tool result ${options.resultEntryId} conflicts with its durable identity`);
+	}
+	for (const [index, block] of message.content.entries()) {
+		const stored = fact.content[index];
+		const bytes = toolResultBytes(block);
+		const mediaType = block.type === "image" ? block.mimeType : "text/plain";
+		if (
+			stored === undefined ||
+			stored.index !== index ||
+			stored.kind !== block.type ||
+			stored.reference.digest !== `sha256:${sha256HexValue(bytes)}` ||
+			stored.reference.mediaType !== mediaType ||
+			stored.reference.sizeBytes !== bytes.byteLength
+		) throw new SessionLedgerBindingError(`Tool result ${options.resultEntryId} conflicts with its durable content`);
+	}
+	const details = message.details === undefined ? undefined : serializeToolResultDetails(message.details);
+	if (
+		(details === undefined) !== (fact.detailsRef === undefined) ||
+		(details !== undefined && fact.detailsRef !== undefined && (
+			fact.detailsRef.digest !== `sha256:${sha256HexValue(new TextEncoder().encode(details.serialized))}` ||
+			fact.detailsRef.mediaType !== "application/json" ||
+			fact.detailsRef.sizeBytes !== new TextEncoder().encode(details.serialized).byteLength ||
+			fact.validation.state !== details.validationState
+		)) ||
+		canonicalFoundationJson(fact.usage ?? null) !== canonicalFoundationJson(message.usage ?? null) ||
+		canonicalFoundationJson(fact.addedToolNames ?? null) !== canonicalFoundationJson(message.addedToolNames ?? null)
+	) throw new SessionLedgerBindingError(`Tool result ${options.resultEntryId} conflicts with its durable metadata`);
+	const expectedArtifactIds = [...fact.content.map((item) => item.reference.artifactId), ...(fact.detailsRef === undefined ? [] : [fact.detailsRef.artifactId])];
+	if (canonicalFoundationJson(fact.validation.artifactIds) !== canonicalFoundationJson(expectedArtifactIds)) {
+		throw new SessionLedgerBindingError(`Tool result ${options.resultEntryId} has conflicting durable artifact references`);
+	}
+}
+
 function toolResultPlaceholder(reference: ArtifactReference): string {
 	return `[tool-result-artifact ${reference.digest} media=${reference.mediaType} bytes=${reference.sizeBytes}]`;
 }
@@ -297,9 +358,11 @@ export class SessionT5Ledger {
 	 * attachments, and structured details never become JSONL payloads.
 	 */
 	async persistToolResult(message: ToolResultMessage, options: ToolResultPersistenceOptions): Promise<PersistedToolResultV1> {
+		const metadata = await this.session.getMetadata();
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.toolResult, options.resultEntryId);
 		if (existing !== undefined) {
 			const fact = existing.payload as unknown as ToolResultFactV1;
+			assertToolResultReplay(fact, message, options, metadata.id);
 			return { fact: structuredClone(fact), message: projectToolResult(fact) };
 		}
 
@@ -307,7 +370,7 @@ export class SessionT5Ledger {
 		const artifactIds: string[] = [];
 		for (const [index, block] of message.content.entries()) {
 			const isImage = block.type === "image";
-			const bytes = isImage ? decodeImageData(block.data) : new TextEncoder().encode(block.text);
+			const bytes = toolResultBytes(block);
 			const reference = isImage
 				? await this.artifacts.putAttachment(bytes, {
 						mediaType: block.mimeType,
@@ -332,29 +395,24 @@ export class SessionT5Ledger {
 		let detailsRef: ArtifactReference | undefined;
 		let validationState: ArtifactValidationState = "verified";
 		if (message.details !== undefined) {
-			let serialized: string;
-			try {
-				serialized = JSON.stringify(message.details) ?? "null";
-			} catch {
-				serialized = "[unserializable tool details]";
-				validationState = "unknown";
-			}
-			const details = await this.artifacts.putStructuredResult(new TextEncoder().encode(serialized), {
+			const details = serializeToolResultDetails(message.details);
+			const serialized = details.serialized;
+			validationState = details.validationState;
+			const storedDetails = await this.artifacts.putStructuredResult(new TextEncoder().encode(serialized), {
 				mediaType: "application/json",
 				producer: "t5-tool-result",
 				validation: { state: validationState, validator: "t5.tool_result", validatedAt: this.now() },
 			});
-			detailsRef = details;
-			artifactIds.push(details.artifactId);
+			detailsRef = storedDetails;
+			artifactIds.push(storedDetails.artifactId);
 			await this.artifacts.retainReference({
-				artifactId: details.artifactId,
+				artifactId: storedDetails.artifactId,
 				referenceId: `tool-result:${options.resultEntryId}:details`,
 				consumerType: T5_LEDGER_OBJECT_TYPES.toolResult,
 				consumerId: options.resultEntryId,
 			});
 		}
 
-		const metadata = await this.session.getMetadata();
 		const fact: ToolResultFactV1 = {
 			schemaVersion: 1,
 			resultEntryId: options.resultEntryId,

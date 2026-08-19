@@ -845,9 +845,7 @@ export class AgentHarness implements AgentLane {
 	private readonly toolExecution: "sequential" | "parallel";
 	private foundationExecution?: AgentHarnessFoundationExecution;
 	private readonly artifactStore?: ArtifactStoreProvider;
-	private readonly foundationOwnerId?: string;
 	private foundationSessionId?: string;
-	private foundationLease?: LedgerWriterLeaseV1;
 	private toolPipeline?: FoundationToolPipelineV1;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
 	private readonly foundationReceipts = new Map<string, FoundationReceiptBundle>();
@@ -1019,7 +1017,7 @@ export class AgentHarness implements AgentLane {
 				ledger: this.durableSession,
 				laneId: "main",
 				correlationFor: (_kind, value) => this.toolCorrelation(value),
-				fencingToken: async () => (await this.ensureFoundationLease()).fencingToken,
+				fencingToken: async () => (await this.t5.writer.ensureLease()).fencingToken,
 			});
 			this.toolPipeline = new FoundationToolPipelineV1({
 				...(this.toolPipelineOptions ?? {}),
@@ -2291,17 +2289,32 @@ export class AgentHarness implements AgentLane {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
 		const started = records.find((record) => record.toolCallId === message.toolCallId);
 		if (!started) throw new HarnessFault(`Tool result ${message.toolCallId} has no durable start`, undefined);
+		if (started.toolName !== message.toolName) throw new HarnessToolPipelineError("Tool result identity does not match its durable start", "side_effect_unknown");
 		const folded = this.foundationExecution === undefined ? undefined : await this.foundationReceiptForToolCall(lane, runId, message.toolCallId);
-		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, folded.error.code === "session_ledger_conflict" ? "side_effect_unknown" : "side_effect_unknown");
+		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, "side_effect_unknown");
 		const receipt = folded?.ok === true ? folded.value : undefined;
 		const terminalToolFailure = this.terminalToolFailureOperations.has(runId);
+		if (receipt !== undefined && (receipt.representative.toolCallId !== started.toolCallId || receipt.representative.toolName !== started.toolName)) {
+			throw new HarnessToolPipelineError("Durable tool receipt identity does not match its tool start", "side_effect_unknown");
+		}
 		if (receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result === undefined) {
 			throw new HarnessToolPipelineError("Durable tool result payload is missing", "side_effect_unknown");
 		}
-		const useCanonicalReceipt = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined;
+		const canonicalReceiptResult = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" ? receipt.result : undefined;
+		const useCanonicalReceipt = canonicalReceiptResult !== undefined;
 		let persisted: Awaited<ReturnType<SessionT5Ledger["persistToolResult"]>> | undefined;
 		if (!useCanonicalReceipt) {
-			persisted = await this.t5.persistToolResult(message, {
+			const durableMessage: ToolResultMessage = receipt === undefined
+				? message
+				: {
+						role: "toolResult",
+						toolCallId: started.toolCallId,
+						toolName: started.toolName,
+						content: [{ type: "text", text: terminalToolFailure ? `Tool ${started.toolName} terminated after an infrastructure failure` : (receipt.representative.error?.message ?? `Tool ${started.toolName} failed`) }],
+						isError: true,
+						timestamp: started.timestamp,
+					};
+			persisted = await this.t5.persistToolResult(durableMessage, {
 				lane,
 				runId,
 				resultEntryId: started.resultEntryId,
@@ -2317,7 +2330,7 @@ export class AgentHarness implements AgentLane {
 				toolCallId: message.toolCallId,
 				toolName: message.toolName,
 				isError: false,
-				result: receipt.result,
+				result: canonicalReceiptResult,
 			};
 			target = {
 				type: "custom",

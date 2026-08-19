@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	ContextCache,
 	FileSystemArtifactBlobStore,
-	type InMemoryArtifactBlobStore,
+	InMemoryArtifactBlobStore,
 	InMemoryArtifactStore,
 	JsonlSessionRepo,
 	Session,
@@ -35,6 +35,30 @@ function expectArtifactError(error: unknown, code: ArtifactStoreError["code"]): 
 }
 
 describe("T5 Session ledger recovery", () => {
+	it("rejects a conflicting tool-result replay before creating artifacts", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "tool-result-replay", createdAt: 1 }));
+		const ledger = new SessionT5Ledger(session, { ownerId: "tool-result-replay", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const message = {
+			role: "toolResult" as const,
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text" as const, text: "canonical result" }],
+			details: { source: "test" },
+			isError: false,
+			timestamp: 2,
+		};
+		const options = { lane: "main", runId: "run-1", resultEntryId: "result-1" } as const;
+		const first = await ledger.persistToolResult(message, options);
+		expect((await ledger.persistToolResult(message, options)).fact).toEqual(first.fact);
+		const artifactsBefore = await ledger.artifacts.list();
+		const recordsBefore = await session.findFoundationRecords({ order: "oldestFirst" });
+
+		await expect(ledger.persistToolResult({ ...message, content: [{ type: "text", text: "forged result" }] }, options)).rejects.toThrow("conflicts with its durable content");
+		expect(await ledger.artifacts.list()).toEqual(artifactsBefore);
+		expect(await session.findFoundationRecords({ order: "oldestFirst" })).toEqual(recordsBefore);
+		await ledger.writer.releaseLease();
+	});
+
 	it("recovers Context, Memory, Compaction, Checkpoint, Artifact, instruction lock, and cache after reopen", async () => {
 		const root = createTempDir();
 		const { session, env, repo } = await createSession(root, "t5-recovery");
