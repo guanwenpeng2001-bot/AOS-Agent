@@ -2,12 +2,14 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
 	FoundationToolGuardV1,
+	FoundationToolQuotaAccountV1,
 	FoundationToolPipelineV1,
 	InMemoryToolPipelineStorageV1,
 	SessionToolPipelineStorageV1,
 	finalizeToolReceiptV1,
 	validateToolResultPayloadV1,
 	validateToolReceiptV1,
+	validateAndVerifyToolReceiptV1,
 	type ToolDefinitionRegistryV1,
 	type ToolDefinitionV1,
 	type ToolGateCheckV1,
@@ -182,6 +184,87 @@ describe("T4 fixed tool runtime", () => {
 
 		expect(result).toMatchObject({ ok: true, value: { outcome: "succeeded", transformProvenance: [{ field: "value", kind: "normalized" }] } });
 		expect(storage.intents[0]?.argumentDigests.original.value).not.toBe(storage.intents[0]?.argumentDigests.accepted.value);
+	});
+
+	it("records stable transformer identity and rejects exact provenance or receipt tampering", async () => {
+		const storage = new InMemoryToolPipelineStorageV1();
+		const transformed = {
+			...tool("transform-stable", async () => ({ ok: true, sideEffectState: "none" as const })),
+			argumentTransformer: { transformerId: "transformer:stable", transformerRevision: 7, transform: () => ({ value: "accepted" }) },
+		};
+		const options = { registry: registry([transformed]), storage, guard: allowAllGuards(), idGenerator: (prefix: string) => `${prefix}-stable` };
+		const first = await new FoundationToolPipelineV1(options).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
+		if (!first.ok) throw first.error;
+		const provenance = first.value.transformProvenance[0]!;
+		expect(provenance).toMatchObject({ transformerId: "transformer:stable", transformerRevision: 7, beforeDigest: { algorithm: "sha256" }, afterDigest: { algorithm: "sha256" } });
+		const tamperedIntent = { ...storage.intents[0]!, transformProvenance: storage.intents[0]!.transformProvenance.map((entry) => ({ ...entry, beforeDigest: { algorithm: "sha256" as const, value: "0".repeat(64) } })) };
+		const tamperedStorage = {
+			writeIntent: async () => Result.ok(tamperedIntent),
+			finalizeReceipt: async (receipt: Parameters<InMemoryToolPipelineStorageV1["finalizeReceipt"]>[0]) => Result.ok({ toolReceiptRef: receipt.toolReceiptId }),
+			listIntents: async () => [tamperedIntent],
+			listReceipts: async () => [],
+		};
+		const replay = await new FoundationToolPipelineV1({ ...options, storage: tamperedStorage }).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
+		expect(replay).toMatchObject({ ok: false, error: { code: "tool_guard_denied" } });
+		const forgedDigest = { ...first.value, digest: { algorithm: "sha256" as const, value: "0".repeat(64) } };
+		expect(validateAndVerifyToolReceiptV1(forgedDigest)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+
+		const ambiguous = await new FoundationToolPipelineV1({
+			registry: registry([{ ...transformed, prepareArguments: () => ({ value: "ambiguous" }) }]),
+			guard: allowAllGuards(),
+		}).execute({ toolCallId: "call-ambiguous-transform", toolName: "transform-stable", args: { value: "x" } }, context());
+		expect(ambiguous).toMatchObject({ ok: false, error: { code: "foundation_schema_invalid_shape" } });
+	});
+
+	it("runs provider-neutral pre/post hooks read-only and fails closed on mutation or invalid normalization", async () => {
+		const stages: string[] = [];
+		let executions = 0;
+		const hooked = {
+			...tool("hooked", async () => { executions += 1; return { ok: true, sideEffectState: "none" as const }; }),
+			preHook: (scope: Parameters<NonNullable<ToolDefinitionV1["preHook"]>>[0]) => {
+				expect(Object.isFrozen(scope)).toBe(true);
+				expect(Object.isFrozen(scope.args)).toBe(true);
+				expect(Object.isFrozen(scope.intent)).toBe(true);
+			},
+			postProcessor: () => ({ result: { schemaVersion: 1 as const, content: [{ type: "text" as const, text: "normalized" }] }, usage: { tokens: 1, costUsd: 0.25, toolCalls: 1 } }),
+		};
+		const pipeline = new FoundationToolPipelineV1({ registry: registry([hooked]), guard: allowAllGuards(), onStage: (event) => { stages.push(event.stage); } });
+		const result = await pipeline.execute({ toolCallId: "call-hooked", toolName: "hooked", args: { value: "x" } }, context());
+		expect(result).toMatchObject({ ok: true, value: { outcome: "succeeded", result: { content: [{ text: "normalized" }] }, usage: { costUsd: 0.25 } } });
+		expect(stages).toEqual(["prepare", "pre", "guard", "execute", "post", "finalize"]);
+		expect(executions).toBe(1);
+
+		let mutatedExecutions = 0;
+		const mutation = await new FoundationToolPipelineV1({
+			registry: registry([{ ...tool("mutation", async () => { mutatedExecutions += 1; return { ok: true, sideEffectState: "none" as const }; }), preHook: (scope) => {
+				(scope.args as Record<string, unknown>).value = "tampered";
+			} }]),
+			guard: allowAllGuards(),
+		}).execute({ toolCallId: "call-mutation", toolName: "mutation", args: { value: "x" } }, context());
+		expect(mutation).toMatchObject({ ok: true, value: { outcome: "blocked", sideEffectState: "none", error: { code: "tool_pre_hook_denied" } } });
+		expect(mutatedExecutions).toBe(0);
+
+		const invalidPost = await new FoundationToolPipelineV1({
+			registry: registry([{ ...tool("invalid-post", async () => ({ ok: true, sideEffectState: "none" as const })), postProcessor: () => ({ outcome: "succeeded" } as never) }]),
+			guard: allowAllGuards(),
+		}).execute({ toolCallId: "call-invalid-post", toolName: "invalid-post", args: { value: "x" } }, context());
+		expect(invalidPost).toMatchObject({ ok: true, value: { outcome: "failed", sideEffectState: "none", error: { code: "tool_post_validation_failed" } } });
+
+		const providerPostError = await new FoundationToolPipelineV1({
+			registry: registry([{ ...tool("provider-post-error", async () => ({ ok: true, sideEffectState: "none" as const })), postProcessor: () => Result.err(new FoundationError("tool_execution_failed", "provider error must not escape post validation")) }]),
+			guard: allowAllGuards(),
+		}).execute({ toolCallId: "call-provider-post-error", toolName: "provider-post-error", args: { value: "x" } }, context());
+		expect(providerPostError).toMatchObject({ ok: true, value: { outcome: "failed", sideEffectState: "none", error: { code: "tool_post_validation_failed" } } });
+	});
+
+	it("accepts fractional currency while rejecting fractional usage counts", () => {
+		const payload = {
+			schemaVersion: 1 as const,
+			content: [{ type: "text" as const, text: "ok" }],
+			usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } },
+		};
+		expect(validateToolResultPayloadV1(payload)).toMatchObject({ ok: true });
+		expect(validateToolResultPayloadV1({ ...payload, usage: { ...payload.usage, input: 1.5 } })).toMatchObject({ ok: false });
 	});
 
 	it("stops the guard chain at the first denial and never executes", async () => {
@@ -394,10 +477,53 @@ describe("T4 fixed tool runtime", () => {
 		expect(executed).toBe(false);
 	});
 
-	it("normalizes cancellation and deadline ambiguity to side_effect_unknown", async () => {
+	it("scopes concurrency reservations to binding and epoch across overlapping batches", async () => {
+		const quota = new FoundationToolQuotaAccountV1({ budget: { concurrency: 1 } });
+		const guard = new FoundationToolGuardV1({
+			capability: { check: () => Result.ok({ allowed: true, reference: reference("capability") }) },
+			policy: { check: () => Result.ok({ allowed: true, reference: reference("policy") }) },
+			approval: { check: () => Result.ok({ allowed: true, reference: reference("approval") }) },
+			sandbox: { check: () => Result.ok({ allowed: true, reference: reference("sandbox") }) },
+			quota: { account: quota },
+		});
+		let releaseFirst: () => void = () => undefined;
+		const firstEntered = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		let firstStarted = false;
+		const pipeline = new FoundationToolPipelineV1({
+			registry: registry([tool("scoped", async (_args, options) => {
+				if (options.toolCallId === "same-first") {
+					firstStarted = true;
+					await firstEntered;
+				}
+				return { ok: true, sideEffectState: "none" as const };
+			})]),
+			guard,
+			quotaAccount: quota,
+			maxConcurrency: 4,
+		});
+		const bindingA = context();
+		const bindingB = { ...context(), binding: { ...context().binding, bindingId: "binding-2", budget: { concurrency: 1 } }, bindingEpoch: { ...context().bindingEpoch, bindingId: "binding-2", bindingEpochId: "epoch-2" } };
+		const first = pipeline.execute({ toolCallId: "same-first", toolName: "scoped", args: { value: "a" } }, bindingA);
+		while (!firstStarted) await new Promise((resolve) => setTimeout(resolve, 0));
+		const sameBinding = await pipeline.execute({ toolCallId: "same-second", toolName: "scoped", args: { value: "b" } }, bindingA);
+		expect(sameBinding).toMatchObject({ ok: true, value: { outcome: "blocked", error: { code: "tool_guard_denied" } } });
+		const unrelated = await pipeline.execute({ toolCallId: "other-binding", toolName: "scoped", args: { value: "c" } }, bindingB);
+		expect(unrelated).toMatchObject({ ok: true, value: { outcome: "succeeded" } });
+		releaseFirst();
+		expect(await first).toMatchObject({ ok: true, value: { outcome: "succeeded" } });
+		expect(quota.reservations).toHaveLength(0);
+	});
+
+	it("keeps pre-provider cancellation/deadline safe and only marks in-flight interruption unknown", async () => {
 		const controller = new AbortController();
+		const preProvider = new AbortController();
+		preProvider.abort();
+		let executions = 0;
 		const pipeline = new FoundationToolPipelineV1({
 			registry: registry([tool("ambiguous", async (_args, options) => {
+				executions += 1;
 				await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
 				return { ok: true, sideEffectState: "none" };
 			})]),
@@ -405,12 +531,16 @@ describe("T4 fixed tool runtime", () => {
 			now: () => "now",
 			idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })(),
 		});
+		const preCancelled = await pipeline.execute({ toolCallId: "call-pre-cancel", toolName: "ambiguous", args: { value: "x" } }, context(), { signal: preProvider.signal });
+		expect(preCancelled).toMatchObject({ ok: true, value: { outcome: "cancelled", sideEffectState: "none", error: { code: "tool_cancelled" } } });
+		expect(executions).toBe(0);
 		const cancellation = pipeline.execute({ toolCallId: "call-cancel", toolName: "ambiguous", args: { value: "x" } }, context(), { signal: controller.signal });
 		setTimeout(() => controller.abort(), 1);
 		await expect(cancellation).resolves.toMatchObject({ ok: true, value: { outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown" } });
 
 		const deadline = await pipeline.execute({ toolCallId: "call-deadline", toolName: "ambiguous", args: { value: "x" } }, context(), { deadlineAt: Date.now() - 1 });
-		expect(deadline).toMatchObject({ ok: true, value: { outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown" } });
+		expect(deadline).toMatchObject({ ok: true, value: { outcome: "failed", sideEffectState: "none", error: { code: "deadline_exceeded" } } });
+		expect(executions).toBe(1);
 
 		const durable = new InMemoryToolPipelineStorageV1();
 		const transport = new FoundationToolPipelineV1({

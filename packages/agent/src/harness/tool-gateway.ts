@@ -1,4 +1,4 @@
-import { FoundationError } from "./foundation/errors.ts";
+import { FoundationError, publicExecutionError, toFoundationError } from "./foundation/errors.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
 import { canonicalFoundationJson, newFoundationId } from "./foundation/identity.ts";
 import {
@@ -47,6 +47,95 @@ export interface FoundationToolGatewayOptionsV1 {
 	readonly gatewayId: string;
 	readonly providers: readonly ToolGatewayProviderV1[];
 }
+
+export interface ConsumerToolGatewayFakeOptionsV1 {
+	readonly providerId?: string;
+	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly nowMs?: () => number;
+	/** Consumer-facing behavior; it returns provider-neutral execution results, never final receipts. */
+	readonly invoke?: (request: ToolGatewayRequestV1, options: { signal?: AbortSignal }) => Promise<ResultValue<ToolExecutionResultV1, FoundationError>>;
+}
+
+/**
+ * Public consumer-shaped gateway fake. It exercises the same request/result
+ * boundary as a real consumer and keeps only provider-neutral settlements for
+ * restart recovery; it never manufactures ToolReceipt/TaskResult/RunReceipt.
+ */
+export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProviderV1 {
+	readonly schemaVersion = 1 as const;
+	readonly providerId: string;
+	readonly providerClass = "gateway" as const;
+	private readonly invoke: NonNullable<ConsumerToolGatewayFakeOptionsV1["invoke"]>;
+	private readonly declared: readonly FoundationProviderCapabilityV1[];
+	private readonly nowMs: () => number;
+	private readonly settlements = new Map<string, ToolExecutionResultV1>();
+	private readonly inFlight = new Set<string>();
+	private disposed = false;
+
+	constructor(options: ConsumerToolGatewayFakeOptionsV1 = {}) {
+		this.providerId = options.providerId ?? "consumer-tool-gateway-fake";
+		if (this.providerId.length === 0) throw new TypeError("providerId must not be empty");
+		this.invoke = options.invoke ?? (async (request) => Result.ok({ schemaVersion: 1, toolCallId: request.toolCallId, toolName: request.toolName, ok: true, sideEffectState: "none" }));
+		this.declared = options.capabilities ?? [];
+		this.nowMs = options.nowMs ?? Date.now;
+	}
+
+	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		return [{ schemaVersion: 1, id: "consumer_tool_gateway_fake", version: 1 }, ...this.declared];
+	}
+
+	async execute(request: ToolGatewayRequestV1, options: { signal?: AbortSignal } = {}): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
+		if (this.disposed) return Result.err(new FoundationError("invalid_identifier", "consumer ToolGateway fake is disposed"));
+		const checkedRequest = validateToolGatewayRequestV1(request);
+		if (!checkedRequest.ok) return checkedRequest;
+		const value = checkedRequest.value;
+		const settle = (result: ToolExecutionResultV1): ResultValue<ToolExecutionResultV1, FoundationError> => {
+			const checked = validateToolExecutionResultV1(result);
+			if (!checked.ok) return checked;
+			this.settlements.set(value.toolCallId, checked.value);
+			return Result.ok(checked.value);
+		};
+		if (options.signal?.aborted) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "none", error: publicExecutionError("tool_cancelled", "tool execution was cancelled", { category: "cancelled" }) });
+		if (value.deadlineAt !== undefined && this.nowMs() >= value.deadlineAt) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "none", error: publicExecutionError("deadline_exceeded", "tool execution deadline was exceeded", { category: "deadline", retryable: false }) });
+		this.inFlight.add(value.toolCallId);
+		try {
+			let result: ResultValue<ToolExecutionResultV1, FoundationError>;
+			try {
+				result = await this.invoke(value, options);
+			} catch (error) {
+				return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "side_effect_unknown", error: toFoundationError(error, "side_effect_unknown").toPublicExecutionError() });
+			}
+			if (!result.ok) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "side_effect_unknown", error: result.error.toPublicExecutionError() });
+			if (options.signal?.aborted) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "side_effect_unknown", error: publicExecutionError("tool_cancelled", "tool execution was cancelled after provider invocation", { category: "side_effect_unknown" }) });
+			if (value.deadlineAt !== undefined && this.nowMs() >= value.deadlineAt) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "side_effect_unknown", error: publicExecutionError("deadline_exceeded", "tool execution deadline was exceeded after provider invocation", { category: "side_effect_unknown", retryable: false }) });
+			if (result.value.toolCallId !== value.toolCallId || result.value.toolName !== value.toolName) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "side_effect_unknown", error: publicExecutionError("invalid_correlation", "consumer fake returned a result for another tool call", { category: "parameter", retryable: false }) });
+			return settle(result.value);
+		} finally {
+			this.inFlight.delete(value.toolCallId);
+		}
+	}
+
+	/** Return provider-neutral settlements that a restarted consumer can reconcile. */
+	recoverSettlements(toolCallId?: string): readonly ToolExecutionResultV1[] {
+		if (toolCallId !== undefined) {
+			const settlement = this.settlements.get(toolCallId);
+			return settlement === undefined ? [] : [settlement];
+		}
+		return [...this.settlements.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, settlement]) => settlement);
+	}
+
+	async dispose(): Promise<void> {
+		this.disposed = true;
+		this.inFlight.clear();
+	}
+}
+
+export function createConsumerToolGatewayFakeV1(options: ConsumerToolGatewayFakeOptionsV1 = {}): ConsumerToolGatewayFakeV1 {
+	return new ConsumerToolGatewayFakeV1(options);
+}
+
+export const PublicToolGatewayFakeV1 = ConsumerToolGatewayFakeV1;
+export const createPublicToolGatewayFakeV1 = createConsumerToolGatewayFakeV1;
 
 /**
  * Provider-neutral ToolGateway consuming the T1 contracts. It validates every

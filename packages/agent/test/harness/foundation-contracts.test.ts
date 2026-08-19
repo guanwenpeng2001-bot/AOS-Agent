@@ -29,6 +29,7 @@ import {
 	isSideEffectRetryable,
 	negotiateProtocolV1,
 	projectEventEnvelopeV1,
+	redactProjection,
 	redactFoundationError,
 	resolveAgentBinding,
 	settleTaskResult,
@@ -215,6 +216,35 @@ describe("Foundation identity, schemas, and redaction", () => {
 		const redacted = new FoundationError("foundation_schema_unknown_record", "failed at C:\\Users\\secret\\result.json sk-1234567890abcdef");
 		expect(redacted.message).not.toContain("secret\\result.json");
 		expect(redacted.message).not.toContain("sk-1234567890abcdef");
+	});
+
+	it("excludes signature/textSignature and secret-bearing fields from public and ledger projections", () => {
+		const secret = {
+			signature: "private-signature",
+			textSignature: "private-text-signature",
+			apiKey: "private-api-key",
+			nested: { signature: "nested-signature", textSignature: "nested-text-signature", token: "nested-token" },
+		};
+		const publicProjection = redactProjection(secret) as Record<string, unknown>;
+		expect(publicProjection.signature).toBe("[redacted]");
+		expect(publicProjection.textSignature).toBe("[redacted]");
+		expect(JSON.stringify(publicProjection)).not.toContain("private-signature");
+		expect(JSON.stringify(publicProjection)).not.toContain("nested-signature");
+		const ledgerError = new FoundationError("foundation_schema_unknown_record", "ledger projection", { details: secret });
+		expect(JSON.stringify(ledgerError.details)).not.toContain("private-text-signature");
+		expect(JSON.stringify(redactFoundationError(ledgerError))).not.toContain("private-api-key");
+		const event = {
+			schemaVersion: 1 as const,
+			class: "durable" as const,
+			category: "goal.created" as const,
+			eventId: "secret-event",
+			streamId: "session-1",
+			sequence: 1,
+			timestamp: fakeNow,
+			correlation: { sessionId: "session-1" },
+			payload: secret,
+		} as never;
+		expect(JSON.stringify(projectEventEnvelopeV1(event))).not.toContain("private-signature");
 	});
 
 	it("accepts only the canonical FoundationError tag", () => {

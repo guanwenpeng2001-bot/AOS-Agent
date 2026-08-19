@@ -9,6 +9,7 @@ import {
 } from "../../src/harness/runtime-services.ts";
 import {
 	LocalPluginRegistry,
+	InMemoryLocalPluginRegistryStorageV1,
 	createPluginContractV1,
 	pluginContentsDigestV1,
 	validateLocalPluginPackageV1,
@@ -228,5 +229,30 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "managed-replace-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "managed-replace", unset: undefined, values: { mode: "fast" } }] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
 		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "forged-managed-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "forged-managed", unset: undefined, values: { mode: "fast" }, managedKeys: [] } as never] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
 		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "bundle", revision: 1, source: "global", profiles: [profile], patches: [{ schemaVersion: 1, patchId: "patch", targetProfileId: "profile", revision: 2, source: "project", values: { timeout: 20 } }] })).toMatchObject({ ok: true, value: { profiles: [{ values: { mode: "safe", timeout: 20 }, managedKeys: ["mode"] }] } });
+	});
+
+	it("persists an atomic activation pointer, recovers after restart, and cleans failed staging", async () => {
+		const storage = new InMemoryLocalPluginRegistryStorageV1();
+		const pkg = pluginPackage();
+		const registry = new LocalPluginRegistry({ storage, now: () => "now" });
+		expect(await registry.install(pkg)).toMatchObject({ ok: true });
+		expect(storage.snapshot.active).toHaveLength(1);
+		expect(storage.snapshot.staged).toHaveLength(0);
+		expect(storage.snapshot.pointers).toMatchObject([{ pluginId: "local-plugin", state: "active" }]);
+
+		const restarted = await LocalPluginRegistry.open({ storage, now: () => "restart" });
+		expect(restarted).toMatchObject({ ok: true });
+		if (!restarted.ok) return;
+		expect(restarted.value.active("local-plugin")).toMatchObject({ revision: 1, pluginId: "local-plugin" });
+		expect(await restarted.value.uninstall("local-plugin")).toMatchObject({ ok: true });
+		expect(storage.snapshot.active).toHaveLength(0);
+		expect(storage.snapshot.previous).toHaveLength(1);
+		expect(storage.snapshot.pointers).toMatchObject([{ pluginId: "local-plugin", state: "uninstalled" }]);
+
+		const failingStorage = new InMemoryLocalPluginRegistryStorageV1();
+		const failing = new LocalPluginRegistry({ storage: failingStorage, onActivate: async () => { throw new Error("activation failed"); } });
+		expect(await failing.install(pkg)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
+		expect(failingStorage.snapshot.active).toHaveLength(0);
+		expect(failingStorage.snapshot.staged).toHaveLength(0);
 	});
 });

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
 	createDefaultSandboxOperationTranslatorV1,
+	createConsumerToolGatewayFakeV1,
 	createFoundationToolGatewayV1,
 	createLocalToolGatewayProviderV1,
 	createSandboxOperationToolGatewayProviderV1,
 } from "../../src/harness/tool-gateway.ts";
 import type { SandboxOperationProvider } from "../../src/harness/foundation/providers.ts";
+import type { ToolGateway } from "../../src/harness/foundation/providers.ts";
 import { Result } from "../../src/harness/result.ts";
 
 const request = {
@@ -91,5 +93,39 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		});
 		const gateway = createFoundationToolGatewayV1({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] });
 		expect(await gateway.execute({ ...request, namespace: undefined, toolName: "read" })).toMatchObject({ ok: false, error: { code: "invalid_identifier" } });
+	});
+
+	it("drives the public consumer-shaped fake through success/failure/cancel/deadline/recovery settlements", async () => {
+		let invoked = 0;
+		const fake = createConsumerToolGatewayFakeV1({
+			nowMs: () => 100,
+			invoke: async (value, options) => {
+				invoked += 1;
+				if (value.toolName === "failure") return Result.ok({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "none", error: { code: "provider_failure", message: "expected failure", retryable: false } });
+				if (value.toolName === "cancel-inflight") {
+					await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+				}
+				return Result.ok({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" });
+			},
+		});
+		const consumer: ToolGateway = fake;
+		expect(await consumer.execute({ ...request, toolCallId: "consumer-success", toolName: "success" })).toMatchObject({ ok: true, value: { ok: true, sideEffectState: "none" } });
+		expect(await consumer.execute({ ...request, toolCallId: "consumer-failure", toolName: "failure" })).toMatchObject({ ok: true, value: { ok: false, sideEffectState: "none", error: { code: "provider_failure" } } });
+		const cancelled = new AbortController();
+		cancelled.abort();
+		expect(await consumer.execute({ ...request, toolCallId: "consumer-cancel", toolName: "cancel" }, { signal: cancelled.signal })).toMatchObject({ ok: true, value: { ok: false, sideEffectState: "none", error: { code: "tool_cancelled" } } });
+		expect(await consumer.execute({ ...request, toolCallId: "consumer-deadline", toolName: "deadline", deadlineAt: 99 })).toMatchObject({ ok: true, value: { ok: false, sideEffectState: "none", error: { code: "deadline_exceeded" } } });
+		const inFlightController = new AbortController();
+		const inFlight = consumer.execute({ ...request, toolCallId: "consumer-cancel-inflight", toolName: "cancel-inflight" }, { signal: inFlightController.signal });
+		setTimeout(() => inFlightController.abort(), 1);
+		expect(await inFlight).toMatchObject({ ok: true, value: { ok: false, sideEffectState: "side_effect_unknown", error: { code: "tool_cancelled" } } });
+		expect(invoked).toBe(3);
+		expect(fake.recoverSettlements().map((settlement) => settlement.toolCallId)).toEqual([
+			"consumer-cancel",
+			"consumer-cancel-inflight",
+			"consumer-deadline",
+			"consumer-failure",
+			"consumer-success",
+		]);
 	});
 });

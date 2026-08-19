@@ -117,6 +117,17 @@ export interface ToolIntentFenceV1 {
 export interface ToolTransformProvenanceV1 {
 	field: string;
 	kind: ToolArgumentTransformKindV1;
+	/** Stable identity and revision of the transformer that produced this field. */
+	transformerId: string;
+	transformerRevision: number;
+	beforeDigest: FingerprintV1;
+	afterDigest: FingerprintV1;
+}
+
+export interface ToolArgumentTransformerV1 {
+	transformerId: string;
+	transformerRevision: number;
+	transform(args: unknown): unknown;
 }
 
 /** Verdict record for one monotonic gate. */
@@ -324,10 +335,41 @@ export interface ToolDefinitionV1 {
 	parameters: TSchema;
 	executionMode?: "sequential" | "parallel";
 	prepareArguments?: (args: unknown) => unknown;
+	argumentTransformer?: ToolArgumentTransformerV1;
+	/** Provider-neutral read-only hook, evaluated after prepare and before guard. */
+	preHook?: ToolPreHookV1;
+	/** Provider-neutral post normalizer; it may only return result/artifacts/usage. */
+	postProcessor?: ToolPostProcessorV1;
 	conflictKeys?: (args: Record<string, unknown>) => readonly string[];
 	idempotency?: IdempotencyV1;
 	execute(args: Record<string, unknown>, options: ToolExecuteOptionsV1): Promise<ToolExecutionV1>;
 }
+
+export interface ToolPreHookScopeV1 {
+	readonly context: Readonly<ToolPipelineContextV1>;
+	readonly tool: Readonly<ToolDefinitionV1>;
+	readonly args: Readonly<Record<string, unknown>>;
+	readonly intent: Readonly<ToolIntentV1>;
+}
+
+export type ToolPreHookResultV1 = void | boolean | ResultValue<void, FoundationError>;
+export type ToolPreHookV1 = (scope: ToolPreHookScopeV1) => ToolPreHookResultV1 | Promise<ToolPreHookResultV1>;
+
+export interface ToolPostProcessorScopeV1 {
+	readonly context: Readonly<ToolPipelineContextV1>;
+	readonly tool: Readonly<ToolDefinitionV1>;
+	readonly args: Readonly<Record<string, unknown>>;
+	readonly intent: Readonly<ToolIntentV1>;
+	readonly execution: Readonly<ToolExecutionV1>;
+}
+
+export interface ToolPostNormalizationV1 {
+	result?: ToolResultPayloadV1;
+	artifacts?: readonly ArtifactRefV1[];
+	usage?: BudgetUsageV1;
+}
+
+export type ToolPostProcessorV1 = (scope: ToolPostProcessorScopeV1) => ToolPostNormalizationV1 | ResultValue<ToolPostNormalizationV1, FoundationError> | undefined | Promise<ToolPostNormalizationV1 | ResultValue<ToolPostNormalizationV1, FoundationError> | undefined>;
 
 export interface ToolDefinitionRegistryV1 {
 	resolve(toolName: string, namespace?: string): ResultValue<ToolDefinitionV1, FoundationError>;
@@ -524,7 +566,7 @@ function toToolPipelineStorageError(error: unknown): FoundationError {
 }
 
 export interface ToolPipelineCleanupV1 {
-	release(): Promise<void>;
+	release(scope?: ToolGateScopeV1): Promise<void>;
 }
 
 /** Host-side quota accounting used by the default quota gate. */
@@ -667,6 +709,12 @@ export interface FoundationToolQuotaAccountOptionsV1 {
 	now?: () => string;
 }
 
+interface ToolReservationScopeV1 {
+	bindingId: string;
+	bindingEpochId: string;
+	toolCallId: string;
+}
+
 /**
  * Small single-host quota account. Reservations are made synchronously at the
  * quota gate, so parallel calls cannot race the tool-call limit.
@@ -679,6 +727,7 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 	private readonly maxToolCalls: number | undefined;
 	private readonly idGenerator: (prefix: string) => string;
 	private readonly now: () => string;
+	private readonly reservationKeys = new Map<string, ToolReservationScopeV1>();
 
 	constructor(options: FoundationToolQuotaAccountOptionsV1 = {}) {
 		this.budget = freeze({ ...(options.budget ?? {}) });
@@ -689,6 +738,13 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 
 	reserve(scope: ToolGateScopeV1): ResultValue<VersionedReferenceV1, FoundationError> {
 		const budget: BudgetV1 = freeze(tightenBudget(scope.context.binding.budget, this.budget));
+		const scopeKey: ToolReservationScopeV1 = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
+		const existingReservation = this.reservations.find((reservation) => sameReservationScope(this.reservationKeys.get(reservation.reservationId), scopeKey));
+		if (existingReservation !== undefined) return Result.ok(capacityReference(scope.context, "tool_quota"));
+		const activeForBinding = [...this.reservationKeys.values()].filter((key) => key.bindingId === scopeKey.bindingId && key.bindingEpochId === scopeKey.bindingEpochId).length;
+		if (budget.concurrency !== undefined && activeForBinding >= budget.concurrency) {
+			return Result.err(new FoundationError("quota_exceeded", "binding concurrency quota exceeded", { details: { toolCallId: scope.intent.toolCallId, active: activeForBinding, limit: budget.concurrency, bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId } }));
+		}
 		const nextToolCalls = (this.usage.toolCalls ?? 0) + 1;
 		const limit = this.maxToolCalls === undefined || budget.toolCalls === undefined ? this.maxToolCalls ?? budget.toolCalls : Math.min(this.maxToolCalls, budget.toolCalls);
 		if (limit !== undefined && nextToolCalls > limit) {
@@ -706,7 +762,7 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 			);
 		}
 		this.usage.toolCalls = nextToolCalls;
-		this.reservations.push({
+		const reservation: QuotaReservationV1 = {
 			schemaVersion: 1,
 			reservationId: this.idGenerator("quota_reservation"),
 			attribution: {
@@ -720,7 +776,9 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 			},
 			budget,
 			grantedAt: this.now(),
-		});
+		};
+		this.reservations.push(reservation);
+		this.reservationKeys.set(reservation.reservationId, scopeKey);
 		return Result.ok(capacityReference(scope.context, "tool_quota"));
 	}
 
@@ -732,9 +790,24 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 		this.usage.wallClockMs = (this.usage.wallClockMs ?? 0) + (receipt.usage.wallClockMs ?? 0);
 	}
 
-	async release(): Promise<void> {
-		this.reservations.splice(0);
+	async release(scope?: ToolGateScopeV1): Promise<void> {
+		if (scope === undefined) {
+			this.reservations.splice(0);
+			this.reservationKeys.clear();
+			return;
+		}
+		const scopeKey: ToolReservationScopeV1 = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
+		for (let index = this.reservations.length - 1; index >= 0; index -= 1) {
+			const reservation = this.reservations[index]!;
+			if (!sameReservationScope(this.reservationKeys.get(reservation.reservationId), scopeKey)) continue;
+			this.reservationKeys.delete(reservation.reservationId);
+			this.reservations.splice(index, 1);
+		}
 	}
+}
+
+function sameReservationScope(left: ToolReservationScopeV1 | undefined, right: ToolReservationScopeV1): boolean {
+	return left?.bindingId === right.bindingId && left.bindingEpochId === right.bindingEpochId && left.toolCallId === right.toolCallId;
 }
 
 /**
@@ -805,7 +878,7 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 			const ownerKey = conflictOwnerKey(scope, key);
 			if (this.conflictOwners.get(ownerKey) === scope.intent.toolCallId) this.conflictOwners.delete(ownerKey);
 		}
-		await this.quotaAccount?.release();
+		await this.quotaAccount?.release(scope);
 	}
 
 	async cleanup(): Promise<void> {
@@ -931,8 +1004,8 @@ export class FoundationToolPipelineV1 {
 				attempt: intent.attempt,
 				retried: 0,
 				completedAt: this.now(),
-							outcome: "side_effect_unknown",
-							 error: publicExecutionError("side_effect_unknown", "tool outcome is unknown after a possible side effect", { category: "side_effect_unknown" }),
+				outcome: "side_effect_unknown",
+				error: publicExecutionError("side_effect_unknown", "tool outcome is unknown after a possible side effect", { category: "side_effect_unknown" }),
 			});
 			let stored: ResultValue<{ toolReceiptRef: string }, FoundationError>;
 			try {
@@ -996,7 +1069,9 @@ export class FoundationToolPipelineV1 {
 			const errors: FoundationError[] = [];
 			const settled = prepared.map(() => deferred<void>());
 			const signal = options.signal;
-			const effectiveConcurrency = Math.max(1, Math.min(this.maxConcurrency ?? prepared.length, prepared.length));
+			const bindingConcurrency = context.binding.budget.concurrency;
+			const concurrencyCaps = [prepared.length, this.maxConcurrency, this.budget.concurrency, bindingConcurrency].filter((value): value is number => value !== undefined);
+			const effectiveConcurrency = Math.max(1, Math.min(...concurrencyCaps));
 			let active = 0;
 			const nextIndex = { value: 0 };
 
@@ -1026,8 +1101,19 @@ export class FoundationToolPipelineV1 {
 				}
 				let scope: ToolGateScopeV1 | undefined;
 				try {
+					if (entry.preHookError !== undefined) {
+						const denied = await this.finalize(entry, context, { outcome: "blocked", sideEffectState: "none", error: entry.preHookError });
+						if (denied.ok) {
+							receipts[index] = denied.value;
+							settledStates[index] = { receipt: denied.value };
+						} else {
+							errors.push(denied.error);
+							settledStates[index] = { error: denied.error };
+						}
+						return;
+					}
 					if (signal?.aborted || deadlineReached(options.deadlineAt ?? context.deadlineAt, this.nowMs())) {
-						const cancelled = await this.finalize(entry, context, { outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: signal?.aborted ? cancellationError() : deadlineError() });
+						const cancelled = await this.finalize(entry, context, { outcome: signal?.aborted ? "cancelled" : "failed", sideEffectState: "none", error: signal?.aborted ? cancellationError() : deadlineError() });
 						if (cancelled.ok) {
 							receipts[index] = cancelled.value;
 							settledStates[index] = { receipt: cancelled.value };
@@ -1102,11 +1188,8 @@ export class FoundationToolPipelineV1 {
 		} catch (error) {
 			return Result.err(toFoundationError(error));
 		} finally {
-			try {
-				await this.quotaAccount.release();
-			} finally {
-				await this.guard.cleanup?.();
-			}
+			// Reservations and conflict locks are released per call in runOne. A
+			// batch-wide cleanup would release another overlapping batch's leases.
 		}
 	}
 
@@ -1122,7 +1205,10 @@ export class FoundationToolPipelineV1 {
 		let acceptedArgs: Record<string, unknown>;
 		try {
 			original = cloneFoundationValue(call.args);
-			const accepted = tool.prepareArguments === undefined ? original : tool.prepareArguments(cloneFoundationValue(original));
+			if (tool.prepareArguments !== undefined && tool.argumentTransformer !== undefined) throw new FoundationError("foundation_schema_invalid_shape", "tool definition cannot declare two argument transformers");
+			const accepted = tool.argumentTransformer === undefined
+				? tool.prepareArguments === undefined ? original : tool.prepareArguments(cloneFoundationValue(original))
+				: tool.argumentTransformer.transform(cloneFoundationValue(original));
 			const normalized = normalizeArguments(accepted);
 			if (!normalized.ok) return normalized;
 			acceptedArgs = normalized.value;
@@ -1135,7 +1221,7 @@ export class FoundationToolPipelineV1 {
 		const acceptedDigest = fingerprintFoundationValue(acceptedArgs);
 		const conflictKeysResult = collectConflictKeys(tool, acceptedArgs, this.canonicalizeConflictKey);
 		if (!conflictKeysResult.ok) return conflictKeysResult;
-		const provenance = argumentTransformProvenance(original, acceptedArgs);
+		const provenance = argumentTransformProvenance(original, acceptedArgs, tool);
 		const attempt = call.attempt ?? 1;
 		if (!Number.isInteger(attempt) || attempt < 1) return Result.err(new FoundationError("invalid_identifier", "tool attempt must be a positive integer"));
 		const persistedCandidates = call.idempotencyKey === undefined
@@ -1171,13 +1257,50 @@ export class FoundationToolPipelineV1 {
 		if (persisted !== undefined && invocationSignature(persisted) !== invocationSignature(intent)) {
 			return Result.err(new FoundationError("goal_conflict", "idempotency key was already used for different frozen tool arguments"));
 		}
-		const expectedIntent = persisted ?? intent;
+		const expectedIntent = persisted === undefined ? intent : freeze({ ...intent, fence: cloneToolIntent(persisted).fence });
+		if (persisted !== undefined) {
+			const persistedIntegrity = validateDurableIntent(persisted, expectedIntent);
+			if (!persistedIntegrity.ok) return persistedIntegrity;
+		}
 		const written = await this.storage.writeIntent(expectedIntent);
 		if (!written.ok) return written;
 		const durableIntent = validateDurableIntent(written.value, expectedIntent);
 		if (!durableIntent.ok) return durableIntent;
 		await this.onStage?.({ stage: "prepare", toolCallId: call.toolCallId });
 		await this.onStage?.({ stage: "pre", toolCallId: call.toolCallId });
+		let preHookError: PublicExecutionErrorV1 | undefined;
+		const acceptedDigestBeforePreHook = acceptedDigest;
+		const intentBeforePreHook = canonicalFoundationJson(durableIntent.value);
+		const preHook = tool.preHook;
+		if (preHook !== undefined) {
+			try {
+				const hookResult = await preHook(freeze({
+					context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContextV1>,
+					tool: snapshotToolDefinition(tool),
+					args: freeze(cloneUnknownRecord(acceptedArgs)),
+					intent: freeze(cloneToolIntent(durableIntent.value)),
+				}));
+				const hookResultRecord = hookResult !== null && typeof hookResult === "object" ? hookResult as { ok?: unknown; error?: unknown } : undefined;
+				const malformed = hookResult !== undefined && typeof hookResult !== "boolean" && (hookResultRecord === undefined || typeof hookResultRecord.ok !== "boolean");
+				const denied = hookResult === false || hookResultRecord?.ok === false;
+				if (malformed || denied) {
+					const reason = !malformed && hookResultRecord !== undefined && FoundationError.is(hookResultRecord.error) ? hookResultRecord.error.message : "provider-neutral pre hook denied execution";
+					preHookError = publicExecutionError("tool_pre_hook_denied", reason, { category: "permission", retryable: false });
+				}
+			} catch (error) {
+				const normalized = toFoundationError(error, "tool_pre_hook_denied");
+				preHookError = normalized.toPublicExecutionError();
+			}
+		}
+		try {
+			const postHookAcceptedDigest = fingerprintFoundationValue(acceptedArgs);
+			const acceptedShape = validateExactShape(tool.parameters, acceptedArgs, "tool arguments after pre hook");
+			if (!acceptedShape.ok || postHookAcceptedDigest.value !== acceptedDigestBeforePreHook.value || canonicalFoundationJson(durableIntent.value) !== intentBeforePreHook) {
+				preHookError = publicExecutionError("tool_pre_hook_denied", "provider-neutral pre hook changed frozen authority or accepted arguments", { category: "permission", retryable: false });
+			}
+		} catch (error) {
+			preHookError = toFoundationError(error, "tool_pre_hook_denied").toPublicExecutionError();
+		}
 		const dedupKey = call.idempotencyKey === undefined ? undefined : idempotencyScopeKey(context, call.idempotencyKey);
 		const signature = invocationSignature(durableIntent.value);
 		const replay = dedupKey === undefined ? undefined : this.completedByKey.get(dedupKey) ?? this.persistentByKey.get(dedupKey);
@@ -1194,6 +1317,7 @@ export class FoundationToolPipelineV1 {
 			acceptedArgs: freeze(acceptedArgs),
 			conflictKeys: conflictKeysResult.value,
 			gateRecords: [],
+			...(preHookError === undefined ? {} : { preHookError }),
 			replay: replay?.receipt,
 		});
 	}
@@ -1277,7 +1401,7 @@ export class FoundationToolPipelineV1 {
 			});
 		}
 		if (signal?.aborted || deadlineReached(options.deadlineAt ?? context.deadlineAt, this.nowMs())) {
-			return this.finalize(prepared, context, { outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: signal?.aborted ? cancellationError() : deadlineError() });
+			return this.finalize(prepared, context, { outcome: signal?.aborted ? "cancelled" : "failed", sideEffectState: "none", error: signal?.aborted ? cancellationError() : deadlineError() });
 		}
 
 		const idempotency: IdempotencyV1 = prepared.tool.idempotency ?? "non_idempotent";
@@ -1286,7 +1410,7 @@ export class FoundationToolPipelineV1 {
 		let execution: ToolExecutionV1 | undefined;
 		for (;;) {
 			if (signal?.aborted || deadlineReached(options.deadlineAt ?? context.deadlineAt, this.nowMs())) {
-				return this.finalize(prepared, context, { outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: signal?.aborted ? cancellationError() : deadlineError(), startedAt, retried });
+				return this.finalize(prepared, context, { outcome: signal?.aborted ? "cancelled" : "failed", sideEffectState: "none", error: signal?.aborted ? cancellationError() : deadlineError(), retried });
 			}
 			await this.onStage?.({ stage: "execute", toolCallId: prepared.call.toolCallId });
 			try {
@@ -1320,6 +1444,10 @@ export class FoundationToolPipelineV1 {
 			retried += 1;
 		}
 		await this.onStage?.({ stage: "post", toolCallId: prepared.call.toolCallId });
+		if (execution === undefined) execution = { ok: false, sideEffectState: "side_effect_unknown", error: publicExecutionError("side_effect_unknown", "tool execution produced no settlement", { category: "side_effect_unknown", retryable: false }) };
+		const normalizedExecution = await this.applyPostProcessor(prepared, context, execution);
+		if (!normalizedExecution.ok) execution = { ok: false, sideEffectState: execution.sideEffectState, error: normalizedExecution.error.toPublicExecutionError() };
+		else execution = normalizedExecution.value;
 		const sideEffectState: SideEffectStateV1 = execution?.sideEffectState === "none"
 			? "none"
 			: "side_effect_unknown";
@@ -1339,6 +1467,53 @@ export class FoundationToolPipelineV1 {
 			startedAt,
 			retried,
 		});
+	}
+
+	private async applyPostProcessor(prepared: PreparedCallV1, context: ToolPipelineContextV1, execution: ToolExecutionV1): Promise<ResultValue<ToolExecutionV1, FoundationError>> {
+		const processor = prepared.tool.postProcessor;
+		if (processor === undefined) return Result.ok(execution);
+		let candidate: ToolPostNormalizationV1 | undefined;
+		try {
+			const returned = await processor(freeze({
+				context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContextV1>,
+				tool: snapshotToolDefinition(prepared.tool),
+				args: freeze(cloneUnknownRecord(prepared.acceptedArgs)),
+				intent: freeze(cloneToolIntent(prepared.intent)),
+				execution: freeze(cloneUnknownRecord(execution as unknown as Record<string, unknown>)) as Readonly<ToolExecutionV1>,
+			}));
+			if (returned !== undefined && typeof returned === "object" && returned !== null && "ok" in returned && typeof returned.ok === "boolean") {
+				if (!returned.ok) return Result.err(this.stablePostValidationError(returned.error));
+				candidate = returned.value;
+			} else candidate = returned as ToolPostNormalizationV1 | undefined;
+		} catch (error) {
+			return Result.err(this.stablePostValidationError(error));
+		}
+		if (candidate === undefined) return Result.ok(execution);
+		if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return Result.err(new FoundationError("tool_post_validation_failed", "post processor must return a result/artifact/usage projection"));
+		const keys = Object.keys(candidate);
+		if (keys.some((key) => key !== "result" && key !== "artifacts" && key !== "usage")) return Result.err(new FoundationError("tool_post_validation_failed", "post processor cannot change execution settlement fields"));
+		if (candidate.result !== undefined) {
+			const checkedResult = validateToolResultPayloadV1(candidate.result);
+			if (!checkedResult.ok) return Result.err(this.stablePostValidationError(checkedResult.error));
+		}
+		if (candidate.artifacts !== undefined) {
+			const checkedArtifacts = validateExactShape<readonly ArtifactRefV1[]>(Type.Array(artifactRefSchema), candidate.artifacts, "tool post artifacts");
+			if (!checkedArtifacts.ok) return Result.err(this.stablePostValidationError(checkedArtifacts.error));
+		}
+		const artifacts = candidate.artifacts ?? execution.artifacts;
+		const artifactCheck = validateDurableResultArtifacts(candidate.result ?? execution.result, artifacts);
+		if (!artifactCheck.ok) return Result.err(this.stablePostValidationError(artifactCheck.error));
+		if (candidate.usage !== undefined) {
+			const checkedUsage = validateExactShape<BudgetUsageV1>(usageSchema, candidate.usage, "tool post usage");
+			if (!checkedUsage.ok) return Result.err(this.stablePostValidationError(checkedUsage.error));
+			if (!isValidBudgetUsage(checkedUsage.value)) return Result.err(new FoundationError("tool_post_validation_failed", "post processor returned invalid usage"));
+		}
+		return Result.ok({ ...execution, ...(candidate.result === undefined ? {} : { result: candidate.result }), ...(candidate.artifacts === undefined ? {} : { artifacts: candidate.artifacts }), ...(candidate.usage === undefined ? {} : { usage: candidate.usage }) });
+	}
+
+	private stablePostValidationError(error: unknown): FoundationError {
+		const normalized = toFoundationError(error, "tool_post_validation_failed");
+		return normalized.code === "tool_post_validation_failed" ? normalized : new FoundationError("tool_post_validation_failed", normalized.message);
 	}
 
 	private async finalize(
@@ -1483,6 +1658,7 @@ interface PreparedCallV1 {
 	acceptedArgs: Record<string, unknown>;
 	conflictKeys: readonly string[];
 	gateRecords: readonly ToolGateRecordV1[];
+	preHookError?: PublicExecutionErrorV1;
 	replay?: ToolReceiptV1;
 }
 
@@ -1504,18 +1680,22 @@ function normalizeArguments(value: unknown): ResultValue<Record<string, unknown>
 	}
 }
 
-function argumentTransformProvenance(original: FoundationJsonValue, accepted: Record<string, unknown>): readonly ToolTransformProvenanceV1[] {
+function argumentTransformProvenance(original: FoundationJsonValue, accepted: Record<string, unknown>, tool: ToolDefinitionV1): readonly ToolTransformProvenanceV1[] {
 	const originalRecord = original !== null && typeof original === "object" && !Array.isArray(original) ? original : undefined;
 	const fields = new Set([...(originalRecord === undefined ? [] : Object.keys(originalRecord)), ...Object.keys(accepted)]);
+	const transformerId = tool.argumentTransformer?.transformerId ?? `tool:${tool.toolRevision.id}:prepareArguments`;
+	const transformerRevision = tool.argumentTransformer?.transformerRevision ?? tool.toolRevision.revision;
 	const provenance: ToolTransformProvenanceV1[] = [];
 	for (const field of fields) {
 		const hadOriginal = originalRecord !== undefined && field in originalRecord;
 		const hasAccepted = field in accepted;
-		if (!hadOriginal && hasAccepted) provenance.push({ field, kind: "defaulted" });
-		else if (hadOriginal && !hasAccepted) provenance.push({ field, kind: "removed" });
+		const before = hadOriginal ? originalRecord[field] : null;
+		const after = hasAccepted ? accepted[field] : null;
+		const beforeDigest = fingerprintFoundationValue(before as FoundationJsonValue);
+		const afterDigest = fingerprintFoundationValue(after as FoundationJsonValue);
+		if (!hadOriginal && hasAccepted) provenance.push({ field, kind: "defaulted", transformerId, transformerRevision, beforeDigest, afterDigest });
+		else if (hadOriginal && !hasAccepted) provenance.push({ field, kind: "removed", transformerId, transformerRevision, beforeDigest, afterDigest });
 		else if (hadOriginal && hasAccepted) {
-			const before = originalRecord[field];
-			const after = accepted[field];
 			let same = false;
 			try {
 				same = fingerprintFoundationValue(before).value === fingerprintFoundationValue(after).value;
@@ -1529,7 +1709,7 @@ function argumentTransformProvenance(original: FoundationJsonValue, accepted: Re
 					: after === "[redacted]"
 						? "redacted"
 						: "normalized";
-			provenance.push({ field, kind });
+			provenance.push({ field, kind, transformerId, transformerRevision, beforeDigest, afterDigest });
 		}
 	}
 	return freeze(provenance.sort((a, b) => a.field.localeCompare(b.field)));
@@ -1637,6 +1817,13 @@ function summarizeUsage(receipts: readonly ToolReceiptV1[]): BudgetUsageV1 {
 		usage.wallClockMs = (usage.wallClockMs ?? 0) + (receipt.usage.wallClockMs ?? 0);
 	}
 	return freeze(usage);
+}
+
+function isValidBudgetUsage(usage: BudgetUsageV1): boolean {
+	for (const value of Object.values(usage)) {
+		if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) return false;
+	}
+	return true;
 }
 
 function tightenBudget(binding: BudgetV1, local: BudgetV1): BudgetV1 {
@@ -1751,6 +1938,8 @@ export function digestToolArgumentsV1(value: unknown): FingerprintV1 {
 
 function snapshotToolDefinition(tool: ToolDefinitionV1): ToolDefinitionV1 {
 	if (tool.name.length === 0 || tool.toolRevision.id.length === 0 || tool.toolRevision.revision < 0) throw new FoundationError("invalid_identifier", "tool definition has an invalid identity");
+	if (tool.prepareArguments !== undefined && tool.argumentTransformer !== undefined) throw new FoundationError("foundation_schema_invalid_shape", "tool definition cannot declare two argument transformers");
+	if (tool.argumentTransformer !== undefined && (tool.argumentTransformer.transformerId.trim().length === 0 || !Number.isInteger(tool.argumentTransformer.transformerRevision) || tool.argumentTransformer.transformerRevision < 0)) throw new FoundationError("foundation_schema_invalid_shape", "tool argument transformer identity is invalid");
 	return freeze({
 		...tool,
 		toolRevision: cloneToolRevision(tool.toolRevision),
@@ -2029,7 +2218,7 @@ const toolIntentFenceSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), fenceId: Type.String({ minLength: 1 }), intentId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), acceptedArgumentsDigest: FingerprintV1Schema, armedAt: Type.String({ minLength: 1 }) },
 	{ additionalProperties: false },
 );
-const toolTransformProvenanceSchema = Type.Object({ field: Type.String({ minLength: 1 }), kind: Type.Union(TOOL_TRANSFORM_KINDS_V1.map((kind) => Type.Literal(kind))) }, { additionalProperties: false });
+const toolTransformProvenanceSchema = Type.Object({ field: Type.String({ minLength: 1 }), kind: Type.Union(TOOL_TRANSFORM_KINDS_V1.map((kind) => Type.Literal(kind))), transformerId: Type.String({ minLength: 1 }), transformerRevision: Type.Integer({ minimum: 0 }), beforeDigest: FingerprintV1Schema, afterDigest: FingerprintV1Schema }, { additionalProperties: false });
 const toolGateReferenceSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), fingerprint: Type.Optional(FingerprintV1Schema), providerId: Type.Optional(Type.String({ minLength: 1 })) },
 	{ additionalProperties: false },
@@ -2043,7 +2232,7 @@ const publicErrorSchema = Type.Object(
 	{ additionalProperties: false },
 );
 const usageSchema = Type.Object(
-	{ tokens: Type.Optional(Type.Number({ minimum: 0 })), costUsd: Type.Optional(Type.Number({ minimum: 0 })), modelCalls: Type.Optional(Type.Integer({ minimum: 0 })), toolCalls: Type.Optional(Type.Integer({ minimum: 0 })), wallClockMs: Type.Optional(Type.Integer({ minimum: 0 })) },
+	{ tokens: Type.Optional(Type.Integer({ minimum: 0 })), costUsd: Type.Optional(Type.Number({ minimum: 0 })), modelCalls: Type.Optional(Type.Integer({ minimum: 0 })), toolCalls: Type.Optional(Type.Integer({ minimum: 0 })), wallClockMs: Type.Optional(Type.Integer({ minimum: 0 })) },
 	{ additionalProperties: false },
 );
 const artifactRefSchema = Type.Object(
@@ -2060,13 +2249,13 @@ const toolResultImageContentSchema = Type.Object(
 );
 const toolResultUsageSchema = Type.Object(
 	{
-		input: Type.Number({ minimum: 0 }),
-		output: Type.Number({ minimum: 0 }),
-		cacheRead: Type.Number({ minimum: 0 }),
-		cacheWrite: Type.Number({ minimum: 0 }),
-		cacheWrite1h: Type.Optional(Type.Number({ minimum: 0 })),
-		reasoning: Type.Optional(Type.Number({ minimum: 0 })),
-		totalTokens: Type.Number({ minimum: 0 }),
+		input: Type.Integer({ minimum: 0 }),
+		output: Type.Integer({ minimum: 0 }),
+		cacheRead: Type.Integer({ minimum: 0 }),
+		cacheWrite: Type.Integer({ minimum: 0 }),
+		cacheWrite1h: Type.Optional(Type.Integer({ minimum: 0 })),
+		reasoning: Type.Optional(Type.Integer({ minimum: 0 })),
+		totalTokens: Type.Integer({ minimum: 0 }),
 		cost: Type.Object(
 			{
 				input: Type.Number({ minimum: 0 }),

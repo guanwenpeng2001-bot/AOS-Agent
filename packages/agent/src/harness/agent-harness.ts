@@ -497,7 +497,9 @@ function foundationJsonValue(value: unknown): FoundationJsonValue {
 	if (Array.isArray(value)) return value.map((item) => foundationJsonValue(item));
 	const record: Record<string, FoundationJsonValue> = {};
 	const objectValue = value as Record<string, unknown>;
-	for (const [key, item] of Object.entries(objectValue)) record[key] = foundationJsonValue(item);
+	for (const [key, item] of Object.entries(objectValue)) {
+		record[key] = foundationJsonValue(item);
+	}
 	return record;
 }
 
@@ -2038,15 +2040,13 @@ export class AgentHarness implements AgentLane {
 			if (canonicalFoundationJson(existing.target) !== canonicalFoundationJson(target)) throw new HarnessFault(`Durable write intent ${target.id} conflicts with its replay payload`, undefined);
 			return;
 		}
-		if (existing === undefined) {
-			await this.durableSession.appendRecord({
-				type: "write_deferred",
-				id: this.durableSession.idGenerator.next(),
-				lane,
-				runId,
-				target: structuredClone(target),
-			} satisfies NewRecord<WriteDeferredRecord>);
-		}
+		await this.durableSession.appendRecord({
+			type: "write_deferred",
+			id: this.durableSession.idGenerator.next(),
+			lane,
+			runId,
+			target: structuredClone(target),
+		} satisfies NewRecord<WriteDeferredRecord>);
 	}
 
 	private async ensureToolResultUsageRecord(lane: string, runId: string, target: ProvisionedEntry): Promise<void> {

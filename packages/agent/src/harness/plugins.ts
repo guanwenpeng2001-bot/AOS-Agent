@@ -120,6 +120,100 @@ export interface LocalPluginRegistryOptionsV1 {
 	verifySignature?: (contract: PluginContractV1, metadata?: PluginSignatureMetadataV1, contentsDigest?: FingerprintV1) => ResultValue<void, FoundationError>;
 	requireContentSignature?: boolean;
 	now?: () => string;
+	/** Durable local storage. Its atomicSwitch operation is the activation pointer commit. */
+	storage?: LocalPluginRegistryStorageV1;
+}
+
+export interface PluginRegistryStoredActivationV1 {
+	package: LocalPluginPackageV1;
+	record: PluginActivationRecordV1;
+}
+
+export interface PluginRegistryStagedPackageV1 {
+	stageId: string;
+	operation: PluginLifecycleOperationV1;
+	pluginId: string;
+	revision: number;
+	package: LocalPluginPackageV1;
+	stagedAt: string;
+}
+
+export interface PluginRegistryActivationPointerV1 {
+	pluginId: string;
+	state: "active" | "uninstalled";
+	stageId?: string;
+	generation: number;
+}
+
+export interface LocalPluginRegistrySnapshotV1 {
+	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
+	generation: number;
+	active: readonly PluginRegistryStoredActivationV1[];
+	previous: readonly PluginRegistryStoredActivationV1[];
+	staged: readonly PluginRegistryStagedPackageV1[];
+	pointers: readonly PluginRegistryActivationPointerV1[];
+}
+
+export interface PluginRegistryAtomicSwitchV1 {
+	pluginId: string;
+	active?: PluginRegistryStoredActivationV1;
+	previous?: PluginRegistryStoredActivationV1;
+	stageId?: string;
+	state: "active" | "uninstalled";
+}
+
+/**
+ * Storage deliberately exposes a single atomic pointer switch. A caller may
+ * recover after a process restart by loading the last complete snapshot; an
+ * orphaned staged package is safe to remove without touching the active one.
+ */
+export interface LocalPluginRegistryStorageV1 {
+	load(): Promise<ResultValue<LocalPluginRegistrySnapshotV1 | undefined, FoundationError>>;
+	stagePackage(record: PluginRegistryStagedPackageV1): Promise<ResultValue<void, FoundationError>>;
+	atomicSwitch(change: PluginRegistryAtomicSwitchV1): Promise<ResultValue<void, FoundationError>>;
+	removeStage(stageId: string): Promise<ResultValue<void, FoundationError>>;
+}
+
+function clonePluginPersistence<T>(value: T): T {
+	return JSON.parse(canonicalFoundationJson(value)) as T;
+}
+
+/** In-memory durable adapter used by hosts and conformance tests. */
+export class InMemoryLocalPluginRegistryStorageV1 implements LocalPluginRegistryStorageV1 {
+	#snapshot: LocalPluginRegistrySnapshotV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: 0, active: [], previous: [], staged: [], pointers: [] };
+
+	get snapshot(): LocalPluginRegistrySnapshotV1 { return clonePluginPersistence(this.#snapshot); }
+
+	async load(): Promise<ResultValue<LocalPluginRegistrySnapshotV1, FoundationError>> {
+		return Result.ok(clonePluginPersistence(this.#snapshot));
+	}
+
+	async stagePackage(record: PluginRegistryStagedPackageV1): Promise<ResultValue<void, FoundationError>> {
+		const staged = [...this.#snapshot.staged.filter((item) => item.stageId !== record.stageId), clonePluginPersistence(record)];
+		this.#snapshot = { ...this.#snapshot, generation: this.#snapshot.generation + 1, staged };
+		return Result.ok(undefined);
+	}
+
+	async atomicSwitch(change: PluginRegistryAtomicSwitchV1): Promise<ResultValue<void, FoundationError>> {
+		const active = this.#snapshot.active.filter((item) => item.record.pluginId !== change.pluginId);
+		const previous = this.#snapshot.previous.filter((item) => item.record.pluginId !== change.pluginId);
+		const nextGeneration = this.#snapshot.generation + 1;
+		const pointers = this.#snapshot.pointers.filter((pointer) => pointer.pluginId !== change.pluginId);
+		this.#snapshot = {
+			...this.#snapshot,
+			generation: nextGeneration,
+			active: change.active === undefined ? active : [...active, clonePluginPersistence(change.active)],
+			previous: change.previous === undefined ? previous : [...previous, clonePluginPersistence(change.previous)],
+			staged: change.stageId === undefined ? this.#snapshot.staged : this.#snapshot.staged.filter((item) => item.stageId !== change.stageId),
+			pointers: [...pointers, { pluginId: change.pluginId, state: change.state, ...(change.stageId === undefined ? {} : { stageId: change.stageId }), generation: nextGeneration }],
+		};
+		return Result.ok(undefined);
+	}
+
+	async removeStage(stageId: string): Promise<ResultValue<void, FoundationError>> {
+		this.#snapshot = { ...this.#snapshot, generation: this.#snapshot.generation + 1, staged: this.#snapshot.staged.filter((item) => item.stageId !== stageId) };
+		return Result.ok(undefined);
+	}
 }
 
 const NAMESPACE_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
@@ -281,11 +375,13 @@ export class LocalPluginRegistry {
 	readonly #active = new Map<string, { package: LocalPluginPackageV1; record: PluginActivationRecordV1; scope: EffectScope }>();
 	readonly #previous = new Map<string, { package: LocalPluginPackageV1; record: PluginActivationRecordV1 }>();
 	readonly #stages: PluginStageReportV1[] = [];
+	readonly #stageIds = new Map<string, string>();
 	readonly #onStage: (report: PluginStageReportV1) => void | Promise<void>;
 	readonly #onActivate: (pkg: LocalPluginPackageV1, context: PluginActivationContextV1) => void | Promise<void>;
 	readonly #verifySignature: NonNullable<LocalPluginRegistryOptionsV1["verifySignature"]>;
 	readonly #now: () => string;
 	readonly #requireContentSignature: boolean;
+	readonly #storage: LocalPluginRegistryStorageV1 | undefined;
 	readonly #releaseReports = new Map<string, unknown>();
 
 	constructor(options: LocalPluginRegistryOptionsV1 = {}) {
@@ -294,7 +390,54 @@ export class LocalPluginRegistry {
 		this.#verifySignature = options.verifySignature ?? (() => Result.ok(undefined));
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#requireContentSignature = options.requireContentSignature ?? true;
+		this.#storage = options.storage;
 	}
+
+	static async open(options: LocalPluginRegistryOptionsV1 = {}): Promise<ResultValue<LocalPluginRegistry, FoundationError>> {
+		const registry = new LocalPluginRegistry(options);
+		const recovered = await registry.recover();
+		return recovered.ok ? Result.ok(registry) : recovered;
+	}
+
+	/** Restore the last atomically committed activation pointer after restart. */
+	async recover(): Promise<ResultValue<void, FoundationError>> {
+		if (this.#storage === undefined) return Result.ok(undefined);
+		let loaded: ResultValue<LocalPluginRegistrySnapshotV1 | undefined, FoundationError>;
+		try {
+			loaded = await this.#storage.load();
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		}
+		if (!loaded.ok) return loaded;
+		this.#active.clear();
+		this.#previous.clear();
+		this.#stageIds.clear();
+		if (loaded.value === undefined) return Result.ok(undefined);
+		const restored: Array<{ pluginId: string; value: { package: LocalPluginPackageV1; record: PluginActivationRecordV1; scope: EffectScope } }> = [];
+		for (const entry of loaded.value.active) {
+			const validation = this.validatePackageWithSignature(entry.package);
+			if (!validation.ok) {
+				for (const item of restored) await item.value.scope.rollback();
+				return validation;
+			}
+			const activation = await this.createActivation(entry.package, entry.record.revision);
+			if (!activation.ok) {
+				for (const item of restored) await item.value.scope.rollback();
+				return activation;
+			}
+			restored.push({ pluginId: entry.record.pluginId, value: { ...activation.value, record: clonePluginPersistence(entry.record) } });
+		}
+		for (const item of restored) this.#active.set(item.pluginId, item.value);
+		for (const entry of loaded.value.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
+		for (const staged of loaded.value.staged) {
+			const removed = await this.removeStageDurably(staged.stageId);
+			if (!removed.ok) return removed;
+		}
+		return Result.ok(undefined);
+	}
+
+	/** Alias used by hosts that call restart handling restore rather than recover. */
+	async restore(): Promise<ResultValue<void, FoundationError>> { return this.recover(); }
 
 	has(pluginId: string): boolean { return this.#active.has(pluginId); }
 	active(pluginId: string): PluginActivationRecordV1 | undefined { return this.#active.get(pluginId)?.record; }
@@ -314,7 +457,11 @@ export class LocalPluginRegistry {
 		} catch (error) {
 			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
 		}
+		const stageId = this.stageId(pkg, revision);
+		const durable = await this.stageDurably({ stageId, operation, pluginId: pkg.contract.pluginId, revision, package: pkg, stagedAt: this.#now() });
+		if (!durable.ok) return durable;
 		this.#stages.push(report);
+		this.#stageIds.set(this.stageKey(pkg.contract.pluginId, revision), stageId);
 		return Result.ok(report);
 	}
 
@@ -338,16 +485,30 @@ export class LocalPluginRegistry {
 		if (current === undefined) return Result.err(pluginError("plugin_rollback_failed", "cannot uninstall a plugin that is not installed", { pluginId }));
 		const stage = await this.stage(current.package, "uninstall", current.record.revision);
 		if (!stage.ok) return stage;
+		const oldPrevious = this.#previous.get(pluginId);
+		const stageId = this.#stageIds.get(this.stageKey(pluginId, current.record.revision));
+		const switched = await this.atomicSwitchDurably({ pluginId, previous: { package: current.package, record: current.record }, stageId, state: "uninstalled" });
+		if (!switched.ok) {
+			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			return switched;
+		}
 		this.#previous.set(pluginId, { package: current.package, record: current.record });
 		this.#active.delete(pluginId);
 		const release = await current.scope.dispose();
 		this.#releaseReports.set(pluginId, release);
 		if (release.failures.length > 0) {
 			const restored = await this.createActivation(current.package, current.record.revision);
-			if (restored.ok) this.#active.set(pluginId, restored.value);
-			this.#previous.delete(pluginId);
+			if (restored.ok) {
+				const restoredValue = { ...restored.value, record: current.record };
+				const restoredDurably = await this.atomicSwitchDurably({ pluginId, active: { package: current.package, record: current.record }, ...(oldPrevious === undefined ? {} : { previous: oldPrevious }), state: "active" });
+				if (restoredDurably.ok) this.#active.set(pluginId, restoredValue);
+				else await restoredValue.scope.rollback();
+			}
+			if (oldPrevious === undefined) this.#previous.delete(pluginId);
+			else this.#previous.set(pluginId, oldPrevious);
 			return Result.err(pluginError("plugin_rollback_failed", "plugin uninstall cleanup failed", { pluginId }));
 		}
+		this.#stageIds.delete(this.stageKey(pluginId, current.record.revision));
 		return Result.ok({ schemaVersion: FOUNDATION_SCHEMA_VERSION, operation: "uninstall", pluginId, revision: current.record.revision, applied: true });
 	}
 
@@ -361,7 +522,17 @@ export class LocalPluginRegistry {
 		const stage = await this.stage(previous.package, "rollback", nextRevision);
 		if (!stage.ok) return stage;
 		const activated = await this.createActivation(previous.package, nextRevision);
-		if (!activated.ok) return activated;
+		const stageId = this.#stageIds.get(this.stageKey(pluginId, nextRevision));
+		if (!activated.ok) {
+			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			return activated;
+		}
+		const switched = await this.atomicSwitchDurably({ pluginId, active: { package: previous.package, record: activated.value.record }, stageId, state: "active" });
+		if (!switched.ok) {
+			await activated.value.scope.rollback();
+			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			return switched;
+		}
 		this.#active.set(pluginId, activated.value);
 		if (current !== undefined) {
 			const release = await current.scope.dispose();
@@ -370,12 +541,16 @@ export class LocalPluginRegistry {
 				const failedActivationRelease = await activated.value.scope.dispose();
 				this.#releaseReports.set(pluginId, failedActivationRelease);
 				const restored = await this.createActivation(current.package, current.record.revision);
-				if (restored.ok) this.#active.set(pluginId, restored.value);
-				else this.#active.delete(pluginId);
+				if (restored.ok) {
+					const restoredDurably = await this.atomicSwitchDurably({ pluginId, active: { package: current.package, record: current.record }, state: "active" });
+					if (restoredDurably.ok) this.#active.set(pluginId, { ...restored.value, record: current.record });
+					else await restored.value.scope.rollback();
+				} else this.#active.delete(pluginId);
 				return Result.err(pluginError("plugin_rollback_failed", "plugin rollback cleanup failed", { pluginId }));
 			}
 		}
 		this.#previous.delete(pluginId);
+		this.#stageIds.delete(this.stageKey(pluginId, nextRevision));
 		return Result.ok({ schemaVersion: FOUNDATION_SCHEMA_VERSION, operation: "rollback", pluginId, revision: nextRevision, applied: true });
 	}
 
@@ -393,8 +568,25 @@ export class LocalPluginRegistry {
 		const stage = await this.stage(pkg, operation, revision);
 		if (!stage.ok) return stage;
 		const activated = await this.createActivation(pkg, revision);
-		if (!activated.ok) return activated;
 		const current = this.#active.get(pkg.contract.pluginId);
+		const oldPrevious = this.#previous.get(pkg.contract.pluginId);
+		const stageId = this.#stageIds.get(this.stageKey(pkg.contract.pluginId, revision));
+		if (!activated.ok) {
+			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			return activated;
+		}
+		const switched = await this.atomicSwitchDurably({
+			pluginId: pkg.contract.pluginId,
+			active: { package: pkg, record: activated.value.record },
+			...(current === undefined ? {} : { previous: { package: current.package, record: current.record } }),
+			stageId,
+			state: "active",
+		});
+		if (!switched.ok) {
+			await activated.value.scope.rollback();
+			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			return switched;
+		}
 		if (current !== undefined) this.#previous.set(pkg.contract.pluginId, { package: current.package, record: current.record });
 		this.#active.set(pkg.contract.pluginId, activated.value);
 		if (current !== undefined) {
@@ -404,12 +596,59 @@ export class LocalPluginRegistry {
 				const failedActivationRelease = await activated.value.scope.dispose();
 				this.#releaseReports.set(pkg.contract.pluginId, failedActivationRelease);
 				const restored = await this.createActivation(current.package, current.record.revision);
-				if (restored.ok) this.#active.set(pkg.contract.pluginId, restored.value);
-				else this.#active.delete(pkg.contract.pluginId);
+				if (restored.ok) {
+					const restoredDurably = await this.atomicSwitchDurably({
+						pluginId: pkg.contract.pluginId,
+						active: { package: current.package, record: current.record },
+						...(oldPrevious === undefined ? {} : { previous: oldPrevious }),
+						state: "active",
+					});
+					if (restoredDurably.ok) this.#active.set(pkg.contract.pluginId, { ...restored.value, record: current.record });
+					else await restored.value.scope.rollback();
+				} else this.#active.delete(pkg.contract.pluginId);
+				if (oldPrevious === undefined) this.#previous.delete(pkg.contract.pluginId);
+				else this.#previous.set(pkg.contract.pluginId, oldPrevious);
 				return Result.err(pluginError("plugin_rollback_failed", "plugin update cleanup failed", { pluginId: pkg.contract.pluginId }));
 			}
 		}
+		this.#stageIds.delete(this.stageKey(pkg.contract.pluginId, revision));
 		return Result.ok({ schemaVersion: FOUNDATION_SCHEMA_VERSION, operation, pluginId: pkg.contract.pluginId, revision, applied: true });
+	}
+
+	private stageKey(pluginId: string, revision: number): string { return `${pluginId}:${revision}`; }
+
+	private stageId(pkg: LocalPluginPackageV1, revision: number): string {
+		return `${pkg.contract.pluginId}:${revision}:${pluginContentsDigestV1(pkg.contents).value}`;
+	}
+
+	private async stageDurably(record: PluginRegistryStagedPackageV1): Promise<ResultValue<void, FoundationError>> {
+		if (this.#storage === undefined) return Result.ok(undefined);
+		try {
+			const result = await this.#storage.stagePackage(record);
+			return result.ok ? Result.ok(undefined) : result;
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		}
+	}
+
+	private async atomicSwitchDurably(change: PluginRegistryAtomicSwitchV1): Promise<ResultValue<void, FoundationError>> {
+		if (this.#storage === undefined) return Result.ok(undefined);
+		try {
+			const result = await this.#storage.atomicSwitch(change);
+			return result.ok ? Result.ok(undefined) : result;
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		}
+	}
+
+	private async removeStageDurably(stageId: string): Promise<ResultValue<void, FoundationError>> {
+		if (this.#storage === undefined) return Result.ok(undefined);
+		try {
+			const result = await this.#storage.removeStage(stageId);
+			return result.ok ? Result.ok(undefined) : result;
+		} catch (error) {
+			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
+		}
 	}
 
 	private async createActivation(pkg: LocalPluginPackageV1, revision: number): Promise<ResultValue<{ package: LocalPluginPackageV1; record: PluginActivationRecordV1; scope: EffectScope }, FoundationError>> {

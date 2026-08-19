@@ -694,7 +694,7 @@ const closures = [
 		id: 45,
 		highLevelRows: rows("02", "03", "10"),
 		implementationStages: stages("T3", "T4", "T9", "T10", "T12"),
-		closure: "implemented",
+		closure: "contract_drafted",
 		ownerModule: "packages/coding-agent/src/core/agent-session.ts",
 		publicContract: "TUI/headless/RPC/SDK shared RuntimeSession facade; other surfaces consume conformance adapters",
 		persistence: "Surfaces never hold a second Session state authority",
