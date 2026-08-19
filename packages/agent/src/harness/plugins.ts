@@ -282,8 +282,9 @@ export class InMemoryLocalPluginRegistryStorageV1 implements LocalPluginRegistry
 	}
 
 	async stagePackage(record: PluginRegistryStagedPackageV1): Promise<ResultValue<void, FoundationError>> {
+		const generation = this.#snapshot.generation + 1;
 		const staged = [...this.#snapshot.staged.filter((item) => item.stageId !== record.stageId), clonePluginPersistence(record)];
-		this.#snapshot = { ...this.#snapshot, generation: this.#snapshot.generation + 1, staged };
+		this.#snapshot = { ...this.#snapshot, generation, staged, pointers: this.#snapshot.pointers.map((pointer) => ({ ...pointer, generation })) };
 		return Result.ok(undefined);
 	}
 
@@ -298,13 +299,14 @@ export class InMemoryLocalPluginRegistryStorageV1 implements LocalPluginRegistry
 			active: change.active === undefined ? active : [...active, clonePluginPersistence(change.active)],
 			previous: change.previous === undefined ? previous : [...previous, clonePluginPersistence(change.previous)],
 			staged: change.stageId === undefined ? this.#snapshot.staged : this.#snapshot.staged.filter((item) => item.stageId !== change.stageId),
-			pointers: [...pointers, { pluginId: change.pluginId, state: change.state, ...(change.stageId === undefined ? {} : { stageId: change.stageId }), generation: nextGeneration }],
+			pointers: [...pointers.map((pointer) => ({ ...pointer, generation: nextGeneration })), { pluginId: change.pluginId, state: change.state, ...(change.stageId === undefined ? {} : { stageId: change.stageId }), generation: nextGeneration }],
 		};
 		return Result.ok(undefined);
 	}
 
 	async removeStage(stageId: string): Promise<ResultValue<void, FoundationError>> {
-		this.#snapshot = { ...this.#snapshot, generation: this.#snapshot.generation + 1, staged: this.#snapshot.staged.filter((item) => item.stageId !== stageId) };
+		const generation = this.#snapshot.generation + 1;
+		this.#snapshot = { ...this.#snapshot, generation, staged: this.#snapshot.staged.filter((item) => item.stageId !== stageId), pointers: this.#snapshot.pointers.map((pointer) => ({ ...pointer, generation })) };
 		return Result.ok(undefined);
 	}
 }
@@ -319,7 +321,7 @@ const PLUGIN_REGISTRY_POINTER_FILE = "activation-pointer.json";
 const PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY = "snapshots";
 
 /** Atomic local-file capabilities required by the durable Plugin v1 registry. */
-export interface LocalPluginRegistryFileSystemV1 extends Pick<FileSystem, "joinPath" | "readTextFile" | "renameFile" | "createDir" | "remove"> {
+export interface LocalPluginRegistryFileSystemV1 extends Pick<FileSystem, "joinPath" | "readTextFile" | "renameFile" | "createDir" | "remove" | "exists"> {
 	createExclusive(path: string, content: string): Promise<ResultValue<void, FileError>>;
 	syncFile(path: string): Promise<ResultValue<void, FileError>>;
 	syncDirectory(path: string): Promise<ResultValue<void, FileError>>;
@@ -384,7 +386,12 @@ function validateDurableStagedPackage(value: unknown, kind: string): ResultValue
 	if (!shape.ok) return shape;
 	const packageResult = validateDurablePluginPackage(shape.value.package, `${kind}.package`);
 	if (!packageResult.ok) return packageResult;
-	if (shape.value.pluginId !== packageResult.value.contract.pluginId || !Number.isSafeInteger(shape.value.revision)) {
+	const expectedStageId = `${packageResult.value.contract.pluginId}:${shape.value.revision}:${pluginContentsDigestV1(packageResult.value.contents).value}`;
+	if (
+		shape.value.pluginId !== packageResult.value.contract.pluginId
+		|| !Number.isSafeInteger(shape.value.revision)
+		|| shape.value.stageId !== expectedStageId
+	) {
 		return Result.err(pluginError("plugin_rollback_failed", "durable staged plugin identity does not match its package"));
 	}
 	return Result.ok({ ...shape.value, package: packageResult.value });
@@ -393,7 +400,7 @@ function validateDurableStagedPackage(value: unknown, kind: string): ResultValue
 function validateDurableActivationPointer(value: unknown, kind: string): ResultValue<PluginRegistryActivationPointerV1, FoundationError> {
 	const shape = durableRegistryShape<PluginRegistryActivationPointerV1>(pluginActivationPointerSchema, value, kind);
 	if (!shape.ok) return shape;
-	return Number.isSafeInteger(shape.value.generation)
+	return Number.isSafeInteger(shape.value.generation) && shape.value.generation >= 1
 		? Result.ok(shape.value)
 		: Result.err(pluginError("plugin_rollback_failed", "durable plugin activation pointer generation is invalid"));
 }
@@ -402,7 +409,7 @@ function validatePluginRegistrySnapshot(value: unknown, expectedGeneration?: num
 	const shape = durableRegistryShape<LocalPluginRegistrySnapshotV1>(pluginRegistrySnapshotSchema, value, "plugin registry snapshot");
 	if (!shape.ok) return shape;
 	try {
-		if (!Number.isSafeInteger(shape.value.generation) || (expectedGeneration !== undefined && shape.value.generation !== expectedGeneration)) {
+		if (!Number.isSafeInteger(shape.value.generation) || shape.value.generation < 0 || (expectedGeneration !== undefined && shape.value.generation !== expectedGeneration)) {
 			return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot generation is invalid"));
 		}
 		const active: PluginRegistryStoredActivationV1[] = [];
@@ -442,8 +449,24 @@ function validatePluginRegistrySnapshot(value: unknown, expectedGeneration?: num
 		const stateIds = new Set<string>([...activeIds, ...previousIds]);
 		if (stateIds.size !== pointers.size || [...stateIds].some((pluginId) => !pointers.has(pluginId))) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointers do not match plugin state"));
 		for (const [pluginId, pointer] of pointers) {
+			if (pointer.generation !== shape.value.generation) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointer generation does not match its snapshot"));
 			const isActive = activeIds.has(pluginId);
 			if ((pointer.state === "active" && !isActive) || (pointer.state === "uninstalled" && isActive) || (!isActive && !previousIds.has(pluginId))) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointer state is inconsistent"));
+			const activeEntry = active.find((entry) => entry.record.pluginId === pluginId);
+			const previousEntry = previous.find((entry) => entry.record.pluginId === pluginId);
+			if (activeEntry !== undefined && previousEntry !== undefined && activeEntry.record.revision <= previousEntry.record.revision) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot active and previous revisions are out of order"));
+			if (pointer.stageId !== undefined) {
+				const pointerEntry = activeEntry ?? previousEntry;
+				if (pointerEntry === undefined || pointer.stageId !== `${pluginId}:${pointerEntry.record.revision}:${pluginContentsDigestV1(pointerEntry.package.contents).value}`) return Result.err(pluginError("plugin_rollback_failed", "plugin registry snapshot pointer stage identity is inconsistent"));
+			}
+		}
+		for (const stagedEntry of staged) {
+			const activeEntry = active.find((entry) => entry.record.pluginId === stagedEntry.pluginId);
+			const previousEntry = previous.find((entry) => entry.record.pluginId === stagedEntry.pluginId);
+			if (stagedEntry.operation === "install" && (stagedEntry.revision !== 1 || activeEntry !== undefined)) return Result.err(pluginError("plugin_rollback_failed", "durable install stage does not match plugin state"));
+			if (stagedEntry.operation === "update" && (activeEntry === undefined || stagedEntry.revision !== activeEntry.record.revision + 1)) return Result.err(pluginError("plugin_rollback_failed", "durable update stage does not match plugin revision"));
+			if (stagedEntry.operation === "uninstall" && (activeEntry === undefined || stagedEntry.revision !== activeEntry.record.revision)) return Result.err(pluginError("plugin_rollback_failed", "durable uninstall stage does not match plugin revision"));
+			if (stagedEntry.operation === "rollback" && (previousEntry === undefined || stagedEntry.revision !== (activeEntry?.record.revision ?? previousEntry.record.revision) + 1)) return Result.err(pluginError("plugin_rollback_failed", "durable rollback stage does not match plugin revision"));
 		}
 		return Result.ok(clonePluginPersistence({ ...shape.value, active, previous, staged, pointers: [...pointers.values()] }));
 	} catch (error) {
@@ -495,6 +518,7 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 			...snapshot,
 			generation: snapshot.generation + 1,
 			staged: [...snapshot.staged.filter((item) => item.stageId !== record.stageId), clonePluginPersistence(record)],
+			pointers: snapshot.pointers.map((pointer) => ({ ...pointer, generation: snapshot.generation + 1 })),
 		}));
 	}
 
@@ -510,7 +534,7 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 				previous: change.previous === undefined ? previous : [...previous, clonePluginPersistence(change.previous)],
 				staged: change.stageId === undefined ? snapshot.staged : snapshot.staged.filter((item) => item.stageId !== change.stageId),
 				pointers: [
-					...snapshot.pointers.filter((pointer) => pointer.pluginId !== change.pluginId),
+					...snapshot.pointers.filter((pointer) => pointer.pluginId !== change.pluginId).map((pointer) => ({ ...pointer, generation })),
 					{ pluginId: change.pluginId, state: change.state, ...(change.stageId === undefined ? {} : { stageId: change.stageId }), generation },
 				],
 			};
@@ -522,6 +546,7 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 			...snapshot,
 			generation: snapshot.generation + 1,
 			staged: snapshot.staged.filter((item) => item.stageId !== stageId),
+			pointers: snapshot.pointers.map((pointer) => ({ ...pointer, generation: snapshot.generation + 1 })),
 		}));
 	}
 
@@ -546,7 +571,12 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 		try {
 			const pointerPath = await this.path(PLUGIN_REGISTRY_POINTER_FILE);
 			const pointerContents = await this.#fileSystem.readTextFile(pointerPath);
-			if (!pointerContents.ok && pointerContents.error.code === "not_found") return Result.ok(undefined);
+			if (!pointerContents.ok && pointerContents.error.code === "not_found") {
+				const snapshotDirectory = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY);
+				const snapshotsExist = unwrapPluginFileResult(await this.#fileSystem.exists(snapshotDirectory));
+				if (snapshotsExist) return Result.err(pluginError("plugin_rollback_failed", "committed plugin activation pointer is missing"));
+				return Result.ok(undefined);
+			}
 			const pointer = parsePluginRegistryPointer(JSON.parse(unwrapPluginFileResult(pointerContents)) as unknown);
 			if (!pointer.ok) return pointer;
 			const snapshotPath = await this.path(PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY, pointer.value.snapshotFile);
@@ -570,35 +600,49 @@ export class LocalFilePluginRegistryStorageV1 implements LocalPluginRegistryStor
 		const previousPointer = await this.#fileSystem.readTextFile(pointerPath);
 		const previousPointerContents = previousPointer.ok ? previousPointer.value : undefined;
 		if (!previousPointer.ok && previousPointer.error.code !== "not_found") unwrapPluginFileResult(previousPointer);
-		let pointerPublicationStarted = false;
+		const pointerPublication = { state: "before-rename" as "before-rename" | "after-rename" | "directory-sync-indeterminate" };
 		try {
 			unwrapPluginFileResult(await this.#fileSystem.createExclusive(snapshotTemporaryPath, canonicalFoundationJson(snapshot)));
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(snapshotTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(snapshotTemporaryPath, snapshotPath));
 			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(snapshotDirectory));
 			const pointer: PluginRegistryDiskPointerV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: snapshot.generation, snapshotFile };
-			pointerPublicationStarted = true;
 			unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerTemporaryPath, canonicalFoundationJson(pointer)));
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerTemporaryPath, pointerPath));
-			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
+			pointerPublication.state = "after-rename";
+			try {
+				unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
+			} catch (error) {
+				pointerPublication.state = "directory-sync-indeterminate";
+				throw error;
+			}
 		} catch (error) {
 			await this.removeBestEffort(snapshotTemporaryPath);
 			await this.removeBestEffort(pointerTemporaryPath);
 			await this.removeBestEffort(pointerRestoreTemporaryPath);
-			if (pointerPublicationStarted) {
+			if (pointerPublication.state === "directory-sync-indeterminate") {
+				let restorationError: unknown;
 				if (previousPointerContents === undefined) {
-					await this.removeBestEffort(pointerPath);
+					try {
+						unwrapPluginFileResult(await this.#fileSystem.remove(pointerPath, { force: true }));
+						unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
+					} catch (restoreError) {
+						restorationError = restoreError;
+					}
 				} else {
 					try {
 						unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerRestoreTemporaryPath, previousPointerContents));
 						unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerRestoreTemporaryPath));
 						unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerRestoreTemporaryPath, pointerPath));
-						await this.#fileSystem.syncDirectory(this.#directory);
-					} catch {
+						unwrapPluginFileResult(await this.#fileSystem.syncDirectory(this.#directory));
+					} catch (restoreError) {
+						restorationError = restoreError;
+					} finally {
 						await this.removeBestEffort(pointerRestoreTemporaryPath);
 					}
 				}
+				if (restorationError !== undefined) throw new FoundationError("plugin_rollback_failed", "activation pointer restoration failed", { cause: restorationError });
 			}
 			throw error;
 		}
@@ -803,30 +847,43 @@ export class LocalPluginRegistry {
 	/** Restore the last atomically committed activation pointer after restart. */
 	async recover(): Promise<ResultValue<void, FoundationError>> {
 		if (this.#storage === undefined) return Result.ok(undefined);
+		const previousActive = [...this.#active.values()];
+		this.#active.clear();
+		this.#previous.clear();
+		this.#stageIds.clear();
 		let loaded: ResultValue<LocalPluginRegistrySnapshotV1 | undefined, FoundationError>;
 		try {
 			loaded = await this.#storage.load();
 		} catch (error) {
+			for (const item of [...previousActive].reverse()) await item.scope.rollback();
 			return Result.err(toFoundationError(error, "plugin_rollback_failed"));
 		}
-		if (!loaded.ok) return loaded;
-		this.#active.clear();
-		this.#previous.clear();
-		this.#stageIds.clear();
-		if (loaded.value === undefined) return Result.ok(undefined);
+		if (!loaded.ok) {
+			for (const item of [...previousActive].reverse()) await item.scope.rollback();
+			return loaded;
+		}
+		if (loaded.value === undefined) {
+			for (const item of [...previousActive].reverse()) await item.scope.rollback();
+			return Result.ok(undefined);
+		}
 		const snapshotValidation = validatePluginRegistrySnapshot(loaded.value);
-		if (!snapshotValidation.ok) return snapshotValidation;
+		if (!snapshotValidation.ok) {
+			for (const item of [...previousActive].reverse()) await item.scope.rollback();
+			return snapshotValidation;
+		}
 		const snapshot = snapshotValidation.value;
 		const restored: Array<{ pluginId: string; value: { package: LocalPluginPackageV1; record: PluginActivationRecordV1; scope: EffectScope } }> = [];
 		for (const entry of snapshot.active) {
 			const validation = this.validatePackageWithSignature(entry.package);
 			if (!validation.ok) {
 				for (const item of [...restored].reverse()) await item.value.scope.rollback();
+				for (const item of [...previousActive].reverse()) await item.scope.rollback();
 				return validation;
 			}
 			const activation = await this.createActivation(entry.package, entry.record.revision);
 			if (!activation.ok) {
 				for (const item of [...restored].reverse()) await item.value.scope.rollback();
+				for (const item of [...previousActive].reverse()) await item.scope.rollback();
 				return activation;
 			}
 			restored.push({ pluginId: entry.record.pluginId, value: { ...activation.value, record: clonePluginPersistence(entry.record) } });
@@ -835,12 +892,25 @@ export class LocalPluginRegistry {
 			const removed = await this.removeStageDurably(staged.stageId);
 			if (!removed.ok) {
 				for (const item of [...restored].reverse()) await item.value.scope.rollback();
+				for (const item of [...previousActive].reverse()) await item.scope.rollback();
 				return removed;
 			}
 		}
+		for (const item of [...previousActive].reverse()) await item.scope.rollback();
 		for (const item of restored) this.#active.set(item.pluginId, item.value);
 		for (const entry of snapshot.previous) this.#previous.set(entry.record.pluginId, clonePluginPersistence(entry));
 		return Result.ok(undefined);
+	}
+
+	private async reconcileAfterDurableFailure(): Promise<ResultValue<void, FoundationError>> {
+		if (this.#storage === undefined) return Result.ok(undefined);
+		const recovered = await this.recover();
+		if (!recovered.ok) {
+			this.#active.clear();
+			this.#previous.clear();
+			this.#stageIds.clear();
+		}
+		return recovered;
 	}
 
 	/** Alias used by hosts that call restart handling restore rather than recover. */
@@ -866,7 +936,10 @@ export class LocalPluginRegistry {
 		}
 		const stageId = this.stageId(pkg, revision);
 		const durable = await this.stageDurably({ stageId, operation, pluginId: pkg.contract.pluginId, revision, package: pkg, stagedAt: this.#now() });
-		if (!durable.ok) return durable;
+		if (!durable.ok) {
+			await this.reconcileAfterDurableFailure();
+			return durable;
+		}
 		this.#stages.push(report);
 		this.#stageIds.set(this.stageKey(pkg.contract.pluginId, revision), stageId);
 		return Result.ok(report);
@@ -897,6 +970,7 @@ export class LocalPluginRegistry {
 		const switched = await this.atomicSwitchDurably({ pluginId, previous: { package: current.package, record: current.record }, stageId, state: "uninstalled" });
 		if (!switched.ok) {
 			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			await this.reconcileAfterDurableFailure();
 			return switched;
 		}
 		this.#previous.set(pluginId, { package: current.package, record: current.record });
@@ -911,8 +985,7 @@ export class LocalPluginRegistry {
 				if (restoredDurably.ok) this.#active.set(pluginId, restoredValue);
 				else await restoredValue.scope.rollback();
 			}
-			if (oldPrevious === undefined) this.#previous.delete(pluginId);
-			else this.#previous.set(pluginId, oldPrevious);
+			await this.reconcileAfterDurableFailure();
 			return Result.err(pluginError("plugin_rollback_failed", "plugin uninstall cleanup failed", { pluginId }));
 		}
 		this.#stageIds.delete(this.stageKey(pluginId, current.record.revision));
@@ -931,7 +1004,10 @@ export class LocalPluginRegistry {
 		const activated = await this.createActivation(previous.package, nextRevision);
 		const stageId = this.#stageIds.get(this.stageKey(pluginId, nextRevision));
 		if (!activated.ok) {
-			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			if (stageId !== undefined) {
+				const removed = await this.removeStageDurably(stageId);
+				if (!removed.ok) await this.reconcileAfterDurableFailure();
+			}
 			return activated;
 		}
 		const switched = await this.atomicSwitchDurably({
@@ -944,6 +1020,7 @@ export class LocalPluginRegistry {
 		if (!switched.ok) {
 			await activated.value.scope.rollback();
 			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			await this.reconcileAfterDurableFailure();
 			return switched;
 		}
 		this.#active.set(pluginId, activated.value);
@@ -962,17 +1039,15 @@ export class LocalPluginRegistry {
 						state: "active",
 					});
 					if (restoredDurably.ok) this.#active.set(pluginId, { ...restored.value, record: current.record });
-					else {
-						await restored.value.scope.rollback();
-						this.#active.delete(pluginId);
-					}
-				} else this.#active.delete(pluginId);
+					else await restored.value.scope.rollback();
+				}
+				await this.reconcileAfterDurableFailure();
 				return Result.err(pluginError("plugin_rollback_failed", "plugin rollback cleanup failed", { pluginId }));
 			}
 		}
 		const clearedRollbackPoint = await this.atomicSwitchDurably({ pluginId, active: { package: previous.package, record: activated.value.record }, state: "active" });
 		if (!clearedRollbackPoint.ok) {
-			if (current !== undefined) this.#previous.set(pluginId, { package: current.package, record: current.record });
+			await this.reconcileAfterDurableFailure();
 			return clearedRollbackPoint;
 		}
 		this.#previous.delete(pluginId);
@@ -998,7 +1073,10 @@ export class LocalPluginRegistry {
 		const oldPrevious = this.#previous.get(pkg.contract.pluginId);
 		const stageId = this.#stageIds.get(this.stageKey(pkg.contract.pluginId, revision));
 		if (!activated.ok) {
-			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			if (stageId !== undefined) {
+				const removed = await this.removeStageDurably(stageId);
+				if (!removed.ok) await this.reconcileAfterDurableFailure();
+			}
 			return activated;
 		}
 		const switched = await this.atomicSwitchDurably({
@@ -1011,6 +1089,7 @@ export class LocalPluginRegistry {
 		if (!switched.ok) {
 			await activated.value.scope.rollback();
 			if (stageId !== undefined) await this.removeStageDurably(stageId);
+			await this.reconcileAfterDurableFailure();
 			return switched;
 		}
 		if (current !== undefined) this.#previous.set(pkg.contract.pluginId, { package: current.package, record: current.record });
@@ -1034,9 +1113,11 @@ export class LocalPluginRegistry {
 				} else this.#active.delete(pkg.contract.pluginId);
 				if (oldPrevious === undefined) this.#previous.delete(pkg.contract.pluginId);
 				else this.#previous.set(pkg.contract.pluginId, oldPrevious);
+				await this.reconcileAfterDurableFailure();
 				return Result.err(pluginError("plugin_rollback_failed", "plugin update cleanup failed", { pluginId: pkg.contract.pluginId }));
 			}
 		}
+		if (current === undefined && operation === "install") this.#previous.delete(pkg.contract.pluginId);
 		this.#stageIds.delete(this.stageKey(pkg.contract.pluginId, revision));
 		return Result.ok({ schemaVersion: FOUNDATION_SCHEMA_VERSION, operation, pluginId: pkg.contract.pluginId, revision, applied: true });
 	}

@@ -17,6 +17,7 @@ import {
 	createPluginContractV1,
 	pluginContentsDigestV1,
 	type LocalPluginRegistryFileSystemV1,
+	type LocalPluginRegistryStorageV1,
 	type LocalPluginRegistrySnapshotV1,
 	type LocalPluginPackageV1,
 	type PluginActivationContextV1,
@@ -71,29 +72,42 @@ function pluginPackage(version = "1.0.0", pluginId = "local-plugin", namespace =
 
 type FaultOperation = "createExclusive" | "syncFile" | "renameFile" | "syncDirectory";
 type FaultTarget = "snapshot" | "pointer";
+interface FaultRule {
+	operation: FaultOperation;
+	target: FaultTarget;
+	failureCalls?: readonly number[];
+}
 
-function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperation, target: FaultTarget): LocalPluginRegistryFileSystemV1 {
-	let injected = false;
-	const matchesTarget = (path: string): boolean => {
+function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperation | FaultRule | readonly FaultRule[], target?: FaultTarget, failureCalls: readonly number[] = [1]): LocalPluginRegistryFileSystemV1 {
+	const rules: readonly FaultRule[] = typeof operation === "string" ? [{ operation, target: target!, failureCalls }] : Array.isArray(operation) ? operation : [operation];
+	const matchingCalls = new Map<string, number>();
+	const matchesTarget = (path: string, faultTarget: FaultTarget, faultOperation: FaultOperation): boolean => {
 		const normalized = path.replaceAll("\\", "/");
-		if (target === "snapshot") return normalized.includes("/snapshots/");
-		return operation === "syncDirectory" ? !normalized.includes("/snapshots/") : normalized.includes("activation-pointer.json");
+		const isSnapshotPath = normalized.includes("/snapshots") || normalized.endsWith("/snapshots");
+		if (faultTarget === "snapshot") return isSnapshotPath;
+		return faultOperation === "syncDirectory" ? !isSnapshotPath : normalized.includes("activation-pointer.json");
 	};
-	const shouldFail = (path: string): boolean => {
-		if (injected || !matchesTarget(path)) return false;
-		injected = true;
-		return true;
+	const shouldFail = (faultOperation: FaultOperation, path: string): boolean => {
+		for (const rule of rules) {
+			if (rule.operation !== faultOperation || !matchesTarget(path, rule.target, faultOperation)) continue;
+			const key = `${rule.operation}:${rule.target}`;
+			const call = (matchingCalls.get(key) ?? 0) + 1;
+			matchingCalls.set(key, call);
+			return (rule.failureCalls ?? [1]).includes(call);
+		}
+		return false;
 	};
-	const injectedError = (path: string): ResultValue<never, FileError> => Result.err(new FileError("unknown", `injected ${operation} failure`, path));
+	const injectedError = (faultOperation: FaultOperation, path: string): ResultValue<never, FileError> => Result.err(new FileError("unknown", `injected ${faultOperation} failure`, path));
 	return {
 		joinPath: (parts) => base.joinPath(parts),
 		readTextFile: (path) => base.readTextFile(path),
-		renameFile: async (sourcePath, destinationPath) => shouldFail(sourcePath) || shouldFail(destinationPath) ? injectedError(destinationPath) : base.renameFile(sourcePath, destinationPath),
+		renameFile: async (sourcePath, destinationPath) => shouldFail("renameFile", sourcePath) || shouldFail("renameFile", destinationPath) ? injectedError("renameFile", destinationPath) : base.renameFile(sourcePath, destinationPath),
 		createDir: (path, options) => base.createDir(path, options),
 		remove: (path, options) => base.remove(path, options),
-		createExclusive: async (path, content) => shouldFail(path) ? injectedError(path) : base.createExclusive(path, content),
-		syncFile: async (path) => shouldFail(path) ? injectedError(path) : base.syncFile(path),
-		syncDirectory: async (path) => shouldFail(path) ? injectedError(path) : base.syncDirectory(path),
+		exists: (path) => base.exists(path),
+		createExclusive: async (path, content) => shouldFail("createExclusive", path) ? injectedError("createExclusive", path) : base.createExclusive(path, content),
+		syncFile: async (path) => shouldFail("syncFile", path) ? injectedError("syncFile", path) : base.syncFile(path),
+		syncDirectory: async (path) => shouldFail("syncDirectory", path) ? injectedError("syncDirectory", path) : base.syncDirectory(path),
 	};
 }
 
@@ -317,6 +331,18 @@ describe("T4 runtime service and extension lifecycle", () => {
 			expect(reopened).toMatchObject({ ok: true });
 			if (!reopened.ok) return;
 			expect(reopened.value.active(pkg.contract.pluginId)).toMatchObject({ pluginId: pkg.contract.pluginId, revision: 1, activatedAt: "installed" });
+			expect(await reopened.value.uninstall(pkg.contract.pluginId)).toMatchObject({ ok: true });
+			expect(await reopened.value.install(pluginPackage("2.0.0"))).toMatchObject({ ok: true, value: { operation: "install", revision: 1 } });
+			expect(await reopened.value.rollback(pkg.contract.pluginId)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
+
+			const reinstalled = await LocalPluginRegistry.open({
+				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				now: () => "reinstalled",
+			});
+			expect(reinstalled).toMatchObject({ ok: true });
+			if (!reinstalled.ok) return;
+			expect(reinstalled.value.active(pkg.contract.pluginId)).toMatchObject({ pluginId: pkg.contract.pluginId, version: "2.0.0", revision: 1 });
+			expect(await reinstalled.value.rollback(pkg.contract.pluginId)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
@@ -337,9 +363,10 @@ describe("T4 runtime service and extension lifecycle", () => {
 			const pointer = JSON.parse(pointerText) as { generation: number; snapshotFile: string };
 			const snapshotPath = join(directory, registryDirectory, "snapshots", pointer.snapshotFile);
 			const snapshotText = await readFile(snapshotPath, "utf8");
-			const expectCorrupt = async (): Promise<void> => {
+			const expectCorrupt = async (message?: string): Promise<void> => {
 				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
 				expect(reopened).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+				if (!reopened.ok && message !== undefined) expect(reopened.error.message).toBe(message);
 			};
 
 			await writeFile(pointerPath, "{", "utf8");
@@ -378,7 +405,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			await writeFile(snapshotPath, snapshotText, "utf8");
 
 			expect(await storage.stagePackage({
-				stageId: "orphan-stage",
+				stageId: `local-plugin:3:${pluginContentsDigestV1(pluginPackage("3.0.0").contents).value}`,
 				operation: "update",
 				pluginId: pkg.contract.pluginId,
 				revision: 3,
@@ -387,10 +414,52 @@ describe("T4 runtime service and extension lifecycle", () => {
 			})).toMatchObject({ ok: true });
 			const stagedPointer = JSON.parse(await readFile(pointerPath, "utf8")) as { snapshotFile: string };
 			const stagedPath = join(directory, registryDirectory, "snapshots", stagedPointer.snapshotFile);
-			const stagedSnapshot = JSON.parse(await readFile(stagedPath, "utf8")) as LocalPluginRegistrySnapshotV1;
+			const stagedSnapshotText = await readFile(stagedPath, "utf8");
+			const stagedSnapshot = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshotV1;
 			stagedSnapshot.staged[0]!.pluginId = "tampered-plugin";
 			await writeFile(stagedPath, JSON.stringify(stagedSnapshot), "utf8");
 			await expectCorrupt();
+
+			const tamperCases: Array<{ message: string; mutate: (snapshot: LocalPluginRegistrySnapshotV1) => void }> = [
+				{ message: "plugin registry snapshot generation is invalid", mutate: (snapshot) => { snapshot.generation += 1; } },
+				{ message: "plugin registry snapshot pointer generation does not match its snapshot", mutate: (snapshot) => { snapshot.pointers[0]!.generation -= 1; } },
+				{ message: "plugin registry snapshot active and previous revisions are out of order", mutate: (snapshot) => { snapshot.active[0]!.record.revision = snapshot.previous[0]!.record.revision; } },
+				{ message: "durable install stage does not match plugin state", mutate: (snapshot) => { snapshot.staged[0]!.operation = "install"; } },
+				{ message: "durable update stage does not match plugin revision", mutate: (snapshot) => {
+					snapshot.staged[0]!.revision = 4;
+					snapshot.staged[0]!.stageId = `local-plugin:4:${pluginContentsDigestV1(snapshot.staged[0]!.package.contents).value}`;
+				} },
+				{ message: "durable staged plugin identity does not match its package", mutate: (snapshot) => { snapshot.staged[0]!.stageId = "forged-stage"; } },
+				{ message: "plugin registry snapshot pointer stage identity is inconsistent", mutate: (snapshot) => { snapshot.pointers[0]!.stageId = "forged-stage"; } },
+			];
+			for (const tamperCase of tamperCases) {
+				const tampered = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshotV1;
+				tamperCase.mutate(tampered);
+				await writeFile(stagedPath, JSON.stringify(tampered), "utf8");
+				await expectCorrupt(tamperCase.message);
+			}
+			await writeFile(stagedPath, stagedSnapshotText, "utf8");
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed when a committed pointer disappears but accepts a new registry", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-missing-pointer-"));
+		try {
+			const registryDirectory = "registry";
+			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const registry = new LocalPluginRegistry({ storage });
+			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
+			await rm(join(directory, registryDirectory, "activation-pointer.json"));
+			expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) })).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+
+			const emptyDirectory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-empty-"));
+			try {
+				expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: emptyDirectory }), registryDirectory) })).toMatchObject({ ok: true });
+			} finally {
+				await rm(emptyDirectory, { recursive: true, force: true });
+			}
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
@@ -445,6 +514,57 @@ describe("T4 runtime service and extension lifecycle", () => {
 		}
 	});
 
+	it("reports indeterminate pointer publication when restoration also fails", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-pointer-restore-"));
+		try {
+			const registryDirectory = "registry";
+			const pkg = pluginPackage();
+			const base = new NodeExecutionEnv({ cwd: directory });
+			const initialStorage = new LocalFilePluginRegistryStorageV1(base, registryDirectory);
+			const registry = new LocalPluginRegistry({ storage: initialStorage });
+			expect(await registry.install(pkg)).toMatchObject({ ok: true });
+			const active = registry.active(pkg.contract.pluginId);
+			expect(active).toBeDefined();
+			if (active === undefined) return;
+			const failingStorage = new LocalFilePluginRegistryStorageV1(
+				faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), { operation: "syncDirectory", target: "pointer", failureCalls: [1, 2] }),
+				registryDirectory,
+			);
+			const switched = await failingStorage.atomicSwitch({ pluginId: pkg.contract.pluginId, active: { package: pkg, record: active }, state: "active" });
+			expect(switched).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+			if (switched.ok) return;
+			expect(switched.error.message).toBe("activation pointer restoration failed");
+			const registryEntries = await readdir(join(directory, registryDirectory));
+			const snapshotEntries = await readdir(join(directory, registryDirectory, "snapshots"));
+			expect([...registryEntries, ...snapshotEntries].filter((entry) => entry.includes(".tmp"))).toEqual([]);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps registry bindings aligned with disk after repeated rollback publication failures", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-rollback-publication-"));
+		try {
+			const registryDirectory = "registry";
+			const faultingFileSystem = faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), { operation: "syncDirectory", target: "pointer", failureCalls: [6, 9] });
+			const storage = new LocalFilePluginRegistryStorageV1(faultingFileSystem, registryDirectory);
+			const registry = new LocalPluginRegistry({ storage });
+			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
+			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
+			expect(await registry.rollback("local-plugin")).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+			expect(registry.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
+			expect(await registry.rollback("local-plugin")).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+			expect(registry.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
+
+			const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+			expect(reopened).toMatchObject({ ok: true });
+			if (!reopened.ok) return;
+			expect(reopened.value.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("rolls back every recovered plugin scope in reverse order when orphan cleanup fails", async () => {
 		const storage = new InMemoryLocalPluginRegistryStorageV1();
 		const first = pluginPackage("1.0.0", "first-plugin", "first");
@@ -453,7 +573,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(await registry.install(first)).toMatchObject({ ok: true });
 		expect(await registry.install(second)).toMatchObject({ ok: true });
 		expect(await storage.stagePackage({
-			stageId: "first-orphan-stage",
+			stageId: `first-plugin:2:${pluginContentsDigestV1(pluginPackage("2.0.0", first.contract.pluginId, first.contract.namespace).contents).value}`,
 			operation: "update",
 			pluginId: first.contract.pluginId,
 			revision: 2,
@@ -461,7 +581,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			stagedAt: "before-crash",
 		})).toMatchObject({ ok: true });
 		expect(await storage.stagePackage({
-			stageId: "second-orphan-stage",
+			stageId: `second-plugin:2:${pluginContentsDigestV1(pluginPackage("2.0.0", second.contract.pluginId, second.contract.namespace).contents).value}`,
 			operation: "update",
 			pluginId: second.contract.pluginId,
 			revision: 2,
@@ -470,19 +590,99 @@ describe("T4 runtime service and extension lifecycle", () => {
 		})).toMatchObject({ ok: true });
 
 		const disposed: string[] = [];
-		const failed = await LocalPluginRegistry.open({
-			storage: {
-				load: () => storage.load(),
-				stagePackage: (record) => storage.stagePackage(record),
-				atomicSwitch: (change) => storage.atomicSwitch(change),
-				removeStage: async () => Result.err(new FoundationError("plugin_rollback_failed", "injected orphan cleanup failure")),
+		let failFirstDisposer = true;
+		let failLaterRemoval = true;
+		const storageAdapter: LocalPluginRegistryStorageV1 = {
+			load: () => storage.load(),
+			stagePackage: (record) => storage.stagePackage(record),
+			atomicSwitch: (change) => storage.atomicSwitch(change),
+			removeStage: async (stageId) => {
+				if (stageId.startsWith("first-plugin:")) return storage.removeStage(stageId);
+				if (failLaterRemoval) {
+					failLaterRemoval = false;
+					return Result.err(new FoundationError("plugin_rollback_failed", "injected orphan cleanup failure"));
+				}
+				return storage.removeStage(stageId);
 			},
+		};
+		const failed = await LocalPluginRegistry.open({
+			storage: storageAdapter,
 			onActivate: async (pkg, context) => {
-				context.register("listener", `recovered-listener:${pkg.contract.pluginId}`, () => { disposed.push(pkg.contract.pluginId); });
+				if (pkg.contract.pluginId === "first-plugin") {
+					context.register("listener", "first-earlier", () => { disposed.push("first-earlier"); });
+					context.register("listener", "first-failing", () => {
+						disposed.push("first-failing");
+						if (failFirstDisposer) {
+							failFirstDisposer = false;
+							throw new Error("injected disposer failure");
+						}
+					});
+				} else context.register("listener", "second-listener", () => { disposed.push("second-plugin"); });
 			},
 		});
 		expect(failed).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
-		expect(disposed).toEqual(["second-plugin", "first-plugin"]);
+		expect(disposed).toEqual(["second-plugin", "first-failing", "first-earlier"]);
+		const retried = await LocalPluginRegistry.open({ storage: storageAdapter, onActivate: async (pkg, context) => {
+			if (pkg.contract.pluginId === "first-plugin") {
+				context.register("listener", "first-earlier", () => { disposed.push("first-earlier"); });
+				context.register("listener", "first-failing", () => { disposed.push("first-failing"); });
+			} else context.register("listener", "second-listener", () => { disposed.push("second-plugin"); });
+		} });
+		expect(retried).toMatchObject({ ok: true });
+		expect(disposed).toEqual(["second-plugin", "first-failing", "first-earlier"]);
+		expect(storage.snapshot.staged).toEqual([]);
+	});
+
+	it("reconciles indeterminate staging and failed activation cleanup from durable state", async () => {
+		const stagedStorage = new InMemoryLocalPluginRegistryStorageV1();
+		const initial = new LocalPluginRegistry({ storage: stagedStorage });
+		expect(await initial.install(pluginPackage())).toMatchObject({ ok: true });
+		let reportStageFailure = true;
+		const stagingAdapter: LocalPluginRegistryStorageV1 = {
+			load: () => stagedStorage.load(),
+			stagePackage: async (record) => {
+				const staged = await stagedStorage.stagePackage(record);
+				if (!staged.ok) return staged;
+				if (reportStageFailure) {
+					reportStageFailure = false;
+					return Result.err(new FoundationError("plugin_rollback_failed", "injected indeterminate staging failure"));
+				}
+				return staged;
+			},
+			atomicSwitch: (change) => stagedStorage.atomicSwitch(change),
+			removeStage: (stageId) => stagedStorage.removeStage(stageId),
+		};
+		const stagingRegistry = await LocalPluginRegistry.open({ storage: stagingAdapter });
+		expect(stagingRegistry).toMatchObject({ ok: true });
+		if (!stagingRegistry.ok) return;
+		expect(await stagingRegistry.value.update(pluginPackage("2.0.0"))).toMatchObject({ ok: false, error: { message: "injected indeterminate staging failure" } });
+		expect(stagingRegistry.value.active("local-plugin")).toMatchObject({ version: "1.0.0", revision: 1 });
+		expect(stagedStorage.snapshot.staged).toEqual([]);
+
+		const cleanupStorage = new InMemoryLocalPluginRegistryStorageV1();
+		let failFirstRemoval = true;
+		const cleanupAdapter: LocalPluginRegistryStorageV1 = {
+			load: () => cleanupStorage.load(),
+			stagePackage: (record) => cleanupStorage.stagePackage(record),
+			atomicSwitch: (change) => cleanupStorage.atomicSwitch(change),
+			removeStage: async (stageId) => {
+				if (failFirstRemoval) {
+					failFirstRemoval = false;
+					return Result.err(new FoundationError("plugin_rollback_failed", "injected activation cleanup failure"));
+				}
+				return cleanupStorage.removeStage(stageId);
+			},
+		};
+		const cleanupRegistry = new LocalPluginRegistry({
+			storage: cleanupAdapter,
+			onActivate: async (pkg) => {
+				if (pkg.contract.version === "2.0.0") throw new Error("injected activation failure");
+			},
+		});
+		expect(await cleanupRegistry.install(pluginPackage())).toMatchObject({ ok: true });
+		expect(await cleanupRegistry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: false, error: { message: "injected activation failure" } });
+		expect(cleanupRegistry.active("local-plugin")).toMatchObject({ version: "1.0.0", revision: 1 });
+		expect(cleanupStorage.snapshot.staged).toEqual([]);
 	});
 
 	it("preserves the rollback point on disk when rollback cleanup fails", async () => {
