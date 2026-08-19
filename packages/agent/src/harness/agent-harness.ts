@@ -2291,18 +2291,25 @@ export class AgentHarness implements AgentLane {
 		const records = await this.durableSession.findRecords({ lane, runId, type: "tool_started", order: "oldestFirst" });
 		const started = records.find((record) => record.toolCallId === message.toolCallId);
 		if (!started) throw new HarnessFault(`Tool result ${message.toolCallId} has no durable start`, undefined);
-		const persisted = await this.t5.persistToolResult(message, {
-			lane,
-			runId,
-			resultEntryId: started.resultEntryId,
-			correlation: this.foundationCorrelation(lane, runId, { runId }),
-		});
 		const folded = this.foundationExecution === undefined ? undefined : await this.foundationReceiptForToolCall(lane, runId, message.toolCallId);
 		if (folded !== undefined && !folded.ok) throw new HarnessToolPipelineError(folded.error.message, folded.error.code === "session_ledger_conflict" ? "side_effect_unknown" : "side_effect_unknown");
 		const receipt = folded?.ok === true ? folded.value : undefined;
 		const terminalToolFailure = this.terminalToolFailureOperations.has(runId);
+		if (receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result === undefined) {
+			throw new HarnessToolPipelineError("Durable tool result payload is missing", "side_effect_unknown");
+		}
+		const useCanonicalReceipt = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined;
+		let persisted: Awaited<ReturnType<SessionT5Ledger["persistToolResult"]>> | undefined;
+		if (!useCanonicalReceipt) {
+			persisted = await this.t5.persistToolResult(message, {
+				lane,
+				runId,
+				resultEntryId: started.resultEntryId,
+				correlation: this.foundationCorrelation(lane, runId, { runId }),
+			});
+		}
 		let target: ProvisionedEntry;
-		if (!terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result !== undefined) {
+		if (useCanonicalReceipt) {
 			const resultEntry: FoundationToolResultEntryV1 = {
 				schemaVersion: 1,
 				runId,
@@ -2319,6 +2326,7 @@ export class AgentHarness implements AgentLane {
 				data: this.foundationJson(resultEntry, "tool result entry"),
 			};
 		} else {
+			if (persisted === undefined) throw new HarnessFault("Tool result projection was not persisted", undefined);
 			target = { type: "message", id: started.resultEntryId, message: persisted.message };
 		}
 		await this.persistOperationEntry(lane, runId, target);

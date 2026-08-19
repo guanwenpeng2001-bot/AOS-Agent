@@ -7,7 +7,7 @@ import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { FoundationToolGuardV1, FoundationToolPipelineV1, SessionToolPipelineStorageV1, finalizeToolReceiptV1, validateToolIntentV1, validateToolReceiptV1, type ToolDefinitionRegistryV1, type ToolPipelineContextV1 } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
-import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
+import { InMemorySessionStorage, Session, T5_LEDGER_OBJECT_TYPES } from "../../src/harness/session/index.ts";
 import type { AgentContext } from "../../src/types.ts";
 
 type ArtifactReadFailure = "none" | "missing" | "malformed" | "get_throw" | "verify_false" | "verify_throw" | "wrong_bytes" | "wrong_size";
@@ -366,6 +366,8 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(JSON.stringify(toolResultEntries)).not.toContain("AQID");
 		const receipts = await session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
 		expect(JSON.stringify(receipts)).not.toContain("AQID");
+		const t5ToolResultFacts = await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" });
+		expect(t5ToolResultFacts).toHaveLength(0);
 		await first.harness.close();
 		const restarted = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, entryProjectors: { "foundation.tool_result": () => [{ role: "user" as const, content: [{ type: "text" as const, text: "caller override" }], timestamp: Date.now() }] }, toolPipelineOptions: { guard: allowAllGuards() } });
 		await restarted.harness.resume();
