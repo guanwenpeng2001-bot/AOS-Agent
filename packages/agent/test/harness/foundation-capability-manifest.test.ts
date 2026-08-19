@@ -201,6 +201,140 @@ const EXPECTED_T4_CLOSURES: Readonly<Record<number, { closure: FoundationCapabil
 	61: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"] },
 };
 
+const EXPECTED_T5_CLOSURE_IDS: readonly number[] = [12, 17, 18, 19, 20, 22, 24, 25, 28, 49, 53, 57, 58, 67];
+
+const EXPECTED_T5_CLOSURES: Readonly<Record<number, { closure: FoundationCapabilityClosureStatus; ownerModule: string; tests: readonly string[] }>> = {
+	12: {
+		closure: "implemented",
+		ownerModule: "packages/agent/src/harness/artifacts.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/agent-harness-runtime.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
+			"packages/agent/test/agent-loop.test.ts",
+		],
+	},
+	17: {
+		closure: "contract_sealed",
+		ownerModule: "packages/agent/src/harness/context/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+		],
+	},
+	18: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/context/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/coding-agent/test/context-engine.test.ts",
+		],
+	},
+	19: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/compaction/compaction.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/compaction.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+		],
+	},
+	20: {
+		closure: "implemented",
+		ownerModule: "packages/agent/src/harness/memory/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/agent/test/harness/session/memory.test.ts",
+		],
+	},
+	22: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/session/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/branch-summarization.test.ts",
+			"packages/coding-agent/test/rpc-client-clone.test.ts",
+		],
+	},
+	24: {
+		closure: "implemented",
+		ownerModule: "packages/agent/src/harness/compaction/compaction.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+			"packages/agent/test/harness/compaction.test.ts",
+		],
+	},
+	25: {
+		closure: "implemented",
+		ownerModule: "packages/agent/src/harness/reducer.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+			"packages/agent/test/harness/reducer.test.ts",
+		],
+	},
+	28: {
+		closure: "contract_sealed",
+		ownerModule: "packages/agent/src/harness/context/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/agent/test/harness/events.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
+		],
+	},
+	49: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/context/index.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+		],
+	},
+	53: {
+		closure: "regression_locked",
+		ownerModule: "packages/coding-agent/src/core/execution-audit.ts",
+		tests: ["packages/coding-agent/test/execution-audit-contract.test.ts", "packages/coding-agent/test/execution-audit-query.test.ts"],
+	},
+	57: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/foundation/identity.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/coding-agent/test/rpc-task-graph.test.ts",
+		],
+	},
+	58: {
+		closure: "regression_locked",
+		ownerModule: "packages/agent/src/harness/foundation/identity.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+		],
+	},
+	67: {
+		closure: "implemented",
+		ownerModule: "packages/agent/src/harness/artifacts.ts",
+		tests: [
+			"packages/agent/test/harness/context-t5-ledger.test.ts",
+			"packages/agent/test/harness/context-t5-regressions.test.ts",
+			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
+		],
+	},
+};
+
 /** Future Role-related capabilities that must explicitly consume role contracts in their upstream list. */
 const FUTURE_ROLE_CONTRACT_IDS = [91, 96, 109, 110, 132, 138, 147];
 
@@ -335,6 +469,23 @@ describe("Foundation v1 capability manifest", () => {
 			expect(entry.tests, `T4 closure ${entry.id} test evidence mismatch`).toEqual(expected.tests);
 			expect(existsSync(resolve(REPO_ROOT, expected.ownerModule)), `T4 closure ${entry.id} owner path is missing`).toBe(true);
 			for (const test of expected.tests) expect(existsSync(resolve(REPO_ROOT, test)), `T4 closure ${entry.id} test path is missing: ${test}`).toBe(true);
+		}
+	});
+
+	it("matches the complete T5 status, owner, and evidence manifest", () => {
+		const actual = FOUNDATION_V1_CAPABILITY_CLOSURES
+			.filter((entry) => EXPECTED_T5_CLOSURE_IDS.includes(entry.id))
+			.sort((a, b) => a.id - b.id);
+		expect(actual.map((entry) => entry.id)).toEqual(EXPECTED_T5_CLOSURE_IDS);
+		for (const entry of actual) {
+			const expected = EXPECTED_T5_CLOSURES[entry.id];
+			expect(expected, `T5 closure ${entry.id} is missing its expected manifest row`).toBeDefined();
+			if (expected === undefined) continue;
+			expect(entry.closure, `T5 closure ${entry.id} status mismatch`).toBe(expected.closure);
+			expect(entry.ownerModule, `T5 closure ${entry.id} owner mismatch`).toBe(expected.ownerModule);
+			expect(entry.tests, `T5 closure ${entry.id} test evidence mismatch`).toEqual(expected.tests);
+			expect(existsSync(resolve(REPO_ROOT, expected.ownerModule)), `T5 closure ${entry.id} owner path is missing`).toBe(true);
+			for (const test of expected.tests) expect(existsSync(resolve(REPO_ROOT, test)), `T5 closure ${entry.id} test path is missing: ${test}`).toBe(true);
 		}
 	});
 
