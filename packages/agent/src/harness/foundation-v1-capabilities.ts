@@ -1691,7 +1691,8 @@ const futureOwners = [
  * and AgentHarness paths. T4 wires 4-7, 29-46, 51-52 and 61; T5 wires
  * 12, 17-20, 22, 24-25, 28, 49, 53, 57-58 and 67. C051/C052 intentionally
  * retain their contract-drafted closure state until their owning
- * implementation slice is merged.
+ * implementation slice is merged. T6 wires C011 and C050 through the
+ * scoped gateway contract; later ModelBroker composition remains deferred.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
@@ -1701,6 +1702,7 @@ const WIRED_CLOSURE_IDS = new Set([
 	5,
 	6,
 	7,
+	11,
 	12,
 	17,
 	18,
@@ -1732,6 +1734,7 @@ const WIRED_CLOSURE_IDS = new Set([
 	45,
 	46,
 	49,
+	50,
 	53,
 	57,
 	58,

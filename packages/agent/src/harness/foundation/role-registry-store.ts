@@ -1,7 +1,7 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
-import { FoundationError, toFoundationError } from "./errors.ts";
+import { FoundationError, toFoundationError, type FoundationErrorCode } from "./errors.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { SessionLedgerV1 } from "./session-ledger.ts";
 import {
@@ -41,7 +41,7 @@ function roleObjectId(roleId: string, scope: "global" | "project"): string {
 	return `${scope}:${roleId}`;
 }
 
-function resultError<T>(error: unknown, fallback: string): ResultValue<T, FoundationError> {
+function resultError<T>(error: unknown, fallback: FoundationErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(error instanceof DurableLedgerError ? new FoundationError(error.code, error.message, { cause: error }) : toFoundationError(error, fallback));
 }
 

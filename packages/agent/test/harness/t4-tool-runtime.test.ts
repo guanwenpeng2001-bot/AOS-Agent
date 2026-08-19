@@ -34,6 +34,7 @@ function context(): ToolPipelineContextV1 {
 			roleRevision: { schemaVersion: 1, type: "role_revision", id: "role-1", revision: 1 },
 			modelProfileRevision: { schemaVersion: 1, type: "model_profile", id: "model-1", revision: 1 },
 			modelRoute: { provider: "test", model: "test-model" },
+			modelBrokerBindingRevision: { schemaVersion: 1, type: "model_broker_binding", id: "model-broker-1", revision: 1 },
 			contextRevision: { schemaVersion: 1, type: "context", id: "context-1", revision: 1 },
 			capabilityRevision: { schemaVersion: 1, type: "capability", id: "capability-1", revision: 1 },
 			policyRevision: { schemaVersion: 1, type: "policy", id: "policy-1", revision: 1 },

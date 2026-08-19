@@ -1,9 +1,8 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type Models } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { AgentHarness, type AgentHarnessFoundationExecution, type HarnessTool } from "../../src/harness/agent-harness.ts";
-import { fingerprintFoundationValue, canonicalFoundationJson, createHostTerminalGateAuthorityV1, type ArtifactStoreProvider, type FoundationJsonValue } from "../../src/harness/foundation/index.ts";
-import { FoundationError } from "../../src/harness/foundation/errors.ts";
+import { AgentHarness, type AgentHarnessFoundationExecution, type AgentHarnessOptions, type HarnessTool } from "../../src/harness/agent-harness.ts";
+import { canonicalFoundationJson, createAttempt, createHostTerminalGateAuthorityV1, fingerprintFoundationValue, FoundationError, SessionLedgerV1, type AgentBindingV1, type ArtifactStoreProvider, type AttemptReceiptV1, type AttemptV1, type DispatchV1, type FoundationJsonValue, type FoundationProviderCapabilityV1, type FoundationProviderExecutionOptionsV1, type ModelProfileV1, type RoleRevisionV1, type TaskExecutorAttemptContextV1, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
 import { FoundationToolGuardV1, FoundationToolPipelineV1, SessionToolPipelineStorageV1, finalizeToolReceiptV1, validateToolIntentV1, validateToolReceiptV1, type ToolDefinitionRegistryV1, type ToolPipelineContextV1 } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
@@ -63,34 +62,137 @@ function foundationJson(value: unknown): FoundationJsonValue {
 	return result;
 }
 
+const T4_NOW = "2026-01-01T00:00:00.000Z";
+
+function immutableReference(type: string, id: string) {
+	const base = { schemaVersion: 1 as const, type, id, revision: 1 };
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
+function t4RoleRevision(): RoleRevisionV1 {
+	const base = {
+		schemaVersion: 1 as const,
+		roleRevisionId: "role",
+		roleId: "role-public-tool",
+		scope: "project" as const,
+		revision: 1,
+		slug: "public-tool",
+		name: "Public Tool",
+		description: "T4 public tool role",
+		persona: "Exercise the public tool pipeline",
+		modelProfileRef: { schemaVersion: 1 as const, type: "model_profile", id: "model", revision: 1 },
+		capabilitySelector: { policy: "all" as const },
+		skillSelector: { policy: "none" as const },
+		mcpSelector: { policy: "none" as const },
+		createdAt: T4_NOW,
+	};
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
+function t4ModelProfile(): ModelProfileV1 {
+	const base = { schemaVersion: 1 as const, modelProfileId: "model", provider: "openai", model: "tool-model", budget: {}, revision: 1, createdAt: T4_NOW };
+	return { ...base, fingerprint: fingerprintFoundationValue(base) };
+}
+
 function execution(): AgentHarnessFoundationExecution {
 	const taskId = "task-public-tool";
+	const role = t4RoleRevision();
+	const profile = t4ModelProfile();
 	const bindingCore = {
 		schemaVersion: 1 as const,
 		bindingId: "binding-public-tool",
 		taskId,
-		roleRevision: { schemaVersion: 1 as const, type: "role_revision", id: "role", revision: 1 },
-		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision", id: "model", revision: 1 },
-		modelRoute: { provider: "openai", model: "tool-model" },
-		contextRevision: { schemaVersion: 1 as const, type: "context_revision", id: "context", revision: 1 },
-		capabilityRevision: { schemaVersion: 1 as const, type: "capability_revision", id: "capability", revision: 1 },
-		policyRevision: { schemaVersion: 1 as const, type: "policy_revision", id: "policy", revision: 1 },
+		goalId: "goal-public-tool",
+		roleRevision: { schemaVersion: 1 as const, type: "role_revision", id: role.roleRevisionId, revision: role.revision, fingerprint: role.fingerprint },
+		modelProfileRevision: { schemaVersion: 1 as const, type: "model_profile_revision", id: profile.modelProfileId, revision: profile.revision, fingerprint: profile.fingerprint },
+		modelRoute: { provider: profile.provider, model: profile.model },
+		contextRevision: immutableReference("external_agent_binding", "context"),
+		capabilityRevision: immutableReference("capability_binding", "capability"),
+		modelBrokerBindingRevision: immutableReference("model_broker_binding", "model-broker"),
+		policyRevision: immutableReference("policy_binding", "policy"),
 		capabilitySelector: { policy: "all" as const },
 		budget: {},
 		sourceTrace: [],
 		conflicts: [],
-		resolvedAt: "2026-01-01T00:00:00.000Z",
+		resolvedAt: T4_NOW,
 	};
+	const binding = { ...bindingCore, fingerprint: fingerprintFoundationValue(bindingCore) };
+	const agentInstanceId = "agent-public-tool";
+	const bindingEpoch = { schemaVersion: 1 as const, bindingEpochId: "epoch-public-tool", taskId, attemptId: "attempt-public-tool", agentInstanceId, bindingId: binding.bindingId, ordinal: 0, activationReason: "attempt_started" as const, activatedByCommandId: "dispatch-public-tool", activatedAt: T4_NOW };
 	return {
-		task: { schemaVersion: 1, taskId, goalId: "goal-public-tool", goal: "run public tool", workspace: "workspace:test", capabilityRefs: [], inputs: [], expectedOutputs: [], budget: {}, acceptanceCriteria: [], status: "ready", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
-		dispatch: { schemaVersion: 1, dispatchId: "dispatch-public-tool", taskId, bindingId: bindingCore.bindingId, taskExecutorProviderId: "agent-provider", status: "pending", createdAt: "2026-01-01T00:00:00.000Z" },
-		binding: { ...bindingCore, fingerprint: fingerprintFoundationValue(bindingCore) },
+		task: { schemaVersion: 1, taskId, goalId: "goal-public-tool", goal: "run public tool", workspace: "workspace:test", capabilityRefs: [], inputs: [], expectedOutputs: [], budget: {}, acceptanceCriteria: [], status: "ready", createdAt: T4_NOW, updatedAt: T4_NOW },
+		dispatch: { schemaVersion: 1, dispatchId: "dispatch-public-tool", taskId, bindingId: binding.bindingId, taskExecutorProviderId: "agent-provider", status: "pending", createdAt: T4_NOW },
+		binding,
 		providerId: "agent-provider",
-		agentInstanceId: "agent-public-tool",
-		bindingEpochIds: ["epoch-public-tool"],
-		settlement: { tests: [], evidence: [] },
+		agentInstanceId,
+		initialBindingEpoch: bindingEpoch,
+		agentInstance: { schemaVersion: 1, agentInstanceId, providerId: "agent-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision }, bindingEpochIds: [bindingEpoch.bindingEpochId], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: agentInstanceId, depth: 0 }, createdAt: T4_NOW, updatedAt: T4_NOW },
+		bindingEpochIds: [bindingEpoch.bindingEpochId],
+		settlement: { tests: [{ name: "T4 public tool", required: true, status: "passed" }], evidence: [] },
 		hostAuthority: createHostTerminalGateAuthorityV1("host-public-tool"),
 	};
+}
+
+const t4ProviderCapability: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.t4.public-tool", version: 1 };
+
+class T4FoundationProvider implements TaskExecutorProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId = "agent-provider";
+	readonly providerClass = "agent" as const;
+	private readonly session: Session;
+
+	constructor(session: Session) { this.session = session; }
+
+	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [t4ProviderCapability]; }
+
+	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider attempt context"));
+		return createAttempt({ attemptId: context.initialBindingEpoch.attemptId, dispatch, providerId: this.providerId, initialBindingEpoch: context.initialBindingEpoch, providerClass: this.providerClass, agentInstanceId: context.initialBindingEpoch.agentInstanceId, now: () => T4_NOW });
+	}
+
+	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider execution correlation"));
+		const toolReceipts = await this.session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
+		let failed = false;
+		let sideEffectState: "none" | "side_effect_unknown" = "none";
+		for (const record of toolReceipts) {
+			if (record.kind !== "fact" || record.correlation.runId !== options.correlation.runId || record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) continue;
+			const payload = record.payload as Record<string, unknown>;
+			if (payload.outcome !== "succeeded") failed = true;
+			if (payload.sideEffectState === "side_effect_unknown") sideEffectState = "side_effect_unknown";
+		}
+		const correlation = { ...options.correlation, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: `attempt_receipt_${options.correlation.runId ?? attempt.attemptId}` };
+		return Result.ok<AttemptReceiptV1>({ schemaVersion: 1, attemptReceiptId: correlation.attemptReceiptId!, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: failed || sideEffectState !== "none" ? "failed" : "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: T4_NOW, correlation }, sideEffectState, ...(failed || sideEffectState !== "none" ? { error: { code: sideEffectState === "none" ? "tool_execution_failed" : "side_effect_unknown", message: sideEffectState === "none" ? "Tool execution failed" : "Tool side effect did not converge", retryable: false } } : {}) });
+	}
+
+	async cancelAttempt(_attemptId: string) { return Result.ok(undefined); }
+	async dispose(): Promise<void> {}
+}
+
+async function seedT4Foundation(session: Session, foundation: AgentHarnessFoundationExecution): Promise<void> {
+	const ledger = new SessionLedgerV1(session, { ownerId: "t4-foundation-seed" });
+	const role = t4RoleRevision();
+	const profile = t4ModelProfile();
+	const refs = [
+		["external_agent_binding", foundation.binding.contextRevision],
+		["capability_binding", foundation.binding.capabilityRevision],
+		["model_broker_binding", foundation.binding.modelBrokerBindingRevision],
+		["policy_binding", foundation.binding.policyRevision],
+	] as const;
+	await ledger.appendFact("task", foundation.task.taskId, foundation.task, { clientRequestId: "t4:task", correlation: { taskId: foundation.task.taskId } });
+	await ledger.appendFact("role_revision", role.roleRevisionId, role, { clientRequestId: "t4:role", correlation: { taskId: foundation.task.taskId } });
+	await ledger.appendFact("model_profile_revision", profile.modelProfileId, profile, { clientRequestId: "t4:profile", correlation: { taskId: foundation.task.taskId } });
+	for (const [objectType, reference] of refs) {
+		const payload = { schemaVersion: 1, type: reference.type, id: reference.id, revision: reference.revision } as FoundationJsonValue;
+		await ledger.appendFact(objectType, reference.id, payload, { clientRequestId: `t4:${objectType}`, correlation: { taskId: foundation.task.taskId } });
+	}
+	await ledger.release();
+}
+
+async function createFoundationHarness(options: AgentHarnessOptions): Promise<Awaited<ReturnType<typeof AgentHarness.create>>> {
+	if (options.foundationExecution === undefined) return AgentHarness.create(options);
+	await seedT4Foundation(options.session, options.foundationExecution);
+	return AgentHarness.create({ ...options, foundationProvider: new T4FoundationProvider(options.session) });
 }
 
 function allowAllGuards(): FoundationToolGuardV1 {
@@ -100,7 +202,7 @@ function allowAllGuards(): FoundationToolGuardV1 {
 }
 
 function consumerModels(toolName: string): { model: Model<"openai-responses">; models: Models; requests: () => number; contexts: () => readonly AgentContext[] } {
-	const model = { id: "tool-consumer-model", name: "Tool Consumer Model", api: "openai-responses" as const, provider: "openai" as const, baseUrl: "", reasoning: false, input: ["text"] as ("text")[], cost: { input: 0, output: 0 }, contextWindow: 1000, maxTokens: 1000 } as Model<"openai-responses">;
+	const model = { id: "tool-model", name: "Tool Consumer Model", api: "openai-responses" as const, provider: "openai" as const, baseUrl: "", reasoning: false, input: ["text"] as ("text")[], cost: { input: 0, output: 0 }, contextWindow: 1000, maxTokens: 1000 } as Model<"openai-responses">;
 	let requests = 0;
 	const contexts: AgentContext[] = [];
 	const models = {
@@ -137,7 +239,7 @@ async function assertProjectorRejectsTamper(tamper: ProjectorTamper): Promise<vo
 		execute: async () => ({ content: [{ type: "text" as const, text: "projected" }], details: {} }),
 	};
 	const foundation = execution();
-	const first = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+	const first = await createFoundationHarness({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 	const firstResult = await first.harness.prompt("persist projector result");
 	expect(firstResult).toMatchObject({ ok: true, value: { kind: "completed" } });
 	const requestsBeforeTamper = requests();
@@ -183,7 +285,7 @@ async function assertProjectorRejectsTamper(tamper: ProjectorTamper): Promise<vo
 	};
 	let restarted: Awaited<ReturnType<typeof AgentHarness.create>> | undefined;
 	try {
-		restarted = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+		restarted = await createFoundationHarness({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await restarted.harness.prompt("projector tamper must fail closed");
 		expect(result).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
 		expect(requests()).toBe(requestsBeforeTamper);
@@ -213,7 +315,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		let sideEffects = 0;
 		const write: HarnessTool = { name: "write", label: "Write", description: "write", parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }), sideEffectState: "none", execute: async () => { sideEffects += 1; return { content: [{ type: "text", text: "written" }], details: { token: "opaque", data: "payload", message: "ordinary detail" } }; } };
 		const foundation = execution();
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+		const { harness } = await createFoundationHarness({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("invoke write");
 		expect(result.ok).toBe(true);
 		expect(sideEffects).toBe(1);
@@ -238,7 +340,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		const attempt = (await session.findRecords({ lane: "main", runId: operation.id, type: "step_attempt", order: "oldestFirst" })).find((candidate) => candidate.type === "step_attempt" && candidate.resultEntryId === started.assistantEntryId);
 		if (attempt?.type !== "step_attempt") throw new Error("missing public tool attempt");
 		await harness.close();
-		const restarted = await AgentHarness.create({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+		const restarted = await createFoundationHarness({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		await restarted.harness.close();
 		const lease = await session.acquireWriterLease({ ownerId: "public-tool-replay" });
 		const replayContext: ToolPipelineContextV1 = {
@@ -296,7 +398,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "text" as const, text: "token=plaintext-secret" }], details: {} }),
 		};
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [secretTool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
+		const { harness } = await createFoundationHarness({ session, models, model, tools: [secretTool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("invoke secret tool");
 		expect(result.ok).toBe(true);
 		const facts = (await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" })).filter((record) => record.kind === "fact");
@@ -349,7 +451,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			},
 		};
 		const foundation = execution();
-		const first = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
+		const first = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await first.harness.prompt("invoke image tool");
 		expect(result.ok).toBe(true);
 		expect(executions).toBe(1);
@@ -375,7 +477,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		const t5ToolResultFacts = await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" });
 		expect(t5ToolResultFacts).toHaveLength(0);
 		await first.harness.close();
-		const restarted = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, entryProjectors: { "foundation.tool_result": () => [{ role: "user" as const, content: [{ type: "text" as const, text: "caller override" }], timestamp: Date.now() }] }, toolPipelineOptions: { guard: allowAllGuards() } });
+		const restarted = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, entryProjectors: { "foundation.tool_result": () => [{ role: "user" as const, content: [{ type: "text" as const, text: "caller override" }], timestamp: Date.now() }] }, toolPipelineOptions: { guard: allowAllGuards() } });
 		await restarted.harness.resume();
 		const restartedLeaf = await session.view("main").getLeafId();
 		if (restartedLeaf === null) throw new Error("missing restarted image leaf");
@@ -411,13 +513,13 @@ describe("T4 public AgentHarness tool consumer", () => {
 				sideEffectState: "none",
 				execute: async () => ({ content: [{ type: "image" as const, data: "AQID", mimeType: "image/png" }], details: {} }),
 			};
-			const first = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
+			const first = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
 			const firstResult = await first.harness.prompt("persist image before hydration failure");
 			expect(firstResult).toMatchObject({ ok: true, value: { kind: "completed" } });
 			const requestsBeforeHydration = requests();
 			await first.harness.close();
 			artifacts.setReadFailure(failure);
-			const restarted = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
+			const restarted = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
 			const hydrated = await restarted.harness.prompt("read image after hydration failure");
 			expect(hydrated).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
 			expect(requests()).toBe(requestsBeforeHydration);
@@ -443,7 +545,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 				sideEffectState: "none",
 				execute: async () => ({ content: [{ type: "image" as const, data: "AQID", mimeType: "image/png" }], details: {} }),
 			};
-			const { harness } = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
+			const { harness } = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: execution(), artifactStore: artifacts.store, toolPipelineOptions: { guard: allowAllGuards() } });
 			const result = await harness.prompt("fail closed while storing image");
 			expect(result).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
 			expect(requests()).toBe(1);
@@ -477,7 +579,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "text" as const, text: "never" }], details: {} }),
 		};
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
+		const { harness } = await createFoundationHarness({ session, models, model, tools: [tool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("must reject orphan custom");
 		expect(result).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
 		expect(requests()).toBe(0);
@@ -511,12 +613,12 @@ describe("T4 public AgentHarness tool consumer", () => {
 		await session.appendEntry(target, "main");
 		const { model, models } = consumerModels("deferred-tool");
 		const foundation = execution();
-		const first = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
+		const first = await createFoundationHarness({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
 		let usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
 		expect(usage).toHaveLength(1);
 		expect(usage[0]).toMatchObject({ cause: "tool", entryId: target.id, toolCallId: "deferred-call", usage: { input: 2, output: 3, totalTokens: 5 } });
 		await first.harness.close();
-		const reopened = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
+		const reopened = await createFoundationHarness({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
 		usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
 		expect(usage).toHaveLength(1);
 		expect(usage[0]).toMatchObject({ cause: "tool", entryId: target.id, toolCallId: "deferred-call", usage: { input: 2, output: 3, totalTokens: 5 } });
@@ -551,7 +653,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			await session.appendRecord({ type: "usage", id: "deferred-usage-1", lane: "main", cause: "tool", runId: "deferred-run", entryId: target.id, toolCallId: "deferred-call", usage: scenario === "mismatched" ? { ...usage, output: 99 } : usage });
 			if (scenario === "duplicate") await session.appendRecord({ type: "usage", id: "deferred-usage-2", lane: "main", cause: "tool", runId: "deferred-run", entryId: target.id, toolCallId: "deferred-call", usage });
 			const { model, models } = consumerModels("deferred-tool");
-			await expect(AgentHarness.create({ session, models, model, tools: [], foundationExecution: execution(), drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } })).rejects.toThrow(/Durable tool (usage record conflicts with its canonical result usage|result has duplicate usage records)/);
+			await expect(createFoundationHarness({ session, models, model, tools: [], foundationExecution: execution(), drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } })).rejects.toThrow(/Durable tool (usage record conflicts with its canonical result usage|result has duplicate usage records)/);
 		}
 	});
 
@@ -566,7 +668,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "image" as const, data: "AQID", mimeType: "image/png" }], details: {} }),
 		};
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [imageTool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
+		const { harness } = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: execution(), toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("invoke image tool without store");
 		expect(result.ok).toBe(true);
 		const facts = (await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" })).filter((record) => record.kind === "fact");
@@ -614,7 +716,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
 		};
-		const { harness } = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+		const { harness } = await createFoundationHarness({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		const result = await harness.prompt("duplicate receipt");
 		expect(result.ok).toBe(true);
 		expect(injected).toBe(true);
@@ -655,7 +757,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 					};
 				},
 			};
-			const { harness } = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+			const { harness } = await createFoundationHarness({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 			const result = await harness.prompt(current.name);
 			expect(result.ok, current.name).toBe(true);
 			expect(calls, `${current.name} must not retry unknown execution`).toBe(1);

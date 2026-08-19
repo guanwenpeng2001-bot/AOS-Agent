@@ -398,7 +398,7 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	let effectiveRole = role;
 	let effectiveModel = model;
 	let effectiveSelector: CapabilitySelectorV1 = { policy: "all" };
-	let effectiveBudget = { ...task.value.budget };
+	let effectiveBudget = mergeBudget(model.budget, task.value.budget);
 	let effectiveRoute: ModelRouteV1 = routeFromModel(model);
 	if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return registryFailure("binding_required_fact", "Role resolution received conflicting External-Agent Binding aliases", { roleId: input.roleId });
 	let effectiveContext = input.externalAgentBindingRevision ?? input.contextRevision;
@@ -485,7 +485,7 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	if (!roleSelectorApplied) return registryFailure("role_resolver_conflict", "Role resolution did not apply its immutable RoleRevision selector", { roleId: input.roleId });
 	if (effectiveContext === undefined || effectiveModelBroker === undefined || effectivePolicy === undefined) return registryFailure("binding_required_fact", "Role resolution lost a required immutable binding fact", { roleId: input.roleId });
 	for (const item of values.values()) trace.push(item.source);
-	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, modelBrokerBindingRevision: effectiveModelBroker, policyRevision: effectivePolicy, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
+	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, modelBrokerBindingRevision: effectiveModelBroker, policyRevision: effectivePolicy, budget: effectiveBudget, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
 	if (!binding.ok) return binding;
 	const fields = [...values.entries()].map(([field, item]) => ({ schemaVersion: 1 as const, field, source: item.source, revision: item.source.revision ?? 1, overrideReason: item.source.overrideReason ?? "resolved", safeValue: redactRoleResolutionValue(item.value as JsonValue) }));
 	const previewBase: Omit<RoleResolutionPreviewV1, "fingerprint"> = { schemaVersion: 1, taskId: task.value.taskId, roleId: effectiveRole.roleId, roleRevision: binding.value.roleRevision, modelProfileRevision: binding.value.modelProfileRevision, modelRoute: binding.value.modelRoute, contextRevision: binding.value.contextRevision, capabilityRevision: binding.value.capabilityRevision, modelBrokerBindingRevision: binding.value.modelBrokerBindingRevision, policyRevision: binding.value.policyRevision, capabilitySelector: binding.value.capabilitySelector, budget: binding.value.budget, orderedLayers: order.value, fields, sourceTrace: binding.value.sourceTrace, conflicts: binding.value.conflicts, binding: binding.value };
@@ -493,7 +493,7 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 }
 
 function routeFromModel(model: ModelProfileV1): ModelRouteV1 {
-	return { provider: model.provider, model: model.model, ...(model.effort === undefined ? {} : { effort: model.effort }), ...(model.serviceTier === undefined ? {} : { serviceTier: model.serviceTier }) };
+	return { provider: model.provider, model: model.model, ...(model.effort === undefined ? {} : { effort: model.effort }), ...(model.serviceTier === undefined ? {} : { serviceTier: model.serviceTier }), ...(model.fallback === undefined ? {} : { fallback: model.fallback.map((route) => ({ ...route })) }) };
 }
 
 function mergeBudget(left: TaskEnvelopeV1["budget"], right: TaskEnvelopeV1["budget"]): TaskEnvelopeV1["budget"] {

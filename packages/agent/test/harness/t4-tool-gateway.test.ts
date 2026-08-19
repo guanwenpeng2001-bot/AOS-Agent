@@ -52,7 +52,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 					operationId: operation.operationId,
 					status: "succeeded",
 					sideEffectState: "none",
-					provenance: { producerKind: "operation_worker", providerId: "sandbox-1", producedAt: "now" },
+					provenance: { producerKind: "operation_worker", providerId: "sandbox-1", producedAt: "now", correlation: { sessionId: "session-t4", laneId: "main", operationId: operation.operationId, revision: 0 } },
 					startedAt: "now",
 					completedAt: "now",
 				});

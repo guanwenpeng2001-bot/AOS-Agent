@@ -319,7 +319,7 @@ export function createSandboxOperationToolGatewayProviderV1(
 				return Result.err(new FoundationError("foundation_schema_invalid_shape", "sandbox operation request failed exact-shape validation"));
 			}
 			const operationPayload = operation.payload;
-			if (operation.providerId !== options.providerId || operation.taskId !== request.context.taskId || operation.toolCallId !== request.toolCallId || operation.toolName !== request.toolName || operation.namespace !== request.namespace || operation.bindingId !== request.context.bindingId || operation.bindingEpochId !== request.context.bindingEpochId) {
+			if (operation.providerId !== undefined && operation.providerId !== options.providerId || operation.taskId !== request.context.taskId || operation.toolCallId !== request.toolCallId || operation.toolName !== request.toolName || operation.namespace !== request.namespace || operation.bindingId !== request.context.bindingId || operation.bindingEpochId !== request.context.bindingEpochId) {
 				return Result.err(new FoundationError("invalid_identifier", "sandbox operation identity does not match the gateway request"));
 			}
 			if (request.context.operationId !== undefined && operation.operationId !== request.context.operationId) return Result.err(new FoundationError("invalid_identifier", "sandbox operation id does not match the gateway request"));

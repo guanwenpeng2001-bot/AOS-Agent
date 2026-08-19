@@ -1,7 +1,7 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
-import { FoundationError, toFoundationError } from "./errors.ts";
+import { FoundationError, toFoundationError, type FoundationErrorCode } from "./errors.ts";
 import { canonicalFoundationJson, extendFoundationLineage, fingerprintFoundationValue, type ExecutionCorrelationV1, type FoundationLineageV1 } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { executeDispatchV1, executeOperationV1, executeAgentSpawnV1, startDispatchAttemptV1, switchAgentModeV1, type DispatchAttemptStartResultV1, type DispatchExecutionInputV1, type DispatchExecutionResultV1, type OperationExecutionInputV1, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInputV1 } from "./execution.ts";
@@ -152,6 +152,12 @@ function immutableEntityFingerprintValid(payload: { readonly fingerprint: { read
 	return fingerprint.value === fingerprintFoundationValue(base).value;
 }
 
+function correlationRecord(correlation: ExecutionCorrelationV1): Record<string, string | undefined> {
+	const record: Record<string, string | undefined> = {};
+	for (const [key, value] of Object.entries(correlation)) if (typeof value === "string") record[key] = value;
+	return record;
+}
+
 async function findDurableRoleRevision(ledger: SessionLedgerV1, reference: AgentBindingV1["roleRevision"]): Promise<RoleRevisionV1> {
 	const direct = await ledger.get("role_revision", reference.id);
 	if (direct?.kind === "fact") {
@@ -243,7 +249,7 @@ async function findCanonicalModelProfile(ledger: SessionLedgerV1, modelProfileId
 }
 
 function routeFromProfile(profile: ModelProfileV1): ModelRouteV1 {
-	return { provider: profile.provider, model: profile.model, ...(profile.effort === undefined ? {} : { effort: profile.effort }), ...(profile.serviceTier === undefined ? {} : { serviceTier: profile.serviceTier }) };
+	return { provider: profile.provider, model: profile.model, ...(profile.effort === undefined ? {} : { effort: profile.effort }), ...(profile.serviceTier === undefined ? {} : { serviceTier: profile.serviceTier }), ...(profile.fallback === undefined ? {} : { fallback: profile.fallback.map((route) => ({ ...route })) }) };
 }
 
 function canonicalBindingFromFacts(binding: AgentBindingV1, facts: DurableBindingFactsV1): AgentBindingV1 {
@@ -362,7 +368,7 @@ async function requireDurableBindingSources(ledger: SessionLedgerV1, binding: Ag
 	if (task !== undefined && binding.goalId !== task.goalId) throw new FoundationError("binding_task_before_binding", "Binding goal identity does not match its durable TaskEnvelope", { details: { bindingId: binding.bindingId, taskId: task.taskId } });
 	if (binding.roleRevision.id !== role.roleRevisionId || binding.roleRevision.revision !== role.revision || binding.roleRevision.fingerprint?.value !== role.fingerprint.value) throw sourceRequired(binding.roleRevision, "roleRevision");
 	if (binding.modelProfileRevision.id !== profile.modelProfileId || binding.modelProfileRevision.revision !== profile.revision || binding.modelProfileRevision.fingerprint?.value !== profile.fingerprint.value) throw sourceRequired(binding.modelProfileRevision, "modelProfileRevision");
-	const expectedRoute = { provider: profile.provider, model: profile.model, ...(profile.effort === undefined ? {} : { effort: profile.effort }), ...(profile.serviceTier === undefined ? {} : { serviceTier: profile.serviceTier }) };
+	const expectedRoute = routeFromProfile(profile);
 	if (canonicalFoundationJson(binding.modelRoute) !== canonicalFoundationJson(expectedRoute)) throw new FoundationError("binding_required_fact", "AgentBinding model route does not match the durable ModelProfile", { details: { bindingId: binding.bindingId, modelProfileId: profile.modelProfileId } });
 	await requireDurableRevisionFact(ledger, "external_agent_binding", binding.contextRevision);
 	await requireDurableRevisionFact(ledger, "capability_binding", binding.capabilityRevision);
@@ -499,7 +505,9 @@ export class LayeredResultSettlementV1 {
 			if (!worker.ok || (reference.revision > 0 && stored.revision !== reference.revision) || (reference.providerId !== undefined && worker.ok && worker.value.provenance.providerId !== reference.providerId) || (reference.fingerprint !== undefined && worker.ok && fingerprintFoundationValue(worker.value).value !== reference.fingerprint.value)) return Result.err(new FoundationError("invalid_correlation", "AttemptReceipt WorkerReceipt reference does not match the durable WorkerReceipt", { details: { attemptReceiptId: checked.value.attemptReceiptId, workerReceiptId: reference.id } }));
 		}
 		try {
-			await this.persistFact("attempt_receipt", checked.value.attemptReceiptId, checked.value, { taskId: checked.value.taskId, dispatchId: checked.value.dispatchId, attemptId: checked.value.attemptId, bindingId: checked.value.bindingId, bindingEpochId: checked.value.bindingEpochIds[0], attemptReceiptId: checked.value.attemptReceiptId, agentInstanceId: checked.value.agentInstanceId }, { immutable: true });
+			const correlation = checked.value.provenance.correlation;
+			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Provider AttemptReceipt provenance is missing its required correlation"));
+			await this.persistFact("attempt_receipt", checked.value.attemptReceiptId, checked.value, correlationRecord(correlation), { immutable: true });
 			return Result.ok({ ...execution, receipt: cloneDeepFrozen(checked.value) });
 		} catch (error) {
 			return this.persistenceError(error, "worker_receipt_invalid_producer");
@@ -514,6 +522,8 @@ export class LayeredResultSettlementV1 {
 			const request = checkedRequest.value;
 			if (!spawnCorrelationValid(input.correlation, request)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn requires a complete child Task and AgentInstance correlation", { details: { spawnId: request.spawnId } }));
 			if (request.parentSpawn === undefined) return Result.err(new FoundationError("role_resolver_task_required", "Agent spawn requires a durable parent Task and Context", { details: { spawnId: request.spawnId } }));
+			const prevalidatedIntent = validateSpawnAgentIntent(request.parentSpawn);
+			if (!prevalidatedIntent.ok) return prevalidatedIntent;
 			const checkedParentIntent = validateSpawnIntentIdentity(request.parentSpawn, request, input.provider.providerId);
 			if (!checkedParentIntent.ok) return checkedParentIntent;
 			const parentTask = await this.requireExistingTask(checkedParentIntent.value.parentTaskId);
@@ -681,7 +691,9 @@ export class LayeredResultSettlementV1 {
 			}
 			const settled = settleTaskResult({ taskResultId: input.taskResultId, task: input.task, receipts, summary: input.summary, ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }), ...(input.diff === undefined ? {} : { diff: input.diff }), tests: input.tests, evidence: input.evidence, producer: input.producer, ...(input.validation === undefined ? {} : { validation: input.validation }) });
 			if (!settled.ok) return settled;
-			const stored = await this.persistFact("task_result", settled.value.taskResultId, settled.value, { taskId: settled.value.taskId, taskResultId: settled.value.taskResultId, attemptId: settled.value.sourceAttemptReceiptIds[0] }, { immutable: true });
+			const correlation = input.producer.correlation;
+			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Host TaskResult provenance is missing its required correlation"));
+			const stored = await this.persistFact("task_result", settled.value.taskResultId, settled.value, correlationRecord(correlation), { immutable: true });
 			return Result.ok(cloneDeepFrozen(stored.payload));
 		} catch (error) {
 			return this.persistenceError(error, "task_result_validation_failed");
@@ -881,7 +893,7 @@ export class LayeredResultSettlementV1 {
 		return undefined;
 	}
 
-	private persistenceError<T>(error: unknown, fallback: string): ResultValue<T, FoundationError> {
+	private persistenceError<T>(error: unknown, fallback: FoundationErrorCode): ResultValue<T, FoundationError> {
 		if (error instanceof DurableLedgerError) throw error;
 		return Result.err(toFoundationError(error, fallback));
 	}
