@@ -123,6 +123,76 @@ function consumerModels(toolName: string): { model: Model<"openai-responses">; m
 	return { model, models, requests: () => requests, contexts: () => contexts };
 }
 
+type ProjectorTamper = "toolName" | "attempt" | "bindingAttemptId";
+
+async function assertProjectorRejectsTamper(tamper: ProjectorTamper): Promise<void> {
+	const session = new Session(new InMemorySessionStorage({ id: `projector-tamper-${tamper}`, createdAt: 1 }));
+	const { model, models, requests } = consumerModels("projector-tool");
+	const tool: HarnessTool = {
+		name: "projector-tool",
+		label: "Projector tool",
+		description: "projector tamper fixture",
+		parameters: Type.Object({}, { additionalProperties: false }),
+		sideEffectState: "none",
+		execute: async () => ({ content: [{ type: "text" as const, text: "projected" }], details: {} }),
+	};
+	const foundation = execution();
+	const first = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+	const firstResult = await first.harness.prompt("persist projector result");
+	expect(firstResult).toMatchObject({ ok: true, value: { kind: "completed" } });
+	const requestsBeforeTamper = requests();
+	const operation = (await session.findRecords({ lane: "main", type: "operation_started", order: "oldestFirst" }))[0];
+	if (operation?.type !== "operation_started") throw new Error("missing projector tamper operation");
+	const started = (await session.findRecords({ lane: "main", runId: operation.id, type: "tool_started", order: "oldestFirst" }))[0];
+	if (started?.type !== "tool_started") throw new Error("missing projector tamper tool start");
+	const step = (await session.findRecords({ lane: "main", runId: operation.id, type: "step_attempt", order: "oldestFirst" })).find((record) => record.type === "step_attempt" && record.resultEntryId === started.assistantEntryId);
+	if (step?.type !== "step_attempt") throw new Error("missing projector tamper step attempt");
+	await first.harness.close();
+
+	const originalFindFoundationRecords = session.findFoundationRecords.bind(session);
+	session.findFoundationRecords = async (query = {}) => {
+		const records = await originalFindFoundationRecords(query);
+		return records.map((record) => {
+			if (record.kind !== "intent" && record.kind !== "fact") return record;
+			if (record.payload === undefined) return record;
+			const payload = structuredClone(record.payload) as Record<string, unknown>;
+			if (payload.toolCallId !== started.toolCallId) return record;
+			if (record.kind === "intent" && record.objectType === "tool_intent") {
+				if (tamper === "toolName") payload.toolName = "tampered-projector-tool";
+				if (tamper === "attempt" && typeof payload.attempt === "number") payload.attempt += 1;
+				if (tamper === "bindingAttemptId") {
+					const binding = payload.binding;
+					if (binding !== null && typeof binding === "object" && !Array.isArray(binding)) (binding as Record<string, unknown>).attemptId = "tampered-step-attempt";
+				}
+				return { ...record, payload: foundationJson(payload) };
+			}
+			if (record.kind === "fact" && record.objectType === "tool_receipt") {
+				if (tamper === "toolName") payload.toolName = "tampered-projector-tool";
+				if (tamper === "attempt" && typeof payload.attempt === "number") payload.attempt += 1;
+				if (tamper === "bindingAttemptId") {
+					const binding = payload.binding;
+					if (binding !== null && typeof binding === "object" && !Array.isArray(binding)) (binding as Record<string, unknown>).attemptId = "tampered-step-attempt";
+				}
+				const checked = validateToolReceiptV1(payload);
+				if (!checked.ok) throw checked.error;
+				const { digest: _digest, ...withoutDigest } = checked.value;
+				return { ...record, payload: foundationJson(finalizeToolReceiptV1(withoutDigest)) };
+			}
+			return record;
+		});
+	};
+	let restarted: Awaited<ReturnType<typeof AgentHarness.create>> | undefined;
+	try {
+		restarted = await AgentHarness.create({ session, models, model, tools: [tool], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
+		const result = await restarted.harness.prompt("projector tamper must fail closed");
+		expect(result).toMatchObject({ ok: true, value: { kind: "failed", error: { code: "side_effect_unknown" } } });
+		expect(requests()).toBe(requestsBeforeTamper);
+	} finally {
+		session.findFoundationRecords = originalFindFoundationRecords;
+		if (restarted !== undefined) await restarted.harness.close().catch(() => undefined);
+	}
+}
+
 describe("T4 public AgentHarness tool consumer", () => {
 	it("routes a public AgentTool through the durable pipeline and replays it after a harness restart", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "public-tool-session", createdAt: 1 }));
@@ -237,7 +307,23 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(payloadFor("run_receipt")).toMatchObject({ terminalStatus: "failed" });
 		expect(JSON.stringify(facts)).not.toContain("plaintext-secret");
 		expect(JSON.stringify(facts)).not.toContain("[redacted]");
+		const entries = await session.findEntries({ order: "oldestFirst" });
+		const records = await session.findRecords({ order: "oldestFirst" });
+		const foundationRecords = await session.findFoundationRecords({ order: "oldestFirst", includePruned: true });
+		for (const ledgerPart of [entries, records, foundationRecords]) expect(JSON.stringify(ledgerPart)).not.toContain("plaintext-secret");
 		await harness.close();
+	});
+
+	it("rejects a reserved projector result when its tool name is tampered", async () => {
+		await assertProjectorRejectsTamper("toolName");
+	});
+
+	it("rejects a reserved projector result when its step attempt is tampered", async () => {
+		await assertProjectorRejectsTamper("attempt");
+	});
+
+	it("rejects a reserved projector result when its step binding attempt id is tampered", async () => {
+		await assertProjectorRejectsTamper("bindingAttemptId");
 	});
 
 	it("persists image tool results as verified ArtifactRefs and never writes base64 to the Session ledger", async () => {
@@ -414,17 +500,51 @@ describe("T4 public AgentHarness tool consumer", () => {
 		};
 		await session.appendRecord({ type: "operation_started", id: "deferred-run", lane: "main", sourceLeafId: null, intent: { kind: "run", originalPrompt: [], initialMessages: [target] } });
 		await session.appendRecord({ type: "write_deferred", id: "deferred-write", lane: "main", runId: "deferred-run", target });
+		await session.appendEntry(target, "main");
 		const { model, models } = consumerModels("deferred-tool");
 		const foundation = execution();
 		const first = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
+		let usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
+		expect(usage).toHaveLength(1);
+		expect(usage[0]).toMatchObject({ cause: "tool", entryId: target.id, toolCallId: "deferred-call", usage: { input: 2, output: 3, totalTokens: 5 } });
 		await first.harness.close();
 		const reopened = await AgentHarness.create({ session, models, model, tools: [], foundationExecution: foundation, drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } });
-		const action = await reopened.harness.executeAction();
-		expect(action).toMatchObject({ kind: "append_entry", entryId: target.id });
-		const usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
+		usage = await session.findRecords({ lane: "main", type: "usage", order: "oldestFirst" });
 		expect(usage).toHaveLength(1);
 		expect(usage[0]).toMatchObject({ cause: "tool", entryId: target.id, toolCallId: "deferred-call", usage: { input: 2, output: 3, totalTokens: 5 } });
 		await reopened.harness.close();
+	});
+
+	it("fails closed during create when deferred tool UsageRecords are mismatched or duplicated", async () => {
+		for (const scenario of ["mismatched", "duplicate"] as const) {
+			const session = new Session(new InMemorySessionStorage({ id: `deferred-tool-usage-${scenario}`, createdAt: 1 }));
+			const target = {
+				type: "custom" as const,
+				id: "deferred-tool-result",
+				customType: "foundation.tool_result",
+				data: {
+					schemaVersion: 1 as const,
+					runId: "deferred-run",
+					operationId: "deferred-run",
+					toolCallId: "deferred-call",
+					toolName: "deferred-tool",
+					isError: false,
+					result: {
+						schemaVersion: 1 as const,
+						content: [{ type: "text" as const, text: "deferred result" }],
+						usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } },
+					},
+				},
+			};
+			await session.appendRecord({ type: "operation_started", id: "deferred-run", lane: "main", sourceLeafId: null, intent: { kind: "run", originalPrompt: [], initialMessages: [target] } });
+			await session.appendRecord({ type: "write_deferred", id: "deferred-write", lane: "main", runId: "deferred-run", target });
+			await session.appendEntry(target, "main");
+			const usage = { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+			await session.appendRecord({ type: "usage", id: "deferred-usage-1", lane: "main", cause: "tool", runId: "deferred-run", entryId: target.id, toolCallId: "deferred-call", usage: scenario === "mismatched" ? { ...usage, output: 99 } : usage });
+			if (scenario === "duplicate") await session.appendRecord({ type: "usage", id: "deferred-usage-2", lane: "main", cause: "tool", runId: "deferred-run", entryId: target.id, toolCallId: "deferred-call", usage });
+			const { model, models } = consumerModels("deferred-tool");
+			await expect(AgentHarness.create({ session, models, model, tools: [], foundationExecution: execution(), drive: "manual", toolPipelineOptions: { guard: allowAllGuards() } })).rejects.toThrow(/Durable tool (usage record conflicts with its canonical result usage|result has duplicate usage records)/);
+		}
 	});
 
 	it("fails all public receipt layers when an image result has no ArtifactStore", async () => {

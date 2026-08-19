@@ -1722,6 +1722,16 @@ export class AgentHarness implements AgentLane {
 		if (checked.value.operationId !== checked.value.runId) throw new HarnessToolPipelineError("Durable tool result entry has an invalid operation identity", "side_effect_unknown");
 		const intent = await this.foundationIntentForToolCall(lane, checked.value.runId, checked.value.toolCallId);
 		if (!intent.ok) throw new HarnessToolPipelineError(intent.error.message, "side_effect_unknown");
+		const stepAttempts = await this.durableSession.findRecords({ lane, type: "step_attempt", order: "oldestFirst" });
+		const matchingStepAttempts = stepAttempts.filter((attempt) => attempt.resultEntryId === start.assistantEntryId);
+		if (matchingStepAttempts.length !== 1) throw new HarnessToolPipelineError("Durable tool start is not authorized by a unique assistant step attempt", "side_effect_unknown");
+		const stepAttempt = matchingStepAttempts[0]!;
+		if (
+			stepAttempt.runId !== checked.value.runId ||
+			intent.value.toolName !== start.toolName ||
+			intent.value.attempt !== stepAttempt.attempt ||
+			intent.value.binding.attemptId !== stepAttempt.id
+		) throw new HarnessToolPipelineError("Durable tool intent is not bound to its assistant step attempt", "side_effect_unknown");
 		let acceptedDigest: ReturnType<typeof digestToolArgumentsV1>;
 		try {
 			acceptedDigest = digestToolArgumentsV1(start.effectiveArgs);
