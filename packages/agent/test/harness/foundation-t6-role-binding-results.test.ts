@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as AgentPublic from "../../src/index.ts";
 import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
@@ -187,6 +188,10 @@ class ChildProvider implements ChildAgentProvider {
 }
 
 describe("T6 provider-driven role binding and result settlement", () => {
+	it("keeps raw child spawn execution behind the settlement boundary", () => {
+		expect("executeAgentSpawnV1" in AgentPublic).toBe(false);
+	});
+
 	it("fails closed without all four existing binding facts", () => {
 		const result = resolveAgentBinding({ task: task(), roleRevision: roleRevision(), modelProfile: modelProfile(), newBindingId: "missing-facts", now: () => now });
 		expect(result).toMatchObject({ ok: false, error: { code: "binding_required_fact" } });

@@ -2,7 +2,19 @@ export * from "./budget.ts";
 export * from "./contracts.ts";
 export * from "./errors.ts";
 export * from "./event-catalog.ts";
-export * from "./execution.ts";
+export {
+	executeDispatchV1,
+	executeOperationV1,
+	startDispatchAttemptV1,
+	switchAgentModeV1,
+} from "./execution.ts";
+export type {
+	DispatchAttemptStartResultV1,
+	DispatchExecutionInputV1,
+	DispatchExecutionResultV1,
+	ModeSwitchExecutionInputV1,
+	OperationExecutionInputV1,
+} from "./execution.ts";
 export * from "./goal.ts";
 export * from "./identity.ts";
 export * from "./immutability.ts";

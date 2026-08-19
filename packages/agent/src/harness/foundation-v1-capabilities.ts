@@ -1743,46 +1743,7 @@ const WIRED_CLOSURE_IDS = new Set([
 	67,
 ]);
 
-
-/**
- * Resolve evidence paths from the original seal ledger to files that exist in
- * this merged worktree. The harness scaffold was renamed to the runtime test;
- * never resurrect the removed scaffold file as audit evidence.
- */
-const FOUNDATION_AGENT_TEST_PATH_REPLACEMENTS: Readonly<Record<string, string>> = {
-	"packages/agent/test/harness/agent-harness-kernel.test.ts": "packages/agent/test/harness/agent-harness-runtime.test.ts",
-	"packages/agent/test/harness/agent-harness-scaffold.test.ts": "packages/agent/test/harness/agent-harness-runtime.test.ts",
-	"packages/agent/test/harness/agent-instance-mode-spawn.test.ts": "packages/agent/test/harness/foundation-t6-role-binding-results.test.ts",
-	"packages/agent/test/harness/artifact-store.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
-	"packages/agent/test/harness/context-lineage.test.ts": "packages/agent/test/harness/session/context.test.ts",
-	"packages/agent/test/harness/goal-workflow.test.ts": "packages/agent/test/harness/reducer.test.ts",
-	"packages/agent/test/harness/observer-continuity.test.ts": "packages/agent/test/harness/events.test.ts",
-	"packages/agent/test/harness/plugins.test.ts": "packages/agent/test/harness/foundation-provider-conformance.test.ts",
-	"packages/agent/test/harness/profile-binding.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
-	"packages/agent/test/harness/profile.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
-	"packages/agent/test/harness/protocol-migration.test.ts": "packages/agent/test/harness/remote-ready-contract.test.ts",
-	"packages/agent/test/harness/role-registry-resolver.test.ts": "packages/agent/test/harness/foundation-t6-role-binding-results.test.ts",
-	"packages/agent/test/harness/runtime-services.test.ts": "packages/agent/test/harness/t4-runtime-lifecycle.test.ts",
-	"packages/agent/test/harness/t6-role-binding-results.test.ts": "packages/agent/test/harness/foundation-t6-role-binding-results.test.ts",
-	"packages/agent/test/harness/task-result.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
-	"packages/agent/test/harness/tool-gateway.test.ts": "packages/agent/test/harness/foundation-contracts.test.ts",
-	"packages/agent/test/harness/tool-pipeline.test.ts": "packages/agent/test/harness/foundation-provider-conformance.test.ts",
-	"packages/coding-agent/test/agent-session-harness-parity.test.ts": "packages/coding-agent/test/agent-session-capabilities.test.ts",
-	"packages/coding-agent/test/canonical-sdk-session.test.ts": "packages/coding-agent/test/sdk-session-manager.test.ts",
-	"packages/coding-agent/test/foundation-control-plane-integration.test.ts": "packages/coding-agent/test/model-broker-ledger.test.ts",
-	"packages/coding-agent/test/foundation-provider-conformance.test.ts": "packages/coding-agent/test/model-broker.test.ts",
-	"packages/coding-agent/test/foundation-surface-conformance.test.ts": "packages/coding-agent/test/public-api-contract.test.ts",
-	"packages/coding-agent/test/rpc-observer-continuity.test.ts": "packages/coding-agent/test/rpc-client-replay-recovery.test.ts",
-	"packages/coding-agent/test/rpc-websocket.test.ts": "packages/coding-agent/test/rpc-client-transport.test.ts",
-	"packages/coding-agent/test/server/foundation-runtime.test.ts": "packages/coding-agent/test/server/create-harness.test.ts",
-};
-
-const resolvedClosures = closures.map((entry) => ({
-	...entry,
-	tests: [...new Set(entry.tests.map((test) => FOUNDATION_AGENT_TEST_PATH_REPLACEMENTS[test] ?? test))],
-}));
-
-const foundationCapabilityClosures = resolvedClosures.map((entry) => ({
+const foundationCapabilityClosures = closures.map((entry) => ({
 	...entry,
 	closure: WIRED_CLOSURE_IDS.has(entry.id) ? entry.closure : "contract_drafted",
 	ownerModule: entry.ownerModule,
