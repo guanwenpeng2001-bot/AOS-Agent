@@ -7,6 +7,7 @@
 - Remote-ready Agent Loop hardening: bounded convergence, stable error classification, safe retry gating, and cancellation/deadline propagation.
 - T4 tool runtime foundations: profile and plugin management, tool gateway/pipeline execution, runtime services, and scoped selector/fencing behavior.
 - T4 authority gates: durable local plugin activation recovery, consumer-shaped ToolGateway fakes, transformer provenance, read-only hooks, scoped reservations, and fail-closed cancellation/deadline settlement.
+- T5 durable context and data foundations: immutable snapshots, fork and rewind planning, scoped memory, content-addressed artifacts, compaction, prompt-cache, and instruction facts.
 
 ### Fixed
 

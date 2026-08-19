@@ -210,7 +210,7 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 		...(workspace?.digest === undefined ? {} : { workspaceDigest: workspace.digest }),
 		createdAt: now(),
 		failClosed: true,
-		...(snapshot.headEntryId === undefined ? {} : { currentLaneLeafId: snapshot.headEntryId }),
+		currentLaneLeafId: snapshot.headEntryId,
 	};
 }
 

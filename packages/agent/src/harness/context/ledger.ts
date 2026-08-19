@@ -850,7 +850,7 @@ export class SessionT5Ledger {
 		const currentLaneLeafId = (await this.session.getLanes()).find((lane) => lane.lane === plan.lane)?.leafId;
 		const authority: CheckpointRewindAuthority = { checkpoint, targetEntryId: plan.targetEntryId, workspace, planId, lane: plan.lane };
 		if (currentLaneLeafId === undefined || !validateCheckpointImpactPlan(plan, snapshot, authority)) throw new Error(`Rewind plan ${planId} is not safe to apply`);
-		if (currentLaneLeafId === undefined || (plan.currentLaneLeafId !== undefined && currentLaneLeafId !== plan.currentLaneLeafId && currentLaneLeafId !== plan.targetEntryId)) {
+		if (plan.currentLaneLeafId !== undefined && currentLaneLeafId !== plan.currentLaneLeafId && currentLaneLeafId !== plan.targetEntryId) {
 			throw new Error(`Rewind plan ${planId} lane changed before execution`);
 		}
 		const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.rewindExecution, planId);
