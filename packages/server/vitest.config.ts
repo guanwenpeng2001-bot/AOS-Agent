@@ -1,15 +1,21 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { defineConfig, mergeConfig } from "vitest/config";
+import baseConfig from "../../vitest.base.ts";
 
-export default defineConfig({
-	test: {
-		globals: true,
-		environment: "node",
-		reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
-	},
-	resolve: {
-		alias: {
-			"@aos-agent/protocol": fileURLToPath(new URL("../protocol/src/index.ts", import.meta.url)),
+
+export default mergeConfig(
+	baseConfig,
+	defineConfig({
+		test: {
+			globals: true,
+			environment: "node",
+			reporters: process.env.GITHUB_ACTIONS ? ["dot", "github-actions"] : ["dot"],
 		},
-	},
-});
+		resolve: {
+			alias: [{
+				find: /^@aos-agent\/protocol$/,
+				replacement: fileURLToPath(new URL("../protocol/src/index.ts", import.meta.url)),
+			}],
+		},
+	}),
+);
