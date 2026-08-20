@@ -68,8 +68,10 @@ The final integration fixes made those gates reproducible in a clean checkout:
 model catalogs are generated deterministically and committed for offline use;
 workspace source aliases and Windows child CLI bootstrapping no longer depend
 on prebuilt `dist` output; local transports and home-path handling are portable;
-and asynchronous Session fixtures wait for capability readiness and disposal.
-Lockfiles and the coding-agent install lock remain unchanged.
+SDK cwd assertions translate shell temporary roots only on Windows and preserve
+isolated POSIX `TMPDIR` paths; and asynchronous Session fixtures wait for
+capability readiness and disposal. Lockfiles and the coding-agent install lock
+remain unchanged.
 
 ## Merge gate
 

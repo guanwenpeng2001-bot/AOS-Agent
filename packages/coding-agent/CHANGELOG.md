@@ -44,7 +44,7 @@
 ### Fixed
 
 - Extension `sendUserMessage()` calls now settle only after the message is queued and propagate delivery failures to the caller.
-- Kept source-checkout child CLI startup, package-command discovery, home-path display, and full workspace test gates portable on Windows.
+- Kept source-checkout child CLI startup, package-command discovery, home-path display, and full workspace test gates portable across Windows and isolated POSIX homes.
 - Canonical prompt preflight now remains observably active through lazy capability discovery, reports rejected preflights, projects active-tool changes synchronously, caps reserved context for small-window models, and omits undefined bash exit codes from durable Session records.
 - `createAgentSession()` now exposes its initial built-in tools and system prompt immediately, and direct built-in bash calls receive the current Session, model, and reasoning environment.
 - Canonical assistant settlement now flushes a pending persisted Session before Automation Host recovery opens it, and legacy consumer-shaped ModelRuntime fakes retain model lookup through the AgentSession compatibility composition boundary.

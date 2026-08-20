@@ -88,7 +88,10 @@ describe("createAgentSession session manager defaults", () => {
 			.filter((item): item is { type: "text"; text: string } => item.type === "text")
 			.map((item) => item.text)
 			.join("");
-		const shellPath = output.trim().replace(/^\/tmp(?=\/|$)/, tmpdir().replace(/\\/g, "/"));
+		const shellPath =
+			process.platform === "win32"
+				? output.trim().replace(/^\/tmp(?=\/|$)/, tmpdir().replace(/\\/g, "/"))
+				: output.trim();
 		expect(realpathSync(shellPath)).toBe(realpathSync(sessionCwd));
 
 		session.dispose();
