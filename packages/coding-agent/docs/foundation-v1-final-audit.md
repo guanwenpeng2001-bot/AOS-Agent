@@ -1,8 +1,9 @@
 # Foundation v1 Final Audit
 
-Audit verdict: the Foundation v1 candidate satisfies the local seal gates. It
-is ready for external review and an explicit user merge decision, but it has
-not been merged into the integration branch or `main`.
+Audit verdict: the Foundation v1 integration candidate satisfies the local
+seal and repository-wide validation gates. The user authorized PR, CI, and
+`main` integration; external final review and protected-branch CI remain the
+promotion gates.
 
 ## Scope
 
@@ -57,26 +58,22 @@ The seal includes targeted regression coverage for:
   projection behavior.
 
 The repository-wide `npm run check` gate passes with formatting, dependency,
-import, generated-lock, TypeScript, and browser-smoke checks enabled. The full
-`@aos-agent/agent-core` suite passes with 658 tests and one skip. The final T12
-targeted runs pass 25 session/ModelBroker tests, 12 compaction/retry tests, and
-73 Context/RPC tests.
+import, generated-lock, TypeScript, and browser-smoke checks enabled. The root
+non-e2e `./test.sh` gate also passes from an isolated no-key home directory. Its
+coding-agent run passes 3,581 tests in 302 files, with the expected 47 skipped
+tests and five skipped files; the agent, server, session-backend, evaluation,
+and TUI suites also complete with no failures or unhandled rejections.
 
-An isolated root `./test.sh` run on the T12 candidate before the final
-compatibility-state closure was also attempted. It recorded 62 AI test failures
-and 27 coding-agent test failures, plus one coding-agent suite import failure.
-One coding-agent failure exposed a T12-owned test-fixture bug: the offline model
-fallback had a context window smaller than the default compaction reserve, so
-the fixture generated negative token usage. The fixture now selects a valid
-reserve explicitly, and its complete file passes with 6 tests. The remaining
-failures are outside the T12 diff: the pre-existing offline AI catalog baseline,
-child-process imports that require workspace `dist` output, and WSL
-platform/permission assumptions. This audit does not report the root gate as
-passing and does not treat that earlier run as exact-head evidence.
+The final integration fixes made those gates reproducible in a clean checkout:
+model catalogs are generated deterministically and committed for offline use;
+workspace source aliases and Windows child CLI bootstrapping no longer depend
+on prebuilt `dist` output; local transports and home-path handling are portable;
+and asynchronous Session fixtures wait for capability readiness and disposal.
+Lockfiles and the coding-agent install lock remain unchanged.
 
 ## Merge gate
 
-The final candidate chain is ready for review as an isolated, reversible
-slice. Fast-forwarding it into the local integration branch or merging it into
-`main` requires explicit user confirmation and a decision on the
-repository-wide baseline failures recorded above.
+The final candidate chain is an isolated, reversible integration slice. It may
+be pushed and proposed only after the exact final commit range passes external
+read-only review. It may merge into `main` only after the pull request's required
+CI and review gates pass. The user has explicitly authorized both operations.

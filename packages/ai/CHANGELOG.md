@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
+- Made the Anthropic OAuth callback flow fall back to manual code entry when a local callback listener is unavailable.
+
 ## [0.84.3] - 2026-08-10
 
 ### Added

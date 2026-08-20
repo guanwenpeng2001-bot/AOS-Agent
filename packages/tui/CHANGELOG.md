@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Normalize home-shortened image fallback paths across platforms.
+- Normalize home-shortened image fallback paths and file hyperlinks across platforms.
 
 ## [0.84.3] - 2026-08-10
 

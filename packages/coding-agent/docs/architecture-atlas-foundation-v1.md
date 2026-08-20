@@ -1,9 +1,10 @@
 # Architecture Atlas: Foundation v1
 
 Foundation v1 closes Atlas rows 01–10 and 10A. Delivery status is a sealed
-candidate on the integration branch; merging into `main` still requires user
-confirmation. Line 11 is the next implementation line. Lines 12A, 12B, 13, 14,
-and 15 remain future work.
+integration candidate whose promotion requires exact-range external review and
+protected-branch CI. The user authorized that promotion workflow. Line 11 is
+the next implementation line. Lines 12A, 12B, 13, 14, and 15 remain future
+work.
 
 ## Sealed rows
 
