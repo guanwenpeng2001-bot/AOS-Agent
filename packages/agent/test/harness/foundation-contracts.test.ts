@@ -50,6 +50,7 @@ import {
 	validateTaskEnvelope,
 	validateEndpointSecurityV1,
 	validateDurableEventV1,
+	validateEventPayloadForCategoryV1,
 	validateProtocolMessageEnvelopeV1,
 	validateExternalAgentStartRequestV1,
 	validateToolGatewayRequestV1,
@@ -300,6 +301,98 @@ describe("Foundation events, protocol, and observer continuity", () => {
 		expect(EVENT_CATALOG.run_end.derivedFrom).not.toEqual(["operation.started"]);
 		expect(EVENT_CATALOG["run_receipt.written"].correlationFields).toEqual(expect.arrayContaining(["runReceiptId", "taskResultId", "runId"]));
 		expect(validateDurableEventV1({ ...event, payload: { schemaVersion: 1, goalId: "goal-1", sessionId: "session-1", revision: 1, prompt: "hidden" } }).ok).toBe(false);
+	});
+
+	it("catalogs safe durable Worker lifecycle and operation projections", () => {
+		expect(EVENT_CATALOG["worker.lifecycle_transitioned"]).toMatchObject({
+			class: "durable",
+			replay: "must",
+			retention: "ledger",
+		});
+		expect(EVENT_CATALOG["worker.operation_recorded"].correlationFields).toEqual(
+			expect.arrayContaining(["sessionId", "laneId", "workerId", "operationId"]),
+		);
+		const lifecycle = createDurableEventV1({
+			category: "worker.lifecycle_transitioned",
+			eventId: "worker-event-1",
+			streamId: "session-1",
+			sequence: 2,
+			timestamp: fakeNow,
+			correlation: {
+				sessionId: "session-1",
+				laneId: "main",
+				workerId: "worker-1",
+				operationId: "operation-1",
+			},
+			payload: {
+				schemaVersion: 1,
+				workerId: "worker-1",
+				providerId: "sandbox-worker",
+				sessionId: "session-1",
+				laneId: "main",
+				status: "running",
+				revision: 3,
+				profileId: "local-worker",
+				activeOperationId: "operation-1",
+			},
+		});
+		expect(projectEventEnvelopeV1(lifecycle).payload).toEqual(lifecycle.payload);
+		const terminal = createDurableEventV1({
+			category: "worker.lifecycle_transitioned",
+			eventId: "worker-event-2",
+			streamId: "session-1",
+			sequence: 3,
+			timestamp: fakeNow,
+			correlation: {
+				sessionId: "session-1",
+				laneId: "main",
+				workerId: "worker-1",
+				operationId: "operation-1",
+			},
+			payload: {
+				schemaVersion: 1,
+				workerId: "worker-1",
+				providerId: "sandbox-worker",
+				sessionId: "session-1",
+				laneId: "main",
+				status: "completed",
+				revision: 4,
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+			},
+		});
+		expect(
+			validateDurableEventV1({
+				...terminal,
+				correlation: { ...terminal.correlation, operationId: "operation-other" },
+			}).ok,
+		).toBe(false);
+		expect(
+			validateEventPayloadForCategoryV1("worker.lifecycle_transitioned", {
+				...terminal.payload,
+				status: "terminal",
+			}),
+		).toBe(false);
+		expect(
+			validateEventPayloadForCategoryV1("worker.lifecycle_transitioned", {
+				...lifecycle.payload,
+				stdout: "must-not-persist",
+			}),
+		).toBe(false);
+		expect(
+			validateEventPayloadForCategoryV1("worker.operation_recorded", {
+				schemaVersion: 1,
+				workerId: "worker-1",
+				providerId: "sandbox-worker",
+				sessionId: "session-1",
+				laneId: "main",
+				operationId: "operation-1",
+				phase: "finished",
+				revision: 4,
+				sideEffectState: "none",
+				receiptId: "receipt-1",
+			}),
+		).toBe(true);
 	});
 
 	it("negotiates the highest common protocol version and fails closed for remote endpoints", () => {
