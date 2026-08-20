@@ -248,6 +248,7 @@ describe("Operation Worker supervisor", () => {
 			expect(current.supervisor.snapshot.record?.status).toBe(
 				profile === "success" ? "completed" : "failed",
 			);
+			expect(await current.supervisor.cancel()).toEqual({ ok: true, value: undefined });
 			const first = await current.supervisor.reclaim();
 			expect(first).toMatchObject({ ok: true, value: { status: "reclaimed" } });
 			const second = await current.supervisor.reclaim();
@@ -282,6 +283,35 @@ describe("Operation Worker supervisor", () => {
 		expect(current.supervisor.lifecycleState?.transitions.map((item) => item.to)).toContain("lost");
 		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
 		await waitForNoLiveProcess(current.supervisor);
+		const cancelled = await current.supervisor.cancel();
+		expect(cancelled).toMatchObject({
+			ok: false,
+			error: { code: "worker_lost" },
+		});
+		expect(await current.supervisor.cancel()).toEqual(cancelled);
+		expect(current.supervisor.snapshot.record?.status).toBe("lost");
+	});
+
+	it("stops and cleans the child before returning an execute backpressure failure", async () => {
+		const current = create("success", { config: { maxPendingWriteBytes: 2_000 } });
+		await activate(current.supervisor, current.workerBinding);
+		const backpressuredRequest: SandboxOperationRequestV1 = {
+			...request(current.workerBinding),
+			payload: { value: "x".repeat(4_000) },
+		};
+		expect(await current.supervisor.execute(backpressuredRequest)).toMatchObject({
+			ok: false,
+			error: { code: "worker_operation_invalid" },
+		});
+		expect(current.supervisor.snapshot).toMatchObject({
+			hasLiveProcess: false,
+			record: { status: "lost" },
+		});
+		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
+		expect(current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true })).toMatchObject({
+			ok: false,
+			error: { code: "worker_conflict" },
+		});
 	});
 
 	it("maps child disconnect and invalid receipt correlation to lost", async () => {
@@ -305,6 +335,7 @@ describe("Operation Worker supervisor", () => {
 		if (!confirmedOutcome.ok) throw confirmedOutcome.error;
 		expect(confirmedOutcome).toMatchObject({ ok: true, value: { status: "cancelled" } });
 		expect(confirmed.supervisor.snapshot.record?.status).toBe("cancelled");
+		expect(await confirmed.supervisor.cancel()).toEqual({ ok: true, value: undefined });
 
 		const timedOut = create("cancel_timeout", { config: { cancelTimeoutMs: 40 } });
 		await activate(timedOut.supervisor, timedOut.workerBinding);

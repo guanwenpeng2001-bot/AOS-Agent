@@ -392,6 +392,7 @@ export class WorkerSupervisorV1 {
 		const sent = await this.sendFrame(frame);
 		if (!sent.ok) {
 			this.markLost("worker_operation_invalid");
+			await this.ensureProcessStoppedAndCleaned();
 			return Result.err(sent.error);
 		}
 		this.armWatchdog();
@@ -418,10 +419,16 @@ export class WorkerSupervisorV1 {
 		reason: WorkerCancelReasonV1 = "cancel",
 		operationId?: string,
 	): Promise<ResultValue<void, FoundationError>> {
-		if (this.lifecycle === undefined || this.child === undefined) {
+		if (this.lifecycle === undefined) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
+		if (this.lifecycle.record.status === "lost") {
+			return Result.err(stableError("worker_lost", "Operation Worker lost a trusted terminal outcome"));
+		}
 		if (isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) return Result.ok(undefined);
+		if (this.child === undefined) {
+			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
+		}
 		if (this.lifecycle.record.status !== "ready" && this.lifecycle.record.status !== "running" && this.lifecycle.record.status !== "cancelling") {
 			return Result.err(stableError("worker_conflict", "Operation Worker cannot be cancelled"));
 		}
