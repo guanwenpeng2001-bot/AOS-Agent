@@ -1,0 +1,263 @@
+import { PassThrough } from "node:stream";
+import { describe, expect, it } from "vitest";
+import {
+	serializeWorkerFrameLineV1,
+	type SafeLeaseProjectionV1,
+	type SafeLeaseReferenceV1,
+	type WorkerEventFrameV1,
+	type WorkerRequestFrameV1,
+} from "../src/core/worker-protocol.ts";
+import { WorkerRuntimeV1 } from "../src/core/worker-runtime.ts";
+import type { WorkerBindingV1 } from "../src/core/worker.ts";
+import { runWorkerEntryV1 } from "../src/worker-entry.ts";
+import { FakeWorkerProviderV1 } from "./fixtures/fake-worker-provider.ts";
+
+const binding: WorkerBindingV1 = {
+	schemaVersion: 1,
+	workerId: "worker-1",
+	providerId: "sandbox-worker",
+	sessionId: "session-1",
+	laneId: "main",
+	runId: "run-1",
+	bindingId: "binding-1",
+	bindingEpochId: "epoch-1",
+	attemptId: "attempt-1",
+	profileId: "local-worker",
+	profileRevision: 1,
+	capabilitySummary: ["filesystem.read", "process.spawn"],
+	deadlineAt: Date.parse("2026-08-21T00:01:00.000Z"),
+	credentialTargetRefs: ["target-1"],
+	requestFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+};
+
+const request = {
+	schemaVersion: 1 as const,
+	operationId: "operation-1",
+	providerId: binding.providerId,
+	bindingId: binding.bindingId,
+	bindingEpochId: binding.bindingEpochId,
+	attemptId: binding.attemptId,
+	taskId: "task-1",
+	dispatchId: "dispatch-1",
+	toolCallId: "tool-call-1",
+	payload: { result: "ok" },
+};
+
+const initialize: WorkerRequestFrameV1 = { type: "initialize", requestId: "initialize-1", binding };
+const execute: WorkerRequestFrameV1 = {
+	type: "execute",
+	requestId: "execute-1",
+	workerId: binding.workerId,
+	operationId: request.operationId,
+	request,
+};
+const lease: SafeLeaseProjectionV1 = {
+	schemaVersion: 1,
+	leaseId: "lease-1",
+	grantId: "grant-1",
+	bindingId: binding.bindingId!,
+	scopeDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	expiresAt: "2026-08-21T00:01:00.000Z",
+	clientRequestId: "credential-1",
+};
+const leaseRef: SafeLeaseReferenceV1 = {
+	schemaVersion: 1,
+	leaseId: lease.leaseId,
+	grantId: lease.grantId,
+	bindingId: lease.bindingId,
+	clientRequestId: lease.clientRequestId,
+};
+
+function harness(provider = new FakeWorkerProviderV1()): {
+	readonly provider: FakeWorkerProviderV1;
+	readonly runtime: WorkerRuntimeV1;
+	readonly frames: WorkerEventFrameV1[];
+	readonly diagnostics: string[];
+} {
+	const frames: WorkerEventFrameV1[] = [];
+	const diagnostics: string[] = [];
+	const runtime = new WorkerRuntimeV1({
+		provider,
+		emit: (frame) => {
+			frames.push(frame);
+		},
+		diagnostic: (line) => diagnostics.push(line),
+		now: () => "2026-08-21T00:00:01.000Z",
+		heartbeatIntervalMs: 0,
+	});
+	return { provider, runtime, frames, diagnostics };
+}
+
+describe("trusted Operation Worker runtime", () => {
+	it("emits ready only after initialize and requires exact provider capabilities", async () => {
+		const accepted = harness();
+		expect(accepted.frames).toEqual([]);
+		await accepted.runtime.receiveFrame(initialize);
+		expect(accepted.frames).toEqual([
+			{
+				type: "ready",
+				requestId: initialize.requestId,
+				workerId: binding.workerId,
+				providerId: binding.providerId,
+				requestFingerprint: binding.requestFingerprint,
+				capabilities: binding.capabilitySummary,
+			},
+		]);
+
+		const mismatch = harness(new FakeWorkerProviderV1({ capabilities: ["filesystem.read"] }));
+		await mismatch.runtime.receiveFrame(initialize);
+		expect(mismatch.frames).toEqual([
+			expect.objectContaining({ type: "error", requestId: initialize.requestId, code: "sandbox_capability_insufficient" }),
+		]);
+		expect(mismatch.runtime.closed).toBe(true);
+	});
+
+	it("executes only through the injected provider and emits one correlated WorkerReceiptV1", async () => {
+		const state = harness();
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.receiveFrame(execute);
+		await state.runtime.waitForIdle();
+
+		expect(state.provider.starts).toHaveLength(1);
+		expect(state.provider.starts[0]).toMatchObject({
+			request,
+			correlation: {
+				sessionId: binding.sessionId,
+				laneId: binding.laneId,
+				providerId: binding.providerId,
+				operationId: request.operationId,
+				taskId: request.taskId,
+				dispatchId: request.dispatchId,
+				attemptId: request.attemptId,
+			},
+		});
+		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "operation.completed", "receipt"]);
+		const receipts = state.frames.filter((frame) => frame.type === "receipt");
+		expect(receipts).toHaveLength(1);
+		expect(receipts[0]).toMatchObject({
+			receipt: {
+				schemaVersion: 1,
+				sandboxProviderId: binding.providerId,
+				operationId: request.operationId,
+				status: "succeeded",
+				sideEffectState: "none",
+			},
+		});
+		await state.runtime.receiveFrame(execute);
+		expect(state.runtime.closed).toBe(true);
+		expect(state.frames.filter((frame) => frame.type === "receipt")).toHaveLength(1);
+	});
+
+	it("fails closed on invalid input and receipt correlation drift", async () => {
+		const invalid = harness();
+		await invalid.runtime.receiveLine('{"type":"unknown","secret":"must-not-leak"}');
+		expect(invalid.runtime.closed).toBe(true);
+		expect(invalid.frames).toEqual([]);
+		expect(invalid.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+
+		const drift = harness(new FakeWorkerProviderV1({ startBehavior: "correlation-drift" }));
+		await drift.runtime.receiveFrame(initialize);
+		await drift.runtime.receiveFrame(execute);
+		await drift.runtime.waitForIdle();
+		expect(drift.runtime.closed).toBe(true);
+		expect(drift.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "error"]);
+		expect(drift.frames.at(-1)).toMatchObject({ code: "worker_receipt_invalid" });
+	});
+
+	it("projects, renews, and revokes safe credential references and reports target failures", async () => {
+		const state = harness(new FakeWorkerProviderV1({ failedCredentialActions: ["renew"] }));
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.receiveFrame({ type: "credential.project", requestId: "project-1", workerId: binding.workerId, lease });
+		await state.runtime.receiveFrame({ type: "credential.renew", requestId: "renew-1", workerId: binding.workerId, lease });
+		await state.runtime.receiveFrame({ type: "credential.revoke", requestId: "revoke-1", workerId: binding.workerId, leaseRef });
+
+		expect(state.provider.projectedLeases).toEqual([lease]);
+		expect(state.provider.renewedLeases).toEqual([lease]);
+		expect(state.provider.revokedLeases).toEqual([leaseRef]);
+		expect(state.frames.filter((frame) => frame.type === "error")).toEqual([
+			expect.objectContaining({ requestId: "renew-1", code: "task_credential_target_unavailable" }),
+		]);
+	});
+
+	it("forwards cancel without treating its acknowledgement as side-effect closure", async () => {
+		const state = harness(new FakeWorkerProviderV1({ startBehavior: "pending" }));
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.receiveFrame(execute);
+		await state.runtime.receiveFrame({ type: "cancel", requestId: "cancel-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
+
+		expect(state.provider.cancellations).toEqual([request.operationId]);
+		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started"]);
+		state.provider.completePending();
+		await state.runtime.waitForIdle();
+		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "operation.completed", "receipt"]);
+	});
+
+	it("reports heartbeat as liveness only, responds to ping, and reclaims the provider", async () => {
+		const state = harness();
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.emitHeartbeat();
+		await state.runtime.receiveFrame({ type: "ping", requestId: "ping-1", workerId: binding.workerId });
+		expect(state.frames.slice(1)).toEqual([
+			{ type: "heartbeat", workerId: binding.workerId, sequence: 1, at: "2026-08-21T00:00:01.000Z" },
+			{ type: "pong", requestId: "ping-1", workerId: binding.workerId, at: "2026-08-21T00:00:01.000Z" },
+		]);
+		await state.runtime.receiveFrame({ type: "reclaim", requestId: "reclaim-1", workerId: binding.workerId });
+		expect(state.provider.disposeCalls).toBe(1);
+		expect(state.runtime.closed).toBe(true);
+
+		const failed = harness(new FakeWorkerProviderV1({ disposeThrows: true }));
+		await failed.runtime.receiveFrame(initialize);
+		await failed.runtime.receiveFrame({ type: "reclaim", requestId: "reclaim-2", workerId: binding.workerId });
+		expect(failed.frames.at(-1)).toMatchObject({ type: "error", requestId: "reclaim-2", code: "worker_reclaim_failed" });
+		expect(failed.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+		expect(failed.runtime.closed).toBe(true);
+	});
+
+	it("redacts provider throws and keeps stdout frames protocol-only", async () => {
+		const state = harness(new FakeWorkerProviderV1({ startBehavior: "throw" }));
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.receiveFrame(execute);
+		await state.runtime.waitForIdle();
+		expect(state.frames.at(-1)).toMatchObject({ type: "error", requestId: execute.requestId, code: "worker_start_failed" });
+		const diagnostic = state.diagnostics.join("");
+		expect(diagnostic).toBe("[redacted worker diagnostic]\n");
+		expect(diagnostic).not.toContain("worker-runtime-secret");
+		expect(JSON.stringify(state.frames)).not.toContain("worker-runtime-secret");
+	});
+
+	it("runs the stdio entry as bounded JSONL without diagnostic contamination", async () => {
+		const input = new PassThrough();
+		const output = new PassThrough();
+		const diagnostic = new PassThrough();
+		let stdoutText = "";
+		let stderrText = "";
+		output.setEncoding("utf8");
+		diagnostic.setEncoding("utf8");
+		output.on("data", (chunk: string) => {
+			stdoutText += chunk;
+		});
+		diagnostic.on("data", (chunk: string) => {
+			stderrText += chunk;
+		});
+
+		const run = runWorkerEntryV1({
+			provider: new FakeWorkerProviderV1({ startBehavior: "throw" }),
+			input,
+			output,
+			diagnostic,
+			now: () => "2026-08-21T00:00:01.000Z",
+			heartbeatIntervalMs: 0,
+		});
+		input.end(`${serializeWorkerFrameLineV1(initialize)}${serializeWorkerFrameLineV1(execute)}`);
+		await run;
+
+		const frames = stdoutText.trim().split("\n").map((line) => JSON.parse(line) as unknown);
+		expect(frames).toEqual([
+			expect.objectContaining({ type: "ready" }),
+			expect.objectContaining({ type: "operation.started" }),
+			expect.objectContaining({ type: "error", code: "worker_start_failed" }),
+		]);
+		expect(stderrText).toBe("[redacted worker diagnostic]\n");
+		expect(stdoutText).not.toContain("worker-runtime-secret");
+	});
+});
