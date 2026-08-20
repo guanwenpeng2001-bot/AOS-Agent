@@ -246,6 +246,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {
 		const model = session.model!;
+		settingsManager.applyOverrides({ compaction: { reserveTokens: 1024 } });
 
 		// A successful assistant message with token usage just over the compaction threshold.
 		// Compute this from the selected model so generated catalog context-window changes do not break the test.
