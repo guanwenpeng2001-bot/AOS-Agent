@@ -40,6 +40,12 @@ function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
 }
 
+function pathsEqual(left: string, right: string): boolean {
+	const leftPath = canonicalizePath(resolvePath(left));
+	const rightPath = canonicalizePath(resolvePath(right));
+	return process.platform === "win32" ? leftPath.toLowerCase() === rightPath.toLowerCase() : leftPath === rightPath;
+}
+
 function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
 	let currentDir = normalizeCwd(cwd);
 	while (true) {
@@ -193,8 +199,11 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 
 	while (true) {
 		const agentsSkillsDir = join(currentDir, ".agents", "skills");
-		if (agentsSkillsDir !== userAgentsSkillsDir && existsSync(agentsSkillsDir)) {
+		if (!pathsEqual(agentsSkillsDir, userAgentsSkillsDir) && existsSync(agentsSkillsDir)) {
 			return true;
+		}
+		if (pathsEqual(currentDir, homeDir)) {
+			return false;
 		}
 
 		const parentDir = dirname(currentDir);

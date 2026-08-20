@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
 import { fileURLToPath } from "url";
@@ -222,11 +222,15 @@ function getGlobalPackageRoots(method: InstallMethod, _packageName: string, npmC
 				requireSuccess: configured,
 			});
 			const inferred = configured ? undefined : getInferredNpmInstall();
-			return [root, inferred?.root].filter((x): x is string => !!x);
+			const configuredLegacyRoot =
+				configured && root && basename(dirname(root)) !== "lib"
+					? join(dirname(root), "lib", "node_modules")
+					: undefined;
+			return [root, configuredLegacyRoot, inferred?.root].filter((x): x is string => !!x);
 		}
 		case "pnpm": {
 			const root = readCommandOutput("pnpm", ["root", "-g"]);
-			if (root) return [root, dirname(root)];
+			if (root) return [root, join(root, "node_modules"), dirname(root)];
 			const match = /^(.*[\\/]global[\\/][^\\/]+)[\\/]\.pnpm[\\/]/.exec(getPackageDir());
 			return match ? [match[1]] : [];
 		}
@@ -293,8 +297,12 @@ function getEntrypointPackageDir(): string | undefined {
 function isSelfUpdatePathWritable(): boolean {
 	const packageDir = getPackageDir();
 	try {
-		accessSync(packageDir, constants.W_OK);
-		accessSync(dirname(packageDir), constants.W_OK);
+		for (const path of [packageDir, dirname(packageDir)]) {
+			accessSync(path, constants.W_OK);
+			if (process.platform === "win32" && (statSync(path).mode & 0o222) === 0) {
+				return false;
+			}
+		}
 		return true;
 	} catch {
 		return false;

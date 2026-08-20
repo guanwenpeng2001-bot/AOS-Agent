@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { getModel } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -41,7 +41,8 @@ describe("createAgentSession session manager defaults", () => {
 		const sessionFile = session.sessionManager.getSessionFile();
 
 		expect(sessionDir).toBe(expectedSessionDir);
-		expect(sessionFile?.startsWith(`${expectedSessionDir}${sep}`)).toBe(true);
+		expect(sessionFile).toBeDefined();
+		expect(dirname(sessionFile!)).toBe(expectedSessionDir);
 
 		session.dispose();
 	});
@@ -87,8 +88,8 @@ describe("createAgentSession session manager defaults", () => {
 			.filter((item): item is { type: "text"; text: string } => item.type === "text")
 			.map((item) => item.text)
 			.join("");
-
-		expect(realpathSync(output.trim())).toBe(realpathSync(sessionCwd));
+		const shellPath = output.trim().replace(/^\/tmp(?=\/|$)/, tmpdir().replace(/\\/g, "/"));
+		expect(realpathSync(shellPath)).toBe(realpathSync(sessionCwd));
 
 		session.dispose();
 	});
