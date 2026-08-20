@@ -344,6 +344,19 @@ const EXPECTED_T7_CLOSURES: Readonly<Record<number, { closure: FoundationCapabil
 	129: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/workflow-store.ts", tests: ["packages/agent/test/harness/foundation-t7-workflow-store.test.ts"] },
 };
 
+const EXPECTED_T11_ADVANCED_CLOSURES: Readonly<
+	Record<number, { closure: FoundationCapabilityClosureStatus; ownerModule: string }>
+> = {
+	27: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/observer.ts" },
+	56: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/identity.ts" },
+	60: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/foundation/observer.ts" },
+	68: { closure: "regression_locked", ownerModule: "packages/coding-agent/src/core/sdk.ts" },
+	69: { closure: "implemented", ownerModule: "packages/coding-agent/src/modes/rpc/rpc-transport.ts" },
+	70: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/observer.ts" },
+	71: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/providers.ts" },
+	72: { closure: "implemented", ownerModule: "packages/agent/src/harness/foundation/protocol.ts" },
+};
+
 /** Future Role-related capabilities that must explicitly consume role contracts in their upstream list. */
 const FUTURE_ROLE_CONTRACT_IDS = [91, 96, 109, 110, 132, 138, 147];
 
@@ -505,6 +518,20 @@ describe("Foundation v1 capability manifest", () => {
 			expect(entry, `T7 closure ${id} is missing`).toBeDefined();
 			expect(entry).toMatchObject(expected);
 			expect(entry?.tests).toEqual(expected.tests);
+		}
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)?.closure).toBe("contract_drafted");
+	});
+
+	it("closes every T11 recovery and migration capability without advancing unrelated drafts", () => {
+		const t11Ids = expandStageSpec(EXPECTED_STAGE_SPECS.T11);
+		for (const id of t11Ids) {
+			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
+			expect(entry, `T11 closure ${id} is missing`).toBeDefined();
+			expect(entry?.closure, `T11 closure ${id} must be wired`).not.toBe("contract_drafted");
+		}
+		for (const [idText, expected] of Object.entries(EXPECTED_T11_ADVANCED_CLOSURES)) {
+			const id = Number(idText);
+			expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === id)).toMatchObject(expected);
 		}
 		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)?.closure).toBe("contract_drafted");
 	});

@@ -30,9 +30,11 @@ import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
 import {
 	createBashTool,
+	createAllTools,
 	createCodingTools,
 	createEditTool,
 	createFindTool,
@@ -374,8 +376,71 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const excludedToolNames = options.excludeTools;
 	const excludedToolNameSet = excludedToolNames ? new Set(excludedToolNames) : undefined;
 	const initialActiveToolNames: string[] = (
-		options.tools ? [...options.tools] : options.noTools ? [] : defaultActiveToolNames
+		options.tools
+			? [...options.tools]
+			: options.noTools === "all"
+				? []
+				: [
+					...(options.noTools === "builtin" ? [] : defaultActiveToolNames),
+					...(options.customTools ?? []).map((tool) => tool.name),
+				]
 	).filter((name) => !excludedToolNameSet?.has(name));
+	let sessionForToolEnvironment: AgentSession | undefined;
+	const baseToolsOverride = createAllTools(cwd, {
+		bash: {
+			spawnHook: (context) => {
+				const currentModel = sessionForToolEnvironment?.model ?? model;
+				const currentThinkingLevel = sessionForToolEnvironment?.thinkingLevel ?? thinkingLevel;
+				const sessionFile = sessionForToolEnvironment?.sessionFile ?? sessionManager.getSessionFile();
+				return {
+					...context,
+					env: {
+						...context.env,
+						AOS_AGENT_SESSION_ID: sessionManager.getSessionId(),
+						...(sessionFile === undefined ? {} : { AOS_AGENT_SESSION_FILE: sessionFile }),
+						...(currentModel === undefined
+							? {}
+							: { AOS_AGENT_PROVIDER: currentModel.provider, AOS_AGENT_MODEL: currentModel.id }),
+						AOS_AGENT_REASONING_LEVEL: currentThinkingLevel,
+					},
+				};
+			},
+		},
+	});
+	const initialToolSnippets: Record<string, string> = {};
+	const initialPromptGuidelines: string[] = [];
+	for (const tool of [...Object.values(baseToolsOverride), ...(options.customTools ?? [])]) {
+		if (!initialActiveToolNames.includes(tool.name)) continue;
+		const promptTool = tool as typeof tool & { promptSnippet?: unknown; promptGuidelines?: readonly unknown[] };
+		if (typeof promptTool.promptSnippet === "string" && promptTool.promptSnippet.trim().length > 0) {
+			initialToolSnippets[tool.name] = promptTool.promptSnippet;
+		}
+		for (const guideline of promptTool.promptGuidelines ?? []) {
+			if (typeof guideline === "string") initialPromptGuidelines.push(guideline);
+		}
+	}
+	const appendSystemPrompt = resourceLoader.getAppendSystemPrompt().join("\n\n");
+	const contextEnabled = settingsManager.getContextSettings().enabled;
+	const initialSystemPrompt = buildSystemPrompt({
+		cwd,
+		customPrompt: resourceLoader.getSystemPrompt(),
+		...(appendSystemPrompt.length === 0 ? {} : { appendSystemPrompt }),
+		selectedTools: initialActiveToolNames,
+		toolSnippets: initialToolSnippets,
+		promptGuidelines: initialPromptGuidelines,
+		instructionBlocks: contextEnabled
+			? []
+			: resourceLoader.getContextSources().contextSources
+				.filter((source) => source.injectable)
+				.map((source) => ({
+					sourceId: source.sourceId,
+					path: source.path,
+					content: source.content,
+					scope: source.scope,
+					trust: source.trust,
+				})),
+		skills: contextEnabled ? [] : resourceLoader.getSkills().skills,
+	});
 
 	let agent: Agent;
 
@@ -420,7 +485,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	agent = new Agent({
 		initialState: {
-			systemPrompt: "",
+			systemPrompt: initialSystemPrompt,
 			model,
 			thinkingLevel,
 			tools: [],
@@ -519,6 +584,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,
+		baseToolsOverride,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 		capabilityRegistry,
@@ -532,6 +598,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		noTools: options.noTools,
 	});
+	sessionForToolEnvironment = session;
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
 		const selection = modelBroker.resolveResult({
 			...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),

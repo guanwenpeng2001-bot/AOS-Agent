@@ -415,6 +415,7 @@ const closures = [
 			"packages/agent/test/harness/agent-harness-runtime.test.ts",
 			"packages/agent/test/harness/recovery-conformance.test.ts",
 			"packages/agent/test/harness/session/jsonl.test.ts",
+			"packages/agent/test/harness/session/t11r-recovery.test.ts",
 		],
 		laterConsumer: "14",
 		laterCapabilityIds: [143],
@@ -925,7 +926,11 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/session/index.ts",
 		publicContract: "Single-writer Session lease with fencing; stale attempt results isolated",
 		persistence: "Writer lease, fencing token and revision records in the ledger",
-		tests: ["packages/agent/test/harness/recovery-conformance.test.ts", "packages/agent/test/harness/session/jsonl.test.ts"],
+		tests: [
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+			"packages/agent/test/harness/session/jsonl.test.ts",
+			"packages/agent/test/harness/session/t11r-recovery.test.ts",
+		],
 		laterConsumer: "14",
 		laterCapabilityIds: [120, 143],
 	},
@@ -1085,7 +1090,10 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/foundation/protocol.ts",
 		publicContract: "Protocol compatibility matrix, feature negotiation, migration registry and rollback",
 		persistence: "Migration plans with temp target and atomic replace; unknown schema fails closed",
-		tests: ["packages/agent/test/harness/foundation-contracts.test.ts"],
+		tests: [
+			"packages/agent/test/harness/foundation-contracts.test.ts",
+			"packages/agent/test/harness/session/t11r-recovery.test.ts",
+		],
 		laterConsumer: "14",
 		laterCapabilityIds: [150],
 	},
@@ -1693,8 +1701,10 @@ const futureOwners = [
  * retain their contract-drafted closure state until their owning
  * implementation slice is merged. T6 wires C011 and C050 through the
  * scoped gateway contract; later ModelBroker composition remains deferred.
- * T7 wires only C014-C016 and C127-C129; C073 remains drafted because the
- * evaluation dataset and regression runner are not implemented by this slice.
+ * T7 wires only C014-C016 and C127-C129; T11 closes recovery, migration,
+ * replay continuity, public SDK/transport readiness, and protocol rollback.
+ * C073 remains drafted because the evaluation dataset and regression runner
+ * are not implemented by these slices.
  */
 const WIRED_CLOSURE_IDS = new Set([
 	1,
@@ -1719,6 +1729,7 @@ const WIRED_CLOSURE_IDS = new Set([
 	24,
 	25,
 	26,
+	27,
 	28,
 	29,
 	30,
@@ -1738,14 +1749,22 @@ const WIRED_CLOSURE_IDS = new Set([
 	44,
 	45,
 	46,
+	47,
 	49,
 	50,
 	53,
+	56,
 	57,
 	58,
 	59,
+	60,
 	61,
 	67,
+	68,
+	69,
+	70,
+	71,
+	72,
 	127,
 	128,
 	129,
