@@ -525,11 +525,6 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return result;
 	}
 
-	/** Wait until every write accepted by this storage instance has settled. */
-	drain(): Promise<void> {
-		return this.tail.promise;
-	}
-
 	private physicalEntries(): SessionEntry[] {
 		return this.manager.getPhysicalEntries();
 	}
