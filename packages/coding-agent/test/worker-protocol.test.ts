@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { WorkerReceiptV1 } from "@aos-agent/agent-core";
 import {
 	WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES,
 	WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES,
@@ -56,12 +57,14 @@ const request = {
 function applyRequest(state: WorkerProtocolStateV1, frame: WorkerRequestFrameV1): WorkerProtocolStateV1 {
 	const result = applyWorkerRequestFrameV1(state, frame);
 	if (!result.ok) throw result.error;
+	if (!protocolStateValid(result.value.state)) throw new Error("accepted Host transition produced invalid protocol state");
 	return result.value.state;
 }
 
 function applyEvent(state: WorkerProtocolStateV1, frame: WorkerEventFrameV1): WorkerProtocolStateV1 {
 	const result = applyWorkerEventFrameV1(state, frame);
 	if (!result.ok) throw result.error;
+	if (!protocolStateValid(result.value.state)) throw new Error("accepted Worker transition produced invalid protocol state");
 	return result.value.state;
 }
 
@@ -154,6 +157,25 @@ describe("private Operation Worker protocol", () => {
 		expect(validateWorkerEventFrameV1({ type: "error", workerId: binding.workerId, code: "worker_not_a_real_code" })).toBe(false);
 		expect(validateSafeOperationResultV1({ ...completedResult, error: { code: "worker_not_a_real_code", message: "safe", retryable: false } })).toBe(false);
 		expect(validateWorkerEventFrameV1({ type: "error", workerId: binding.workerId, code: "worker_cancel_failed" })).toBe(true);
+		for (const message of [
+			"PID=1234",
+			"executable=/usr/bin/worker",
+			"argv=--secret",
+			"cwd=/tmp/work",
+			"path=/tmp/work",
+			"env=TOKEN",
+			"stdout=private output",
+			"stderr=private error",
+			"prompt=private prompt",
+			"secret=private",
+			"token=private",
+			"header=Authorization",
+			"provider stack trace",
+			"VM/QEMU detail",
+			"raw frame payload",
+		]) {
+			expect(validateSafeOperationResultV1({ ...completedResult, error: { code: "worker_cancel_failed", message, retryable: false } })).toBe(false);
+		}
 	});
 
 	it("enforces started and terminal once, including duplicate responses and receipts", () => {
@@ -167,11 +189,42 @@ describe("private Operation Worker protocol", () => {
 		expect(applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "late" })).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 	});
 
+	it("blocks a completed operation until receipt, then unblocks execute", () => {
+		const secondRequest = { ...request, operationId: "operation-2" };
+		let state = runningState();
+		state = applyEvent(state, { type: "operation.completed", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, result: completedResult });
+		expect(protocolStateValid(state)).toBe(true);
+		const secondFrame: WorkerRequestFrameV1 = { type: "execute", requestId: "execute-2", workerId: binding.workerId, operationId: secondRequest.operationId, request: secondRequest };
+		expect(applyWorkerRequestFrameV1(state, secondFrame)).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
+		state = applyEvent(state, { type: "receipt", requestId: "execute-1", receipt });
+		expect(protocolStateValid(state)).toBe(true);
+		expect(applyWorkerRequestFrameV1(state, secondFrame)).toMatchObject({ ok: true });
+
+		let errorResolved = runningState();
+		errorResolved = applyEvent(errorResolved, { type: "error", requestId: "execute-1", workerId: binding.workerId, code: "worker_operation_invalid" });
+		expect(protocolStateValid(errorResolved)).toBe(true);
+		expect(applyWorkerRequestFrameV1(errorResolved, secondFrame)).toMatchObject({ ok: true });
+	});
+
 	it("rejects receipt correlation drift against the execute request and binding", () => {
 		let state = runningState();
 		state = applyEvent(state, { type: "operation.completed", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, result: completedResult });
 		const correlation = receipt.provenance.correlation!;
-		const receiptFrame = (value: typeof receipt): WorkerEventFrameV1 => ({ type: "receipt", requestId: "execute-1", receipt: value });
+		const receiptFrame = (value: WorkerReceiptV1): WorkerEventFrameV1 => ({ type: "receipt", requestId: "execute-1", receipt: value });
+		const receiptWithoutField = (field: "taskId" | "dispatchId" | "attemptId"): WorkerEventFrameV1 => {
+			const value: Record<string, unknown> = { ...receipt };
+			Reflect.deleteProperty(value, field);
+			return receiptFrame(value as unknown as WorkerReceiptV1);
+		};
+		const receiptWithoutCorrelationField = (field: "taskId" | "dispatchId" | "attemptId"): WorkerEventFrameV1 => {
+			const nextCorrelation: Record<string, unknown> = { ...correlation };
+			Reflect.deleteProperty(nextCorrelation, field);
+			return receiptFrame({ ...receipt, provenance: { ...receipt.provenance, correlation: nextCorrelation } } as unknown as WorkerReceiptV1);
+		};
+		for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
+			expect(applyWorkerEventFrameV1(state, receiptWithoutField(field))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+			expect(applyWorkerEventFrameV1(state, receiptWithoutCorrelationField(field))).toMatchObject({ ok: false, error: { code: "worker_receipt_invalid" } });
+		}
 		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, taskId: "task-2", provenance: { ...receipt.provenance, correlation: { ...correlation, taskId: "task-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
 		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, dispatchId: "dispatch-2", provenance: { ...receipt.provenance, correlation: { ...correlation, dispatchId: "dispatch-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
 		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, attemptId: "attempt-2", provenance: { ...receipt.provenance, correlation: { ...correlation, attemptId: "attempt-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
@@ -183,11 +236,17 @@ describe("private Operation Worker protocol", () => {
 
 	it("validates protocol state phase, response cardinality, and operation invariants", () => {
 		const ready = readyState();
+		expect(protocolStateValid({ ...ready, extra: true })).toBe(false);
 		expect(protocolStateValid({ ...ready, phase: "invalid" as WorkerProtocolStateV1["phase"] })).toBe(false);
 		expect(protocolStateValid({ ...ready, requests: ready.requests.map((item) => ({ ...item, responseCount: 2 })) })).toBe(false);
 		expect(protocolStateValid({ ...ready, requests: ready.requests.map((item) => ({ ...item, responseType: "pong" as const })) })).toBe(false);
+		expect(protocolStateValid({ ...ready, requests: ready.requests.map((item) => ({ ...item, responseCount: 1, responseType: "pong" as const })) })).toBe(false);
+	expect(protocolStateValid({ ...ready, readyRequestId: "other-request" })).toBe(false);
 		const running = runningState();
+		expect(protocolStateValid({ ...running, requests: running.requests.map((item) => item.type === "execute" ? { ...item, responseCount: 1, responseType: "receipt" as const } : item) })).toBe(false);
 		expect(protocolStateValid({ ...running, operations: running.operations.map((item) => ({ ...item, requestId: "other-request" })) })).toBe(false);
+		expect(protocolStateValid({ ...running, operations: running.operations.map((item) => ({ ...item, extra: true })) })).toBe(false);
+		expect(protocolStateValid({ ...running, requests: running.requests.map((item) => ({ ...item, extra: true })) })).toBe(false);
 		expect(applyWorkerRequestFrameV1({ ...ready, phase: "invalid" as WorkerProtocolStateV1["phase"] }, { type: "ping", requestId: "ping-1", workerId: binding.workerId })).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
 	});
 
@@ -261,6 +320,15 @@ describe("private Operation Worker protocol", () => {
 		const ready = new FakeWorkerProtocolTransportV1(binding, "ready");
 		const readyResult = ready.send({ type: "initialize", requestId: "initialize-1", binding });
 		expect(readyResult.ok).toBe(true);
+		const heartbeat = new FakeWorkerProtocolTransportV1(binding, "ready");
+		heartbeat.send({ type: "initialize", requestId: "initialize-1", binding });
+		const heartbeatOutput = heartbeat.sendHeartbeat(1, "2026-08-21T00:00:03.000Z");
+		expect(heartbeatOutput).toMatchObject({ ok: true, value: [expect.stringContaining('"type":"heartbeat"')] });
+		if (heartbeatOutput.ok) expect(parseWorkerFrameV1(heartbeatOutput.value[0]!).ok).toBe(true);
+		expect(heartbeat.state).toMatchObject({ heartbeatSequence: 1, lastHeartbeatAt: "2026-08-21T00:00:03.000Z" });
+		expect(heartbeat.state.binding?.deadlineAt).toBe(binding.deadlineAt);
+		expect(heartbeat.sendHeartbeat(1, "2026-08-21T00:00:04.000Z")).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
+		expect(heartbeat.sendHeartbeat(2, "2026-08-21T00:00:02.000Z")).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 
 		const slow = new FakeWorkerProtocolTransportV1(binding, "slow");
 		expect(slow.send({ type: "initialize", requestId: "initialize-1", binding }).ok).toBe(true);
@@ -271,11 +339,8 @@ describe("private Operation Worker protocol", () => {
 		cancel.send({ type: "initialize", requestId: "initialize-1", binding });
 		cancel.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		const cancelOutput = cancel.send({ type: "cancel", requestId: "cancel-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
-		expect(cancelOutput).toMatchObject({ ok: true, value: expect.arrayContaining([expect.stringContaining("worker_cancel_failed")]) });
-		if (cancelOutput.ok) {
-			expect(cancelOutput.value.some((line) => line.includes('"type":"operation.completed"'))).toBe(false);
-			expect(cancelOutput.value.some((line) => line.includes('"type":"receipt"'))).toBe(false);
-		}
+		expect(cancelOutput).toMatchObject({ ok: true, value: [] });
+		expect(cancel.state.phase).toBe("cancelling");
 		expect(cancel.state.operations[0]).toMatchObject({ started: true, terminal: false, receiptReceived: false });
 
 		const receiptTransport = new FakeWorkerProtocolTransportV1(binding, "receipt");

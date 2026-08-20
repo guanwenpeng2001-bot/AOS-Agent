@@ -74,15 +74,19 @@ export class FakeWorkerProtocolTransportV1 {
 			}
 			return Result.ok(this.takeStdout());
 		}
-		if (frame.type === "cancel" && this.mode === "cancel_ack" && frame.operationId !== undefined) {
-			this.emit({
-				type: "error",
-				requestId: frame.requestId,
-				workerId: frame.workerId,
-				code: "worker_cancel_failed",
-			});
-		}
 		return Result.ok(this.takeStdout());
+	}
+
+	heartbeat(sequence: number, at: string): ResultValue<readonly string[], FoundationError> {
+		const frame: WorkerEventFrameV1 = { type: "heartbeat", workerId: this.binding.workerId, sequence, at };
+		const accepted = this.session.receiveWorkerFrame(frame);
+		if (!accepted.ok) return accepted;
+		this.stdoutLines.push(serializeWorkerFrameLineV1(frame));
+		return Result.ok(this.takeStdout());
+	}
+
+	sendHeartbeat(sequence: number, at: string): ResultValue<readonly string[], FoundationError> {
+		return this.heartbeat(sequence, at);
 	}
 
 	stderr(diagnostic: string): string {

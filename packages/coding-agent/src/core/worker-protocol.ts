@@ -301,6 +301,26 @@ const PUBLIC_ERROR_CATEGORIES = new Set([
 	"side_effect_unknown",
 	"unknown",
 ]);
+const PUBLIC_ERROR_FORBIDDEN_DIAGNOSTIC_PATTERNS = [
+	/\bpid\b/i,
+	/\bexecutable\b/i,
+	/\bargv\b/i,
+	/\bcwd\b/i,
+	/\bpath\b/i,
+	/(?:^|[\s:=])(?:[A-Za-z]:)?[\\/][^\s]*/i,
+	/\benv(?:ironment)?\b/i,
+	/\bstdout\b/i,
+	/\bstderr\b/i,
+	/\bprompt\b/i,
+	/\bsecret\b/i,
+	/\btoken\b/i,
+	/\bheader\b/i,
+	/\bprovider\b/i,
+	/\bstack\b/i,
+	/\bvm\b/i,
+	/\bqemu\b/i,
+	/\braw(?:\s+frame)?\b/i,
+] as const;
 
 type RecordValue = Record<string, unknown>;
 type ProtocolResult<TValue> = ResultValue<TValue, FoundationError>;
@@ -317,9 +337,9 @@ function isRecord(value: unknown): value is RecordValue {
 
 function hasExactKeys(value: RecordValue, required: readonly string[], optional: readonly string[] = []): boolean {
 	const allowed = new Set([...required, ...optional]);
-	const keys = Object.keys(value);
+	const keys = Reflect.ownKeys(value);
 	return (
-		keys.every((key) => allowed.has(key) && value[key] !== undefined) &&
+		keys.every((key) => typeof key === "string" && allowed.has(key) && value[key] !== undefined) &&
 		required.every((key) => Object.hasOwn(value, key))
 	);
 }
@@ -427,14 +447,16 @@ function isBoundedFoundationJson(value: unknown, maxBytes: number): value is Fou
 
 function isSafePublicError(value: unknown): value is PublicExecutionErrorV1 {
 	if (!isRecord(value) || !hasExactKeys(value, ["code", "message", "retryable"], ["category"])) return false;
+	const message = value.message;
 	if (
 		typeof value.code !== "string" ||
 		!FRAME_ERROR_CODES.has(value.code) ||
-		typeof value.message !== "string" ||
-		value.message.length === 0 ||
-		utf8ByteLength(value.message) > 1024 ||
-		/[\u0000-\u001f\u007f]/.test(value.message) ||
-		redactText(value.message) !== value.message ||
+		typeof message !== "string" ||
+		message.length === 0 ||
+		utf8ByteLength(message) > 1024 ||
+		/[\u0000-\u001f\u007f]/.test(message) ||
+		PUBLIC_ERROR_FORBIDDEN_DIAGNOSTIC_PATTERNS.some((pattern) => pattern.test(message)) ||
+		redactText(message) !== message ||
 		typeof value.retryable !== "boolean"
 	) {
 		return false;
@@ -537,8 +559,9 @@ function receiptMatchesRequestAndBinding(receipt: WorkerReceiptV1, request: Work
 		const receiptValue = receipt[field];
 		const correlationValue = correlation[field];
 		const requestValue = request[field];
-		if (receiptValue !== undefined && (requestValue === undefined || receiptValue !== requestValue)) return false;
-		if (correlationValue !== undefined && (requestValue === undefined || correlationValue !== requestValue)) return false;
+		const requestPresent = requestValue !== undefined;
+		if ((receiptValue !== undefined) !== requestPresent || (correlationValue !== undefined) !== requestPresent) return false;
+		if (requestPresent && (receiptValue !== requestValue || correlationValue !== requestValue)) return false;
 	}
 	return true;
 }
@@ -909,8 +932,28 @@ export function createWorkerProtocolStateV1(binding?: WorkerBindingV1): WorkerPr
 export const newWorkerProtocolStateV1 = createWorkerProtocolStateV1;
 export const createWorkerProtocolState = createWorkerProtocolStateV1;
 
+function responseTypeCompatible(type: WorkerRequestFrameTypeV1, responseType: WorkerEventFrameTypeV1): boolean {
+	switch (type) {
+		case "initialize":
+			return responseType === "ready" || responseType === "error";
+		case "execute":
+			return responseType === "receipt" || responseType === "error";
+		case "ping":
+			return responseType === "pong" || responseType === "error";
+		default:
+			return responseType === "error";
+	}
+}
+
 export function protocolStateValid(value: unknown): value is WorkerProtocolStateV1 {
-	if (!isRecord(value) || value.schemaVersion !== WORKER_PROTOCOL_SCHEMA_VERSION || !Array.isArray(value.requests) || !Array.isArray(value.operations)) return false;
+	try {
+	if (
+		!isRecord(value) ||
+		!hasExactKeys(value, ["schemaVersion", "phase", "requests", "operations", "reclaimRequested", "disconnected"], ["binding", "initializedRequestId", "readyRequestId", "heartbeatSequence", "lastHeartbeatAt"]) ||
+		value.schemaVersion !== WORKER_PROTOCOL_SCHEMA_VERSION ||
+		!Array.isArray(value.requests) ||
+		!Array.isArray(value.operations)
+	) return false;
 	const state = value as unknown as WorkerProtocolStateV1;
 	const phases: readonly WorkerProtocolPhaseV1[] = ["new", "initializing", "ready", "running", "cancelling", "terminal", "lost"];
 	if (!phases.includes(state.phase as WorkerProtocolPhaseV1)) return false;
@@ -927,10 +970,10 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 
 	const requestIds = new Set<string>();
 	for (const request of state.requests) {
-		if (!isRecord(request) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameTypeV1)) return false;
+		if (!isRecord(request) || !hasExactKeys(request, ["requestId", "type", "responseCount"], ["operationId", "providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId", "responseType"]) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameTypeV1)) return false;
 		if (!isSafeInteger(request.responseCount) || request.responseCount > 1) return false;
 		if (request.responseCount === 0 && request.responseType !== undefined) return false;
-		if (request.responseCount === 1 && !WORKER_EVENT_FRAME_TYPES.includes(request.responseType as WorkerEventFrameTypeV1)) return false;
+		if (request.responseCount === 1 && (request.responseType === undefined || !WORKER_EVENT_FRAME_TYPES.includes(request.responseType as WorkerEventFrameTypeV1) || !responseTypeCompatible(request.type as WorkerRequestFrameTypeV1, request.responseType as WorkerEventFrameTypeV1))) return false;
 		if (request.operationId !== undefined && !isSafeIdentifier(request.operationId)) return false;
 		if (request.type === "execute" && request.operationId === undefined) return false;
 		if (request.type !== "execute" && request.type !== "cancel" && request.operationId !== undefined) return false;
@@ -941,6 +984,7 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 	}
 
 	const initializeRequest = state.initializedRequestId === undefined ? undefined : state.requests.find((request) => request.requestId === state.initializedRequestId);
+	if (state.readyRequestId !== undefined && state.readyRequestId !== state.initializedRequestId) return false;
 	if (state.phase === "new" && (state.initializedRequestId !== undefined || state.readyRequestId !== undefined || state.requests.length > 0 || state.operations.length > 0)) return false;
 	if (state.phase !== "new" && state.phase !== "lost" && (state.binding === undefined || state.initializedRequestId === undefined)) return false;
 	if (state.initializedRequestId !== undefined && (initializeRequest === undefined || initializeRequest.type !== "initialize")) return false;
@@ -955,15 +999,25 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 
 	const operationIds = new Set<string>();
 	for (const operation of state.operations) {
-		if (!isRecord(operation) || !isSafeIdentifier(operation.operationId) || !isSafeRequestId(operation.requestId) || operationIds.has(operation.operationId)) return false;
+		if (!isRecord(operation) || !hasExactKeys(operation, ["operationId", "requestId", "started", "terminal", "completed", "receiptReceived", "dataBytes", "dataEvents", "dataTruncated"]) || !isSafeIdentifier(operation.operationId) || !isSafeRequestId(operation.requestId) || operationIds.has(operation.operationId)) return false;
 		if (!isSafeInteger(operation.dataBytes) || !isSafeInteger(operation.dataEvents) || operation.dataBytes > WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES || operation.dataEvents > WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS) return false;
 		if (typeof operation.started !== "boolean" || typeof operation.terminal !== "boolean" || typeof operation.completed !== "boolean" || typeof operation.receiptReceived !== "boolean" || typeof operation.dataTruncated !== "boolean") return false;
 		if (operation.completed && (!operation.started || !operation.terminal)) return false;
-		if (operation.receiptReceived && !operation.terminal) return false;
+		if (operation.receiptReceived && (!operation.terminal || !operation.completed)) return false;
 		const request = state.requests.find((item) => item.requestId === operation.requestId);
 		if (request === undefined || request.type !== "execute" || request.operationId !== operation.operationId) return false;
-		if (operation.receiptReceived && (request.responseCount !== 1 || request.responseType !== "receipt")) return false;
+		if (operation.receiptReceived !== (request.responseType === "receipt")) return false;
+		if (request.responseType === "receipt" && (!operation.terminal || !operation.completed || request.responseCount !== 1)) return false;
+		if (request.responseType === "error" && (!operation.terminal || operation.completed || operation.receiptReceived)) return false;
+		if (operation.terminal && !operation.completed && request.responseType !== "error") return false;
 		operationIds.add(operation.operationId);
+	}
+	for (const request of state.requests) {
+		if (request.type !== "execute") continue;
+		const operation = state.operations.find((item) => item.operationId === request.operationId);
+		if (operation === undefined) return false;
+		if (request.responseType === "receipt" && !operation.receiptReceived) return false;
+		if (request.responseType !== "receipt" && operation.receiptReceived) return false;
 	}
 	const activeOperations = state.operations.filter((operation) => isRecord(operation) && operation.terminal === false);
 	if (activeOperations.length > 1) return false;
@@ -971,6 +1025,9 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 	if (state.phase === "running" && (activeOperation === undefined || !activeOperation.started)) return false;
 	if (state.phase === "ready" && activeOperation !== undefined && activeOperation.started) return false;
 	return true;
+	} catch {
+		return false;
+	}
 }
 
 function withState(state: WorkerProtocolStateV1, patch: {
@@ -1006,6 +1063,12 @@ function findRequest(state: WorkerProtocolStateV1, requestId: string): WorkerPro
 
 function findOperation(state: WorkerProtocolStateV1, operationId: string): WorkerProtocolOperationStateV1 | undefined {
 	return state.operations.find((operation) => operation.operationId === operationId);
+}
+
+function operationBlocksNewExecute(state: WorkerProtocolStateV1, operation: WorkerProtocolOperationStateV1): boolean {
+	if (operation.receiptReceived) return false;
+	const request = findRequest(state, operation.requestId);
+	return request?.responseType !== "error";
 }
 
 function addRequest(state: WorkerProtocolStateV1, requestId: string, type: WorkerRequestFrameTypeV1, operationId?: string, identity?: WorkerRequestIdentityV1): ProtocolResult<WorkerProtocolStateV1> {
@@ -1063,7 +1126,7 @@ export function applyWorkerRequestFrameV1(stateValue: WorkerProtocolStateV1, val
 	if (frame.type !== "execute" && frame.workerId !== state.binding.workerId) return Result.err(bindingInvalid());
 	if (frame.type === "execute") {
 		if (frame.workerId !== state.binding.workerId || !bindingMatchesRequest(state.binding, frame.request)) return Result.err(bindingInvalid());
-		if (state.phase !== "ready" || state.reclaimRequested || state.operations.some((operation) => !operation.receiptReceived && !operation.terminal)) return Result.err(conflict());
+		if (state.phase !== "ready" || state.reclaimRequested || state.operations.some((operation) => operationBlocksNewExecute(state, operation))) return Result.err(conflict());
 		if (findOperation(state, frame.operationId) !== undefined) return Result.err(conflict());
 		const added = addRequest(state, frame.requestId, frame.type, frame.operationId, requestIdentity(frame.request));
 		if (!added.ok) return added;
