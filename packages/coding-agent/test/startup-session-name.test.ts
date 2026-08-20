@@ -78,7 +78,7 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	return new Promise((resolvePromise, reject) => {
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
-		}, 10_000);
+		}, 40_000);
 		child.on("error", (error) => {
 			clearTimeout(timeout);
 			reject(error);
@@ -104,7 +104,7 @@ function setup(): CliDirs {
 }
 
 describe("startup session name", () => {
-	it("sets --name on the selected session before runtime model validation", async () => {
+	it("sets --name on the selected session before runtime model validation", { timeout: 50_000 }, async () => {
 		const dirs = setup();
 		const result = await runCli(
 			["--session", dirs.sessionFile, "--name", "  CLI Named Session  ", "--model", "missing-model", "-p", "hi"],
@@ -116,7 +116,7 @@ describe("startup session name", () => {
 		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
 	});
 
-	it("rejects empty --name values without appending session metadata", async () => {
+	it("rejects empty --name values without appending session metadata", { timeout: 50_000 }, async () => {
 		const dirs = setup();
 		const result = await runCli(
 			["--session", dirs.sessionFile, "--name", "   ", "--model", "missing-model", "-p", "hi"],

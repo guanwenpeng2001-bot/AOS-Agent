@@ -1280,7 +1280,7 @@ export class CanonicalAgentSessionServices {
 				sendUserMessage: (content, options) => {
 					const task = this.sendUserMessage(content, options);
 					this.harness.trackCompatibilityTask(task);
-					void task.catch((error: unknown) => {
+					return task.catch((error: unknown) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_user_message",

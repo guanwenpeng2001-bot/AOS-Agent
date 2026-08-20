@@ -1136,6 +1136,7 @@ describe("AgentSession H2 session capability control", () => {
 			customTools: [sdkTool("sdk_helper")],
 		});
 		try {
+			await session.whenCapabilitiesReady();
 			const runPromise = session.prompt("First message");
 			await waitUntil(() => session.isStreaming);
 
@@ -1167,7 +1168,9 @@ describe("AgentSession H2 session capability control", () => {
 			expect(session.getActiveToolNames()).toContain("sdk_helper");
 			expect(session.getActiveToolNames()).not.toContain("read");
 		} finally {
+			await session.abort();
 			session.dispose();
+			await session.waitForDispose();
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 		}
 	});

@@ -9,6 +9,10 @@ export const workspaceSourcePaths = {
 	aiOAuth: fileURLToPath(new URL("./packages/ai/src/oauth.ts", import.meta.url)),
 	aiProviders: fileURLToPath(new URL("./packages/ai/src/providers", import.meta.url)),
 	agentIndex: fileURLToPath(new URL("./packages/agent/src/index.ts", import.meta.url)),
+	agentNode: fileURLToPath(new URL("./packages/agent/src/node.ts", import.meta.url)),
+	agentSessionTesting: fileURLToPath(
+		new URL("./packages/agent/src/harness/session/testing/index.ts", import.meta.url),
+	),
 	codingAgentIndex: fileURLToPath(new URL("./packages/coding-agent/src/index.ts", import.meta.url)),
 	tuiIndex: fileURLToPath(new URL("./packages/tui/src/index.ts", import.meta.url)),
 } as const;
@@ -26,6 +30,11 @@ export default defineConfig({
 				replacement: `${workspaceSourcePaths.aiProviders}/$1.ts`,
 			},
 			{ find: /^@aos-agent\/agent-core$/, replacement: workspaceSourcePaths.agentIndex },
+			{ find: /^@aos-agent\/agent-core\/node$/, replacement: workspaceSourcePaths.agentNode },
+			{
+				find: /^@aos-agent\/agent-core\/session\/testing$/,
+				replacement: workspaceSourcePaths.agentSessionTesting,
+			},
 			{ find: /^@aos-agent\/tui$/, replacement: workspaceSourcePaths.tuiIndex },
 			{ find: /^aos-agent$/, replacement: workspaceSourcePaths.codingAgentIndex },
 		],

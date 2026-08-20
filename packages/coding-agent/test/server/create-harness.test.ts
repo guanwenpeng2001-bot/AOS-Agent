@@ -11,6 +11,8 @@ import {
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
+import { anthropicProvider } from "@aos-agent/ai/providers/anthropic";
+import { googleProvider } from "@aos-agent/ai/providers/google";
 import { Type } from "typebox";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -49,6 +51,13 @@ function createPromptTool(name: string, promptSnippet?: string, promptGuidelines
 	};
 }
 
+function createHarnessModels() {
+	const models = createModels();
+	models.setProvider(googleProvider());
+	models.setProvider(anthropicProvider());
+	return models;
+}
+
 const defaultPromptTools = [
 	createPromptTool("read", "Read file contents", ["Use read to examine files instead of cat or sed."]),
 	createPromptTool("bash", "Execute bash commands (ls, grep, find, etc.)", [
@@ -64,7 +73,7 @@ describe("coding-agent Harness construction", () => {
 		const env = new NodeExecutionEnv({ cwd: "/workspace" });
 		const created = await createCodingAgentHarness({
 			session,
-			models: createModels(),
+			models: createHarnessModels(),
 			model: getModel("google", "gemini-2.5-flash"),
 			thinkingLevel: "high",
 			env,
@@ -114,7 +123,7 @@ describe("coding-agent Harness construction", () => {
 		};
 		const created = await createCodingAgentHarness({
 			session,
-			models: createModels(),
+			models: createHarnessModels(),
 			model: getModel("google", "gemini-2.5-flash"),
 			env,
 			tools: [customTool],
@@ -138,7 +147,7 @@ describe("coding-agent Harness construction", () => {
 		});
 		const created = await createCodingAgentHarness({
 			session,
-			models: createModels(),
+			models: createHarnessModels(),
 			model: getModel("google", "gemini-2.5-flash"),
 			thinkingLevel: "high",
 			env,
@@ -179,7 +188,7 @@ describe("coding-agent Harness construction", () => {
 		});
 		const created = await createCodingAgentHarness({
 			session,
-			models: createModels(),
+			models: createHarnessModels(),
 			model: getModel("google", "gemini-2.5-flash"),
 			thinkingLevel: "high",
 			env,
@@ -227,7 +236,7 @@ describe("coding-agent Harness construction", () => {
 		try {
 			const created = await createCodingAgentHarness({
 				session,
-				models: createModels(),
+				models: createHarnessModels(),
 				model: getModel("google", "gemini-2.5-flash"),
 				env,
 			});

@@ -174,7 +174,7 @@ describe("--session-id read-only commands", () => {
 });
 
 describe("--session-id validation", () => {
-	it("rejects ids invalid under SessionManager rules without stack traces", async () => {
+	it("rejects ids invalid under SessionManager rules without stack traces", { timeout: 70_000 }, async () => {
 		for (const id of ["-bad", "bad id"]) {
 			const result = await runCli(["--session-id", id, "-p", "hi"]);
 

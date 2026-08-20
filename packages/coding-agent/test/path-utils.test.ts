@@ -1,5 +1,5 @@
 import { mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { expandPath, resolveReadPath, resolveToCwd } from "../src/core/tools/path-utils.ts";
@@ -7,13 +7,11 @@ import { expandPath, resolveReadPath, resolveToCwd } from "../src/core/tools/pat
 describe("path-utils", () => {
 	describe("expandPath", () => {
 		it("should expand ~ to home directory", () => {
-			const result = expandPath("~");
-			expect(result).not.toContain("~");
+			expect(expandPath("~")).toBe(homedir());
 		});
 
 		it("should expand ~/path to home directory", () => {
-			const result = expandPath("~/Documents/file.txt");
-			expect(result).not.toContain("~/");
+			expect(expandPath("~/Documents/file.txt")).toBe(join(homedir(), "Documents", "file.txt"));
 		});
 
 		it("should keep tilde-prefixed filenames literal", () => {
