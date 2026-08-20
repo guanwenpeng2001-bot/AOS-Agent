@@ -282,6 +282,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		scopedModels: options.scopedModels,
 		customTools: options.customTools,
 		initialActiveToolNames: options.initialActiveToolNames,
+		sessionStartEvent: options.sessionStartEvent,
 		extensionRunnerRef: options.extensionRunnerRef,
 		capabilityRegistry: options.capabilityRegistry,
 		mcpTransportFactory: options.mcpTransportFactory,
@@ -459,6 +460,7 @@ export class CanonicalAgentSessionServices {
 	private _sessionStartEvent: SessionStartEvent | undefined;
 	private extensionToolsReady: Promise<void> = Promise.resolve();
 	private disposed = false;
+	private disposePromise: Promise<void> | undefined;
 	private readonly sessionInfoSubscribers = new Set<AgentSessionEventListener>();
 
 	constructor(options: CanonicalAgentSessionOptions);
@@ -1764,6 +1766,10 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async waitForDispose(): Promise<void> {
+		if (this.disposePromise !== undefined) {
+			await this.disposePromise;
+			return;
+		}
 		await this.waitForIdle();
 	}
 
@@ -2757,11 +2763,17 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async dispose(): Promise<void> {
-		if (this.disposed) return;
+		if (this.disposePromise !== undefined) return this.disposePromise;
 		this.disposed = true;
+		this.disposePromise = this.disposeInternal();
+		return this.disposePromise;
+	}
+
+	private async disposeInternal(): Promise<void> {
 		this._extensionRunner.invalidate();
 		await this.controlPlane.dispose();
 		await this.harness.close();
+		await this.canonicalStorage.drain();
 	}
 }
 

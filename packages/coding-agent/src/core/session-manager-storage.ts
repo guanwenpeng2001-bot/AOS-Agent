@@ -508,6 +508,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return clone(this.snapshot().lanes);
 	}
 
+	/** Wait until every write accepted by this storage instance has settled. */
+	drain(): Promise<void> {
+		return this.tail.promise;
+	}
+
 	private enqueue<TValue>(operation: () => TValue | Promise<TValue>): Promise<TValue> {
 		const result = this.tail.promise.then(operation);
 		this.tail.promise = result.then(
@@ -805,6 +810,9 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			timestamp: Date.now(),
 		} as unknown as TEntry;
 		this.appendWrapper(snapshot, FOUNDATION_ENTRY_CUSTOM_TYPE, { schemaVersion: 1, kind: "entry", entry: assigned }, assigned.id);
+		if (assigned.type === "message" && assigned.message.role === "assistant") {
+			this.manager.flushPendingSession();
+		}
 		return clone(assigned);
 	}
 

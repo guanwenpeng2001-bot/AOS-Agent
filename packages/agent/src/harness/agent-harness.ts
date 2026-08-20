@@ -539,6 +539,7 @@ export interface WatchHandle<TSnapshot> {
 interface ActiveOperation {
 	id: string;
 	lane: string;
+	kind: "run" | "summary";
 	controller: AbortController;
 	promise: Promise<void>;
 }
@@ -1101,6 +1102,9 @@ export class AgentHarness implements AgentLane {
 	private readonly mutationTails = new Map<string, Promise<void>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
 	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
+	private lastQueueUpdateFingerprint: string | undefined;
+	private queueUpdatePending = false;
+	private agentSettlementPending = false;
 	private readonly pendingThinkingLevels = new Map<string, ThinkingLevel>();
 	private readonly foundationToolHookResults = new Map<string, AfterToolCallResult>();
 	private sessionSnapshot: SessionSnapshot = { lanes: [], faulted: false };
@@ -1463,11 +1467,14 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private emitQueueUpdate(): void {
-		this.eventBus.emit({
-			type: "queue_update",
+		const update = {
 			steering: this.queuedItems("main", "steer").map((item) => messageText(item.message)),
 			followUp: this.queuedItems("main", "followUp").map((item) => messageText(item.message)),
-		});
+		};
+		const fingerprint = JSON.stringify(update);
+		if (fingerprint === this.lastQueueUpdateFingerprint) return;
+		this.lastQueueUpdateFingerprint = fingerprint;
+		this.eventBus.emit({ type: "queue_update", ...update });
 	}
 
 	private closedError(): Closed {
@@ -3206,6 +3213,10 @@ export class AgentHarness implements AgentLane {
 			if (!existing) await this.durableSession.appendEntry(target, lane);
 			messages.push(target.message);
 		}
+		if (messages.length > 0) {
+			await this.refreshSnapshots();
+			this.queueUpdatePending = true;
+		}
 		return messages;
 	}
 
@@ -3429,6 +3440,10 @@ export class AgentHarness implements AgentLane {
 		event = await this.publishAgentEvent(event);
 		switch (event.type) {
 			case "turn_start": {
+				if (this.queueUpdatePending) {
+					this.queueUpdatePending = false;
+					this.emitQueueUpdate();
+				}
 				const reduction = await this.getLaneReduction(lane);
 				if (this.pendingPromptEvents.delete(runId) && reduction.laneState.operation?.intent.kind === "run") {
 					for (const message of reduction.laneState.operation.intent.originalPrompt) {
@@ -3489,13 +3504,16 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async finishActiveOperation(runId: string): Promise<void> {
+		const activeOperation = this.activeOperations.get(runId);
 		this.activeOperations.delete(runId);
+		if (activeOperation?.kind === "run") this.agentSettlementPending = true;
 		this.retryCancelledOperations.delete(runId);
 		this.pendingPromptEvents.delete(runId);
 		this.contextPreparationErrors.delete(runId);
 		try {
 			await this.refreshSnapshots();
-			if (this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
+			if (this.agentSettlementPending && this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
+				this.agentSettlementPending = false;
 				this.eventBus.emit({ type: "agent_settled" });
 			}
 		} catch (error) {
@@ -3513,6 +3531,7 @@ export class AgentHarness implements AgentLane {
 		const operation: ActiveOperation = {
 			id: runId,
 			lane,
+			kind: "run",
 			controller,
 			promise: Promise.resolve(),
 		};
@@ -3587,7 +3606,7 @@ export class AgentHarness implements AgentLane {
 	): void {
 		if (this.activeOperations.has(runId)) return;
 		const controller = new AbortController();
-		const operation: ActiveOperation = { id: runId, lane, controller, promise: Promise.resolve() };
+		const operation: ActiveOperation = { id: runId, lane, kind: "summary", controller, promise: Promise.resolve() };
 		const promise = (async () => {
 			try {
 				await work(controller.signal);

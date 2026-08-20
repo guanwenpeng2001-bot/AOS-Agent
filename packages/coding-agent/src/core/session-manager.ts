@@ -1155,6 +1155,13 @@ export class SessionManager {
 		});
 	}
 
+	/** Persist the complete pending log after a canonical assistant response settles. */
+	flushPendingSession(): void {
+		if (!this.persist || !this.sessionFile || this.flushed) return;
+		this._rewriteFile();
+		this.flushed = true;
+	}
+
 	isPersisted(): boolean {
 		return this.persist;
 	}
