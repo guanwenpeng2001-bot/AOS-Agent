@@ -769,6 +769,15 @@ export function serializeWorkerFrameV1(value: unknown): string {
 	return encoded;
 }
 
+function workerFrameSerializationError(value: WorkerProtocolFrameV1): FoundationError | undefined {
+	try {
+		serializeWorkerFrameV1(value);
+		return undefined;
+	} catch {
+		return operationInvalid();
+	}
+}
+
 export function serializeWorkerFrameLineV1(value: unknown): string {
 	return `${serializeWorkerFrameV1(value)}\n`;
 }
@@ -977,7 +986,9 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 		if (request.operationId !== undefined && !isSafeIdentifier(request.operationId)) return false;
 		if (request.type === "execute" && request.operationId === undefined) return false;
 		if (request.type !== "execute" && request.type !== "cancel" && request.operationId !== undefined) return false;
-		for (const field of ["providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"] as const) {
+		const identityFields = ["providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"] as const;
+		if (request.type !== "execute" && identityFields.some((field) => request[field] !== undefined)) return false;
+		for (const field of identityFields) {
 			if (request[field] !== undefined && !isSafeIdentifier(request[field])) return false;
 		}
 		requestIds.add(request.requestId);
@@ -1109,10 +1120,12 @@ function mutation(state: WorkerProtocolStateV1, frame: WorkerProtocolFrameV1, tr
 
 export function applyWorkerRequestFrameV1(stateValue: WorkerProtocolStateV1, value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
 	if (!protocolStateValid(stateValue)) return Result.err(operationInvalid());
-	const state = freezeState(stateValue);
 	const checked = validateRequestResult(value);
 	if (!checked.ok) return checked;
 	const frame = checked.value;
+	const serializationError = workerFrameSerializationError(frame);
+	if (serializationError !== undefined) return Result.err(serializationError);
+	const state = freezeState(stateValue);
 	if (state.disconnected || state.phase === "lost") return Result.err(workerLost());
 	if (frame.type === "initialize") {
 		if (state.phase !== "new" || state.initializedRequestId !== undefined) return Result.err(conflict());
@@ -1189,13 +1202,19 @@ function normalizeDataFrame(frame: Extract<WorkerEventFrameV1, { type: "operatio
 
 export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
 	if (!protocolStateValid(stateValue)) return Result.err(operationInvalid());
-	const state = freezeState(stateValue);
 	const checked = validateEventResult(value);
 	if (!checked.ok) return checked;
 	const frame = checked.value;
+	const serializationError = workerFrameSerializationError(frame);
+	if (serializationError !== undefined) return Result.err(serializationError);
+	const state = freezeState(stateValue);
 	if (state.disconnected || state.phase === "lost") return Result.err(workerLost());
 	if (frame.type !== "ready" && frame.type !== "receipt") {
 		if (state.binding === undefined || frame.workerId !== state.binding.workerId) return Result.err(bindingInvalid());
+	}
+	if (state.phase === "terminal" && state.reclaimRequested) {
+		const reclaimError = frame.type === "error" && frame.requestId !== undefined && findRequest(state, frame.requestId)?.type === "reclaim" && findRequest(state, frame.requestId)?.responseCount === 0;
+		if (!reclaimError) return Result.err(conflict());
 	}
 	if (frame.type === "ready") {
 		if (state.binding === undefined || frame.workerId !== state.binding.workerId || state.phase !== "initializing" || state.initializedRequestId !== frame.requestId) return Result.err(bindingInvalid());
