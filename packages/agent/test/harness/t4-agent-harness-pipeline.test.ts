@@ -657,7 +657,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		}
 	});
 
-	it("fails all public receipt layers when an image result has no ArtifactStore", async () => {
+	it("uses the session artifact store when an image result has no external ArtifactStore", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "image-tool-missing-store", createdAt: 1 }));
 		const { model, models } = consumerModels("image-tool-missing-store");
 		const imageTool: HarnessTool = {
@@ -673,10 +673,11 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(result.ok).toBe(true);
 		const facts = (await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" })).filter((record) => record.kind === "fact");
 		const payloadFor = (objectType: string): unknown => facts.find((record) => record.objectType === objectType)?.payload;
-		expect(payloadFor("tool_receipt")).toMatchObject({ outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown" });
-		expect(payloadFor("attempt_receipt")).toMatchObject({ status: "failed", sideEffectState: "side_effect_unknown" });
-		expect(payloadFor("task_result")).toMatchObject({ status: "failed" });
-		expect(payloadFor("run_receipt")).toMatchObject({ terminalStatus: "failed" });
+		expect(payloadFor("tool_receipt")).toMatchObject({ outcome: "succeeded", sideEffectState: "none" });
+		expect(payloadFor("attempt_receipt")).toMatchObject({ status: "succeeded", sideEffectState: "none" });
+		expect(payloadFor("task_result")).toMatchObject({ status: "succeeded" });
+		expect(payloadFor("run_receipt")).toMatchObject({ terminalStatus: "completed" });
+		expect(await harness.artifacts.list()).toHaveLength(1);
 		expect(JSON.stringify(facts)).not.toContain("AQID");
 		await harness.close();
 	});

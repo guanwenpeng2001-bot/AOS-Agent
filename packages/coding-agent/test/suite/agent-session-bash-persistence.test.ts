@@ -7,6 +7,7 @@ import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
 import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/execution-association.ts";
 import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/execution-policy.ts";
 import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/model-broker-ledger.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session-manager-storage.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -56,9 +57,9 @@ function getInvocationByCommand(
 describe("AgentSession bash and persistence characterization", () => {
 	const harnesses: Harness[] = [];
 
-	afterEach(() => {
+	afterEach(async () => {
 		while (harnesses.length > 0) {
-			harnesses.pop()?.cleanup();
+			await harnesses.pop()?.cleanup();
 		}
 	});
 
@@ -267,7 +268,9 @@ describe("AgentSession bash and persistence characterization", () => {
 				(entry.customType !== MODEL_BINDING_CUSTOM_TYPE &&
 					entry.customType !== MODEL_ATTEMPT_CUSTOM_TYPE &&
 					entry.customType !== EXECUTION_ASSOCIATION_CUSTOM_TYPE &&
-					entry.customType !== POLICY_BINDING_CUSTOM_TYPE),
+					entry.customType !== POLICY_BINDING_CUSTOM_TYPE &&
+					entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE &&
+					!entry.customType.startsWith("harness.config.")),
 		);
 		expect(userFacingEntries.map((entry) => entry.type)).toEqual([
 			"custom_message",
@@ -347,7 +350,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		await harness.session.abort();
 		await promptPromise;
 
-		const lastEntry = harness.sessionManager.getEntries()[harness.sessionManager.getEntries().length - 1];
+		const lastEntry = harness.sessionManager.getEntries().filter((entry) => entry.type === "message").at(-1);
 		expect(lastEntry?.type).toBe("message");
 		if (lastEntry?.type === "message") {
 			expect(lastEntry.message.role).toBe("assistant");

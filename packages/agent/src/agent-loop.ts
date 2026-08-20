@@ -515,7 +515,9 @@ async function streamAssistantResponse(
 			retriesUsed,
 			policy?.maxRetries ?? retriesUsed,
 			delayMs,
-			classification.message,
+			config.preserveProviderRetryMessage === true
+				? attempt.message.errorMessage ?? classification.message
+				: classification.message,
 		);
 		attemptEvents.discard();
 		try {
@@ -609,7 +611,7 @@ async function streamAssistantResponseAttempt(
 			sideEffect: events.hasVisibleOutput ? "unknown" : "none",
 		});
 		const preserveLegacyRetryMessage =
-			config.retry === undefined &&
+			config.preserveProviderRetryMessage === true &&
 			classification.category === "transient_provider" &&
 			!events.hasVisibleOutput &&
 			!isWrappedTransportCancellation(finalMessage);

@@ -153,6 +153,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 	/** Optional bounded retry policy for transient provider turns. */
 	retry?: RetryPolicy;
+	/** Preserve the provider's redacted error text in retry lifecycle callbacks. */
+	preserveProviderRetryMessage?: boolean;
 	/** Optional lifecycle callbacks for production-loop retries. */
 	retryCallbacks?: RetryCallbacks;
 	/** Bounded convergence policy for provider/tool turns in this loop. */

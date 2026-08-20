@@ -90,6 +90,14 @@
       "title": "Reference",
       "items": [
         {
+          "title": "Architecture Atlas: Foundation v1",
+          "path": "architecture-atlas-foundation-v1.md"
+        },
+        {
+          "title": "Foundation v1 Final Audit",
+          "path": "foundation-v1-final-audit.md"
+        },
+        {
           "title": "Session Format",
           "path": "session-format.md"
         },

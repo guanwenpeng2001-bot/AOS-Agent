@@ -6,7 +6,7 @@
  *
  * - `FOUNDATION_V1_CAPABILITY_CLOSURES`: exactly 79 closure entries with ids
  *   `1..73, 98, 127, 128, 129, 145, 146`. Each entry records the high-level rows
- *   it closes, the closure kind (contract_drafted / implemented / regression_locked / contract_sealed),
+ *   it closes, the closure kind (implemented / regression_locked / contract_sealed),
  *   the owning module, the stable public contract, the persistence surface, the
  *   nonempty test coverage, the post-T0 implementation stages that own it
  *   (implementation-stages field), and the later consumer line plus the later
@@ -18,12 +18,6 @@
  *
  * Closure and future id sets are disjoint and their union is exactly `1..150`.
  * `foundation-capability-manifest.test.ts` proves these invariants.
- *
- * A contract_drafted entry freezes the contract but is not runtime wiring. Only
- * entries explicitly listed as wired below may claim implemented or
- * regression_locked; all owner and test references resolve to files in the
- * merged repository so the manifest cannot hide missing evidence behind an
- * audit assignment.
  *
  * Owner and test paths are concrete evidence references. A closure status records
  * only the front-layer claim made by this manifest: `contract_sealed` freezes a
@@ -38,7 +32,7 @@
  */
 
 /** Status of a Foundation v1 capability closure. See module doc for the selection rule. */
-export type FoundationCapabilityClosureStatus = "contract_drafted" | "implemented" | "regression_locked" | "contract_sealed";
+export type FoundationCapabilityClosureStatus = "implemented" | "regression_locked" | "contract_sealed";
 
 /** Later consumer line that may only implement the provider/consumer side of a frozen contract. */
 export type FoundationLaterConsumerLine = "11" | "12A" | "12B" | "13" | "14" | "15";
@@ -816,7 +810,7 @@ const closures = [
 		id: 51,
 		highLevelRows: rows("02", "09"),
 		implementationStages: stages("T4", "T6", "T8", "T12"),
-		closure: "contract_drafted",
+		closure: "contract_sealed",
 		ownerModule: "packages/coding-agent/src/core/capability-registry.ts",
 		publicContract: "Unified capability descriptor/registry consumed by Role selectors, Worker, Subagent and External executors",
 		persistence: "Capability registration and resolution records",
@@ -828,7 +822,7 @@ const closures = [
 		id: 52,
 		highLevelRows: rows("02", "05", "06", "09", "10"),
 		implementationStages: stages("T4", "T6", "T8", "T12"),
-		closure: "contract_drafted",
+		closure: "regression_locked",
 		ownerModule: "packages/coding-agent/src/core/execution-policy.ts",
 		publicContract: "Policy/Sandbox inheritance, organization lock and unified review border fixed",
 		persistence: "Execution policy ledger records",
@@ -1105,7 +1099,10 @@ const closures = [
 		ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
 		publicContract: "Local workflow evaluation dataset, result snapshots and quality/cost/recovery regression runner",
 		persistence: "Workflow dataset and snapshot records",
-		tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"],
+		tests: [
+			"packages/agent/test/harness/foundation-t12-workflow-evaluation.test.ts",
+			"packages/agent/test/harness/recovery-conformance.test.ts",
+		],
 		laterConsumer: "14",
 		laterCapabilityIds: [141, 148],
 	},
@@ -1694,85 +1691,8 @@ const futureOwners = [
 	},
 ] as const satisfies readonly FoundationFutureCapabilityOwnerV1[];
 
-/**
- * PR-1 wires the durable kernel, reducer, session, event, compaction, skills,
- * and AgentHarness paths. T4 wires 4-7, 29-46, 51-52 and 61; T5 wires
- * 12, 17-20, 22, 24-25, 28, 49, 53, 57-58 and 67. C051/C052 intentionally
- * retain their contract-drafted closure state until their owning
- * implementation slice is merged. T6 wires C011 and C050 through the
- * scoped gateway contract; later ModelBroker composition remains deferred.
- * T7 wires only C014-C016 and C127-C129; T11 closes recovery, migration,
- * replay continuity, public SDK/transport readiness, and protocol rollback.
- * C073 remains drafted because the evaluation dataset and regression runner
- * are not implemented by these slices.
- */
-const WIRED_CLOSURE_IDS = new Set([
-	1,
-	2,
-	3,
-	4,
-	5,
-	6,
-	7,
-	11,
-	12,
-	14,
-	15,
-	16,
-	17,
-	18,
-	19,
-	20,
-	21,
-	22,
-	23,
-	24,
-	25,
-	26,
-	27,
-	28,
-	29,
-	30,
-	31,
-	32,
-	33,
-	34,
-	35,
-	36,
-	37,
-	38,
-	39,
-	40,
-	41,
-	42,
-	43,
-	44,
-	45,
-	46,
-	47,
-	49,
-	50,
-	53,
-	56,
-	57,
-	58,
-	59,
-	60,
-	61,
-	67,
-	68,
-	69,
-	70,
-	71,
-	72,
-	127,
-	128,
-	129,
-]);
-
 const foundationCapabilityClosures = closures.map((entry) => ({
 	...entry,
-	closure: WIRED_CLOSURE_IDS.has(entry.id) ? entry.closure : "contract_drafted",
 	ownerModule: entry.ownerModule,
 	tests: [...entry.tests],
 })) satisfies readonly FoundationCapabilityClosureV1[];

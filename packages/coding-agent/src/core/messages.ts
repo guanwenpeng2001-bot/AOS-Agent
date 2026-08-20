@@ -30,7 +30,7 @@ export interface BashExecutionMessage {
 	role: "bashExecution";
 	command: string;
 	output: string;
-	exitCode: number | undefined;
+	exitCode?: number;
 	cancelled: boolean;
 	truncated: boolean;
 	fullOutputPath?: string;

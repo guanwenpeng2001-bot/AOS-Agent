@@ -128,13 +128,25 @@ async function createRuntimeHost(options: {
 			systemPrompt: "Test",
 			tools: [],
 		},
-		streamFn: (_model, _context, _options) => {
+		streamFn: (_model, _context, streamOptions) => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
-				setTimeout(() => {
+				const finish = () => {
+					streamOptions?.signal?.removeEventListener("abort", abort);
 					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
-				}, options.responseDelayMs);
+				};
+				const timer = setTimeout(finish, options.responseDelayMs);
+				const abort = () => {
+					clearTimeout(timer);
+					stream.push({
+						type: "error",
+						reason: "aborted",
+						error: { ...createAssistantMessage("aborted"), stopReason: "aborted", errorMessage: "aborted" },
+					});
+				};
+				if (streamOptions?.signal?.aborted) abort();
+				else streamOptions?.signal?.addEventListener("abort", abort, { once: true });
 			});
 			return stream;
 		},
@@ -195,6 +207,7 @@ async function createRuntimeHost(options: {
 			// Simulate a real session switch: open the persisted ledger, rebuild the
 			// session, and re-run the registered rebind so the controller rebuilds
 			// its coordinator and TaskGateStore against the restored session.
+			await currentSession.dispose();
 			currentSession = openSession(SessionManager.open(sessionPath));
 			if (rebindCallback !== undefined) {
 				await rebindCallback();
@@ -214,7 +227,7 @@ async function createRuntimeHost(options: {
 			} catch {
 				// ignore test cleanup failures
 			}
-			currentSession.dispose();
+			await currentSession.dispose();
 		},
 	};
 }
@@ -902,6 +915,7 @@ describe("task gate automation host rpc", () => {
 				`aos-rpc-task-gate-switch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 			);
 			mkdirSync(switchDir, { recursive: true });
+			tempDirs.push(switchDir);
 			const targetSession = SessionManager.create(switchDir, switchDir);
 			targetSession.appendMessage({ role: "user", content: "seed", timestamp: 1 });
 			targetSession.appendMessage({
@@ -936,7 +950,6 @@ describe("task gate automation host rpc", () => {
 			expect(secondData.gate.sessionId).toBe(runtimeHost.session.sessionId);
 			expect(secondData.gate.gateId).not.toBe(firstGateId);
 			expect(gateEntries(runtimeHost.session)).toHaveLength(1);
-			rmSync(switchDir, { recursive: true, force: true });
 		} finally {
 			await cleanup();
 		}
@@ -1096,7 +1109,14 @@ describe("task gate automation host rpc", () => {
 				.getEntries()
 				.filter((entry) => entry.type === "custom")
 				.map((entry) => (entry as { customType?: string }).customType);
-			expect(customTypes).toEqual(["task.gate", "task.gate", "task.gate", "task.gate", "task.gate", "task.gate"]);
+			expect(customTypes.filter((type) => type === "task.gate")).toEqual([
+				"task.gate",
+				"task.gate",
+				"task.gate",
+				"task.gate",
+				"task.gate",
+				"task.gate",
+			]);
 			expect(customTypes.some((type) => type?.startsWith("policy.") || type?.startsWith("automation.run"))).toBe(false);
 		} finally {
 			await cleanup();

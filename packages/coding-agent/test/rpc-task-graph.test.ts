@@ -127,13 +127,25 @@ async function createRuntimeHost(options: {
 			systemPrompt: "Test",
 			tools: [],
 		},
-		streamFn: (_model, _context, _options) => {
+		streamFn: (_model, _context, streamOptions) => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
-				setTimeout(() => {
+				const finish = () => {
+					streamOptions?.signal?.removeEventListener("abort", abort);
 					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
-				}, options.responseDelayMs);
+				};
+				const timer = setTimeout(finish, options.responseDelayMs);
+				const abort = () => {
+					clearTimeout(timer);
+					stream.push({
+						type: "error",
+						reason: "aborted",
+						error: { ...createAssistantMessage("aborted"), stopReason: "aborted", errorMessage: "aborted" },
+					});
+				};
+				if (streamOptions?.signal?.aborted) abort();
+				else streamOptions?.signal?.addEventListener("abort", abort, { once: true });
 			});
 			return stream;
 		},
@@ -195,6 +207,7 @@ async function createRuntimeHost(options: {
 			// session, and re-run the registered rebind so the controller rebuilds
 			// its coordinator, TaskGateStore, and TaskGraphStore against the
 			// restored session.
+			await currentSession.dispose();
 			currentSession = openSession(SessionManager.open(sessionPath));
 			if (rebindCallback !== undefined) {
 				await rebindCallback();
@@ -214,7 +227,7 @@ async function createRuntimeHost(options: {
 			} catch {
 				// ignore test cleanup failures
 			}
-			currentSession.dispose();
+			await currentSession.dispose();
 		},
 	};
 }
@@ -1615,6 +1628,7 @@ describe("task graph automation host rpc", () => {
 				`aos-rpc-task-graph-switch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 			);
 			mkdirSync(switchDir, { recursive: true });
+			tempDirs.push(switchDir);
 			const targetSession = SessionManager.create(switchDir, switchDir);
 			targetSession.appendMessage({ role: "user", content: "seed", timestamp: 1 });
 			targetSession.appendMessage({
@@ -1653,7 +1667,6 @@ describe("task graph automation host rpc", () => {
 			const secondData = expectGraphMutationResponse(second, "task.graph.create");
 			expect(secondData.graph.sessionId).toBe(runtimeHost.session.sessionId);
 			expect(graphEntries(runtimeHost.session)).toHaveLength(1);
-			rmSync(switchDir, { recursive: true, force: true });
 		} finally {
 			await cleanup();
 		}

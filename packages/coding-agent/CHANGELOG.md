@@ -43,6 +43,7 @@
 
 ### Fixed
 
+- Canonical prompt preflight now remains observably active through lazy capability discovery, reports rejected preflights, projects active-tool changes synchronously, caps reserved context for small-window models, and omits undefined bash exit codes from durable Session records.
 - `createAgentSession()` now exposes its initial built-in tools and system prompt immediately, and direct built-in bash calls receive the current Session, model, and reasoning environment.
 - Canonical assistant settlement now flushes a pending persisted Session before Automation Host recovery opens it, and legacy consumer-shaped ModelRuntime fakes retain model lookup through the AgentSession compatibility composition boundary.
 - Restored AgentSession parity for retry event ordering and cancellation, extension-provided compaction and branch summaries, automatic overflow compact-and-continue with a single retry bound, tool hook result persistence, and JSONL-compatible legacy message projection.

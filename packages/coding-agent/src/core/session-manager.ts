@@ -1000,6 +1000,20 @@ async function listSessionsFromDir(
 	return sessions;
 }
 
+type SessionReadProjectionInitializer = (manager: SessionManager) => void;
+
+let sessionReadProjectionInitializer: SessionReadProjectionInitializer | undefined;
+
+/** Register the canonical storage adapter used to derive mature read views. */
+export function registerSessionReadProjectionInitializer(initializer: SessionReadProjectionInitializer): void {
+	sessionReadProjectionInitializer = initializer;
+}
+
+function initializeSessionReadProjection(manager: SessionManager): SessionManager {
+	sessionReadProjectionInitializer?.(manager);
+	return manager;
+}
+
 /**
  * Manages conversation sessions as append-only trees stored in JSONL files.
  *
@@ -1024,6 +1038,7 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private entriesReadProjection: (() => SessionEntry[]) | undefined;
+	private leafIdReadProjection: (() => string | null) | undefined;
 
 	private constructor(
 		cwd: string,
@@ -1408,14 +1423,16 @@ export class SessionManager {
 	// =========================================================================
 
 	getLeafId(): string | null {
-		return this.leafId;
+		return this.leafIdReadProjection?.() ?? this.leafId;
 	}
 
 	getLeafEntry(): SessionEntry | undefined {
-		return this.leafId ? this.byId.get(this.leafId) : undefined;
+		const leafId = this.getLeafId();
+		return leafId ? this.getEntry(leafId) : undefined;
 	}
 
 	getEntry(id: string): SessionEntry | undefined {
+		if (this.entriesReadProjection) return this.entriesReadProjection().find((entry) => entry.id === id);
 		return this.byId.get(id);
 	}
 
@@ -1424,7 +1441,7 @@ export class SessionManager {
 	 */
 	getChildren(parentId: string): SessionEntry[] {
 		const children: SessionEntry[] = [];
-		for (const entry of this.byId.values()) {
+		for (const entry of this.entriesReadProjection?.() ?? this.byId.values()) {
 			if (entry.parentId === parentId) {
 				children.push(entry);
 			}
@@ -1473,12 +1490,16 @@ export class SessionManager {
 	 * Use buildSessionContext() to get the resolved messages for the LLM.
 	 */
 	getBranch(fromId?: string): SessionEntry[] {
+		const entries = this.getEntries();
+		const byId = this.entriesReadProjection
+			? new Map(entries.map((entry) => [entry.id, entry]))
+			: this.byId;
 		const path: SessionEntry[] = [];
-		const startId = fromId ?? this.leafId;
-		let current = startId ? this.byId.get(startId) : undefined;
+		const startId = fromId ?? this.getLeafId();
+		let current = startId ? byId.get(startId) : undefined;
 		while (current) {
 			path.push(current);
-			current = current.parentId ? this.byId.get(current.parentId) : undefined;
+			current = current.parentId ? byId.get(current.parentId) : undefined;
 		}
 		path.reverse();
 		return path;
@@ -1489,7 +1510,8 @@ export class SessionManager {
 	 * Uses tree traversal from current leaf.
 	 */
 	buildContextEntries(): SessionEntry[] {
-		return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+		const entries = this.getEntries();
+		return buildContextEntries(entries, this.getLeafId(), this.entriesReadProjection ? undefined : this.byId);
 	}
 
 	/**
@@ -1497,7 +1519,8 @@ export class SessionManager {
 	 * Uses tree traversal from current leaf.
 	 */
 	buildSessionContext(): SessionContext {
-		return buildSessionContext(this.getEntries(), this.leafId, this.byId);
+		const entries = this.getEntries();
+		return buildSessionContext(entries, this.getLeafId(), this.entriesReadProjection ? undefined : this.byId);
 	}
 
 	/**
@@ -1527,8 +1550,12 @@ export class SessionManager {
 	}
 
 	/** Bind a derived legacy read view while keeping fileEntries as the sole ledger. */
-	setEntriesReadProjection(projection: (() => SessionEntry[]) | undefined): void {
+	setEntriesReadProjection(
+		projection: (() => SessionEntry[]) | undefined,
+		leafIdProjection?: () => string | null,
+	): void {
 		this.entriesReadProjection = projection;
+		this.leafIdReadProjection = leafIdProjection;
 	}
 
 	/**
@@ -1783,7 +1810,9 @@ export class SessionManager {
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+		return initializeSessionReadProjection(
+			new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries),
+		);
 	}
 
 	/**
@@ -1796,7 +1825,7 @@ export class SessionManager {
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
 		if (mostRecent) {
-			return new SessionManager(cwd, dir, mostRecent, true);
+			return initializeSessionReadProjection(new SessionManager(cwd, dir, mostRecent, true));
 		}
 		return new SessionManager(cwd, dir, undefined, true);
 	}
@@ -1865,7 +1894,9 @@ export class SessionManager {
 			}
 		});
 
-		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
+		return initializeSessionReadProjection(
+			new SessionManager(resolvedTargetCwd, dir, newSessionFile, true),
+		);
 	}
 
 	/**

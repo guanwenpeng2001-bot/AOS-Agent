@@ -41,7 +41,7 @@ import type {
 	SessionHeader,
 	SessionInfoEntry,
 } from "./session-manager.ts";
-import type { SessionManager } from "./session-manager.ts";
+import { registerSessionReadProjectionInitializer, type SessionManager } from "./session-manager.ts";
 import { createCustomMessage, type BashExecutionMessage, type CustomMessage } from "./messages.ts";
 
 /** Reserved custom-entry types used to store canonical Harness state in the existing JSONL file. */
@@ -488,7 +488,10 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		this.manager = manager;
 		this.metadata = makeMetadata(manager);
 		this.snapshot();
-		this.manager.setEntriesReadProjection(() => this.legacyEntriesSnapshot());
+		this.manager.setEntriesReadProjection(
+			() => this.legacyEntriesSnapshot(),
+			() => this.legacyLeafIdSnapshot(),
+		);
 	}
 
 	/**
@@ -522,6 +525,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return result;
 	}
 
+	/** Wait until every write accepted by this storage instance has settled. */
+	drain(): Promise<void> {
+		return this.tail.promise;
+	}
+
 	private physicalEntries(): SessionEntry[] {
 		return this.manager.getPhysicalEntries();
 	}
@@ -535,18 +543,26 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		const physical = this.physicalEntries();
 		const byPhysicalId = new Map(physical.map((entry) => [entry.id, entry]));
 		const visibleByPhysicalId = new Map<string, Entry>();
+		const canonicalById = new Map<string, Entry>();
+		const visibleCanonicalIds = new Set<string>();
 		const projected: SessionEntry[] = [];
 		for (let index = 0; index < physical.length; index += 1) {
 			const physicalEntry = physical[index]!;
 			const foundation = parseFoundationEnvelope(physicalEntry);
 			if (foundation?.kind === "durable") continue;
 			if (foundation?.kind === "entry") {
-				if (foundation.entry.type === "active_tools_change") continue;
-				const parentId = this.resolveVisibleParent(foundation.entry.parentId, byPhysicalId, visibleByPhysicalId);
+				const parentId = this.resolveVisibleCanonicalParent(
+					foundation.entry.parentId,
+					canonicalById,
+					visibleCanonicalIds,
+				);
 				const entry = foundation.entry.parentId === parentId
 					? foundation.entry
 					: { ...foundation.entry, parentId };
+				canonicalById.set(entry.id, entry);
+				if (foundation.entry.type === "active_tools_change") continue;
 				visibleByPhysicalId.set(physicalEntry.id, entry);
+				visibleCanonicalIds.add(entry.id);
 				const timestamp = new Date(entry.timestamp).toISOString();
 				switch (entry.type) {
 					case "message":
@@ -614,18 +630,33 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 				}
 				continue;
 			}
+			if (foundation?.kind === "name" && foundation.fact.kind === "name") {
+				projected.push({
+					type: "session_info",
+					id: physicalEntry.id,
+					parentId: this.resolveVisibleParent(physicalEntry.parentId ?? null, byPhysicalId, visibleByPhysicalId),
+					timestamp: physicalEntry.timestamp,
+					name: foundation.fact.name,
+				});
+				continue;
+			}
 			if (foundation !== undefined) continue;
 			const parentId = this.resolveVisibleParent(physicalEntry.parentId ?? null, byPhysicalId, visibleByPhysicalId);
 			if (physicalEntry.type === "custom_message") {
 				const customMessage = clone(physicalEntry);
 				customMessage.parentId = parentId;
 				projected.push(customMessage);
-				visibleByPhysicalId.set(physicalEntry.id, legacyCustomMessageToCanonical(physicalEntry, index + 1, parentId));
+				const canonical = legacyCustomMessageToCanonical(physicalEntry, index + 1, parentId);
+				visibleByPhysicalId.set(physicalEntry.id, canonical);
+				canonicalById.set(canonical.id, canonical);
+				visibleCanonicalIds.add(canonical.id);
 				continue;
 			}
 			const entry = legacyEntryToCanonical(physicalEntry, index + 1, parentId);
 			if (entry !== undefined) {
 				visibleByPhysicalId.set(physicalEntry.id, entry);
+				canonicalById.set(entry.id, entry);
+				visibleCanonicalIds.add(entry.id);
 				const timestamp = new Date(entry.timestamp).toISOString();
 				if (entry.type === "message") projected.push({ type: "message", id: entry.id, parentId: entry.parentId, timestamp, message: clone(entry.message) });
 				else if (entry.type === "custom") projected.push({ type: "custom", id: entry.id, parentId: entry.parentId, timestamp, customType: entry.customType, data: clone(entry.data) });
@@ -640,6 +671,23 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			}
 		}
 		return projected;
+	}
+
+	private legacyLeafIdSnapshot(): string | null {
+		const snapshot = this.snapshot();
+		let leafId = snapshot.lanes.find((lane) => lane.lane === "main")?.leafId ?? null;
+		if (leafId === null) return null;
+		const projectedIds = new Set(this.legacyEntriesSnapshot()
+			.filter((entry) => entry.type !== "custom" || !entry.customType.startsWith("harness.config."))
+			.map((entry) => entry.id));
+		const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
+		const visited = new Set<string>();
+		while (leafId !== null && !projectedIds.has(leafId)) {
+			if (visited.has(leafId)) failClosed(`canonical main lane contains a cycle at ${leafId}`);
+			visited.add(leafId);
+			leafId = byId.get(leafId)?.parentId ?? null;
+		}
+		return leafId;
 	}
 
 	private snapshot(): Snapshot {
@@ -775,6 +823,22 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			const visible = visibleByPhysicalId.get(current);
 			if (visible) return visible.id;
 			current = byPhysicalId.get(current)?.parentId ?? null;
+		}
+		return null;
+	}
+
+	private resolveVisibleCanonicalParent(
+		parentId: string | null,
+		byId: ReadonlyMap<string, Entry>,
+		visibleIds: ReadonlySet<string>,
+	): string | null {
+		const visited = new Set<string>();
+		let current = parentId;
+		while (current !== null) {
+			if (visited.has(current)) failClosed(`canonical parent chain contains a cycle at ${current}`);
+			visited.add(current);
+			if (visibleIds.has(current)) return current;
+			current = byId.get(current)?.parentId ?? null;
 		}
 		return null;
 	}
@@ -1178,3 +1242,7 @@ export function createHarnessCompatibilityWriter(storage: SessionManagerStorage)
 export function createSessionManagerStorage(manager: SessionManager): SessionManagerStorage {
 	return new SessionManagerStorage(manager);
 }
+
+registerSessionReadProjectionInitializer((manager) => {
+	new SessionManagerStorage(manager);
+});

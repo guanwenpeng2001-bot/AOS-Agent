@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
 	AgentHarness,
+	InMemoryArtifactBlobStore,
 	Session,
 	type AgentContext,
 	type Agent,
@@ -15,6 +16,7 @@ import {
 	type HarnessCompactionResult,
 	type HarnessTool,
 	type HarnessContextPreparationInput,
+	type HarnessModelCallBoundaryInput,
 	type Entry,
 	type FoundationJsonValue,
 	type ProvisionedEntry,
@@ -24,7 +26,19 @@ import {
 	type ThinkingLevel,
 	createCompactionSummaryMessage,
 } from "@aos-agent/agent-core";
-import { isContextOverflow, isRecoverableLength, type Api, type AssistantMessage, type ImageContent, type Model, type Usage } from "@aos-agent/ai";
+import {
+	createAssistantMessageEventStream,
+	isContextOverflow,
+	isRecoverableLength,
+	type Api,
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	type AssistantMessageEventStream,
+	type ImageContent,
+	type Model,
+	type ThinkingLevel as AiThinkingLevel,
+	type Usage,
+} from "@aos-agent/ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@aos-agent/ai/compat";
 import type {
 	AgentSessionConfig,
@@ -41,7 +55,14 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import { wrapRegisteredTools } from "./extensions/wrapper.ts";
 import { wrapToolDefinitions } from "./tools/tool-definition-wrapper.ts";
 import { ModelRegistry } from "./model-registry.ts";
-import { ModelBroker, type ModelResolution } from "./model-broker.ts";
+import { ModelBroker, type ModelResolution, type NormalizedModelReference } from "./model-broker.ts";
+import {
+	persistModelAttempt,
+	persistModelBinding,
+	type ModelAttemptLedgerRecord,
+	type ModelBindingLedgerRecord,
+} from "./model-broker-ledger.ts";
+import { classifyProviderFailure } from "./execution-error.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
@@ -109,7 +130,7 @@ import type { TaskCredentialProviderAvailability } from "./task-credential-provi
 import type { BashOperations } from "./tools/bash.ts";
 import { exportSessionToHtml } from "./export-html/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import { calculateContextTokens, estimateContextTokens, type CompactionPreparation as LegacyCompactionPreparation, type CompactionResult } from "./compaction/index.ts";
+import { calculateContextTokens, estimateContextTokens, shouldCompact, type CompactionPreparation as LegacyCompactionPreparation, type CompactionResult } from "./compaction/index.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -181,6 +202,53 @@ class ModelSelectionState {
 	get bindingId(): string | undefined {
 		return this.lastBindingId ?? this.selected?.bindingId;
 	}
+
+	get resolution(): ModelResolution | undefined {
+		return this.selected;
+	}
+}
+
+interface PendingModelAttempt {
+	resolution: ModelResolution;
+	attempt: ModelAttemptLedgerRecord;
+	model: Model<Api>;
+	order: number;
+	reservationId?: string;
+}
+
+function modelEventHasVisibleOutput(event: AssistantMessageEvent): boolean {
+	if (event.type === "toolcall_start" || event.type === "toolcall_delta" || event.type === "toolcall_end") return true;
+	if (event.type === "text_delta") return event.delta.length > 0;
+	if (event.type === "thinking_delta") return event.delta.length > 0;
+	if (event.type === "done") {
+		return event.reason === "toolUse" || event.message.content.some((part) => {
+			if (part.type === "toolCall") return true;
+			if (part.type === "text") return part.text.length > 0;
+			return part.thinking.length > 0;
+		});
+	}
+	return false;
+}
+
+function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = false): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: aborted ? "aborted" : "error",
+		errorMessage,
+		timestamp: Date.now(),
+	};
 }
 
 function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
@@ -279,6 +347,9 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		retry: options.settingsManager.getRetrySettings(),
 		compaction: options.settingsManager.getCompactionSettings(),
 		compatibilityWriter: createHarnessCompatibilityWriter(canonicalStorage),
+		...(options.sessionManager.isPersisted()
+			? {}
+			: { t5Options: { artifactBlobStore: new InMemoryArtifactBlobStore() } }),
 	});
 	return {
 		harness,
@@ -391,6 +462,23 @@ function recordValue(value: unknown): Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function normalizeCompatibilityMessage(message: AgentMessage): AgentMessage {
+	if ("content" in message && message.content == null) {
+		return { ...message, content: [] } as AgentMessage;
+	}
+	return message;
+}
+
+function normalizeContextUsageAfterSummary(messages: AgentMessage[]): AgentMessage[] {
+	const latestSummary = [...messages]
+		.reverse()
+		.find((message) => message.role === "compactionSummary" || message.role === "branchSummary");
+	if (latestSummary === undefined) return messages;
+	return messages.map((message) => message.role === "assistant" && message.timestamp <= latestSummary.timestamp
+		? { ...message, usage: emptyUsage() }
+		: message);
+}
+
 function contextEngineError(contextError: ContextError): Error {
 	const error = new Error(contextError.message) as Error & { contextError: typeof contextError };
 	error.name = "ContextEngineError";
@@ -458,6 +546,9 @@ export class CanonicalAgentSessionServices {
 	private readonly _modelBroker: ModelBroker;
 	private readonly _modelBrokerConfigRevision: string;
 	private readonly modelSelection = new ModelSelectionState();
+	private readonly persistedModelBrokerBindingIds = new Set<string>();
+	private readonly modelBrokerOperations = new Map<string, ModelResolution>();
+	private readonly pendingModelAttempts = new Map<string, PendingModelAttempt>();
 	private readonly _cwd: string;
 	private readonly _systemPromptOptions: BuildSystemPromptOptions;
 	private _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
@@ -475,6 +566,11 @@ export class CanonicalAgentSessionServices {
 	private promptSurface: RuntimeSessionSurfaceV1 = "sdk";
 	private compatibilityFacade: AgentSession | undefined;
 	private extensionToolsReady: Promise<void> = Promise.resolve();
+	private pendingActiveToolNames: string[] | undefined;
+	private readonly pendingExternalMessages: AgentMessage[] = [];
+	private readonly activePromptTasks = new Set<Promise<void>>();
+	private promptPreflightPending = false;
+	private manualCompactionPending = false;
 	private disposed = false;
 	private disposePromise: Promise<void> | undefined;
 	private readonly sessionInfoSubscribers = new Set<AgentSessionEventListener>();
@@ -702,6 +798,8 @@ export class CanonicalAgentSessionServices {
 			},
 		});
 		this.harness.setContextPreparation((input) => this.prepareHarnessContext(input));
+		this.harness.setModelContextPreparationStart((input) => this.beginModelBrokerAttempt(input));
+		this.harness.setModelCallBoundary((input) => this.streamWithModelBroker(input));
 		this.harness.setContextSnapshotIdForOperation((operationId, purpose) => {
 			const snapshots = this.sessionManager.getContextSnapshots().filter((snapshot) => snapshot.purpose === purpose);
 			return snapshots.filter((snapshot) => snapshot.runId === operationId).at(-1)?.id;
@@ -752,6 +850,7 @@ export class CanonicalAgentSessionServices {
 				false,
 			));
 		}
+		const contextMessages = normalizeContextUsageAfterSummary(input.context.messages);
 
 		const extraSources: ContextSourceInput[] = [];
 		if (input.purpose === "agent_turn" && this._extensionRunner.hasHandlers("before_agent_start")) {
@@ -841,7 +940,7 @@ export class CanonicalAgentSessionServices {
 			});
 		}
 
-		for (const [index, message] of input.context.messages.entries()) {
+		for (const [index, message] of contextMessages.entries()) {
 			const serialized = JSON.stringify(message);
 			const kind = message.role === "branchSummary" || message.role === "compactionSummary" ? "session_summary" : "session_message";
 			sources.push({
@@ -858,14 +957,15 @@ export class CanonicalAgentSessionServices {
 		}
 		sources.push(...extraSources);
 
+		const reserveTokens = Math.min(contextSettings.reserveTokens, Math.floor(input.model.contextWindow / 2));
 		const resolved = resolveContext({
 			purpose: input.purpose,
 			sessionId: this.sessionManager.getSessionId(),
 			runId: input.operationId,
 			contextWindow: input.model.contextWindow,
-			reserveTokens: contextSettings.reserveTokens,
+			reserveTokens,
 			sources,
-			sessionMessages: input.context.messages,
+			sessionMessages: contextMessages,
 			turnMessages: [],
 		});
 		if (!resolved.ok) throw contextEngineError(resolved.error);
@@ -882,6 +982,284 @@ export class CanonicalAgentSessionServices {
 			systemPrompt: resolved.plan.systemPrompt,
 			messages: resolved.plan.messages,
 		};
+	}
+
+	private resolveModelBrokerOperation(operationId: string, model: Model<Api>): ModelResolution {
+		const existing = this.modelBrokerOperations.get(operationId);
+		if (existing !== undefined) return existing;
+		const selected = this.modelSelection.resolution;
+		const resolution = selected !== undefined && selected.reference.provider === model.provider && selected.reference.id === model.id
+			? selected
+			: this._modelBroker.hasDefaultSelection()
+				? this._modelBroker.resolve({})
+				: this._modelBroker.resolve({
+					direct: {
+						provider: model.provider,
+						id: model.id,
+						thinkingLevel: this.thinkingLevel,
+					},
+				});
+		this._modelBroker.beginBindingOperation(resolution.binding.id);
+		this.modelBrokerOperations.set(operationId, resolution);
+		this.modelSelection.setSelection(resolution);
+		this.controlPlane.setModelBrokerBindingId(resolution.binding.id);
+		this.persistModelBrokerBinding(resolution);
+		return resolution;
+	}
+
+	private persistModelBrokerBinding(resolution: ModelResolution): void {
+		const binding = resolution.binding;
+		if (this.persistedModelBrokerBindingIds.has(binding.id)) return;
+		const ledgerBinding: ModelBindingLedgerRecord = {
+			bindingId: binding.id,
+			mode: resolution.source === "role" ? "route" : resolution.source,
+			...(resolution.routeId === undefined ? {} : { routeId: resolution.routeId }),
+			...(resolution.role === undefined ? {} : { role: resolution.role }),
+			candidates: resolution.candidatesConsidered.map((candidate, order) => ({
+				order,
+				model: {
+					provider: candidate.provider,
+					modelId: candidate.id,
+					...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel as ThinkingLevel }),
+				},
+			})),
+			fallback: binding.fallback ?? { maxAttempts: 1, on: [] },
+			budget: {
+				...(binding.budget?.maxModelCalls === undefined ? {} : { maxModelCalls: binding.budget.maxModelCalls }),
+				...(binding.budget?.maxInputTokens === undefined ? {} : { maxInputTokens: binding.budget.maxInputTokens }),
+				...(binding.budget?.maxOutputTokens === undefined ? {} : { maxOutputTokens: binding.budget.maxOutputTokens }),
+				...(binding.budget?.maxTotalTokens === undefined ? {} : { maxTotalTokens: binding.budget.maxTotalTokens }),
+				...(binding.budget?.maxCost === undefined ? {} : { maxCostUsd: binding.budget.maxCost }),
+				...(binding.budget?.maxCostUsd === undefined ? {} : { maxCostUsd: binding.budget.maxCostUsd }),
+			},
+			configRevision: binding.configRevision ?? this._modelBrokerConfigRevision,
+			createdAt: binding.createdAt,
+		};
+		try {
+			persistModelBinding(this.sessionManager, ledgerBinding);
+		} catch {
+			// Ledger serialization must not replace the provider result.
+		}
+		this.persistedModelBrokerBindingIds.add(binding.id);
+	}
+
+	private createStartedModelAttempt(
+		resolution: ModelResolution,
+		order: number,
+		model: Model<Api>,
+	): PendingModelAttempt {
+		const reference = resolution.candidatesConsidered[order] ?? resolution.reference;
+		const attempt: ModelAttemptLedgerRecord = {
+			attemptId: `model-attempt:${randomUUID()}`,
+			bindingId: resolution.binding.id,
+			candidate: {
+				provider: reference.provider,
+				modelId: reference.id,
+				...(reference.thinkingLevel === undefined ? {} : { thinkingLevel: reference.thinkingLevel as ThinkingLevel }),
+			},
+			order,
+			status: "started",
+			startedAt: new Date().toISOString(),
+		};
+		let reservationId: string | undefined;
+		if (this._modelBroker.hasBudgetForBinding(resolution.binding.id)) {
+			const preflight = this._modelBroker.preflightBudgetForBinding(resolution.binding.id, {
+				bindingId: resolution.binding.id,
+			});
+			if (!preflight.ok) {
+				this.persistModelBrokerAttempt({
+					...attempt,
+					status: "failed",
+					endedAt: new Date().toISOString(),
+					failureCategory: preflight.error.code,
+				});
+				throw new Error("Model budget exceeded.");
+			}
+			reservationId = preflight.preflight.reservation.id;
+		}
+		this.persistModelBrokerAttempt(attempt);
+		return {
+			resolution,
+			attempt,
+			model,
+			order,
+			...(reservationId === undefined ? {} : { reservationId }),
+		};
+	}
+
+	private persistModelBrokerAttempt(attempt: ModelAttemptLedgerRecord): void {
+		try {
+			persistModelAttempt(this.sessionManager, attempt);
+		} catch {
+			// Ledger serialization must not replace the provider result.
+		}
+	}
+
+	private async beginModelBrokerAttempt(input: HarnessContextPreparationInput): Promise<void> {
+		const resolution = this.resolveModelBrokerOperation(input.operationId, input.model);
+		const reference = resolution.reference;
+		const order = Math.max(0, resolution.candidatesConsidered.findIndex(
+			(candidate) => candidate.provider === reference.provider && candidate.id === reference.id,
+		));
+		const selectedModel = typeof this._modelRuntime.getModel === "function"
+			? this._modelRuntime.getModel(reference.provider, reference.id) ?? input.model
+			: input.model;
+		this.pendingModelAttempts.set(
+			input.operationId,
+			this.createStartedModelAttempt(resolution, order, selectedModel),
+		);
+	}
+
+	private modelAttemptSnapshotId(runId: string): string | undefined {
+		return this.sessionManager
+			.getContextSnapshots()
+			.filter((snapshot) => snapshot.purpose === "agent_turn" && snapshot.runId === runId)
+			.at(-1)?.id;
+	}
+
+	private modelForReference(reference: NormalizedModelReference): Model<Api> | undefined {
+		return typeof this._modelRuntime.getModel === "function"
+			? this._modelRuntime.getModel(reference.provider, reference.id)
+			: undefined;
+	}
+
+	private streamWithModelBroker(input: HarnessModelCallBoundaryInput): AssistantMessageEventStream {
+		const initial = this.pendingModelAttempts.get(input.runId);
+		this.pendingModelAttempts.delete(input.runId);
+		if (initial === undefined) {
+			const stream = createAssistantMessageEventStream();
+			void input.invoke(input.model, input.context, input.options).then(async (source) => {
+				for await (const event of source) stream.push(event);
+				stream.end();
+			}).catch((error: unknown) => {
+				stream.push({ type: "error", reason: "error", error: syntheticModelError(input.model, error instanceof Error ? error.message : String(error)) });
+				stream.end();
+			});
+			return stream;
+		}
+
+		const output = createAssistantMessageEventStream();
+		void this.runModelBrokerStream(input, initial, output);
+		return output;
+	}
+
+	private async runModelBrokerStream(
+		input: HarnessModelCallBoundaryInput,
+		initial: PendingModelAttempt,
+		output: AssistantMessageEventStream,
+	): Promise<void> {
+		let current = initial;
+		let context = input.context;
+		let attempts = 0;
+		try {
+			while (true) {
+				attempts += 1;
+				const snapshotId = this.modelAttemptSnapshotId(input.runId);
+				let visibleOutput = false;
+				let terminalError: AssistantMessage | undefined;
+				const attemptThinkingLevel = current.resolution.candidatesConsidered[current.order]?.thinkingLevel;
+				const options = attemptThinkingLevel === undefined || attemptThinkingLevel === "off"
+					? input.options
+					: { ...input.options, reasoning: attemptThinkingLevel as AiThinkingLevel };
+				const source = await input.invoke(current.model, context, options);
+				for await (const event of source) {
+					if (modelEventHasVisibleOutput(event)) visibleOutput = true;
+					if (event.type === "error") {
+						terminalError = event.error;
+						break;
+					}
+					if (event.type === "done") {
+						const usage = {
+							input: event.message.usage.input,
+							output: event.message.usage.output,
+							total: event.message.usage.totalTokens,
+							cost: event.message.usage.cost.total,
+						};
+						const settlement = current.reservationId === undefined
+							? undefined
+							: this._modelBroker.settleBudgetForBinding(current.resolution.binding.id, current.reservationId, usage);
+						const budgetExceeded = settlement?.ok === false && settlement.error.code === "model_budget_exceeded";
+						this.persistModelBrokerAttempt({
+							...current.attempt,
+							status: "completed",
+							endedAt: new Date().toISOString(),
+							visibleOutput,
+							...(snapshotId === undefined ? {} : { contextSnapshotId: snapshotId }),
+							usage,
+							...(budgetExceeded ? { summary: "Model budget exceeded; subsequent calls are blocked." } : {}),
+						});
+						if (budgetExceeded) {
+							const error = syntheticModelError(current.model, "The operation outcome is unknown after a possible side effect.");
+							output.push({ type: "error", reason: "error", error });
+							output.end();
+						} else {
+							output.push(event);
+							output.end();
+						}
+						return;
+					}
+					output.push(event);
+				}
+
+				if (terminalError === undefined) {
+					terminalError = syntheticModelError(current.model, "The model request failed.");
+				}
+				const failure = classifyProviderFailure(terminalError, { visibleOutput });
+				const settlement = current.reservationId === undefined
+					? undefined
+					: this._modelBroker.settleBudgetForBinding(current.resolution.binding.id, current.reservationId, {
+						input: terminalError.usage.input,
+						output: terminalError.usage.output,
+						total: terminalError.usage.totalTokens,
+						cost: terminalError.usage.cost.total,
+					});
+				const budgetBlocked = settlement?.ok === false;
+				const nextOrder = current.resolution.candidatesConsidered.findIndex((candidate, index) =>
+					index > current.order && (candidate.provider !== current.model.provider || candidate.id !== current.model.id));
+				const fallbackEligible = !visibleOutput
+					&& !budgetBlocked
+					&& current.resolution.binding.fallbackAllowed
+					&& failure.fallbackReason !== undefined
+					&& current.resolution.binding.fallback?.on.includes(failure.fallbackReason) === true
+					&& this._modelBroker.classifyFallback({
+						category: failure.category,
+						sideEffectStatus: failure.sideEffectStatus,
+					}).eligible;
+				const fallbackAllowed = fallbackEligible
+					&& attempts < (current.resolution.binding.fallback?.maxAttempts ?? 1)
+					&& nextOrder >= 0;
+				this.persistModelBrokerAttempt({
+					...current.attempt,
+					status: "failed",
+					endedAt: new Date().toISOString(),
+					failureCategory: budgetBlocked ? "model_budget_exceeded" : (failure.fallbackReason ?? failure.category),
+					visibleOutput,
+					...(snapshotId === undefined ? {} : { contextSnapshotId: snapshotId }),
+				});
+				if (!fallbackAllowed) {
+					const error = budgetBlocked
+						? syntheticModelError(current.model, "Model budget exceeded.")
+						: terminalError;
+					output.push({ type: "error", reason: error.stopReason === "aborted" ? "aborted" : "error", error });
+					output.end();
+					return;
+				}
+				const nextReference = current.resolution.candidatesConsidered[nextOrder];
+				const nextModel = nextReference === undefined ? undefined : this.modelForReference(nextReference);
+				if (nextModel === undefined) {
+					const error = syntheticModelError(current.model, "Model fallback exhausted.");
+					output.push({ type: "error", reason: "error", error });
+					output.end();
+					return;
+				}
+				current = this.createStartedModelAttempt(current.resolution, nextOrder, nextModel);
+				context = await input.prepareContext(nextModel);
+			}
+		} catch (error) {
+			const message = syntheticModelError(current.model, error instanceof Error ? error.message : String(error), input.options?.signal?.aborted === true);
+			output.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
+			output.end();
+		}
 	}
 
 	private bindExtensionRuntime(): void {
@@ -981,6 +1359,7 @@ export class CanonicalAgentSessionServices {
 			void runner.emit({ type: "agent_end", messages: [] });
 		});
 		this.harness.events.on("agent_settled", () => {
+			this.flushPendingExternalMessages();
 			void runner.emit({ type: "agent_settled" });
 		});
 		this.harness.setEventTransform(async (event) => (await this.emitEventThroughCompatibilityHook(event)) ?? event);
@@ -1005,7 +1384,7 @@ export class CanonicalAgentSessionServices {
 		}
 		if (event.type === "message_end") {
 			const replacement = await currentRunner.emitMessageEnd({ type: "message_end", message: event.message });
-			return replacement === undefined ? event : { ...event, message: replacement };
+			return replacement === undefined ? event : { ...event, message: normalizeCompatibilityMessage(replacement) };
 		}
 		if (event.type === "tool_execution_start" && currentRunner.hasHandlers("tool_execution_start")) {
 			await currentRunner.emit({
@@ -1283,11 +1662,11 @@ export class CanonicalAgentSessionServices {
 	}
 
 	get isStreaming(): boolean {
-		return this.harness.isRunning;
+		return this.promptPreflightPending || this.harness.isRunning;
 	}
 
 	get isIdle(): boolean {
-		return !this.harness.isRunning;
+		return !this.isStreaming;
 	}
 
 	get systemPrompt(): string {
@@ -1300,7 +1679,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	getActiveToolNames(): string[] {
-		return [...this.harness.activeToolNamesSnapshot];
+		return [...(this.pendingActiveToolNames ?? this.harness.activeToolNamesSnapshot)];
 	}
 
 	get messages(): AgentMessage[] {
@@ -1318,22 +1697,22 @@ export class CanonicalAgentSessionServices {
 		if (compactionIndex < 0) {
 			return entries
 				.filter((entry): entry is Extract<Entry, { type: "message" }> => entry.type === "message")
-				.map((entry) => structuredClone(entry.message));
+				.map((entry) => structuredClone(normalizeCompatibilityMessage(entry.message)));
 		}
 		const compaction = entries[compactionIndex];
 		if (compaction.type !== "compaction") return [];
 		return [
 			createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp),
-			...compaction.retainedTail.map((message) => structuredClone(message)),
+			...compaction.retainedTail.map((message) => structuredClone(normalizeCompatibilityMessage(message))),
 			...entries
 				.slice(compactionIndex + 1)
 				.filter((entry): entry is Extract<Entry, { type: "message" }> => entry.type === "message")
-				.map((entry) => structuredClone(entry.message)),
+				.map((entry) => structuredClone(normalizeCompatibilityMessage(entry.message))),
 		];
 	}
 
 	private async refreshCompatibilityMessages(): Promise<void> {
-		this.compatibilityMessagesProjection = await this.harness.getMessages();
+		this.compatibilityMessagesProjection = (await this.harness.getMessages()).map(normalizeCompatibilityMessage);
 	}
 
 	private syncCompatibilityMessages(messages: AgentMessage[]): void {
@@ -1343,7 +1722,8 @@ export class CanonicalAgentSessionServices {
 			const key = JSON.stringify(entry.message);
 			if (key !== undefined) available.set(key, (available.get(key) ?? 0) + 1);
 		}
-		for (const message of messages) {
+		for (const sourceMessage of messages) {
+			const message = normalizeCompatibilityMessage(sourceMessage);
 			const key = JSON.stringify(message);
 			if (key !== undefined) {
 				const count = available.get(key) ?? 0;
@@ -1361,7 +1741,14 @@ export class CanonicalAgentSessionServices {
 			) continue;
 			this.harness.recordCompatibilityMessage(omitUndefined(message) as AgentMessage);
 		}
-		this.compatibilityMessagesProjection = structuredClone(messages);
+		this.compatibilityMessagesProjection = structuredClone(messages.map(normalizeCompatibilityMessage));
+	}
+
+	private flushPendingExternalMessages(): void {
+		for (const message of this.pendingExternalMessages.splice(0)) {
+			void this.harness.recordExternalMessage(message);
+		}
+		this.compatibilityMessagesProjection = this.projectCompatibilityMessages(this.canonicalEntriesSnapshot());
 	}
 
 	private canonicalEntriesSnapshot(): Entry[] {
@@ -1465,6 +1852,15 @@ export class CanonicalAgentSessionServices {
 				...(value.errorMessage === undefined ? {} : { errorMessage: value.errorMessage }),
 			});
 		});
+		const unsubscribeSummarizationRetryScheduled = this.harness.events.on("summarization_retry_scheduled", (value) => {
+			listener(value);
+		});
+		const unsubscribeSummarizationRetryAttemptStart = this.harness.events.on("summarization_retry_attempt_start", (value) => {
+			listener(value);
+		});
+		const unsubscribeSummarizationRetryFinished = this.harness.events.on("summarization_retry_finished", () => {
+			listener({ type: "summarization_retry_finished" });
+		});
 		return () => {
 			this.sessionInfoSubscribers.delete(listener);
 			unsubscribeAgent();
@@ -1475,6 +1871,9 @@ export class CanonicalAgentSessionServices {
 			unsubscribeBash();
 			unsubscribeCompactionStart();
 			unsubscribeCompactionEnd();
+			unsubscribeSummarizationRetryScheduled();
+			unsubscribeSummarizationRetryAttemptStart();
+			unsubscribeSummarizationRetryFinished();
 		};
 	}
 
@@ -1621,7 +2020,22 @@ export class CanonicalAgentSessionServices {
 			options.preflightResult?.(true);
 			return;
 		}
-		await this.promptPrepared(this.expandPromptText(input.text, options.expandPromptTemplates ?? true), input.images, options);
+		await this.trackPromptTask(
+			this.promptPrepared(this.expandPromptText(input.text, options.expandPromptTemplates ?? true), input.images, options),
+		);
+	}
+
+	private trackPromptTask(task: Promise<void>): Promise<void> {
+		let tracked!: Promise<void>;
+		tracked = (async () => {
+			try {
+				await task;
+			} finally {
+				this.activePromptTasks.delete(tracked);
+			}
+		})();
+		this.activePromptTasks.add(tracked);
+		return tracked;
 	}
 
 	private async syncHarnessRetryPolicy(): Promise<void> {
@@ -1629,7 +2043,14 @@ export class CanonicalAgentSessionServices {
 	}
 
 	private async syncHarnessCompactionSettings(): Promise<void> {
-		await this.harness.setCompactionSettings(this.settingsManager.getCompactionSettings());
+		const settings = this.settingsManager.getCompactionSettings();
+		const contextWindow = this.model?.contextWindow;
+		await this.harness.setCompactionSettings({
+			...settings,
+			reserveTokens: contextWindow === undefined
+				? settings.reserveTokens
+				: Math.min(settings.reserveTokens, Math.floor(contextWindow / 2)),
+		});
 	}
 
 	private productPromptDependencySnapshot(
@@ -1706,17 +2127,6 @@ export class CanonicalAgentSessionServices {
 			}
 			throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
 		}
-		try {
-			await this.assertModelAndAuth({ allowCustomStream: false });
-		} catch (error) {
-			options.preflightResult?.(false);
-			throw error;
-		}
-		await this.syncHarnessRetryPolicy();
-		if (options.deadlineMs !== undefined && (!Number.isFinite(options.deadlineMs) || options.deadlineMs < 0)) {
-			options.preflightResult?.(false);
-			throw new Error("Prompt deadlineMs must be a non-negative finite number");
-		}
 		const runId = options.runId ?? randomUUID();
 		const deadlineSignal = options.deadlineMs === undefined ? undefined : AbortSignal.timeout(options.deadlineMs);
 		const signal = options.signal === undefined
@@ -1724,10 +2134,25 @@ export class CanonicalAgentSessionServices {
 			: deadlineSignal === undefined
 				? options.signal
 				: AbortSignal.any([options.signal, deadlineSignal]);
-		await (this.compatibilityFacade?.whenCapabilitiesReady(runId, signal) ?? this.whenCapabilitiesReady(runId, signal));
-		if (signal?.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
+		this.promptPreflightPending = true;
+		try {
+			await this.assertModelAndAuth({ allowCustomStream: false });
+			await this.syncHarnessRetryPolicy();
+			if (options.deadlineMs !== undefined && (!Number.isFinite(options.deadlineMs) || options.deadlineMs < 0)) {
+				throw new Error("Prompt deadlineMs must be a non-negative finite number");
+			}
+			await (this.compatibilityFacade?.whenCapabilitiesReady(runId, signal) ?? this.whenCapabilitiesReady(runId, signal));
+			if (signal?.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
+		} catch (error) {
+			options.preflightResult?.(false);
+			throw error;
+		} finally {
+			this.promptPreflightPending = false;
+		}
 		options.preflightResult?.(true);
 		this.harness.beginPromptCompactionCycle();
+		const previousAssistant = [...this.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
+		if (previousAssistant !== undefined) await this._checkCompaction(previousAssistant);
 		let execution = await this.productPromptIngress.execute({
 			prompt: text,
 			surface: options.surface ?? this.promptSurface,
@@ -1782,10 +2207,14 @@ export class CanonicalAgentSessionServices {
 		const result = await this.harness.abort();
 		const error = resultError(result);
 		if (error && !/No active operation/.test(error.message)) throw error;
+		await this.harness.waitForIdle();
+		await Promise.all([...this.activePromptTasks].map((task) => task.catch(() => undefined)));
 	}
 
 	async waitForIdle(): Promise<void> {
 		await this.harness.waitForIdle();
+		this.flushPendingExternalMessages();
+		await this.refreshCompatibilityMessages();
 	}
 
 	async waitForDispose(): Promise<void> {
@@ -1818,11 +2247,21 @@ export class CanonicalAgentSessionServices {
 		const images = typeof content === "string" ? undefined : content
 			.filter((part): part is { type: "image"; data: string; mimeType: string } => part.type === "image" && part.data !== undefined && part.mimeType !== undefined)
 			.map((part) => ({ type: "image" as const, data: part.data, mimeType: part.mimeType }));
-		const input = await this.transformInput(text, images, "extension", options?.deliverAs === "steer" || options?.deliverAs === "followUp" ? options.deliverAs : undefined);
+		const input = await this.transformInput(text, images, "extension", options?.deliverAs);
 		if (input === undefined) return;
-		if (options?.deliverAs === "steer") return this.steer(input.text, input.images);
-		if (options?.deliverAs === "followUp") return this.followUp(input.text, input.images);
-		return this.promptPrepared(input.text, input.images, { images: input.images, source: "extension" });
+		if (options?.deliverAs === "steer") {
+			const result = await this.harness.steer(input.text, input.images);
+			const error = resultError(result);
+			if (error) throw error;
+			return;
+		}
+		if (options?.deliverAs === "followUp") {
+			const result = await this.harness.followUp(input.text, input.images);
+			const error = resultError(result);
+			if (error) throw error;
+			return;
+		}
+		return this.trackPromptTask(this.promptPrepared(input.text, input.images, { images: input.images, source: "extension" }));
 	}
 
 	private async tryExecuteExtensionCommand(text: string): Promise<boolean> {
@@ -1896,30 +2335,36 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		await this.assertModelAndAuth({ allowCustomStream: true });
-		await this.syncHarnessRetryPolicy();
-		await this.syncHarnessCompactionSettings();
-		const result = await this.harness.compact({ customInstructions });
-		await this.refreshCompatibilityMessages();
-		const error = resultError(result);
-		if (error) throw error;
-		if (!result.ok) throw new Error("Compaction failed");
-		if (result.value.kind === "completed") {
-			return {
-				summary: result.value.entry.summary,
-				firstKeptEntryId: result.value.entry.firstKeptEntryId ?? result.value.entry.id,
-				tokensBefore: result.value.entry.tokensBefore,
-				estimatedTokensAfter: estimateContextTokens(this.messages).tokens,
-				...(result.value.entry.usage === undefined ? {} : { usage: result.value.entry.usage }),
-				...(result.value.entry.details === undefined ? {} : { details: result.value.entry.details }),
-			};
+		this.manualCompactionPending = true;
+		try {
+			await this.harness.waitForIdle();
+			await this.assertModelAndAuth({ allowCustomStream: true });
+			await this.syncHarnessRetryPolicy();
+			await this.syncHarnessCompactionSettings();
+			const result = await this.harness.compact({ customInstructions });
+			await this.refreshCompatibilityMessages();
+			const error = resultError(result);
+			if (error) throw error;
+			if (!result.ok) throw new Error("Compaction failed");
+			if (result.value.kind === "completed") {
+				return {
+					summary: result.value.entry.summary,
+					firstKeptEntryId: result.value.entry.firstKeptEntryId ?? result.value.entry.id,
+					tokensBefore: result.value.entry.tokensBefore,
+					estimatedTokensAfter: estimateContextTokens(this.messages).tokens,
+					...(result.value.entry.usage === undefined ? {} : { usage: result.value.entry.usage }),
+					...(result.value.entry.details === undefined ? {} : { details: result.value.entry.details }),
+				};
+			}
+			if (result.value.kind === "aborted") throw new Error("Compaction cancelled");
+			if (result.value.kind === "declined") throw new Error("No compactable session history");
+			if (result.value.kind !== "failed") throw new Error("Compaction failed");
+			const failure = new Error(result.value.error.message) as Error & { code?: string };
+			failure.code = result.value.error.code;
+			throw failure;
+		} finally {
+			this.manualCompactionPending = false;
 		}
-		if (result.value.kind === "aborted") throw new Error("Compaction cancelled");
-		if (result.value.kind === "declined") throw new Error("No compactable session history");
-		if (result.value.kind !== "failed") throw new Error("Compaction failed");
-		const failure = new Error(result.value.error.message) as Error & { code?: string };
-		failure.code = result.value.error.code;
-		throw failure;
 	}
 
 	async _checkCompaction(
@@ -1927,13 +2372,37 @@ export class CanonicalAgentSessionServices {
 		skipAbortedCheck = true,
 		autoCompaction?: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>,
 	): Promise<boolean> {
+		if (this.manualCompactionPending) return false;
 		await this.syncHarnessRetryPolicy();
 		await this.syncHarnessCompactionSettings();
-		return this.harness.checkCompaction(
+		const compacted = await this.harness.checkCompaction(
 			assistantMessage,
 			skipAbortedCheck,
 			autoCompaction ?? ((reason, willRetry) => this._runAutoCompaction(reason, willRetry)),
 		);
+		if (compacted) return true;
+		const model = this.model;
+		if (
+			model === undefined
+			|| assistantMessage.provider !== model.provider
+			|| assistantMessage.model !== model.id
+			|| (assistantMessage.stopReason !== "error" && calculateContextTokens(assistantMessage.usage) !== 0)
+			|| isContextOverflow(assistantMessage, model.contextWindow)
+			|| isRecoverableLength(assistantMessage, model.maxTokens)
+		) return false;
+		const estimate = estimateContextTokens(this.agent.state.messages);
+		if (estimate.lastUsageIndex === null) return false;
+		const usageMessage = this.agent.state.messages[estimate.lastUsageIndex];
+		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
+		if (
+			latestCompaction !== null
+			&& usageMessage?.role === "assistant"
+			&& usageMessage.timestamp <= Date.parse(latestCompaction.timestamp)
+		) return false;
+		const settings = this.settingsManager.getCompactionSettings();
+		return shouldCompact(estimate.tokens, model.contextWindow, settings)
+			? (autoCompaction ?? ((reason, willRetry) => this._runAutoCompaction(reason, willRetry)))("threshold", false)
+			: false;
 	}
 
 	async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
@@ -1954,6 +2423,9 @@ export class CanonicalAgentSessionServices {
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
 	): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }> {
+		if (this.isStreaming) {
+			throw new Error("Wait for the current response to finish before navigating the session tree.");
+		}
 		const target = this.canonicalEntriesSnapshot().find((entry) => entry.id === targetId);
 		await this.syncHarnessRetryPolicy();
 		const result = await this.harness.navigateTree(targetId, {
@@ -2060,7 +2532,17 @@ export class CanonicalAgentSessionServices {
 	}
 
 	setActiveToolsByName(names: string[]): void {
-		void this.harness.setActiveTools(names);
+		const requestedNames = [...names];
+		this.pendingActiveToolNames = requestedNames;
+		const update = this.harness.setActiveTools(requestedNames);
+		void update.then(
+			() => {
+				if (this.pendingActiveToolNames === requestedNames) this.pendingActiveToolNames = undefined;
+			},
+			() => {
+				if (this.pendingActiveToolNames === requestedNames) this.pendingActiveToolNames = undefined;
+			},
+		);
 	}
 
 	getAllTools(): ToolInfo[] {
@@ -2205,6 +2687,9 @@ export class CanonicalAgentSessionServices {
 		this._sessionStartEvent = undefined;
 		await this._extensionRunner.emit(startEvent);
 		await this.initializeExtensions();
+		while (this.activePromptTasks.size > 0) {
+			await Promise.allSettled([...this.activePromptTasks]);
+		}
 	}
 
 	getLastContextSnapshotId(): string | undefined {
@@ -2582,7 +3067,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	get hasPendingBashMessages(): boolean {
-		return this.harness.hasPendingExternalMessages;
+		return this.pendingExternalMessages.some((message) => message.role === "bashExecution");
 	}
 
 	async authorizeUserBashExtension(command: string, options?: { id?: string }): Promise<boolean> {
@@ -2613,14 +3098,19 @@ export class CanonicalAgentSessionServices {
 			role: "bashExecution",
 			command,
 			output: result.output,
-			exitCode: result.exitCode,
+			...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
 			cancelled: result.cancelled,
 			truncated: result.truncated,
 			...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
 			...(options?.excludeFromContext === undefined ? {} : { excludeFromContext: options.excludeFromContext }),
 			timestamp: Date.now(),
 		};
-		this.harness.recordExternalMessage(message);
+		if (this.harness.isRunning) {
+			this.pendingExternalMessages.push(message);
+			return;
+		}
+		void this.harness.recordExternalMessage(message);
+		this.compatibilityMessagesProjection = this.projectCompatibilityMessages(this.canonicalEntriesSnapshot());
 	}
 
 	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
@@ -2804,6 +3294,7 @@ export class CanonicalAgentSessionServices {
 	private async disposeInternal(): Promise<void> {
 		this._extensionRunner.invalidate();
 		await this.controlPlane.dispose();
+		this.flushPendingExternalMessages();
 		await this.harness.close();
 		await this.canonicalStorage.drain();
 	}

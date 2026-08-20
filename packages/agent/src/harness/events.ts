@@ -53,6 +53,22 @@ export interface RetryFinishedEvent {
 	finalError?: string;
 }
 
+export interface SummarizationRetryScheduledEvent {
+	type: "summarization_retry_scheduled";
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+export type SummarizationRetryAttemptStartEvent =
+	| { type: "summarization_retry_attempt_start"; source: "branchSummary" }
+	| { type: "summarization_retry_attempt_start"; source: "compaction"; reason: "manual" | "threshold" | "overflow" };
+
+export interface SummarizationRetryFinishedEvent {
+	type: "summarization_retry_finished";
+}
+
 export interface AgentSettledEvent {
 	type: "agent_settled";
 }
@@ -79,6 +95,9 @@ export type HarnessEvent =
 	| BashExecutionUpdateEvent
 	| RetryScheduledEvent
 	| RetryFinishedEvent
+	| SummarizationRetryScheduledEvent
+	| SummarizationRetryAttemptStartEvent
+	| SummarizationRetryFinishedEvent
 	| AgentSettledEvent
 	| CompactionStartEvent
 	| CompactionEndEvent;

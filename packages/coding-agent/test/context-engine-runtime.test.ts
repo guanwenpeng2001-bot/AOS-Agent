@@ -8,7 +8,7 @@ import {
 } from "../src/core/context-engine.ts";
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { createHarness, createHarnessWithExtensions } from "./test-harness.ts";
+import { createHarness, createHarnessWithExtensions, fauxModel } from "./test-harness.ts";
 import { assistantMsg, createTestResourceLoader, userMsg } from "./utilities.ts";
 
 function freezeSampleSnapshot(sessionId: string, id: string): ContextSnapshot {
@@ -180,7 +180,11 @@ describe("context-engine runtime persistence", () => {
 
 		try {
 			harness.sessionManager.appendMessage(userMsg("old context"));
-			harness.sessionManager.appendMessage(assistantMsg("old response"));
+			harness.sessionManager.appendMessage({
+				...assistantMsg("old response"),
+				provider: fauxModel.provider,
+				model: fauxModel.id,
+			});
 
 			await expect(harness.session.compact()).rejects.toMatchObject({
 				contextError: { code: "context_extension_source_missing" },
@@ -351,7 +355,11 @@ describe("context-engine runtime persistence", () => {
 
 		try {
 			const rootId = harness.sessionManager.appendMessage(userMsg("root"));
-			const oldLeafId = harness.sessionManager.appendMessage(assistantMsg("old branch context"));
+			const oldLeafId = harness.sessionManager.appendMessage({
+				...assistantMsg("old branch context"),
+				provider: fauxModel.provider,
+				model: fauxModel.id,
+			});
 			harness.sessionManager.branch(rootId);
 			const targetId = harness.sessionManager.appendMessage(userMsg("target"));
 			harness.sessionManager.branch(oldLeafId);

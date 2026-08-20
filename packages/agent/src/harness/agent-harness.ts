@@ -410,6 +410,19 @@ export interface HarnessContextPreparationInput {
 	signal?: AbortSignal;
 }
 export type HarnessContextPreparation = (input: HarnessContextPreparationInput) => AgentContext | Promise<AgentContext>;
+export type HarnessModelContextPreparationStart = (input: HarnessContextPreparationInput) => void | Promise<void>;
+export interface HarnessModelCallBoundaryInput {
+	lane: string;
+	runId: string;
+	model: Model<Api>;
+	context: Context;
+	options?: SimpleStreamOptions;
+	prepareContext(model: Model<Api>): Promise<Context>;
+	invoke(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessageEventStream>;
+}
+export type HarnessModelCallBoundary = (
+	input: HarnessModelCallBoundaryInput,
+) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 export interface HarnessStreamRequestPreparationInput {
 	model: Model<Api>;
 	options?: SimpleStreamOptions;
@@ -819,6 +832,59 @@ function receiptMatchesIntentCanonical(receipt: ToolReceiptV1, intent: ToolInten
 	});
 }
 
+function sessionArtifactProvider(store: SessionArtifactStore): ArtifactStoreProvider {
+	return {
+		schemaVersion: 1,
+		providerId: "aos.session-artifact-store",
+		providerClass: "store",
+		capabilities: async () => [],
+		dispose: async () => {},
+		put: async (descriptor, data) => {
+			try {
+				const producer = descriptor.producer ?? "system";
+				const metadata = await store.put(data, {
+					name: descriptor.name,
+					mediaType: descriptor.mediaType,
+					principal: producer,
+					permissions: descriptor.permissions,
+					acl: { owner: producer, readers: [producer, "system"], writers: [producer, "system"] },
+					retention: descriptor.retention,
+					producer,
+					validation: { state: descriptor.validationState },
+				});
+				if (metadata.id !== descriptor.artifactId) {
+					return Result.err(new FoundationError("side_effect_unknown", "session artifact identity does not match its descriptor"));
+				}
+				return Result.ok({ schemaVersion: 1, ref: metadata.id, sizeBytes: metadata.sizeBytes });
+			} catch (error) {
+				return Result.err(toFoundationError(error, "side_effect_unknown"));
+			}
+		},
+		get: async (ref) => {
+			try {
+				return Result.ok((await store.get(ref)).content);
+			} catch (error) {
+				return Result.err(toFoundationError(error, "side_effect_unknown"));
+			}
+		},
+		verify: async (artifactId) => {
+			try {
+				return Result.ok({ schemaVersion: 1, digestValid: (await store.verify(artifactId)) === "verified" });
+			} catch (error) {
+				return Result.err(toFoundationError(error, "side_effect_unknown"));
+			}
+		},
+		delete: async (artifactId) => {
+			try {
+				await store.remove(artifactId);
+				return Result.ok(undefined);
+			} catch (error) {
+				return Result.err(toFoundationError(error, "side_effect_unknown"));
+			}
+		},
+	};
+}
+
 async function foundationToolResultPayload(
 	result: AgentToolResult<unknown>,
 	artifactStore: ArtifactStoreProvider | undefined,
@@ -845,7 +911,7 @@ async function foundationToolResultPayload(
 		const digest = rawSha256(bytes);
 		const descriptor: ArtifactDescriptorV1 = {
 			schemaVersion: 1,
-			artifactId: `tool-result-image:${toolCallId}:${digest}`,
+			artifactId: digest,
 			name: `tool-result-image:${toolCallId}`,
 			mediaType: item.mimeType,
 			digest: `sha256:${digest}`,
@@ -1053,7 +1119,7 @@ export class AgentHarness implements AgentLane {
 	readonly events: Events;
 	private readonly durableSession: Session;
 	private readonly models: Models;
-	private readonly defaultModel: Model<Api>;
+	private defaultModel: Model<Api>;
 	private readonly defaultThinkingLevel: ThinkingLevel;
 	private readonly defaultActiveToolNames: string[];
 	private modelAvailable = true;
@@ -1081,6 +1147,8 @@ export class AgentHarness implements AgentLane {
 	private eventTransform?: (event: AgentEvent) => AgentEvent | Promise<AgentEvent>;
 	private readonly compatibilityWriter?: HarnessCompatibilityWriter;
 	private contextPreparation?: HarnessContextPreparation;
+	private modelContextPreparationStart?: HarnessModelContextPreparationStart;
+	private modelCallBoundary?: HarnessModelCallBoundary;
 	private streamRequestPreparation?: HarnessStreamRequestPreparation;
 	private compactionHooks?: HarnessCompactionHooks;
 	private navigationHooks?: HarnessNavigationHooks;
@@ -1100,16 +1168,20 @@ export class AgentHarness implements AgentLane {
 	private readonly activeOperations = new Map<string, ActiveOperation>();
 	private readonly laneReductions = new Map<string, LaneReductionResult>();
 	private readonly mutationTails = new Map<string, Promise<void>>();
+	private readonly compatibilityTasks = new Set<Promise<unknown>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
 	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
 	private lastQueueUpdateFingerprint: string | undefined;
 	private queueUpdatePending = false;
 	private agentSettlementPending = false;
 	private readonly pendingThinkingLevels = new Map<string, ThinkingLevel>();
+	private readonly pendingModels = new Map<string, Model<Api>>();
+	private readonly pendingActiveToolNames = new Map<string, string[]>();
 	private readonly foundationToolHookResults = new Map<string, AfterToolCallResult>();
 	private sessionSnapshot: SessionSnapshot = { lanes: [], faulted: false };
 	private readonly assistantEntries = new Map<string, string>();
 	private readonly contextPreparationErrors = new Map<string, unknown>();
+	private readonly operationContextInputs = new Map<string, AgentContext>();
 	private closed = false;
 	private closing = false;
 	private closePromise?: Promise<void>;
@@ -1179,7 +1251,7 @@ export class AgentHarness implements AgentLane {
 		this.foundationModelCallAdapter = options.foundationModelCallAdapter ?? createFoundationHostModelCallAdapter({
 			streamSimple: (model, context, streamOptions) => this.streamFunctionValue?.(model, context, streamOptions) ?? options.models.streamSimple(model, context, streamOptions),
 		});
-		this.artifactStore = options.artifactStore;
+		this.artifactStore = options.artifactStore ?? sessionArtifactProvider(this.artifacts);
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
 		this.hooks = this.hookRegistry;
@@ -1206,13 +1278,14 @@ export class AgentHarness implements AgentLane {
 	}
 
 	get currentModel(): Model<Api> {
+		const pending = this.pendingModels.get("main");
+		if (pending !== undefined) return pending;
 		const route = this.foundationExecution?.binding.modelRoute;
 		const configured = this.laneReductions.get("main")?.effectiveConfiguration.model;
 		const provider = route?.provider ?? configured?.provider ?? this.defaultModel.provider;
 		const modelId = route?.model ?? configured?.modelId ?? this.defaultModel.id;
-		return this.defaultModel.provider === provider && this.defaultModel.id === modelId
-			? this.defaultModel
-			: this.models.getModel(provider, modelId) ?? this.defaultModel;
+		if (this.defaultModel.provider === provider && this.defaultModel.id === modelId) return this.defaultModel;
+		return this.models.getModel(provider, modelId) ?? this.defaultModel;
 	}
 	get hasModel(): boolean { return this.modelAvailable; }
 	get currentThinkingLevel(): ThinkingLevel {
@@ -1226,7 +1299,7 @@ export class AgentHarness implements AgentLane {
 	get currentSteeringMode(): QueueMode { return this.steeringMode; }
 	get currentFollowUpMode(): QueueMode { return this.followUpMode; }
 	get activeToolNamesSnapshot(): readonly string[] {
-		return [...(this.laneReductions.get("main")?.effectiveConfiguration.activeToolNames ?? this.defaultActiveToolNames)];
+		return [...(this.pendingActiveToolNames.get("main") ?? this.laneReductions.get("main")?.effectiveConfiguration.activeToolNames ?? this.defaultActiveToolNames)];
 	}
 	get toolsSnapshot(): readonly HarnessTool[] { return [...this.tools]; }
 	get isRunning(): boolean { return this.activeOperations.size > 0 || this.sessionSnapshot.lanes.some((lane) => lane.operation !== null); }
@@ -1272,6 +1345,16 @@ export class AgentHarness implements AgentLane {
 	setContextPreparation(preparation: HarnessContextPreparation | undefined): void {
 		this.ensureOpen();
 		this.contextPreparation = preparation;
+	}
+
+	setModelContextPreparationStart(preparation: HarnessModelContextPreparationStart | undefined): void {
+		this.ensureOpen();
+		this.modelContextPreparationStart = preparation;
+	}
+
+	setModelCallBoundary(boundary: HarnessModelCallBoundary | undefined): void {
+		this.ensureOpen();
+		this.modelCallBoundary = boundary;
 	}
 
 	setContextSnapshotIdForOperation(
@@ -1340,15 +1423,17 @@ export class AgentHarness implements AgentLane {
 		this.compatibilityWriter.setSessionLabel(targetId, label);
 	}
 
-	recordCompatibilityMessage(message: AgentMessage): void {
+	recordCompatibilityMessage(message: AgentMessage): Promise<void> {
 		this.ensureOpen();
 		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
 		const snapshot = structuredClone(message);
 		const written = this.compatibilityWriter.recordMessage(snapshot);
-		void Promise.resolve(written).then(() => {
+		const task = Promise.resolve(written).then(() => {
 			this.eventBus.emit({ type: "agent_event", event: { type: "message_start", message: structuredClone(snapshot) } });
 			this.eventBus.emit({ type: "agent_event", event: { type: "message_end", message: structuredClone(snapshot) } });
 		});
+		this.trackCompatibilityTask(task);
+		return task;
 	}
 
 	emitBashExecutionUpdate(id: string | undefined, delta: string): void {
@@ -1357,7 +1442,17 @@ export class AgentHarness implements AgentLane {
 	}
 
 	trackCompatibilityTask(task: Promise<unknown>): void {
-		void task.catch(() => undefined);
+		this.compatibilityTasks.add(task);
+		void task.then(
+			() => this.compatibilityTasks.delete(task),
+			() => this.compatibilityTasks.delete(task),
+		);
+	}
+
+	private async drainCompatibilityTasks(): Promise<void> {
+		while (this.compatibilityTasks.size > 0) {
+			await Promise.allSettled([...this.compatibilityTasks]);
+		}
 	}
 
 	async appendCustomEntry(customType: string, data?: unknown): Promise<string> {
@@ -1431,8 +1526,8 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	recordExternalMessage(message: AgentMessage): void {
-		this.recordCompatibilityMessage(message);
+	recordExternalMessage(message: AgentMessage): Promise<void> {
+		return this.recordCompatibilityMessage(message);
 	}
 
 	private enqueue<T>(lane: string, operation: () => Promise<T>): Promise<T> {
@@ -1618,7 +1713,7 @@ export class AgentHarness implements AgentLane {
 		await this.drainMutations("main");
 		await this.refreshSnapshots();
 		const mainQueues = this.laneSnapshots.get("main")?.queues;
-		const hasQueuedMessages = mainQueues !== undefined && (mainQueues.steer.length > 0 || mainQueues.followUp.length > 0 || mainQueues.nextRun.length > 0);
+		const hasQueuedMessages = mainQueues !== undefined && (mainQueues.steer.length > 0 || mainQueues.followUp.length > 0);
 		if (this.activeOperations.size > 0 || this.sessionSnapshot.lanes.some((lane) => lane.operation !== null) || hasQueuedMessages) {
 			throw new HarnessFault("Foundation execution can change only at an idle queue boundary", undefined);
 		}
@@ -1695,10 +1790,14 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	private foundationModelRoute(): FoundationJsonValue {
+	private foundationModelRoute(model?: Model<Api>): FoundationJsonValue {
 		const execution = this.foundationExecution;
 		if (execution === undefined) throw new HarnessFault("Foundation model route requested without execution authority", undefined);
-		return this.foundationJson({ ...execution.binding.modelRoute, budget: { ...execution.binding.budget } }, "model invocation route");
+		return this.foundationJson({
+			...execution.binding.modelRoute,
+			...(model === undefined ? {} : { provider: model.provider, model: model.id }),
+			budget: { ...execution.binding.budget },
+		}, "model invocation route");
 	}
 
 	private async foundationModelInvocationRecords(runId: string): Promise<Exclude<FoundationRecordV1, { readonly kind: "retention" }>[]> {
@@ -1780,7 +1879,7 @@ export class AgentHarness implements AgentLane {
 		await this.persistFoundationModelInvocationFact(invocation, "unknown", emptyModelUsage(), "recovery_required", "unknown", "model_invocation_recovery_required", "A model invocation intent had no terminal fact during recovery");
 	}
 
-	private async prepareFoundationModelInvocation(lane: string, runId: string): Promise<FoundationModelInvocationPreparationV1> {
+	private async prepareFoundationModelInvocation(lane: string, runId: string, model?: Model<Api>): Promise<FoundationModelInvocationPreparationV1> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) throw new HarnessFault("Foundation model invocation requested without execution authority", undefined);
 		const records = await this.foundationModelInvocationRecords(runId);
@@ -1811,7 +1910,7 @@ export class AgentHarness implements AgentLane {
 			modelProfileRevisionId: execution.binding.modelProfileRevision.id,
 		});
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for model invocation", undefined);
-		const route = this.foundationModelRoute();
+		const route = this.foundationModelRoute(model);
 		const contextSnapshotId = this.contextSnapshotIdForOperation?.(runId, "agent_turn");
 		const invocation: FoundationModelInvocationV1 = {
 			invocationId,
@@ -1820,7 +1919,10 @@ export class AgentHarness implements AgentLane {
 			bindingDigest: execution.binding.fingerprint.value,
 			route,
 			routeDigest: sha256HexValue(canonicalFoundationJson(route)),
-			selectedTarget: this.foundationJson({ provider: execution.binding.modelRoute.provider, model: execution.binding.modelRoute.model }, "model invocation selected target"),
+			selectedTarget: this.foundationJson({
+				provider: model?.provider ?? execution.binding.modelRoute.provider,
+				model: model?.id ?? execution.binding.modelRoute.model,
+			}, "model invocation selected target"),
 			...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
 			correlation,
 		};
@@ -1958,19 +2060,23 @@ export class AgentHarness implements AgentLane {
 		return typeof code === "string" ? { code, message: diagnostic?.error?.message ?? message.errorMessage ?? "Foundation model invocation failed" } : undefined;
 	}
 
-	private async streamFoundationModel(lane: string, runId: string, model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessageEventStream> {
+	private async dispatchFoundationModel(lane: string, runId: string, model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessageEventStream> {
 		const preparedRequest = this.streamRequestPreparation === undefined
 			? { model, options }
 			: await this.streamRequestPreparation({ model, options });
 		model = preparedRequest.model;
 		options = preparedRequest.options;
 		if (this.foundationExecution === undefined) return this.streamFunctionValue?.(model, context, options) ?? this.models.streamSimple(model, context, options);
-		const modelRequest = { route: this.foundationExecution.binding.modelRoute, model, context, options, budget: this.foundationExecution.binding.budget };
+		const bindingRoute = this.foundationExecution.binding.modelRoute;
+		const route = this.modelCallBoundary === undefined
+			? bindingRoute
+			: { ...bindingRoute, provider: model.provider, model: model.id };
+		const modelRequest = { route, model, context, options, budget: this.foundationExecution.binding.budget };
 		const validationError = this.foundationModelCallAdapter.validate(modelRequest);
 		if (validationError !== undefined) return foundationModelCallErrorStream(validationError, model);
 		let preparation: FoundationModelInvocationPreparationV1;
 		try {
-			preparation = await this.prepareFoundationModelInvocation(lane, runId);
+			preparation = await this.prepareFoundationModelInvocation(lane, runId, this.modelCallBoundary === undefined ? undefined : model);
 		} catch (error) {
 			if (error instanceof FoundationError) return foundationModelCallErrorStream(error, model);
 			throw error;
@@ -1987,8 +2093,16 @@ export class AgentHarness implements AgentLane {
 		}
 		const output = createAssistantMessageEventStream();
 		void (async () => {
+			let visibleOutput = false;
 			try {
 				for await (const event of source) {
+					if (
+						event.type === "toolcall_start"
+						|| event.type === "toolcall_delta"
+						|| event.type === "toolcall_end"
+						|| (event.type === "text_delta" && event.delta.length > 0)
+						|| (event.type === "thinking_delta" && event.delta.length > 0)
+					) visibleOutput = true;
 					if (event.type === "done") {
 						const status: FoundationModelInvocationStatusV1 = event.message.stopReason === "aborted" ? "unknown" : event.message.stopReason === "error" ? "failed" : "succeeded";
 						await this.persistFoundationModelInvocationFact(invocation, status, event.message.usage, event.message.stopReason, status === "succeeded" ? "none" : "unknown", status === "failed" ? "provider_error" : status === "unknown" ? "model_stream_unknown" : undefined, event.message.errorMessage);
@@ -1997,7 +2111,15 @@ export class AgentHarness implements AgentLane {
 						return;
 					}
 					if (event.type === "error") {
-						await this.persistFoundationModelInvocationFact(invocation, "unknown", event.error.usage, "error", "unknown", "model_stream_unknown", event.error.errorMessage);
+						await this.persistFoundationModelInvocationFact(
+							invocation,
+							visibleOutput ? "unknown" : "failed",
+							event.error.usage,
+							"error",
+							visibleOutput ? "unknown" : "none",
+							visibleOutput ? "model_stream_unknown" : "provider_error",
+							event.error.errorMessage,
+						);
 						output.push({ ...event, error: durableAssistantMessage(event.error) });
 						output.end();
 						return;
@@ -2017,6 +2139,39 @@ export class AgentHarness implements AgentLane {
 			}
 		})();
 		return output;
+	}
+
+	private async streamFoundationModel(lane: string, runId: string, model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessageEventStream> {
+		if (this.modelCallBoundary === undefined) {
+			return this.dispatchFoundationModel(lane, runId, model, context, options);
+		}
+		return this.modelCallBoundary({
+			lane,
+			runId,
+			model,
+			context,
+			options,
+			prepareContext: async (attemptModel) => {
+				const baseContext = this.operationContextInputs.get(runId);
+				if (baseContext === undefined || this.contextPreparation === undefined) return context;
+				const prepared = await this.contextPreparation({
+					purpose: "agent_turn",
+					operationId: runId,
+					model: attemptModel,
+					context: {
+						...baseContext,
+						messages: [...baseContext.messages],
+					},
+					signal: options?.signal,
+				});
+				return {
+					...prepared,
+					messages: await this.toProviderMessages(prepared.messages),
+				};
+			},
+			invoke: (attemptModel, attemptContext, attemptOptions) =>
+				this.dispatchFoundationModel(lane, runId, attemptModel, attemptContext, attemptOptions),
+		});
 	}
 
 	private completionProvider(lane: string, runId: string): Pick<Models, "completeSimple"> {
@@ -2218,7 +2373,10 @@ export class AgentHarness implements AgentLane {
 					failed = true;
 					mergeSideEffectState("side_effect_unknown");
 					recordError({ code: "side_effect_unknown", message: "Durable tool result payload is missing" });
-				} else if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") {
+				} else if (
+					(receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") &&
+					!(receipt.outcome === "blocked" && receipt.sideEffectState === "none")
+				) {
 					failed = true;
 					recordError({ code: receipt.error?.code ?? (receipt.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"), message: receipt.error?.message ?? `Tool ${start.toolName} did not complete successfully` });
 				}
@@ -2411,7 +2569,11 @@ export class AgentHarness implements AgentLane {
 					...(operationAttempt === undefined ? {} : { attemptId: operationAttempt.id }),
 					providerId: this.foundationExecution.providerId,
 				};
-		const toolCallIds = [...new Set(ownEntries.flatMap((entry) => entry.type === "message" && entry.message.role === "assistant" ? entry.message.content.filter((content) => content.type === "toolCall").map((content) => content.id) : []))];
+		const toolCallIds = [...new Set(ownEntries.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "assistant" && Array.isArray(entry.message.content)
+				? entry.message.content.filter((content) => content.type === "toolCall").map((content) => content.id)
+				: [],
+		))];
 		const findToolRecords = async (kind: "intent" | "fact", objectType: "tool_intent" | "tool_receipt"): Promise<FoundationRecordV1[]> => {
 			if (toolCorrelation === undefined) return [];
 			const batches = await Promise.all(toolCallIds.map((toolCallId) => this.durableSession.findFoundationRecords({ kind, objectType, includePruned: true, order: "oldestFirst", correlation: { ...toolCorrelation, toolCallId } })));
@@ -2633,8 +2795,7 @@ export class AgentHarness implements AgentLane {
 		const modelId = route?.model ?? reduction.effectiveConfiguration.model.modelId;
 		const model = this.defaultModel.provider === provider && this.defaultModel.id === modelId
 			? this.defaultModel
-			: this.models.getModel(provider, modelId);
-		if (!model) throw new MissingIdentities({ lane, tools: [], models: [`${provider}/${modelId}`,], message: "Configured model is unavailable" });
+			: this.models.getModel(provider, modelId) ?? this.defaultModel;
 		const thinkingLevel = route === undefined
 			? isThinkingLevel(reduction.effectiveConfiguration.thinkingLevel) ? reduction.effectiveConfiguration.thinkingLevel : this.defaultThinkingLevel
 			: route.effort !== undefined && isThinkingLevel(route.effort) ? route.effort : "off";
@@ -2833,6 +2994,15 @@ export class AgentHarness implements AgentLane {
 					this.terminalToolFailureOperations.add(operationId);
 					throw new HarnessToolPipelineError(restored.error.message, "side_effect_unknown");
 				}
+				if (execution.ok && execution.value.outcome === "blocked" && execution.value.sideEffectState === "none") {
+					const hookResult = this.foundationToolHookResults.get(this.foundationToolHookKey(operationId, toolCallId));
+					if (hookResult !== undefined) {
+						return {
+							content: hookResult.content ?? [{ type: "text", text: execution.value.error?.message ?? "Tool execution was blocked" }],
+							...(hookResult.details === undefined ? {} : { details: hookResult.details }),
+						};
+					}
+				}
 				if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") this.terminalToolFailureOperations.add(operationId);
 				throw new HarnessToolPipelineError(
 					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
@@ -2911,6 +3081,7 @@ export class AgentHarness implements AgentLane {
 			model,
 			reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 			retry: { ...this.retryPolicy },
+			preserveProviderRetryMessage: true,
 			retryCallbacks: {
 				onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
 					this.retryAttemptValue = attempt;
@@ -2926,11 +3097,32 @@ export class AgentHarness implements AgentLane {
 				? undefined
 				: async (attemptContext, attemptModel, attemptSignal) => {
 					try {
+						const activeToolNames = this.pendingActiveToolNames.get(lane)
+							?? (await this.getLaneReduction(lane)).effectiveConfiguration.activeToolNames;
+						const activeTools = this.tools.filter((tool) => activeToolNames.includes(tool.name));
+						const refreshedContext: AgentContext = {
+							...attemptContext,
+							messages: [...attemptContext.messages],
+							tools: this.foundationExecution === undefined || this.toolPipeline === undefined
+								? activeTools
+								: activeTools.map((tool) => this.pipelineTool(tool, lane, operationId)),
+						};
+						this.operationContextInputs.set(operationId, {
+							...refreshedContext,
+							messages: [...refreshedContext.messages],
+						});
+						await this.modelContextPreparationStart?.({
+							purpose: "agent_turn",
+							operationId,
+							model: attemptModel,
+							context: refreshedContext,
+							signal: attemptSignal,
+						});
 						return await this.contextPreparation!({
 							purpose: "agent_turn",
 							operationId,
 							model: attemptModel,
-							context: attemptContext,
+							context: refreshedContext,
 							signal: attemptSignal,
 						});
 					} catch (error) {
@@ -3052,8 +3244,8 @@ export class AgentHarness implements AgentLane {
 					}));
 				}
 				const initialMessages: ProvisionedEntry[] = [
-					...reduction.laneState.pendingNextRun,
 					...messages.map((message) => ({ type: "message" as const, id: this.durableSession.idGenerator.next(), message })),
+					...reduction.laneState.pendingNextRun,
 				];
 				const id = requestedRunId ?? this.durableSession.idGenerator.next();
 				const correlation = this.foundationCorrelation(lane, id, { runId: id });
@@ -3469,6 +3661,11 @@ export class AgentHarness implements AgentLane {
 			case "agent_end": {
 				const finalMessage = [...event.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 				if (!finalMessage || finalMessage.stopReason === "deferred") break;
+				const current = await this.getLaneReduction(lane);
+				if (
+					current.laneState.operation?.id === runId &&
+					(current.laneState.operation.pendingFollowUp.length > 0 || this.queuedItems(lane, "followUp").length > 0)
+				) break;
 				if (event.terminationReason !== undefined) {
 					const message = `Agent loop terminated due to ${event.terminationReason}`;
 					await this.finishOperation(lane, runId, "failed", { code: `agent_loop_${event.terminationReason}`, message });
@@ -3510,6 +3707,7 @@ export class AgentHarness implements AgentLane {
 		this.retryCancelledOperations.delete(runId);
 		this.pendingPromptEvents.delete(runId);
 		this.contextPreparationErrors.delete(runId);
+		this.operationContextInputs.delete(runId);
 		try {
 			await this.refreshSnapshots();
 			if (this.agentSettlementPending && this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
@@ -3696,6 +3894,17 @@ export class AgentHarness implements AgentLane {
 						signal,
 						prepared.thinkingLevel,
 						this.retryPolicy,
+						{
+							onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+								this.eventBus.emit({ type: "summarization_retry_scheduled", attempt, maxAttempts, delayMs, errorMessage });
+							},
+							onRetryAttemptStart: () => {
+								this.eventBus.emit({ type: "summarization_retry_attempt_start", source: "compaction", reason });
+							},
+							onRetryFinished: () => {
+								this.eventBus.emit({ type: "summarization_retry_finished" });
+							},
+						},
 					);
 					if (!generated.ok) {
 						await this.enqueue(lane, async () => {
@@ -3708,9 +3917,14 @@ export class AgentHarness implements AgentLane {
 					const firstKeptEntryId = firstRetained === undefined
 						? ""
 						: branchEntries.find((entry) => entry.type === "message" && canonicalFoundationJson(entry.message) === canonicalFoundationJson(firstRetained))?.id ?? "";
+					const contextSnapshotId = this.contextSnapshotIdForOperation?.(operation.id, "compaction");
 					result = {
 						...generated.value,
 						firstKeptEntryId,
+						details: {
+							...(asRecord(generated.value.details) ?? {}),
+							...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
+						},
 						fromExtension: false,
 					};
 				}
@@ -3805,8 +4019,29 @@ export class AgentHarness implements AgentLane {
 				const generated = extensionSummary === undefined
 					? await (async () => {
 							const prepared = await this.contextForOperation(lane, operation.id, "branch_summary");
-							return generateBranchSummary(sourceEntries, { models: this.completionProvider(lane, operation.id), model: prepared.model, signal, customInstructions, replaceInstructions });
+							return generateBranchSummary(sourceEntries, {
+								models: this.completionProvider(lane, operation.id),
+								model: prepared.model,
+								signal,
+								customInstructions,
+								replaceInstructions,
+								retry: this.retryPolicy,
+								callbacks: {
+									onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+										this.eventBus.emit({ type: "summarization_retry_scheduled", attempt, maxAttempts, delayMs, errorMessage });
+									},
+									onRetryAttemptStart: () => {
+										this.eventBus.emit({ type: "summarization_retry_attempt_start", source: "branchSummary" });
+									},
+									onRetryFinished: () => {
+										this.eventBus.emit({ type: "summarization_retry_finished" });
+									},
+								},
+							});
 						})()
+					: undefined;
+				const contextSnapshotId = extensionSummary === undefined
+					? this.contextSnapshotIdForOperation?.(operation.id, "branch_summary")
 					: undefined;
 				await this.enqueue(lane, async () => {
 					if (generated !== undefined && !generated.ok) {
@@ -3822,7 +4057,11 @@ export class AgentHarness implements AgentLane {
 						fromId: operation.resumeBoundary.branchId ?? intent.targetId ?? "root",
 						summary: summary.summary,
 						...(extensionSummary === undefined
-							? { details: { readFiles: generated!.value.readFiles, modifiedFiles: generated!.value.modifiedFiles } }
+							? { details: {
+									readFiles: generated!.value.readFiles,
+									modifiedFiles: generated!.value.modifiedFiles,
+									...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
+								} }
 							: extensionSummary.details === undefined ? {} : { details: extensionSummary.details }),
 						...(summary.usage === undefined ? {} : { usage: summary.usage }),
 						...(extensionSummary === undefined ? {} : { fromExtension: true }),
@@ -4015,7 +4254,7 @@ export class AgentHarness implements AgentLane {
 		}
 		if (operation.kind === "navigation" && operation.intent.kind === "navigation") {
 			if (operation.intent.summarize && !operation.targets.summary) return { kind: "stream_assistant", step: "branch_summary", attempt: 1 };
-			if (!operation.intent.summarize && reduction.laneState.leafId !== operation.intent.targetId) return { kind: "move_lane", to: operation.intent.targetId };
+			if (!operation.intent.summarize && reduction.laneState.leafId !== operation.intent.targetId) return { kind: "stream_assistant", step: "branch_summary", attempt: 1 };
 		}
 		return { kind: "finish_operation", outcome: "completed" };
 	}
@@ -4687,7 +4926,12 @@ export class AgentHarness implements AgentLane {
 	}
 
 	async setModelOnLane(lane: string, model: Model<Api>): Promise<void> {
-		return this.runWithLane(lane, () => this.setModelImpl(lane, model));
+		if (this.foundationExecution !== undefined) return this.runWithLane(lane, () => this.setModelImpl(lane, model));
+		this.pendingModels.set(lane, model);
+		const mutation = this.runWithLane(lane, () => this.setModelImpl(lane, model));
+		await mutation.finally(() => {
+			if (this.pendingModels.get(lane) === model) this.pendingModels.delete(lane);
+		});
 	}
 
 	private async setModelImpl(lane: string, model: Model<Api>): Promise<void> {
@@ -4698,6 +4942,7 @@ export class AgentHarness implements AgentLane {
 			return;
 		}
 		await this.enqueue(lane, async () => {
+			this.defaultModel = model;
 			await this.durableSession.appendEntry({ type: "model_change", id: this.durableSession.idGenerator.next(), provider: model.provider, modelId: model.id }, lane);
 			this.modelAvailable = true;
 			await this.refreshSnapshots();
@@ -4759,9 +5004,14 @@ export class AgentHarness implements AgentLane {
 
 	private async setActiveToolsImpl(lane: string, names: string[]): Promise<void> {
 		this.ensureOpen();
-		await this.enqueue(lane, async () => {
+		const requestedNames = [...names];
+		this.pendingActiveToolNames.set(lane, requestedNames);
+		const mutation = this.enqueue(lane, async () => {
 			await this.durableSession.appendEntry({ type: "active_tools_change", id: this.durableSession.idGenerator.next(), activeToolNames: [...names] }, lane);
 			await this.refreshSnapshots();
+		});
+		await mutation.finally(() => {
+			if (this.pendingActiveToolNames.get(lane) === requestedNames) this.pendingActiveToolNames.delete(lane);
 		});
 	}
 
@@ -4833,11 +5083,16 @@ export class AgentHarness implements AgentLane {
 
 	private async setToolsImpl(lane: string, tools: HarnessTool[], activeNames?: string[]): Promise<void> {
 		this.ensureOpen();
-		await this.enqueue(lane, async () => {
-			const selectedActiveNames = [...(activeNames ?? tools.map((tool) => tool.name))];
-			this.tools = [...tools];
+		const requestedTools = [...tools];
+		const selectedActiveNames = [...(activeNames ?? tools.map((tool) => tool.name))];
+		this.tools = requestedTools;
+		this.pendingActiveToolNames.set(lane, selectedActiveNames);
+		const mutation = this.enqueue(lane, async () => {
 			await this.durableSession.appendEntry({ type: "active_tools_change", id: this.durableSession.idGenerator.next(), activeToolNames: selectedActiveNames }, lane);
 			await this.persistConfiguration(lane, HARNESS_CONFIGURATION_TYPES.tools, { activeToolNames: selectedActiveNames });
+		});
+		await mutation.finally(() => {
+			if (this.pendingActiveToolNames.get(lane) === selectedActiveNames) this.pendingActiveToolNames.delete(lane);
 		});
 	}
 
@@ -4943,6 +5198,7 @@ export class AgentHarness implements AgentLane {
 			try {
 				for (const operation of this.activeOperations.values()) operation.controller.abort();
 				await Promise.all([...this.activeOperations.values()].map((operation) => operation.promise.catch((error) => { failure ??= error; })));
+				await this.drainCompatibilityTasks();
 				await this.drainMutations();
 				if (failure === undefined) {
 					await this.refreshSnapshots();

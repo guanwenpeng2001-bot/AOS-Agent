@@ -13,7 +13,7 @@ import {
 	type FoundationLaterConsumerLine,
 } from "../../src/harness/foundation-v1-capabilities.ts";
 
-const CLOSURE_STATUSES: readonly FoundationCapabilityClosureStatus[] = ["contract_drafted", "implemented", "regression_locked", "contract_sealed"];
+const CLOSURE_STATUSES: readonly FoundationCapabilityClosureStatus[] = ["implemented", "regression_locked", "contract_sealed"];
 const HIGH_LEVEL_ROWS: readonly FoundationHighLevelRow[] = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "10A"];
 const LATER_LINES: readonly FoundationLaterConsumerLine[] = ["11", "12A", "12B", "13", "14", "15"];
 const STAGES: readonly FoundationImplementationStage[] = [
@@ -196,8 +196,8 @@ const EXPECTED_T4_CLOSURES: Readonly<Record<number, { closure: FoundationCapabil
 	44: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/foundation/role-registry.ts", tests: ["packages/agent/test/harness/foundation-contracts.test.ts", "packages/agent/test/harness/t4-runtime-lifecycle.test.ts"] },
 	45: { closure: "contract_sealed", ownerModule: "packages/coding-agent/src/core/runtime-session-surface.ts", tests: ["packages/coding-agent/test/foundation-runtime-session-surfaces.test.ts", "packages/coding-agent/test/rpc-automation-run.test.ts"] },
 	46: { closure: "contract_sealed", ownerModule: "packages/agent/src/harness/runtime-services.ts", tests: ["packages/agent/test/harness/t4-runtime-lifecycle.test.ts", "packages/agent/test/harness/events.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
-	51: { closure: "contract_drafted", ownerModule: "packages/coding-agent/src/core/capability-registry.ts", tests: ["packages/coding-agent/test/capability-registry.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
-	52: { closure: "contract_drafted", ownerModule: "packages/coding-agent/src/core/execution-policy.ts", tests: ["packages/coding-agent/test/execution-policy-contract.test.ts", "packages/coding-agent/test/execution-policy.test.ts"] },
+	51: { closure: "contract_sealed", ownerModule: "packages/coding-agent/src/core/capability-registry.ts", tests: ["packages/coding-agent/test/capability-registry.test.ts", "packages/agent/test/harness/foundation-provider-conformance.test.ts"] },
+	52: { closure: "regression_locked", ownerModule: "packages/coding-agent/src/core/execution-policy.ts", tests: ["packages/coding-agent/test/execution-policy-contract.test.ts", "packages/coding-agent/test/execution-policy.test.ts"] },
 	61: { closure: "regression_locked", ownerModule: "packages/agent/src/harness/tool-pipeline.ts", tests: ["packages/agent/test/harness/t4-tool-runtime.test.ts", "packages/agent/test/harness/recovery-conformance.test.ts"] },
 };
 
@@ -511,7 +511,7 @@ describe("Foundation v1 capability manifest", () => {
 		}
 	});
 
-	it("wires only the implemented T7 Goal, Ask, and Workflow closures", () => {
+	it("keeps the T7 Goal, Ask, and Workflow closures wired", () => {
 		for (const [idText, expected] of Object.entries(EXPECTED_T7_CLOSURES)) {
 			const id = Number(idText);
 			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
@@ -519,21 +519,36 @@ describe("Foundation v1 capability manifest", () => {
 			expect(entry).toMatchObject(expected);
 			expect(entry?.tests).toEqual(expected.tests);
 		}
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)?.closure).toBe("contract_drafted");
 	});
 
-	it("closes every T11 recovery and migration capability without advancing unrelated drafts", () => {
+	it("keeps every T11 recovery and migration capability wired", () => {
 		const t11Ids = expandStageSpec(EXPECTED_STAGE_SPECS.T11);
 		for (const id of t11Ids) {
 			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
 			expect(entry, `T11 closure ${id} is missing`).toBeDefined();
-			expect(entry?.closure, `T11 closure ${id} must be wired`).not.toBe("contract_drafted");
+			expect(CLOSURE_STATUSES).toContain(entry?.closure);
 		}
 		for (const [idText, expected] of Object.entries(EXPECTED_T11_ADVANCED_CLOSURES)) {
 			const id = Number(idText);
 			expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === id)).toMatchObject(expected);
 		}
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)?.closure).toBe("contract_drafted");
+	});
+
+	it("seals every T12 closure with concrete implementation evidence", () => {
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.every((entry) => CLOSURE_STATUSES.includes(entry.closure))).toBe(true);
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 51)).toMatchObject({
+			closure: "contract_sealed",
+			ownerModule: "packages/coding-agent/src/core/capability-registry.ts",
+		});
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 52)).toMatchObject({
+			closure: "regression_locked",
+			ownerModule: "packages/coding-agent/src/core/execution-policy.ts",
+		});
+		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)).toMatchObject({
+			closure: "implemented",
+			ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
+			tests: expect.arrayContaining(["packages/agent/test/harness/foundation-t12-workflow-evaluation.test.ts"]),
+		});
 	});
 
 	it("matches the seal PR high-level row mapping exactly", () => {
