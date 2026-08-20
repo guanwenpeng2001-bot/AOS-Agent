@@ -50,6 +50,7 @@
 	"scripts": {
 		"clean": "shx rm -rf dist",
 		"generate-models": "node scripts/generate-models.ts --strict",
+		"prepare-test-catalog": "node scripts/generate-models.ts --strict --snapshot test/fixtures/model-catalog && node scripts/generate-image-models.ts --strict --snapshot test/fixtures/image-models.json",
 		"hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
 		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output ../../.artifacts/model-catalog",
 		"generate-aos-model-registry": "node scripts/generate-aos-model-registry.ts",
@@ -58,6 +59,7 @@
 		"check:model-data": "node scripts/check-model-data.ts",
 		"build": "npm run generate-models && npm run generate-image-models && npm run build:offline",
 		"build:offline": "npm run generate-aos-model-registry && npm run check:model-data && tsgo -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
+		"pretest": "npm run prepare-test-catalog",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

@@ -6,6 +6,7 @@ import assert from "node:assert";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { pathToFileURL } from "node:url";
 import { Image } from "../src/components/image.ts";
 import {
 	cropKittyImageLine,
@@ -572,10 +573,7 @@ describe("imageFallback", () => {
 			const abs = join(homedir(), ".aos-agent", "agent", "shot.png");
 			const result = imageFallback("image/png", { widthPx: 10, heightPx: 10 }, abs);
 			assert.ok(result.includes("\x1b]8;;file://"), "expected OSC 8 file link");
-			assert.ok(
-				result.includes(abs.replaceAll("\\", "/")) || result.includes(abs),
-				"file URL should target absolute path",
-			);
+			assert.ok(result.includes(pathToFileURL(abs).href), "file URL should target absolute path");
 			// Visible text must use ~/... not the expanded home path.
 			const visible = result.replace(/\x1b\]8;;.*?\x1b\\/g, "");
 			assert.strictEqual(visible, "[Image: ~/.aos-agent/agent/shot.png [image/png] 10x10]");

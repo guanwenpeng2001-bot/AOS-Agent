@@ -515,7 +515,9 @@ async function streamAssistantResponse(
 			retriesUsed,
 			policy?.maxRetries ?? retriesUsed,
 			delayMs,
-			classification.message,
+			config.preserveProviderRetryMessage === true
+				? attempt.message.errorMessage ?? classification.message
+				: classification.message,
 		);
 		attemptEvents.discard();
 		try {
@@ -567,15 +569,18 @@ async function streamAssistantResponseAttempt(
 	streamFunction: StreamFn,
 	events: AttemptEventBuffer,
 ): Promise<StreamAssistantAttempt> {
-	let messages = context.messages;
+	const preparedContext = config.prepareContext === undefined
+		? context
+		: await raceWithAbortSignal(Promise.resolve(config.prepareContext(context, config.model, signal)), signal);
+	let messages = preparedContext.messages;
 	if (config.transformContext) {
 		messages = await raceWithAbortSignal(config.transformContext(messages, signal), signal);
 	}
 	const llmMessages = await raceWithAbortSignal(Promise.resolve(config.convertToLlm(messages)), signal);
 	const llmContext: Context = {
-		systemPrompt: context.systemPrompt,
+		systemPrompt: preparedContext.systemPrompt,
 		messages: llmMessages,
-		tools: context.tools,
+		tools: preparedContext.tools,
 	};
 	const resolvedApiKey =
 		(config.getApiKey ? await raceWithAbortSignal(Promise.resolve(config.getApiKey(config.model.provider)), signal) : undefined) ||
@@ -606,7 +611,7 @@ async function streamAssistantResponseAttempt(
 			sideEffect: events.hasVisibleOutput ? "unknown" : "none",
 		});
 		const preserveLegacyRetryMessage =
-			config.retry === undefined &&
+			config.preserveProviderRetryMessage === true &&
 			classification.category === "transient_provider" &&
 			!events.hasVisibleOutput &&
 			!isWrappedTransportCancellation(finalMessage);
@@ -1110,7 +1115,7 @@ function createToolResultMessage(finalized: FinalizedToolCallOutcome): ToolResul
 		// so the null never enters session history or provider payloads.
 		content: finalized.result.content ?? [],
 		details: finalized.result.details,
-		usage: finalized.result.usage,
+		...(finalized.result.usage === undefined ? {} : { usage: finalized.result.usage }),
 		...(finalized.result.addedToolNames?.length ? { addedToolNames: finalized.result.addedToolNames } : {}),
 		isError: finalized.isError,
 		timestamp: Date.now(),

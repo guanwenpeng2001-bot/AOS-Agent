@@ -14,6 +14,7 @@ import {
 	type Edit,
 	type EditDiffError,
 	type EditDiffResult,
+	formatEditFilesystemError,
 	generateDiffString,
 	generateUnifiedPatch,
 	normalizeToLF,
@@ -354,9 +355,7 @@ export function createEditToolDefinition(
 						await ops.access(absolutePath);
 					} catch (error: unknown) {
 						throwIfAborted();
-						const errorMessage =
-							error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-						throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+						throw new Error(`Could not edit file: ${path}. ${formatEditFilesystemError(error)}.`);
 					}
 				}
 				throwIfAborted();

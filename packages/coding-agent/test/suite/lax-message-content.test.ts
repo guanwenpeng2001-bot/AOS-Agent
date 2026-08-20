@@ -55,7 +55,7 @@ describe("lax message content handling", () => {
 			// The follow-up turn consumed the normalized tool result without crashing.
 			expect(harness.getPendingResponseCount()).toBe(0);
 		} finally {
-			harness.cleanup();
+			await harness.cleanup();
 		}
 	});
 
@@ -79,7 +79,7 @@ describe("lax message content handling", () => {
 			expect(assistantMessages).toHaveLength(1);
 			expect(assistantMessages[0].content).toEqual([]);
 		} finally {
-			harness.cleanup();
+			await harness.cleanup();
 		}
 	});
 
@@ -98,7 +98,7 @@ describe("lax message content handling", () => {
 			expect(customMessages).toHaveLength(1);
 			expect(customMessages[0].content).toEqual([]);
 		} finally {
-			harness.cleanup();
+			await harness.cleanup();
 		}
 	});
 

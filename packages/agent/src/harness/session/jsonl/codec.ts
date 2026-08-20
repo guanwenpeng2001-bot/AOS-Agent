@@ -2,7 +2,7 @@ import { err, ok, type Result } from "../../types.ts";
 import type { SessionMutation } from "../state.ts";
 import type { Entry, LaneRecord } from "../types.ts";
 import { JsonlDecodeError } from "./errors.ts";
-import type { JsonlSessionMetadata, JsonlV4Header } from "./types.ts";
+import type { JsonlSessionHeader, JsonlSessionMetadata, JsonlV4Header, JsonlV5Header } from "./types.ts";
 
 const ENTRY_TYPES = new Set<Entry["type"]>([
 	"message",
@@ -67,8 +67,7 @@ function requireNullableId(value: unknown, field: string): string | null {
 	return value as string | null;
 }
 
-function decodeHeader(line: string): JsonlV4Header {
-	const value = parseObject(line);
+function decodeV4Header(value: Record<string, unknown>): JsonlV4Header {
 	if (value.kind !== "header") throw new JsonlDecodeError("schema", "is not a header");
 	if (value.version !== 4) throw new JsonlDecodeError("schema", "has unsupported session version");
 	const parentSessionId = value.parentSessionId;
@@ -99,6 +98,50 @@ function decodeHeader(line: string): JsonlV4Header {
 	};
 }
 
+function decodeV5Header(value: Record<string, unknown>): JsonlV5Header {
+	if (value.kind !== "header") throw new JsonlDecodeError("schema", "is not a header");
+	if (value.version !== 5 || value.schemaVersion !== 1) throw new JsonlDecodeError("schema", "has unsupported durable schema version");
+	const allowed = new Set([
+		"kind", "version", "schemaVersion", "id", "createdAt", "cwd", "parentSessionId", "legacyParentSessionPath",
+		"metadata", "migratedFromVersion", "migratedAt",
+	]);
+	for (const key of Object.keys(value)) if (!allowed.has(key)) throw new JsonlDecodeError("schema", `has unknown header field ${key}`);
+	const parentSessionId = value.parentSessionId;
+	if (parentSessionId !== undefined && typeof parentSessionId !== "string") throw new JsonlDecodeError("schema", "has invalid parentSessionId");
+	const legacyParentSessionPath = value.legacyParentSessionPath;
+	if (legacyParentSessionPath !== undefined && typeof legacyParentSessionPath !== "string") throw new JsonlDecodeError("schema", "has invalid legacyParentSessionPath");
+	if (parentSessionId !== undefined && legacyParentSessionPath !== undefined) throw new JsonlDecodeError("schema", "has both parentSessionId and legacyParentSessionPath");
+	const metadataValue = value.metadata;
+	if (metadataValue !== undefined && !isObject(metadataValue)) throw new JsonlDecodeError("schema", "has invalid metadata");
+	if (value.migratedFromVersion !== 4 || !Number.isSafeInteger(value.migratedAt) || (value.migratedAt as number) < 0) {
+		throw new JsonlDecodeError("schema", "has invalid migration provenance");
+	}
+	return {
+		kind: "header",
+		version: 5,
+		schemaVersion: 1,
+		id: requireString(value.id, "id"),
+		createdAt: requireTimestamp(value.createdAt),
+		cwd: requireString(value.cwd, "cwd"),
+		parentSessionId,
+		legacyParentSessionPath,
+		metadata: metadataValue as JsonlV5Header["metadata"],
+		migratedFromVersion: 4,
+		migratedAt: value.migratedAt as number,
+	};
+}
+
+function decodeHeader(line: string): JsonlV4Header {
+	const value = parseObject(line);
+	return decodeV4Header(value);
+}
+
+function decodeSessionHeader(line: string): JsonlSessionHeader {
+	const value = parseObject(line);
+	if (value.version === 5) return decodeV5Header(value);
+	return decodeV4Header(value);
+}
+
 export function parseHeader(line: string): Result<JsonlV4Header, JsonlDecodeError> {
 	try {
 		return ok<JsonlV4Header, JsonlDecodeError>(decodeHeader(line));
@@ -108,18 +151,31 @@ export function parseHeader(line: string): Result<JsonlV4Header, JsonlDecodeErro
 	}
 }
 
+export function parseSessionHeader(line: string): Result<JsonlSessionHeader, JsonlDecodeError> {
+	try {
+		return ok<JsonlSessionHeader, JsonlDecodeError>(decodeSessionHeader(line));
+	} catch (error) {
+		if (error instanceof JsonlDecodeError) return err<JsonlSessionHeader, JsonlDecodeError>(error);
+		throw error;
+	}
+}
+
 export function encodeHeader(header: JsonlV4Header): string {
 	return `${JSON.stringify(header)}\n`;
 }
 
-export function metadataFromHeader(header: JsonlV4Header, path: string, modifiedAt: number): JsonlSessionMetadata {
+export function encodeV5Header(header: JsonlV5Header): string {
+	return `${JSON.stringify(header)}\n`;
+}
+
+export function metadataFromHeader(header: JsonlSessionHeader, path: string, modifiedAt: number): JsonlSessionMetadata {
 	return {
 		id: header.id,
 		createdAt: header.createdAt,
 		cwd: header.cwd,
 		path,
 		modifiedAt,
-		sourceFormat: 4,
+		sourceFormat: header.version,
 		...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
 		...(header.legacyParentSessionPath === undefined
 			? {}

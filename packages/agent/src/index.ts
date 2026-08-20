@@ -84,6 +84,12 @@ export {
 	type AgentOperationSignalOptions,
 } from "./operation-signal.ts";
 export * from "./harness/agent-harness.ts";
+// Foundation v1 modular public contracts are the single identity/event/protocol authority.
+export * from "./harness/foundation/index.ts";
+export * from "./harness/foundation-v1-capabilities.ts";
+export * from "./harness/artifacts.ts";
+export * from "./harness/context/index.ts";
+export * from "./harness/memory/index.ts";
 export {
 	type BranchPreparation,
 	type BranchSummaryDetails,
@@ -115,6 +121,12 @@ export {
 } from "./harness/compaction/compaction.ts";
 export * from "./harness/messages.ts";
 export * from "./harness/prompt-templates.ts";
+// Foundation v1 runtime contracts
+export * from "./harness/profile.ts";
+export * from "./harness/plugins.ts";
+export * from "./harness/runtime-services.ts";
+export * from "./harness/tool-gateway.ts";
+export * from "./harness/tool-pipeline.ts";
 // Harness
 export * from "./harness/result.ts";
 export * from "./harness/session/index.ts";

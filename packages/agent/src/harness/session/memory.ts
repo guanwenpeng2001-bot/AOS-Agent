@@ -1,6 +1,21 @@
 import { uuidv7 } from "@aos-agent/ai";
 import { Session } from "./session.ts";
 import { SessionState } from "./state.ts";
+import { FoundationLedgerState, prepareForkFoundationRecords } from "./durable/state.ts";
+import type {
+	AcquireWriterLeaseOptionsV1,
+	AppendFoundationRecordResultV1,
+	DurableLedgerApi,
+	FoundationRecordQueryV1,
+	FoundationRecordV1,
+	FoundationObjectResultV1,
+	FoundationRetentionPolicyV1,
+	LedgerWriterLeaseV1,
+	ProvisionedFoundationRecordV1,
+	ReleaseWriterLeaseOptionsV1,
+	RenewWriterLeaseOptionsV1,
+	SetRetentionPolicyOptionsV1,
+} from "./durable/types.ts";
 import {
 	type BranchBounds,
 	type Entry,
@@ -22,17 +37,29 @@ import {
 	type SessionStorage,
 } from "./types.ts";
 
-export class InMemorySessionStorage implements SessionStorage {
+export class InMemorySessionStorage implements SessionStorage, DurableLedgerApi {
 	private readonly metadata: SessionMetadata;
 	private readonly state = new SessionState();
+	private readonly durableState: FoundationLedgerState;
 
 	constructor(metadata: SessionMetadata) {
 		this.metadata = structuredClone(metadata);
+		this.durableState = new FoundationLedgerState({ sessionId: metadata.id });
 	}
 
 	fork(metadata: SessionMetadata, options: ForkOptions & SessionCreateOptions): InMemorySessionStorage {
 		const storage = new InMemorySessionStorage(metadata);
-		for (const mutation of this.state.createForkMutations(options)) storage.state.applyMutation(mutation);
+		const mutations = this.state.createForkMutations(options);
+		for (const mutation of mutations) {
+			storage.state.applyMutation(mutation);
+			const sequence = mutation.kind === "entry" ? mutation.entry.seq : mutation.kind === "record" ? mutation.record.seq : mutation.seq;
+			storage.durableState.observeExternalSequence(sequence);
+		}
+		const lanes = options.scope === "tree" ? new Set(this.state.getLanes().map((pointer) => pointer.lane)) : new Set(["main"]);
+		for (const record of prepareForkFoundationRecords(this.durableState.getRecords(), { targetSessionId: metadata.id, laneIds: lanes, firstSequence: mutations.length })) {
+			storage.durableState.applyPersistedRecord(record);
+			storage.state.observeExternalSequence(record.seq, record.id, record);
+		}
 		return storage;
 	}
 
@@ -47,13 +74,17 @@ export class InMemorySessionStorage implements SessionStorage {
 	async createLane(lane: string, at: string | null): Promise<void> {
 		this.state.validateNewLane(lane);
 		this.state.validateTarget(at);
-		this.state.applyMutation({ kind: "lane", seq: this.state.nextSequence, lane, leafId: at });
+		const mutation = { kind: "lane" as const, seq: this.state.nextSequence, lane, leafId: at };
+		this.state.applyMutation(mutation);
+		this.durableState.observeExternalSequence(mutation.seq);
 	}
 
 	async moveLane(lane: string, to: string | null): Promise<void> {
 		this.state.requireLane(lane);
 		this.state.validateTarget(to);
-		this.state.applyMutation({ kind: "lane", seq: this.state.nextSequence, lane, leafId: to });
+		const mutation = { kind: "lane" as const, seq: this.state.nextSequence, lane, leafId: to };
+		this.state.applyMutation(mutation);
+		this.durableState.observeExternalSequence(mutation.seq);
 	}
 
 	async appendEntry<TEntry extends Entry>(newEntry: ProvisionedEntry<TEntry>, lane: string): Promise<TEntry> {
@@ -66,6 +97,7 @@ export class InMemorySessionStorage implements SessionStorage {
 			timestamp: Date.now(),
 		} as unknown as TEntry;
 		this.state.applyMutation({ kind: "entry", lane, entry });
+		this.durableState.observeExternalSequence(entry.seq);
 		return structuredClone(entry);
 	}
 
@@ -85,6 +117,7 @@ export class InMemorySessionStorage implements SessionStorage {
 			timestamp: Date.now(),
 		} as unknown as TRecord;
 		this.state.applyMutation({ kind: "record", record });
+		this.durableState.observeExternalSequence(record.seq);
 		return structuredClone(record);
 	}
 
@@ -122,7 +155,9 @@ export class InMemorySessionStorage implements SessionStorage {
 	}
 
 	async setName(name: string | undefined): Promise<void> {
-		this.state.applyMutation({ kind: "fact", seq: this.state.nextSequence, fact: "name", name });
+		const mutation = { kind: "fact" as const, seq: this.state.nextSequence, fact: "name" as const, name };
+		this.state.applyMutation(mutation);
+		this.durableState.observeExternalSequence(mutation.seq);
 	}
 
 	async getLabel(id: string): Promise<string | undefined> {
@@ -131,17 +166,88 @@ export class InMemorySessionStorage implements SessionStorage {
 
 	async setLabel(id: string, label: string | undefined): Promise<void> {
 		this.state.validateTarget(id);
-		this.state.applyMutation({
+		const mutation = {
 			kind: "fact",
 			seq: this.state.nextSequence,
 			fact: "label",
 			targetId: id,
 			label,
-		});
+		} as const;
+		this.state.applyMutation(mutation);
+		this.durableState.observeExternalSequence(mutation.seq);
 	}
 
 	async getStats(): Promise<SessionStats> {
 		return structuredClone(this.state.getStats());
+	}
+
+	async acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+		return this.durableState.acquireWriterLease(options);
+	}
+
+	async renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+		return this.durableState.renewWriterLease(options);
+	}
+
+	async releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+		this.durableState.releaseWriterLease(options);
+	}
+
+	async getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+		return this.durableState.getWriterLease();
+	}
+
+	async getLedgerRevision(): Promise<number> {
+		return this.durableState.getLedgerRevision();
+	}
+
+	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+		this.alignDurableCursor();
+		const result = this.durableState.appendFoundationRecord(record);
+		if (!result.replayed) this.state.observeExternalSequence(result.record.seq, result.record.id, result.record);
+		return result;
+	}
+
+	async setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): Promise<AppendFoundationRecordResultV1> {
+		this.alignDurableCursor();
+		const result = this.durableState.setRetentionPolicy(policy, options);
+		if (!result.replayed) this.state.observeExternalSequence(result.record.seq, result.record.id, result.record);
+		return result;
+	}
+
+	async findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+		return this.durableState.findFoundationRecords(query);
+	}
+
+	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+		return this.durableState.getFoundationObject(objectType, objectId);
+	}
+
+	async getFoundationRevision(objectType: string, objectId: string): Promise<number> {
+		return this.durableState.getFoundationRevision(objectType, objectId);
+	}
+
+	async isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
+		return this.durableState.isObjectTombstoned(objectType, objectId);
+	}
+
+	async getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+		return this.durableState.getRetentionPolicy();
+	}
+
+	async prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+		return this.durableState.prunableFoundationRecords();
+	}
+
+	private alignDurableCursor(): void {
+		const sharedSequence = this.state.nextSequence - 1;
+		const durableSequence = this.durableState.getLedgerRevision();
+		if (durableSequence > sharedSequence) {
+			throw new SessionError("storage", "Foundation reducer is ahead of the Session ledger");
+		}
+		while (this.durableState.getLedgerRevision() < sharedSequence) {
+			this.durableState.observeExternalSequence(this.durableState.getLedgerRevision() + 1);
+		}
 	}
 }
 

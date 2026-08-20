@@ -212,6 +212,12 @@ function getHomeDir(): string {
 	return process.env.HOME || homedir();
 }
 
+function pathsEqual(left: string, right: string): boolean {
+	const leftPath = canonicalizePath(resolve(left));
+	const rightPath = canonicalizePath(resolve(right));
+	return process.platform === "win32" ? leftPath.toLowerCase() === rightPath.toLowerCase() : leftPath === rightPath;
+}
+
 export function getExtensionTempFolder(agentDir: string): string {
 	const tempFolder = join(agentDir, "tmp", "extensions");
 	mkdirSync(tempFolder, { recursive: true, mode: 0o700 });
@@ -436,11 +442,12 @@ function collectAncestorAgentsSkillDirs(startDir: string): string[] {
 	const skillDirs: string[] = [];
 	const resolvedStartDir = resolve(startDir);
 	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
+	const homeDir = resolve(getHomeDir());
 
 	let dir = resolvedStartDir;
 	while (true) {
 		skillDirs.push(join(dir, ".agents", "skills"));
-		if (gitRepoRoot && dir === gitRepoRoot) {
+		if ((gitRepoRoot && pathsEqual(dir, gitRepoRoot)) || pathsEqual(dir, homeDir)) {
 			break;
 		}
 		const parent = dirname(dir);
@@ -2375,7 +2382,7 @@ export class DefaultPackageManager implements PackageManager {
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
 		const projectTrusted = this.settingsManager.isProjectTrusted();
 		const projectAgentsSkillDirs = projectTrusted
-			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
+			? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => !pathsEqual(dir, userAgentsSkillsDir))
 			: [];
 
 		const addResources = (

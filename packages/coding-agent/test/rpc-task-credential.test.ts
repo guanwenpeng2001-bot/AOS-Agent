@@ -309,12 +309,29 @@ async function createRuntimeHost(options: {
 			systemPrompt: "Test",
 			tools: [],
 		},
-		streamFn: (_model, _context, _options) => {
+		streamFn: (_model, _context, streamOptions) => {
 			modelCalls += 1;
 			const stream = new MockAssistantStream();
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const abort = (): void => {
+				if (timer !== undefined) clearTimeout(timer);
+				const message = createAssistantMessage("");
+				stream.push({
+					type: "error",
+					reason: "aborted",
+					error: { ...message, stopReason: "aborted", errorMessage: "Request aborted" },
+				});
+			};
+			if (streamOptions?.signal?.aborted) {
+				abort();
+				return stream;
+			}
+			streamOptions?.signal?.addEventListener("abort", abort, { once: true });
+			void stream.result().finally(() => streamOptions?.signal?.removeEventListener("abort", abort));
 			queueMicrotask(() => {
+				if (streamOptions?.signal?.aborted) return;
 				stream.push({ type: "start", partial: createAssistantMessage("") });
-				setTimeout(() => {
+				timer = setTimeout(() => {
 					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
 				}, options.responseDelayMs);
 			});
@@ -387,6 +404,8 @@ async function createRuntimeHost(options: {
 			rebindCallback = cb;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
+			const outgoing = currentSession;
+			await outgoing.dispose();
 			currentSession = openSession(SessionManager.open(sessionPath));
 			if (rebindCallback !== undefined) {
 				await rebindCallback();
@@ -395,7 +414,10 @@ async function createRuntimeHost(options: {
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
-		dispose: vi.fn(async () => {}),
+		dispose: vi.fn(async () => {
+			if (currentSession.isStreaming) await currentSession.abort();
+			await currentSession.dispose();
+		}),
 		getModelCallCount: () => modelCalls,
 	} as unknown as AgentSessionRuntime;
 
@@ -404,12 +426,7 @@ async function createRuntimeHost(options: {
 		provider,
 		target,
 		cleanup: async () => {
-			try {
-				if (currentSession.isStreaming) await currentSession.abort();
-			} catch {
-				// ignore test cleanup failures
-			}
-			currentSession.dispose();
+			await runtimeHost.dispose();
 		},
 	};
 }
@@ -434,7 +451,17 @@ async function startInMemoryController(options: {
 		output: { publish: (record) => records.push(record) } satisfies RpcHostOutputSink,
 	});
 	await controller.start();
-	return { controller, runtimeHost, records, provider, target, cleanup };
+	return {
+		controller,
+		runtimeHost,
+		records,
+		provider,
+		target,
+		cleanup: async () => {
+			await controller.detachTransport();
+			await cleanup();
+		},
+	};
 }
 
 function dispatchCommand(
@@ -1564,10 +1591,7 @@ describe("task credential automation host rpc", () => {
 				const boundary = await seedRunGraphAndBoundary(controller, runtimeHost.session, "run_001", "graph-disposed");
 				// Dispose the live per-binding sandbox session: the T3 sandbox
 				// fact is no longer `ready`, so the preflight fails closed.
-				const internals = runtimeHost.session as unknown as {
-					_activeSandboxSession?: { dispose(): Promise<void> };
-				};
-				await internals._activeSandboxSession?.dispose();
+				await runtimeHost.session.getActiveSandboxSessionForCompatibility()?.dispose();
 				const response = await dispatchCommand(controller, issueCommand("run_001", "issue-disposed", boundary));
 				expectAutomationError(response, "task.credential.issue", "task_credential_target_unavailable");
 				expectNoProviderOrAppend(provider, target, runtimeHost.session);

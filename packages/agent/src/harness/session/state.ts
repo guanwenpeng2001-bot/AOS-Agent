@@ -13,6 +13,7 @@ import {
 	SessionError,
 	type SessionStats,
 } from "./types.ts";
+import type { FoundationRecordV1 } from "./durable/types.ts";
 
 export type SessionMutation =
 	| { kind: "entry"; lane?: string; entry: Entry }
@@ -68,6 +69,23 @@ export class SessionState {
 
 	get nextSequence(): number {
 		return this.sequence + 1;
+	}
+
+	/**
+	 * Advance the shared cursor for a durable Foundation envelope. Foundation
+	 * records are not Session entries/records, but they still occupy the one
+	 * append-only Session sequence and id namespace.
+	 */
+	observeExternalSequence(seq: number, id?: string, foundation?: FoundationRecordV1): void {
+		if (!Number.isSafeInteger(seq) || seq !== this.sequence + 1) {
+			throw new SessionError("invalid_entry", `External mutation has non-consecutive seq ${seq}`);
+		}
+		if (id !== undefined) {
+			if (this.usedIds.has(id)) throw new SessionError("already_exists", `Session id already exists: ${id}`);
+			this.usedIds.add(id);
+		}
+		this.sequence = seq;
+		if (foundation !== undefined) this.log.push({ kind: "foundation", seq, record: structuredClone(foundation) });
 	}
 
 	getLanes(): LanePointer[] {

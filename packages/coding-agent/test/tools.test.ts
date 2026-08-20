@@ -1,5 +1,6 @@
 import { applyPatch } from "diff";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { readFile as readFileAsync } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -463,9 +464,20 @@ describe("Coding Agent Tools", () => {
 		it("should include EACCES in diff preview for unreadable files", async () => {
 			const unreadableFile = join(testDir, "unreadable-preview.txt");
 			writeFileSync(unreadableFile, "hello\n");
-			chmodSync(unreadableFile, 0o222);
-
-			const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
+			chmodSync(unreadableFile, process.platform === "win32" ? 0o000 : 0o222);
+			const result = await computeEditsDiff(
+				unreadableFile,
+				[{ oldText: "hello", newText: "world" }],
+				testDir,
+				process.platform === "win32"
+					? {
+							access: async () => {
+								throw Object.assign(new Error("Permission denied"), { code: "EPERM" });
+							},
+							readFile: (path) => readFileAsync(path, "utf-8"),
+						}
+					: undefined,
+			);
 
 			expect(result).toEqual({ error: `Could not edit file: ${unreadableFile}. Error code: EACCES.` });
 		});

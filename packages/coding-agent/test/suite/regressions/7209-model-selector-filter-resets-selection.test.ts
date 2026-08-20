@@ -21,19 +21,25 @@ function selectedModelId(rendered: string): string | undefined {
 
 describe("model selector filter resets selection to top", () => {
 	const harnesses: Harness[] = [];
+	const originalDeepseekApiKey = process.env.DEEPSEEK_API_KEY;
 
 	beforeAll(() => {
 		initTheme("dark");
+		// Keep this selector fixture limited to its faux catalog when the test
+		// runner exposes an ambient provider credential.
+		delete process.env.DEEPSEEK_API_KEY;
 	});
 
 	beforeEach(() => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	afterAll(() => {
+	afterAll(async () => {
 		while (harnesses.length > 0) {
-			harnesses.pop()?.cleanup();
+			await harnesses.pop()?.cleanup();
 		}
+		if (originalDeepseekApiKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+		else process.env.DEEPSEEK_API_KEY = originalDeepseekApiKey;
 	});
 
 	it("moves selection to the first row in the All tab when typing a query", async () => {
@@ -66,9 +72,12 @@ describe("model selector filter resets selection to top", () => {
 		// Current model (alpha-1) is sorted first, so selection starts on row 0.
 		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-1");
 
-		// Move selection down two rows to alpha-3.
-		selector.handleInput("\x1b[B");
-		selector.handleInput("\x1b[B");
+		// Move to alpha-3 without assuming the faux models are adjacent to the
+		// offline built-in catalog entries.
+		for (let index = 0; index < 100; index++) {
+			if (selectedModelId(stripAnsi(selector.render(120).join("\n"))) === "alpha-3") break;
+			selector.handleInput("\x1b[B");
+		}
 		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-3");
 
 		// Type a query that matches the three alpha models. The selection must

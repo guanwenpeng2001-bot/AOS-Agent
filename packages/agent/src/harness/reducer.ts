@@ -11,6 +11,8 @@ import type {
 	ToolStartedRecord,
 	WriteDeferredRecord,
 } from "./session/types.ts";
+import { canonicalFoundationJson, type ExecutionCorrelationV1 } from "./foundation/identity.ts";
+import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, projectToolReceiptExecutionSemanticsV1, validateFoundationToolResultEntryV1, type ToolBindingRefV1, type ToolIntentV1, type ToolReceiptV1 } from "./tool-pipeline.ts";
 
 /**
  * Machine-readable category for a contradiction in a lane's durable recovery
@@ -21,6 +23,9 @@ import type {
  */
 export type RecordLogCorruptionReason =
 	| "multiple_open_operations"
+	| "non_monotonic_sequence"
+	| "duplicate_record_id"
+	| "open_operations_mismatch"
 	| "unknown_operation"
 	| "record_after_finish"
 	| "non_consecutive_attempt"
@@ -30,8 +35,10 @@ export type RecordLogCorruptionReason =
 	| "inconsistent_step"
 	| "tool_call_mismatch"
 	| "duplicate_tool_invocation"
+	| "tool_receipt_conflict"
 	| "provisioned_entry_mismatch"
-	| "invalid_deferred_handle";
+	| "invalid_deferred_handle"
+	| "invalid_deferred_fetch";
 
 export class RecordLogCorruption extends Error {
 	readonly reason: RecordLogCorruptionReason;
@@ -69,11 +76,31 @@ export interface ToolBatchState {
 		toolIndex: number;
 		toolCall: AgentToolCall;
 		started?: ToolStartedRecord;
+		intent?: ToolIntentV1;
+		receipt?: ToolReceiptV1;
 		resultExists: boolean;
 		terminate?: boolean;
 	}[];
 	truncated: boolean;
 	unresolved: boolean;
+	receiptConflict?: boolean;
+}
+
+/** Durable redemption prefix for one provider-deferred assistant response. */
+export const DEFERRED_FETCH_INTENT_CUSTOM_TYPE = "harness.deferred_fetch.intent";
+export const DEFERRED_FETCH_RESULT_CUSTOM_TYPE = "harness.deferred_fetch.result";
+
+export type DeferredFetchResultStatus = "succeeded" | "failed" | "unknown";
+
+export interface DeferredFetchState {
+	intent: { entryId: string; runId: string; handle: DeferredHandle; responseEntryId: string };
+	result?: {
+		entryId: string;
+		status: DeferredFetchResultStatus;
+		responseEntryId?: string;
+		response?: AssistantMessage;
+		error?: { code: string; message: string };
+	};
 }
 
 /** Why a loop must stop before another provider turn is started. */
@@ -156,6 +183,7 @@ export interface LaneState {
 		pendingFollowUp: ProvisionedEntry[];
 		pendingWrites: ProvisionedEntry[];
 		deferred: DeferredHandle | null;
+		deferredFetch: DeferredFetchState | null;
 		overflowRecoveryUsed: boolean;
 		newestOwn: null | {
 			entryId: string;
@@ -266,6 +294,8 @@ export function advanceLoopConvergence(
 }
 
 export interface LaneReductionInput extends RecordLogSlice {
+	/** Session identity used to keep tool facts from another session out of the reduction. */
+	sessionId?: string;
 	leafId: string | null;
 	/** Entries appended by the open operation, oldest first. Empty when idle. */
 	ownEntries: readonly Entry[];
@@ -273,6 +303,10 @@ export interface LaneReductionInput extends RecordLogSlice {
 	configurationEntries: readonly Entry[];
 	/** Harness option fallbacks used when no persisted value exists. */
 	defaults: EffectiveLaneConfiguration;
+	toolIntents?: readonly ToolIntentV1[];
+	toolReceipts?: readonly ToolReceiptV1[];
+	/** Complete execution identity used to exclude tool facts from another attempt or operation. */
+	toolIdentity?: Partial<ExecutionCorrelationV1>;
 }
 
 export interface LaneReductionResult {
@@ -394,6 +428,7 @@ function validateToolStart(
 	record: Extract<LaneRecord, { type: "tool_started" }>,
 	entriesById: ReadonlyMap<string, Entry>,
 	invocations: Set<string>,
+	toolCallIds: Set<string>,
 ): void {
 	const invocation = `${record.assistantEntryId}\u0000${record.toolIndex}`;
 	if (invocations.has(invocation)) {
@@ -403,6 +438,14 @@ function validateToolStart(
 		);
 	}
 	invocations.add(invocation);
+	const callIdentity = `${record.runId}\u0000${record.toolCallId}`;
+	if (toolCallIds.has(callIdentity)) {
+		corrupt(
+			"duplicate_tool_invocation",
+			`Tool call ${record.toolCallId} has more than one durable tool start`,
+		);
+	}
+	toolCallIds.add(callIdentity);
 
 	const assistantEntry = entriesById.get(record.assistantEntryId);
 	if (!assistantEntry || assistantEntry.type !== "message" || assistantEntry.message.role !== "assistant") {
@@ -417,11 +460,12 @@ function validateToolStart(
 	validateResultEntry(
 		entriesById,
 		record.resultEntryId,
-		(entry) =>
-			entry.type === "message" &&
-			entry.message.role === "toolResult" &&
-			entry.message.toolCallId === record.toolCallId &&
-			entry.message.toolName === record.toolName,
+		(entry) => {
+			if (entry.type === "message") return entry.message.role === "toolResult" && entry.message.toolCallId === record.toolCallId && entry.message.toolName === record.toolName;
+			if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
+			const checked = validateFoundationToolResultEntryV1(entry.data);
+			return checked.ok && checked.value.runId === record.runId && checked.value.operationId === record.runId && checked.value.toolCallId === record.toolCallId && checked.value.toolName === record.toolName;
+		},
 		"tool result",
 	);
 }
@@ -437,6 +481,130 @@ function validateDeferredHandles(entries: Iterable<Entry>): void {
 			corrupt("invalid_deferred_handle", `Deferred assistant entry ${entry.id} does not carry a handle`);
 		}
 	}
+}
+
+function isJsonValue(value: unknown): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	if (typeof value !== "object") return false;
+	return Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(isJsonValue);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function parseDeferredHandle(value: unknown): DeferredHandle | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.provider !== "string" || record.provider.length === 0 ||
+		typeof record.modelId !== "string" || record.modelId.length === 0 ||
+		typeof record.api !== "string" || record.api.length === 0 ||
+		typeof record.id !== "string" || record.id.length === 0
+	) return undefined;
+	if (record.expiresAt !== undefined && (!Number.isSafeInteger(record.expiresAt) || (record.expiresAt as number) < 0)) return undefined;
+	if (record.pollAfterMs !== undefined && (!Number.isSafeInteger(record.pollAfterMs) || (record.pollAfterMs as number) < 0)) return undefined;
+	if (record.data !== undefined && !isJsonValue(record.data)) return undefined;
+	return structuredClone(record) as unknown as DeferredHandle;
+}
+
+function parseDeferredFetchIntent(entry: Entry): DeferredFetchState["intent"] | undefined {
+	if (entry.type !== "custom" || entry.customType !== DEFERRED_FETCH_INTENT_CUSTOM_TYPE) return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} is not an object`);
+	const record = data as Record<string, unknown>;
+	if (record.schemaVersion !== 1 || record.status !== "pending" || typeof record.runId !== "string" || record.runId.length === 0) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has an invalid prefix`);
+	}
+	if (typeof record.responseEntryId !== "string" || record.responseEntryId.length === 0) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has no response association`);
+	const handle = parseDeferredHandle(record.handle);
+	if (!handle) corrupt("invalid_deferred_fetch", `Deferred fetch intent ${entry.id} has an invalid handle`);
+	return { entryId: entry.id, runId: record.runId as string, handle, responseEntryId: record.responseEntryId as string };
+}
+
+function parseDeferredFetchResult(entry: Entry): DeferredFetchState["result"] | undefined {
+	if (entry.type !== "custom" || entry.customType !== DEFERRED_FETCH_RESULT_CUSTOM_TYPE) return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} is not an object`);
+	const record = data as Record<string, unknown>;
+	if (record.schemaVersion !== 1 || typeof record.runId !== "string" || record.runId.length === 0) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid prefix`);
+	}
+	if (record.status !== "succeeded" && record.status !== "failed" && record.status !== "unknown") {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid status`);
+	}
+	if (record.responseEntryId !== undefined && (typeof record.responseEntryId !== "string" || record.responseEntryId.length === 0)) {
+		corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid response entry id`);
+	}
+	if (record.error !== undefined) {
+		if (typeof record.error !== "object" || record.error === null || Array.isArray(record.error)) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid error`);
+		const error = record.error as Record<string, unknown>;
+		if (typeof error.code !== "string" || error.code.length === 0 || typeof error.message !== "string" || error.message.length === 0) corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid error`);
+	}
+	if (record.response !== undefined) {
+		if (typeof record.response !== "object" || record.response === null || Array.isArray(record.response) || (record.response as Record<string, unknown>).role !== "assistant") {
+			corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} has an invalid response`);
+		}
+	}
+	if (record.status === "succeeded" && (record.response === undefined || record.responseEntryId === undefined)) {
+		corrupt("invalid_deferred_fetch", `Successful deferred fetch result ${entry.id} is missing its response association`);
+	}
+	return {
+		entryId: entry.id,
+		status: record.status as DeferredFetchResultStatus,
+		...(record.responseEntryId === undefined ? {} : { responseEntryId: record.responseEntryId as string }),
+		...(record.response === undefined ? {} : { response: structuredClone(record.response) as AssistantMessage }),
+		...(record.error === undefined ? {} : { error: structuredClone(record.error) as { code: string; message: string } }),
+	};
+}
+
+function validateDeferredFetchEntries(entries: Iterable<Entry>): void {
+	const intents = new Map<string, { entry: Entry; value: DeferredFetchState["intent"] }>();
+	const results = new Map<string, { entry: Entry; value: NonNullable<DeferredFetchState["result"]> }>();
+	const allEntries = [...entries];
+	for (const entry of allEntries) {
+		const intent = parseDeferredFetchIntent(entry);
+		if (intent) {
+			if (intents.has(intent.runId)) corrupt("invalid_deferred_fetch", `Deferred fetch run ${intent.runId} has duplicate intents`);
+			intents.set(intent.runId, { entry, value: intent });
+		}
+		const result = parseDeferredFetchResult(entry);
+		if (result) {
+			if (entry.type !== "custom") corrupt("invalid_deferred_fetch", `Deferred fetch result ${entry.id} is not a custom entry`);
+			const data = entry.data as Record<string, unknown>;
+			const runId = data.runId as string;
+			if (results.has(runId)) corrupt("invalid_deferred_fetch", `Deferred fetch run ${runId} has duplicate results`);
+			results.set(runId, { entry, value: result });
+		}
+	}
+	for (const [runId, result] of results) {
+		const intent = intents.get(runId);
+		if (!intent || intent.entry.seq >= result.entry.seq) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} has no preceding intent`);
+		if (result.value.responseEntryId !== undefined && result.value.responseEntryId !== intent.value.responseEntryId) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} changes its response association`);
+		if (result.value.responseEntryId !== undefined) {
+			const response = allEntries.find((candidate) => candidate.id === result.value.responseEntryId);
+			if (response && (response.type !== "message" || response.message.role !== "assistant")) corrupt("invalid_deferred_fetch", `Deferred fetch result ${result.entry.id} references a non-assistant response`);
+		}
+	}
+}
+
+function deriveDeferredFetchState(operationId: string, entries: readonly Entry[]): DeferredFetchState | null {
+	const ordered = bySequence(entries);
+	const intentEntry = ordered.find((entry) => {
+		const value = parseDeferredFetchIntent(entry);
+		return value?.runId === operationId;
+	});
+	if (!intentEntry) return null;
+	const intent = parseDeferredFetchIntent(intentEntry);
+	if (!intent) return null;
+	const resultEntry = ordered.find((entry) => {
+		const data = entry.type === "custom" && entry.customType === DEFERRED_FETCH_RESULT_CUSTOM_TYPE ? asRecord(entry.data) : undefined;
+		return data?.runId === operationId;
+	});
+	const result = resultEntry ? parseDeferredFetchResult(resultEntry) : undefined;
+	return { intent, ...(result === undefined ? {} : { result }) };
 }
 
 function validateOperationResult(entriesById: ReadonlyMap<string, Entry>, record: OperationStartedRecord): void {
@@ -473,16 +641,27 @@ export function validateRecordLog(input: RecordLogSlice): void {
 
 	const entriesById = new Map(input.entries.map((entry) => [entry.id, entry]));
 	validateDeferredHandles(entriesById.values());
+	validateDeferredFetchEntries(entriesById.values());
 	const starts = new Map<string, OperationStartedRecord>();
 	const finishedAt = new Map<string, number>();
 	const abortedAt = new Map<string, number>();
 	const queueEnqueues = new Map<string, Extract<LaneRecord, { type: "queue_enqueued" }>>();
 	const latestAttempt = new Map<string, AttemptSeries>();
 	const toolInvocations = new Set<string>();
-	const records = [...input.records].sort((left, right) => left.seq - right.seq);
+	const toolCallIds = new Set<string>();
+	const records = input.records;
+	let previousSequence = 0;
+	const recordIds = new Set<string>();
 
 	for (const record of records) {
+		if (!Number.isSafeInteger(record.seq) || record.seq <= previousSequence) {
+			corrupt("non_monotonic_sequence", `Record ${record.id} does not follow the lane record sequence`);
+		}
+		if (recordIds.has(record.id)) corrupt("duplicate_record_id", `Record ${record.id} appears more than once`);
+		recordIds.add(record.id);
+		previousSequence = record.seq;
 		if (record.type === "operation_started") {
+			if (starts.has(record.id)) corrupt("duplicate_record_id", `Operation ${record.id} starts more than once`);
 			starts.set(record.id, record);
 			validateOperationResult(entriesById, record);
 			continue;
@@ -512,7 +691,7 @@ export function validateRecordLog(input: RecordLogSlice): void {
 				latestAttempt.set(record.runId, { record });
 				break;
 			case "tool_started":
-				validateToolStart(record, entriesById, toolInvocations);
+				validateToolStart(record, entriesById, toolInvocations, toolCallIds);
 				break;
 			case "queue_enqueued":
 				if (
@@ -543,6 +722,17 @@ export function validateRecordLog(input: RecordLogSlice): void {
 			case "usage":
 				break;
 		}
+	}
+
+	const actualOpenOperationIds = new Set(
+		[...starts.keys()].filter((operationId) => finishedAt.get(operationId) === undefined),
+	);
+	const suppliedOpenOperationIds = new Set(input.openOperations.map((operation) => operation.id));
+	if (
+		actualOpenOperationIds.size !== suppliedOpenOperationIds.size ||
+		[...actualOpenOperationIds].some((operationId) => !suppliedOpenOperationIds.has(operationId))
+	) {
+		corrupt("open_operations_mismatch", `Lane ${input.lane} open operation index disagrees with its records`);
 	}
 }
 
@@ -599,12 +789,60 @@ function deriveNewestOwn(
 	};
 }
 
+function toolIdentityMatches(
+	binding: ToolBindingRefV1,
+	identity: Partial<ExecutionCorrelationV1>,
+): boolean {
+	const expected: Array<[keyof ToolBindingRefV1, string | undefined]> = [
+		["sessionId", identity.sessionId],
+		["laneId", identity.laneId],
+		["runId", identity.runId],
+		["operationId", identity.operationId],
+		["taskId", identity.taskId],
+		["dispatchId", identity.dispatchId],
+		["attemptId", identity.attemptId],
+		["bindingId", identity.bindingId],
+		["bindingEpochId", identity.bindingEpochId],
+		["providerId", identity.providerId],
+		["agentInstanceId", identity.agentInstanceId],
+	];
+	for (const [field, expectedValue] of expected) {
+		if (expectedValue !== undefined && binding[field] !== expectedValue) return false;
+	}
+	return true;
+}
+
+function foldToolReceiptsByCallId(receipts: readonly ToolReceiptV1[], identity: Partial<ExecutionCorrelationV1>): { values: Map<string, ToolReceiptV1>; conflict: boolean } {
+	const folded = new Map<string, ToolReceiptV1>();
+	let conflict = false;
+	for (const receipt of receipts) {
+		if (!toolIdentityMatches(receipt.binding, identity)) continue;
+		const existing = folded.get(receipt.toolCallId);
+		if (existing === undefined) {
+			folded.set(receipt.toolCallId, receipt);
+			continue;
+		}
+		if (projectToolReceiptExecutionSemanticsV1(existing) !== projectToolReceiptExecutionSemanticsV1(receipt)) {
+			conflict = true;
+		}
+		const existingCanonical = canonicalFoundationJson(existing);
+		const candidateCanonical = canonicalFoundationJson(receipt);
+		if (candidateCanonical < existingCanonical) folded.set(receipt.toolCallId, receipt);
+	}
+	return { values: folded, conflict };
+}
+
 function deriveToolBatch(
+	sessionId: string | undefined,
+	laneId: string,
 	operationId: string,
 	records: readonly LaneRecord[],
 	ownEntries: readonly Entry[],
 	entriesById: ReadonlyMap<string, Entry>,
 	deferredWriteIds: ReadonlySet<string>,
+	toolIntents: readonly ToolIntentV1[] = [],
+	toolReceipts: readonly ToolReceiptV1[] = [],
+	toolIdentity: Partial<ExecutionCorrelationV1> = {},
 ): ToolBatchState | null {
 	const assistantEntry = [...ownEntries]
 		.reverse()
@@ -619,7 +857,20 @@ function deriveToolBatch(
 	const toolCalls = assistantEntry.message.content.filter(
 		(content): content is AgentToolCall => content.type === "toolCall",
 	);
+	const identity: Partial<ExecutionCorrelationV1> = {
+		...toolIdentity,
+		...(toolIdentity.sessionId === undefined && sessionId === undefined ? {} : { sessionId: toolIdentity.sessionId ?? sessionId }),
+		laneId,
+		runId: toolIdentity.runId ?? operationId,
+		operationId: toolIdentity.operationId ?? operationId,
+	};
 	const starts = new Map<number, ToolStartedRecord>();
+	const intents = new Map<string, ToolIntentV1>();
+	for (const intent of toolIntents) {
+		if (toolIdentityMatches(intent.binding, identity)) intents.set(intent.toolCallId, intent);
+	}
+	const foldedReceipts = foldToolReceiptsByCallId(toolReceipts, identity);
+	const receipts = foldedReceipts.values;
 	for (const record of records) {
 		if (
 			record.type === "tool_started" &&
@@ -629,23 +880,34 @@ function deriveToolBatch(
 			starts.set(record.toolIndex, record);
 		}
 	}
+	const isMatchingToolResultEntry = (entry: Entry | undefined, toolCallId: string, toolName: string, expectedRunId?: string): boolean => {
+		if (entry === undefined) return false;
+		if (entry.type === "message") {
+			return entry.message.role === "toolResult" && entry.message.toolCallId === toolCallId && entry.message.toolName === toolName;
+		}
+		if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
+		const checked = validateFoundationToolResultEntryV1(entry.data);
+		return checked.ok && (expectedRunId === undefined || (checked.value.runId === expectedRunId && checked.value.operationId === expectedRunId)) && checked.value.toolCallId === toolCallId && checked.value.toolName === toolName;
+	};
 
 	const calls = toolCalls.map((toolCall, toolIndex) => {
 		const started = starts.get(toolIndex);
-		const startedResult = started ? entriesById.get(started.resultEntryId) : undefined;
+		const startedResult = started && isMatchingToolResultEntry(entriesById.get(started.resultEntryId), toolCall.id, toolCall.name, started.runId)
+			? entriesById.get(started.resultEntryId)
+			: undefined;
 		const blockedResult = ownEntries.find(
 			(entry) =>
 				entry.seq > assistantEntry.seq &&
 				!deferredWriteIds.has(entry.id) &&
-				entry.type === "message" &&
-				entry.message.role === "toolResult" &&
-				entry.message.toolCallId === toolCall.id,
+				isMatchingToolResultEntry(entry, toolCall.id, toolCall.name),
 		);
 		const result = startedResult ?? blockedResult;
 		return {
 			toolIndex,
 			toolCall: clone(toolCall),
 			...(started ? { started: clone(started) } : {}),
+			...(intents.get(toolCall.id) === undefined ? {} : { intent: clone(intents.get(toolCall.id)!) }),
+			...(receipts.get(toolCall.id) === undefined ? {} : { receipt: clone(receipts.get(toolCall.id)!) }),
 			resultExists: result !== undefined,
 			...(result?.type === "message" && result.terminate === true ? { terminate: true } : {}),
 		};
@@ -655,7 +917,8 @@ function deriveToolBatch(
 		assistantEntryId: assistantEntry.id,
 		calls,
 		truncated: assistantEntry.message.stopReason === "length",
-		unresolved: calls.some((call) => !call.resultExists),
+		unresolved: foldedReceipts.conflict || calls.some((call) => !call.resultExists),
+		...(foldedReceipts.conflict ? { receiptConflict: true } : {}),
 	};
 }
 
@@ -796,7 +1059,10 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 			record.seq > newestConsumedInputSequence,
 	);
 
-	const newestOwnEntry = ownEntries.at(-1);
+	// Custom entries include configuration and harness lifecycle markers that
+	// are not operation output. They must not hide the last assistant/tool or
+	// compaction entry during recovery.
+	const newestOwnEntry = [...ownEntries].reverse().find((entry) => entry.type !== "custom");
 	const newestOwn = deriveNewestOwn(newestOwnEntry);
 	const deferred =
 		newestOwnEntry?.type === "message" &&
@@ -815,7 +1081,8 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 	const deferredWriteIds = new Set(
 		operationRecords.filter((record) => record.type === "write_deferred").map((record) => record.target.id),
 	);
-	const toolBatch = deriveToolBatch(started.id, operationRecords, ownEntries, entriesById, deferredWriteIds);
+	const deferredFetch = deriveDeferredFetchState(started.id, ownEntries);
+	const toolBatch = deriveToolBatch(input.sessionId, input.lane, started.id, operationRecords, ownEntries, entriesById, deferredWriteIds, input.toolIntents, input.toolReceipts, input.toolIdentity);
 	let terminalFailure: TerminalFailureState | null = null;
 	if (
 		newestOwnEntry?.type === "message" &&
@@ -872,6 +1139,7 @@ export function reduceLaneState(input: LaneReductionInput): LaneReductionResult 
 				pendingFollowUp,
 				pendingWrites,
 				deferred,
+				deferredFetch,
 				overflowRecoveryUsed,
 				newestOwn,
 				targets,

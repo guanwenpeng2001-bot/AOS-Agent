@@ -58,6 +58,59 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
+async function waitForStreaming(session: AgentSession, prompt: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const streaming = new Promise<void>((resolve) => {
+		const check = () => {
+			const harnessRunning = (
+				session as unknown as { delegate: { harness: { isRunning: boolean } } }
+			).delegate.harness.isRunning;
+			if (session.isStreaming && harnessRunning) {
+				resolve();
+				return;
+			}
+			timer = setTimeout(check, 10);
+		};
+		check();
+	});
+	const promptSettled = prompt.then(
+		() => {
+			throw new Error("Prompt completed before the session started streaming");
+		},
+		(error: unknown) => {
+			throw error;
+		},
+	);
+	try {
+		await Promise.race([streaming, promptSettled]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
+function createAbortableStream(signal: AbortSignal | undefined): MockAssistantStream {
+	if (signal === undefined) throw new Error("Mock stream requires an abort signal");
+
+	const stream = new MockAssistantStream();
+	let settled = false;
+	const abort = () => {
+		if (settled) return;
+		settled = true;
+		stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+	};
+
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: createAssistantMessage("") });
+		if (signal.aborted) {
+			abort();
+		} else {
+			signal.addEventListener("abort", abort, { once: true });
+		}
+	});
+
+	return stream;
+}
+
 describe("AgentSession concurrent prompt guard", () => {
 	let session: AgentSession;
 	let tempDir: string;
@@ -71,7 +124,9 @@ describe("AgentSession concurrent prompt guard", () => {
 		delete (globalThis as typeof globalThis & { testExtensionApi?: unknown }).testExtensionApi;
 		delete (globalThis as typeof globalThis & { testCommandRuns?: unknown }).testCommandRuns;
 		if (session) {
+			await session.abort();
 			session.dispose();
+			await session.waitForDispose();
 		}
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true });
@@ -80,9 +135,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 	async function createSession() {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		let abortSignal: AbortSignal | undefined;
 
-		// Use a stream function that responds to abort
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -90,22 +143,7 @@ describe("AgentSession concurrent prompt guard", () => {
 				systemPrompt: "Test",
 				tools: [],
 			},
-			streamFn: (_model, _context, options) => {
-				abortSignal = options?.signal;
-				const stream = new MockAssistantStream();
-				queueMicrotask(() => {
-					stream.push({ type: "start", partial: createAssistantMessage("") });
-					const checkAbort = () => {
-						if (abortSignal?.aborted) {
-							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
-						} else {
-							setTimeout(checkAbort, 5);
-						}
-					};
-					checkAbort();
-				});
-				return stream;
-			},
+			streamFn: (_model, _context, options) => createAbortableStream(options?.signal),
 		});
 
 		const sessionManager = SessionManager.inMemory();
@@ -131,21 +169,19 @@ describe("AgentSession concurrent prompt guard", () => {
 		await createSession();
 
 		// Start first prompt (don't await, it will block until abort)
-		const firstPrompt = session.prompt("First message");
-
-		// Wait a tick for isStreaming to be set
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		const firstPrompt = session!.prompt("First message");
+		await waitForStreaming(session!, firstPrompt);
 
 		// Verify we're streaming
-		expect(session.isStreaming).toBe(true);
+		expect(session!.isStreaming).toBe(true);
 
 		// Second prompt should reject
-		await expect(session.prompt("Second message")).rejects.toThrow(
+		await expect(session!.prompt("Second message")).rejects.toThrow(
 			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 		);
 
 		// Cleanup
-		await session.abort();
+		await session!.abort();
 		await firstPrompt.catch(() => {}); // Ignore abort error
 	});
 
@@ -153,15 +189,15 @@ describe("AgentSession concurrent prompt guard", () => {
 		await createSession();
 
 		// Start first prompt
-		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		const firstPrompt = session!.prompt("First message");
+		await waitForStreaming(session!, firstPrompt);
 
 		// steer should work while streaming
-		expect(() => session.steer("Steering message")).not.toThrow();
-		expect(session.pendingMessageCount).toBe(1);
+		await expect(session!.steer("Steering message")).resolves.toBeUndefined();
+		expect(session!.pendingMessageCount).toBe(1);
 
 		// Cleanup
-		await session.abort();
+		await session!.abort();
 		await firstPrompt.catch(() => {});
 	});
 
@@ -169,21 +205,20 @@ describe("AgentSession concurrent prompt guard", () => {
 		await createSession();
 
 		// Start first prompt
-		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		const firstPrompt = session!.prompt("First message");
+		await waitForStreaming(session!, firstPrompt);
 
 		// followUp should work while streaming
-		expect(() => session.followUp("Follow-up message")).not.toThrow();
-		expect(session.pendingMessageCount).toBe(1);
+		await expect(session!.followUp("Follow-up message")).resolves.toBeUndefined();
+		expect(session!.pendingMessageCount).toBe(1);
 
 		// Cleanup
-		await session.abort();
+		await session!.abort();
 		await firstPrompt.catch(() => {});
 	});
 
 	it("keeps extension-origin steering queued when the active run is aborted", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		let abortSignal: AbortSignal | undefined;
 		let sawSteeringMessage = false;
 		let lastInputSource: string | undefined;
 		const queueEvents: Array<{ steering: readonly string[]; followUp: readonly string[] }> = [];
@@ -196,8 +231,8 @@ describe("AgentSession concurrent prompt guard", () => {
 				tools: [],
 			},
 			streamFn: (_model, context, options) => {
-				abortSignal = options?.signal;
 				const stream = new MockAssistantStream();
+				const signal = options?.signal;
 				queueMicrotask(() => {
 					const userTexts = context.messages
 						.filter((message) => message.role === "user")
@@ -220,14 +255,11 @@ describe("AgentSession concurrent prompt guard", () => {
 					}
 
 					stream.push({ type: "start", partial: createAssistantMessage("") });
-					const checkAbort = () => {
-						if (abortSignal?.aborted) {
-							stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
-						} else {
-							setTimeout(checkAbort, 5);
-						}
-					};
-					checkAbort();
+					if (signal === undefined) throw new Error("Mock stream requires an abort signal");
+					const abort = () =>
+						stream.push({ type: "error", reason: "aborted", error: createAssistantMessage("Aborted") });
+					if (signal.aborted) abort();
+					else signal.addEventListener("abort", abort, { once: true });
 				});
 				return stream;
 			},
@@ -264,28 +296,30 @@ describe("AgentSession concurrent prompt guard", () => {
 			}
 		});
 
-		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(session.isStreaming).toBe(true);
+		const firstPrompt = session!.prompt("First message");
+		await waitForStreaming(session!, firstPrompt);
+		expect(session!.isStreaming).toBe(true);
 
 		const extensionApi = (
 			globalThis as typeof globalThis & {
 				testExtensionApi?: {
-					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => void;
+					sendUserMessage: (content: string, options?: { deliverAs?: "steer" | "followUp" }) => Promise<void>;
 				};
 			}
 		).testExtensionApi;
 		expect(extensionApi).toBeDefined();
 
-		extensionApi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
-		await new Promise((resolve) => setTimeout(resolve, 25));
+		await expect(extensionApi!.sendUserMessage("Concurrent extension prompt")).rejects.toThrow(
+			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+		);
+		await extensionApi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
 
-		expect(session.pendingMessageCount).toBe(1);
-		expect(session.getSteeringMessages()).toContain("Steer from extension");
+		expect(session!.pendingMessageCount).toBe(1);
+		expect(session!.getSteeringMessages()).toContain("Steer from extension");
 		expect(lastInputSource).toBe("extension");
 		expect(queueEvents.some((event) => event.steering.includes("Steer from extension"))).toBe(true);
 
-		await session.abort();
+		await session!.abort();
 		await firstPrompt.catch(() => {});
 
 		expect(sawSteeringMessage).toBe(false);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AosServer } from "../src/index.ts";
 import { connectUnixTestClient, type ProtocolTestClient, TestServerService } from "../src/testing/index.ts";
+import { getWindowsPipePath } from "../src/transports/unix/listener.ts";
 import { createUnixServer } from "../src/transports/unix/index.ts";
 
 const servers = new Set<AosServer>();
@@ -44,18 +45,29 @@ describe("Unix listener filesystem lifecycle", () => {
 		const path = await makeSocketPath();
 		const first = makeServer(path);
 		await first.start();
-		const firstIdentity = await lstat(path);
+		const firstAddress = first.addresses[0];
+		const firstIdentity = process.platform === "win32" ? undefined : await lstat(path);
+		if (process.platform === "win32") {
+			expect(firstAddress).toBe(getWindowsPipePath(path));
+			await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+		} else {
+			expect(firstAddress).toBe(path);
+		}
 
 		const second = makeServer(path);
 		await expect(second.start()).rejects.toThrow(/already running/);
-		const currentIdentity = await lstat(path);
-		expect(currentIdentity.isSocket()).toBe(true);
-		expect({ dev: currentIdentity.dev, ino: currentIdentity.ino }).toEqual({
-			dev: firstIdentity.dev,
-			ino: firstIdentity.ino,
-		});
+		if (process.platform === "win32") {
+			await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+		} else {
+			const currentIdentity = await lstat(path);
+			expect(currentIdentity.isSocket()).toBe(true);
+			expect({ dev: currentIdentity.dev, ino: currentIdentity.ino }).toEqual({
+				dev: firstIdentity!.dev,
+				ino: firstIdentity!.ino,
+			});
+		}
 
-		const client = await connectUnixTestClient(path);
+		const client = await connectUnixTestClient(firstAddress!);
 		clients.add(client);
 		expect(await client.hello()).toMatchObject({ type: "hello" });
 	});
@@ -72,9 +84,14 @@ describe("Unix listener filesystem lifecycle", () => {
 		const path = await makeSocketPath(true);
 		const server = makeServer(path);
 		await server.start();
-		const stats = await lstat(path);
-		expect(stats.isSocket()).toBe(true);
-		if (process.platform !== "win32") expect(stats.mode & 0o777).toBe(0o600);
+		if (process.platform === "win32") {
+			await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+			expect(server.addresses[0]).toBe(getWindowsPipePath(path));
+		} else {
+			const stats = await lstat(path);
+			expect(stats.isSocket()).toBe(true);
+			expect(stats.mode & 0o777).toBe(0o600);
+		}
 
 		await server.close();
 		await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -84,8 +101,12 @@ describe("Unix listener filesystem lifecycle", () => {
 		const path = await makeSocketPath();
 		const server = makeServer(path);
 		await server.start();
-		await unlink(path);
-		await writeFile(path, "replacement");
+		if (process.platform === "win32") {
+			await writeFile(path, "replacement");
+		} else {
+			await unlink(path);
+		}
+		if (process.platform !== "win32") await writeFile(path, "replacement");
 
 		const closing = server.close();
 		expect(await readFile(path, "utf8")).toBe("replacement");
@@ -95,22 +116,31 @@ describe("Unix listener filesystem lifecycle", () => {
 
 	test("removes a genuinely stale socket before binding", async () => {
 		const path = await makeSocketPath();
-		const child = fork(new URL("fixtures/stale-socket-server.mjs", import.meta.url), [path], {
+		const bindPath = process.platform === "win32" ? getWindowsPipePath(path) : path;
+		const child = fork(new URL("fixtures/stale-socket-server.mjs", import.meta.url), [bindPath], {
 			stdio: ["ignore", "ignore", "inherit", "ipc"],
 		});
 		children.add(child);
 		await once(child, "message");
-		const staleIdentity = await lstat(path);
-		expect(staleIdentity.isSocket()).toBe(true);
+		if (process.platform === "win32") {
+			await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+		} else {
+			const staleIdentity = await lstat(path);
+			expect(staleIdentity.isSocket()).toBe(true);
+		}
 		child.kill("SIGKILL");
 		await once(child, "exit");
 		children.delete(child);
 
 		const server = makeServer(path);
 		await server.start();
-		const liveIdentity = await lstat(path);
-		expect(liveIdentity.isSocket()).toBe(true);
-		const client = await connectUnixTestClient(path);
+		if (process.platform === "win32") {
+			await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+		} else {
+			const liveIdentity = await lstat(path);
+			expect(liveIdentity.isSocket()).toBe(true);
+		}
+		const client = await connectUnixTestClient(server.addresses[0]!);
 		clients.add(client);
 		expect(await client.hello()).toMatchObject({ type: "hello" });
 	});

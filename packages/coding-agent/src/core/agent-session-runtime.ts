@@ -13,6 +13,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
+import { createSessionManagerStorage } from "./session-manager-storage.ts";
 
 /**
  * Result returned by runtime creation.
@@ -174,8 +175,7 @@ export class AgentSessionRuntime {
 			targetSessionFile,
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose();
-		await this.session.waitForDispose();
+		await this.session.dispose();
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -316,6 +316,7 @@ export class AgentSessionRuntime {
 				);
 			}
 			const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
+			createSessionManagerStorage(sessionManager);
 			const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
 			if (!forkedSessionPath) {
 				throw new Error("Failed to create forked session");
@@ -334,12 +335,12 @@ export class AgentSessionRuntime {
 		}
 
 		const sessionManager = this.session.sessionManager;
+		await this.teardownCurrent("fork", sessionManager.getSessionFile());
 		if (!targetLeafId) {
 			sessionManager.newSession({ parentSession: this.session.sessionFile });
 		} else {
 			sessionManager.createBranchedSession(targetLeafId);
 		}
-		await this.teardownCurrent("fork", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({
 				cwd: this.cwd,
@@ -402,8 +403,7 @@ export class AgentSessionRuntime {
 			reason: "quit",
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose();
-		await this.session.waitForDispose();
+		await this.session.dispose();
 	}
 }
 

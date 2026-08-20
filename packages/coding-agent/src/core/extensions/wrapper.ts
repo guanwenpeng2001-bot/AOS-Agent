@@ -21,7 +21,8 @@ export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: Exten
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate) => {
 			const activeBefore = runner.getActiveTools();
-			const result = await execute(toolCallId, params, signal, onUpdate);
+			const executed = await execute(toolCallId, params, signal, onUpdate);
+			const result = { ...executed, content: executed.content ?? [] };
 			const activeAfter = runner.getActiveTools();
 			if (!activeBefore.every((name) => activeAfter.includes(name))) return result;
 

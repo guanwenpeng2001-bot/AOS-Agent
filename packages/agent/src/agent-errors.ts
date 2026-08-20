@@ -240,7 +240,7 @@ function isParameterError(text: string, status: number | undefined): boolean {
 function isTransientError(text: string, status: number | undefined): boolean {
 	return (
 		(status !== undefined && (status === 408 || status === 409 || status === 429 || status >= 500)) ||
-		/\b(?:408|409|429|5\d\d)\b|provider failed transiently|overloaded|rate.?limit|too many requests|provider.?returned.?error|provider.?unavailable|service.?unavailable|server.?error|internal.?error|network.?error|connection.?(?:error|refused|lost)|fetch failed|getaddrinfo|eai_again|enotfound|upstream.?connect|reset before headers|timed? out|timeout|socket hang up|websocket.?closed|stream ended|try your request again|please retry|resourceexhausted/.test(
+		/\b(?:408|409|429|5\d\d)\b|provider failed transiently|overloaded|rate.?limit|too many requests|provider.?returned.?error|provider.?unavailable|service.?unavailable|server.?error|internal.?error|network.?error|connection.?(?:error|refused|lost)|fetch failed|getaddrinfo|eai_again|enotfound|upstream.?connect|reset before headers|timed? out|timeout|socket hang up|websocket.?closed|try your request again|you can retry|please retry|resourceexhausted/.test(
 			text,
 		)
 	);

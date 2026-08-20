@@ -1,7 +1,7 @@
 import { uuidv7 } from "@aos-agent/ai";
 import { assertJsonSerializable, Session } from "../session.ts";
 import { type ForkOptions, SessionError, type SessionRepo } from "../types.ts";
-import { metadataFromHeader, parseHeader } from "./codec.ts";
+import { metadataFromHeader, parseSessionHeader } from "./codec.ts";
 import { fileResult } from "./errors.ts";
 import { JsonlSessionStorage } from "./storage.ts";
 import type {
@@ -64,6 +64,7 @@ export class JsonlSessionRepo
 
 	async delete(metadata: JsonlSessionMetadata): Promise<void> {
 		fileResult(await this.fs.remove(metadata.path, { force: true }), `Failed to delete session ${metadata.path}`);
+		fileResult(await this.fs.remove(`${metadata.path}.lease`, { force: true }), `Failed to delete session lease ${metadata.path}.lease`);
 	}
 
 	async fork(
@@ -168,7 +169,7 @@ export class JsonlSessionRepo
 					`Failed to read session header ${file.path}`,
 				);
 				if (!firstLine) continue;
-				const headerResult = parseHeader(firstLine);
+				const headerResult = parseSessionHeader(firstLine);
 				if (!headerResult.ok) continue;
 				metadata.push(metadataFromHeader(headerResult.value, file.path, file.mtimeMs));
 			}

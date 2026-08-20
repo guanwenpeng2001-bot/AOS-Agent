@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import type { ImagesModel } from "../src/types.ts";
@@ -11,10 +11,25 @@ const packageRoot = join(__dirname, "..");
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 function readStrictOption(args: string[]): boolean {
-	for (const arg of args) {
-		if (arg !== "--strict") throw new Error(`Unknown argument: ${arg}`);
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--strict") continue;
+		if (arg === "--snapshot") {
+			index++;
+			if (!args[index]) throw new Error("--snapshot requires a file");
+			continue;
+		}
+		throw new Error(`Unknown argument: ${arg}`);
 	}
 	return args.includes("--strict");
+}
+
+function readSnapshotPath(args: string[]): string | undefined {
+	const index = args.indexOf("--snapshot");
+	if (index === -1) return undefined;
+	const value = args[index + 1];
+	if (!value) throw new Error("--snapshot requires a file");
+	return resolve(value);
 }
 
 interface OpenRouterModelRecord {
@@ -104,6 +119,48 @@ async function fetchOpenRouterImageModels(strict: boolean): Promise<ImagesModel<
 	}
 }
 
+function isFiniteCost(value: object): boolean {
+	const cost = value as Record<string, unknown>;
+	return ["input", "output", "cacheRead", "cacheWrite"].every(
+		(key) => typeof cost[key] === "number" && Number.isFinite(cost[key]),
+	);
+}
+
+function loadSnapshotImageModels(snapshotPath: string, strict: boolean): ImagesModel<"openrouter-images">[] {
+	if (!existsSync(snapshotPath)) throw new Error(`Image model snapshot does not exist: ${snapshotPath}`);
+	const parsed = JSON.parse(readFileSync(snapshotPath, "utf8")) as unknown;
+	if (!Array.isArray(parsed) || parsed.length === 0) {
+		if (strict) throw new Error("Image model snapshot must contain a non-empty array");
+		return [];
+	}
+	const models: ImagesModel<"openrouter-images">[] = [];
+	for (const value of parsed) {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			throw new Error("Image model snapshot contains invalid model metadata");
+		}
+		const model = value as Record<string, unknown>;
+		if (
+			typeof model.id !== "string" ||
+			typeof model.name !== "string" ||
+			model.api !== "openrouter-images" ||
+			model.provider !== "openrouter" ||
+			typeof model.baseUrl !== "string" ||
+			!Array.isArray(model.input) ||
+			!model.input.every((entry) => entry === "text" || entry === "image") ||
+			!Array.isArray(model.output) ||
+			!model.output.every((entry) => entry === "image") ||
+			typeof model.cost !== "object" ||
+			model.cost === null ||
+			Array.isArray(model.cost) ||
+			!isFiniteCost(model.cost)
+		) {
+			throw new Error(`Image model snapshot ${String(model.id ?? "unknown")} has invalid normalized metadata`);
+		}
+		models.push(model as unknown as ImagesModel<"openrouter-images">);
+	}
+	return models;
+}
+
 function generateImageModelsFile(models: ImagesModel<"openrouter-images">[]): string {
 	const imageModelsByProvider = {
 		openrouter: Object.fromEntries(
@@ -146,8 +203,10 @@ ${providerEntries}
 }
 
 async function main(): Promise<void> {
-	const strict = readStrictOption(process.argv.slice(2));
-	const models = await fetchOpenRouterImageModels(strict);
+	const args = process.argv.slice(2);
+	const strict = readStrictOption(args);
+	const snapshotPath = readSnapshotPath(args);
+	const models = snapshotPath ? loadSnapshotImageModels(snapshotPath, strict) : await fetchOpenRouterImageModels(strict);
 	const output = generateImageModelsFile(models);
 	const outputPath = join(packageRoot, "src", "image-models.generated.ts");
 	writeFileSync(outputPath, output, "utf-8");

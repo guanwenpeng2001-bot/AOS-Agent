@@ -665,10 +665,10 @@ export function createSessionBackendConformance(
 
 		createCase(factory, "validation and immutability", "returns immutable copies from reads", async (repository) => {
 			const session = await repository.create({ id: "immutable" });
-			const metadata = await session.getMetadata();
 			const data = { nested: { value: 1 } };
 			await session.appendEntry<CustomEntry>({ type: "custom", id: "custom", customType: "note", data }, "main");
 			data.nested.value = 50;
+			const metadata = await session.getMetadata();
 			const read = await session.getEntry("custom");
 			if (read?.type !== "custom") throw new Error("Expected custom entry");
 			(read.data as { nested: { value: number } }).nested.value = 99;

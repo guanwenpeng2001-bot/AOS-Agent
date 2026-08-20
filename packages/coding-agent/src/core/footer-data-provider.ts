@@ -107,8 +107,10 @@ export class FooterDataProvider {
 	private headWatchFilePath: string | null = null;
 	private headWatchFileListener: ((current: Stats, previous: Stats) => void) | null = null;
 	private reftableWatcher: FSWatcher | null = null;
-	private reftableTablesListWatcher: FSWatcher | null = null;
+	private reftableWatchFilePath: string | null = null;
+	private reftableWatchFileListener: ((current: Stats, previous: Stats) => void) | null = null;
 	private reftableTablesListPath: string | null = null;
+	private reftableTablesListListener: ((current: Stats, previous: Stats) => void) | null = null;
 	private branchChangeCallbacks = new Set<() => void>();
 	private availableProviderCount = 0;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -276,11 +278,17 @@ export class FooterDataProvider {
 		}
 		closeWatcher(this.reftableWatcher);
 		this.reftableWatcher = null;
-		closeWatcher(this.reftableTablesListWatcher);
-		this.reftableTablesListWatcher = null;
+		if (this.reftableWatchFilePath && this.reftableWatchFileListener) {
+			unwatchFile(this.reftableWatchFilePath, this.reftableWatchFileListener);
+			this.reftableWatchFilePath = null;
+			this.reftableWatchFileListener = null;
+		}
 		if (this.reftableTablesListPath) {
-			unwatchFile(this.reftableTablesListPath);
+			if (this.reftableTablesListListener) {
+				unwatchFile(this.reftableTablesListPath, this.reftableTablesListListener);
+			}
 			this.reftableTablesListPath = null;
+			this.reftableTablesListListener = null;
 		}
 		if (this.gitWatcherRetryTimer) {
 			clearTimeout(this.gitWatcherRetryTimer);
@@ -343,31 +351,9 @@ export class FooterDataProvider {
 		// instead of HEAD. Watch it separately so the footer picks up those changes.
 		const reftableDir = join(this.gitPaths.commonGitDir, "reftable");
 		if (existsSync(reftableDir)) {
-			this.reftableWatcher = watchWithErrorHandler(
-				reftableDir,
-				() => {
-					this.scheduleRefresh();
-				},
-				() => this.handleGitWatcherError(),
-			);
-			if (!this.reftableWatcher) {
-				return;
-			}
-
-			const tablesListPath = join(reftableDir, "tables.list");
-			if (existsSync(tablesListPath)) {
-				this.reftableTablesListPath = tablesListPath;
-				this.reftableTablesListWatcher = watchWithErrorHandler(
-					tablesListPath,
-					() => {
-						this.scheduleRefresh();
-					},
-					() => this.handleGitWatcherError(),
-				);
-				if (!this.reftableTablesListWatcher) {
-					return;
-				}
-				watchFile(tablesListPath, { interval: 250 }, (current, previous) => {
+			if (shouldPollGitHead(this.gitPaths.repoDir) || process.platform === "win32") {
+				this.reftableWatchFilePath = reftableDir;
+				this.reftableWatchFileListener = (current, previous) => {
 					if (
 						current.mtimeMs !== previous.mtimeMs ||
 						current.ctimeMs !== previous.ctimeMs ||
@@ -375,7 +361,34 @@ export class FooterDataProvider {
 					) {
 						this.scheduleRefresh();
 					}
-				});
+				};
+				watchFile(reftableDir, { interval: 250 }, this.reftableWatchFileListener);
+			} else {
+				this.reftableWatcher = watchWithErrorHandler(
+					reftableDir,
+					() => {
+						this.scheduleRefresh();
+					},
+					() => this.handleGitWatcherError(),
+				);
+				if (!this.reftableWatcher) {
+					return;
+				}
+			}
+
+			const tablesListPath = join(reftableDir, "tables.list");
+			if (existsSync(tablesListPath)) {
+				this.reftableTablesListPath = tablesListPath;
+				this.reftableTablesListListener = (current, previous) => {
+					if (
+						current.mtimeMs !== previous.mtimeMs ||
+						current.ctimeMs !== previous.ctimeMs ||
+						current.size !== previous.size
+					) {
+						this.scheduleRefresh();
+					}
+				};
+				watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListListener);
 			}
 		}
 	}

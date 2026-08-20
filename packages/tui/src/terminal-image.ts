@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export type ImageProtocol = "kitty" | "iterm2" | null;
@@ -629,9 +629,10 @@ export function hyperlink(text: string, url: string): string {
 
 /** Shorten home-prefixed absolute paths to ~/... for compact display. */
 function shortenImagePath(filename: string): string {
-	const home = homedir();
-	if (home && (filename === home || filename.startsWith(`${home}/`) || filename.startsWith(`${home}\\`))) {
-		return `~${filename.slice(home.length)}`;
+	const home = resolve(homedir());
+	const absoluteFilename = isAbsolute(filename) ? resolve(filename) : filename;
+	if (absoluteFilename === home || absoluteFilename.startsWith(`${home}${sep}`)) {
+		return `~${absoluteFilename.slice(home.length).replaceAll("\\", "/")}`;
 	}
 	return filename;
 }

@@ -1,6 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# WSL must not run dependencies installed by Windows npm. Their launchers select
+# node.exe and can reintroduce host credentials or report misleading path errors.
+wsl_shell=false
+if [[ -r /proc/version ]] && grep -qiE "microsoft|wsl" /proc/version; then
+	wsl_shell=true
+else
+	uname_output="$(uname -a 2>/dev/null || true)"
+	if [[ "$uname_output" == *Microsoft* || "$uname_output" == *microsoft* || "$uname_output" == *WSL* ]]; then
+		wsl_shell=true
+	fi
+fi
+
+if [[ "$wsl_shell" == true ]]; then
+	node_platform="$(node -p 'process.platform' 2>/dev/null || true)"
+	windows_node_modules=false
+	if [[ -d node_modules/.bin ]]; then
+		for launcher in node_modules/.bin/*.cmd node_modules/.bin/*.ps1; do
+			if [[ -f "$launcher" ]]; then
+				windows_node_modules=true
+				break
+			fi
+		done
+		if [[ "$windows_node_modules" == false ]]; then
+			for launcher in node_modules/.bin/*; do
+				if [[ -f "$launcher" && ! -L "$launcher" ]] && grep -qE "node\.exe|basedir_win" "$launcher" 2>/dev/null; then
+					windows_node_modules=true
+					break
+				fi
+			done
+		fi
+	fi
+	if [[ "$node_platform" == win32 || "$windows_node_modules" == true ]]; then
+		printf '%s\n' "WSL test gate requires Linux-native Node and dependencies; Windows-installed node_modules or a Windows Node runtime was detected." >&2
+		printf '%s\n' "From this WSL checkout, run: npm ci --ignore-scripts" >&2
+		exit 1
+	fi
+fi
+
 # Isolate user resources, credentials, temporary files, and tool configuration.
 temp_parent="${TMPDIR:-/tmp}"
 temp_parent="${temp_parent%/}"
@@ -64,10 +102,12 @@ test_env=(
 )
 
 # Native Windows needs these inherited values to launch child processes.
-for name in SystemRoot SYSTEMROOT WINDIR COMSPEC PATHEXT; do
-	value="${!name-}"
-	[[ -z "$value" ]] || test_env+=("$name=$value")
-done
+if [[ "$wsl_shell" != true ]]; then
+	for name in SystemRoot SYSTEMROOT WINDIR COMSPEC PATHEXT; do
+		value="${!name-}"
+		[[ -z "$value" ]] || test_env+=("$name=$value")
+	done
+fi
 
 # Preserve CI detection only for runner behavior and test reporting.
 for name in CI GITHUB_ACTIONS; do

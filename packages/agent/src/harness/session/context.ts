@@ -1,6 +1,6 @@
 import type { AgentMessage } from "../../types.ts";
 import { createBranchSummaryMessage, createCompactionSummaryMessage } from "../messages.ts";
-import type { CompactionEntry, CustomEntry, Entry } from "./types.ts";
+import type { CompactionEntry, CustomEntry, Entry, MessageEntry } from "./types.ts";
 
 export interface SessionContext {
 	messages: AgentMessage[];
@@ -17,9 +17,27 @@ export type CustomEntryContextMessageProjector = (
 	entries: readonly Entry[],
 ) => readonly AgentMessage[] | undefined;
 
+export type AsyncCustomEntryContextMessageProjector = (
+	entry: CustomEntry,
+	index: number,
+	entries: readonly Entry[],
+) => readonly AgentMessage[] | Promise<readonly AgentMessage[] | undefined> | undefined;
+
+export type AsyncMessageEntryContextMessageProjector = (
+	entry: MessageEntry,
+	index: number,
+	entries: readonly Entry[],
+) => readonly AgentMessage[] | Promise<readonly AgentMessage[] | undefined> | undefined;
+
 export interface SessionContextBuildOptions {
 	entryTransforms?: readonly ContextEntryTransform[];
 	entryProjectors?: Readonly<Record<string, CustomEntryContextMessageProjector>>;
+}
+
+export interface AsyncSessionContextBuildOptions {
+	entryTransforms?: readonly ContextEntryTransform[];
+	entryProjectors?: Readonly<Record<string, AsyncCustomEntryContextMessageProjector>>;
+	messageProjector?: AsyncMessageEntryContextMessageProjector;
 }
 
 function deriveSessionContextState(pathEntries: readonly Entry[]): Omit<SessionContext, "messages"> {
@@ -97,4 +115,23 @@ export function buildSessionContext(
 		sessionEntryToContextMessages(entry, index, contextEntries, options),
 	);
 	return { ...state, messages };
+}
+
+export async function buildSessionContextAsync(
+	pathEntries: readonly Entry[],
+	options: AsyncSessionContextBuildOptions = {},
+): Promise<SessionContext> {
+	const state = deriveSessionContextState(pathEntries);
+	const contextEntries = buildContextEntries(pathEntries, { entryTransforms: options.entryTransforms });
+	const messageGroups = await Promise.all(
+		contextEntries.map(async (entry, index) => {
+			if (entry.type === "message") {
+				return (await options.messageProjector?.(entry, index, contextEntries)) ??
+					sessionEntryToContextMessages(entry, index, contextEntries);
+			}
+			if (entry.type !== "custom") return sessionEntryToContextMessages(entry, index, contextEntries);
+			return (await options.entryProjectors?.[entry.customType]?.(entry, index, contextEntries)) ?? [];
+		}),
+	);
+	return { ...state, messages: messageGroups.flat() };
 }

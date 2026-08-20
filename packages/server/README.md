@@ -37,6 +37,8 @@ await server.start();
 
 This package does not provide a standalone CLI or coding-agent service. Applications supply the `AosServerService` implementation.
 
+On Windows, Node provides local IPC through named pipes instead of filesystem Unix sockets. The configured path is used to derive a stable named-pipe address, which is returned by `server.addresses`; Unix permission modes apply only to filesystem sockets.
+
 `AosServerService.listSessions()` returns protocol `SessionMetadata`, not acquired runtime state. Services should map the durable fields their storage supports and may omit `updatedAt`, `parentSessionId`, `sessionName`, and `cwd`. `AosServer` refreshes available metadata from live snapshots without requiring stored sessions to fabricate phase, model, thinking-level, attachment, or lock values.
 
 ## Transport testing

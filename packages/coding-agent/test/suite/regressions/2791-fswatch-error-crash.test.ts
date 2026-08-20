@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { sourceProcessArgs, sourceProcessEnv } from "../../cli-process.ts";
 
 /**
  * Regression test for https://example.com/aos-agent
@@ -39,7 +41,7 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 	});
 
 	it("process should survive an error event on the theme FSWatcher", () => {
-		const themeModulePath = join(__dirname, "../../../src/modes/interactive/theme/theme.ts").replace(/\\/g, "/");
+		const themeModulePath = pathToFileURL(join(__dirname, "../../../src/modes/interactive/theme/theme.ts")).href;
 		const agentDir = join(tempRoot, "agent").replace(/\\/g, "/");
 
 		// Script that sets up the watcher and emits a synthetic error on it.
@@ -87,10 +89,10 @@ process.exit(0);
 		let stderr = "";
 		let exitCode: number;
 		try {
-			_stdout = execFileSync(process.execPath, [scriptPath], {
+			_stdout = execFileSync(process.execPath, sourceProcessArgs(scriptPath), {
 				timeout: 10000,
 				encoding: "utf-8",
-				env: { ...process.env, AOS_AGENT_CODING_AGENT_DIR: agentDir },
+				env: { ...sourceProcessEnv(), AOS_AGENT_CODING_AGENT_DIR: agentDir },
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 			exitCode = 0;

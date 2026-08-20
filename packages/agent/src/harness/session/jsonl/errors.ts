@@ -11,6 +11,33 @@ export class JsonlDecodeError extends Error {
 	}
 }
 
+/** True only when a final JSON line is structurally incomplete, not merely invalid. */
+export function isTruncatedJsonLine(line: string): boolean {
+	const text = line.trim();
+	if (!text.startsWith("{") && !text.startsWith("[")) return false;
+	const stack: string[] = [];
+	let inString = false;
+	let escaped = false;
+	for (const character of text) {
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === '"') inString = false;
+			continue;
+		}
+		if (character === '"') {
+			inString = true;
+			continue;
+		}
+		if (character === "{" || character === "[") stack.push(character);
+		else if (character === "}" || character === "]") {
+			const opening = stack.pop();
+			if ((character === "}" && opening !== "{") || (character === "]" && opening !== "[")) return false;
+		}
+	}
+	return inString || escaped || stack.length > 0;
+}
+
 export function fileResult<T>(result: Result<T, FileError>, message: string): T {
 	if (!result.ok) {
 		throw new SessionError(

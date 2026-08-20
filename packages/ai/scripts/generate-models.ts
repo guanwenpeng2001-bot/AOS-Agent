@@ -38,12 +38,14 @@ function readGeneratorOptions(args: string[]): {
 	dataOnly: boolean;
 	jsonOnly: boolean;
 	jsonOutputDir: string | undefined;
+	snapshotDir: string | undefined;
 	pretty: boolean;
 } {
 	let strict = false;
 	let dataOnly = false;
 	let jsonOnly = false;
 	let jsonOutputDir: string | undefined;
+	let snapshotDir: string | undefined;
 	let pretty = false;
 
 	for (let index = 0; index < args.length; index++) {
@@ -70,12 +72,18 @@ function readGeneratorOptions(args: string[]): {
 			jsonOutputDir = resolve(value);
 			continue;
 		}
+		if (arg === "--snapshot") {
+			const value = args[++index];
+			if (!value) throw new Error("--snapshot requires a directory");
+			snapshotDir = resolve(value);
+			continue;
+		}
 		throw new Error(`Unknown argument: ${arg}`);
 	}
 
 	if (jsonOnly && !jsonOutputDir) throw new Error("--json-only requires --json-output");
 	if (dataOnly && (jsonOnly || jsonOutputDir)) throw new Error("--data-only cannot be combined with JSON catalog output");
-	return { strict, dataOnly, jsonOnly, jsonOutputDir, pretty };
+	return { strict, dataOnly, jsonOnly, jsonOutputDir, snapshotDir, pretty };
 }
 
 const generatorOptions = readGeneratorOptions(process.argv.slice(2));
@@ -122,6 +130,50 @@ interface ModelsDevProvider {
 }
 
 type ModelsDevCatalog = Record<string, ModelsDevProvider>;
+
+type GeneratedModelCatalog = Record<string, Record<string, Model<Api>>>;
+
+const BUILTIN_MODEL_PROVIDER_IDS = [
+	"amazon-bedrock",
+	"ant-ling",
+	"anthropic",
+	"azure-openai-responses",
+	"baseten",
+	"cerebras",
+	"cloudflare-ai-gateway",
+	"cloudflare-workers-ai",
+	"deepseek",
+	"fireworks",
+	"github-copilot",
+	"google",
+	"google-vertex",
+	"groq",
+	"huggingface",
+	"kimi-coding",
+	"minimax",
+	"minimax-cn",
+	"mistral",
+	"moonshotai",
+	"moonshotai-cn",
+	"nvidia",
+	"openai",
+	"openai-codex",
+	"opencode",
+	"opencode-go",
+	"openrouter",
+	"qwen-token-plan",
+	"qwen-token-plan-cn",
+	"qwen-token-plan-individual",
+	"together",
+	"vercel-ai-gateway",
+	"xai",
+	"xiaomi",
+	"xiaomi-token-plan-ams",
+	"xiaomi-token-plan-cn",
+	"xiaomi-token-plan-sgp",
+	"zai",
+	"zai-coding-cn",
+] as const;
 
 interface NvidiaNimModelListItem {
 	id: string;
@@ -861,7 +913,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
+	if (
+		model.api === "anthropic-messages" &&
+		isAnthropicAdaptiveThinkingModel(model.id) &&
+		model.compat?.forceAdaptiveThinking !== false
+	) {
 		mergeAnthropicMessagesCompat(model, { forceAdaptiveThinking: true });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
@@ -982,6 +1038,83 @@ function getModelsDevCost(cost: ModelsDevModel["cost"]): ModelCost {
 		cacheWrite: cost?.cache_write || 0,
 		...(tiers && tiers.length > 0 ? { tiers } : {}),
 	};
+}
+
+function isFiniteCost(value: object): boolean {
+	const cost = value as Record<string, unknown>;
+	return ["input", "output", "cacheRead", "cacheWrite"].every(
+		(key) => typeof cost[key] === "number" && Number.isFinite(cost[key]),
+	);
+}
+
+function loadSnapshotCatalog(snapshotDir: string): GeneratedModelCatalog {
+	if (!existsSync(snapshotDir)) throw new Error(`Model catalog snapshot directory does not exist: ${snapshotDir}`);
+
+	const providerFiles = readdirSync(snapshotDir)
+		.filter((entry) => entry.endsWith(".json") && entry !== MODEL_DATA_MANIFEST_FILE)
+		.sort();
+	if (providerFiles.length === 0) throw new Error(`Model catalog snapshot has no provider JSON files: ${snapshotDir}`);
+
+	const jsonProviders: GeneratedModelCatalog = {};
+	for (const filename of providerFiles) {
+		const providerId = filename.slice(0, -".json".length);
+		const parsed = JSON.parse(readFileSync(join(snapshotDir, filename), "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error(`Model catalog snapshot ${filename} must contain API-grouped model data`);
+		}
+
+		const models: Record<string, Model<Api>> = {};
+		for (const [api, groupedModels] of Object.entries(parsed)) {
+			if (typeof groupedModels !== "object" || groupedModels === null || Array.isArray(groupedModels)) {
+				throw new Error(`Model catalog snapshot ${filename} API group ${JSON.stringify(api)} must be an object`);
+			}
+			for (const [modelId, value] of Object.entries(groupedModels)) {
+				if (models[modelId]) {
+					throw new Error(`Model catalog snapshot ${filename} contains ${modelId} in more than one API group`);
+				}
+				if (typeof value !== "object" || value === null || Array.isArray(value)) {
+					throw new Error(`Model catalog snapshot ${filename} model ${modelId} must be an object`);
+				}
+				const model = value as Record<string, unknown>;
+				if (
+					model.id !== modelId ||
+					model.api !== api ||
+					model.provider !== providerId ||
+					typeof model.name !== "string" ||
+					typeof model.baseUrl !== "string" ||
+					typeof model.reasoning !== "boolean" ||
+					!Array.isArray(model.input) ||
+					!model.input.every((value) => value === "text" || value === "image") ||
+					typeof model.cost !== "object" ||
+					model.cost === null ||
+					Array.isArray(model.cost) ||
+					!isFiniteCost(model.cost) ||
+					typeof model.contextWindow !== "number" ||
+					!Number.isFinite(model.contextWindow) ||
+					model.contextWindow <= 0 ||
+					typeof model.maxTokens !== "number" ||
+					!Number.isFinite(model.maxTokens) ||
+					model.maxTokens <= 0
+				) {
+					throw new Error(`Model catalog snapshot ${filename} model ${modelId} has invalid normalized metadata`);
+				}
+				models[modelId] = model as Model<Api>;
+			}
+		}
+		if (Object.keys(models).length === 0) throw new Error(`Model catalog snapshot ${filename} contains no models`);
+		jsonProviders[providerId] = Object.fromEntries(
+			Object.entries(models).sort(([left], [right]) => left.localeCompare(right)),
+		);
+	}
+
+	return Object.fromEntries(
+		Object.entries(jsonProviders).sort(([left], [right]) => left.localeCompare(right)),
+	);
+}
+
+function loadSnapshotModels(snapshotDir: string): Model<Api>[] {
+	const catalog = loadSnapshotCatalog(snapshotDir);
+	return Object.values(catalog).flatMap((models) => Object.values(models));
 }
 
 async function fetchNvidiaNimModelIds(): Promise<Map<string, string>> {
@@ -2271,13 +2404,14 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 }
 
 async function generateModels() {
-	// Fetch models from both sources
-	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
-	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
-	// AI Gateway: OpenAI-compatible catalog with tool-capable models
-	const modelsDevModels = await loadModelsDevData();
-	const openRouterModels = await fetchOpenRouterModels();
-	const aiGatewayModels = await fetchAiGatewayModels();
+	// Fetch models from both sources, or use a repository-provided snapshot for
+	// offline test/check preparation. The snapshot contains already-normalized
+	// provider values, so no catalog API or provider endpoint is contacted.
+	const modelsDevModels = generatorOptions.snapshotDir
+		? loadSnapshotModels(generatorOptions.snapshotDir)
+		: await loadModelsDevData();
+	const openRouterModels = generatorOptions.snapshotDir ? [] : await fetchOpenRouterModels();
+	const aiGatewayModels = generatorOptions.snapshotDir ? [] : await fetchAiGatewayModels();
 
 	// Combine models (models.dev has priority)
 	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
@@ -2763,6 +2897,9 @@ async function generateModels() {
 		if (!providers[model.provider][model.id]) {
 			providers[model.provider][model.id] = model;
 		}
+	}
+	for (const providerId of BUILTIN_MODEL_PROVIDER_IDS) {
+		providers[providerId] ??= {};
 	}
 
 	const sortedProviderIds = Object.keys(providers).sort();

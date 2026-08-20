@@ -1,16 +1,24 @@
 import type { AgentTool } from "@aos-agent/agent-core";
+import type { TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
+type PromptAwareAgentTool<TParameters extends TSchema, TDetails> = AgentTool<TParameters, TDetails> & Pick<
+	ToolDefinition<TParameters, TDetails>,
+	"promptSnippet" | "promptGuidelines"
+>;
+
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
-export function wrapToolDefinition<TDetails = unknown>(
-	definition: ToolDefinition<any, TDetails>,
+export function wrapToolDefinition<TParameters extends TSchema = TSchema, TDetails = unknown>(
+	definition: ToolDefinition<TParameters, TDetails>,
 	ctxFactory?: () => ExtensionContext,
-): AgentTool<any, TDetails> {
+): PromptAwareAgentTool<TParameters, TDetails> {
 	return {
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
 		parameters: definition.parameters,
+		promptSnippet: definition.promptSnippet,
+		promptGuidelines: definition.promptGuidelines,
 		constrainedSampling: definition.constrainedSampling,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,

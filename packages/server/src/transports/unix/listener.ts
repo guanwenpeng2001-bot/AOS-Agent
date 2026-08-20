@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import { chmod, link, lstat, mkdir, rename, unlink } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DEFAULT_MAX_FRAME_LENGTH } from "@aos-agent/protocol";
 import type { ByteConnection, ByteConnectionAcceptor } from "../../connection.ts";
 import type { AosServerListener } from "../../listener.ts";
@@ -14,12 +14,20 @@ const MAX_UINT32 = 0xffff_ffff;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const SOCKET_PROBE_TIMEOUT_MS = 1_000;
 const MAX_UNIX_SOCKET_PATH_BYTES = process.platform === "linux" ? 107 : 103;
+const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\aos-agent-unix-";
 
 export function validateUnixSocketPath(path: string, description = "Unix socket path"): void {
 	if (!path) throw new TypeError(`${description} must not be empty`);
 	if (Buffer.byteLength(path) > MAX_UNIX_SOCKET_PATH_BYTES) {
 		throw new TypeError(`${description} is too long; maximum is ${MAX_UNIX_SOCKET_PATH_BYTES} UTF-8 bytes`);
 	}
+}
+
+/** @internal Derive the stable Windows named-pipe address for a configured Unix path. */
+export function getWindowsPipePath(path: string): string {
+	const canonicalPath = resolve(path).toLowerCase();
+	const suffix = createHash("sha256").update(canonicalPath).digest("hex").slice(0, 32);
+	return `${WINDOWS_PIPE_PREFIX}${suffix}`;
 }
 
 interface ResolvedUnixListenerOptions {
@@ -62,11 +70,15 @@ class UnixListener implements AosServerListener {
 		if (this.closing) throw new Error("Unix listener is closing or closed");
 		this.accept = accept;
 
-		const ownedBindPath = getOwnedBindPath(this.path);
-		validateUnixSocketPath(ownedBindPath, "AosServer private Unix bind path");
+		const ownedBindPath = process.platform === "win32" ? getWindowsPipePath(this.path) : getOwnedBindPath(this.path);
+		if (process.platform !== "win32") validateUnixSocketPath(ownedBindPath, "AosServer private Unix bind path");
 		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
 		await removeStaleSocket(this.path);
-		await removeStaleSocket(ownedBindPath);
+		if (process.platform === "win32") {
+			if (await isSocketLive(ownedBindPath)) throw new Error(`Unix listener is already running: ${this.path}`);
+		} else {
+			await removeStaleSocket(ownedBindPath);
+		}
 		this.ownedBindPath = ownedBindPath;
 		const server = createServer((socket) => this.acceptSocket(socket));
 		server.on("error", (error) => this.reportError(error));
@@ -85,6 +97,10 @@ class UnixListener implements AosServerListener {
 				server.once("listening", onListening);
 				server.listen(ownedBindPath);
 			});
+			if (process.platform === "win32") {
+				this.boundPath = ownedBindPath;
+				return;
+			}
 			const stats = await lstat(ownedBindPath);
 			if (!stats.isSocket()) throw new Error(`Unix listener path is not a socket after binding: ${ownedBindPath}`);
 			this.socketIdentity = { dev: stats.dev, ino: stats.ino };
@@ -94,6 +110,9 @@ class UnixListener implements AosServerListener {
 		} catch (error) {
 			await this.closeServerAndCleanup(server);
 			this.server = undefined;
+			if (process.platform === "win32" && isErrorCode(error, "EADDRINUSE")) {
+				throw new Error(`Unix listener is already running: ${this.path}`, { cause: error });
+			}
 			throw error;
 		}
 	}

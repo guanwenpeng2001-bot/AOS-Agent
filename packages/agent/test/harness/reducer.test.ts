@@ -1,6 +1,8 @@
 import type { AssistantMessage, ToolResultMessage, Usage, UserMessage } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import {
+	DEFERRED_FETCH_INTENT_CUSTOM_TYPE,
+	DEFERRED_FETCH_RESULT_CUSTOM_TYPE,
 	type EffectiveLaneConfiguration,
 	type LaneReductionInput,
 	RecordLogCorruption,
@@ -84,6 +86,25 @@ function persistedEntry<TEntry extends Entry>(
 	parentId: string | null = null,
 ): TEntry {
 	return { ...target, parentId, seq, timestamp: seq } as unknown as TEntry;
+}
+
+function deferredCustomEntry(
+	id: string,
+	seq: number,
+	customType: typeof DEFERRED_FETCH_INTENT_CUSTOM_TYPE | typeof DEFERRED_FETCH_RESULT_CUSTOM_TYPE,
+	data: Record<string, unknown>,
+): Entry {
+	return { type: "custom", id, parentId: null, seq, timestamp: seq, customType, data } as unknown as Entry;
+}
+
+function deferredIntentData(responseEntryId = "deferred-response"): Record<string, unknown> {
+	return {
+		schemaVersion: 1,
+		runId: "run-1",
+		status: "pending",
+		handle: { provider: "openai", modelId: "test-model", api: "openai-responses", id: "deferred-1" },
+		responseEntryId,
+	};
 }
 
 function runStarted(
@@ -321,6 +342,25 @@ interface CorruptionCase {
 
 const corruptionCases: CorruptionCase[] = [
 	{
+		name: "record sequence moves backwards",
+		reason: "non_monotonic_sequence",
+		input: recoverySlice([runStarted(1), attempt(1, "run-1", "assistant", 1, "assistant-1")]),
+	},
+	{
+		name: "record ids are duplicated",
+		reason: "duplicate_record_id",
+		input: recoverySlice([
+			runStarted(1),
+			attempt(2, "run-1", "assistant", 1, "assistant-1"),
+			{ ...attempt(3, "run-1", "assistant", 2, "assistant-2"), id: "attempt-2" },
+		]),
+	},
+	{
+		name: "supplied open operation index disagrees with records",
+		reason: "open_operations_mismatch",
+		input: { ...recoverySlice([runStarted(1)]), openOperations: [] },
+	},
+	{
 		name: "multiple operations are open",
 		reason: "multiple_open_operations",
 		input: recoverySlice([runStarted(1), runStarted(2, { id: "run-2" })]),
@@ -436,6 +476,53 @@ const corruptionCases: CorruptionCase[] = [
 				),
 			],
 		),
+	},
+	{
+		name: "a deferred result has no preceding intent",
+		reason: "invalid_deferred_fetch",
+		input: recoverySlice([runStarted(1)], [
+			deferredCustomEntry("deferred-result", 2, DEFERRED_FETCH_RESULT_CUSTOM_TYPE, {
+				schemaVersion: 1,
+				runId: "run-1",
+				status: "unknown",
+			}),
+		]),
+	},
+	{
+		name: "deferred fetch has duplicate intents",
+		reason: "invalid_deferred_fetch",
+		input: recoverySlice([runStarted(1)], [
+			deferredCustomEntry("deferred-intent-1", 2, DEFERRED_FETCH_INTENT_CUSTOM_TYPE, deferredIntentData()),
+			deferredCustomEntry("deferred-intent-2", 3, DEFERRED_FETCH_INTENT_CUSTOM_TYPE, deferredIntentData()),
+		]),
+	},
+	{
+		name: "deferred result changes its response association",
+		reason: "invalid_deferred_fetch",
+		input: recoverySlice([runStarted(1)], [
+			deferredCustomEntry("deferred-intent", 2, DEFERRED_FETCH_INTENT_CUSTOM_TYPE, deferredIntentData()),
+			deferredCustomEntry("deferred-result", 3, DEFERRED_FETCH_RESULT_CUSTOM_TYPE, {
+				schemaVersion: 1,
+				runId: "run-1",
+				status: "failed",
+				responseEntryId: "other-response",
+			}),
+		]),
+	},
+	{
+		name: "deferred result references a non-assistant entry",
+		reason: "invalid_deferred_fetch",
+		input: recoverySlice([runStarted(1)], [
+			deferredCustomEntry("deferred-intent", 2, DEFERRED_FETCH_INTENT_CUSTOM_TYPE, deferredIntentData("response-entry")),
+			deferredCustomEntry("deferred-result", 3, DEFERRED_FETCH_RESULT_CUSTOM_TYPE, {
+				schemaVersion: 1,
+				runId: "run-1",
+				status: "succeeded",
+				responseEntryId: "response-entry",
+				response: assistantMessage([], "stop"),
+			}),
+			persistedEntry(messageTarget("response-entry", userMessage("not assistant")), 4),
+		]),
 	},
 ];
 

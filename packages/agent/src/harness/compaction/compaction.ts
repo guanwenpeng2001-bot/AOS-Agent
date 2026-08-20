@@ -99,8 +99,11 @@ export interface CompactResult<T = unknown> {
 	details?: T;
 }
 
+/** Minimal model boundary needed by compaction and branch summarization. */
+export type SimpleCompletionProvider = Pick<Models, "completeSimple">;
+
 export async function completeSimpleWithRetries(
-	models: Models,
+	models: SimpleCompletionProvider,
 	model: Model<Api>,
 	context: Context,
 	options: SimpleStreamOptions,
@@ -528,7 +531,7 @@ export async function generateSummary(
 /** Generate or update a conversation summary and return its provider usage. */
 export async function generateSummaryWithUsage(
 	currentMessages: AgentMessage[],
-	models: Models,
+	models: SimpleCompletionProvider,
 	model: Model<Api>,
 	reserveTokens: number,
 	signal?: AbortSignal,
@@ -706,7 +709,7 @@ export { serializeConversation } from "./utils.ts";
 /** Generate compaction summary data from prepared session history. */
 export async function compact(
 	preparation: CompactionPreparation,
-	models: Models,
+	models: SimpleCompletionProvider,
 	model: Model<Api>,
 	customInstructions?: string,
 	signal?: AbortSignal,
@@ -794,7 +797,7 @@ export async function compact(
 }
 async function generateTurnPrefixSummary(
 	messages: AgentMessage[],
-	models: Models,
+	models: SimpleCompletionProvider,
 	model: Model<Api>,
 	reserveTokens: number,
 	signal?: AbortSignal,

@@ -218,6 +218,7 @@ describe("JSONL v4 persistence", () => {
 		const cwd = join(root, "workspace");
 		const source = await repository.create({ id: "source", cwd });
 		const sourceMetadata = await source.getMetadata();
+		const sourceBeforeFailure = readFileSync(sourceMetadata.path, "utf8");
 		const run = () =>
 			kind === "create"
 				? repository.create({ id: "retry", cwd })
@@ -235,7 +236,20 @@ describe("JSONL v4 persistence", () => {
 			});
 		}
 
-		await expect(run()).rejects.toMatchObject({ code: "storage" });
+		if (kind === "fork") {
+			await expect(run()).rejects.toMatchObject({
+				code: "session_ledger_migrating",
+				message: expect.stringContaining("Session migration failed"),
+				cause: expect.objectContaining({
+					code: "storage",
+					message: expect.stringContaining("injected fork failure"),
+				}),
+			});
+		} else {
+			await expect(run()).rejects.toMatchObject({ code: "storage" });
+		}
+		expect(readFileSync(sourceMetadata.path, "utf8")).toBe(sourceBeforeFailure);
+		expect((await repository.list({ cwd })).filter((listed) => listed.id === "retry")).toHaveLength(0);
 		await expect(run()).resolves.toBeDefined();
 		expect((await repository.list({ cwd })).filter((listed) => listed.id === "retry")).toHaveLength(1);
 	});
@@ -410,15 +424,22 @@ describe("JSONL v4 persistence", () => {
 		const source = await repository.create({ id: "source", cwd: root });
 		await source.appendMessage({ role: "user", content: [{ type: "text", text: "one" }], timestamp: 1 });
 		const sourceMetadata = await source.getMetadata();
+		const sourceBeforeFailure = readFileSync(sourceMetadata.path, "utf8");
 		vi.spyOn(env, "renameFile").mockResolvedValueOnce({
 			ok: false,
 			error: new FileError("unknown", "injected rename failure"),
 		});
 
 		await expect(repository.fork(sourceMetadata, { id: "fork", cwd: root })).rejects.toMatchObject({
-			code: "storage",
+			code: "session_ledger_migrating",
+			message: expect.stringContaining("Session migration failed"),
+			cause: expect.objectContaining({
+				code: "storage",
+				message: expect.stringContaining("injected rename failure"),
+			}),
 		});
 
+		expect(readFileSync(sourceMetadata.path, "utf8")).toBe(sourceBeforeFailure);
 		expect((await repository.list()).map((metadata) => metadata.id)).toEqual(["source"]);
 		expect(readdirSync(dirname(sourceMetadata.path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 	});
@@ -507,7 +528,10 @@ describe("JSONL v4 persistence", () => {
 		writeFileSync(metadata.path, corrupted);
 
 		const reopenedRepository = createRepository(root);
-		await expect(reopenedRepository.open(metadata)).rejects.toMatchObject({ code: "invalid_entry" });
+		await expect(reopenedRepository.open(metadata)).rejects.toMatchObject({
+			code: "session_ledger_corrupt",
+			message: expect.stringContaining("line 3 is not valid JSON"),
+		});
 		expect(readFileSync(metadata.path, "utf8")).toBe(corrupted);
 	});
 

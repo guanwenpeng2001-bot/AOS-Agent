@@ -1402,12 +1402,13 @@ export class InteractiveMode {
 	// =========================================================================
 
 	private formatDisplayPath(p: string): string {
-		const home = os.homedir();
+		const home = path.resolve(os.homedir());
 		let result = p;
+		const resolved = path.isAbsolute(p) ? path.resolve(p) : p;
 
 		// Replace home directory with ~
-		if (result.startsWith(home)) {
-			result = `~${result.slice(home.length)}`;
+		if (path.isAbsolute(p) && (resolved === home || resolved.startsWith(`${home}${path.sep}`))) {
+			result = `~${resolved.slice(home.length)}`;
 		}
 
 		return result;

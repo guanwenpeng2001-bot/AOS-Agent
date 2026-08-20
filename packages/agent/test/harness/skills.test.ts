@@ -2,7 +2,7 @@ import { symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
-import { loadSkills, loadSourcedSkills } from "../../src/harness/skills.ts";
+import { loadSkills, loadSourcedSkills, projectSkillExternalV1 } from "../../src/harness/skills.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 describe("loadSkills", () => {
@@ -33,6 +33,40 @@ Use this skill.
 				disableModelInvocation: true,
 			},
 		]);
+	});
+
+	it("loads Foundation skill metadata and MCP selector without changing legacy fields", async () => {
+		const root = createTempDir();
+		const env = new NodeExecutionEnv({ cwd: root });
+		await env.createDir(".agents/skills/metadata", { recursive: true });
+		await env.writeFile(
+			".agents/skills/metadata/SKILL.md",
+			`---
+name: metadata
+description: Metadata skill
+skill-id: metadata-skill
+version: 1.2.3
+capability-refs:
+  - tools.read
+mcp-selector:
+  policy: named
+  named:
+    - local-server
+---
+Use this skill.
+`,
+		);
+
+		const { skills, diagnostics } = await loadSkills(env, ".agents/skills");
+
+		expect(diagnostics).toEqual([]);
+		expect(skills[0]?.metadata).toEqual({
+			schemaVersion: 1,
+			skillId: "metadata-skill",
+			version: "1.2.3",
+			capabilityRefs: ["tools.read"],
+			mcpSelector: { policy: "named", named: ["local-server"] },
+		});
 	});
 
 	it("loads skills through symlinked directories", async () => {
@@ -112,5 +146,32 @@ Use this skill.
 
 		expect(skills.map((skill) => skill.name)).toEqual(["skills"]);
 		expect(skills[0]?.content).toBe("Root content");
+	});
+
+	it("parses execution metadata and projects a safe external skill contract", async () => {
+		const root = createTempDir();
+		const env = new NodeExecutionEnv({ cwd: root });
+		await env.createDir("skills/advanced", { recursive: true });
+		await env.writeFile("skills/advanced/SKILL.md", `---
+name: advanced
+description: Advanced skill
+skill-id: advanced-skill
+parameters:
+  mode: safe
+model: test-model
+effort: high
+fork: child-agent
+tool-policy:
+  allow: [read]
+external:
+  version: 1
+---
+Private instructions.
+`);
+		const loaded = await loadSkills(env, "skills");
+		expect(loaded.diagnostics).toEqual([]);
+		const projection = projectSkillExternalV1(loaded.skills[0]!);
+		expect(projection).toEqual({ schemaVersion: 1, name: "advanced", description: "Advanced skill", skillId: "advanced-skill", parameters: { mode: "safe" }, model: "test-model", effort: "high", fork: "child-agent", toolPolicy: { allow: ["read"] }, externalProjection: { version: 1 } });
+		expect(projection).not.toHaveProperty("content");
 	});
 });

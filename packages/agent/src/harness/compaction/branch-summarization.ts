@@ -2,7 +2,6 @@ import {
 	type Api,
 	contentText,
 	type Model,
-	type Models,
 	type RetryCallbacks,
 	type RetryPolicy,
 	type Usage,
@@ -12,7 +11,7 @@ import type { AgentMessage } from "../../types.ts";
 import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage } from "../messages.ts";
 import { type Entry, type Session, SessionError } from "../session/index.ts";
 import { BranchSummaryError, err, ok, type Result } from "../types.ts";
-import { completeSimpleWithRetries, estimateTokens, SUMMARIZATION_SYSTEM_PROMPT } from "./compaction.ts";
+import { completeSimpleWithRetries, estimateTokens, SUMMARIZATION_SYSTEM_PROMPT, type SimpleCompletionProvider } from "./compaction.ts";
 import {
 	computeFileLists,
 	createFileOps,
@@ -61,7 +60,7 @@ export interface CollectEntriesResult {
 /** Options for generating a branch summary. */
 export interface GenerateBranchSummaryOptions {
 	/** Provider collection the summarization request goes through; owns auth resolution. */
-	models: Models;
+	models: SimpleCompletionProvider;
 	/** Model used for summarization. */
 	model: Model<Api>;
 	/** Abort signal for the summarization request. */
