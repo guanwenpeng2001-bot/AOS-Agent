@@ -209,6 +209,10 @@ export class WorkerSupervisorV1 {
 	private terminalWaiter?: Deferred<boolean>;
 	private exitWaiter?: Deferred<void>;
 	private watchdogTimer?: NodeJS.Timeout;
+	private pendingReadyFrame?: Extract<WorkerEventFrameV1, { type: "ready" }>;
+	private pendingReceiptFrame?: Extract<WorkerEventFrameV1, { type: "receipt" }>;
+	private frameCommit?: NodeJS.Immediate;
+	private processStopPromise?: Promise<void>;
 	private closing = false;
 	private exitSeen = false;
 	private reclaimFailure = false;
@@ -310,15 +314,15 @@ export class WorkerSupervisorV1 {
 		}
 
 		const child = this.child;
-		if (child.pid === undefined) {
-			this.transition("failed", { sideEffectState: "none" });
-			this.cleanupProcess();
-			return Result.err(stableError("worker_start_failed", "Operation Worker failed to start"));
-		}
-		trackDetachedChildPid(child.pid);
-		this.attachProcessListeners(child);
 		this.readyWaiter = deferred();
 		this.exitWaiter = deferred();
+		this.attachProcessListeners(child);
+		if (child.pid === undefined) {
+			const failure = this.failStart();
+			await this.ensureProcessStoppedAndCleaned();
+			return Result.err(failure);
+		}
+		trackDetachedChildPid(child.pid);
 
 		const initialize: WorkerRequestFrameV1 = {
 			type: "initialize",
@@ -328,6 +332,7 @@ export class WorkerSupervisorV1 {
 		const sent = await this.sendFrame(initialize);
 		if (!sent.ok) {
 			this.markLost(sent.error.code === "worker_operation_invalid" ? "worker_operation_invalid" : "worker_lost");
+			await this.ensureProcessStoppedAndCleaned();
 			return Result.err(sent.error);
 		}
 
@@ -336,14 +341,30 @@ export class WorkerSupervisorV1 {
 			this.remainingDeadlineMs(plan.binding),
 		);
 		const ready = await this.withTimeout(this.readyWaiter.promise, timeoutMs);
-		if (!ready.timedOut) return ready.value;
+		if (!ready.timedOut) {
+			if (!ready.value.ok) {
+				await this.ensureProcessStoppedAndCleaned();
+				return ready.value;
+			}
+			if (
+				this.lifecycle?.record.status !== "ready" ||
+				this.child === undefined ||
+				this.exitSeen ||
+				this.closing
+			) {
+				const failure = this.markLost("worker_lost");
+				await this.ensureProcessStoppedAndCleaned();
+				return Result.err(failure);
+			}
+			return ready.value;
+		}
 
 		const failure = stableError("worker_start_failed", "Operation Worker readiness timed out");
 		if (this.lifecycle?.record.status === "starting") {
 			this.transition("failed", { sideEffectState: "none" });
 		}
 		this.readyWaiter.resolve(Result.err(failure));
-		await this.stopProcessTree();
+		await this.ensureProcessStoppedAndCleaned();
 		return Result.err(failure);
 	}
 
@@ -374,7 +395,23 @@ export class WorkerSupervisorV1 {
 			return Result.err(sent.error);
 		}
 		this.armWatchdog();
-		return this.receiptWaiter.promise;
+		const outcome = await this.receiptWaiter.promise;
+		if (!outcome.ok) {
+			if (this.snapshot.record?.status === "lost") await this.ensureProcessStoppedAndCleaned();
+			return outcome;
+		}
+		const expectedStatus: WorkerLifecycleStatusV1 =
+			outcome.value.status === "succeeded"
+				? "completed"
+				: outcome.value.status === "failed"
+					? "failed"
+					: "cancelled";
+		if (this.snapshot.record?.status !== expectedStatus) {
+			const failure = this.markLost("worker_lost");
+			await this.ensureProcessStoppedAndCleaned();
+			return Result.err(failure);
+		}
+		return outcome;
 	}
 
 	async cancel(
@@ -448,7 +485,14 @@ export class WorkerSupervisorV1 {
 
 	/** Restore safe facts only. No process, handle, lease, or protocol session is recreated. */
 	recover(state: WorkerLifecycleStateV1): ResultValue<WorkerRecordV1, FoundationError> {
-		if (this.activationAttempted || this.lifecycle !== undefined || !validateWorkerLifecycleStateV1(state)) {
+		if (
+			this.activationAttempted ||
+			this.lifecycle !== undefined ||
+			!validateWorkerLifecycleStateV1(state) ||
+			state.binding.profileId !== this.config.profileId ||
+			state.binding.profileRevision !== this.config.profileRevision ||
+			!sameStringSequence(state.binding.capabilitySummary, this.config.capabilities)
+		) {
 			return Result.err(stableError("worker_persistence_failed", "Operation Worker recovery state is invalid"));
 		}
 		this.activationAttempted = true;
@@ -525,6 +569,7 @@ export class WorkerSupervisorV1 {
 		child.stderr.on("data", this.onStderrData);
 		child.on("error", this.onProcessError);
 		child.on("exit", this.onProcessExit);
+		child.on("close", this.onProcessExit);
 	}
 
 	private readonly onStdoutData = (chunk: string): void => {
@@ -564,10 +609,17 @@ export class WorkerSupervisorV1 {
 
 	private readonly onProcessError = (error: Error): void => {
 		void error;
+		if (this.closing) return;
+		if (this.lifecycle?.record.status === "starting") {
+			this.failStart();
+			void this.ensureProcessStoppedAndCleaned();
+			return;
+		}
 		this.protocolFailure("worker_lost");
 	};
 
 	private readonly onProcessExit = (): void => {
+		if (this.exitSeen) return;
 		this.exitSeen = true;
 		const pid = this.child?.pid;
 		if (pid !== undefined) untrackDetachedChildPid(pid);
@@ -593,13 +645,8 @@ export class WorkerSupervisorV1 {
 
 	private handleWorkerEvent(frame: WorkerEventFrameV1): void {
 		if (frame.type === "ready") {
-			const ready = this.transition("ready");
-			if (!ready.ok) {
-				this.protocolFailure("worker_persistence_failed");
-				return;
-			}
-			this.armWatchdog();
-			this.readyWaiter?.resolve(Result.ok(ready.value));
+			this.pendingReadyFrame = frame;
+			this.scheduleFrameCommit();
 			return;
 		}
 		if (frame.type === "heartbeat") {
@@ -643,7 +690,42 @@ export class WorkerSupervisorV1 {
 			return;
 		}
 
-		const receipt = frame.receipt;
+		this.pendingReceiptFrame = frame;
+		this.scheduleFrameCommit();
+	}
+
+	private scheduleFrameCommit(): void {
+		if (this.frameCommit !== undefined) return;
+		this.frameCommit = setImmediate(() => {
+			this.frameCommit = undefined;
+			this.commitPendingFrames();
+		});
+		this.frameCommit.unref();
+	}
+
+	private commitPendingFrames(): void {
+		const readyFrame = this.pendingReadyFrame;
+		const receiptFrame = this.pendingReceiptFrame;
+		this.pendingReadyFrame = undefined;
+		this.pendingReceiptFrame = undefined;
+		if (this.closing || this.lifecycle?.record.status === "lost") return;
+
+		if (readyFrame !== undefined) {
+			if (this.lifecycle?.record.status !== "starting" || this.child === undefined || this.exitSeen) {
+				this.protocolFailure("worker_lost");
+				return;
+			}
+			const ready = this.transition("ready");
+			if (!ready.ok) {
+				this.protocolFailure("worker_persistence_failed");
+				return;
+			}
+			this.armWatchdog();
+			this.readyWaiter?.resolve(Result.ok(ready.value));
+		}
+
+		if (receiptFrame === undefined) return;
+		const receipt = receiptFrame.receipt;
 		const status: WorkerLifecycleStatusV1 | undefined =
 			receipt.status === "succeeded"
 				? "completed"
@@ -740,6 +822,7 @@ export class WorkerSupervisorV1 {
 	private markLost(code: SupervisorErrorCode): FoundationError {
 		const error = stableError(code, "Operation Worker lost a trusted terminal outcome");
 		this.clearWatchdog();
+		this.discardPendingFrameCommits();
 		const status = this.lifecycle?.record.status;
 		if (
 			status === "starting" ||
@@ -762,7 +845,7 @@ export class WorkerSupervisorV1 {
 
 	private protocolFailure(code: SupervisorErrorCode): void {
 		this.markLost(code);
-		void this.stopProcessTree();
+		void this.ensureProcessStoppedAndCleaned();
 	}
 
 	private armWatchdog(): void {
@@ -802,8 +885,56 @@ export class WorkerSupervisorV1 {
 		await wait(0);
 	}
 
+	private ensureProcessStoppedAndCleaned(): Promise<void> {
+		this.processStopPromise ??= this.stopAndCleanupProcess();
+		return this.processStopPromise;
+	}
+
+	private async stopAndCleanupProcess(): Promise<void> {
+		const child = this.child;
+		if (child === undefined) return;
+		await this.stopProcessTree();
+		let exited = this.exitSeen;
+		if (!exited && this.exitWaiter !== undefined) {
+			exited = !(await this.withTimeout(
+				this.exitWaiter.promise,
+				this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
+			)).timedOut;
+		}
+		if (!exited && child.pid !== undefined) {
+			killProcessTree(child.pid);
+			if (this.exitWaiter !== undefined) {
+				exited = !(await this.withTimeout(
+					this.exitWaiter.promise,
+					this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
+				)).timedOut;
+			}
+		}
+		if (!exited && child.pid !== undefined) this.quarantinedValue = true;
+		this.cleanupProcess();
+	}
+
+	private failStart(): FoundationError {
+		const failure = stableError("worker_start_failed", "Operation Worker failed to start");
+		if (this.lifecycle?.record.status === "starting") {
+			this.transition("failed", { sideEffectState: "none" });
+		}
+		this.readyWaiter?.resolve(Result.err(failure));
+		this.terminalWaiter?.resolve(false);
+		return failure;
+	}
+
+	private discardPendingFrameCommits(): void {
+		this.pendingReadyFrame = undefined;
+		this.pendingReceiptFrame = undefined;
+		if (this.frameCommit === undefined) return;
+		clearImmediate(this.frameCommit);
+		this.frameCommit = undefined;
+	}
+
 	private cleanupProcess(): void {
 		this.clearWatchdog();
+		this.discardPendingFrameCommits();
 		const child = this.child;
 		if (child !== undefined) {
 			child.stdin.removeListener("error", this.onStdinError);
@@ -812,6 +943,10 @@ export class WorkerSupervisorV1 {
 			child.stderr.removeListener("data", this.onStderrData);
 			child.removeListener("error", this.onProcessError);
 			child.removeListener("exit", this.onProcessExit);
+			child.removeListener("close", this.onProcessExit);
+			child.on("error", (error: Error) => {
+				void error;
+			});
 			if (child.pid !== undefined) untrackDetachedChildPid(child.pid);
 			child.stdin.destroy();
 			child.stdout.destroy();

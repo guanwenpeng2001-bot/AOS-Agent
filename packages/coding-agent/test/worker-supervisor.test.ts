@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxOperationRequestV1 } from "@aos-agent/agent-core";
@@ -109,6 +112,18 @@ async function waitForStatus(
 	throw new Error(`Timed out waiting for ${status}`);
 }
 
+async function waitForNoLiveProcess(
+	supervisor: WorkerSupervisorV1,
+	timeoutMs = 1_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (!supervisor.snapshot.hasLiveProcess) return;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error("Timed out waiting for the worker process to stop");
+}
+
 function recoveredReadyState(workerBinding: WorkerBindingV1): WorkerLifecycleStateV1 {
 	const created = createWorkerLifecycleV1(workerBinding, "2026-08-21T00:00:00.000Z");
 	if (!created.ok) throw created.error;
@@ -180,6 +195,42 @@ describe("Operation Worker supervisor", () => {
 			error: { code: "worker_start_failed" },
 		});
 		expect(timedOut.supervisor.snapshot.record?.status).toBe("failed");
+		expect(timedOut.supervisor.snapshot.hasLiveProcess).toBe(false);
+	});
+
+	it("stops and cleans the child before returning an initialize backpressure failure", async () => {
+		const current = create("success", { config: { maxPendingWriteBytes: 1 } });
+		const preflight = current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true });
+		if (!preflight.ok) throw preflight.error;
+		expect(await current.supervisor.activate(preflight.value)).toMatchObject({
+			ok: false,
+			error: { code: "worker_operation_invalid" },
+		});
+		expect(current.supervisor.snapshot).toMatchObject({
+			hasLiveProcess: false,
+			record: { status: "lost" },
+		});
+	});
+
+	it("handles an asynchronous spawn error without exposing an unhandled child error", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "aos-worker-supervisor-"));
+		const nonExecutable = join(directory, "ordinary-file.txt");
+		await writeFile(nonExecutable, "not an executable", { mode: 0o600 });
+		try {
+			const current = create("success", { config: { executable: nonExecutable } });
+			const preflight = current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true });
+			if (!preflight.ok) throw preflight.error;
+			expect(await current.supervisor.activate(preflight.value)).toMatchObject({
+				ok: false,
+				error: { code: "worker_start_failed" },
+			});
+			expect(current.supervisor.snapshot).toMatchObject({
+				hasLiveProcess: false,
+				record: { status: "failed" },
+			});
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("returns valid success and failure receipts and reclaims exactly once", async () => {
@@ -211,18 +262,26 @@ describe("Operation Worker supervisor", () => {
 			const preflight = current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true });
 			if (!preflight.ok) throw preflight.error;
 			const activated = await current.supervisor.activate(preflight.value);
-			if (profile === "sequence_drift") {
-				expect(activated.ok).toBe(true);
-				await waitForStatus(current.supervisor, "lost");
-			} else {
-				expect(activated).toMatchObject({ ok: false });
-				expect(current.supervisor.snapshot.record?.status).toBe("lost");
-			}
+			expect(activated.ok).toBe(false);
+			expect(current.supervisor.snapshot.record?.status).toBe("lost");
 			expect(current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true })).toMatchObject({
 				ok: false,
 				error: { code: "worker_conflict" },
 			});
 		}
+	});
+
+	it("rejects a duplicate terminal in one output batch before exposing receipt success", async () => {
+		const current = create("duplicate_terminal");
+		await activate(current.supervisor, current.workerBinding);
+		expect(await current.supervisor.execute(request(current.workerBinding))).toMatchObject({
+			ok: false,
+			error: { code: "worker_operation_invalid" },
+		});
+		expect(current.supervisor.snapshot.record?.status).toBe("lost");
+		expect(current.supervisor.lifecycleState?.transitions.map((item) => item.to)).toContain("lost");
+		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
+		await waitForNoLiveProcess(current.supervisor);
 	});
 
 	it("maps child disconnect and invalid receipt correlation to lost", async () => {
@@ -306,6 +365,25 @@ describe("Operation Worker supervisor", () => {
 			value: { status: "reclaim_unknown" },
 		});
 		expect(current.supervisor.snapshot.quarantined).toBe(true);
+	});
+
+	it("rejects recovered state that does not exactly match the configured profile", () => {
+		const mismatches = [
+			binding("other-profile"),
+			binding("success", { profileRevision: 2 }),
+			binding("success", { capabilitySummary: ["filesystem.read"] }),
+		];
+		for (const recoveredBinding of mismatches) {
+			const current = create("success");
+			expect(current.supervisor.recover(recoveredReadyState(recoveredBinding))).toMatchObject({
+				ok: false,
+				error: { code: "worker_persistence_failed" },
+			});
+			expect(current.supervisor.snapshot).toEqual({ hasLiveProcess: false, quarantined: false });
+			expect(current.supervisor.preflight({ binding: current.workerBinding, runAccepted: true })).toMatchObject({
+				ok: true,
+			});
+		}
 	});
 
 	it("never projects process or protocol internals into safe records", async () => {

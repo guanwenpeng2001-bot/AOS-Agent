@@ -18,6 +18,10 @@ function emit(frame: WorkerEventFrameV1): void {
 	process.stdout.write(`${JSON.stringify(frame)}\n`);
 }
 
+function emitBatch(frames: readonly WorkerEventFrameV1[]): void {
+	process.stdout.write(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(""));
+}
+
 function now(): string {
 	return new Date().toISOString();
 }
@@ -87,7 +91,7 @@ function complete(
 	overrides: { readonly taskId?: string } = {},
 ): void {
 	stopHeartbeat();
-	emit({
+	const completed: WorkerEventFrameV1 = {
 		type: "operation.completed",
 		requestId: frame.requestId,
 		workerId: frame.workerId,
@@ -101,25 +105,38 @@ function complete(
 				? { error: { code: "worker_operation_invalid", message: "Operation failed", retryable: false } }
 				: {}),
 		},
-	});
-	emit({ type: "receipt", requestId: frame.requestId, receipt: receipt(frame, status, overrides) });
+	};
+	const terminal: WorkerEventFrameV1 = {
+		type: "receipt",
+		requestId: frame.requestId,
+		receipt: receipt(frame, status, overrides),
+	};
+	if (binding?.profileId === "duplicate_terminal") {
+		emitBatch([completed, terminal, completed]);
+		return;
+	}
+	emitBatch([completed, terminal]);
 }
 
 function ready(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): void {
-	emit({
+	const readyFrame: WorkerEventFrameV1 = {
 		type: "ready",
 		requestId: frame.requestId,
 		workerId: frame.binding.workerId,
 		providerId: frame.binding.providerId,
 		requestFingerprint: frame.binding.requestFingerprint,
 		capabilities: [...frame.binding.capabilitySummary],
-	});
+	};
 	const profile = frame.binding.profileId;
 	if (profile === "sequence_drift") {
-		emit({ type: "heartbeat", workerId: frame.binding.workerId, sequence: 2, at: now() });
-		emit({ type: "heartbeat", workerId: frame.binding.workerId, sequence: 1, at: now() });
+		emitBatch([
+			readyFrame,
+			{ type: "heartbeat", workerId: frame.binding.workerId, sequence: 2, at: now() },
+			{ type: "heartbeat", workerId: frame.binding.workerId, sequence: 1, at: now() },
+		]);
 		return;
 	}
+	emit(readyFrame);
 	startHeartbeat(profile === "heartbeat_stall");
 }
 
