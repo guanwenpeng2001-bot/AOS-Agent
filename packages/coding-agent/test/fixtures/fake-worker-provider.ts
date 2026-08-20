@@ -14,7 +14,7 @@ import type {
 } from "../../src/core/worker-protocol.ts";
 import type { WorkerRuntimeSandboxOperationProviderV1 } from "../../src/core/worker-runtime.ts";
 
-export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "pending";
+export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
 export type FakeWorkerCredentialActionV1 = "project" | "renew" | "revoke";
 
 export interface FakeWorkerProviderOptionsV1 {
@@ -35,6 +35,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	readonly projectedLeases: SafeLeaseProjectionV1[] = [];
 	readonly renewedLeases: SafeLeaseProjectionV1[] = [];
 	readonly revokedLeases: SafeLeaseReferenceV1[] = [];
+	readonly receipts: WorkerReceiptV1[] = [];
 	disposeCalls = 0;
 
 	private readonly capabilityIds: readonly string[];
@@ -73,7 +74,9 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 			});
 		}
 		const receiptCorrelation = this.startBehavior === "correlation-drift" ? { ...correlation, laneId: "drifted-lane" } : correlation;
-		return Result.ok(this.receipt(request, receiptCorrelation));
+		const receipt = this.receipt(request, receiptCorrelation);
+		this.receipts.push(receipt);
+		return Result.ok(receipt);
 	}
 
 	async cancel(operationId: string): Promise<ResultValue<void, FoundationError>> {
@@ -111,7 +114,9 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 		this.pendingRequest = undefined;
 		this.pendingCorrelation = undefined;
 		this.pendingResolve = undefined;
-		resolve(this.receipt(request, correlation));
+		const receipt = this.receipt(request, correlation);
+		this.receipts.push(receipt);
+		resolve(receipt);
 	}
 
 	private credentialResult(action: FakeWorkerCredentialActionV1): ResultValue<void, FoundationError> {
@@ -121,6 +126,19 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	}
 
 	private receipt(request: SandboxOperationRequestV1, correlation: ExecutionCorrelationV1): WorkerReceiptV1 {
+		const artifacts = this.startBehavior === "oversized-frame"
+			? Array.from({ length: 64 }, (_, index) => {
+					const marker = "oversized-provider-result";
+					return {
+						schemaVersion: 1 as const,
+						artifactId: `artifact-${String(index).padStart(2, "0")}-${"a".repeat(244)}`,
+						mediaType: `${marker}${"\u0000".repeat(128 - marker.length)}`,
+						digest: `sha256:${"b".repeat(64)}`,
+						producer: "p".repeat(256),
+						sizeBytes: Number.MAX_SAFE_INTEGER,
+					};
+				})
+			: undefined;
 		return {
 			schemaVersion: 1,
 			workerReceiptId: `receipt-${this.starts.length}`,
@@ -131,6 +149,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			status: "succeeded",
 			sideEffectState: "none",
+			...(artifacts === undefined ? {} : { artifacts }),
 			provenance: {
 				producerKind: "operation_worker",
 				providerId: this.providerId,

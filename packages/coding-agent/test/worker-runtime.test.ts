@@ -1,7 +1,10 @@
 import { PassThrough } from "node:stream";
+import { validateWorkerReceiptForProviderV1 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
+	WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	serializeWorkerFrameLineV1,
+	validateWorkerEventFrameV1,
 	type SafeLeaseProjectionV1,
 	type SafeLeaseReferenceV1,
 	type WorkerEventFrameV1,
@@ -164,6 +167,43 @@ describe("trusted Operation Worker runtime", () => {
 		expect(drift.frames.at(-1)).toMatchObject({ code: "worker_receipt_invalid" });
 	});
 
+	it("fails closed before transport output when a valid provider result exceeds the complete-frame bound", async () => {
+		const state = harness(new FakeWorkerProviderV1({ startBehavior: "oversized-frame" }));
+		await state.runtime.receiveFrame(initialize);
+		await state.runtime.receiveFrame(execute);
+		await state.runtime.waitForIdle();
+
+		const receipt = state.provider.receipts[0]!;
+		expect(validateWorkerReceiptForProviderV1(receipt, { providerId: binding.providerId, providerClass: "operation_worker" }).ok).toBe(true);
+		const completed: WorkerEventFrameV1 = {
+			type: "operation.completed",
+			requestId: execute.requestId,
+			workerId: binding.workerId,
+			operationId: request.operationId,
+			result: {
+				schemaVersion: 1,
+				operationId: request.operationId,
+				ok: true,
+				sideEffectState: "none",
+				artifacts: receipt.artifacts,
+			},
+		};
+		expect(validateWorkerEventFrameV1(completed)).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(completed), "utf8") + 1).toBeGreaterThan(WORKER_PROTOCOL_MAX_FRAME_BYTES);
+		expect(() => serializeWorkerFrameLineV1(completed)).toThrow();
+		const receiptFrame: WorkerEventFrameV1 = { type: "receipt", requestId: execute.requestId, receipt };
+		expect(validateWorkerEventFrameV1(receiptFrame)).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(receiptFrame), "utf8") + 1).toBeGreaterThan(WORKER_PROTOCOL_MAX_FRAME_BYTES);
+		expect(() => serializeWorkerFrameLineV1(receiptFrame)).toThrow();
+		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started"]);
+		expect(state.runtime.closed).toBe(true);
+		expect(state.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+		expect(JSON.stringify(execute)).not.toContain("oversized-provider-result");
+		expect(JSON.stringify(state.runtime.binding)).not.toContain("oversized-provider-result");
+		expect(JSON.stringify(state.frames)).not.toContain("oversized-provider-result");
+		expect(state.diagnostics.join("")).not.toContain("oversized-provider-result");
+	});
+
 	it("projects, renews, and revokes safe credential references and reports target failures", async () => {
 		const state = harness(new FakeWorkerProviderV1({ failedCredentialActions: ["renew"] }));
 		await state.runtime.receiveFrame(initialize);
@@ -190,6 +230,26 @@ describe("trusted Operation Worker runtime", () => {
 		state.provider.completePending();
 		await state.runtime.waitForIdle();
 		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "operation.completed", "receipt"]);
+	});
+
+	it("maps provider Result.err and cancel failure without leaking provider detail", async () => {
+		const rejected = harness(new FakeWorkerProviderV1({ startBehavior: "provider-error" }));
+		await rejected.runtime.receiveFrame(initialize);
+		await rejected.runtime.receiveFrame(execute);
+		await rejected.runtime.waitForIdle();
+		expect(rejected.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "error"]);
+		expect(rejected.frames.at(-1)).toMatchObject({ requestId: execute.requestId, code: "worker_start_failed" });
+
+		const cancelFailed = harness(new FakeWorkerProviderV1({ startBehavior: "pending", cancelFails: true }));
+		await cancelFailed.runtime.receiveFrame(initialize);
+		await cancelFailed.runtime.receiveFrame(execute);
+		await cancelFailed.runtime.receiveFrame({ type: "cancel", requestId: "cancel-failed-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
+		expect(cancelFailed.frames.at(-1)).toMatchObject({ type: "error", requestId: "cancel-failed-1", code: "worker_cancel_failed" });
+		cancelFailed.provider.completePending();
+		await cancelFailed.runtime.waitForIdle();
+		expect(cancelFailed.frames.slice(-2).map((frame) => frame.type)).toEqual(["operation.completed", "receipt"]);
+		expect(rejected.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+		expect(cancelFailed.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
 	});
 
 	it("reports heartbeat as liveness only, responds to ping, and reclaims the provider", async () => {

@@ -315,6 +315,10 @@ export class WorkerRuntimeV1 {
 
 	private emit(frame: WorkerEventFrameV1): Promise<void> {
 		if (this.closedValue) return Promise.resolve();
+		// This state-machine transition serializes the complete frame and applies
+		// WORKER_PROTOCOL_MAX_FRAME_BYTES before the transport callback can run.
+		// Per-field bounds such as WORKER_PROTOCOL_MAX_RESULT_DATA_BYTES never
+		// bypass that gate.
 		const accepted = this.protocol.receiveWorkerFrame(frame);
 		if (!accepted.ok) {
 			this.failClosed("worker emitted an invalid protocol frame");
