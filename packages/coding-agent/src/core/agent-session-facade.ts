@@ -1286,6 +1286,7 @@ export class CanonicalAgentSessionServices {
 							event: "send_user_message",
 							error: error instanceof Error ? error.message : String(error),
 						});
+						throw error;
 					});
 				},
 				appendEntry: (customType, data) => {

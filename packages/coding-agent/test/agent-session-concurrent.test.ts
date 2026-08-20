@@ -309,6 +309,9 @@ describe("AgentSession concurrent prompt guard", () => {
 		).testExtensionApi;
 		expect(extensionApi).toBeDefined();
 
+		await expect(extensionApi!.sendUserMessage("Concurrent extension prompt")).rejects.toThrow(
+			"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+		);
 		await extensionApi!.sendUserMessage("Steer from extension", { deliverAs: "steer" });
 
 		expect(session!.pendingMessageCount).toBe(1);

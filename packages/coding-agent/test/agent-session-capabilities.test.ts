@@ -844,6 +844,7 @@ describe("AgentSession capability binding integration", () => {
 		it("defers reload until an active run settles so the frozen binding is never rebuilt mid-run", async () => {
 			const { dir, agentDir } = tmpDir("reload-midrun");
 			const model = getModel("anthropic", "claude-sonnet-4-5")!;
+			let streamStarted = false;
 			let releaseStream: ((message: AssistantMessage) => void) | undefined;
 			const gate = new Promise<AssistantMessage>((resolve) => {
 				releaseStream = resolve;
@@ -854,6 +855,7 @@ describe("AgentSession capability binding integration", () => {
 				streamFn: () => {
 					const stream = new MockAssistantStream();
 					queueMicrotask(() => {
+						streamStarted = true;
 						stream.push({ type: "start", partial: createAssistantMessage("") });
 						void gate.then((message) => {
 							stream.push({ type: "done", reason: "stop", message });
@@ -868,7 +870,15 @@ describe("AgentSession capability binding integration", () => {
 			const authStorage = AuthStorage.create(join(dir, "auth.json"));
 			const modelRegistry = await createModelRegistry(authStorage, dir);
 			await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
-			const resourceLoader = createTestResourceLoader();
+			const baseResourceLoader = createTestResourceLoader();
+			let resourceReloadStarted = false;
+			const resourceLoader: ResourceLoader = {
+				...baseResourceLoader,
+				reload: async () => {
+					resourceReloadStarted = true;
+					await baseResourceLoader.reload();
+				},
+			};
 
 			const session = new AgentSession({
 				agent,
@@ -878,21 +888,20 @@ describe("AgentSession capability binding integration", () => {
 				modelRuntime: getModelRuntime(modelRegistry),
 				resourceLoader,
 			});
+			let runPromise: Promise<void> | undefined;
+			let reloadPromise: Promise<void> | undefined;
 			try {
-				const runPromise = session.prompt("First message");
-				await waitUntil(() => session.isStreaming);
+				runPromise = session.prompt("First message");
+				await waitUntil(() => streamStarted && session.isStreaming);
 
 				const before = session.getActiveToolNames();
 				const bindingBefore = session.getActiveCapabilityBinding()?.id;
 				expect(before).toContain("read");
 
 				// reload blocks on the active run and must not rebuild the binding.
-				let reloadResolved = false;
-				const reloadPromise = session.reload().then(() => {
-					reloadResolved = true;
-				});
-				await new Promise((resolve) => setTimeout(resolve, 10));
-				expect(reloadResolved).toBe(false);
+				reloadPromise = session.reload();
+				await Promise.resolve();
+				expect(resourceReloadStarted).toBe(false);
 				expect(session.isStreaming).toBe(true);
 				expect(session.getActiveToolNames()).toEqual(before);
 				expect(session.getActiveCapabilityBinding()?.id).toBe(bindingBefore);
@@ -900,9 +909,14 @@ describe("AgentSession capability binding integration", () => {
 				releaseStream?.(createAssistantMessage("Done"));
 				await runPromise;
 				await reloadPromise;
-				expect(reloadResolved).toBe(true);
+				expect(resourceReloadStarted).toBe(true);
 			} finally {
+				releaseStream?.(createAssistantMessage("Done"));
+				await runPromise?.catch(() => undefined);
+				await reloadPromise?.catch(() => undefined);
+				await session.abort();
 				session.dispose();
+				await session.waitForDispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
