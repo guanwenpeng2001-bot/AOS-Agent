@@ -8,9 +8,12 @@ import {
 	createWorkerProtocolStateV1,
 	parseWorkerFrameV1,
 	parseWorkerJsonlV1,
+	protocolStateValid,
+	redactWorkerDiagnosticV1,
 	serializeWorkerFrameLineV1,
 	serializeWorkerFrameV1,
 	validateSafeOperationResultV1,
+	validateWorkerEventFrameV1,
 	validateWorkerRequestFrameV1,
 	type SafeOperationResultV1,
 	type WorkerEventFrameV1,
@@ -45,6 +48,8 @@ const request = {
 	bindingId: binding.bindingId,
 	bindingEpochId: binding.bindingEpochId,
 	attemptId: binding.attemptId,
+	taskId: "task-1",
+	dispatchId: "dispatch-1",
 	payload: { result: "ok" },
 };
 
@@ -93,13 +98,16 @@ const receipt = {
 	workerReceiptId: "receipt-1",
 	sandboxProviderId: binding.providerId,
 	operationId: request.operationId,
+	taskId: request.taskId,
+	dispatchId: request.dispatchId,
+	attemptId: request.attemptId,
 	status: "succeeded" as const,
 	sideEffectState: "none" as const,
 	provenance: {
 		producerKind: "operation_worker" as const,
 		providerId: binding.providerId,
 		producedAt: "2026-08-21T00:00:02.000Z",
-		correlation: { sessionId: binding.sessionId, laneId: binding.laneId, operationId: request.operationId, revision: 0 },
+		correlation: { sessionId: binding.sessionId, laneId: binding.laneId, operationId: request.operationId, taskId: request.taskId, dispatchId: request.dispatchId, attemptId: request.attemptId, revision: 0 },
 	},
 	startedAt: "2026-08-21T00:00:01.000Z",
 	completedAt: "2026-08-21T00:00:02.000Z",
@@ -120,12 +128,32 @@ describe("private Operation Worker protocol", () => {
 	it("fails closed on cross-Worker frames and identity drift", () => {
 		const state = readyState();
 		expect(applyWorkerEventFrameV1(state, { type: "heartbeat", workerId: "worker-2", sequence: 1, at: "2026-08-21T00:00:01.000Z" })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(createWorkerProtocolStateV1(), { type: "heartbeat", workerId: binding.workerId, sequence: 1, at: "2026-08-21T00:00:01.000Z" })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
 		expect(applyWorkerRequestFrameV1(state, { type: "ping", requestId: "ping-1", workerId: "worker-2" })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
 		expect(applyWorkerEventFrameV1(
 			applyRequest(state, { type: "ping", requestId: "ping-1", workerId: binding.workerId }),
 			{ type: "pong", requestId: "ping-1", workerId: binding.workerId, at: "2026-08-21T00:00:01.000Z" },
 		)).toMatchObject({ ok: true });
 		expect(applyWorkerEventFrameV1(state, { type: "ready", requestId: "initialize-1", workerId: binding.workerId, providerId: "other-provider", requestFingerprint: binding.requestFingerprint, capabilities: [] })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+	});
+
+	it("requires ready capabilities to exactly echo the binding", () => {
+		let state = createWorkerProtocolStateV1();
+		state = applyRequest(state, { type: "initialize", requestId: "initialize-1", binding });
+		expect(applyWorkerEventFrameV1(state, {
+			type: "ready",
+			requestId: "initialize-1",
+			workerId: binding.workerId,
+			providerId: binding.providerId,
+			requestFingerprint: binding.requestFingerprint,
+			capabilities: [binding.capabilitySummary[0]!, "different-capability"],
+		})).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+	});
+
+	it("accepts only finite protocol error codes", () => {
+		expect(validateWorkerEventFrameV1({ type: "error", workerId: binding.workerId, code: "worker_not_a_real_code" })).toBe(false);
+		expect(validateSafeOperationResultV1({ ...completedResult, error: { code: "worker_not_a_real_code", message: "safe", retryable: false } })).toBe(false);
+		expect(validateWorkerEventFrameV1({ type: "error", workerId: binding.workerId, code: "worker_cancel_failed" })).toBe(true);
 	});
 
 	it("enforces started and terminal once, including duplicate responses and receipts", () => {
@@ -139,6 +167,30 @@ describe("private Operation Worker protocol", () => {
 		expect(applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "late" })).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 	});
 
+	it("rejects receipt correlation drift against the execute request and binding", () => {
+		let state = runningState();
+		state = applyEvent(state, { type: "operation.completed", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, result: completedResult });
+		const correlation = receipt.provenance.correlation!;
+		const receiptFrame = (value: typeof receipt): WorkerEventFrameV1 => ({ type: "receipt", requestId: "execute-1", receipt: value });
+		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, taskId: "task-2", provenance: { ...receipt.provenance, correlation: { ...correlation, taskId: "task-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, dispatchId: "dispatch-2", provenance: { ...receipt.provenance, correlation: { ...correlation, dispatchId: "dispatch-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, attemptId: "attempt-2", provenance: { ...receipt.provenance, correlation: { ...correlation, attemptId: "attempt-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, provenance: { ...receipt.provenance, correlation: { ...correlation, sessionId: "session-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, receiptFrame({ ...receipt, provenance: { ...receipt.provenance, correlation: { ...correlation, laneId: "lane-2" } } }))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, { type: "receipt", requestId: "execute-1", receipt: { ...receipt, operationId: "operation-2", provenance: { ...receipt.provenance, correlation: { ...receipt.provenance.correlation!, operationId: "operation-2" } } } })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+		expect(applyWorkerEventFrameV1(state, { type: "receipt", requestId: "execute-1", receipt: { ...receipt, sandboxProviderId: "provider-2", provenance: { ...receipt.provenance, providerId: "provider-2", correlation: { ...receipt.provenance.correlation! } } } })).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });
+	});
+
+	it("validates protocol state phase, response cardinality, and operation invariants", () => {
+		const ready = readyState();
+		expect(protocolStateValid({ ...ready, phase: "invalid" as WorkerProtocolStateV1["phase"] })).toBe(false);
+		expect(protocolStateValid({ ...ready, requests: ready.requests.map((item) => ({ ...item, responseCount: 2 })) })).toBe(false);
+		expect(protocolStateValid({ ...ready, requests: ready.requests.map((item) => ({ ...item, responseType: "pong" as const })) })).toBe(false);
+		const running = runningState();
+		expect(protocolStateValid({ ...running, operations: running.operations.map((item) => ({ ...item, requestId: "other-request" })) })).toBe(false);
+		expect(applyWorkerRequestFrameV1({ ...ready, phase: "invalid" as WorkerProtocolStateV1["phase"] }, { type: "ping", requestId: "ping-1", workerId: binding.workerId })).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
+	});
+
 	it("keeps heartbeat as monotonic liveness only", () => {
 		const state = readyState();
 		const first = applyWorkerEventFrameV1(state, { type: "heartbeat", workerId: binding.workerId, sequence: 3, at: "2026-08-21T00:00:03.000Z" });
@@ -150,20 +202,28 @@ describe("private Operation Worker protocol", () => {
 		expect(applyWorkerEventFrameV1(first.value.state, { type: "heartbeat", workerId: binding.workerId, sequence: 4, at: "2026-08-21T00:00:02.000Z" })).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 	});
 
-	it("deterministically truncates one chunk and the operation aggregate", () => {
+	it("deterministically truncates one chunk and rejects data after either aggregate cap", () => {
 		let state = runningState();
-		const hugeChunk = "界".repeat(WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES);
+		const hugeChunk = `${"界".repeat(Math.floor(WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES / 3))}xx`;
 		const first = applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: hugeChunk });
 		expect(first).toMatchObject({ ok: true, value: { truncated: true, frame: { data: expect.any(String), truncated: true } } });
 		if (!first.ok) return;
 		state = first.value.state;
-		for (let index = 1; index < WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS; index += 1) {
+		for (let index = 1; index < WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES / WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES; index += 1) {
 			const next = applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "x".repeat(WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES) });
 			if (!next.ok) throw next.error;
 			state = next.value.state;
 		}
-		const overflow = applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "overflow" });
-		expect(overflow).toMatchObject({ ok: true, value: { truncated: true, frame: { data: "", truncated: true }, state: { operations: [{ dataEvents: WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS, dataBytes: WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES, dataTruncated: true }] } } });
+		expect(state.operations[0]).toMatchObject({ dataEvents: 16, dataBytes: WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES, dataTruncated: true });
+		expect(applyWorkerEventFrameV1(state, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "overflow" })).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
+
+		let eventLimitedState = runningState();
+		for (let index = 0; index < WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS; index += 1) {
+			const next = applyWorkerEventFrameV1(eventLimitedState, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "x" });
+			if (!next.ok) throw next.error;
+			eventLimitedState = next.value.state;
+		}
+		expect(applyWorkerEventFrameV1(eventLimitedState, { type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "" })).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 		const serialized = JSON.parse(serializeWorkerFrameV1({ type: "operation.data", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, stream: "content", data: "y".repeat(WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES + 1) })) as { data: string; truncated?: boolean };
 		expect(serialized.truncated).toBe(true);
 		expect(new TextEncoder().encode(serialized.data).byteLength).toBe(WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES);
@@ -190,6 +250,11 @@ describe("private Operation Worker protocol", () => {
 		expect(stderr).not.toContain("super-secret");
 		expect(stderr).not.toContain("/tmp/private-work");
 		expect(stderr.endsWith("\n")).toBe(true);
+		for (const category of ["PID", "executable", "argv", "cwd", "path", "env", "stdout", "stderr", "prompt", "secret", "token", "header", "provider", "stack", "VM", "QEMU", "raw frame"]) {
+			const diagnostic = `${category}=sensitive-${category.toLowerCase()}`;
+			expect(redactWorkerDiagnosticV1(diagnostic)).toBe("[redacted worker diagnostic]");
+			expect(transport.stderr(diagnostic)).not.toContain(`sensitive-${category.toLowerCase()}`);
+		}
 	});
 
 	it("covers fake ready, slow, cancel acknowledgement, receipt, disconnect, malformed, and oversized data", () => {
@@ -206,7 +271,12 @@ describe("private Operation Worker protocol", () => {
 		cancel.send({ type: "initialize", requestId: "initialize-1", binding });
 		cancel.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		const cancelOutput = cancel.send({ type: "cancel", requestId: "cancel-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
-		expect(cancelOutput).toMatchObject({ ok: true, value: expect.arrayContaining([expect.stringContaining("operation.completed")]) });
+		expect(cancelOutput).toMatchObject({ ok: true, value: expect.arrayContaining([expect.stringContaining("worker_cancel_failed")]) });
+		if (cancelOutput.ok) {
+			expect(cancelOutput.value.some((line) => line.includes('"type":"operation.completed"'))).toBe(false);
+			expect(cancelOutput.value.some((line) => line.includes('"type":"receipt"'))).toBe(false);
+		}
+		expect(cancel.state.operations[0]).toMatchObject({ started: true, terminal: false, receiptReceived: false });
 
 		const receiptTransport = new FakeWorkerProtocolTransportV1(binding, "receipt");
 		receiptTransport.send({ type: "initialize", requestId: "initialize-1", binding });

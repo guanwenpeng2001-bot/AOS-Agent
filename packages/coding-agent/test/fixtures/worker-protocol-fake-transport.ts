@@ -76,13 +76,11 @@ export class FakeWorkerProtocolTransportV1 {
 		}
 		if (frame.type === "cancel" && this.mode === "cancel_ack" && frame.operationId !== undefined) {
 			this.emit({
-				type: "operation.completed",
-				requestId: this.session.state.operations.find((operation) => operation.operationId === frame.operationId)?.requestId ?? frame.requestId,
+				type: "error",
+				requestId: frame.requestId,
 				workerId: frame.workerId,
-				operationId: frame.operationId,
-				result: { schemaVersion: 1, operationId: frame.operationId, ok: false, sideEffectState: "none", error: { code: "worker_cancel_failed", message: "cancel acknowledged", retryable: false } },
+				code: "worker_cancel_failed",
 			});
-			this.emitReceipt({ requestId: this.session.state.operations.find((operation) => operation.operationId === frame.operationId)?.requestId ?? frame.requestId, operationId: frame.operationId });
 		}
 		return Result.ok(this.takeStdout());
 	}
@@ -102,10 +100,10 @@ export class FakeWorkerProtocolTransportV1 {
 	}
 
 	private emitReceiptForExecute(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>): void {
-		this.emitReceipt({ requestId: frame.requestId, operationId: frame.operationId });
+		this.emitReceipt({ requestId: frame.requestId, operationId: frame.operationId, taskId: frame.request.taskId, dispatchId: frame.request.dispatchId, attemptId: frame.request.attemptId });
 	}
 
-	private emitReceipt(input: { readonly requestId: string; readonly operationId: string }): void {
+	private emitReceipt(input: { readonly requestId: string; readonly operationId: string; readonly taskId?: string; readonly dispatchId?: string; readonly attemptId?: string }): void {
 		this.emit({
 			type: "receipt",
 			requestId: input.requestId,
@@ -114,13 +112,16 @@ export class FakeWorkerProtocolTransportV1 {
 				workerReceiptId: `receipt-${input.operationId}`,
 				sandboxProviderId: this.binding.providerId,
 				operationId: input.operationId,
+				...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+				...(input.dispatchId === undefined ? {} : { dispatchId: input.dispatchId }),
+				...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }),
 				status: "succeeded",
 				sideEffectState: "none",
 				provenance: {
 					producerKind: "operation_worker",
 					providerId: this.binding.providerId,
 					producedAt: "2026-08-21T00:00:02.000Z",
-					correlation: { sessionId: this.binding.sessionId, laneId: this.binding.laneId, operationId: input.operationId, revision: 0 },
+					correlation: { sessionId: this.binding.sessionId, laneId: this.binding.laneId, operationId: input.operationId, ...(input.taskId === undefined ? {} : { taskId: input.taskId }), ...(input.dispatchId === undefined ? {} : { dispatchId: input.dispatchId }), ...(input.attemptId === undefined ? {} : { attemptId: input.attemptId }), revision: 0 },
 				},
 				startedAt: "2026-08-21T00:00:01.000Z",
 				completedAt: "2026-08-21T00:00:02.000Z",

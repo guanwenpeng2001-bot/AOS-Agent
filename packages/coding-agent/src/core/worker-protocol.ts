@@ -429,7 +429,7 @@ function isSafePublicError(value: unknown): value is PublicExecutionErrorV1 {
 	if (!isRecord(value) || !hasExactKeys(value, ["code", "message", "retryable"], ["category"])) return false;
 	if (
 		typeof value.code !== "string" ||
-		(!FRAME_ERROR_CODES.has(value.code) && !/^worker_[a-z0-9_:-]{1,120}$/.test(value.code)) ||
+		!FRAME_ERROR_CODES.has(value.code) ||
 		typeof value.message !== "string" ||
 		value.message.length === 0 ||
 		utf8ByteLength(value.message) > 1024 ||
@@ -517,6 +517,30 @@ function sameBinding(left: WorkerBindingV1, right: WorkerBindingV1): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function sameStringSequence(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function receiptMatchesRequestAndBinding(receipt: WorkerReceiptV1, request: WorkerProtocolRequestStateV1, binding: WorkerBindingV1): boolean {
+	const correlation = receipt.provenance.correlation;
+	if (
+		correlation === undefined ||
+		receipt.sandboxProviderId !== binding.providerId ||
+		receipt.provenance.providerId !== binding.providerId ||
+		correlation.sessionId !== binding.sessionId ||
+		correlation.laneId !== binding.laneId ||
+		correlation.operationId !== request.operationId
+	) return false;
+	for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
+		const receiptValue = receipt[field];
+		const correlationValue = correlation[field];
+		const requestValue = request[field];
+		if (receiptValue !== undefined && (requestValue === undefined || receiptValue !== requestValue)) return false;
+		if (correlationValue !== undefined && (requestValue === undefined || correlationValue !== requestValue)) return false;
+	}
+	return true;
 }
 
 function validatePrivateWorkerReceipt(value: unknown): value is WorkerReceiptV1 {
@@ -642,7 +666,7 @@ function validateWorkerEventFrameInternal(value: unknown): value is WorkerEventF
 				isSafeIdentifier(value.workerId) &&
 				(value.requestId === undefined || isSafeRequestId(value.requestId)) &&
 				typeof value.code === "string" &&
-				(FRAME_ERROR_CODES.has(value.code) || /^worker_[a-z0-9_:-]{1,120}$/.test(value.code))
+				FRAME_ERROR_CODES.has(value.code)
 			);
 		case "pong":
 			return hasExactKeys(value, ["type", "requestId", "workerId", "at"]) && isSafeRequestId(value.requestId) && isSafeIdentifier(value.workerId) && isCanonicalTimestamp(value.at);
@@ -772,10 +796,8 @@ export function parseWorkerJsonlV1(text: string): ProtocolResult<readonly Worker
 }
 
 export function redactWorkerDiagnosticV1(value: string): string {
-	const normalized = redactText(value).replace(/[\r\n]+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "?");
-	if (normalized.trim().startsWith("{") || normalized.trim().startsWith("[")) return "[redacted worker diagnostic]";
-	const withoutRaw = normalized.replace(/(?:raw(?:frame|error)?|child(?:error|exception)?|provider(?:error|exception)?|stack|cause)\s*[:=].*/gi, "[redacted]");
-	return truncateUtf8(withoutRaw, WORKER_PROTOCOL_MAX_DIAGNOSTIC_BYTES).value;
+	void value;
+	return "[redacted worker diagnostic]";
 }
 
 export function formatWorkerStderrDiagnosticV1(value: string): string {
@@ -789,6 +811,12 @@ export interface WorkerProtocolRequestStateV1 {
 	readonly requestId: string;
 	readonly type: WorkerRequestFrameTypeV1;
 	readonly operationId?: string;
+	readonly providerId?: string;
+	readonly taskId?: string;
+	readonly dispatchId?: string;
+	readonly attemptId?: string;
+	readonly bindingId?: string;
+	readonly bindingEpochId?: string;
 	readonly responseCount: number;
 	readonly responseType?: WorkerEventFrameTypeV1;
 }
@@ -845,6 +873,26 @@ function freezeState(value: WorkerProtocolStateV1): WorkerProtocolStateV1 {
 	});
 }
 
+interface WorkerRequestIdentityV1 {
+	readonly providerId?: string;
+	readonly taskId?: string;
+	readonly dispatchId?: string;
+	readonly attemptId?: string;
+	readonly bindingId?: string;
+	readonly bindingEpochId?: string;
+}
+
+function requestIdentity(request: SandboxOperationRequestV1): WorkerRequestIdentityV1 {
+	return {
+		...(request.providerId === undefined ? {} : { providerId: request.providerId }),
+		...(request.taskId === undefined ? {} : { taskId: request.taskId }),
+		...(request.dispatchId === undefined ? {} : { dispatchId: request.dispatchId }),
+		...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
+		...(request.bindingId === undefined ? {} : { bindingId: request.bindingId }),
+		...(request.bindingEpochId === undefined ? {} : { bindingEpochId: request.bindingEpochId }),
+	};
+}
+
 export function createWorkerProtocolStateV1(binding?: WorkerBindingV1): WorkerProtocolStateV1 {
 	if (binding !== undefined && !validateWorkerBindingV1(binding)) throw protocolError("worker_binding_invalid", "Worker protocol binding is invalid");
 	return freezeState({
@@ -861,27 +909,67 @@ export function createWorkerProtocolStateV1(binding?: WorkerBindingV1): WorkerPr
 export const newWorkerProtocolStateV1 = createWorkerProtocolStateV1;
 export const createWorkerProtocolState = createWorkerProtocolStateV1;
 
-function protocolStateValid(state: WorkerProtocolStateV1): boolean {
-	if (!isRecord(state) || state.schemaVersion !== WORKER_PROTOCOL_SCHEMA_VERSION || !Array.isArray(state.requests) || !Array.isArray(state.operations)) return false;
+export function protocolStateValid(value: unknown): value is WorkerProtocolStateV1 {
+	if (!isRecord(value) || value.schemaVersion !== WORKER_PROTOCOL_SCHEMA_VERSION || !Array.isArray(value.requests) || !Array.isArray(value.operations)) return false;
+	const state = value as unknown as WorkerProtocolStateV1;
+	const phases: readonly WorkerProtocolPhaseV1[] = ["new", "initializing", "ready", "running", "cancelling", "terminal", "lost"];
+	if (!phases.includes(state.phase as WorkerProtocolPhaseV1)) return false;
 	if (state.binding !== undefined && !validateWorkerBindingV1(state.binding)) return false;
 	if (state.initializedRequestId !== undefined && !isSafeRequestId(state.initializedRequestId)) return false;
 	if (state.readyRequestId !== undefined && !isSafeRequestId(state.readyRequestId)) return false;
 	if (state.heartbeatSequence !== undefined && !isSafeInteger(state.heartbeatSequence)) return false;
 	if (state.lastHeartbeatAt !== undefined && !isCanonicalTimestamp(state.lastHeartbeatAt)) return false;
+	if ((state.heartbeatSequence === undefined) !== (state.lastHeartbeatAt === undefined)) return false;
 	if (typeof state.reclaimRequested !== "boolean" || typeof state.disconnected !== "boolean") return false;
+	if (state.disconnected !== (state.phase === "lost")) return false;
+	if (!state.reclaimRequested && state.phase === "terminal") return false;
+	if (state.reclaimRequested && state.phase !== "terminal" && state.phase !== "lost") return false;
+
 	const requestIds = new Set<string>();
 	for (const request of state.requests) {
-		if (!isRecord(request) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameTypeV1) || !isSafeInteger(request.responseCount)) return false;
+		if (!isRecord(request) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameTypeV1)) return false;
+		if (!isSafeInteger(request.responseCount) || request.responseCount > 1) return false;
+		if (request.responseCount === 0 && request.responseType !== undefined) return false;
+		if (request.responseCount === 1 && !WORKER_EVENT_FRAME_TYPES.includes(request.responseType as WorkerEventFrameTypeV1)) return false;
 		if (request.operationId !== undefined && !isSafeIdentifier(request.operationId)) return false;
+		if (request.type === "execute" && request.operationId === undefined) return false;
+		if (request.type !== "execute" && request.type !== "cancel" && request.operationId !== undefined) return false;
+		for (const field of ["providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"] as const) {
+			if (request[field] !== undefined && !isSafeIdentifier(request[field])) return false;
+		}
 		requestIds.add(request.requestId);
 	}
+
+	const initializeRequest = state.initializedRequestId === undefined ? undefined : state.requests.find((request) => request.requestId === state.initializedRequestId);
+	if (state.phase === "new" && (state.initializedRequestId !== undefined || state.readyRequestId !== undefined || state.requests.length > 0 || state.operations.length > 0)) return false;
+	if (state.phase !== "new" && state.phase !== "lost" && (state.binding === undefined || state.initializedRequestId === undefined)) return false;
+	if (state.initializedRequestId !== undefined && (initializeRequest === undefined || initializeRequest.type !== "initialize")) return false;
+	if (state.readyRequestId !== undefined) {
+		const readyRequest = state.requests.find((request) => request.requestId === state.readyRequestId);
+		if (readyRequest === undefined || readyRequest.type !== "initialize" || readyRequest.responseCount !== 1 || readyRequest.responseType !== "ready") return false;
+	}
+	if (state.phase === "initializing" && (initializeRequest === undefined || state.readyRequestId !== undefined || initializeRequest.responseCount > 1 || initializeRequest.responseCount === 1 && initializeRequest.responseType !== "error")) return false;
+	if (state.phase === "ready" || state.phase === "running" || state.phase === "cancelling" || state.phase === "terminal") {
+		if (state.readyRequestId === undefined) return false;
+	}
+
 	const operationIds = new Set<string>();
 	for (const operation of state.operations) {
 		if (!isRecord(operation) || !isSafeIdentifier(operation.operationId) || !isSafeRequestId(operation.requestId) || operationIds.has(operation.operationId)) return false;
 		if (!isSafeInteger(operation.dataBytes) || !isSafeInteger(operation.dataEvents) || operation.dataBytes > WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES || operation.dataEvents > WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS) return false;
 		if (typeof operation.started !== "boolean" || typeof operation.terminal !== "boolean" || typeof operation.completed !== "boolean" || typeof operation.receiptReceived !== "boolean" || typeof operation.dataTruncated !== "boolean") return false;
+		if (operation.completed && (!operation.started || !operation.terminal)) return false;
+		if (operation.receiptReceived && !operation.terminal) return false;
+		const request = state.requests.find((item) => item.requestId === operation.requestId);
+		if (request === undefined || request.type !== "execute" || request.operationId !== operation.operationId) return false;
+		if (operation.receiptReceived && (request.responseCount !== 1 || request.responseType !== "receipt")) return false;
 		operationIds.add(operation.operationId);
 	}
+	const activeOperations = state.operations.filter((operation) => isRecord(operation) && operation.terminal === false);
+	if (activeOperations.length > 1) return false;
+	const activeOperation = activeOperations[0];
+	if (state.phase === "running" && (activeOperation === undefined || !activeOperation.started)) return false;
+	if (state.phase === "ready" && activeOperation !== undefined && activeOperation.started) return false;
 	return true;
 }
 
@@ -920,9 +1008,9 @@ function findOperation(state: WorkerProtocolStateV1, operationId: string): Worke
 	return state.operations.find((operation) => operation.operationId === operationId);
 }
 
-function addRequest(state: WorkerProtocolStateV1, requestId: string, type: WorkerRequestFrameTypeV1, operationId?: string): ProtocolResult<WorkerProtocolStateV1> {
+function addRequest(state: WorkerProtocolStateV1, requestId: string, type: WorkerRequestFrameTypeV1, operationId?: string, identity?: WorkerRequestIdentityV1): ProtocolResult<WorkerProtocolStateV1> {
 	if (findRequest(state, requestId) !== undefined) return Result.err(conflict());
-	return Result.ok(withState(state, { requests: [...state.requests, freezeRequest({ requestId, type, ...(operationId === undefined ? {} : { operationId }), responseCount: 0 })] }));
+	return Result.ok(withState(state, { requests: [...state.requests, freezeRequest({ requestId, type, ...(operationId === undefined ? {} : { operationId }), ...(identity ?? {}), responseCount: 0 })] }));
 }
 
 function updateRequest(state: WorkerProtocolStateV1, requestId: string, responseType: WorkerEventFrameTypeV1): ProtocolResult<WorkerProtocolStateV1> {
@@ -977,7 +1065,7 @@ export function applyWorkerRequestFrameV1(stateValue: WorkerProtocolStateV1, val
 		if (frame.workerId !== state.binding.workerId || !bindingMatchesRequest(state.binding, frame.request)) return Result.err(bindingInvalid());
 		if (state.phase !== "ready" || state.reclaimRequested || state.operations.some((operation) => !operation.receiptReceived && !operation.terminal)) return Result.err(conflict());
 		if (findOperation(state, frame.operationId) !== undefined) return Result.err(conflict());
-		const added = addRequest(state, frame.requestId, frame.type, frame.operationId);
+		const added = addRequest(state, frame.requestId, frame.type, frame.operationId, requestIdentity(frame.request));
 		if (!added.ok) return added;
 		const operations = [...added.value.operations, freezeOperation({ operationId: frame.operationId, requestId: frame.requestId, started: false, terminal: false, completed: false, receiptReceived: false, dataBytes: 0, dataEvents: 0, dataTruncated: false })];
 		return Result.ok(mutation(withState(added.value, { operations, phase: "ready" }), frame));
@@ -1022,9 +1110,9 @@ function normalizeDataFrame(frame: Extract<WorkerEventFrameV1, { type: "operatio
 	const remainingBytes = Math.max(0, WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES - operation.dataBytes);
 	const chunk = truncateUtf8(frame.data, WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES);
 	const total = truncateUtf8(chunk.value, remainingBytes);
-	const truncated = frame.truncated === true || chunk.truncated || total.truncated || operation.dataEvents >= WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS;
-	const data = operation.dataEvents >= WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS ? "" : total.value;
-	const bytes = operation.dataEvents >= WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS ? 0 : total.bytes;
+	const truncated = frame.truncated === true || chunk.truncated || total.truncated;
+	const data = total.value;
+	const bytes = total.bytes;
 	return {
 		frame: Object.freeze({
 			...frame,
@@ -1043,10 +1131,13 @@ export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value
 	if (!checked.ok) return checked;
 	const frame = checked.value;
 	if (state.disconnected || state.phase === "lost") return Result.err(workerLost());
-	if (frame.type !== "ready" && frame.type !== "receipt" && state.binding !== undefined && frame.workerId !== state.binding.workerId) return Result.err(bindingInvalid());
+	if (frame.type !== "ready" && frame.type !== "receipt") {
+		if (state.binding === undefined || frame.workerId !== state.binding.workerId) return Result.err(bindingInvalid());
+	}
 	if (frame.type === "ready") {
 		if (state.binding === undefined || frame.workerId !== state.binding.workerId || state.phase !== "initializing" || state.initializedRequestId !== frame.requestId) return Result.err(bindingInvalid());
 		if (frame.providerId !== state.binding.providerId || frame.requestFingerprint !== state.binding.requestFingerprint) return Result.err(bindingInvalid());
+		if (!sameStringSequence(frame.capabilities, state.binding.capabilitySummary)) return Result.err(bindingInvalid());
 		const request = findRequest(state, frame.requestId);
 		if (request === undefined || request.responseCount > 0) return Result.err(conflict());
 		const updated = updateRequest(state, frame.requestId, frame.type);
@@ -1093,6 +1184,7 @@ export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value
 		const operation = operationResult.value;
 		if (!operation.started) return Result.err(operationInvalid());
 		if (operation.terminal) return Result.err(conflict());
+		if (operation.dataEvents >= WORKER_PROTOCOL_MAX_OPERATION_DATA_EVENTS || operation.dataBytes >= WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES) return Result.err(conflict());
 		const bounded = normalizeDataFrame(frame, operation);
 		const updated = updateOperation(state, frame.operationId, {
 			dataBytes: operation.dataBytes + bounded.bytes,
@@ -1111,13 +1203,16 @@ export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value
 		return updated.ok ? Result.ok(mutation(withState(updated.value, { phase: "ready" }), frame)) : updated;
 	}
 	const receiptFrame = frame;
+	if (state.binding === undefined) return Result.err(bindingInvalid());
 	const receiptCheck = validatePrivateWorkerReceipt(receiptFrame.receipt);
 	if (!receiptCheck) return Result.err(receiptInvalid());
 	const request = findRequest(state, receiptFrame.requestId);
 	if (request === undefined || request.type !== "execute" || request.operationId === undefined || request.responseCount > 0) return Result.err(conflict());
 	const operation = findOperation(state, receiptFrame.receipt.operationId);
-	if (operation === undefined || operation.requestId !== receiptFrame.requestId || !operation.terminal || operation.receiptReceived) return Result.err(receiptInvalid());
-	if (state.binding === undefined || receiptFrame.receipt.sandboxProviderId !== state.binding.providerId) return Result.err(bindingInvalid());
+	if (operation === undefined || operation.requestId !== receiptFrame.requestId) return Result.err(bindingInvalid());
+	if (operation.receiptReceived) return Result.err(conflict());
+	if (!operation.terminal) return Result.err(receiptInvalid());
+	if (!receiptMatchesRequestAndBinding(receiptFrame.receipt, request, state.binding)) return Result.err(bindingInvalid());
 	const updatedOperation = updateOperation(state, operation.operationId, { receiptReceived: true });
 	if (!updatedOperation.ok) return updatedOperation;
 	const updatedRequest = updateRequest(updatedOperation.value, receiptFrame.requestId, receiptFrame.type);
