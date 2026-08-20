@@ -62,16 +62,17 @@ import, generated-lock, TypeScript, and browser-smoke checks enabled. The full
 targeted runs pass 25 session/ModelBroker tests, 12 compaction/retry tests, and
 73 Context/RPC tests.
 
-An isolated root `./test.sh` run on the final T12 source was also attempted. It
-recorded 62 AI test failures and 27 coding-agent test failures, plus one
-coding-agent suite import failure. One coding-agent failure exposed a T12-owned
-test-fixture bug: the offline model fallback had a context window smaller than
-the default compaction reserve, so the fixture generated negative token usage.
-The fixture now selects a valid reserve explicitly, and its complete file passes
-with 6 tests. The remaining failures are outside the T12 diff: the pre-existing
-offline AI catalog baseline, child-process imports that require workspace
-`dist` output, and WSL platform/permission assumptions. This audit does not
-report the root gate as passing.
+An isolated root `./test.sh` run on the T12 candidate before the final
+compatibility-state closure was also attempted. It recorded 62 AI test failures
+and 27 coding-agent test failures, plus one coding-agent suite import failure.
+One coding-agent failure exposed a T12-owned test-fixture bug: the offline model
+fallback had a context window smaller than the default compaction reserve, so
+the fixture generated negative token usage. The fixture now selects a valid
+reserve explicitly, and its complete file passes with 6 tests. The remaining
+failures are outside the T12 diff: the pre-existing offline AI catalog baseline,
+child-process imports that require workspace `dist` output, and WSL
+platform/permission assumptions. This audit does not report the root gate as
+passing and does not treat that earlier run as exact-head evidence.
 
 ## Merge gate
 
