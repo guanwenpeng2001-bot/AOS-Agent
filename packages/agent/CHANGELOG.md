@@ -25,6 +25,7 @@
 - Tool receipt deduplication now validates every durable receipt, aggregates the worst side-effect state, and replays only bounded safe results with verified image artifacts.
 - Foundation model calls now durably record route-bound intent/fact pairs and fail closed on unsupported service tiers or pending/unknown restart state without replaying provider side effects.
 - Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
+- AgentHarness compatibility retry and external-message state now reflects active retry attempts and pending writes instead of fixed false values.
 
 ## [0.84.3] - 2026-08-10
 

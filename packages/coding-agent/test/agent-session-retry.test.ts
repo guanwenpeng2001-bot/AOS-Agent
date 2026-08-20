@@ -136,8 +136,12 @@ describe("AgentSession retry", () => {
 	it("retries after a transient error and succeeds", async () => {
 		const created = await createSession({ failCount: 1 });
 		const events: string[] = [];
+		const retryStates: boolean[] = [];
 		created.session.subscribe((event) => {
-			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_start") {
+				events.push(`start:${event.attempt}`);
+				retryStates.push(created.session.isRetrying);
+			}
 			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
 		});
 
@@ -145,6 +149,7 @@ describe("AgentSession retry", () => {
 
 		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
+		expect(retryStates).toEqual([true]);
 		expect(created.session.isRetrying).toBe(false);
 	});
 

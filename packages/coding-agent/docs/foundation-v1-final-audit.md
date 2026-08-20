@@ -1,8 +1,8 @@
 # Foundation v1 Final Audit
 
-Audit verdict: Foundation v1 is sealed on the integration branch. The seal is
-ready for review, but it must not be merged into `main` without explicit user
-confirmation.
+Audit verdict: the Foundation v1 candidate satisfies the local seal gates. It
+is ready for external review and an explicit user merge decision, but it has
+not been merged into the integration branch or `main`.
 
 ## Scope
 
@@ -41,6 +41,9 @@ owner module, persistence boundary, public contract, and test evidence.
   strict versioned quality, cost, and recovery snapshot.
 - Recovery rejects unknown schemas and semantic corruption, preserves lineage,
   and repairs only a truncated JSONL tail.
+- Compatibility retry state and pending external-message writes expose their
+  live state and drain before close; they are no longer fixed-value stubs or
+  untracked tasks.
 
 ## Verification evidence
 
@@ -49,7 +52,7 @@ The seal includes targeted regression coverage for:
 - Foundation capability accounting and T12 workflow evaluation.
 - AgentHarness runtime and Foundation model-call behavior.
 - Canonical AgentSession runtime, queue, ModelBroker, model extension, tool
-  image, compaction, and parity behavior.
+  image, compaction, retry-state, pending external-message, and parity behavior.
 - Task Gate, Task Graph, task credential, recovery, migration, and session
   projection behavior.
 
@@ -72,6 +75,7 @@ report the root gate as passing.
 
 ## Merge gate
 
-The integration branch is ready for review as an isolated, reversible slice.
-Merging or rebasing it into `main` requires explicit user confirmation and a
-decision on the repository-wide baseline failures recorded above.
+The final candidate chain is ready for review as an isolated, reversible
+slice. Fast-forwarding it into the local integration branch or merging it into
+`main` requires explicit user confirmation and a decision on the
+repository-wide baseline failures recorded above.

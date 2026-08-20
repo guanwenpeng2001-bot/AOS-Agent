@@ -1169,6 +1169,7 @@ export class AgentHarness implements AgentLane {
 	private readonly laneReductions = new Map<string, LaneReductionResult>();
 	private readonly mutationTails = new Map<string, Promise<void>>();
 	private readonly compatibilityTasks = new Set<Promise<unknown>>();
+	private readonly pendingExternalMessageTasks = new Set<Promise<void>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
 	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
 	private lastQueueUpdateFingerprint: string | undefined;
@@ -1318,8 +1319,8 @@ export class AgentHarness implements AgentLane {
 	get followUpMessagesSnapshot(): readonly AgentMessage[] { return this.queuedItems("main", "followUp").map((item) => structuredClone(item.message)); }
 	get currentOperationKind(): "run" | "compaction" | "navigation" | undefined { return this.laneSnapshots.get("main")?.operation?.kind; }
 	get retryAttempt(): number { return this.retryAttemptValue; }
-	get isRetrying(): boolean { return false; }
-	get hasPendingExternalMessages(): boolean { return false; }
+	get isRetrying(): boolean { return this.retryAttemptValue > 0; }
+	get hasPendingExternalMessages(): boolean { return this.pendingExternalMessageTasks.size > 0; }
 
 	setStreamFunction(streamFunction: StreamFn): void {
 		this.ensureOpen();
@@ -1527,7 +1528,13 @@ export class AgentHarness implements AgentLane {
 	}
 
 	recordExternalMessage(message: AgentMessage): Promise<void> {
-		return this.recordCompatibilityMessage(message);
+		const task = this.recordCompatibilityMessage(message);
+		this.pendingExternalMessageTasks.add(task);
+		void task.then(
+			() => this.pendingExternalMessageTasks.delete(task),
+			() => this.pendingExternalMessageTasks.delete(task),
+		);
+		return task;
 	}
 
 	private enqueue<T>(lane: string, operation: () => Promise<T>): Promise<T> {
