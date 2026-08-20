@@ -18,6 +18,13 @@ export {
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.ts";
 export {
+	RUNTIME_SESSION_SURFACES,
+	createRuntimeSessionSurfaceAdapter,
+	isRuntimeSessionSurfaceV1,
+	type RuntimeSessionSurfaceAdapterV1,
+	type RuntimeSessionSurfaceV1,
+} from "./runtime-session-surface.ts";
+export {
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,

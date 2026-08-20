@@ -779,6 +779,13 @@ export {
 	type PromptTemplate,
 } from "./core/sdk.ts";
 export {
+	RUNTIME_SESSION_SURFACES,
+	createRuntimeSessionSurfaceAdapter,
+	isRuntimeSessionSurfaceV1,
+	type RuntimeSessionSurfaceAdapterV1,
+	type RuntimeSessionSurfaceV1,
+} from "./core/runtime-session-surface.ts";
+export {
 	createSessionBranchBoundary,
 	createSessionCheckpoint,
 	getSessionBoundaries,

@@ -74,12 +74,14 @@ describe("ProductPromptIngressV1", () => {
 		try {
 			const first = await ingress.execute({
 				prompt: "first prompt",
+				surface: "sdk",
 				runId: "product-run-1",
 				images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
 			});
-			const second = await ingress.execute({ prompt: "second prompt", runId: "product-run-2" });
+			const second = await ingress.execute({ prompt: "second prompt", surface: "rpc", runId: "product-run-2" });
 			const replay = await ingress.execute({
 				prompt: "first prompt",
+				surface: "sdk",
 				runId: "product-run-1",
 				images: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
 			});
@@ -104,7 +106,8 @@ describe("ProductPromptIngressV1", () => {
 			expect(taskResults).toHaveLength(2);
 			expect(runReceipts).toHaveLength(2);
 			expect(new Set(tasks.map((record) => record.kind === "fact" && (record.payload as { goalId: string }).goalId))).toEqual(new Set([first.task.goalId]));
-			await expect(ingress.execute({ prompt: "conflicting prompt", runId: "product-run-1" })).rejects.toMatchObject({ code: "session_ledger_conflict" });
+			await expect(ingress.execute({ prompt: "conflicting prompt", surface: "sdk", runId: "product-run-1" })).rejects.toMatchObject({ code: "session_ledger_conflict" });
+			await expect(ingress.execute({ prompt: "first prompt", surface: "tui", runId: "product-run-1" })).rejects.toMatchObject({ code: "session_ledger_conflict" });
 		} finally {
 			await created.harness.close();
 		}

@@ -33,6 +33,7 @@ import {
 	type PromptTaskDependencyNameV1,
 	type PromptTaskExecutionV1,
 } from "./prompt-task-adapter.ts";
+import { isRuntimeSessionSurfaceV1, type RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
@@ -59,6 +60,7 @@ type ProductPromptIngressFactV1 = {
 	readonly id: string;
 	readonly revision: 1;
 	readonly runId: string;
+	readonly surface: RuntimeSessionSurfaceV1;
 	readonly inputDigest: string;
 	readonly submittedAt: string;
 } & { readonly [key: string]: FoundationJsonValue };
@@ -87,6 +89,7 @@ export interface ProductPromptIngressOptionsV1 {
 
 export interface ProductPromptInputV1 {
 	readonly prompt: string;
+	readonly surface: RuntimeSessionSurfaceV1;
 	readonly images?: readonly ImageContent[];
 	readonly continuation?: boolean;
 	readonly runId?: string;
@@ -103,8 +106,12 @@ function promptToken(runId: string): string {
 	return sha256HexValue(runId).slice(0, 32);
 }
 
-function inputDigest(prompt: string, images: readonly ImageContent[] | undefined): string {
-	return fingerprintFoundationValue({ prompt, images: images ?? [] }).value;
+function inputDigest(
+	prompt: string,
+	images: readonly ImageContent[] | undefined,
+	surface: RuntimeSessionSurfaceV1,
+): string {
+	return fingerprintFoundationValue({ prompt, images: images ?? [], surface }).value;
 }
 
 function roleRevision(token: string, modelProfile: ModelProfileV1, timestamp: string): RoleRevisionV1 {
@@ -343,9 +350,10 @@ export class ProductPromptIngressV1 {
 		runId: string,
 		prompt: string,
 		images: readonly ImageContent[] | undefined,
+		surface: RuntimeSessionSurfaceV1,
 	): Promise<ProductPromptIngressFactV1> {
 		const id = `product_prompt_${promptToken(runId)}`;
-		const digest = inputDigest(prompt, images);
+		const digest = inputDigest(prompt, images, surface);
 		const existing = await this.options.harness.t5.writer.readFact<ProductPromptIngressFactV1>(
 			PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			id,
@@ -358,6 +366,8 @@ export class ProductPromptIngressV1 {
 				fact.id !== id ||
 				fact.revision !== 1 ||
 				fact.runId !== runId ||
+				!isRuntimeSessionSurfaceV1(fact.surface) ||
+				fact.surface !== surface ||
 				fact.inputDigest !== digest ||
 				Number.isNaN(Date.parse(fact.submittedAt))
 			) {
@@ -373,6 +383,7 @@ export class ProductPromptIngressV1 {
 			id,
 			revision: 1,
 			runId,
+			surface,
 			inputDigest: digest,
 			submittedAt,
 		};
@@ -392,8 +403,9 @@ export class ProductPromptIngressV1 {
 
 	async execute(input: ProductPromptInputV1): Promise<PromptTaskExecutionV1> {
 		if (input.prompt.trim().length === 0) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt must be non-empty");
+		if (!isRuntimeSessionSurfaceV1(input.surface)) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt surface is invalid");
 		const runId = requireRunId(input.runId ?? randomUUID());
-		const ingress = await this.establishIngressFact(runId, input.prompt, input.images);
+		const ingress = await this.establishIngressFact(runId, input.prompt, input.images, input.surface);
 		const token = promptToken(runId);
 		const metadata = await this.options.session.getMetadata();
 		const goalStore = createGoalStore(this.options.session, { writer: this.options.harness.t5.writer });

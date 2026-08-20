@@ -3319,6 +3319,7 @@ export class RpcHostController {
 				promptPromise = session.prompt(message, {
 					images,
 					source: "rpc",
+					surface: "automation_host",
 					runId: proposedRunId,
 					signal: deadlineController.signal,
 					preflightResult: (didSucceed) => {
@@ -5111,6 +5112,7 @@ export class RpcHostController {
 							images: command.images,
 							streamingBehavior: command.streamingBehavior,
 							source: "rpc",
+							surface: "rpc",
 							preflightResult: (didSucceed) => {
 								if (didSucceed) {
 									preflightSucceeded = true;

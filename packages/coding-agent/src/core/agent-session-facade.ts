@@ -123,6 +123,7 @@ import {
 	type ProductPromptDependencySnapshotContextV1,
 } from "./product-prompt-ingress.ts";
 import type { PromptTaskDependencyNameV1 } from "./prompt-task-adapter.ts";
+import type { RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -186,6 +187,19 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
 	const canonicalSession = new Session(canonicalStorage);
 	const legacyAgent = options.agent;
+	const harnessModels = typeof options.modelRuntime.getModel === "function"
+		? options.modelRuntime
+		: new Proxy(options.modelRuntime, {
+			get(target, property, receiver) {
+				if (property === "getModel") {
+					return (provider: string, id: string): Model<Api> | undefined => {
+						const model = legacyAgent.state.model as Model<Api>;
+						return model.provider === provider && model.id === id ? model : undefined;
+					};
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
 	const builtinTools = options.baseToolsOverride === undefined
 		? Object.values(createAllTools(options.cwd))
 		: Object.values(options.baseToolsOverride);
@@ -239,7 +253,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 	};
 	const harness = AgentHarness.createUnrestored({
 		session: canonicalSession,
-		models: options.modelRuntime,
+		models: harnessModels,
 		model: legacyAgent.state.model as Model<Api>,
 		thinkingLevel: legacyAgent.state.thinkingLevel,
 		activeToolNames: options.noTools === "all" ? [] : options.initialActiveToolNames ?? defaultActiveToolNames,
@@ -458,6 +472,8 @@ export class CanonicalAgentSessionServices {
 	private _systemPrompt: string;
 	private compatibilityMessagesProjection: AgentMessage[] = [];
 	private _sessionStartEvent: SessionStartEvent | undefined;
+	private promptSurface: RuntimeSessionSurfaceV1 = "sdk";
+	private compatibilityFacade: AgentSession | undefined;
 	private extensionToolsReady: Promise<void> = Promise.resolve();
 	private disposed = false;
 	private disposePromise: Promise<void> | undefined;
@@ -708,6 +724,11 @@ export class CanonicalAgentSessionServices {
 			},
 		});
 		this.compatibilityMessagesProjection = this.projectCompatibilityMessages(this.canonicalEntriesSnapshot());
+	}
+
+	/** @internal Bind the public facade so consumer overrides remain observable. */
+	bindCompatibilityFacade(facade: AgentSession): void {
+		this.compatibilityFacade = facade;
 	}
 
 	private async prepareHarnessContext(input: HarnessContextPreparationInput): Promise<AgentContext> {
@@ -1703,12 +1724,13 @@ export class CanonicalAgentSessionServices {
 			: deadlineSignal === undefined
 				? options.signal
 				: AbortSignal.any([options.signal, deadlineSignal]);
-		await this.whenCapabilitiesReady(runId, signal);
+		await (this.compatibilityFacade?.whenCapabilitiesReady(runId, signal) ?? this.whenCapabilitiesReady(runId, signal));
 		if (signal?.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
 		options.preflightResult?.(true);
 		this.harness.beginPromptCompactionCycle();
 		let execution = await this.productPromptIngress.execute({
 			prompt: text,
+			surface: options.surface ?? this.promptSurface,
 			...(images === undefined ? {} : { images }),
 			runId,
 			...(signal === undefined ? {} : { signal }),
@@ -1731,6 +1753,7 @@ export class CanonicalAgentSessionServices {
 		if (!compacted || !overflowNeedsContinuation) return;
 		execution = await this.productPromptIngress.execute({
 			prompt: text,
+			surface: options.surface ?? this.promptSurface,
 			continuation: true,
 			runId: randomUUID(),
 			...(signal === undefined ? {} : { signal }),
@@ -2166,6 +2189,15 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		if (bindings.mode !== undefined) {
+			this.promptSurface = bindings.mode === "tui"
+				? "tui"
+				: bindings.mode === "rpc"
+					? "rpc"
+					: bindings.mode === "json"
+						? "headless"
+						: "print";
+		}
 		if (bindings.uiContext !== undefined || bindings.mode !== undefined) this._extensionRunner.setUIContext(bindings.uiContext, bindings.mode);
 		this._extensionRunner.bindCommandContext(bindings.commandContextActions);
 		if (bindings.onError !== undefined) this._extensionRunner.onError(bindings.onError);
@@ -3123,6 +3155,7 @@ export class AgentSession {
 		if (!(this.delegate instanceof CanonicalAgentSessionServices)) {
 			throw new Error("AgentSession compatibility facade requires canonical services");
 		}
+		this.delegate.bindCompatibilityFacade(this);
 	}
 
 	async _checkCompaction(
