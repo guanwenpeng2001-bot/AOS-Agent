@@ -1,4 +1,5 @@
-import { createAssistantMessageEventStream, type Api, type AssistantMessageEventStream, type Context, type Model, type Models, type SimpleStreamOptions } from "@aos-agent/ai";
+import { createAssistantMessageEventStream, type Api, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@aos-agent/ai";
+import type { StreamFn } from "../../types.ts";
 import { FoundationError } from "./errors.ts";
 import type { BudgetV1 } from "./budget.ts";
 import type { FoundationProviderCapabilityV1 } from "./providers.ts";
@@ -22,7 +23,7 @@ export interface FoundationHostModelCallRequestV1 {
 export interface FoundationHostModelCallAdapterV1 {
 	capabilities(): readonly FoundationProviderCapabilityV1[];
 	validate(request: FoundationHostModelCallRequestV1): FoundationError | undefined;
-	stream(request: FoundationHostModelCallRequestV1): AssistantMessageEventStream;
+	stream(request: FoundationHostModelCallRequestV1): AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 }
 
 export interface FoundationHostModelCallAdapterOptionsV1 {
@@ -50,7 +51,7 @@ function validateHostModelCallRequest(request: FoundationHostModelCallRequestV1,
  * fallback list is recorded in the route but is intentionally never executed.
  */
 export function createFoundationHostModelCallAdapter(
-	models: Models,
+	models: { readonly streamSimple: StreamFn },
 	options: FoundationHostModelCallAdapterOptionsV1 = {},
 ): FoundationHostModelCallAdapterV1 {
 	const supportedServiceTiers = new Set(options.supportedServiceTiers ?? []);

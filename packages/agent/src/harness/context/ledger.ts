@@ -304,6 +304,12 @@ function toolResultPlaceholder(reference: ArtifactReference): string {
 	return `[tool-result-artifact ${reference.digest} media=${reference.mediaType} bytes=${reference.sizeBytes}]`;
 }
 
+function encodeToolResultImage(value: Uint8Array): string {
+	let binary = "";
+	for (const byte of value) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
 function projectToolResult(fact: ToolResultFactV1): ToolResultMessage<ArtifactReference> {
 	return {
 		role: "toolResult",
@@ -448,6 +454,92 @@ export class SessionT5Ledger {
 		});
 		const stored = accepted.payload as unknown as ToolResultFactV1;
 		return { fact: structuredClone(stored), message: projectToolResult(stored) };
+	}
+
+	/**
+	 * Rebuild the transient tool result consumed by the agent loop from the
+	 * canonical fact and its verified artifacts. The JSONL transcript remains a
+	 * reference-only projection; this method never creates another state owner.
+	 */
+	async materializeToolResult(resultEntryId: string): Promise<ToolResultMessage<unknown> | undefined> {
+		const stored = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.toolResult, resultEntryId);
+		if (stored === undefined) return undefined;
+		const fact = stored.payload as unknown as ToolResultFactV1;
+		if (
+			fact.schemaVersion !== 1 ||
+			fact.resultEntryId !== resultEntryId ||
+			typeof fact.toolCallId !== "string" ||
+			typeof fact.toolName !== "string" ||
+			!Array.isArray(fact.content) ||
+			fact.validation?.state !== "verified" ||
+			!Array.isArray(fact.validation.artifactIds)
+		) {
+			throw new SessionLedgerBindingError(`Tool result ${resultEntryId} cannot be materialized from an invalid durable fact`);
+		}
+
+		const content: ToolResultMessage<unknown>["content"] = [];
+		const artifactIds: string[] = [];
+		for (const [index, item] of fact.content.entries()) {
+			if (item.index !== index || (item.kind !== "text" && item.kind !== "image")) {
+				throw new SessionLedgerBindingError(`Tool result ${resultEntryId} has an invalid durable content index`);
+			}
+			const reference = redactArtifactReference(item.reference);
+			const artifact = await this.artifacts.get(reference.artifactId);
+			if (
+				artifact.metadata.digest !== reference.digest ||
+				artifact.metadata.mediaType !== reference.mediaType ||
+				artifact.metadata.sizeBytes !== reference.sizeBytes
+			) {
+				throw new SessionLedgerBindingError(`Tool result ${resultEntryId} artifact metadata conflicts with its durable fact`);
+			}
+			artifactIds.push(reference.artifactId);
+			if (item.kind === "text") {
+				if (reference.mediaType !== "text/plain") {
+					throw new SessionLedgerBindingError(`Tool result ${resultEntryId} text artifact has an invalid media type`);
+				}
+				content.push({ type: "text", text: new TextDecoder().decode(artifact.content) });
+			} else {
+				if (!reference.mediaType.startsWith("image/")) {
+					throw new SessionLedgerBindingError(`Tool result ${resultEntryId} image artifact has an invalid media type`);
+				}
+				content.push({ type: "image", data: encodeToolResultImage(artifact.content), mimeType: reference.mediaType });
+			}
+		}
+
+		let details: unknown;
+		if (fact.detailsRef !== undefined) {
+			const reference = redactArtifactReference(fact.detailsRef);
+			const artifact = await this.artifacts.get(reference.artifactId);
+			if (
+				reference.mediaType !== "application/json" ||
+				artifact.metadata.digest !== reference.digest ||
+				artifact.metadata.mediaType !== reference.mediaType ||
+				artifact.metadata.sizeBytes !== reference.sizeBytes
+			) {
+				throw new SessionLedgerBindingError(`Tool result ${resultEntryId} details artifact conflicts with its durable fact`);
+			}
+			artifactIds.push(reference.artifactId);
+			try {
+				details = JSON.parse(new TextDecoder().decode(artifact.content)) as unknown;
+			} catch (_error) {
+				throw new SessionLedgerBindingError(`Tool result ${resultEntryId} details artifact is not valid JSON`);
+			}
+		}
+		if (canonicalFoundationJson(artifactIds) !== canonicalFoundationJson(fact.validation.artifactIds)) {
+			throw new SessionLedgerBindingError(`Tool result ${resultEntryId} artifact set conflicts with its durable fact`);
+		}
+
+		return {
+			role: "toolResult",
+			toolCallId: fact.toolCallId,
+			toolName: fact.toolName,
+			content,
+			...(fact.detailsRef === undefined ? {} : { details }),
+			...(fact.usage === undefined ? {} : { usage: structuredClone(fact.usage) }),
+			...(fact.addedToolNames === undefined ? {} : { addedToolNames: [...fact.addedToolNames] }),
+			isError: fact.isError,
+			timestamp: fact.timestamp,
+		};
 	}
 
 	async saveContextSnapshot(snapshot: ContextSnapshot): Promise<ContextSnapshot> {

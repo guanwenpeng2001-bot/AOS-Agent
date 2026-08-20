@@ -157,6 +157,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	retryCallbacks?: RetryCallbacks;
 	/** Bounded convergence policy for provider/tool turns in this loop. */
 	loopConvergence?: AgentLoopConvergenceOptions;
+	/** Prepare the exact agent context independently before every provider attempt. */
+	prepareContext?: (context: AgentContext, model: Model<any>, signal?: AbortSignal) => AgentContext | Promise<AgentContext>;
 
 	/**
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.

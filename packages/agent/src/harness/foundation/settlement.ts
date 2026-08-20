@@ -30,9 +30,11 @@ import { validateLineageV1 } from "./schema.ts";
 import { SessionLedgerV1 } from "./session-ledger.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import type { FoundationIntentRecordV1 } from "../session/durable/types.ts";
+import type { SessionLedgerWriter } from "../session/t5.ts";
 
 export interface FoundationTaskPersistenceOptionsV1 {
 	readonly ownerId?: string;
+	readonly writer?: SessionLedgerWriter;
 }
 
 /**
@@ -43,7 +45,7 @@ export interface FoundationTaskPersistenceOptionsV1 {
 export async function persistTaskEnvelopeBeforeResolverV1(session: Session, task: TaskEnvelopeV1, options: FoundationTaskPersistenceOptionsV1 = {}): Promise<ResultValue<TaskEnvelopeV1, FoundationError>> {
 	const checked = validateTaskEnvelope(task);
 	if (!checked.ok) return checked;
-	const ledger = new SessionLedgerV1(session, { ownerId: options.ownerId });
+	const ledger = new SessionLedgerV1(session, { ownerId: options.ownerId, writer: options.writer });
 	try {
 		const existing = await ledger.get("task", checked.value.taskId);
 		if (existing?.kind === "fact") {
@@ -385,8 +387,8 @@ export class LayeredResultSettlementV1 {
 	private readonly ledger: SessionLedgerV1;
 	private finalizationTail: Promise<void> = Promise.resolve();
 
-	constructor(session: Session, options: { readonly ownerId?: string } = {}) {
-		this.ledger = new SessionLedgerV1(session, { ownerId: options.ownerId });
+	constructor(session: Session, options: { readonly ownerId?: string; readonly writer?: SessionLedgerWriter } = {}) {
+		this.ledger = new SessionLedgerV1(session, { ownerId: options.ownerId, writer: options.writer });
 	}
 
 	async executeOperation(input: OperationExecutionInputV1): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {

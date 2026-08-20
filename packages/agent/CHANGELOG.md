@@ -10,6 +10,7 @@
 - T5 durable context and data foundations: immutable snapshots, fork and rewind planning, scoped memory, content-addressed artifacts, compaction, prompt-cache, and instruction facts.
 - T6 Foundation execution gates: immutable ModelProfile routing and AgentBinding epochs, scoped gateway consumers, and provider-owned lifecycle conformance.
 - T7 durable control objects: Goal/Plan/Stage/Todo, Ask/Reply settlement, and versioned Workflow DSL lifecycle with CAS recovery and explicit budget accounting.
+- AgentHarness compatibility lifecycle: durable user/assistant/tool event ordering, extension tool and compaction hooks, bounded retry cancellation, automatic overflow compaction continuations, and model invocation context-snapshot provenance.
 
 ### Fixed
 
@@ -21,6 +22,7 @@
 - Tool receipts now preserve AgentTool failures, usage, and side-effect state through AttemptReceipt, TaskResult, and RunReceipt settlement.
 - Tool receipt deduplication now validates every durable receipt, aggregates the worst side-effect state, and replays only bounded safe results with verified image artifacts.
 - Foundation model calls now durably record route-bound intent/fact pairs and fail closed on unsupported service tiers or pending/unknown restart state without replaying provider side effects.
+- Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
 
 ## [0.84.3] - 2026-08-10
 

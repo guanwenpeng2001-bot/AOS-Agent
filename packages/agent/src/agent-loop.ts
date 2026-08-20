@@ -567,15 +567,18 @@ async function streamAssistantResponseAttempt(
 	streamFunction: StreamFn,
 	events: AttemptEventBuffer,
 ): Promise<StreamAssistantAttempt> {
-	let messages = context.messages;
+	const preparedContext = config.prepareContext === undefined
+		? context
+		: await raceWithAbortSignal(Promise.resolve(config.prepareContext(context, config.model, signal)), signal);
+	let messages = preparedContext.messages;
 	if (config.transformContext) {
 		messages = await raceWithAbortSignal(config.transformContext(messages, signal), signal);
 	}
 	const llmMessages = await raceWithAbortSignal(Promise.resolve(config.convertToLlm(messages)), signal);
 	const llmContext: Context = {
-		systemPrompt: context.systemPrompt,
+		systemPrompt: preparedContext.systemPrompt,
 		messages: llmMessages,
-		tools: context.tools,
+		tools: preparedContext.tools,
 	};
 	const resolvedApiKey =
 		(config.getApiKey ? await raceWithAbortSignal(Promise.resolve(config.getApiKey(config.model.provider)), signal) : undefined) ||

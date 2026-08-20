@@ -13,9 +13,9 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "@aos-agent/ai";
-import { createAssistantMessageEventStream } from "@aos-agent/ai";
+import { createAssistantMessageEventStream, isContextOverflow, isRecoverableLength } from "@aos-agent/ai";
 import { runAgentLoopContinue } from "../agent-loop.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback, QueueMode, ThinkingLevel } from "../types.ts";
+import type { AfterToolCallResult, AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolCall, AgentToolResult, AgentToolUpdateCallback, BeforeToolCallContext, QueueMode, StreamFn, ThinkingLevel } from "../types.ts";
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
@@ -58,18 +58,25 @@ import {
 	type TaskResultV1,
 	type ValidationResultV1,
 } from "./foundation/index.ts";
-import { compact as generateCompaction, prepareCompaction, type CompactionSettings } from "./compaction/compaction.ts";
+import { calculateContextTokens, compact as generateCompaction, estimateContextTokens, prepareCompaction, shouldCompact, type CompactionPreparation, type CompactionSettings } from "./compaction/compaction.ts";
 import { generateBranchSummary } from "./compaction/branch-summarization.ts";
 import { convertToLlm } from "./messages.ts";
 import { buildSessionContextAsync, type AsyncCustomEntryContextMessageProjector } from "./session/context.ts";
 import { formatPromptTemplateInvocation } from "./prompt-templates.ts";
 import { formatSkillInvocation } from "./skills.ts";
 import { formatSkillsForSystemPrompt } from "./system-prompt.ts";
-import { HarnessEventBus, type HarnessEventListener } from "./events.ts";
+import {
+	HarnessEventBus,
+	type HarnessEventListener,
+	type HarnessEventOfType,
+	type HarnessEventType,
+} from "./events.ts";
 import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import {
 	FoundationToolPipelineV1,
+	FoundationToolGuardV1,
+	FoundationToolQuotaAccountV1,
 	FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
 	SessionToolPipelineStorageV1,
 	projectToolReceiptExecutionSemanticsV1,
@@ -86,6 +93,7 @@ import {
 	type ToolIntentV1,
 	type ToolPipelineContextV1,
 	type ToolPipelineOptionsV1,
+	type ToolGateScopeV1,
 	type ToolReceiptV1,
 	type ToolReceiptOutcomeV1,
 	type FoundationToolResultEntryV1,
@@ -100,7 +108,9 @@ import {
 	type CompactionEntry,
 	type CustomEntry,
 	type Entry,
+	type EntryQuery,
 	type JsonValue,
+	type MessageEntry,
 	type NewRecord,
 	type OperationStartedRecord,
 	type ProvisionedEntry,
@@ -179,6 +189,7 @@ export class HarnessClosed extends Error {
 export interface OperationError {
 	code: string;
 	message: string;
+	details?: FoundationJsonValue;
 }
 
 const USER_ABORT_ERROR: OperationError = {
@@ -244,6 +255,7 @@ export type CreateLaneResult = ResultValue<AgentLane, LaneExists | InvalidLane |
 export interface NavigateOptions {
 	summarize?: boolean;
 	customInstructions?: string;
+	replaceInstructions?: boolean;
 	label?: string;
 }
 
@@ -272,6 +284,13 @@ export interface LaneInfo {
 export interface QueuedItem {
 	entryId: string;
 	message: AgentMessage;
+}
+
+interface PendingQueueMutation {
+	lane: string;
+	queue: "steer" | "followUp" | "nextRun";
+	runId?: string;
+	target: { type: "message"; id: string; message: AgentMessage };
 }
 
 export interface LaneSnapshot {
@@ -320,7 +339,10 @@ export interface Hooks {
 }
 
 export interface Events {
-	on(type: string, listener: (event: unknown) => void | Promise<void>): () => void;
+	on<TType extends HarnessEventType>(
+		type: TType,
+		listener: HarnessEventListener<HarnessEventOfType<TType>>,
+	): () => void;
 }
 
 class HookRegistry implements Hooks {
@@ -358,9 +380,11 @@ class EventsFacade implements Events {
 		this.bus = bus;
 	}
 
-	on(type: string, listener: (event: unknown) => void | Promise<void>): () => void {
-		if (type !== "run_start" && type !== "run_end") return () => {};
-		return this.bus.on(type, listener as HarnessEventListener);
+	on<TType extends HarnessEventType>(
+		type: TType,
+		listener: HarnessEventListener<HarnessEventOfType<TType>>,
+	): () => void {
+		return this.bus.on(type, listener);
 	}
 }
 
@@ -369,6 +393,71 @@ export type Resources = AgentHarnessResources<Skill, PromptTemplate>;
 export type StreamOptions = SimpleStreamOptions;
 export type StreamOptionsPatch = Partial<SimpleStreamOptions>;
 export type EntryProjector = (entry: Entry) => AgentMessage[] | Promise<AgentMessage[]>;
+
+export interface HarnessCompatibilityWriter {
+	recordMessage(message: AgentMessage): void | Promise<void>;
+	recordCustomEntry(customType: string, data?: unknown): string;
+	setSessionName(name: string | undefined): void;
+	setSessionLabel(targetId: string, label: string | undefined): void;
+}
+
+export type HarnessContextPurpose = "agent_turn" | "compaction" | "branch_summary";
+export interface HarnessContextPreparationInput {
+	purpose: HarnessContextPurpose;
+	operationId: string;
+	model: Model<Api>;
+	context: AgentContext;
+	signal?: AbortSignal;
+}
+export type HarnessContextPreparation = (input: HarnessContextPreparationInput) => AgentContext | Promise<AgentContext>;
+export interface HarnessStreamRequestPreparationInput {
+	model: Model<Api>;
+	options?: SimpleStreamOptions;
+}
+export interface HarnessStreamRequestPreparationResult {
+	model: Model<Api>;
+	options?: SimpleStreamOptions;
+}
+export type HarnessStreamRequestPreparation = (
+	input: HarnessStreamRequestPreparationInput,
+) => HarnessStreamRequestPreparationResult | Promise<HarnessStreamRequestPreparationResult>;
+export interface HarnessCompactionHookInput {
+	preparation: CompactionPreparation;
+	branchEntries: Entry[];
+	customInstructions?: string;
+	reason: "manual" | "threshold" | "overflow";
+	willRetry: boolean;
+	signal: AbortSignal;
+}
+export interface HarnessCompactionHookResult {
+	cancel?: boolean;
+	compaction?: { summary: string; firstKeptEntryId: string; tokensBefore: number; usage?: Usage; details?: unknown };
+}
+export interface HarnessCompactionResult {
+	summary: string;
+	firstKeptEntryId: string;
+	tokensBefore: number;
+	estimatedTokensAfter: number;
+	usage?: Usage;
+	details?: unknown;
+	fromExtension: boolean;
+}
+export interface HarnessCompactionHooks {
+	before?: (input: HarnessCompactionHookInput) => HarnessCompactionHookResult | undefined | Promise<HarnessCompactionHookResult | undefined>;
+	after?: (input: { entry: CompactionEntry; result: HarnessCompactionResult; reason: "manual" | "threshold" | "overflow"; willRetry: boolean }) => void | Promise<void>;
+}
+export interface HarnessNavigationHooks {
+	before?: (input: { preparation: { targetId: string | null; oldLeafId: string | null; commonAncestorId: string | null; entriesToSummarize: Entry[]; userWantsSummary: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }; signal: AbortSignal }) => HarnessNavigationHookResult | undefined | Promise<HarnessNavigationHookResult | undefined>;
+	after?: (input: { oldLeafId: string | null; newLeafId: string | null; summaryEntry?: BranchSummaryEntry; fromExtension?: boolean }) => void | Promise<void>;
+}
+
+export interface HarnessNavigationHookResult {
+	cancel?: boolean;
+	summary?: { summary: string; details?: unknown; usage?: Usage };
+	customInstructions?: string;
+	replaceInstructions?: boolean;
+	label?: string;
+}
 
 /**
  * Product execution identity supplied by the caller. The harness never creates
@@ -412,6 +501,17 @@ export interface AgentHarnessOptions {
 	drive?: "automatic" | "manual";
 	toProviderMessages?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	entryProjectors?: Record<string, EntryProjector>;
+	streamFunction?: StreamFn;
+	streamFunctionOverridden?: boolean;
+	getApiKey?: AgentLoopConfig["getApiKey"];
+	transformContext?: AgentLoopConfig["transformContext"];
+	shouldStopAfterTurn?: AgentLoopConfig["shouldStopAfterTurn"];
+	prepareNextTurn?: AgentLoopConfig["prepareNextTurn"];
+	beforeToolCall?: AgentLoopConfig["beforeToolCall"];
+	afterToolCall?: AgentLoopConfig["afterToolCall"];
+	compatibilityWriter?: HarnessCompatibilityWriter;
+	contextPreparation?: HarnessContextPreparation;
+	streamRequestPreparation?: HarnessStreamRequestPreparation;
 	context?: TelemetryContext;
 	/** Optional T5 authority; omitted harnesses create one bound to this Session. */
 	t5?: SessionT5Ledger;
@@ -461,6 +561,7 @@ interface FoundationModelInvocationV1 {
 	readonly route: FoundationJsonValue;
 	readonly routeDigest: string;
 	readonly selectedTarget: FoundationJsonValue;
+	readonly contextSnapshotId?: string;
 	readonly correlation: ExecutionCorrelationV1;
 }
 
@@ -507,6 +608,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
+function messageText(message: AgentMessage): string {
+	if (!("content" in message) || !Array.isArray(message.content)) return "";
+	return message.content
+		.filter((part): part is { type: "text"; text: string } => part.type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
 interface SessionMetadataWithPath {
 	readonly path?: unknown;
 }
@@ -527,13 +636,85 @@ function sessionStopReason(message: AssistantMessage): SessionStopReason {
 	return message.stopReason === "pending" ? "error" : message.stopReason;
 }
 
+function durableAssistantMessage(message: AssistantMessage): AssistantMessage {
+	const durable: AssistantMessage = {
+		role: "assistant",
+		content: message.content.map((content) => {
+			if (content.type === "text") {
+				return { type: "text", text: content.text, ...(content.textSignature === undefined ? {} : { textSignature: content.textSignature }) };
+			}
+			if (content.type === "thinking") {
+				return {
+					type: "thinking",
+					thinking: content.thinking,
+					...(content.thinkingSignature === undefined ? {} : { thinkingSignature: content.thinkingSignature }),
+					...(content.redacted === undefined ? {} : { redacted: content.redacted }),
+				};
+			}
+			return {
+				type: "toolCall",
+				id: content.id,
+				name: content.name,
+				arguments: structuredClone(content.arguments),
+				...(content.thoughtSignature === undefined ? {} : { thoughtSignature: content.thoughtSignature }),
+				...(content.namespace === undefined ? {} : { namespace: content.namespace }),
+			};
+		}),
+		api: message.api,
+		provider: message.provider,
+		model: message.model,
+		usage: {
+			input: message.usage.input,
+			output: message.usage.output,
+			cacheRead: message.usage.cacheRead,
+			cacheWrite: message.usage.cacheWrite,
+			...(message.usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: message.usage.cacheWrite1h }),
+			...(message.usage.reasoning === undefined ? {} : { reasoning: message.usage.reasoning }),
+			totalTokens: message.usage.totalTokens,
+			cost: { ...message.usage.cost },
+		},
+		stopReason: message.stopReason,
+		timestamp: message.timestamp,
+		...(message.responseModel === undefined ? {} : { responseModel: message.responseModel }),
+		...(message.responseId === undefined ? {} : { responseId: message.responseId }),
+		...(message.diagnostics === undefined ? {} : {
+			diagnostics: message.diagnostics.map((diagnostic) => ({
+				type: diagnostic.type,
+				timestamp: diagnostic.timestamp,
+				...(diagnostic.error === undefined ? {} : {
+					error: {
+						message: diagnostic.error.message,
+						...(diagnostic.error.name === undefined ? {} : { name: diagnostic.error.name }),
+						...(diagnostic.error.stack === undefined ? {} : { stack: diagnostic.error.stack }),
+						...(diagnostic.error.code === undefined ? {} : { code: diagnostic.error.code }),
+					},
+				}),
+				...(diagnostic.details === undefined ? {} : { details: structuredClone(diagnostic.details) }),
+			})),
+		}),
+		...(message.deferred === undefined ? {} : { deferred: structuredClone(message.deferred) }),
+		...(message.errorMessage === undefined ? {} : { errorMessage: message.errorMessage }),
+		...(message.rawStopReason === undefined ? {} : { rawStopReason: message.rawStopReason }),
+		...(message.endTurn === undefined ? {} : { endTurn: message.endTurn }),
+	};
+	assertJsonSerializable(durable);
+	return durable;
+}
+
 function operationError(error: unknown): OperationError {
 	const normalized = toError(error);
 	const code = error instanceof HarnessToolPipelineError
 		? error.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"
 		: error instanceof FoundationError ? error.code
 		: error instanceof SessionError && error.code ? error.code : error instanceof Error ? error.name : "error";
-	return { code, message: normalized.message };
+	const contextError = error !== null && typeof error === "object" && "contextError" in error
+		? error.contextError
+		: undefined;
+	return {
+		code,
+		message: normalized.message,
+		...(contextError === undefined ? {} : { details: foundationJsonValue(contextError) }),
+	};
 }
 
 function foundationToolUsage(usage: Usage): NonNullable<ToolExecutionV1["usage"]> {
@@ -594,7 +775,7 @@ function toolStartedExecutionSemantics(start: ToolStartedRecord): string {
 	}
 }
 
-function foundationBindingMatchesCorrelation(binding: ToolBindingRefV1, correlation: ExecutionCorrelationV1): boolean {
+function foundationBindingCorrelationMismatch(binding: ToolBindingRefV1, correlation: ExecutionCorrelationV1): string | undefined {
 	for (const [field, expected] of [
 		["sessionId", correlation.sessionId],
 		["laneId", correlation.laneId],
@@ -608,9 +789,9 @@ function foundationBindingMatchesCorrelation(binding: ToolBindingRefV1, correlat
 		["providerId", correlation.providerId],
 		["agentInstanceId", correlation.agentInstanceId],
 	] as const) {
-		if (expected !== undefined && binding[field] !== expected) return false;
+		if (expected !== undefined && binding[field] !== expected) return field;
 	}
-	return true;
+	return undefined;
 }
 
 function receiptMatchesIntentCanonical(receipt: ToolReceiptV1, intent: ToolIntentV1): boolean {
@@ -874,6 +1055,7 @@ export class AgentHarness implements AgentLane {
 	private readonly defaultModel: Model<Api>;
 	private readonly defaultThinkingLevel: ThinkingLevel;
 	private readonly defaultActiveToolNames: string[];
+	private modelAvailable = true;
 	private readonly ownsT5: boolean;
 	private tools: HarnessTool[];
 	private resources: Resources;
@@ -886,14 +1068,29 @@ export class AgentHarness implements AgentLane {
 	private readonly toolContext?: object | (() => object | Promise<object>);
 	private readonly systemPromptSource?: string | (() => string | Promise<string>);
 	private readonly toProviderMessages: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
-	private readonly entryProjectors: Record<string, EntryProjector>;
+	private entryProjectors: Record<string, EntryProjector>;
+	private streamFunctionValue?: StreamFn;
+	private streamFunctionOverridden: boolean;
+	private readonly getApiKey?: AgentLoopConfig["getApiKey"];
+	private readonly transformContext?: AgentLoopConfig["transformContext"];
+	private readonly shouldStopAfterTurn?: AgentLoopConfig["shouldStopAfterTurn"];
+	private readonly prepareNextTurn?: AgentLoopConfig["prepareNextTurn"];
+	private beforeToolCall: AgentLoopConfig["beforeToolCall"];
+	private afterToolCall: AgentLoopConfig["afterToolCall"];
+	private eventTransform?: (event: AgentEvent) => AgentEvent | Promise<AgentEvent>;
+	private readonly compatibilityWriter?: HarnessCompatibilityWriter;
+	private contextPreparation?: HarnessContextPreparation;
+	private streamRequestPreparation?: HarnessStreamRequestPreparation;
+	private compactionHooks?: HarnessCompactionHooks;
+	private navigationHooks?: HarnessNavigationHooks;
+	private contextSnapshotIdForOperation?: (operationId: string, purpose: HarnessContextPurpose) => string | undefined;
 	private readonly toolExecution: "sequential" | "parallel";
 	private foundationExecution?: AgentHarnessFoundationExecution;
 	private readonly artifactStore?: ArtifactStoreProvider;
 	private foundationSessionId?: string;
 	private toolPipeline?: FoundationToolPipelineV1;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
-	private readonly foundationProvider?: TaskExecutorProvider;
+	private foundationProvider?: TaskExecutorProvider;
 	private readonly foundationModelCallAdapter: FoundationHostModelCallAdapterV1;
 	private readonly foundationOwnerId?: string;
 	private readonly terminalToolFailureOperations = new Set<string>();
@@ -903,12 +1100,20 @@ export class AgentHarness implements AgentLane {
 	private readonly laneReductions = new Map<string, LaneReductionResult>();
 	private readonly mutationTails = new Map<string, Promise<void>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
+	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
+	private readonly pendingThinkingLevels = new Map<string, ThinkingLevel>();
+	private readonly foundationToolHookResults = new Map<string, AfterToolCallResult>();
 	private sessionSnapshot: SessionSnapshot = { lanes: [], faulted: false };
 	private readonly assistantEntries = new Map<string, string>();
+	private readonly contextPreparationErrors = new Map<string, unknown>();
 	private closed = false;
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private faulted = false;
+	private retryAttemptValue = 0;
+	private readonly retryCancelledOperations = new Set<string>();
+	private readonly pendingPromptEvents = new Set<string>();
+	private overflowRecoveryAttempted = false;
 
 	private constructor(options: AgentHarnessOptions) {
 		this.durableSession = options.session;
@@ -917,7 +1122,7 @@ export class AgentHarness implements AgentLane {
 			throw new SessionLedgerBindingError("AgentHarness T5 authority must use the supplied Session");
 		}
 		const foundationOwnerId =
-			options.foundationExecution === undefined
+			options.foundationExecution === undefined && options.foundationProvider === undefined
 				? undefined
 				: options.t5Options?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
 		this.foundationOwnerId = foundationOwnerId;
@@ -953,10 +1158,23 @@ export class AgentHarness implements AgentLane {
 		this.systemPromptSource = options.systemPrompt;
 		this.toProviderMessages = options.toProviderMessages ?? convertToLlm;
 		this.entryProjectors = { ...(options.entryProjectors ?? {}) };
+		this.streamFunctionValue = options.streamFunction;
+		this.streamFunctionOverridden = options.streamFunctionOverridden ?? options.streamFunction !== undefined;
+		this.getApiKey = options.getApiKey;
+		this.transformContext = options.transformContext;
+		this.shouldStopAfterTurn = options.shouldStopAfterTurn;
+		this.prepareNextTurn = options.prepareNextTurn;
+		this.beforeToolCall = options.beforeToolCall;
+		this.afterToolCall = options.afterToolCall;
+		this.compatibilityWriter = options.compatibilityWriter;
+		this.contextPreparation = options.contextPreparation;
+		this.streamRequestPreparation = options.streamRequestPreparation;
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.foundationExecution = options.foundationExecution === undefined ? undefined : structuredClone(options.foundationExecution);
 		this.foundationProvider = options.foundationProvider;
-		this.foundationModelCallAdapter = options.foundationModelCallAdapter ?? createFoundationHostModelCallAdapter(options.models);
+		this.foundationModelCallAdapter = options.foundationModelCallAdapter ?? createFoundationHostModelCallAdapter({
+			streamSimple: (model, context, streamOptions) => this.streamFunctionValue?.(model, context, streamOptions) ?? options.models.streamSimple(model, context, streamOptions),
+		});
 		this.artifactStore = options.artifactStore;
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
@@ -976,6 +1194,241 @@ export class AgentHarness implements AgentLane {
 			await harness.releaseOwnedT5Lease();
 			throw error;
 		}
+	}
+
+	/** Synchronous composition for legacy constructors; the first operation still reduces the durable Session. */
+	static createUnrestored(options: AgentHarnessOptions): AgentHarness {
+		return new AgentHarness(options);
+	}
+
+	get currentModel(): Model<Api> {
+		const route = this.foundationExecution?.binding.modelRoute;
+		const configured = this.laneReductions.get("main")?.effectiveConfiguration.model;
+		const provider = route?.provider ?? configured?.provider ?? this.defaultModel.provider;
+		const modelId = route?.model ?? configured?.modelId ?? this.defaultModel.id;
+		return this.defaultModel.provider === provider && this.defaultModel.id === modelId
+			? this.defaultModel
+			: this.models.getModel(provider, modelId) ?? this.defaultModel;
+	}
+	get hasModel(): boolean { return this.modelAvailable; }
+	get currentThinkingLevel(): ThinkingLevel {
+		const pending = this.pendingThinkingLevels.get("main");
+		if (pending !== undefined) return pending;
+		const route = this.foundationExecution?.binding.modelRoute;
+		if (route !== undefined) return route.effort !== undefined && isThinkingLevel(route.effort) ? route.effort : "off";
+		const configured = this.laneReductions.get("main")?.effectiveConfiguration.thinkingLevel;
+		return configured !== undefined && isThinkingLevel(configured) ? configured : this.defaultThinkingLevel;
+	}
+	get currentSteeringMode(): QueueMode { return this.steeringMode; }
+	get currentFollowUpMode(): QueueMode { return this.followUpMode; }
+	get activeToolNamesSnapshot(): readonly string[] {
+		return [...(this.laneReductions.get("main")?.effectiveConfiguration.activeToolNames ?? this.defaultActiveToolNames)];
+	}
+	get toolsSnapshot(): readonly HarnessTool[] { return [...this.tools]; }
+	get isRunning(): boolean { return this.activeOperations.size > 0 || this.sessionSnapshot.lanes.some((lane) => lane.operation !== null); }
+	get currentSignal(): AbortSignal | undefined { return this.activeOperations.values().next().value?.controller.signal; }
+	get hasCustomStreamFunction(): boolean { return this.streamFunctionOverridden; }
+	get streamFunction(): StreamFn { return this.streamFunctionValue ?? ((model, context, options) => this.models.streamSimple(model, context, options)); }
+	get pendingMessageCount(): number {
+		return this.queuedItems("main", "steer").length + this.queuedItems("main", "followUp").length + this.queuedItems("main", "nextRun").length;
+	}
+	get durablePendingMessageCount(): number {
+		const queues = this.laneSnapshots.get("main")?.queues;
+		return queues === undefined ? 0 : queues.steer.length + queues.followUp.length + queues.nextRun.length;
+	}
+	get hasQueuedMessages(): boolean { return this.pendingMessageCount > 0; }
+	get steeringMessagesSnapshot(): readonly AgentMessage[] { return this.queuedItems("main", "steer").map((item) => structuredClone(item.message)); }
+	get followUpMessagesSnapshot(): readonly AgentMessage[] { return this.queuedItems("main", "followUp").map((item) => structuredClone(item.message)); }
+	get currentOperationKind(): "run" | "compaction" | "navigation" | undefined { return this.laneSnapshots.get("main")?.operation?.kind; }
+	get retryAttempt(): number { return this.retryAttemptValue; }
+	get isRetrying(): boolean { return false; }
+	get hasPendingExternalMessages(): boolean { return false; }
+
+	setStreamFunction(streamFunction: StreamFn): void {
+		this.ensureOpen();
+		this.streamFunctionValue = streamFunction;
+		this.streamFunctionOverridden = true;
+	}
+
+	setStreamRequestPreparation(preparation: HarnessStreamRequestPreparation | undefined): void {
+		this.ensureOpen();
+		this.streamRequestPreparation = preparation;
+	}
+
+	setCompactionHooks(hooks: HarnessCompactionHooks | undefined): void {
+		this.ensureOpen();
+		this.compactionHooks = hooks;
+	}
+
+	setNavigationHooks(hooks: HarnessNavigationHooks | undefined): void {
+		this.ensureOpen();
+		this.navigationHooks = hooks;
+	}
+
+	setContextPreparation(preparation: HarnessContextPreparation | undefined): void {
+		this.ensureOpen();
+		this.contextPreparation = preparation;
+	}
+
+	setContextSnapshotIdForOperation(
+		reader: ((operationId: string, purpose: HarnessContextPurpose) => string | undefined) | undefined,
+	): void {
+		this.ensureOpen();
+		this.contextSnapshotIdForOperation = reader;
+	}
+
+	setEventTransform(transform: ((event: AgentEvent) => AgentEvent | Promise<AgentEvent>) | undefined): void {
+		this.ensureOpen();
+		this.eventTransform = transform;
+	}
+
+	setToolCallHooks(hooks: { beforeToolCall?: AgentLoopConfig["beforeToolCall"]; afterToolCall?: AgentLoopConfig["afterToolCall"] }): void {
+		this.ensureOpen();
+		const previousBefore = this.beforeToolCall;
+		const previousAfter = this.afterToolCall;
+		this.beforeToolCall = hooks.beforeToolCall === undefined
+			? previousBefore
+			: async (context, signal) => {
+					const previous = await previousBefore?.(context, signal);
+					if (previous?.block === true) return previous;
+					return (await hooks.beforeToolCall?.(context, signal)) ?? previous;
+				};
+		this.afterToolCall = hooks.afterToolCall === undefined
+			? previousAfter
+			: async (context, signal) => {
+					const previous = await previousAfter?.(context, signal);
+					const nextContext = previous === undefined ? context : { ...context, result: { ...context.result, ...previous } };
+					const next = await hooks.afterToolCall?.(nextContext, signal);
+					return next === undefined ? previous : { ...previous, ...next };
+				};
+	}
+
+	setEntryProjectors(projectors: Record<string, EntryProjector>): void {
+		this.ensureOpen();
+		this.entryProjectors = { ...this.entryProjectors, ...projectors };
+	}
+
+	async getSystemPrompt(): Promise<string> {
+		return this.systemPrompt();
+	}
+
+	clearModel(): void {
+		this.ensureOpen();
+		this.modelAvailable = false;
+	}
+
+	recordCustomEntry(customType: string, data?: unknown): string {
+		this.ensureOpen();
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		assertJsonSerializable(data);
+		return this.compatibilityWriter.recordCustomEntry(customType, data);
+	}
+
+	setSessionNameSync(name: string | undefined): void {
+		this.ensureOpen();
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		this.compatibilityWriter.setSessionName(name);
+	}
+
+	setSessionLabelSync(targetId: string, label: string | undefined): void {
+		this.ensureOpen();
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		this.compatibilityWriter.setSessionLabel(targetId, label);
+	}
+
+	recordCompatibilityMessage(message: AgentMessage): void {
+		this.ensureOpen();
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		const snapshot = structuredClone(message);
+		const written = this.compatibilityWriter.recordMessage(snapshot);
+		void Promise.resolve(written).then(() => {
+			this.eventBus.emit({ type: "agent_event", event: { type: "message_start", message: structuredClone(snapshot) } });
+			this.eventBus.emit({ type: "agent_event", event: { type: "message_end", message: structuredClone(snapshot) } });
+		});
+	}
+
+	emitBashExecutionUpdate(id: string | undefined, delta: string): void {
+		if (this.closed) return;
+		this.eventBus.emit({ type: "bash_execution_update", ...(id === undefined ? {} : { id }), delta });
+	}
+
+	trackCompatibilityTask(task: Promise<unknown>): void {
+		void task.catch(() => undefined);
+	}
+
+	async appendCustomEntry(customType: string, data?: unknown): Promise<string> {
+		this.ensureOpen();
+		assertJsonSerializable(data);
+		return this.durableSession.view("main").appendCustomEntry(customType, data);
+	}
+
+	findEntries(query?: EntryQuery): Promise<Entry[]> {
+		return this.durableSession.findEntries(query);
+	}
+
+	async promptWithPreflight(
+		text: string,
+		preflight: (signal: AbortSignal) => void | Promise<void>,
+		options: { images?: ImageContent[]; signal?: AbortSignal; deadlineMs?: number; runId?: string } = {},
+	): Promise<RunResult> {
+		return this.runWithPreflight(preflight, options, () => this.promptImpl("main", text, options.images, options.runId));
+	}
+
+	async continueWithPreflight(
+		preflight: (signal: AbortSignal) => void | Promise<void>,
+		options: { signal?: AbortSignal; deadlineMs?: number; runId?: string } = {},
+	): Promise<RunResult> {
+		return this.runWithPreflight(preflight, options, () => this.promptImpl("main", [], undefined, options.runId, true));
+	}
+
+	beginPromptCompactionCycle(): void {
+		this.overflowRecoveryAttempted = false;
+	}
+
+	private async runWithPreflight(
+		preflight: (signal: AbortSignal) => void | Promise<void>,
+		options: { signal?: AbortSignal; deadlineMs?: number },
+		operation: () => Promise<RunResult>,
+	): Promise<RunResult> {
+		const controller = new AbortController();
+		const abort = (): void => controller.abort(options.signal?.reason);
+		options.signal?.addEventListener("abort", abort, { once: true });
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		if (options.deadlineMs !== undefined) deadline = setTimeout(() => controller.abort(new DOMException("Operation deadline exceeded", "TimeoutError")), options.deadlineMs);
+		try {
+			await preflight(controller.signal);
+			if (controller.signal.aborted) throw controller.signal.reason;
+			const pending = operation();
+			const onAbort = (): void => { void this.abort(); };
+			controller.signal.addEventListener("abort", onAbort, { once: true });
+			try { return await pending; } finally { controller.signal.removeEventListener("abort", onAbort); }
+		} finally {
+			options.signal?.removeEventListener("abort", abort);
+			if (deadline !== undefined) clearTimeout(deadline);
+		}
+	}
+
+	async cancelAllQueued(): Promise<{ steering: string[]; followUp: string[] }> {
+		await this.refreshSnapshots();
+		const queues = this.laneSnapshots.get("main")?.queues;
+		const steering = queues?.steer.map((item) => messageText(item.message)) ?? [];
+		const followUp = queues?.followUp.map((item) => messageText(item.message)) ?? [];
+		for (const item of [...(queues?.steer ?? []), ...(queues?.followUp ?? []), ...(queues?.nextRun ?? [])]) {
+			await this.cancelQueued(item.entryId);
+		}
+		return { steering, followUp };
+	}
+
+	async abortRetry(): Promise<void> {
+		if (this.retryAttemptValue === 0) return;
+		for (const operation of this.activeOperations.values()) {
+			this.retryCancelledOperations.add(operation.id);
+			operation.controller.abort(new Error("Retry cancelled"));
+		}
+	}
+
+	recordExternalMessage(message: AgentMessage): void {
+		this.recordCompatibilityMessage(message);
 	}
 
 	private enqueue<T>(lane: string, operation: () => Promise<T>): Promise<T> {
@@ -1000,6 +1453,23 @@ export class AgentHarness implements AgentLane {
 		return operation();
 	}
 
+	private queuedItems(lane: string, queue: PendingQueueMutation["queue"]): QueuedItem[] {
+		const durable = this.laneSnapshots.get(lane)?.queues[queue] ?? [];
+		const ids = new Set(durable.map((item) => item.entryId));
+		const pending = [...this.pendingQueueMutations.values()]
+			.filter((item) => item.lane === lane && item.queue === queue && !ids.has(item.target.id))
+			.map((item) => ({ entryId: item.target.id, message: item.target.message }));
+		return [...durable, ...pending];
+	}
+
+	private emitQueueUpdate(): void {
+		this.eventBus.emit({
+			type: "queue_update",
+			steering: this.queuedItems("main", "steer").map((item) => messageText(item.message)),
+			followUp: this.queuedItems("main", "followUp").map((item) => messageText(item.message)),
+		});
+	}
+
 	private closedError(): Closed {
 		return new Closed({ message: "AgentHarness is closed" });
 	}
@@ -1014,7 +1484,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined) return;
 		const checkedTask = validateTaskEnvelopeV1(execution.task);
 		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
-		const persistedTask = await persistTaskEnvelopeBeforeResolverV1(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId });
+		const persistedTask = await persistTaskEnvelopeBeforeResolverV1(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		if (!persistedTask.ok) throw new HarnessFault("Foundation execution TaskEnvelope could not be durably established before binding resolution", persistedTask.error);
 		const checkedDispatch = validateDispatchV1(execution.dispatch);
 		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
@@ -1088,11 +1558,73 @@ export class AgentHarness implements AgentLane {
 				correlationFor: (_kind, value) => this.toolCorrelation(value),
 				fencingToken: async () => (await this.t5.writer.ensureLease()).fencingToken,
 			});
+			const pipelineOptions = this.toolPipelineOptions ?? {};
+			const quotaAccount = pipelineOptions.quotaAccount ?? new FoundationToolQuotaAccountV1({
+				budget: normalizedExecution.binding.budget,
+				maxToolCalls: pipelineOptions.maxToolCalls,
+				idGenerator: pipelineOptions.idGenerator,
+				now: pipelineOptions.now,
+			});
+			const durableAuthority = (field: string, objectType: string) => async (scope: ToolGateScopeV1) => {
+				const source = scope.context.binding.sourceTrace.find((candidate) => candidate.field === field);
+				const reference = {
+					schemaVersion: 1 as const,
+					type: objectType,
+					id: source?.referenceId ?? `missing:${field}`,
+					revision: source?.revision ?? 0,
+				};
+				const fact = source === undefined ? undefined : await this.durableSession.getFoundationObject(objectType, source.referenceId);
+				return Result.ok({
+					allowed: fact?.kind === "fact" && fact.revision === source?.revision,
+					reference,
+					...(fact?.kind === "fact" && fact.revision === source?.revision ? {} : { reason: `${field} guard authority is not durably bound` }),
+				});
+			};
+			const guard = pipelineOptions.guard ?? new FoundationToolGuardV1({
+				policy: { check: durableAuthority("policy", "policy_binding") },
+				approval: { check: durableAuthority("gate", "task_gate_binding") },
+				sandbox: { check: durableAuthority("sandbox", "sandbox_binding") },
+				quota: { account: quotaAccount },
+			});
 			this.toolPipeline = new FoundationToolPipelineV1({
-				...(this.toolPipelineOptions ?? {}),
+				...pipelineOptions,
 				registry,
 				storage,
+				quotaAccount,
+				guard,
 			});
+		}
+	}
+
+	/**
+	 * Activate the next immutable Prompt Task identity on this Harness.
+	 *
+	 * The Harness remains the single long-lived loop, queue, transcript, signal,
+	 * and event authority. Rebinding is allowed only at an idle boundary; product
+	 * entry points cannot create a second Harness for the next prompt.
+	 */
+	async activateFoundationExecution(
+		execution: AgentHarnessFoundationExecution,
+		provider?: TaskExecutorProvider,
+	): Promise<void> {
+		this.ensureOpen();
+		await this.drainMutations("main");
+		await this.refreshSnapshots();
+		const mainQueues = this.laneSnapshots.get("main")?.queues;
+		const hasQueuedMessages = mainQueues !== undefined && (mainQueues.steer.length > 0 || mainQueues.followUp.length > 0 || mainQueues.nextRun.length > 0);
+		if (this.activeOperations.size > 0 || this.sessionSnapshot.lanes.some((lane) => lane.operation !== null) || hasQueuedMessages) {
+			throw new HarnessFault("Foundation execution can change only at an idle queue boundary", undefined);
+		}
+		const previous = this.foundationExecution;
+		const previousProvider = this.foundationProvider;
+		this.foundationExecution = structuredClone(execution);
+		this.foundationProvider = provider ?? previousProvider;
+		try {
+			await this.initializeFoundationExecution();
+		} catch (error) {
+			this.foundationExecution = previous;
+			this.foundationProvider = previousProvider;
+			throw error;
 		}
 	}
 
@@ -1235,6 +1767,7 @@ export class AgentHarness implements AgentLane {
 			route: routeValue,
 			routeDigest: sha256HexValue(canonicalFoundationJson(routeValue)),
 			selectedTarget,
+			...(typeof payload?.contextSnapshotId === "string" ? { contextSnapshotId: payload.contextSnapshotId } : {}),
 			correlation: correlation as unknown as ExecutionCorrelationV1,
 		};
 		await this.persistFoundationModelInvocationFact(invocation, "unknown", emptyModelUsage(), "recovery_required", "unknown", "model_invocation_recovery_required", "A model invocation intent had no terminal fact during recovery");
@@ -1246,14 +1779,18 @@ export class AgentHarness implements AgentLane {
 		const records = await this.foundationModelInvocationRecords(runId);
 		const usage = this.foundationModelUsage(await this.foundationModelBindingInvocationRecords());
 		const intents = records.filter((record) => record.kind === "intent");
-		for (const intent of intents) {
+		for (const [index, intent] of intents.entries()) {
 			const fact = records.find((record) => record.kind === "fact" && record.objectId === intent.objectId);
 			const status = fact?.kind === "fact" ? asRecord(fact.payload)?.status : undefined;
 			if (fact === undefined) {
 				await this.recoverOrphanedModelInvocation(intent);
 				throw new FoundationError("model_invocation_recovery_required", "A model invocation intent had no terminal fact during recovery");
 			}
-			if (status === "pending" || status === "unknown") throw new FoundationError("model_invocation_recovery_required", "A pending or unknown model invocation cannot be replayed");
+			const supersededBySuccess = intents.slice(index + 1).some((laterIntent) => {
+				const laterFact = records.find((record) => record.kind === "fact" && record.objectId === laterIntent.objectId);
+				return laterFact?.kind === "fact" && asRecord(laterFact.payload)?.status === "succeeded";
+			});
+			if (status === "pending" || (status === "unknown" && this.retryAttemptValue === 0 && !supersededBySuccess)) throw new FoundationError("model_invocation_recovery_required", "A pending or unknown model invocation cannot be replayed");
 		}
 		const budget = this.foundationModelBudget(usage);
 		const ordinal = intents.length;
@@ -1268,6 +1805,7 @@ export class AgentHarness implements AgentLane {
 		});
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for model invocation", undefined);
 		const route = this.foundationModelRoute();
+		const contextSnapshotId = this.contextSnapshotIdForOperation?.(runId, "agent_turn");
 		const invocation: FoundationModelInvocationV1 = {
 			invocationId,
 			turnId,
@@ -1276,6 +1814,7 @@ export class AgentHarness implements AgentLane {
 			route,
 			routeDigest: sha256HexValue(canonicalFoundationJson(route)),
 			selectedTarget: this.foundationJson({ provider: execution.binding.modelRoute.provider, model: execution.binding.modelRoute.model }, "model invocation selected target"),
+			...(contextSnapshotId === undefined ? {} : { contextSnapshotId }),
 			correlation,
 		};
 		const existing = records.filter((record) => record.objectId === invocationId);
@@ -1289,6 +1828,7 @@ export class AgentHarness implements AgentLane {
 				&& payload.routeDigest === invocation.routeDigest
 				&& canonicalFoundationJson(payload.selectedTarget) === canonicalFoundationJson(invocation.selectedTarget)
 				&& canonicalFoundationJson(payload.route) === canonicalFoundationJson(invocation.route)
+				&& payload.contextSnapshotId === invocation.contextSnapshotId
 				&& canonicalFoundationJson(payload.correlation) === canonicalFoundationJson(invocation.correlation);
 			if (!matches) throw new HarnessFault("Existing model invocation intent conflicts with its immutable reconstruction", undefined);
 			const fact = existing.find((record) => record.kind === "fact");
@@ -1305,7 +1845,7 @@ export class AgentHarness implements AgentLane {
 			objectId: invocationId,
 			clientRequestId: `model-invocation:${invocationId}`,
 			intent: "create",
-			payload: this.foundationJson({ schemaVersion: 1, invocationId, status: "pending", turnId, bindingDigest: invocation.bindingDigest, routeDigest: invocation.routeDigest, selectedTarget: invocation.selectedTarget, route: invocation.route, correlation }, "model invocation intent"),
+			payload: this.foundationJson({ schemaVersion: 1, invocationId, status: "pending", turnId, bindingDigest: invocation.bindingDigest, routeDigest: invocation.routeDigest, selectedTarget: invocation.selectedTarget, route: invocation.route, ...(invocation.contextSnapshotId === undefined ? {} : { contextSnapshotId: invocation.contextSnapshotId }), correlation }, "model invocation intent"),
 			correlation,
 		});
 		return { invocation, ...budget };
@@ -1332,6 +1872,7 @@ export class AgentHarness implements AgentLane {
 			routeDigest: invocation.routeDigest,
 			selectedTarget: invocation.selectedTarget,
 			route: invocation.route,
+			...(invocation.contextSnapshotId === undefined ? {} : { contextSnapshotId: invocation.contextSnapshotId }),
 			correlation: invocation.correlation,
 			sideEffectState,
 			...(stopReason === undefined ? {} : { stopReason }),
@@ -1387,14 +1928,10 @@ export class AgentHarness implements AgentLane {
 			}
 			if (await this.foundationModelPreflightError(lane, runId) !== undefined) return true;
 		}
-		const intents = records.filter((record) => record.kind === "intent");
-		for (const intent of intents) {
-			const fact = records.find((record) => record.kind === "fact" && record.objectId === intent.objectId);
-			if (fact === undefined) return true;
-			const status = fact.kind === "fact" ? asRecord(fact.payload)?.status : undefined;
-			if (status !== "succeeded") return true;
-		}
-		return false;
+		const latestIntent = records.filter((record) => record.kind === "intent").at(-1);
+		if (latestIntent === undefined) return false;
+		const fact = records.find((record) => record.kind === "fact" && record.objectId === latestIntent.objectId);
+		return fact === undefined || (fact.kind === "fact" && asRecord(fact.payload)?.status !== "succeeded");
 	}
 
 	private async foundationModelTerminalError(runId: string): Promise<OperationError | undefined> {
@@ -1415,7 +1952,12 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async streamFoundationModel(lane: string, runId: string, model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessageEventStream> {
-		if (this.foundationExecution === undefined) return this.models.streamSimple(model, context, options);
+		const preparedRequest = this.streamRequestPreparation === undefined
+			? { model, options }
+			: await this.streamRequestPreparation({ model, options });
+		model = preparedRequest.model;
+		options = preparedRequest.options;
+		if (this.foundationExecution === undefined) return this.streamFunctionValue?.(model, context, options) ?? this.models.streamSimple(model, context, options);
 		const modelRequest = { route: this.foundationExecution.binding.modelRoute, model, context, options, budget: this.foundationExecution.binding.budget };
 		const validationError = this.foundationModelCallAdapter.validate(modelRequest);
 		if (validationError !== undefined) return foundationModelCallErrorStream(validationError, model);
@@ -1430,7 +1972,7 @@ export class AgentHarness implements AgentLane {
 		const callOptions = this.modelInvocationOptions(options, preparation.remainingOutputTokens);
 		let source: AssistantMessageEventStream;
 		try {
-			source = this.foundationModelCallAdapter.stream({ ...modelRequest, options: callOptions });
+			source = await this.foundationModelCallAdapter.stream({ ...modelRequest, options: callOptions });
 		} catch (error) {
 			const foundationError = error instanceof FoundationError ? error : toFoundationError(error, "unsupported_feature");
 			await this.persistFoundationModelInvocationFact(invocation, "failed", emptyModelUsage(), "error", "unknown", foundationError.code, foundationError.message);
@@ -1443,13 +1985,13 @@ export class AgentHarness implements AgentLane {
 					if (event.type === "done") {
 						const status: FoundationModelInvocationStatusV1 = event.message.stopReason === "aborted" ? "unknown" : event.message.stopReason === "error" ? "failed" : "succeeded";
 						await this.persistFoundationModelInvocationFact(invocation, status, event.message.usage, event.message.stopReason, status === "succeeded" ? "none" : "unknown", status === "failed" ? "provider_error" : status === "unknown" ? "model_stream_unknown" : undefined, event.message.errorMessage);
-						output.push(event);
+						output.push({ ...event, message: durableAssistantMessage(event.message) });
 						output.end();
 						return;
 					}
 					if (event.type === "error") {
 						await this.persistFoundationModelInvocationFact(invocation, "unknown", event.error.usage, "error", "unknown", "model_stream_unknown", event.error.errorMessage);
-						output.push(event);
+						output.push({ ...event, error: durableAssistantMessage(event.error) });
 						output.end();
 						return;
 					}
@@ -1468,6 +2010,14 @@ export class AgentHarness implements AgentLane {
 			}
 		})();
 		return output;
+	}
+
+	private completionProvider(lane: string, runId: string): Pick<Models, "completeSimple"> {
+		if (this.foundationExecution === undefined && this.streamRequestPreparation === undefined) return this.models;
+		return {
+			completeSimple: async (model, context, options) =>
+				(await this.streamFoundationModel(lane, runId, model, context, options)).result(),
+		};
 	}
 
 	private async appendFoundation(record: ProvisionedFoundationRecordV1): Promise<FoundationRecordV1> {
@@ -1540,7 +2090,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while starting Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const started = await settlement.startDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!started.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt start: ${started.error.message}`, started.error);
 	}
@@ -1552,7 +2102,7 @@ export class AgentHarness implements AgentLane {
 		if (await this.foundationModelInvocationBlocksSettlement(lane, runId)) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while resuming Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const resumed = await settlement.resumeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!resumed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt resume: ${resumed.error.message}`, resumed.error);
 	}
@@ -1563,7 +2113,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while cancelling Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const cancelled = await settlement.cancelAttempt({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!cancelled.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt cancellation: ${cancelled.error.message}`, cancelled.error);
 	}
@@ -1578,10 +2128,10 @@ export class AgentHarness implements AgentLane {
 		const execution = this.foundationExecution;
 		const provider = this.foundationProvider;
 		if (provider === undefined) throw new HarnessFault("Foundation execution requires a trusted provider consumer", undefined);
-		if (await this.foundationModelInvocationBlocksSettlement(lane, runId)) return undefined;
+		if (this.compatibilityWriter === undefined && await this.foundationModelInvocationBlocksSettlement(lane, runId)) return undefined;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for provider consumption", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId });
+		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const executed = await settlement.executeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!executed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Dispatch: ${executed.error.message}`, executed.error);
 		const attemptReceipt = executed.value.receipt;
@@ -1674,7 +2224,7 @@ export class AgentHarness implements AgentLane {
 					continue;
 				}
 				const checkedEntry = validateFoundationToolResultEntryV1(result.data);
-				if (!checkedEntry.ok || checkedEntry.value.runId !== runId || checkedEntry.value.operationId !== runId || checkedEntry.value.toolCallId !== start.toolCallId || checkedEntry.value.toolName !== start.toolName || checkedEntry.value.isError || canonicalFoundationJson(checkedEntry.value.result) !== canonicalFoundationJson(durableResult)) {
+				if (!checkedEntry.ok || checkedEntry.value.runId !== runId || checkedEntry.value.operationId !== runId || checkedEntry.value.toolCallId !== start.toolCallId || checkedEntry.value.toolName !== start.toolName || canonicalFoundationJson(checkedEntry.value.result) !== canonicalFoundationJson(durableResult)) {
 					markLedgerConflict();
 				}
 				continue;
@@ -1692,9 +2242,9 @@ export class AgentHarness implements AgentLane {
 				failed = true;
 				mergeSideEffectState("side_effect_unknown");
 				recordError({ code: "side_effect_unknown", message: "Durable image tool result is not ArtifactRef-backed" });
-			} else if (result.message.isError) {
+			} else if (result.message.isError && receipt?.outcome === "succeeded") {
 				failed = true;
-				if (receipt?.outcome === "succeeded") {
+				if (receipt.outcome === "succeeded") {
 					mergeSideEffectState("side_effect_unknown");
 					if (receipt.result !== undefined) markLedgerConflict();
 				}
@@ -2058,14 +2608,25 @@ export class AgentHarness implements AgentLane {
 		}];
 	}
 
-	private async contextForOperation(lane: string, operationId?: string): Promise<{ context: AgentContext; reduction: LaneReductionResult; model: Model<Api>; thinkingLevel: ThinkingLevel; activeToolNames: string[] }> {
+	private async contextForOperation(
+		lane: string,
+		operationId?: string,
+		purpose: HarnessContextPurpose = "agent_turn",
+	): Promise<{ context: AgentContext; reduction: LaneReductionResult; model: Model<Api>; thinkingLevel: ThinkingLevel; activeToolNames: string[] }> {
 		const reduction = await this.getLaneReduction(lane);
 		const laneEntries = await this.getLaneEntries(lane);
-		const context = await buildSessionContextAsync(laneEntries, { entryProjectors: this.projectorMap(lane) });
+		const projectedMessages = await this.contextMessages(lane, laneEntries);
+		const operation = reduction.laneState.operation;
+		const isContinuation = operation !== null && operation.id === operationId && operation.intent.kind === "run" && operation.intent.continuation === true;
+		const messages = isContinuation && projectedMessages.at(-1)?.role === "assistant"
+			? projectedMessages.slice(0, -1)
+			: projectedMessages;
 		const route = this.foundationExecution?.binding.modelRoute;
 		const provider = route?.provider ?? reduction.effectiveConfiguration.model.provider;
 		const modelId = route?.model ?? reduction.effectiveConfiguration.model.modelId;
-		const model = this.models.getModel(provider, modelId);
+		const model = this.defaultModel.provider === provider && this.defaultModel.id === modelId
+			? this.defaultModel
+			: this.models.getModel(provider, modelId);
 		if (!model) throw new MissingIdentities({ lane, tools: [], models: [`${provider}/${modelId}`,], message: "Configured model is unavailable" });
 		const thinkingLevel = route === undefined
 			? isThinkingLevel(reduction.effectiveConfiguration.thinkingLevel) ? reduction.effectiveConfiguration.thinkingLevel : this.defaultThinkingLevel
@@ -2073,19 +2634,37 @@ export class AgentHarness implements AgentLane {
 		const activeToolNames = [...reduction.effectiveConfiguration.activeToolNames];
 		const pipelineOperationId = operationId ?? reduction.laneState.operation?.id ?? "context";
 		const activeTools = this.tools.filter((tool) => activeToolNames.includes(tool.name));
-		return {
-			context: {
+		const context: AgentContext = {
 				systemPrompt: await this.systemPrompt(),
-				messages: context.messages,
+				messages,
 				tools: this.foundationExecution === undefined || this.toolPipeline === undefined
 					? activeTools
 					: activeTools.map((tool) => this.pipelineTool(tool, lane, pipelineOperationId)),
-			},
+			};
+		const preparedContext = this.contextPreparation === undefined || purpose === "agent_turn"
+			? context
+			: await this.contextPreparation({ purpose, operationId: pipelineOperationId, model, context, signal: this.activeOperations.get(pipelineOperationId)?.controller.signal });
+		return {
+			context: preparedContext,
 			reduction,
 			model,
 			thinkingLevel,
 			activeToolNames,
 		};
+	}
+
+	private async contextMessages(lane: string, laneEntries: Entry[]): Promise<AgentMessage[]> {
+		const context = await buildSessionContextAsync(laneEntries, {
+			entryProjectors: this.projectorMap(lane),
+			messageProjector: (entry) => this.projectT5ToolResultEntry(entry),
+		});
+		return context.messages;
+	}
+
+	private async projectT5ToolResultEntry(entry: MessageEntry): Promise<readonly AgentMessage[] | undefined> {
+		if (entry.message.role !== "toolResult") return undefined;
+		const materialized = await this.t5.materializeToolResult(entry.id);
+		return materialized === undefined ? undefined : [materialized];
 	}
 
 	private createToolRegistry(): ToolDefinitionRegistryV1 {
@@ -2095,6 +2674,36 @@ export class AgentHarness implements AgentLane {
 				return tool === undefined
 					? Result.err(new FoundationError("invalid_identifier", `tool ${toolName} is not registered`))
 					: Result.ok(this.toolDefinition(tool));
+			},
+		};
+	}
+
+	private foundationToolHookKey(operationId: string | undefined, toolCallId: string): string {
+		return `${operationId ?? "unknown"}:${toolCallId}`;
+	}
+
+	private async toolHookContext(
+		lane: string,
+		toolCallId: string,
+		toolName: string,
+		args: Readonly<Record<string, unknown>>,
+	): Promise<BeforeToolCallContext> {
+		const messages = await this.contextMessages(lane, await this.getLaneEntries(lane));
+		const assistantMessage = [...messages].reverse().find(
+			(message): message is AssistantMessage => message.role === "assistant" && message.content.some((content) => content.type === "toolCall" && content.id === toolCallId),
+		);
+		if (assistantMessage === undefined) throw new HarnessFault(`Tool hook ${toolCallId} has no requesting assistant message`, undefined);
+		const toolCall = assistantMessage.content.find(
+			(content): content is AgentToolCall => content.type === "toolCall" && content.id === toolCallId,
+		) ?? { type: "toolCall", id: toolCallId, name: toolName, arguments: { ...args } };
+		return {
+			assistantMessage,
+			toolCall,
+			args: { ...args },
+			context: {
+				systemPrompt: await this.systemPrompt(),
+				messages,
+				tools: [...this.tools],
 			},
 		};
 	}
@@ -2116,11 +2725,57 @@ export class AgentHarness implements AgentLane {
 			capabilities: [...(metadata.capabilities ?? [])],
 			parameters: tool.parameters,
 			executionMode: tool.executionMode,
+			preHook: async (scope) => {
+				if (this.beforeToolCall === undefined) return;
+				const lane = scope.context.laneId ?? "main";
+				const hookContext = await this.toolHookContext(lane, scope.intent.toolCallId, tool.name, scope.args);
+				const result = await this.beforeToolCall(hookContext);
+				if (result?.block !== true) return;
+				this.foundationToolHookResults.set(
+					this.foundationToolHookKey(scope.context.operationId, scope.intent.toolCallId),
+					{
+						content: [{ type: "text", text: result.reason || "Tool execution was blocked" }],
+						isError: true,
+						...(result.terminate === undefined ? {} : { terminate: result.terminate }),
+					},
+				);
+				return Result.err(new FoundationError("tool_pre_hook_denied", result.reason || "Tool execution was blocked"));
+			},
+			postProcessor: async (scope) => {
+				if (this.afterToolCall === undefined || scope.execution.result === undefined) return undefined;
+				const restored = await restoreFoundationToolResult(scope.execution.result, this.artifactStore);
+				if (!restored.ok) return Result.err(restored.error);
+				const lane = scope.context.laneId ?? "main";
+				const beforeContext = await this.toolHookContext(lane, scope.intent.toolCallId, tool.name, scope.args);
+				const result = await this.afterToolCall({
+					...beforeContext,
+					result: restored.value,
+					isError: !scope.execution.ok,
+				});
+				if (result === undefined) return undefined;
+				this.foundationToolHookResults.set(this.foundationToolHookKey(scope.context.operationId, scope.intent.toolCallId), result);
+				const merged: AgentToolResult<unknown> = {
+					...restored.value,
+					content: result.content ?? restored.value.content,
+					...(result.details === undefined ? {} : { details: result.details }),
+					...(result.usage === undefined ? {} : { usage: result.usage }),
+				};
+				const durable = await foundationToolResultPayload(merged, this.artifactStore, this.foundationExecution?.providerId, scope.intent.toolCallId);
+				if (!durable.ok) return Result.err(durable.error);
+				return {
+					result: durable.value.result,
+					...(durable.value.artifacts.length === 0 ? {} : { artifacts: durable.value.artifacts }),
+					...(merged.usage === undefined ? {} : { usage: foundationToolUsage(merged.usage) }),
+				};
+			},
 			// AgentLoop prepares the public wrapper before invoking execute; the
 			// pipeline must not apply the transform a second time.
 			...(metadata.conflictKeys === undefined ? {} : { conflictKeys: metadata.conflictKeys }),
 			...(metadata.idempotency === undefined ? {} : { idempotency: metadata.idempotency }),
 			execute: async (args, options) => {
+				const sideEffectState = tool.sideEffectState === "none" || (tool.sideEffectState === undefined && this.compatibilityWriter !== undefined)
+					? "none"
+					: "side_effect_unknown";
 				try {
 					const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
 					const durableResult = await foundationToolResultPayload(result as AgentToolResult<unknown>, this.artifactStore, this.foundationExecution?.providerId, options.toolCallId);
@@ -2133,7 +2788,7 @@ export class AgentHarness implements AgentLane {
 					}
 					return {
 						ok: true,
-						sideEffectState: tool.sideEffectState === "none" ? "none" : "side_effect_unknown",
+						sideEffectState: sideEffectState === "none" ? "none" : "side_effect_unknown",
 						...(result.usage === undefined ? {} : { usage: foundationToolUsage(result.usage) }),
 						...(durableResult.value.artifacts.length === 0 ? {} : { artifacts: durableResult.value.artifacts }),
 						result: durableResult.value.result,
@@ -2141,7 +2796,6 @@ export class AgentHarness implements AgentLane {
 				} catch (error) {
 					const normalized = toFoundationError(error, "tool_execution_failed");
 					const publicError = normalized.toPublicExecutionError();
-					const sideEffectState = tool.sideEffectState === "none" ? "none" : "side_effect_unknown";
 					return {
 						ok: false,
 						sideEffectState,
@@ -2250,8 +2904,36 @@ export class AgentHarness implements AgentLane {
 			model,
 			reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 			retry: { ...this.retryPolicy },
+			retryCallbacks: {
+				onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) => {
+					this.retryAttemptValue = attempt;
+					this.eventBus.emit({ type: "retry_scheduled", attempt, maxAttempts, delayMs, errorMessage });
+				},
+				onRetryFinished: (success, attempt, finalError) => {
+					const retryFinalError = this.retryCancelledOperations.has(operationId) ? "Retry cancelled" : finalError;
+					this.eventBus.emit({ type: "retry_finished", success, attempt, ...(retryFinalError === undefined ? {} : { finalError: retryFinalError }) });
+					this.retryAttemptValue = 0;
+				},
+			},
+			prepareContext: this.contextPreparation === undefined
+				? undefined
+				: async (attemptContext, attemptModel, attemptSignal) => {
+					try {
+						return await this.contextPreparation!({
+							purpose: "agent_turn",
+							operationId,
+							model: attemptModel,
+							context: attemptContext,
+							signal: attemptSignal,
+						});
+					} catch (error) {
+						this.contextPreparationErrors.set(operationId, error);
+						throw error;
+					}
+				},
 			toolExecution: this.toolExecution,
 			convertToLlm: this.toProviderMessages,
+			getApiKey: this.getApiKey,
 			getSteeringMessages: async () => {
 				if (skipInitialSteeringPoll) {
 					skipInitialSteeringPoll = false;
@@ -2260,8 +2942,18 @@ export class AgentHarness implements AgentLane {
 				return this.enqueue(lane, () => this.consumeQueueMessages(lane, operationId, "steer", this.steeringMode));
 			},
 			getFollowUpMessages: async () => this.enqueue(lane, () => this.consumeQueueMessages(lane, operationId, "followUp", this.followUpMode)),
-			transformContext: async (messages) => messages,
-			shouldStopAfterTurn: () => this.terminalToolFailureOperations.has(operationId),
+			transformContext: this.transformContext ?? (async (messages) => messages),
+			beforeToolCall: this.foundationExecution === undefined ? this.beforeToolCall : undefined,
+			afterToolCall: this.foundationExecution === undefined
+				? this.afterToolCall
+				: async ({ toolCall }) => {
+					const key = this.foundationToolHookKey(operationId, toolCall.id);
+					const result = this.foundationToolHookResults.get(key);
+					this.foundationToolHookResults.delete(key);
+					return result;
+				},
+			shouldStopAfterTurn: async (messages) => this.terminalToolFailureOperations.has(operationId) || (await this.shouldStopAfterTurn?.(messages)) === true,
+			prepareNextTurn: this.prepareNextTurn,
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),
 		};
@@ -2289,12 +2981,60 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	private async startRun(lane: string, messages: AgentMessage[]): Promise<ResultValue<string, RunRejected>> {
+	private promptReplayIdentity(messages: readonly AgentMessage[]): string {
+		return canonicalFoundationJson(messages.map((message) => {
+			const { timestamp: _timestamp, ...identity } = message;
+			return identity;
+		}));
+	}
+
+	private async startRun(
+		lane: string,
+		messages: AgentMessage[],
+		requestedRunId?: string,
+		continuation = false,
+	): Promise<ResultValue<string, RunRejected>> {
 		return this.enqueue(lane, async () => {
 			try {
 				this.ensureOpen();
-				const invalid = this.validatePrompt(lane, messages);
+				const invalid = continuation && messages.length === 0 ? undefined : this.validatePrompt(lane, messages);
 				if (invalid) return Result.err<RunRejected>(invalid);
+				if (requestedRunId !== undefined && requestedRunId.trim().length === 0) {
+					return Result.err<RunRejected>(new InvalidMessage({
+						lane,
+						reason: "invalid_run_id",
+						message: "Requested runId must be a non-empty string",
+					}));
+				}
+				if (requestedRunId !== undefined) {
+					const existingStarts = await this.durableSession.findRecords({
+						type: "operation_started",
+						runId: requestedRunId,
+						order: "oldestFirst",
+					});
+					if (existingStarts.length > 0) {
+						const matches = existingStarts.length === 1 && existingStarts[0]?.lane === lane &&
+							existingStarts[0].intent.kind === "run" &&
+							this.promptReplayIdentity(existingStarts[0].intent.originalPrompt) === this.promptReplayIdentity(messages);
+						if (!matches) {
+							return Result.err<RunRejected>(new InvalidMessage({
+								lane,
+								reason: "run_id_conflict",
+								message: `Requested runId ${requestedRunId} conflicts with an existing operation`,
+							}));
+						}
+						const existingReduction = await this.getLaneReduction(lane);
+						if (existingReduction.laneState.operation !== null && existingReduction.laneState.operation.id !== requestedRunId) {
+							return Result.err<RunRejected>(new LaneBusy({
+								lane,
+								operationId: existingReduction.laneState.operation.id,
+								operationKind: existingReduction.laneState.operation.kind,
+								message: "Lane already has an open operation",
+							}));
+						}
+						return Result.ok<string>(requestedRunId);
+					}
+				}
 				const reduction = await this.getLaneReduction(lane);
 				if (reduction.laneState.operation) {
 					return Result.err<RunRejected>(new LaneBusy({
@@ -2308,7 +3048,7 @@ export class AgentHarness implements AgentLane {
 					...reduction.laneState.pendingNextRun,
 					...messages.map((message) => ({ type: "message" as const, id: this.durableSession.idGenerator.next(), message })),
 				];
-				const id = this.durableSession.idGenerator.next();
+				const id = requestedRunId ?? this.durableSession.idGenerator.next();
 				const correlation = this.foundationCorrelation(lane, id, { runId: id });
 				await this.durableSession.appendRecord({
 					type: "operation_started",
@@ -2320,6 +3060,7 @@ export class AgentHarness implements AgentLane {
 						kind: "run",
 						originalPrompt: structuredClone(messages),
 						initialMessages: structuredClone(initialMessages),
+						...(continuation ? { continuation: true } : {}),
 					},
 				} satisfies NewRecord<OperationStartedRecord>);
 				await this.persistFoundationIntent(lane, id);
@@ -2406,7 +3147,9 @@ export class AgentHarness implements AgentLane {
 		const operation = reduction.laneState.operation;
 		if (!operation || operation.intent.kind !== "run") return;
 		const target = operation.missingInitialMessages[0];
-		if (target) await this.persistOperationEntry(lane, operation.id, target);
+		if (target) {
+			await this.persistOperationEntry(lane, operation.id, target);
+		}
 	}
 
 	private async ensureStep(
@@ -2534,17 +3277,22 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async foundationIntentForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<ToolIntentV1, FoundationError>> {
-		const correlation = this.foundationCorrelation(lane, runId, { toolCallId });
-		if (correlation === undefined) return Result.err(new FoundationError("side_effect_unknown", "Foundation tool intent has no execution correlation"));
-		const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
-		const records = await this.durableSession.findFoundationRecords({ kind: "intent", objectType: "tool_intent", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
+		const metadata = await this.durableSession.getMetadata();
+		const records = await this.durableSession.findFoundationRecords({
+			kind: "intent",
+			objectType: "tool_intent",
+			includePruned: true,
+			order: "oldestFirst",
+			correlation: { sessionId: metadata.id, laneId: lane, runId, operationId: runId, toolCallId },
+		});
 		const intents: ToolIntentV1[] = [];
 		for (const record of records) {
 			if (record.kind !== "intent" || record.payload === undefined) continue;
 			const checked = validateToolIntentV1(record.payload);
 			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool intent failed validation"));
 			if (checked.value.toolCallId !== toolCallId) continue;
-			if (!foundationBindingMatchesCorrelation(checked.value.binding, correlation)) return Result.err(new FoundationError("invalid_correlation", "Durable tool intent identity does not match its operation"));
+			const mismatch = foundationBindingCorrelationMismatch(checked.value.binding, record.correlation);
+			if (mismatch !== undefined) return Result.err(new FoundationError("invalid_correlation", `Durable tool intent ${mismatch} does not match its record correlation`));
 			intents.push(checked.value);
 		}
 		if (intents.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool intent is missing"));
@@ -2555,19 +3303,24 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async foundationReceiptForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<FoundationReceiptFoldV1, FoundationError>> {
-		const correlation = this.foundationCorrelation(lane, runId, { toolCallId });
-		if (correlation === undefined) return Result.err(new FoundationError("side_effect_unknown", "Foundation tool result has no execution correlation"));
 		const intent = await this.foundationIntentForToolCall(lane, runId, toolCallId);
 		if (!intent.ok) return intent;
-		const { revision: _revision, goalId: _goalId, ...queryCorrelation } = correlation;
-		const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
+		const metadata = await this.durableSession.getMetadata();
+		const records = await this.durableSession.findFoundationRecords({
+			kind: "fact",
+			objectType: "tool_receipt",
+			includePruned: true,
+			order: "oldestFirst",
+			correlation: { sessionId: metadata.id, laneId: lane, runId, operationId: runId, toolCallId },
+		});
 		const receipts: ToolReceiptV1[] = [];
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
 			const checked = validateAndVerifyToolReceiptV1(record.payload);
 			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool receipt failed validation"));
 			if (checked.value.toolCallId !== toolCallId) continue;
-			if (!foundationBindingMatchesCorrelation(checked.value.binding, correlation) || !receiptMatchesIntentCanonical(checked.value, intent.value)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipt identity does not match its intent"));
+			const mismatch = foundationBindingCorrelationMismatch(checked.value.binding, record.correlation);
+			if (mismatch !== undefined || !receiptMatchesIntentCanonical(checked.value, intent.value)) return Result.err(new FoundationError("session_ledger_conflict", mismatch === undefined ? "Durable tool receipt identity does not match its intent" : `Durable tool receipt ${mismatch} does not match its record correlation`));
 			receipts.push(checked.value);
 		}
 		if (receipts.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool receipt is missing"));
@@ -2598,19 +3351,19 @@ export class AgentHarness implements AgentLane {
 		}
 		const canonicalReceiptResult = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" ? receipt.result : undefined;
 		const useCanonicalReceipt = canonicalReceiptResult !== undefined;
+		const receiptFailureMessage: ToolResultMessage | undefined = receipt === undefined
+			? undefined
+			: {
+					role: "toolResult",
+					toolCallId: started.toolCallId,
+					toolName: started.toolName,
+					content: [{ type: "text", text: terminalToolFailure ? `Tool ${started.toolName} terminated after an infrastructure failure` : (receipt.representative.error?.message ?? `Tool ${started.toolName} failed`) }],
+					isError: true,
+					timestamp: started.timestamp,
+				};
 		let persisted: Awaited<ReturnType<SessionT5Ledger["persistToolResult"]>> | undefined;
-		if (!useCanonicalReceipt) {
-			const durableMessage: ToolResultMessage = receipt === undefined
-				? message
-				: {
-						role: "toolResult",
-						toolCallId: started.toolCallId,
-						toolName: started.toolName,
-						content: [{ type: "text", text: terminalToolFailure ? `Tool ${started.toolName} terminated after an infrastructure failure` : (receipt.representative.error?.message ?? `Tool ${started.toolName} failed`) }],
-						isError: true,
-						timestamp: started.timestamp,
-					};
-			persisted = await this.t5.persistToolResult(durableMessage, {
+		if (!useCanonicalReceipt && (receiptFailureMessage === undefined || this.compatibilityWriter === undefined)) {
+			persisted = await this.t5.persistToolResult(receiptFailureMessage ?? message, {
 				lane,
 				runId,
 				resultEntryId: started.resultEntryId,
@@ -2634,6 +3387,8 @@ export class AgentHarness implements AgentLane {
 				customType: FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
 				data: this.foundationJson(resultEntry, "tool result entry"),
 			};
+		} else if (receiptFailureMessage !== undefined && persisted === undefined) {
+			target = { type: "message", id: started.resultEntryId, message: receiptFailureMessage };
 		} else {
 			if (persisted === undefined) throw new HarnessFault("Tool result projection was not persisted", undefined);
 			target = { type: "message", id: started.resultEntryId, message: persisted.message };
@@ -2659,20 +3414,38 @@ export class AgentHarness implements AgentLane {
 	private toolIndex(lane: string, assistantEntryId: string, toolCallId: string): number {
 		const entry = this.laneSnapshots.get(lane)?.transcript.find((candidate) => candidate.id === assistantEntryId);
 		if (entry?.type !== "message" || entry.message.role !== "assistant") return 0;
-		return entry.message.content.findIndex((content) => content.type === "toolCall" && content.id === toolCallId);
+		return entry.message.content
+			.filter((content) => content.type === "toolCall")
+			.findIndex((content) => content.id === toolCallId);
+	}
+
+	private async publishAgentEvent(event: AgentEvent): Promise<AgentEvent> {
+		event = this.eventTransform === undefined ? event : await this.eventTransform(event);
+		this.eventBus.emit({ type: "agent_event", event: structuredClone(event) });
+		return event;
 	}
 
 	private async processAgentEvent(lane: string, runId: string, event: AgentEvent, signal: AbortSignal): Promise<void> {
+		event = await this.publishAgentEvent(event);
 		switch (event.type) {
 			case "turn_start": {
 				const reduction = await this.getLaneReduction(lane);
+				if (this.pendingPromptEvents.delete(runId) && reduction.laneState.operation?.intent.kind === "run") {
+					for (const message of reduction.laneState.operation.intent.originalPrompt) {
+						await this.publishAgentEvent({ type: "message_start", message });
+						await this.publishAgentEvent({ type: "message_end", message });
+					}
+				}
 				if (reduction.laneState.operation?.id === runId && reduction.laneState.operation.step === null) {
 					await this.ensureStep(lane, reduction, "assistant");
 				}
 				break;
 			}
 			case "message_end":
-				if (event.message.role === "assistant") await this.appendAssistantEntry(lane, runId, event.message);
+				if (event.message.role === "assistant") {
+					await this.appendAssistantEntry(lane, runId, event.message);
+					if (event.message.stopReason !== "error" && event.message.stopReason !== "length") this.overflowRecoveryAttempted = false;
+				}
 				else if (event.message.role === "toolResult") await this.appendToolResult(lane, runId, event.message);
 				break;
 			case "tool_execution_start":
@@ -2695,6 +3468,7 @@ export class AgentHarness implements AgentLane {
 					: finalMessage.stopReason === "error"
 						? "failed"
 						: "completed";
+				const contextPreparationError = this.contextPreparationErrors.get(runId);
 				const durableModelError = finalMessage.stopReason === "error" ? await this.foundationModelTerminalError(runId) : undefined;
 				await this.finishOperation(
 					lane,
@@ -2703,7 +3477,9 @@ export class AgentHarness implements AgentLane {
 					signal.aborted
 						? USER_ABORT_ERROR
 						: finalMessage.stopReason === "error"
-						? durableModelError ?? this.foundationModelDiagnosticError(finalMessage) ?? operationError(finalMessage.errorMessage ?? "Agent loop failed")
+						? contextPreparationError === undefined
+							? durableModelError ?? this.foundationModelDiagnosticError(finalMessage) ?? operationError(finalMessage.errorMessage ?? "Agent loop failed")
+							: operationError(contextPreparationError)
 							: undefined,
 				);
 				break;
@@ -2714,8 +3490,14 @@ export class AgentHarness implements AgentLane {
 
 	private async finishActiveOperation(runId: string): Promise<void> {
 		this.activeOperations.delete(runId);
+		this.retryCancelledOperations.delete(runId);
+		this.pendingPromptEvents.delete(runId);
+		this.contextPreparationErrors.delete(runId);
 		try {
 			await this.refreshSnapshots();
+			if (this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
+				this.eventBus.emit({ type: "agent_settled" });
+			}
 		} catch (error) {
 			this.faulted = true;
 			this.sessionSnapshot = { ...this.sessionSnapshot, faulted: true };
@@ -2741,6 +3523,7 @@ export class AgentHarness implements AgentLane {
 				const prepared = await this.contextForOperation(lane, runId);
 				operationModel = prepared.model;
 				const config = this.loopConfig(lane, runId, prepared.context, controller.signal, prepared.model, prepared.thinkingLevel);
+				this.pendingPromptEvents.add(runId);
 				await runAgentLoopContinue(
 					prepared.context,
 					config,
@@ -2834,44 +3617,119 @@ export class AgentHarness implements AgentLane {
 		if (!operation || operation.kind !== "compaction" || operation.intent.kind !== "compaction") return;
 		const intent = operation.intent;
 		await this.ensureFoundationIntentForOperation(lane, operation.id);
-		const preparationResult = prepareCompaction(await this.getLaneEntries(lane), this.compactionSettings);
+		const branchEntries = await this.getLaneEntries(lane);
+		const preparationResult = prepareCompaction(branchEntries, this.compactionSettings);
 		if (!preparationResult.ok || preparationResult.value === undefined) {
 			await this.finishOperation(lane, operation.id, "declined");
 			return;
 		}
-		const prepared = await this.contextForOperation(lane);
-		const step = await this.ensureStep(lane, reduction, "compaction", "manual");
+		const preparation = preparationResult.value;
+		const reason = intent.reason ?? "manual";
+		const willRetry = intent.willRetry ?? false;
+		const step = await this.ensureStep(lane, reduction, "compaction", reason);
 		this.startActiveOperation(
 			lane,
 			operation.id,
 			async (signal) => {
-				const result = await generateCompaction(
-					preparationResult.value!,
-					this.models,
-					prepared.model,
-					intent.customInstructions,
+				const hookResult = await this.compactionHooks?.before?.({
+					preparation,
+					branchEntries,
+					...(intent.customInstructions === undefined ? {} : { customInstructions: intent.customInstructions }),
+					reason,
+					willRetry,
 					signal,
-					prepared.thinkingLevel,
-					this.retryPolicy,
-				);
-				await this.enqueue(lane, async () => {
-					if (!result.ok) {
-						const aborted = result.error.code === "aborted";
-						await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(result.error.message)) : operationError(result.error));
+				});
+				if (hookResult?.cancel === true) {
+					await this.enqueue(lane, () => this.finishOperation(lane, operation.id, "aborted", USER_ABORT_ERROR));
+					return;
+				}
+				const extensionCompaction = hookResult?.compaction;
+				let result: {
+					summary: string;
+					firstKeptEntryId: string;
+					tokensBefore: number;
+					retainedTail: AgentMessage[];
+					usage?: Usage;
+					details?: unknown;
+					fromExtension: boolean;
+				};
+				if (extensionCompaction !== undefined) {
+					const firstKeptIndex = extensionCompaction.firstKeptEntryId === ""
+						? branchEntries.length
+						: branchEntries.findIndex((entry) => entry.id === extensionCompaction.firstKeptEntryId);
+					if (firstKeptIndex < 0) throw new FoundationError("invalid_identifier", "Extension compaction references an unknown first kept entry");
+					result = {
+						summary: extensionCompaction.summary,
+						firstKeptEntryId: extensionCompaction.firstKeptEntryId,
+						tokensBefore: extensionCompaction.tokensBefore,
+						retainedTail: await this.contextMessages(lane, branchEntries.slice(firstKeptIndex)),
+						...(extensionCompaction.usage === undefined ? {} : { usage: extensionCompaction.usage }),
+						...(extensionCompaction.details === undefined ? {} : { details: extensionCompaction.details }),
+						fromExtension: true,
+					};
+				} else {
+					const prepared = await this.contextForOperation(lane, operation.id, "compaction");
+					const generated = await generateCompaction(
+						preparation,
+						this.completionProvider(lane, operation.id),
+						prepared.model,
+						intent.customInstructions,
+						signal,
+						prepared.thinkingLevel,
+						this.retryPolicy,
+					);
+					if (!generated.ok) {
+						await this.enqueue(lane, async () => {
+							const aborted = generated.error.code === "aborted";
+							await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(generated.error.message)) : operationError(generated.error));
+						});
 						return;
 					}
+					const firstRetained = generated.value.retainedTail[0];
+					const firstKeptEntryId = firstRetained === undefined
+						? ""
+						: branchEntries.find((entry) => entry.type === "message" && canonicalFoundationJson(entry.message) === canonicalFoundationJson(firstRetained))?.id ?? "";
+					result = {
+						...generated.value,
+						firstKeptEntryId,
+						fromExtension: false,
+					};
+				}
+				await this.enqueue(lane, async () => {
 					const entry: ProvisionedEntry = {
 						type: "compaction",
 						id: step.resultEntryId,
-						summary: result.value.summary,
-						retainedTail: result.value.retainedTail,
-						tokensBefore: result.value.tokensBefore,
-						...(result.value.details !== undefined ? { details: result.value.details } : {}),
-						...(result.value.usage ? { usage: result.value.usage } : {}),
+						summary: result.summary,
+						retainedTail: result.retainedTail,
+						firstKeptEntryId: result.firstKeptEntryId,
+						tokensBefore: result.tokensBefore,
+						...(result.details !== undefined ? { details: result.details } : {}),
+						...(result.usage ? { usage: result.usage } : {}),
+						...(result.fromExtension ? { fromExtension: true } : {}),
 					};
 					await this.persistOperationEntry(lane, operation.id, entry);
-					if (result.value.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "compaction", runId: operation.id, entryId: entry.id, attempt: step.attempt, stopReason: "stop", usage: result.value.usage });
+					if (result.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "compaction", runId: operation.id, entryId: entry.id, attempt: step.attempt, stopReason: "stop", usage: result.usage });
 					await this.finishOperation(lane, operation.id, "completed");
+					const persisted = await this.durableSession.getEntry(entry.id);
+					if (persisted?.type === "compaction") {
+						await this.compactionHooks?.after?.({
+							entry: persisted,
+							result: {
+								summary: result.summary,
+								firstKeptEntryId: result.firstKeptEntryId,
+								tokensBefore: result.tokensBefore,
+								estimatedTokensAfter: estimateContextTokens([
+									{ role: "compactionSummary", summary: result.summary, tokensBefore: result.tokensBefore, timestamp: Date.now() },
+									...result.retainedTail,
+								]).tokens,
+								...(result.usage === undefined ? {} : { usage: result.usage }),
+								...(result.details === undefined ? {} : { details: result.details }),
+								fromExtension: result.fromExtension,
+							},
+							reason,
+							willRetry,
+						});
+					}
 				});
 			},
 			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
@@ -2883,32 +3741,84 @@ export class AgentHarness implements AgentLane {
 		if (!operation || operation.kind !== "navigation" || operation.intent.kind !== "navigation") return;
 		await this.ensureFoundationIntentForOperation(lane, operation.id);
 		const intent = operation.intent;
-		if (!intent.summarize) {
-			await this.durableSession.moveLane(lane, intent.targetId);
-			await this.finishOperation(lane, operation.id, "completed");
-			return;
-		}
-		const step = await this.ensureStep(lane, reduction, "branch_summary");
 		const sourceEntries = operation.resumeBoundary.branchId
 			? await this.durableSession.findEntriesOnBranch({ start: operation.resumeBoundary.branchId, stopAtId: intent.targetId ?? undefined, order: "oldestFirst" })
 			: [];
-		const prepared = await this.contextForOperation(lane);
+		const targetPath = intent.targetId === null ? [] : await this.durableSession.findEntriesOnBranch({ start: intent.targetId, order: "newestFirst" });
+		const sourceIds = new Set(operation.resumeBoundary.branchId === null ? [] : (await this.durableSession.findEntriesOnBranch({ start: operation.resumeBoundary.branchId, order: "newestFirst" })).map((entry) => entry.id));
+		const commonAncestorId = targetPath.find((entry) => sourceIds.has(entry.id))?.id ?? null;
+		const step = intent.summarize ? await this.ensureStep(lane, reduction, "branch_summary") : undefined;
 		this.startActiveOperation(
 			lane,
 			operation.id,
 			async (signal) => {
-				const result = await generateBranchSummary(sourceEntries, { models: this.models, model: prepared.model, signal, customInstructions: intent.customInstructions });
+				const hookResult = await this.navigationHooks?.before?.({
+					preparation: {
+						targetId: intent.targetId,
+						oldLeafId: operation.resumeBoundary.branchId,
+						commonAncestorId,
+						entriesToSummarize: sourceEntries,
+						userWantsSummary: intent.summarize,
+						...(intent.customInstructions === undefined ? {} : { customInstructions: intent.customInstructions }),
+						...(intent.replaceInstructions === undefined ? {} : { replaceInstructions: intent.replaceInstructions }),
+						...(intent.label === undefined ? {} : { label: intent.label }),
+					},
+					signal,
+				});
+				if (hookResult?.cancel === true) {
+					await this.enqueue(lane, () => this.finishOperation(lane, operation.id, "declined"));
+					return;
+				}
+				const customInstructions = hookResult?.customInstructions ?? intent.customInstructions;
+				const replaceInstructions = hookResult?.replaceInstructions ?? intent.replaceInstructions;
+				const label = hookResult?.label ?? intent.label;
+				if (!intent.summarize) {
+					await this.enqueue(lane, async () => {
+						await this.durableSession.moveLane(lane, intent.targetId);
+						if (label !== undefined && intent.targetId !== null) await this.durableSession.setLabel(intent.targetId, label);
+						await this.finishOperation(lane, operation.id, "completed");
+						await this.navigationHooks?.after?.({ oldLeafId: operation.resumeBoundary.branchId, newLeafId: intent.targetId });
+					});
+					return;
+				}
+				if (step === undefined) throw new HarnessFault("Navigation summary has no durable step", undefined);
+				const extensionSummary = hookResult?.summary;
+				const generated = extensionSummary === undefined
+					? await (async () => {
+							const prepared = await this.contextForOperation(lane, operation.id, "branch_summary");
+							return generateBranchSummary(sourceEntries, { models: this.completionProvider(lane, operation.id), model: prepared.model, signal, customInstructions, replaceInstructions });
+						})()
+					: undefined;
 				await this.enqueue(lane, async () => {
-					if (!result.ok) {
-						const aborted = result.error.code === "aborted";
-						await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(result.error.message)) : operationError(result.error));
+					if (generated !== undefined && !generated.ok) {
+						const aborted = generated.error.code === "aborted";
+						await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(generated.error.message)) : operationError(generated.error));
 						return;
 					}
+					const summary = extensionSummary ?? generated!.value;
 					await this.durableSession.moveLane(lane, intent.targetId);
-					const summaryEntry: ProvisionedEntry = { type: "branch_summary", id: step.resultEntryId, fromId: operation.resumeBoundary.branchId ?? intent.targetId ?? "root", summary: result.value.summary, ...(result.value.usage ? { usage: result.value.usage } : {}) };
+					const summaryEntry: ProvisionedEntry = {
+						type: "branch_summary",
+						id: step.resultEntryId,
+						fromId: operation.resumeBoundary.branchId ?? intent.targetId ?? "root",
+						summary: summary.summary,
+						...(extensionSummary === undefined
+							? { details: { readFiles: generated!.value.readFiles, modifiedFiles: generated!.value.modifiedFiles } }
+							: extensionSummary.details === undefined ? {} : { details: extensionSummary.details }),
+						...(summary.usage === undefined ? {} : { usage: summary.usage }),
+						...(extensionSummary === undefined ? {} : { fromExtension: true }),
+					};
 					await this.persistOperationEntry(lane, operation.id, summaryEntry);
-					if (result.value.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "branch_summary", runId: operation.id, entryId: summaryEntry.id, attempt: step.attempt, stopReason: "stop", usage: result.value.usage });
+					if (summary.usage) await this.durableSession.appendRecord({ type: "usage", id: this.durableSession.idGenerator.next(), lane, cause: "branch_summary", runId: operation.id, entryId: summaryEntry.id, attempt: step.attempt, stopReason: "stop", usage: summary.usage });
+					if (label !== undefined) await this.durableSession.setLabel(summaryEntry.id, label);
 					await this.finishOperation(lane, operation.id, "completed");
+					const persisted = await this.durableSession.getEntry(summaryEntry.id);
+					await this.navigationHooks?.after?.({
+						oldLeafId: operation.resumeBoundary.branchId,
+						newLeafId: summaryEntry.id,
+						...(persisted?.type === "branch_summary" ? { summaryEntry: persisted } : {}),
+						fromExtension: extensionSummary !== undefined,
+					});
 				});
 			},
 			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
@@ -3164,18 +4074,18 @@ export class AgentHarness implements AgentLane {
 	private async runOutcome(lane: string, runId: string): Promise<RunResult> {
 		const records = await this.durableSession.findRecords({ lane, runId, order: "oldestFirst" });
 		const finish = records.find((record) => record.type === "operation_finished");
-		const leafId = await this.durableSession.view(lane).getLeafId();
-		const branchMessages = leafId
-			? await this.durableSession.view(lane).findEntriesOnBranch({ start: leafId, type: "message", order: "newestFirst" })
-			: [];
-		const finalEntry = branchMessages.find((entry) => entry.type === "message" && entry.message.role === "assistant");
+		const finalStep = records
+			.filter((record): record is StepAttemptRecord => record.type === "step_attempt" && record.step === "assistant")
+			.at(-1);
+		const finalEntry = finalStep === undefined ? undefined : await this.durableSession.getEntry(finalStep.resultEntryId);
 		const finalMessage = finalEntry?.type === "message" && finalEntry.message.role === "assistant" ? finalEntry.message : undefined;
+		const leafId = finalEntry?.id ?? await this.durableSession.view(lane).getLeafId() ?? "";
 		if (!finish || !finalEntry || !finalMessage) {
-			return Result.ok({ runId, kind: "failed", leafId: leafId ?? "", error: { code: "suspended", message: "Run is not finished" }, ...(finalEntry ? { finalEntryId: finalEntry.id } : {}) });
+			return Result.ok({ runId, kind: "failed", leafId, error: { code: "suspended", message: "Run is not finished" }, ...(finalEntry ? { finalEntryId: finalEntry.id } : {}) });
 		}
-		if (finish.outcome === "aborted") return Result.ok({ runId, kind: "aborted", leafId: leafId ?? "", finalEntryId: finalEntry.id, finalMessage });
-		if (finish.outcome === "failed") return Result.ok({ runId, kind: "failed", leafId: leafId ?? "", error: finish.error ?? { code: "failed", message: finalMessage.errorMessage ?? "Run failed" }, finalEntryId: finalEntry.id, finalMessage });
-		return Result.ok({ runId, kind: "completed", leafId: leafId ?? "", finalEntryId: finalEntry.id, finalMessage });
+		if (finish.outcome === "aborted") return Result.ok({ runId, kind: "aborted", leafId, finalEntryId: finalEntry.id, finalMessage });
+		if (finish.outcome === "failed") return Result.ok({ runId, kind: "failed", leafId, error: finish.error ?? { code: "failed", message: finalMessage.errorMessage ?? "Run failed" }, finalEntryId: finalEntry.id, finalMessage });
+		return Result.ok({ runId, kind: "completed", leafId, finalEntryId: finalEntry.id, finalMessage });
 	}
 
 	private async compactOutcome(lane: string, runId: string): Promise<CompactionResult> {
@@ -3233,6 +4143,14 @@ export class AgentHarness implements AgentLane {
 		return this.getLeafIdOnLane("main");
 	}
 
+	async getMessages(): Promise<AgentMessage[]> {
+		return this.getMessagesOnLane("main");
+	}
+
+	async getMessagesOnLane(lane: string): Promise<AgentMessage[]> {
+		return this.runWithLane(lane, async () => structuredClone(await this.contextMessages(lane, await this.getLaneEntries(lane))));
+	}
+
 	async getLeafIdOnLane(lane: string): Promise<string | null> {
 		return this.runWithLane(lane, () => this.durableSession.view(lane).getLeafId());
 	}
@@ -3251,9 +4169,15 @@ export class AgentHarness implements AgentLane {
 		return this.runWithLane(lane, () => this.promptImpl(lane, input, images));
 	}
 
-	private async promptImpl(lane: string, input: string | AgentMessage | AgentMessage[], images?: ImageContent[]): Promise<RunResult> {
+	private async promptImpl(
+		lane: string,
+		input: string | AgentMessage | AgentMessage[],
+		images?: ImageContent[],
+		requestedRunId?: string,
+		continuation = false,
+	): Promise<RunResult> {
 		if (this.closed) return Result.err(new Closed({ message: "AgentHarness is closed" }));
-		const started = await this.startRun(lane, this.normalizePrompt(input, images));
+		const started = await this.startRun(lane, this.normalizePrompt(input, images), requestedRunId, continuation);
 		if (!started.ok) return started;
 		if (this.drive === "manual") return this.pendingRunOutcome(lane, started.value);
 		await this.runToCompletionImpl(lane);
@@ -3289,14 +4213,105 @@ export class AgentHarness implements AgentLane {
 	}
 
 	async compact(options: { customInstructions?: string } = {}): Promise<CompactionResult> {
-		return this.compactOnLane("main", options);
+		this.eventBus.emit({ type: "compaction_start", reason: "manual" });
+		const result = await this.compactOnLane("main", options);
+		const completed = result.ok && result.value.kind === "completed";
+		const entry = result.ok && result.value.kind === "completed" ? result.value.entry : undefined;
+		this.eventBus.emit({
+			type: "compaction_end",
+			reason: "manual",
+			aborted: result.ok && result.value.kind === "aborted",
+			willRetry: false,
+			...(entry === undefined ? {} : { result: this.compactionEventResult(entry) }),
+			...(completed ? {} : { errorMessage: result.ok && result.value.kind === "failed" ? result.value.error.message : "Manual compaction did not complete" }),
+		});
+		return result;
 	}
 
 	async compactOnLane(lane: string, options: { customInstructions?: string } = {}): Promise<CompactionResult> {
 		return this.runWithLane(lane, () => this.compactImpl(lane, options));
 	}
 
-	private async compactImpl(lane: string, options: { customInstructions?: string } = {}): Promise<CompactionResult> {
+	async checkCompaction(
+		assistantMessage: AssistantMessage,
+		skipAbortedCheck = true,
+		autoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean> = (reason, willRetry) => this.runAutoCompaction(reason, willRetry),
+	): Promise<boolean> {
+		if (!this.compactionSettings.enabled || !this.modelAvailable) return false;
+		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return false;
+		const model = this.currentModel;
+		if (assistantMessage.provider !== model.provider || assistantMessage.model !== model.id) return false;
+		const entries = await this.getLaneEntries("main");
+		const latestCompaction = [...entries].reverse().find((entry): entry is CompactionEntry => entry.type === "compaction");
+		if (latestCompaction !== undefined && assistantMessage.timestamp <= latestCompaction.timestamp) return false;
+		if (isContextOverflow(assistantMessage, model.contextWindow) || isRecoverableLength(assistantMessage, model.maxTokens)) {
+			const willRetry = assistantMessage.stopReason !== "stop";
+			if (!willRetry) return autoCompaction("overflow", false);
+			if (this.overflowRecoveryAttempted) {
+				this.eventBus.emit({
+					type: "compaction_end",
+					reason: "overflow",
+					aborted: false,
+					willRetry: false,
+					errorMessage: "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				});
+				return false;
+			}
+			this.overflowRecoveryAttempted = true;
+			return autoCompaction("overflow", true);
+		}
+		const directContextTokens = calculateContextTokens(assistantMessage.usage);
+		let contextTokens = directContextTokens;
+		if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
+			const messages = await this.getMessages();
+			const estimate = estimateContextTokens(messages);
+			if (estimate.lastUsageIndex === null) return false;
+			const usageMessage = messages[estimate.lastUsageIndex];
+			if (
+				latestCompaction !== undefined &&
+				usageMessage?.role === "assistant" &&
+				usageMessage.timestamp <= latestCompaction.timestamp
+			) return false;
+			contextTokens = estimate.tokens;
+		}
+		return shouldCompact(contextTokens, model.contextWindow, this.compactionSettings)
+			? autoCompaction("threshold", false)
+			: false;
+	}
+
+	async runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+		if (this.isRunning) return false;
+		this.eventBus.emit({ type: "compaction_start", reason });
+		const result = await this.runWithLane("main", () => this.compactImpl("main", { reason, willRetry }));
+		const completed = result.ok && result.value.kind === "completed";
+		const entry = result.ok && result.value.kind === "completed" ? result.value.entry : undefined;
+		this.eventBus.emit({
+			type: "compaction_end",
+			reason,
+			aborted: result.ok && result.value.kind === "aborted",
+			willRetry: completed && willRetry,
+			...(entry === undefined ? {} : { result: this.compactionEventResult(entry) }),
+			...(completed ? {} : { errorMessage: result.ok && result.value.kind === "failed" ? result.value.error.message : "Automatic compaction did not complete" }),
+		});
+		return completed;
+	}
+
+	private compactionEventResult(entry: CompactionEntry): HarnessCompactionResult {
+		return {
+			summary: entry.summary,
+			firstKeptEntryId: entry.firstKeptEntryId ?? entry.id,
+			tokensBefore: entry.tokensBefore,
+			estimatedTokensAfter: estimateContextTokens([
+				{ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp: entry.timestamp },
+				...entry.retainedTail,
+			]).tokens,
+			...(entry.usage === undefined ? {} : { usage: entry.usage }),
+			...(entry.details === undefined ? {} : { details: entry.details }),
+			fromExtension: entry.fromExtension === true,
+		};
+	}
+
+	private async compactImpl(lane: string, options: { customInstructions?: string; reason?: "manual" | "threshold" | "overflow"; willRetry?: boolean } = {}): Promise<CompactionResult> {
 		if (this.closed) return Result.err(new Closed({ message: "AgentHarness is closed" }));
 		const started = await this.enqueue(lane, async () => {
 			const reduction = await this.getLaneReduction(lane);
@@ -3306,7 +4321,7 @@ export class AgentHarness implements AgentLane {
 			const id = this.durableSession.idGenerator.next();
 			const resultEntryId = this.durableSession.idGenerator.next();
 			const correlation = this.foundationCorrelation(lane, id, { runId: id });
-			await this.durableSession.appendRecord({ type: "operation_started", id, lane, sourceLeafId: reduction.laneState.leafId, ...(correlation === undefined ? {} : { correlation }), intent: { kind: "compaction", ...(options.customInstructions === undefined ? {} : { customInstructions: options.customInstructions }), resultEntryId } } satisfies NewRecord<OperationStartedRecord>);
+			await this.durableSession.appendRecord({ type: "operation_started", id, lane, sourceLeafId: reduction.laneState.leafId, ...(correlation === undefined ? {} : { correlation }), intent: { kind: "compaction", ...(options.customInstructions === undefined ? {} : { customInstructions: options.customInstructions }), resultEntryId, ...(options.reason === undefined ? {} : { reason: options.reason }), ...(options.willRetry === undefined ? {} : { willRetry: options.willRetry }) } } satisfies NewRecord<OperationStartedRecord>);
 			await this.persistFoundationIntent(lane, id);
 			await this.refreshSnapshots();
 			return Result.ok<string>(id);
@@ -3334,7 +4349,7 @@ export class AgentHarness implements AgentLane {
 			const id = this.durableSession.idGenerator.next();
 			const summaryEntryId = options.summarize ? this.durableSession.idGenerator.next() : undefined;
 			const correlation = this.foundationCorrelation(lane, id, { runId: id });
-			await this.durableSession.appendRecord({ type: "operation_started", id, lane, sourceLeafId: reduction.laneState.leafId, ...(correlation === undefined ? {} : { correlation }), intent: { kind: "navigation", targetId, summarize: options.summarize === true, ...(options.customInstructions === undefined ? {} : { customInstructions: options.customInstructions }), ...(options.label === undefined ? {} : { label: options.label }), ...(summaryEntryId ? { summaryEntryId } : {}) } } satisfies NewRecord<OperationStartedRecord>);
+			await this.durableSession.appendRecord({ type: "operation_started", id, lane, sourceLeafId: reduction.laneState.leafId, ...(correlation === undefined ? {} : { correlation }), intent: { kind: "navigation", targetId, summarize: options.summarize === true, ...(options.customInstructions === undefined ? {} : { customInstructions: options.customInstructions }), ...(options.replaceInstructions === undefined ? {} : { replaceInstructions: options.replaceInstructions }), ...(options.label === undefined ? {} : { label: options.label }), ...(summaryEntryId ? { summaryEntryId } : {}) } } satisfies NewRecord<OperationStartedRecord>);
 			await this.persistFoundationIntent(lane, id);
 			await this.refreshSnapshots();
 			return Result.ok<string>(id);
@@ -3407,65 +4422,80 @@ export class AgentHarness implements AgentLane {
 		});
 	}
 
-	async steer(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
-	async steer(_message: AgentMessage): Promise<QueueResult>;
-	async steer(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+	steer(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
+	steer(_message: AgentMessage): Promise<QueueResult>;
+	steer(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
 		return this.steerOnLane("main", input, images);
 	}
 
-	async steerOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
-		return this.runWithLane(lane, () => this.enqueue(lane, async () => this.enqueueMessage(lane, "steer", this.normalizePrompt(input, images)[0])));
+	steerOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+		return this.runWithLane(lane, () => this.enqueueMessage(lane, "steer", this.normalizePrompt(input, images)[0]));
 	}
 
-	async followUp(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
-	async followUp(_message: AgentMessage): Promise<QueueResult>;
-	async followUp(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+	followUp(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
+	followUp(_message: AgentMessage): Promise<QueueResult>;
+	followUp(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
 		return this.followUpOnLane("main", input, images);
 	}
 
-	async followUpOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
-		return this.runWithLane(lane, () => this.enqueue(lane, async () => this.enqueueMessage(lane, "followUp", this.normalizePrompt(input, images)[0])));
+	followUpOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+		return this.runWithLane(lane, () => this.enqueueMessage(lane, "followUp", this.normalizePrompt(input, images)[0]));
 	}
 
-	async nextRun(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
-	async nextRun(_message: AgentMessage): Promise<QueueResult>;
-	async nextRun(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+	nextRun(_text: string, _images?: ImageContent[]): Promise<QueueResult>;
+	nextRun(_message: AgentMessage): Promise<QueueResult>;
+	nextRun(input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
 		return this.nextRunOnLane("main", input, images);
 	}
 
-	async nextRunOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
-		return this.runWithLane(lane, () => this.enqueue(lane, async () => this.enqueueMessage(lane, "nextRun", this.normalizePrompt(input, images)[0])));
+	nextRunOnLane(lane: string, input: string | AgentMessage, images?: ImageContent[]): Promise<QueueResult> {
+		return this.runWithLane(lane, () => this.enqueueMessage(lane, "nextRun", this.normalizePrompt(input, images)[0]));
 	}
 
-	private async enqueueMessage(lane: string, queue: "steer" | "followUp" | "nextRun", message: AgentMessage | undefined): Promise<QueueResult> {
-		if (this.closed) return Result.err(new Closed({ message: "AgentHarness is closed" }));
-		if (!message) return Result.err(new InvalidMessage({ lane, reason: "empty", message: "Queued message is empty" }));
+	private enqueueMessage(lane: string, queue: "steer" | "followUp" | "nextRun", message: AgentMessage | undefined): Promise<QueueResult> {
+		if (this.closed || this.closing) return Promise.resolve(Result.err(new Closed({ message: "AgentHarness is closed" })));
+		if (!message) return Promise.resolve(Result.err(new InvalidMessage({ lane, reason: "empty", message: "Queued message is empty" })));
 		const invalid = this.validatePrompt(lane, [message]);
-		if (invalid) return Result.err(invalid);
-		const reduction = await this.getLaneReduction(lane);
-		const operation = reduction.laneState.operation;
-		if ((queue === "steer" || queue === "followUp") && !operation) return Result.err(new NoActiveRun({ lane, message: "No active run" }));
-		const target: ProvisionedEntry = { type: "message", id: this.durableSession.idGenerator.next(), message };
-		if (queue === "nextRun") {
-			await this.durableSession.appendRecord({
-				type: "queue_enqueued",
-				id: this.durableSession.idGenerator.next(),
-				lane,
-				queue,
-				target,
-			});
-		} else {
-			await this.durableSession.appendRecord({
-				type: "queue_enqueued",
-				id: this.durableSession.idGenerator.next(),
-				lane,
-				queue,
-				runId: operation!.id,
-				target,
-			});
+		if (invalid) return Promise.resolve(Result.err(invalid));
+		const runId = this.laneSnapshots.get(lane)?.operation?.id;
+		if ((queue === "steer" || queue === "followUp") && runId === undefined) {
+			return Promise.resolve(Result.err(new NoActiveRun({ lane, message: "No active run" })));
 		}
-		await this.refreshSnapshots();
-		return Result.ok({ entryId: target.id });
+		const target: ProvisionedEntry = { type: "message", id: this.durableSession.idGenerator.next(), message };
+		this.pendingQueueMutations.set(target.id, { lane, queue, ...(runId === undefined ? {} : { runId }), target });
+		this.emitQueueUpdate();
+		return this.enqueue(lane, async () => {
+			try {
+				const reduction = await this.getLaneReduction(lane);
+				const operation = reduction.laneState.operation;
+				if ((queue === "steer" || queue === "followUp") && operation?.id !== runId) {
+					return Result.err(new NoActiveRun({ lane, message: "No active run" }));
+				}
+				if (queue === "nextRun") {
+					await this.durableSession.appendRecord({
+						type: "queue_enqueued",
+						id: this.durableSession.idGenerator.next(),
+						lane,
+						queue,
+						target,
+					});
+				} else {
+					await this.durableSession.appendRecord({
+						type: "queue_enqueued",
+						id: this.durableSession.idGenerator.next(),
+						lane,
+						queue,
+						runId: runId!,
+						target,
+					});
+				}
+				await this.refreshSnapshots();
+				return Result.ok({ entryId: target.id });
+			} finally {
+				this.pendingQueueMutations.delete(target.id);
+				this.emitQueueUpdate();
+			}
+		});
 	}
 
 	async cancelQueued(entryId: string): Promise<CancelQueuedResult> {
@@ -3650,6 +4680,7 @@ export class AgentHarness implements AgentLane {
 		}
 		await this.enqueue(lane, async () => {
 			await this.durableSession.appendEntry({ type: "model_change", id: this.durableSession.idGenerator.next(), provider: model.provider, modelId: model.id }, lane);
+			this.modelAvailable = true;
 			await this.refreshSnapshots();
 		});
 	}
@@ -3681,9 +4712,13 @@ export class AgentHarness implements AgentLane {
 			if ((route.effort ?? "off") !== level) throw new FoundationError("binding_task_before_binding", "Foundation execution thinking effort is frozen by its AgentBinding route");
 			return;
 		}
-		await this.enqueue(lane, async () => {
+		this.pendingThinkingLevels.set(lane, level);
+		const mutation = this.enqueue(lane, async () => {
 			await this.durableSession.appendEntry({ type: "thinking_level_change", id: this.durableSession.idGenerator.next(), thinkingLevel: level }, lane);
 			await this.refreshSnapshots();
+		});
+		await mutation.finally(() => {
+			if (this.pendingThinkingLevels.get(lane) === level) this.pendingThinkingLevels.delete(lane);
 		});
 	}
 
@@ -3817,6 +4852,10 @@ export class AgentHarness implements AgentLane {
 		});
 	}
 
+	async patchStreamOptions(options: StreamOptionsPatch): Promise<void> {
+		return this.setStreamOptions({ ...this.streamOptions, ...options });
+	}
+
 	async getRetryPolicy(): Promise<RetryPolicy> {
 		return { ...this.retryPolicy };
 	}
@@ -3923,6 +4962,10 @@ class BoundAgentLane implements AgentLane {
 
 	getLeafId(): Promise<string | null> {
 		return this.harness.getLeafIdOnLane(this.name);
+	}
+
+	getMessages(): Promise<AgentMessage[]> {
+		return this.harness.getMessagesOnLane(this.name);
 	}
 
 	prompt(text: string, images?: ImageContent[]): Promise<RunResult>;
@@ -4033,6 +5076,7 @@ class BoundAgentLane implements AgentLane {
 export interface AgentLane {
 	readonly name: string;
 	getLeafId(): Promise<string | null>;
+	getMessages(): Promise<AgentMessage[]>;
 	prompt(text: string, images?: ImageContent[]): Promise<RunResult>;
 	prompt(message: AgentMessage | AgentMessage[]): Promise<RunResult>;
 	skill(name: string, additionalInstructions?: string): Promise<RunResult>;

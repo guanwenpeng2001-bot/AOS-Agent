@@ -1023,6 +1023,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private entriesReadProjection: (() => SessionEntry[]) | undefined;
 
 	private constructor(
 		cwd: string,
@@ -1506,7 +1507,21 @@ export class SessionManager {
 	 * change the leaf pointer. Entries cannot be modified or deleted.
 	 */
 	getEntries(): SessionEntry[] {
+		return this.entriesReadProjection?.() ?? this.getPhysicalEntries();
+	}
+
+	/**
+	 * Return the append-only physical entries without applying a compatibility
+	 * read projection. Storage adapters use this to avoid projecting their own
+	 * Foundation envelopes back into the durable source.
+	 */
+	getPhysicalEntries(): SessionEntry[] {
 		return this.fileEntries.filter((e): e is SessionEntry => e.type !== "session");
+	}
+
+	/** Bind a derived legacy read view while keeping fileEntries as the sole ledger. */
+	setEntriesReadProjection(projection: (() => SessionEntry[]) | undefined): void {
+		this.entriesReadProjection = projection;
 	}
 
 	/**

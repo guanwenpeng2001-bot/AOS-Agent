@@ -60,6 +60,7 @@ import type {
 	SessionBeforeForkResult,
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -156,6 +157,12 @@ type RunnerEmitResult<TEvent extends RunnerEmitEvent> = TEvent extends { type: "
 				: undefined;
 
 export type ExtensionErrorListener = (error: ExtensionError) => void;
+
+interface ExtensionProviderActions {
+	registerProvider?: (name: string, config: ProviderConfig) => void;
+	registerNativeProvider?: (provider: Provider) => void;
+	unregisterProvider?: (name: string) => void;
+}
 
 export type NewSessionHandler = (options?: {
 	parentSession?: string;
@@ -292,6 +299,10 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private coreActions?: ExtensionActions;
+	private contextActions?: ExtensionContextActions;
+	private providerActions?: ExtensionProviderActions;
+	private commandContextActions?: ExtensionCommandContextActions;
 
 	constructor(
 		extensions: Extension[],
@@ -311,12 +322,11 @@ export class ExtensionRunner {
 	bindCore(
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
-		providerActions?: {
-			registerProvider?: (name: string, config: ProviderConfig) => void;
-			registerNativeProvider?: (provider: Provider) => void;
-			unregisterProvider?: (name: string) => void;
-		},
+		providerActions?: ExtensionProviderActions,
 	): void {
+		this.coreActions = actions;
+		this.contextActions = contextActions;
+		this.providerActions = providerActions;
 		// Copy actions into the shared runtime (all extension APIs reference this)
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
@@ -410,6 +420,7 @@ export class ExtensionRunner {
 	}
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {
+		this.commandContextActions = actions;
 		if (actions) {
 			this.waitForIdleFn = actions.waitForIdle;
 			this.newSessionHandler = actions.newSession;
@@ -426,6 +437,23 @@ export class ExtensionRunner {
 		this.navigateTreeHandler = async () => ({ cancelled: false });
 		this.switchSessionHandler = async () => ({ cancelled: false });
 		this.reloadHandler = async () => {};
+	}
+
+	/** Rebind the stable runner object to a newly loaded extension generation. */
+	replaceExtensions(extensions: Extension[], runtime: ExtensionRuntime): void {
+		if (runtime === this.runtime) {
+			if (this.staleMessage) throw new Error("Cannot reactivate an invalidated extension runtime");
+			this.extensions = extensions;
+			return;
+		}
+		this.runtime.invalidate();
+		this.extensions = extensions;
+		this.runtime = runtime;
+		this.staleMessage = undefined;
+		if (this.coreActions !== undefined && this.contextActions !== undefined) {
+			this.bindCore(this.coreActions, this.contextActions, this.providerActions);
+		}
+		this.bindCommandContext(this.commandContextActions);
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
@@ -561,6 +589,32 @@ export class ExtensionRunner {
 	emitError(error: ExtensionError): void {
 		for (const listener of this.errorListeners) {
 			listener(error);
+		}
+	}
+
+	/** Synchronous dispatch preserves the AgentSession.setSessionName contract. */
+	emitSessionInfoChanged(event: SessionInfoChangedEvent): void {
+		const ctx = this.createContext();
+		for (const extension of this.extensions) {
+			for (const handler of extension.handlers.get(event.type) ?? []) {
+				try {
+					void Promise.resolve(handler(event, ctx)).catch((error: unknown) => {
+						this.emitError({
+							extensionPath: extension.path,
+							event: event.type,
+							error: error instanceof Error ? error.message : String(error),
+							stack: error instanceof Error ? error.stack : undefined,
+						});
+					});
+				} catch (error) {
+					this.emitError({
+						extensionPath: extension.path,
+						event: event.type,
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
+				}
+			}
 		}
 	}
 

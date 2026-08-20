@@ -13,12 +13,14 @@ import type {
 	LedgerWriterLeaseV1,
 	ProvisionedFoundationRecordV1,
 } from "../session/durable/types.ts";
+import { assertSessionLedgerWriterSession, type SessionLedgerWriter } from "../session/t5.ts";
 
 /** The only state retained by a Foundation facade is a lease token; objects live in Session. */
 export interface SessionLedgerOptionsV1 {
 	readonly ownerId?: string;
 	readonly laneId?: string;
 	readonly leaseTtlMs?: number;
+	readonly writer?: SessionLedgerWriter;
 }
 
 export interface AppendFoundationFactOptionsV1 {
@@ -48,12 +50,15 @@ export class SessionLedgerV1 {
 	private readonly ownerId: string;
 	private readonly laneId: string;
 	private readonly leaseTtlMs: number;
+	private readonly writer: SessionLedgerWriter | undefined;
 	private lease: LedgerWriterLeaseV1 | undefined;
 
 	constructor(session: Session, options: SessionLedgerOptionsV1 = {}) {
 		this.session = session;
+		this.writer = options.writer;
+		if (this.writer !== undefined) assertSessionLedgerWriterSession(session, this.writer, "SessionLedgerV1");
 		this.ownerId = options.ownerId ?? newFoundationId("foundation-writer");
-		this.laneId = options.laneId ?? "main";
+		this.laneId = options.laneId ?? this.writer?.lane ?? "main";
 		this.leaseTtlMs = options.leaseTtlMs ?? 15 * 60 * 1000;
 	}
 
@@ -81,6 +86,17 @@ export class SessionLedgerV1 {
 		if (options.expectedRevision !== undefined && options.expectedRevision !== actualRevision) throw new FoundationError("session_writer_stale_revision", "Foundation object revision does not match the compare-and-set expectation", { details: { objectType, objectId, expectedRevision: options.expectedRevision, actualRevision } });
 		if (current?.kind === "fact" && canonicalFoundationJson(current.payload) === canonicalFoundationJson(payload)) {
 			return { record: current, payload: current.payload as TPayload, replayed: true };
+		}
+		if (this.writer !== undefined) {
+			const appended = await this.writer.writeFact({
+				objectType,
+				objectId,
+				payload: payload as FoundationJsonValue,
+				clientRequestId: options.clientRequestId,
+				expectedRevision: options.expectedRevision,
+				correlation: options.correlation,
+			});
+			return { record: appended.record, payload: appended.payload as TPayload, replayed: appended.replayed };
 		}
 		const lease = await this.ensureLease();
 		const expectedRevision = options.expectedRevision ?? actualRevision;
@@ -147,7 +163,9 @@ export class SessionLedgerV1 {
 			correlation,
 		};
 		try {
-			const appended = await this.session.appendFoundationRecord(input);
+			const appended = this.writer === undefined
+				? await this.session.appendFoundationRecord(input)
+				: await this.writer.appendFoundationRecord(input);
 			return { record: appended.record as FoundationIntentRecordV1, replayed: appended.replayed };
 		} catch (error) {
 			if (error instanceof DurableLedgerError) throw error;
@@ -156,6 +174,7 @@ export class SessionLedgerV1 {
 	}
 
 	async release(): Promise<void> {
+		if (this.writer !== undefined) return;
 		if (this.lease === undefined) return;
 		try {
 			await this.session.releaseWriterLease({ fencingToken: this.lease.fencingToken });
@@ -166,6 +185,7 @@ export class SessionLedgerV1 {
 
 	private async ensureLease(): Promise<LedgerWriterLeaseV1> {
 		try {
+			if (this.writer !== undefined) return this.writer.ensureLease();
 			if (this.lease !== undefined && this.lease.expiresAt > Date.now() + 1000) {
 				this.lease = await this.session.renewWriterLease({ fencingToken: this.lease.fencingToken, ttlMs: this.leaseTtlMs });
 				return this.lease;

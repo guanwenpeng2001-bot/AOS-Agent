@@ -21,7 +21,67 @@ export interface RunEndEvent {
 	resumeBoundary?: "before_step" | "awaiting_checkpoint" | "awaiting_tool_results" | "deferred" | "terminal_failure" | "checkpointed" | "aborting";
 }
 
-export type HarnessEvent = RunStartEvent | RunEndEvent;
+export interface AgentLoopEvent {
+	type: "agent_event";
+	event: AgentEvent;
+}
+
+export interface QueueUpdateEvent {
+	type: "queue_update";
+	steering: readonly string[];
+	followUp: readonly string[];
+}
+
+export interface BashExecutionUpdateEvent {
+	type: "bash_execution_update";
+	id?: string;
+	delta: string;
+}
+
+export interface RetryScheduledEvent {
+	type: "retry_scheduled";
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+export interface RetryFinishedEvent {
+	type: "retry_finished";
+	success: boolean;
+	attempt: number;
+	finalError?: string;
+}
+
+export interface AgentSettledEvent {
+	type: "agent_settled";
+}
+
+export interface CompactionStartEvent {
+	type: "compaction_start";
+	reason: "manual" | "threshold" | "overflow";
+}
+
+export interface CompactionEndEvent {
+	type: "compaction_end";
+	reason: "manual" | "threshold" | "overflow";
+	result?: unknown;
+	aborted: boolean;
+	willRetry: boolean;
+	errorMessage?: string;
+}
+
+export type HarnessEvent =
+	| RunStartEvent
+	| RunEndEvent
+	| AgentLoopEvent
+	| QueueUpdateEvent
+	| BashExecutionUpdateEvent
+	| RetryScheduledEvent
+	| RetryFinishedEvent
+	| AgentSettledEvent
+	| CompactionStartEvent
+	| CompactionEndEvent;
 export type HarnessEventType = HarnessEvent["type"];
 export type HarnessEventOfType<TType extends HarnessEventType> = Extract<HarnessEvent, { type: TType }>;
 export type HarnessEventListener<TEvent extends HarnessEvent = HarnessEvent> = (event: TEvent) => void | Promise<void>;
@@ -109,3 +169,4 @@ export class HarnessEventBus implements Events {
 		};
 	}
 }
+import type { AgentEvent } from "../types.ts";

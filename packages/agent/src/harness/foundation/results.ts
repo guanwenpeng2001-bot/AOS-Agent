@@ -102,8 +102,11 @@ export function settleTaskResult(input: SettleTaskResultInput): ResultValue<Task
 	const expectedOutputsValid = expectedOutputs?.every(validArtifactRef);
 	const expectedOutputsPresent = expectedOutputsValid === true && expectedOutputs.every((expected) => artifacts.some((actual) => actual.artifactId === expected.artifactId && actual.digest === expected.digest));
 	const requiredTests = input.tests.filter((test) => test.required);
-	const testsValid = input.tests.length > 0 && requiredTests.length > 0 && requiredTests.every((test) => test.status === "passed");
 	const requiredCriteria = Array.isArray(input.task.acceptanceCriteria) ? input.task.acceptanceCriteria.filter((criterion) => criterion.required) : [];
+	const requiresAcceptanceProof = (expectedOutputs?.length ?? 0) > 0 || requiredCriteria.length > 0;
+	const testsValid = requiredTests.length > 0
+		? requiredTests.every((test) => test.status === "passed")
+		: !requiresAcceptanceProof && input.tests.length === 0;
 	const validTest = (test: ValidationResultV1): boolean => typeof test.name === "string" && test.name.length > 0 && typeof test.required === "boolean" && ["passed", "failed", "skipped", "pending"].includes(test.status) && (test.evidenceRefs === undefined || test.evidenceRefs.every(validArtifactRef));
 	const validEvidence = (fact: AcceptanceFactV1): boolean => fact.schemaVersion === 1 && typeof fact.factId === "string" && fact.factId.length > 0 && typeof fact.criterionId === "string" && fact.criterionId.length > 0 && ["satisfied", "unsatisfied", "pending"].includes(fact.outcome) && typeof fact.recordedAt === "string" && fact.recordedAt.length > 0 && (fact.evidenceRefs === undefined || fact.evidenceRefs.every(validArtifactRef));
 	const evidenceValid = input.evidence.every(validEvidence) && requiredCriteria.every((criterion) => input.evidence.some((fact) => { const evidenceRefs = fact.evidenceRefs; return fact.criterionId === criterion.criterionId && fact.outcome === "satisfied" && evidenceRefs !== undefined && evidenceRefs.length > 0 && evidenceRefs.every(validArtifactRef); }));

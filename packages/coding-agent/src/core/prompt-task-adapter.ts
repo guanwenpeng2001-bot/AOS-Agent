@@ -1,5 +1,7 @@
 import {
 	canonicalFoundationJson,
+	type AgentHarness,
+	type AgentHarnessFoundationExecution,
 	createAgentInstance,
 	createHostTerminalGateAuthorityV1,
 	createOrderedBindingEpochV1,
@@ -26,11 +28,13 @@ import {
 	type RoleRevisionV1,
 	type RunOutcome,
 	type RunReceiptV1,
+	type SessionLedgerWriter,
 	type TaskEnvelopeV1,
 	type TaskExecutorProvider,
 	type TaskResultV1,
 	type ValidationResultV1,
 } from "@aos-agent/agent-core";
+import type { ImageContent } from "@aos-agent/ai";
 import { createCodingAgentHarness, type CreateCodingAgentHarnessOptions } from "../server/create-harness.ts";
 
 export const PROMPT_TASK_DEPENDENCY_NAMES = [
@@ -129,11 +133,16 @@ export interface PromptTaskSettlementV1 {
 
 export interface PromptTaskInputV1 {
 	readonly prompt: string;
+	readonly images?: readonly ImageContent[];
+	readonly continuation?: boolean;
+	readonly runId?: string;
 	readonly task: PromptTaskEnvelopeInputV1;
 	readonly roleRevision: RoleRevisionV1;
 	readonly modelProfile: ModelProfileV1;
 	readonly identity: PromptTaskIdentityV1;
 	readonly settlement: PromptTaskSettlementV1;
+	readonly signal?: AbortSignal;
+	readonly deadlineMs?: number;
 	readonly now?: () => string;
 }
 
@@ -152,8 +161,14 @@ export interface PromptTaskExecutionV1 {
 export interface PromptTaskCompositionRootOptionsV1 {
 	readonly dependencies: PromptTaskCompositionDependenciesV1;
 	readonly provider: TaskExecutorProvider;
-	readonly harness: Omit<CreateCodingAgentHarnessOptions, "foundationExecution" | "foundationProvider">;
+	readonly harness: Omit<CreateCodingAgentHarnessOptions, "env" | "foundationExecution" | "foundationProvider"> & {
+		readonly env?: CreateCodingAgentHarnessOptions["env"];
+	};
+	/** Long-lived runtime authority used by product entry points. */
+	readonly runtimeHarness?: AgentHarness;
 	readonly ownerId?: string;
+	/** Shared durable writer for composition into a long-lived Harness. */
+	readonly writer?: SessionLedgerWriter;
 }
 
 export interface PromptTaskAdapterV1 {
@@ -172,7 +187,12 @@ function validateSettlementPrerequisites(input: PromptTaskInputV1): void {
 	if (settlement === undefined || !Array.isArray(settlement.artifacts) || !Array.isArray(settlement.tests) || !Array.isArray(settlement.evidence)) {
 		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement artifacts, tests, and evidence are required before provider execution");
 	}
-	if (!settlement.tests.some((test) => test.required && test.status === "passed") || settlement.tests.some((test) => test.required && test.status !== "passed")) {
+	const requiredTests = settlement.tests.filter((test) => test.required);
+	const requiresAcceptanceProof = input.task.expectedOutputs.length > 0 || input.task.acceptanceCriteria.some((criterion) => criterion.required);
+	if (
+		requiredTests.some((test) => test.status !== "passed") ||
+		(requiresAcceptanceProof && !requiredTests.some((test) => test.status === "passed"))
+	) {
 		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement requires at least one passed required test and no unmet required test");
 	}
 	for (const expected of input.task.expectedOutputs) {
@@ -271,7 +291,7 @@ async function persistBindingSources(
 	input: PromptTaskInputV1,
 	resolved: ResolvedPromptTaskDependencies,
 ): Promise<void> {
-	const ledger = new SessionLedgerV1(options.harness.session, { ownerId: options.ownerId ?? `prompt-task:${input.identity.bindingId}` });
+	const ledger = new SessionLedgerV1(options.harness.session, { ownerId: options.ownerId ?? `prompt-task:${input.identity.bindingId}`, writer: options.writer });
 	try {
 		await persistImmutableFact(ledger, "role_revision", input.roleRevision.roleRevisionId, input.roleRevision as unknown as FoundationJsonValue, input.task.taskId, input.identity.bindingId, `prompt-task:role:${input.roleRevision.roleRevisionId}`);
 		await persistImmutableFact(ledger, "model_profile_revision", input.modelProfile.modelProfileId, input.modelProfile as unknown as FoundationJsonValue, input.task.taskId, input.identity.bindingId, `prompt-task:model-profile:${input.modelProfile.modelProfileId}`);
@@ -358,9 +378,23 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 	validateCompositionRootDependencies(options.dependencies);
 	requireNonempty(options.provider.providerId, "provider.providerId");
 	if (options.harness.drive === "manual") throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task composition requires automatic Harness drive to produce terminal receipts");
+	if (options.runtimeHarness === undefined && options.harness.env === undefined) {
+		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task composition requires an execution environment when it creates a Harness");
+	}
+	if (options.runtimeHarness !== undefined && options.runtimeHarness.session !== options.harness.session) {
+		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task runtime Harness must use the composition Session");
+	}
+	if (options.runtimeHarness !== undefined && options.writer !== options.runtimeHarness.t5.writer) {
+		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task runtime Harness must share its Session ledger writer with the composition root");
+	}
 	return {
 		async execute(input) {
 			requireNonempty(input.prompt, "prompt");
+			if (input.runId !== undefined) requireNonempty(input.runId, "runId");
+			if (input.signal?.aborted) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task was aborted before execution");
+			if (input.deadlineMs !== undefined && (!Number.isFinite(input.deadlineMs) || input.deadlineMs < 0)) {
+				throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task deadlineMs must be non-negative");
+			}
 			for (const [field, value] of Object.entries(input.identity)) requireNonempty(value, `identity.${field}`);
 			validateSettlementPrerequisites(input);
 			const timestamp = (input.now ?? (() => new Date().toISOString()))();
@@ -373,7 +407,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			if (!checkedProfile.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task ModelProfile is invalid", undefined, checkedProfile.error);
 			const normalizedInput = { ...input, roleRevision: checkedRole.value, modelProfile: checkedProfile.value };
 			const task = createTask(normalizedInput, timestamp);
-			const persistedTask = await persistTaskEnvelopeBeforeResolverV1(options.harness.session, task, { ownerId: options.ownerId });
+			const persistedTask = await persistTaskEnvelopeBeforeResolverV1(options.harness.session, task, { ownerId: options.ownerId, writer: options.writer });
 			if (!persistedTask.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task TaskEnvelope could not be persisted before resolution", undefined, persistedTask.error);
 			const resolved = await resolveDependencies(options.dependencies, { prompt: input.prompt, task: persistedTask.value, roleRevision: checkedRole.value, modelProfile: checkedProfile.value });
 			if (resolved.adapter.reference.providerId !== options.provider.providerId) {
@@ -383,25 +417,51 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			const binding = createBinding(normalizedInput, persistedTask.value, resolved, timestamp);
 			const dispatch = createDispatch(normalizedInput, persistedTask.value, options.provider, timestamp);
 			const identity = createExecutionIdentity(normalizedInput, persistedTask.value, options.provider, timestamp);
-			const created = await createCodingAgentHarness({
-				...options.harness,
-				foundationProvider: options.provider,
-				foundationExecution: {
-					task: persistedTask.value,
-					binding,
-					dispatch,
-					providerId: options.provider.providerId,
-					initialBindingEpoch: identity.epoch,
-					bindingEpochIds: [identity.epoch.bindingEpochId],
-					...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId, agentInstance: identity.agentInstance }),
-					settlement: input.settlement,
-					hostAuthority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
-				},
-			});
+			const foundationExecution: AgentHarnessFoundationExecution = {
+				task: persistedTask.value,
+				binding,
+				dispatch,
+				providerId: options.provider.providerId,
+				initialBindingEpoch: identity.epoch,
+				bindingEpochIds: [identity.epoch.bindingEpochId],
+				...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId, agentInstance: identity.agentInstance }),
+				settlement: input.settlement,
+				hostAuthority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+			};
+			let created: { harness: AgentHarness };
+			if (options.runtimeHarness === undefined) {
+				const env = options.harness.env;
+				if (env === undefined) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task composition requires an execution environment when it creates a Harness");
+				created = await createCodingAgentHarness({
+					...options.harness,
+					env,
+					foundationProvider: options.provider,
+					foundationExecution,
+				});
+			} else {
+				created = { harness: options.runtimeHarness };
+			}
+			if (options.runtimeHarness !== undefined) {
+				await created.harness.activateFoundationExecution(foundationExecution, options.provider);
+			}
+			if (input.signal?.aborted) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task was aborted before provider execution");
 			let execution: PromptTaskExecutionV1 | undefined;
 			let executionError: unknown;
 			try {
-				const run = await created.harness.prompt(input.prompt);
+				const preflight = (signal: AbortSignal): void => {
+					if (signal.aborted) throw signal.reason;
+				};
+				const runOptions = {
+					...(input.runId === undefined ? {} : { runId: input.runId }),
+					...(input.signal === undefined ? {} : { signal: input.signal }),
+					...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
+				};
+				const run = input.continuation === true
+					? await created.harness.continueWithPreflight(preflight, runOptions)
+					: await created.harness.promptWithPreflight(input.prompt, preflight, {
+						...runOptions,
+						...(input.images === undefined ? {} : { images: [...input.images] }),
+					});
 				if (!run.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task Harness rejected the prompt: ${run.error.message}`, undefined, run.error);
 				const attemptReceipt = await findAttemptReceipt(options.harness.session, input.identity.attemptId);
 				const taskResult = await requireReceipt<TaskResultV1>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
@@ -411,10 +471,12 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				executionError = error;
 			}
 			let closeError: unknown;
-			try {
-				await created.harness.close();
-			} catch (error) {
-				closeError = error;
+			if (options.runtimeHarness === undefined) {
+				try {
+					await created.harness.close();
+				} catch (error) {
+					closeError = error;
+				}
 			}
 			if (executionError !== undefined) throw executionError;
 			if (closeError !== undefined) throw closeError;

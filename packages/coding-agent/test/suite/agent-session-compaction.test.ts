@@ -97,6 +97,7 @@ describe("AgentSession compaction characterization", () => {
 	});
 
 	it("manually compacts using an extension-provided summary", async () => {
+		const compactEvents: Array<{ summary: string; fromExtension: boolean }> = [];
 		const summaryUsage = {
 			input: 10,
 			output: 20,
@@ -118,6 +119,9 @@ describe("AgentSession compaction characterization", () => {
 							details: { source: "extension" },
 						},
 					}));
+					agent.on("session_compact", async (event) => {
+						compactEvents.push({ summary: event.compactionEntry.summary, fromExtension: event.fromExtension });
+					});
 				},
 			],
 		});
@@ -135,6 +139,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(result.usage).toEqual(summaryUsage);
 		expect(result.estimatedTokensAfter).toBe(estimatedTokensAfter);
 		expect(compactionEntries).toHaveLength(1);
+		expect(compactEvents).toEqual([{ summary: "summary from extension", fromExtension: true }]);
 		const compactionEntry = compactionEntries[0];
 		if (compactionEntry?.type === "compaction") {
 			expect(compactionEntry.usage).toEqual(summaryUsage);

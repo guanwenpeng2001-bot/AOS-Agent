@@ -47,9 +47,11 @@ export interface CompactionEntry extends EntryBase {
 	type: "compaction";
 	summary: string;
 	retainedTail: AgentMessage[];
+	firstKeptEntryId?: string;
 	tokensBefore: number;
 	details?: unknown;
 	usage?: Usage;
+	fromExtension?: boolean;
 }
 
 export interface BranchSummaryEntry extends EntryBase {
@@ -58,6 +60,7 @@ export interface BranchSummaryEntry extends EntryBase {
 	summary: string;
 	details?: unknown;
 	usage?: Usage;
+	fromExtension?: boolean;
 }
 
 export interface CustomEntry extends EntryBase {
@@ -98,6 +101,8 @@ export interface OperationStartedRecord extends RecordBase {
 				originalPrompt: AgentMessage[];
 				/** Captured nextRun items, then the prompt, then before_run injections. */
 				initialMessages: ProvisionedEntry[];
+				/** Internal continuation after a completed compaction; adds no caller message. */
+				continuation?: boolean;
 				systemPromptOverride?: string;
 				resumeData?: { [extensionId: string]: JsonValue };
 		  }
@@ -105,12 +110,15 @@ export interface OperationStartedRecord extends RecordBase {
 				kind: "compaction";
 				customInstructions?: string;
 				resultEntryId: string;
+				reason?: "manual" | "threshold" | "overflow";
+				willRetry?: boolean;
 		  }
 		| {
 				kind: "navigation";
 				targetId: string | null;
 				summarize: boolean;
 				customInstructions?: string;
+				replaceInstructions?: boolean;
 				label?: string;
 				summaryEntryId?: string;
 		  };

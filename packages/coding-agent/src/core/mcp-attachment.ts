@@ -4,9 +4,46 @@ import {
 	type MCPGetPromptResult,
 	type MCPNormalizedContentBlock,
 	type MCPReadResourceResult,
+	isValidMCPBase64,
+	isWellFormedMCPText,
+	mcpDigestHex,
 	mcpDigestId,
+	normalizeMCPMimeType,
+	sanitizeMCPText,
 } from "./mcp-content.ts";
 import type { ContextSourceInput } from "./context-engine.ts";
+import { DEFAULT_MCP_CONTENT_LIMITS } from "./mcp-types.ts";
+
+export const MCP_ATTACHMENT_SCHEMA_VERSION = 1 as const;
+export const MCP_ATTACHMENT_CUSTOM_TYPE = "mcp.attachment" as const;
+
+export interface McpAttachmentAddRecord {
+	readonly schemaVersion: typeof MCP_ATTACHMENT_SCHEMA_VERSION;
+	readonly kind: "add";
+	readonly attachment: McpAttachment;
+}
+
+export interface McpAttachmentTombstone {
+	readonly schemaVersion: typeof MCP_ATTACHMENT_SCHEMA_VERSION;
+	readonly kind: "remove";
+	readonly attachmentId: string;
+}
+
+export type McpAttachmentPersistedRecord = McpAttachmentAddRecord | McpAttachmentTombstone;
+
+export class McpAttachmentRecordError extends Error {
+	readonly code: "mcp_attachment_malformed" | "mcp_attachment_unknown_schema" | "mcp_attachment_unknown_kind";
+
+	constructor(code: McpAttachmentRecordError["code"]) {
+		super(code === "mcp_attachment_unknown_schema"
+			? "MCP attachment record uses an unsupported schema version."
+			: code === "mcp_attachment_unknown_kind"
+				? "MCP attachment record uses an unsupported kind."
+				: "MCP attachment record is malformed.");
+		this.name = "McpAttachmentRecordError";
+		this.code = code;
+	}
+}
 
 /**
  * Structured external attachment: the explicit, session-owned result of an
@@ -70,6 +107,141 @@ export interface McpAttachment {
 
 function attachmentId(kind: McpAttachmentKind, sourceId: string, contentDigest: string): string {
 	return mcpDigestId(`mcp:attachment:${kind}\u0000${sourceId}\u0000${contentDigest}`);
+}
+
+function persistedRecord(value: unknown): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	}
+	return value as Record<string, unknown>;
+}
+
+function validSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validTimestamp(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const parsed = new Date(value);
+	return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function normalizePersistedAttachment(value: unknown): McpAttachment {
+	const attachment = persistedRecord(value);
+	if (
+		(attachment.kind !== "resource" && attachment.kind !== "prompt") ||
+		typeof attachment.id !== "string" ||
+		typeof attachment.serverId !== "string" ||
+		typeof attachment.sourceId !== "string" ||
+		typeof attachment.contentDigest !== "string" ||
+		typeof attachment.capabilityBindingId !== "string" ||
+		typeof attachment.policyBindingId !== "string" ||
+		!validSafeInteger(attachment.byteCount) ||
+		!validSafeInteger(attachment.blockCount) ||
+		attachment.byteCount > DEFAULT_MCP_CONTENT_LIMITS.maxAttachmentBytes ||
+		attachment.blockCount > DEFAULT_MCP_CONTENT_LIMITS.maxBlocks ||
+		!validTimestamp(attachment.createdAt) ||
+		!Array.isArray(attachment.attachableBlocks) ||
+		typeof attachment.text !== "string" ||
+		!isWellFormedMCPText(attachment.text) ||
+		sanitizeMCPText(attachment.text) !== attachment.text
+	) {
+		throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	}
+	const provenance = persistedRecord(attachment.provenance);
+	if (
+		provenance.serverId !== attachment.serverId ||
+		provenance.source !== attachment.kind ||
+		provenance.sourceId !== attachment.sourceId ||
+		provenance.contentDigest !== attachment.contentDigest ||
+		provenance.byteCount !== attachment.byteCount ||
+		provenance.blockCount !== attachment.blockCount ||
+		provenance.untrusted !== true ||
+		!validTimestamp(provenance.receivedAt) ||
+		attachment.id !== attachmentId(attachment.kind, attachment.sourceId, attachment.contentDigest)
+	) {
+		throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	}
+	const blocks: MCPNormalizedContentBlock[] = attachment.attachableBlocks.map((candidate) => {
+		const block = persistedRecord(candidate);
+		if (block.kind === "text") {
+			if (
+				typeof block.text !== "string" ||
+				!isWellFormedMCPText(block.text) ||
+				sanitizeMCPText(block.text) !== block.text ||
+				!validSafeInteger(block.bytes) ||
+				block.bytes !== Buffer.byteLength(block.text, "utf8") ||
+				block.digest !== mcpDigestHex(block.text)
+			) throw new McpAttachmentRecordError("mcp_attachment_malformed");
+			return { kind: "text", text: block.text, bytes: block.bytes, digest: block.digest as string };
+		}
+		if (block.kind === "image") {
+			const mimeType = normalizeMCPMimeType(block.mimeType);
+			if (
+				typeof block.data !== "string" ||
+				!isValidMCPBase64(block.data) ||
+				mimeType === undefined ||
+				!validSafeInteger(block.bytes) ||
+				block.digest !== mcpDigestHex(block.data)
+			) throw new McpAttachmentRecordError("mcp_attachment_malformed");
+			return { kind: "image", data: block.data, mimeType, bytes: block.bytes, digest: block.digest as string };
+		}
+		throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	});
+	const text = blocks
+		.filter((block): block is Extract<MCPNormalizedContentBlock, { kind: "text" }> => block.kind === "text")
+		.map((block) => block.text)
+		.join("\n\n");
+	if (text !== attachment.text) throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	return structuredClone({ ...attachment, provenance, attachableBlocks: blocks }) as unknown as McpAttachment;
+}
+
+export function serializeMcpAttachmentRecord(attachment: McpAttachment): McpAttachmentAddRecord {
+	return { schemaVersion: MCP_ATTACHMENT_SCHEMA_VERSION, kind: "add", attachment: normalizePersistedAttachment(attachment) };
+}
+
+export function createMcpAttachmentTombstone(attachmentIdValue: string): McpAttachmentTombstone {
+	if (typeof attachmentIdValue !== "string" || attachmentIdValue.length === 0) {
+		throw new McpAttachmentRecordError("mcp_attachment_malformed");
+	}
+	return { schemaVersion: MCP_ATTACHMENT_SCHEMA_VERSION, kind: "remove", attachmentId: attachmentIdValue };
+}
+
+export function normalizeMcpAttachmentRecord(value: unknown): McpAttachmentPersistedRecord {
+	const record = persistedRecord(value);
+	if (record.schemaVersion !== MCP_ATTACHMENT_SCHEMA_VERSION) {
+		throw new McpAttachmentRecordError("mcp_attachment_unknown_schema");
+	}
+	if (record.kind === "add") {
+		return { schemaVersion: MCP_ATTACHMENT_SCHEMA_VERSION, kind: "add", attachment: normalizePersistedAttachment(record.attachment) };
+	}
+	if (record.kind === "remove") {
+		return createMcpAttachmentTombstone(typeof record.attachmentId === "string" ? record.attachmentId : "");
+	}
+	throw new McpAttachmentRecordError("mcp_attachment_unknown_kind");
+}
+
+export interface McpAttachmentFoldResult {
+	readonly attachments: ReadonlyArray<McpAttachment>;
+	readonly byId: ReadonlyMap<string, McpAttachment>;
+	readonly tombstones: ReadonlySet<string>;
+}
+
+export function foldMcpAttachmentEntries(entries: ReadonlyArray<unknown>): McpAttachmentFoldResult {
+	const byId = new Map<string, McpAttachment>();
+	const tombstones = new Set<string>();
+	for (const candidate of entries) {
+		const entry = persistedRecord(candidate);
+		if (entry.type !== "custom" || entry.customType !== MCP_ATTACHMENT_CUSTOM_TYPE) continue;
+		const record = normalizeMcpAttachmentRecord(entry.data);
+		if (record.kind === "remove") {
+			tombstones.add(record.attachmentId);
+			byId.delete(record.attachmentId);
+		} else if (!tombstones.has(record.attachment.id) && !byId.has(record.attachment.id)) {
+			byId.set(record.attachment.id, record.attachment);
+		}
+	}
+	return { attachments: [...byId.values()], byId, tombstones };
 }
 
 /** Opaque binding ids of the frozen bindings that authorized an attach. */
