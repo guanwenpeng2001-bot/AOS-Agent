@@ -92,6 +92,52 @@ function harness(provider = new FakeWorkerProviderV1()): {
 }
 
 describe("trusted Operation Worker runtime", () => {
+	it("fails initialize closed on provider identity mismatch without ready or provider effects", async () => {
+		const provider = new FakeWorkerProviderV1({ providerId: "mismatched-provider" });
+		const state = harness(provider);
+		await state.runtime.receiveFrame(initialize);
+
+		expect(state.frames).toEqual([
+			expect.objectContaining({ type: "error", requestId: initialize.requestId, workerId: binding.workerId, code: "worker_binding_invalid" }),
+		]);
+		expect(state.runtime.closed).toBe(true);
+		expect(provider.capabilityCalls).toBe(0);
+		expect(provider.starts).toEqual([]);
+		expect(provider.cancellations).toEqual([]);
+		expect(provider.projectedLeases).toEqual([]);
+		expect(provider.renewedLeases).toEqual([]);
+		expect(provider.revokedLeases).toEqual([]);
+		expect(provider.disposeCalls).toBe(0);
+		expect(state.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+		expect(JSON.stringify(state.frames)).not.toContain(provider.providerId);
+		await state.runtime.receiveFrame(execute);
+		expect(provider.starts).toEqual([]);
+	});
+
+	it("fails execute before initialize closed without provider calls, output, or raw-frame leakage", async () => {
+		const provider = new FakeWorkerProviderV1();
+		const state = harness(provider);
+		const rawMarker = "raw-execute-before-initialize";
+		const earlyExecute: WorkerRequestFrameV1 = {
+			...execute,
+			request: { ...request, payload: { detail: rawMarker } },
+		};
+		await state.runtime.receiveLine(serializeWorkerFrameLineV1(earlyExecute));
+
+		expect(state.runtime.closed).toBe(true);
+		expect(state.frames).toEqual([]);
+		expect(provider.capabilityCalls).toBe(0);
+		expect(provider.starts).toEqual([]);
+		expect(provider.cancellations).toEqual([]);
+		expect(provider.projectedLeases).toEqual([]);
+		expect(provider.renewedLeases).toEqual([]);
+		expect(provider.revokedLeases).toEqual([]);
+		expect(provider.disposeCalls).toBe(0);
+		expect(state.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
+		expect(state.diagnostics.join("")).not.toContain(rawMarker);
+		expect(JSON.stringify(state.frames)).not.toContain(rawMarker);
+	});
+
 	it("emits ready only after initialize and requires exact provider capabilities", async () => {
 		const accepted = harness();
 		expect(accepted.frames).toEqual([]);

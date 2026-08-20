@@ -36,6 +36,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	readonly renewedLeases: SafeLeaseProjectionV1[] = [];
 	readonly revokedLeases: SafeLeaseReferenceV1[] = [];
 	readonly receipts: WorkerReceiptV1[] = [];
+	capabilityCalls = 0;
 	disposeCalls = 0;
 
 	private readonly capabilityIds: readonly string[];
@@ -57,6 +58,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		this.capabilityCalls += 1;
 		return this.capabilityIds.map((id) => ({ schemaVersion: 1, id, version: 1 }));
 	}
 
