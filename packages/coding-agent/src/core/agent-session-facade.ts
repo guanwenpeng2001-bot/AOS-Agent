@@ -3058,6 +3058,22 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getExternalAgentRegistry();
 	}
 
+	getWorkerRegistry():
+		| Pick<WorkerSandboxProviderV1, "getWorkerRecord" | "listWorkerRecords" | "reclaimWorker">
+		| undefined {
+		if (this.controlPlane.getWorkerSandboxProvider() === undefined) return undefined;
+
+		return {
+			getWorkerRecord: (workerId) => this.controlPlane.getWorkerRecord(workerId),
+			listWorkerRecords: () => this.controlPlane.listWorkerRecords(),
+			reclaimWorker: async (workerId) => {
+				const result = await this.controlPlane.reclaimWorker(workerId);
+				if (result === undefined) throw new Error("Worker registry became unavailable");
+				return result;
+			},
+		};
+	}
+
 	getTaskCredentialService(): TaskCredentialService | undefined {
 		return this.controlPlane.getTaskCredentialService();
 	}
@@ -3426,6 +3442,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"setModelBrokerResolution",
 	"getActiveBindingHandles",
 	"getExternalAgentRegistry",
+	"getWorkerRegistry",
 	"getTaskCredentialService",
 	"getActiveSandboxSessionForCompatibility",
 	"setAutoCompactionEnabled",
@@ -3635,6 +3652,7 @@ export class AgentSession {
 	declare readonly setModelBrokerResolution: CanonicalAgentSessionServices["setModelBrokerResolution"];
 	declare readonly getActiveBindingHandles: CanonicalAgentSessionServices["getActiveBindingHandles"];
 	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
+	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];
 	declare readonly getActiveSandboxSessionForCompatibility: CanonicalAgentSessionServices["getActiveSandboxSessionForCompatibility"];
 	declare readonly setAutoCompactionEnabled: CanonicalAgentSessionServices["setAutoCompactionEnabled"];

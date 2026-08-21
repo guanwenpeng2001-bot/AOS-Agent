@@ -13,7 +13,31 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { WorkerLifecycleStatusV1, WorkerRecordV1 } from "../src/core/worker.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../src/modes/rpc/rpc-host.ts";
+import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import type { RpcCommand, RpcWorkerRecord, RpcWorkerResponse } from "../src/modes/rpc/rpc-types.ts";
+
+const rpcIo = vi.hoisted(() => ({
+	outputLines: [] as string[],
+	lineHandler: undefined as ((line: string) => void) | undefined,
+}));
+
+vi.mock("../src/core/output-guard.js", () => ({
+	flushRawStdout: vi.fn(async () => {}),
+	takeOverStdout: vi.fn(),
+	waitForRawStdoutBackpressure: vi.fn(async () => {}),
+	writeRawStdout: (line: string) => rpcIo.outputLines.push(line),
+}));
+
+vi.mock("../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
+
+vi.mock("../src/modes/rpc/jsonl.js", () => ({
+	attachJsonlLineReader: vi.fn((_stream: NodeJS.ReadableStream, onLine: (line: string) => void) => {
+		rpcIo.lineHandler = onLine;
+		return () => {};
+	}),
+	DEFAULT_MAX_JSONL_FRAME_BYTES: 1024 * 1024,
+	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
+}));
 
 vi.mock("@aos-agent/ai/compat", () => ({
 	clampThinkingLevel: (level: unknown) => level,
@@ -62,7 +86,9 @@ function testResourceLoader(): ResourceLoader {
 	};
 }
 
-async function createHarness(workerRegistry?: (session: AgentSession) => RpcWorkerRegistry | undefined): Promise<{
+async function createHarness(
+	workerRegistry?: (session: AgentSession) => RpcWorkerRegistry | undefined,
+): Promise<{
 	controller: RpcHostController;
 	runtimeHost: AgentSessionRuntime;
 	cleanup: () => Promise<void>;
@@ -197,11 +223,16 @@ function expectSafeWorker(worker: RpcWorkerRecord): void {
 }
 
 describe("RpcHostController Worker management", () => {
-	afterEach(() => vi.restoreAllMocks());
+	afterEach(() => {
+		rpcIo.outputLines = [];
+		rpcIo.lineHandler = undefined;
+		vi.restoreAllMocks();
+	});
 
 	it("advertises additive commands and defaults to no Worker authority", async () => {
 		const harness = await createHarness();
 		try {
+			expect(harness.runtimeHost.session.getWorkerRegistry()).toBeUndefined();
 			expect(await harness.controller.dispatch({ type: "worker.list" })).toMatchObject({
 				command: "worker.list",
 				success: false,
@@ -229,6 +260,44 @@ describe("RpcHostController Worker management", () => {
 				error: { code: "worker_unavailable" },
 			});
 		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("wires the current Session control-plane registry through stdio RPC", async () => {
+		const harness = await createHarness();
+		const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
+		const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
+		const stdinEndListenersBefore = new Set(process.stdin.listeners("end"));
+		try {
+			const listWorkerRecords = vi.fn(() => []);
+			const registry: RpcWorkerRegistry = {
+				getWorkerRecord: () => undefined,
+				listWorkerRecords,
+				reclaimWorker: async () => Result.err(new FoundationError("worker_reclaim_failed", "reclaim failed")),
+			};
+			const registryAccessor = vi.spyOn(harness.runtimeHost.session, "getWorkerRegistry").mockReturnValue(registry);
+			void runRpcMode(harness.runtimeHost);
+			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
+
+			rpcIo.lineHandler!(JSON.stringify({ id: "initialize", type: "initialize", protocolVersion: 1 }));
+			await vi.waitFor(() => expect(rpcIo.outputLines.join("\n")).toContain('"id":"initialize"'));
+			for (const id of ["list-1", "list-2"]) {
+				rpcIo.lineHandler!(JSON.stringify({ id, type: "worker.list" }));
+				await vi.waitFor(() => expect(rpcIo.outputLines.join("\n")).toContain(`"id":"${id}"`));
+			}
+
+			expect(registryAccessor).toHaveBeenCalledTimes(2);
+			expect(listWorkerRecords).toHaveBeenCalledTimes(2);
+		} finally {
+			for (const [signal, listenersBefore] of signalListenersBefore) {
+				for (const listener of process.listeners(signal)) {
+					if (!listenersBefore.has(listener)) process.off(signal, listener as (...args: unknown[]) => void);
+				}
+			}
+			for (const listener of process.stdin.listeners("end")) {
+				if (!stdinEndListenersBefore.has(listener)) process.stdin.off("end", listener as (...args: unknown[]) => void);
+			}
 			await harness.cleanup();
 		}
 	});
@@ -489,15 +558,28 @@ describe("RpcHostController Worker management", () => {
 			await throwingHarness.cleanup();
 		}
 
-		let listRecords: readonly unknown[] = [null];
+		let getRecord: unknown = null;
+		let listRecords: unknown = [null];
 		const malformedListRegistry: RpcWorkerRegistry = {
-			getWorkerRecord: () => undefined,
+			getWorkerRecord: () => getRecord as WorkerRecordV1 | undefined,
 			listWorkerRecords: () => listRecords as unknown as readonly WorkerRecordV1[],
 			reclaimWorker: async () => Result.err(new FoundationError("worker_reclaim_failed", "reclaim failed")),
 		};
 		const listHarness = await createHarness(() => malformedListRegistry);
 		try {
 			await listHarness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
+			expect(await listHarness.controller.dispatch({ type: "worker.get", workerId: "malformed" })).toMatchObject({
+				success: false,
+				error: { code: "worker_invalid" },
+			});
+			getRecord = undefined;
+			for (const malformed of [null, { records: [] }]) {
+				listRecords = malformed;
+				expect(await listHarness.controller.dispatch({ type: "worker.list" })).toMatchObject({
+					success: false,
+					error: { code: "worker_invalid" },
+				});
+			}
 			for (const malformed of [null, { workerId: "malformed" }]) {
 				listRecords = [malformed];
 				expect(await listHarness.controller.dispatch({ type: "worker.list" })).toMatchObject({
