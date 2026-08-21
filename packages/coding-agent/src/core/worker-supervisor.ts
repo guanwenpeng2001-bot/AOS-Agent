@@ -27,6 +27,8 @@ import {
 	type WorkerCancelReasonV1,
 	type WorkerEventFrameV1,
 	type WorkerRequestFrameV1,
+	type SafeLeaseProjectionV1,
+	type SafeLeaseReferenceV1,
 } from "./worker-protocol.ts";
 import {
 	WORKER_SCHEMA_VERSION,
@@ -469,6 +471,30 @@ export class WorkerSupervisorV1 {
 		return Result.err(stableError("worker_cancel_failed", "Operation Worker cancellation timed out"));
 	}
 
+	/** Request safe-ref projection; a successful write is not delivery proof. */
+	projectCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+		return this.sendCredentialProjection("credential.project", lease);
+	}
+
+	/** Request safe-ref renewal; a successful write is not delivery proof. */
+	renewCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+		return this.sendCredentialProjection("credential.renew", lease);
+	}
+
+	/** Request safe-ref revocation; a successful write is not revocation proof. */
+	revokeCredential(leaseRef: SafeLeaseReferenceV1): Promise<ResultValue<void, FoundationError>> {
+		const workerId = this.lifecycle?.binding.workerId;
+		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) {
+			return Promise.resolve(Result.err(stableError("worker_lost", "Operation Worker is unavailable for credential revocation")));
+		}
+		return this.sendFrame({
+			type: "credential.revoke",
+			requestId: this.nextRequestId("credential-revoke"),
+			workerId,
+			leaseRef,
+		});
+	}
+
 	async terminate(reason: WorkerCancelReasonV1 = "shutdown"): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
 		if (
 			this.lifecycle !== undefined &&
@@ -640,6 +666,14 @@ export class WorkerSupervisorV1 {
 			this.protocolFailure("worker_operation_invalid");
 			return;
 		}
+		if (
+			parsed.value.type === "heartbeat" &&
+			this.lifecycle !== undefined &&
+			parsed.value.workerId === this.lifecycle.binding.workerId &&
+			(this.pendingReceiptFrame !== undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status))
+		) {
+			return;
+		}
 		const accepted = this.protocol.receiveWorkerFrame(parsed.value);
 		if (!accepted.ok) {
 			this.protocolFailure(
@@ -795,6 +829,22 @@ export class WorkerSupervisorV1 {
 		return result.timedOut
 			? Result.err(stableError("worker_lost", "Operation Worker backpressure did not drain"))
 			: Result.ok(undefined);
+	}
+
+	private sendCredentialProjection(
+		type: "credential.project" | "credential.renew",
+		lease: SafeLeaseProjectionV1,
+	): Promise<ResultValue<void, FoundationError>> {
+		const workerId = this.lifecycle?.binding.workerId;
+		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) {
+			return Promise.resolve(Result.err(stableError("worker_lost", "Operation Worker is unavailable for credential projection")));
+		}
+		return this.sendFrame({
+			type,
+			requestId: this.nextRequestId(type === "credential.project" ? "credential-project" : "credential-renew"),
+			workerId,
+			lease,
+		});
 	}
 
 	private transition(

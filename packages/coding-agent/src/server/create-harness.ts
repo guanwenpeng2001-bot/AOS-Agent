@@ -1,14 +1,20 @@
 import {
 	AgentHarness,
+	createFoundationToolGatewayV1,
+	createSandboxOperationToolGatewayProviderV1,
 	type AgentHarnessOptions,
 	type AgentHarnessTool,
 	createBashTool,
 	createEditTool,
 	createReadTool,
 	createWriteTool,
+	validateFoundationProviderCapabilityV1,
 	type ExecutionEnv,
 	type ExecutionToolContext,
 	type HarnessTool,
+	type FoundationJsonValue,
+	type SandboxOperationProvider,
+	type ToolGatewayRouteV1,
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
@@ -42,6 +48,12 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 	sessionFile?: string;
 	tools?: CodingAgentHarnessTool[];
 	systemPromptOptions?: Omit<BuildSystemPromptOptions, "cwd" | "promptGuidelines" | "selectedTools" | "toolSnippets">;
+	/** Explicit opt-in for the Foundation sandbox ToolGateway route. */
+	workerSandbox?: {
+		readonly provider: SandboxOperationProvider;
+		readonly routes: readonly ToolGatewayRouteV1[];
+		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
+	};
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -81,6 +93,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		bashCommandPrefix,
 		sessionFile,
 		systemPromptOptions,
+		workerSandbox,
 		tools: providedTools,
 		activeToolNames: providedActiveToolNames,
 		systemPrompt: providedSystemPrompt,
@@ -155,5 +168,26 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
-	return created;
+	if (workerSandbox === undefined) return created;
+	const workerCapabilities = Object.freeze((await workerSandbox.provider.capabilities()).map((capability) => {
+		const validated = validateFoundationProviderCapabilityV1(capability);
+		if (!validated.ok) throw validated.error;
+		return Object.freeze({ ...validated.value });
+	}));
+	const sandboxProvider = createSandboxOperationToolGatewayProviderV1({
+		providerId: workerSandbox.provider.providerId,
+		routes: workerSandbox.routes,
+		sandbox: workerSandbox.provider,
+		capabilities: workerCapabilities,
+		...(workerSandbox.onOperationPayload === undefined
+			? {}
+			: { onOperationPayload: workerSandbox.onOperationPayload }),
+	});
+	return {
+		...created,
+		operationToolGateway: createFoundationToolGatewayV1({
+			gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
+			providers: [sandboxProvider],
+		}),
+	};
 }

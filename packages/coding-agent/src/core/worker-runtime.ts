@@ -367,7 +367,6 @@ function operationCorrelation(binding: WorkerBindingV1, request: Extract<WorkerR
 		...(binding.runId === undefined ? {} : { runId: binding.runId }),
 		...(request.bindingId === undefined ? {} : { bindingId: request.bindingId }),
 		...(request.bindingEpochId === undefined ? {} : { bindingEpochId: request.bindingEpochId }),
-		...(request.agentInstanceId === undefined ? {} : { agentInstanceId: request.agentInstanceId }),
 		...(request.toolCallId === undefined ? {} : { toolCallId: request.toolCallId }),
 		...(request.taskId === undefined ? {} : { taskId: request.taskId }),
 		...(request.dispatchId === undefined ? {} : { dispatchId: request.dispatchId }),

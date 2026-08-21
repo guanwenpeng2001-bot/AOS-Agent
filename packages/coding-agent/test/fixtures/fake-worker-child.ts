@@ -115,6 +115,24 @@ function complete(
 		emitBatch([completed, terminal, completed]);
 		return;
 	}
+	if (binding?.profileId === "late_heartbeat") {
+		heartbeatSequence += 1;
+		emitBatch([
+			completed,
+			terminal,
+			{ type: "heartbeat", workerId: binding.workerId, sequence: heartbeatSequence, at: now() },
+		]);
+		return;
+	}
+	if (binding?.profileId === "late_heartbeat_cross_worker") {
+		heartbeatSequence += 1;
+		emitBatch([
+			completed,
+			terminal,
+			{ type: "heartbeat", workerId: "foreign-worker", sequence: heartbeatSequence, at: now() },
+		]);
+		return;
+	}
 	emitBatch([completed, terminal]);
 }
 
@@ -181,7 +199,7 @@ function handleExecute(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>
 	}
 	if (profile === "cancel_success" || profile === "cancel_timeout") return;
 	if (profile === "deadline_late") {
-		setTimeout(() => complete(frame, "succeeded"), 600);
+		setTimeout(() => complete(frame, "succeeded"), 2_000);
 		return;
 	}
 	if (profile === "receipt_invalid") {

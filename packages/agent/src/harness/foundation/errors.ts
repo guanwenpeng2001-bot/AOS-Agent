@@ -91,6 +91,8 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"protocol_unsupported_version",
 	"protocol_invalid_envelope",
 	"observer_cursor_gap",
+	"sandbox_capability_insufficient",
+	"task_credential_target_unavailable",
 ] as const;
 
 /** Canonical durable-ledger error catalog. Keep this tuple as the only source for its union. */

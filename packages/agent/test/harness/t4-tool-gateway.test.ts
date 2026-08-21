@@ -68,7 +68,10 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		});
 		const gateway = createFoundationToolGatewayV1({ gatewayId: "gateway-2", providers: [provider] });
 
-		expect(await gateway.execute(request)).toMatchObject({ ok: true, value: { ok: true, sideEffectState: "none" } });
+		expect(await gateway.execute(request)).toMatchObject({
+			ok: true,
+			value: { ok: true, sideEffectState: "none", toolReceiptRef: "worker-receipt-1" },
+		});
 		expect(starts).toEqual(["operation-1"]);
 		await gateway.dispose();
 		expect(disposed).toBe(true);

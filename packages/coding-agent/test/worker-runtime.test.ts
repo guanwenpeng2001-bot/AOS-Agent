@@ -43,6 +43,7 @@ const request = {
 	taskId: "task-1",
 	dispatchId: "dispatch-1",
 	toolCallId: "tool-call-1",
+	agentInstanceId: "upstream-agent-only",
 	payload: { result: "ok" },
 };
 
@@ -180,6 +181,7 @@ describe("trusted Operation Worker runtime", () => {
 				attemptId: request.attemptId,
 			},
 		});
+		expect(state.provider.starts[0]?.correlation).not.toHaveProperty("agentInstanceId");
 		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "operation.completed", "receipt"]);
 		const receipts = state.frames.filter((frame) => frame.type === "receipt");
 		expect(receipts).toHaveLength(1);
@@ -192,6 +194,8 @@ describe("trusted Operation Worker runtime", () => {
 				sideEffectState: "none",
 			},
 		});
+		if (receipts[0]?.type !== "receipt") throw new Error("Expected Worker receipt");
+		expect(receipts[0].receipt.provenance.correlation).not.toHaveProperty("agentInstanceId");
 		await state.runtime.receiveFrame(execute);
 		expect(state.runtime.closed).toBe(true);
 		expect(state.frames.filter((frame) => frame.type === "receipt")).toHaveLength(1);

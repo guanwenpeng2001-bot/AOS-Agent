@@ -1,6 +1,14 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
-import type { AgentHarness, HarnessTool } from "@aos-agent/agent-core";
+import {
+	canonicalFoundationJson,
+	FoundationError,
+	validateDurableEventV1,
+	type AgentHarness,
+	type FoundationEventEnvelopeV1,
+	type HarnessTool,
+} from "@aos-agent/agent-core";
 import {
 	CapabilityError,
 	CapabilityNameConflictError,
@@ -104,6 +112,18 @@ import {
 	isTaskExecutionBinding,
 } from "./task-credential-lease.ts";
 import { TaskCredentialService, type TaskCredentialPreflightFactsInput } from "./task-credential-service.ts";
+import { registerRunWorkerLifecycleHooks, type RunWorkerLifecycleHooks } from "./run-lifecycle.ts";
+import {
+	parseWorkerRecordV1,
+	workerTransitionAllowedV1,
+	type WorkerRecordV1,
+	type WorkerTransitionReceiptV1,
+} from "./worker.ts";
+import type {
+	WorkerSandboxFactV1,
+	WorkerSandboxProviderV1,
+	WorkerSandboxRecoveryV1,
+} from "./worker-sandbox-provider.ts";
 
 /**
  * Service state shared by all coding-agent entry surfaces.
@@ -128,6 +148,10 @@ export interface FoundationControlPlaneOptions {
 	mcpAuthProvider?: MCPAuthProviderResolver;
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Explicit Operation Worker profile/provider. Omission preserves the inline/Host path. */
+	workerSandboxProvider?: WorkerSandboxProviderV1;
+	/** Testable optimization bound; Session eventId lookup remains authoritative. */
+	workerFactCacheLimit?: number;
 	policyProfile?: string;
 	externalAgentRegistry?: ExternalAgentAdapterRegistry;
 	taskCredentialProvider?: TaskCredentialProvider;
@@ -185,6 +209,17 @@ function isAbortError(value: unknown): boolean {
 	return value instanceof Error && value.name === "AbortError";
 }
 
+function hasExactKeys(value: object, required: readonly string[], optional: readonly string[] = []): boolean {
+	const allowed = new Set([...required, ...optional]);
+	return required.every((key) => Object.hasOwn(value, key)) &&
+		Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isCanonicalWorkerTimestamp(value: string): boolean {
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
 export class FoundationControlPlane {
 	private readonly harness: AgentHarness;
 	private readonly sessionManager: SessionManager;
@@ -202,6 +237,16 @@ export class FoundationControlPlane {
 	private readonly taskCredentialPolicyMaxTtlMs: number | undefined;
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
 	private readonly sandboxProviders: ReadonlyMap<string, SandboxProvider>;
+	private readonly workerSandboxProvider: WorkerSandboxProviderV1 | undefined;
+	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
+	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
+	private readonly releaseWorkerDurableSink: (() => void) | undefined;
+	private readonly persistedWorkerFacts = new Map<string, {
+		readonly customType: string;
+		readonly canonicalEnvelope: string;
+		readonly entryCount: number;
+	}>();
+	private readonly workerFactCacheLimit: number;
 	private readonly noTools: "all" | "builtin" | undefined;
 	private readonly allowedToolNames: ReadonlySet<string> | undefined;
 	private readonly excludedToolNames: ReadonlySet<string>;
@@ -263,6 +308,19 @@ export class FoundationControlPlane {
 		this.excludedToolNames = new Set(options.excludedToolNames ?? []);
 		this.policyProfileSelection = options.policyProfile;
 		this.sandboxProviders = normalizeSandboxProviders(options.sandboxProviders);
+		this.workerSandboxProvider = options.workerSandboxProvider;
+		this.workerFactCacheLimit = options.workerFactCacheLimit ?? 4_096;
+		if (!Number.isSafeInteger(this.workerFactCacheLimit) || this.workerFactCacheLimit < 1) {
+			throw new RangeError("workerFactCacheLimit must be a positive safe integer");
+		}
+		this.workerLifecycleHooks = this.workerSandboxProvider === undefined
+			? undefined
+			: {
+				onRunCancelRequested: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "cancel").catch(() => undefined); },
+				onRunDeadlineExceeded: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "deadline").catch(() => undefined); },
+				onRunTerminal: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "terminal").catch(() => undefined); },
+				onRunInterrupted: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "detach").catch(() => undefined); },
+			};
 		this.policyLedger = createExecutionPolicyLedger(this.sessionManager);
 		this.mcpAuthManager = options.mcpAuthManagerOptions === undefined
 			? undefined
@@ -276,6 +334,37 @@ export class FoundationControlPlane {
 		});
 		this.captureHarnessTools();
 		this.registerConfiguredServers();
+		let releaseWorkerDurableSink: (() => void) | undefined;
+		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
+		try {
+			if (this.workerSandboxProvider !== undefined) {
+				if (this.workerLifecycleHooks !== undefined) {
+					unregisterWorkerLifecycleHooks = registerRunWorkerLifecycleHooks(
+						this.sessionManager,
+						this.workerLifecycleHooks,
+					);
+				}
+				if (this.workerSandboxProvider.hasDurableFactOwner()) {
+					throw new FoundationError("service_conflict", "Operation Worker durable fact owner is already bound");
+				}
+				const history = this.readPersistedWorkerRecovery();
+				const validated = this.workerSandboxProvider.validateWorkerFactsForRestore(history.recovery);
+				if (!validated.ok) throw validated.error;
+				releaseWorkerDurableSink = this.workerSandboxProvider.bindDurableFactSink(
+					this.sessionManager.getSessionId(),
+					(fact) => this.persistWorkerFact(fact),
+				);
+				for (const fact of history.convergenceFacts) this.persistWorkerFact(fact);
+				const restored = this.workerSandboxProvider.restoreWorkerFacts(history.recovery);
+				if (!restored.ok) throw restored.error;
+			}
+		} catch (error) {
+			unregisterWorkerLifecycleHooks?.();
+			releaseWorkerDurableSink?.();
+			throw error;
+		}
+		this.releaseWorkerDurableSink = releaseWorkerDurableSink;
+		this.unregisterWorkerLifecycleHooks = unregisterWorkerLifecycleHooks;
 	}
 
 	private registerConfiguredServers(): void {
@@ -1305,6 +1394,7 @@ export class FoundationControlPlane {
 		this.policyApprovals.delete(requestId);
 	}
 	async setExecutionPolicyProfile(profileName?: string): Promise<void> {
+		await this.workerSandboxProvider?.terminateAll("detach");
 		await this.mcpLifecycle.closeAll().catch(() => undefined);
 		await this.disposeSandbox();
 		this.policyProfileSelection = profileName;
@@ -1640,6 +1730,14 @@ export class FoundationControlPlane {
 		for (const controller of this.bashControllers) controller.abort(new DOMException("Bash execution cancelled", "AbortError"));
 	}
 	getSandboxHandle(): SandboxHandle | undefined { return this.sandboxHandle; }
+	getWorkerSandboxProvider(): WorkerSandboxProviderV1 | undefined { return this.workerSandboxProvider; }
+	getWorkerRecord(workerId: string) { return this.workerSandboxProvider?.getWorkerRecord(workerId); }
+	listWorkerRecords() { return this.workerSandboxProvider?.listWorkerRecords() ?? []; }
+	getWorkerReceipt(workerReceiptId: string) { return this.workerSandboxProvider?.getWorkerReceipt(workerReceiptId); }
+	listWorkerReceipts() { return this.workerSandboxProvider?.listWorkerReceipts() ?? []; }
+	reclaimWorker(workerId: string) { return this.workerSandboxProvider?.reclaimWorker(workerId); }
+	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
+	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to
 	 * dispose the live sandbox before a credential preflight. The control plane
@@ -1651,6 +1749,7 @@ export class FoundationControlPlane {
 	}
 	async reload(): Promise<void> {
 		if (this.disposed) throw new Error("Foundation control plane is disposed");
+		await this.workerSandboxProvider?.terminateAll("detach");
 		await this.mcpLifecycle.closeAll().catch(() => undefined);
 		await this.disposeSandbox();
 		this.mcpTools = [];
@@ -1672,15 +1771,719 @@ export class FoundationControlPlane {
 		this.taskCredentialDisposed = true;
 		this.cancelMcpContentOperations();
 		this.abortBash();
+		let failure: unknown;
 		try {
 			this.taskCredentialService?.onSessionShutdown();
 		} catch {
 			// Credential shutdown is best effort and never blocks session close.
 		}
 		await this.mcpLifecycle.closeAll().catch(() => undefined);
-		await this.disposeSandbox();
-		await this.mcpAuthManager?.dispose();
+		try {
+			await this.workerSandboxProvider?.dispose();
+		} catch (error) {
+			failure = error;
+		} finally {
+			this.unregisterWorkerLifecycleHooks?.();
+			this.releaseWorkerDurableSink?.();
+		}
+		try {
+			await this.disposeSandbox();
+		} catch (error) {
+			failure ??= error;
+		}
+		try {
+			await this.mcpAuthManager?.dispose();
+		} catch (error) {
+			failure ??= error;
+		}
+		if (failure !== undefined) throw failure;
 	}
+
+	private readPersistedWorkerRecovery(): {
+		readonly recovery: WorkerSandboxRecoveryV1;
+		readonly convergenceFacts: readonly WorkerSandboxFactV1[];
+	} {
+		const sessionId = this.sessionManager.getSessionId();
+		const seen = new Map<string, { readonly customType: string; readonly canonicalEnvelope: string }>();
+		const operationIds = new Set<string>();
+		const workerIds = new Set<string>();
+		const terminalLifecycle = new Map<string, { readonly operationId: string; readonly receiptId?: string }>();
+		const lifecycleRevisions = new Map<string, WorkerRecordV1>();
+		const operationEvents: Array<{
+			readonly workerId: string;
+			readonly providerId: string;
+			readonly sessionId: string;
+			readonly laneId: string;
+			readonly operationId: string;
+			readonly revision: number;
+			readonly phase: "claimed" | "started" | "terminal";
+			readonly sideEffectState?: "none" | "unknown" | "side_effect_unknown";
+			readonly receiptId?: string;
+			readonly correlationReceiptId?: string;
+		}> = [];
+		const receiptEvents: Array<{
+			readonly sessionId: string;
+			readonly taskId?: string;
+			readonly operationId: string;
+			readonly receiptId: string;
+			readonly terminalRecordRevision: number;
+			readonly streamId: string;
+		}> = [];
+		const lifecycle = new Map<string, {
+			record: WorkerRecordV1;
+			lastTimestamp: string;
+			activeOperationId?: string;
+			receiptId?: string;
+			lastHeartbeatAt?: string;
+		}>();
+		for (const entry of this.sessionManager.getPhysicalEntries()) {
+			if (entry.type !== "custom" || entry.data === null || typeof entry.data !== "object" || Array.isArray(entry.data)) continue;
+			if (
+				entry.customType !== "worker.lifecycle_transitioned" &&
+				entry.customType !== "worker.operation_recorded" &&
+				entry.customType !== "worker_receipt.written"
+			) continue;
+			const eventId = "eventId" in entry.data && typeof entry.data.eventId === "string" ? entry.data.eventId : undefined;
+			if (eventId === undefined) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event identity is invalid");
+			}
+			const event = validateDurableEventV1(entry.data);
+			if (!event.ok || entry.customType !== event.value.category) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event is invalid");
+			}
+			if (!isCanonicalWorkerTimestamp(event.value.timestamp)) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event timestamp is invalid");
+			}
+			const canonicalEnvelope = canonicalFoundationJson(event.value);
+			const eventPayload = event.value.payload;
+			if (
+				event.value.correlation.sessionId !== sessionId ||
+				eventPayload !== null && typeof eventPayload === "object" && !Array.isArray(eventPayload) &&
+					typeof eventPayload.sessionId === "string" && eventPayload.sessionId !== sessionId
+			) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker Session identity is invalid");
+			}
+			const seenPrevious = seen.get(eventId);
+			if (seenPrevious !== undefined) {
+				if (seenPrevious.customType !== entry.customType || seenPrevious.canonicalEnvelope !== canonicalEnvelope) {
+					throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event identity conflicts");
+				}
+				continue;
+			}
+			seen.set(eventId, { customType: entry.customType, canonicalEnvelope });
+			if (event.value.category === "worker.operation_recorded") {
+				const correlation = event.value.correlation;
+				const payload = event.value.payload;
+				if (
+					payload === null || typeof payload !== "object" || Array.isArray(payload) ||
+					!hasExactKeys(payload, [
+						"schemaVersion", "workerId", "providerId", "sessionId", "laneId", "operationId",
+						"phase", "revision", "recordedAt",
+					], ["sideEffectState", "receiptId"]) ||
+					!hasExactKeys(correlation, ["sessionId", "laneId", "workerId", "operationId"], ["receiptId"]) ||
+					payload.schemaVersion !== 1 ||
+					typeof payload.workerId !== "string" || typeof payload.operationId !== "string" ||
+					typeof payload.providerId !== "string" || typeof payload.sessionId !== "string" ||
+					typeof payload.laneId !== "string" || typeof payload.recordedAt !== "string" ||
+					(payload.phase !== "claimed" && payload.phase !== "started" && payload.phase !== "terminal") ||
+					payload.revision !== event.value.sequence ||
+					payload.recordedAt !== event.value.timestamp ||
+					(payload.sideEffectState !== undefined &&
+						(typeof payload.sideEffectState !== "string" || !["none", "unknown", "side_effect_unknown"].includes(payload.sideEffectState))) ||
+					(payload.receiptId !== undefined && typeof payload.receiptId !== "string") ||
+					(correlation.receiptId !== undefined && typeof correlation.receiptId !== "string") ||
+					eventId !== `worker-operation:${payload.workerId}:${String(payload.revision)}` ||
+					event.value.streamId !== `worker-operation:${payload.workerId}:${payload.operationId}` ||
+					correlation.workerId !== payload.workerId || correlation.operationId !== payload.operationId ||
+					correlation.sessionId !== payload.sessionId || correlation.laneId !== payload.laneId
+				) {
+					throw new FoundationError("worker_persistence_failed", "Historical Operation Worker operation event is invalid");
+				}
+				operationIds.add(payload.operationId);
+				operationEvents.push({
+					workerId: payload.workerId,
+					providerId: payload.providerId,
+					sessionId: payload.sessionId,
+					laneId: payload.laneId,
+					operationId: payload.operationId,
+					revision: payload.revision as number,
+					phase: payload.phase,
+					...(typeof payload.sideEffectState === "string" && ["none", "unknown", "side_effect_unknown"].includes(payload.sideEffectState)
+						? { sideEffectState: payload.sideEffectState as "none" | "unknown" | "side_effect_unknown" }
+						: {}),
+					...(typeof payload.receiptId === "string" ? { receiptId: payload.receiptId } : {}),
+					...(typeof correlation.receiptId === "string" ? { correlationReceiptId: correlation.receiptId } : {}),
+				});
+				continue;
+			}
+			if (event.value.category === "worker_receipt.written") {
+				const correlation = event.value.correlation;
+				const payload = event.value.payload;
+				if (
+					payload === null || typeof payload !== "object" || Array.isArray(payload) ||
+					!hasExactKeys(payload, ["schemaVersion", "workerReceiptId", "operationId"], ["taskId"]) ||
+					!hasExactKeys(correlation, ["sessionId", "operationId", "workerReceiptId"], ["taskId"]) ||
+					payload.schemaVersion !== 1 ||
+					typeof payload.workerReceiptId !== "string" || typeof payload.operationId !== "string" ||
+					(payload.taskId !== undefined && typeof payload.taskId !== "string") ||
+					typeof correlation.sessionId !== "string" ||
+					(correlation.taskId !== undefined && typeof correlation.taskId !== "string") ||
+					eventId !== `worker-receipt:${payload.workerReceiptId}` ||
+					correlation.workerReceiptId !== payload.workerReceiptId ||
+					correlation.operationId !== payload.operationId || correlation.taskId !== payload.taskId
+				) {
+					throw new FoundationError("worker_persistence_failed", "Historical Operation Worker receipt event is invalid");
+				}
+				operationIds.add(payload.operationId);
+				receiptEvents.push({
+					sessionId: correlation.sessionId,
+					...(correlation.taskId === undefined ? {} : { taskId: correlation.taskId }),
+					operationId: payload.operationId,
+					receiptId: payload.workerReceiptId,
+					terminalRecordRevision: event.value.sequence,
+					streamId: event.value.streamId,
+				});
+				continue;
+			}
+			if (event.value.category !== "worker.lifecycle_transitioned") {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event category is invalid");
+			}
+			const payload = event.value.payload;
+			if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle payload is invalid");
+			}
+			if ("operationId" in payload && typeof payload.operationId !== "string") {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle operation identity is invalid");
+			}
+			if (!hasExactKeys(event.value.correlation, ["sessionId", "laneId", "workerId"], [
+				"runId", "bindingId", "bindingEpochId", "attemptId", "operationId", "receiptId",
+			])) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle correlation is invalid");
+			}
+			const recordValue = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "operationId"));
+			const parsed = parseWorkerRecordV1(canonicalFoundationJson(recordValue));
+			if (!parsed.ok) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker record is invalid");
+			}
+			const record = parsed.value;
+			workerIds.add(record.workerId);
+			const previous = lifecycle.get(record.workerId);
+			const operationId = typeof payload.operationId === "string" ? payload.operationId : undefined;
+			if (
+				operationId !== undefined &&
+				["running", "cancelling", "completed", "failed", "cancelled", "lost"].includes(record.status)
+			) operationIds.add(operationId);
+			const correlation = event.value.correlation;
+			const executionTerminal = ["completed", "failed", "cancelled", "lost"].includes(record.status);
+			const expectedReadyAt = previous?.record.readyAt ?? (record.status === "ready" ? event.value.timestamp : undefined);
+			const expectedEndedAt = previous?.record.endedAt ?? (executionTerminal ? event.value.timestamp : undefined);
+			const expectedActiveOperationId = record.status === "running"
+				? operationId
+				: record.status === "cancelling"
+					? previous?.activeOperationId
+					: undefined;
+			const transitionReceiptId = typeof correlation.receiptId === "string" ? correlation.receiptId : undefined;
+			const expectedReceiptId = transitionReceiptId ?? previous?.receiptId;
+			const expectedHeartbeat = expectedEndedAt === undefined
+				? undefined
+				: previous?.lastHeartbeatAt ?? record.lastHeartbeatAt;
+			const identityMatches = previous === undefined || (
+				previous.record.providerId === record.providerId &&
+				previous.record.sessionId === record.sessionId &&
+				previous.record.laneId === record.laneId &&
+				previous.record.runId === record.runId &&
+				previous.record.bindingId === record.bindingId &&
+				previous.record.bindingEpochId === record.bindingEpochId &&
+				previous.record.attemptId === record.attemptId &&
+				previous.record.profileId === record.profileId &&
+				previous.record.createdAt === record.createdAt
+			);
+			const transitionOperationValid = record.status === "running"
+				? operationId !== undefined
+				: record.status === "cancelling" || executionTerminal
+					? operationId === previous?.activeOperationId
+					: operationId === undefined;
+			const transitionReceiptValid = record.status === "completed" || record.status === "cancelled"
+				? transitionReceiptId !== undefined
+				: record.status === "lost" || !executionTerminal
+					? transitionReceiptId === undefined
+					: true;
+			if (
+				eventId !== `worker-lifecycle:${record.workerId}:${record.revision}` ||
+				event.value.streamId !== `worker-lifecycle:${record.workerId}` ||
+				event.value.sequence !== record.revision ||
+				correlation.sessionId !== record.sessionId || correlation.laneId !== record.laneId ||
+				correlation.workerId !== record.workerId || correlation.runId !== record.runId ||
+				correlation.bindingId !== record.bindingId || correlation.bindingEpochId !== record.bindingEpochId ||
+				correlation.attemptId !== record.attemptId || correlation.operationId !== operationId ||
+				!identityMatches ||
+				(previous === undefined
+					? record.revision !== 1 || record.status !== "starting" || event.value.timestamp < record.createdAt
+					: record.revision !== previous.record.revision + 1 ||
+						event.value.timestamp < previous.lastTimestamp ||
+						!workerTransitionAllowedV1(previous.record.status, record.status)) ||
+				!transitionOperationValid || !transitionReceiptValid ||
+				record.readyAt !== expectedReadyAt || record.endedAt !== expectedEndedAt ||
+				record.activeOperationId !== expectedActiveOperationId || record.receiptId !== expectedReceiptId ||
+				record.lastHeartbeatAt !== expectedHeartbeat
+			) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle stream is invalid");
+			}
+			lifecycle.set(record.workerId, {
+				record,
+				lastTimestamp: event.value.timestamp,
+				...(expectedActiveOperationId === undefined ? {} : { activeOperationId: expectedActiveOperationId }),
+				...(expectedReceiptId === undefined ? {} : { receiptId: expectedReceiptId }),
+				...(expectedHeartbeat === undefined ? {} : { lastHeartbeatAt: expectedHeartbeat }),
+			});
+			lifecycleRevisions.set(`${record.workerId}:${record.revision}`, record);
+			if (executionTerminal && operationId !== undefined) {
+				terminalLifecycle.set(`${record.workerId}:${record.revision}`, {
+					operationId,
+					...(transitionReceiptId === undefined ? {} : { receiptId: transitionReceiptId }),
+				});
+			}
+		}
+		const claimedOperations = new Map<string, string>();
+		const operationWorkers = new Map<string, string>();
+		const operationPhases = new Map<string, {
+			readonly claimedRevision: number;
+			readonly startedRevision?: number;
+			readonly terminalRevision?: number;
+		}>();
+		for (const operationEvent of operationEvents) {
+			const lifecycleRecord = lifecycleRevisions.get(`${operationEvent.workerId}:${operationEvent.revision}`);
+			const expectedStatus = operationEvent.phase === "claimed"
+				? "ready"
+				: operationEvent.phase === "started"
+					? "running"
+					: undefined;
+			const terminal = terminalLifecycle.get(`${operationEvent.workerId}:${operationEvent.revision}`);
+			const terminalSemanticsValid = operationEvent.phase !== "terminal" || lifecycleRecord === undefined
+				? operationEvent.sideEffectState === undefined && operationEvent.receiptId === undefined && operationEvent.correlationReceiptId === undefined
+				: lifecycleRecord.status === "completed" || lifecycleRecord.status === "cancelled"
+					? operationEvent.sideEffectState === "none" && operationEvent.receiptId === terminal?.receiptId && operationEvent.correlationReceiptId === terminal?.receiptId
+					: lifecycleRecord.status === "lost"
+						? operationEvent.sideEffectState === "side_effect_unknown" && operationEvent.receiptId === undefined && operationEvent.correlationReceiptId === undefined
+						: lifecycleRecord.status === "failed" && operationEvent.sideEffectState !== undefined &&
+							operationEvent.receiptId === terminal?.receiptId && operationEvent.correlationReceiptId === terminal?.receiptId;
+			const priorWorker = operationWorkers.get(operationEvent.operationId);
+			const priorOperation = claimedOperations.get(operationEvent.workerId);
+			const phaseKey = canonicalFoundationJson([operationEvent.workerId, operationEvent.operationId]);
+			const priorPhases = operationPhases.get(phaseKey);
+			const phaseOrderValid = operationEvent.phase === "claimed"
+				? priorPhases === undefined
+				: operationEvent.phase === "started"
+					? priorPhases !== undefined && priorPhases.startedRevision === undefined && priorPhases.terminalRevision === undefined
+					: priorPhases?.startedRevision !== undefined && priorPhases.terminalRevision === undefined;
+			if (
+				lifecycleRecord === undefined ||
+				operationEvent.providerId !== lifecycleRecord.providerId ||
+				operationEvent.providerId !== this.workerSandboxProvider?.providerId ||
+				operationEvent.sessionId !== lifecycleRecord.sessionId ||
+				operationEvent.laneId !== lifecycleRecord.laneId ||
+				expectedStatus !== undefined && lifecycleRecord.status !== expectedStatus ||
+				operationEvent.phase === "terminal" && !["completed", "failed", "cancelled", "lost"].includes(lifecycleRecord.status) ||
+				operationEvent.phase !== "claimed" && terminal?.operationId !== operationEvent.operationId &&
+					lifecycleRecord.activeOperationId !== operationEvent.operationId ||
+				!terminalSemanticsValid ||
+				priorWorker !== undefined && priorWorker !== operationEvent.workerId ||
+				priorOperation !== undefined && priorOperation !== operationEvent.operationId ||
+				operationEvent.phase !== "claimed" && priorOperation === undefined ||
+				!phaseOrderValid
+			) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker operation revision is invalid");
+			}
+			operationWorkers.set(operationEvent.operationId, operationEvent.workerId);
+			if (operationEvent.phase === "claimed") {
+				claimedOperations.set(operationEvent.workerId, operationEvent.operationId);
+				operationPhases.set(phaseKey, { claimedRevision: operationEvent.revision });
+			} else if (operationEvent.phase === "started" && priorPhases !== undefined) {
+				operationPhases.set(phaseKey, { ...priorPhases, startedRevision: operationEvent.revision });
+			} else if (priorPhases !== undefined) {
+				operationPhases.set(phaseKey, { ...priorPhases, terminalRevision: operationEvent.revision });
+			}
+		}
+		for (const [key, lifecycleRecord] of lifecycleRevisions) {
+			const lifecycleOperationId = lifecycleRecord.activeOperationId ?? terminalLifecycle.get(key)?.operationId;
+			if (lifecycleOperationId === undefined) continue;
+			if (
+				claimedOperations.get(lifecycleRecord.workerId) !== lifecycleOperationId ||
+				operationWorkers.get(lifecycleOperationId) !== lifecycleRecord.workerId
+			) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle has no claimed operation fence");
+			}
+		}
+		for (const receiptEvent of receiptEvents) {
+			const workerId = operationWorkers.get(receiptEvent.operationId);
+			const lifecycleRecord = workerId === undefined
+				? undefined
+				: lifecycleRevisions.get(`${workerId}:${receiptEvent.terminalRecordRevision}`);
+			const terminal = workerId === undefined
+				? undefined
+				: terminalLifecycle.get(`${workerId}:${receiptEvent.terminalRecordRevision}`);
+			const phases = workerId === undefined
+				? undefined
+				: operationPhases.get(canonicalFoundationJson([workerId, receiptEvent.operationId]));
+			if (
+				workerId === undefined || receiptEvent.streamId !== `worker-receipts:${workerId}` ||
+				lifecycleRecord === undefined || lifecycleRecord.sessionId !== receiptEvent.sessionId ||
+				terminal === undefined || terminal.operationId !== receiptEvent.operationId ||
+				terminal.receiptId !== receiptEvent.receiptId ||
+				phases?.terminalRevision !== receiptEvent.terminalRecordRevision
+			) {
+				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker receipt revision is invalid");
+			}
+		}
+		for (const [eventId, value] of seen) {
+			this.markWorkerFactPersisted(eventId, value.customType, value.canonicalEnvelope);
+		}
+		const convergenceFacts: WorkerSandboxFactV1[] = [];
+		const records = [...lifecycle.values()].map(({ record, activeOperationId, lastTimestamp }) => {
+			if (record.status === "reclaimed" || record.status === "reclaim_unknown") return record;
+			const convergence = this.createWorkerRecoveryConvergenceFact(record, activeOperationId, lastTimestamp);
+			convergenceFacts.push(convergence);
+			return convergence.record;
+		});
+		return {
+			recovery: {
+				records,
+				operationIds: [...operationIds],
+				workerIds: [...workerIds],
+			},
+			convergenceFacts,
+		};
+	}
+
+	private createWorkerRecoveryConvergenceFact(
+		record: WorkerRecordV1,
+		activeOperationId: string | undefined,
+		at: string,
+	): Extract<WorkerSandboxFactV1, { readonly type: "record" }> {
+		const transitions: WorkerTransitionReceiptV1[] = [];
+		const transitionRecords: WorkerRecordV1[] = [];
+		let current = record;
+		const append = (
+			to: WorkerRecordV1["status"],
+			next: WorkerRecordV1,
+			operationId?: string,
+			sideEffectState?: "side_effect_unknown",
+		): void => {
+			const revision = current.revision + 1;
+			transitions.push(Object.freeze({
+				schemaVersion: 1,
+				clientRequestId: `recovery:${record.workerId}:${revision}`,
+				requestFingerprint: `sha256:${createHash("sha256").update(`${record.workerId}:${revision}`).digest("hex")}`,
+				from: current.status,
+				to,
+				previousRevision: current.revision,
+				revision,
+				at,
+				...(operationId === undefined ? {} : { operationId }),
+				...(sideEffectState === undefined ? {} : { sideEffectState }),
+			}));
+			current = Object.freeze(next);
+			transitionRecords.push(current);
+		};
+		if (["starting", "ready", "running", "cancelling"].includes(current.status)) {
+			const operationId = current.status === "running" || current.status === "cancelling" ? activeOperationId : undefined;
+			const lostRecord = { ...current };
+			delete lostRecord.activeOperationId;
+			delete lostRecord.receiptId;
+			append("lost", {
+				...lostRecord,
+				status: "lost",
+				revision: current.revision + 1,
+				endedAt: at,
+			}, operationId, "side_effect_unknown");
+		}
+		if (["completed", "failed", "cancelled", "lost"].includes(current.status)) {
+			append("reclaiming", {
+				...current,
+				status: "reclaiming",
+				revision: current.revision + 1,
+			});
+		}
+		if (current.status === "reclaiming") {
+			append("reclaim_unknown", {
+				...current,
+				status: "reclaim_unknown",
+				revision: current.revision + 1,
+			});
+		}
+		if (transitions.length === 0 || current.status !== "reclaim_unknown") {
+			throw new FoundationError("worker_persistence_failed", "Historical Operation Worker cannot converge safely");
+		}
+		return Object.freeze({
+			type: "record",
+			record: current,
+			transitions: Object.freeze(transitions),
+			transitionRecords: Object.freeze(transitionRecords),
+		});
+	}
+
+	private persistWorkerFact(fact: WorkerSandboxFactV1): void {
+		const sessionId = this.sessionManager.getSessionId();
+		if (fact.type === "operation") {
+			if (fact.sessionId !== sessionId) {
+				throw new FoundationError("worker_persistence_failed", "Operation Worker fence session identity is invalid");
+			}
+			const event = validateDurableEventV1({
+				schemaVersion: 1,
+				class: "durable",
+				category: "worker.operation_recorded",
+				eventId: `worker-operation:${fact.workerId}:${fact.revision}`,
+				streamId: `worker-operation:${fact.workerId}:${fact.operationId}`,
+				sequence: fact.revision,
+				timestamp: fact.recordedAt,
+				correlation: {
+					sessionId: fact.sessionId,
+					laneId: fact.laneId,
+					workerId: fact.workerId,
+					operationId: fact.operationId,
+				},
+				payload: {
+					schemaVersion: 1,
+					workerId: fact.workerId,
+					providerId: fact.providerId,
+					sessionId: fact.sessionId,
+					laneId: fact.laneId,
+					operationId: fact.operationId,
+					phase: "claimed",
+					revision: fact.revision,
+					recordedAt: fact.recordedAt,
+				},
+			});
+			if (!event.ok) throw event.error;
+			this.appendWorkerEvent("worker.operation_recorded", event.value);
+			return;
+		}
+		if (fact.type === "receipt") {
+			const eventId = `worker-receipt:${fact.receipt.workerReceiptId}`;
+			const payload = {
+				schemaVersion: 1,
+				workerReceiptId: fact.receipt.workerReceiptId,
+				operationId: fact.receipt.operationId,
+				...(fact.receipt.taskId === undefined ? {} : { taskId: fact.receipt.taskId }),
+			};
+			const correlation = fact.receipt.provenance.correlation;
+			if (correlation === undefined || correlation.sessionId !== sessionId) {
+				throw new FoundationError("worker_persistence_failed", "Operation Worker receipt session identity is invalid");
+			}
+			const event = validateDurableEventV1({
+				schemaVersion: 1,
+				class: "durable",
+				category: "worker_receipt.written",
+				eventId,
+				streamId: `worker-receipts:${fact.workerId}`,
+				sequence: fact.terminalRecordRevision,
+				timestamp: fact.receipt.completedAt,
+				correlation: {
+					sessionId: correlation.sessionId,
+					operationId: fact.receipt.operationId,
+					workerReceiptId: fact.receipt.workerReceiptId,
+					...(fact.receipt.taskId === undefined ? {} : { taskId: fact.receipt.taskId }),
+				},
+				payload,
+			});
+			if (!event.ok) throw event.error;
+			this.appendWorkerEvent("worker_receipt.written", event.value);
+			return;
+		}
+		const record = fact.record;
+		if (record.sessionId !== sessionId) {
+			throw new FoundationError("worker_persistence_failed", "Operation Worker record session identity is invalid");
+		}
+		let readyAt: string | undefined;
+		let endedAt: string | undefined;
+		let receiptId: string | undefined;
+		for (const transition of fact.transitions) {
+			const suppliedRecord = fact.transitionRecords?.find((candidate) => candidate.revision === transition.revision);
+			let transitionRecord: WorkerRecordV1;
+			if (suppliedRecord !== undefined) {
+				const parsed = parseWorkerRecordV1(canonicalFoundationJson(suppliedRecord));
+				if (
+					!parsed.ok || parsed.value.workerId !== record.workerId || parsed.value.providerId !== record.providerId ||
+					parsed.value.sessionId !== record.sessionId || parsed.value.laneId !== record.laneId ||
+					parsed.value.runId !== record.runId || parsed.value.bindingId !== record.bindingId ||
+					parsed.value.bindingEpochId !== record.bindingEpochId || parsed.value.attemptId !== record.attemptId ||
+					parsed.value.profileId !== record.profileId || parsed.value.createdAt !== record.createdAt ||
+					parsed.value.status !== transition.to || parsed.value.revision !== transition.revision
+				) {
+					throw new FoundationError("worker_persistence_failed", "Operation Worker transition snapshot is invalid");
+				}
+				transitionRecord = parsed.value;
+				readyAt = transitionRecord.readyAt;
+				endedAt = transitionRecord.endedAt;
+				receiptId = transitionRecord.receiptId;
+			} else {
+				if (readyAt === undefined && transition.to === "ready") readyAt = transition.at;
+				if (endedAt === undefined && ["completed", "failed", "cancelled", "lost"].includes(transition.to)) endedAt = transition.at;
+				receiptId = transition.receiptId ?? receiptId;
+				transitionRecord = {
+					schemaVersion: 1,
+					workerId: record.workerId,
+					providerId: record.providerId,
+					sessionId: record.sessionId,
+					laneId: record.laneId,
+					...(record.runId === undefined ? {} : { runId: record.runId }),
+					...(record.bindingId === undefined ? {} : { bindingId: record.bindingId }),
+					...(record.bindingEpochId === undefined ? {} : { bindingEpochId: record.bindingEpochId }),
+					...(record.attemptId === undefined ? {} : { attemptId: record.attemptId }),
+					profileId: record.profileId,
+					status: transition.to,
+					revision: transition.revision,
+					createdAt: record.createdAt,
+					...(readyAt === undefined ? {} : { readyAt }),
+					...(endedAt === undefined ? {} : { endedAt }),
+					...(endedAt === undefined || record.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: record.lastHeartbeatAt }),
+					...((transition.to === "running" || transition.to === "cancelling") && transition.operationId !== undefined
+						? { activeOperationId: transition.operationId }
+						: {}),
+					...(receiptId === undefined ? {} : { receiptId }),
+				};
+			}
+			const lifecycleEventId = `worker-lifecycle:${record.workerId}:${transition.revision}`;
+			const lifecyclePayload = {
+				schemaVersion: 1,
+				workerId: transitionRecord.workerId,
+				providerId: transitionRecord.providerId,
+				sessionId: transitionRecord.sessionId,
+				laneId: transitionRecord.laneId,
+				status: transitionRecord.status,
+				revision: transitionRecord.revision,
+				profileId: transitionRecord.profileId,
+				createdAt: transitionRecord.createdAt,
+				...(transitionRecord.runId === undefined ? {} : { runId: transitionRecord.runId }),
+				...(transitionRecord.bindingId === undefined ? {} : { bindingId: transitionRecord.bindingId }),
+				...(transitionRecord.bindingEpochId === undefined ? {} : { bindingEpochId: transitionRecord.bindingEpochId }),
+				...(transitionRecord.attemptId === undefined ? {} : { attemptId: transitionRecord.attemptId }),
+				...(transitionRecord.readyAt === undefined ? {} : { readyAt: transitionRecord.readyAt }),
+				...(transitionRecord.endedAt === undefined ? {} : { endedAt: transitionRecord.endedAt }),
+				...(transitionRecord.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: transitionRecord.lastHeartbeatAt }),
+				...(transitionRecord.activeOperationId === undefined ? {} : { activeOperationId: transitionRecord.activeOperationId }),
+				...(transition.operationId === undefined ? {} : { operationId: transition.operationId }),
+				...(transitionRecord.receiptId === undefined ? {} : { receiptId: transitionRecord.receiptId }),
+			};
+			const event = validateDurableEventV1({
+				schemaVersion: 1,
+				class: "durable",
+				category: "worker.lifecycle_transitioned",
+					eventId: lifecycleEventId,
+				streamId: `worker-lifecycle:${record.workerId}`,
+				sequence: transition.revision,
+				timestamp: transition.at,
+				correlation: {
+					sessionId: record.sessionId,
+					laneId: record.laneId,
+					workerId: record.workerId,
+					...(record.runId === undefined ? {} : { runId: record.runId }),
+					...(record.bindingId === undefined ? {} : { bindingId: record.bindingId }),
+					...(record.bindingEpochId === undefined ? {} : { bindingEpochId: record.bindingEpochId }),
+					...(record.attemptId === undefined ? {} : { attemptId: record.attemptId }),
+					...(transition.operationId === undefined ? {} : { operationId: transition.operationId }),
+					...(transition.receiptId === undefined ? {} : { receiptId: transition.receiptId }),
+				},
+				payload: lifecyclePayload,
+			});
+			if (!event.ok) throw event.error;
+			this.appendWorkerEvent("worker.lifecycle_transitioned", event.value);
+
+			if (
+				transition.operationId === undefined ||
+				(transition.to !== "running" && !["completed", "failed", "cancelled", "lost"].includes(transition.to))
+			) continue;
+			const operationEventId = `worker-operation:${record.workerId}:${transition.revision}`;
+			const operationPayload = {
+				schemaVersion: 1,
+				workerId: record.workerId,
+				providerId: record.providerId,
+				sessionId: record.sessionId,
+				laneId: record.laneId,
+				operationId: transition.operationId,
+				phase: transition.to === "running" ? "started" : "terminal",
+				revision: transition.revision,
+				recordedAt: transition.at,
+				...(transition.sideEffectState === undefined ? {} : { sideEffectState: transition.sideEffectState }),
+				...(transition.receiptId === undefined ? {} : { receiptId: transition.receiptId }),
+			};
+			const operationEvent = validateDurableEventV1({
+				schemaVersion: 1,
+				class: "durable",
+				category: "worker.operation_recorded",
+				eventId: operationEventId,
+				streamId: `worker-operation:${record.workerId}:${transition.operationId}`,
+				sequence: transition.revision,
+				timestamp: transition.at,
+				correlation: {
+					sessionId: record.sessionId,
+					laneId: record.laneId,
+					workerId: record.workerId,
+					operationId: transition.operationId,
+					...(transition.receiptId === undefined ? {} : { receiptId: transition.receiptId }),
+				},
+				payload: operationPayload,
+			});
+			if (!operationEvent.ok) throw operationEvent.error;
+			this.appendWorkerEvent("worker.operation_recorded", operationEvent.value);
+		}
+	}
+
+	private appendWorkerEvent(customType: string, event: FoundationEventEnvelopeV1): void {
+		if (this.hasPersistedWorkerFact(customType, event)) return;
+		this.sessionManager.appendCustomEntry(customType, event);
+		this.markWorkerFactPersisted(event.eventId, customType, canonicalFoundationJson(event));
+	}
+
+	private markWorkerFactPersisted(eventId: string, customType: string, canonicalEnvelope: string): void {
+		this.persistedWorkerFacts.delete(eventId);
+		this.persistedWorkerFacts.set(eventId, {
+			customType,
+			canonicalEnvelope,
+			entryCount: this.sessionManager.getPhysicalEntries().length,
+		});
+		while (this.persistedWorkerFacts.size > this.workerFactCacheLimit) {
+			const oldest = this.persistedWorkerFacts.keys().next().value;
+			if (oldest === undefined) break;
+			this.persistedWorkerFacts.delete(oldest);
+		}
+	}
+
+	private hasPersistedWorkerFact(customType: string, event: FoundationEventEnvelopeV1): boolean {
+		const entries = this.sessionManager.getPhysicalEntries();
+		const canonicalEnvelope = canonicalFoundationJson(event);
+		const cached = this.persistedWorkerFacts.get(event.eventId);
+		if (
+			cached !== undefined &&
+			cached.entryCount === entries.length &&
+			cached.customType === customType &&
+			cached.canonicalEnvelope === canonicalEnvelope
+		) {
+			return true;
+		}
+		let persisted = false;
+		for (const entry of entries) {
+			if (entry.type !== "custom" || entry.data === null || typeof entry.data !== "object" || Array.isArray(entry.data)) continue;
+			if (!("eventId" in entry.data) || entry.data.eventId !== event.eventId) continue;
+			let candidateCanonical: string;
+			try {
+				candidateCanonical = canonicalFoundationJson(entry.data);
+			} catch {
+				throw new FoundationError("worker_persistence_failed", "Operation Worker event identity conflicts");
+			}
+			if (
+				entry.customType !== customType ||
+				entry.customType !== event.category ||
+				candidateCanonical !== canonicalEnvelope
+			) {
+				throw new FoundationError("worker_persistence_failed", "Operation Worker event identity conflicts");
+			}
+			persisted = true;
+		}
+		if (persisted) this.markWorkerFactPersisted(event.eventId, customType, canonicalEnvelope);
+		return persisted;
+	}
+
 }
 
 function normalizeSandboxProviders(input: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider> | undefined): ReadonlyMap<string, SandboxProvider> {

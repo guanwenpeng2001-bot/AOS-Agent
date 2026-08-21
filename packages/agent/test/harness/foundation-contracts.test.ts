@@ -5,6 +5,7 @@ import {
 	ArtifactRefV1Schema,
 	DURABLE_LEDGER_ERROR_CODES,
 	FoundationError,
+	foundationErrorCategory,
 	FOUNDATION_ERROR_CODES,
 	FoundationObserverV1,
 	FOUNDATION_ENTITY_KINDS_V1,
@@ -197,6 +198,13 @@ function receipt(status: AttemptReceiptV1["status"] = "succeeded"): AttemptRecei
 describe("Foundation identity, schemas, and redaction", () => {
 	it("keeps Foundation and durable-ledger error catalogs exhaustive and single-source", () => {
 		expect(new Set(FOUNDATION_ERROR_CODES).size).toBe(FOUNDATION_ERROR_CODES.length);
+		const coreErrorCodes = FOUNDATION_ERROR_CODES.slice(0, -DURABLE_LEDGER_ERROR_CODES.length);
+		expect(coreErrorCodes.slice(-2)).toEqual([
+			"sandbox_capability_insufficient",
+			"task_credential_target_unavailable",
+		]);
+		expect(foundationErrorCategory("sandbox_capability_insufficient")).toBe("validation");
+		expect(foundationErrorCategory("task_credential_target_unavailable")).toBe("validation");
 		expect(new Set(DURABLE_LEDGER_ERROR_CODES).size).toBe(DURABLE_LEDGER_ERROR_CODES.length);
 		expect([...FOUNDATION_LEDGER_ERROR_CODES]).toEqual([...DURABLE_LEDGER_ERROR_CODES]);
 		expect([...FOUNDATION_ERROR_CODES].filter((code) => code.startsWith("session_")).sort()).toEqual([...DURABLE_LEDGER_ERROR_CODES].sort());

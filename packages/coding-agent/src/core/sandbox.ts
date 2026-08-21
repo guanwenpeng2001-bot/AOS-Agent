@@ -1,4 +1,5 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
+import type { FoundationJsonValue } from "@aos-agent/agent-core";
 import {
 	type PolicyBinding,
 	PolicyError,
@@ -78,6 +79,96 @@ export interface SandboxOperationResult {
 	readonly entries?: ReadonlyArray<string | SandboxDirectoryEntry>;
 	readonly isDirectory?: boolean;
 	readonly mimeType?: string;
+}
+
+const WORKER_OPERATION_PAYLOAD_KEYS = new Set([
+	"resource",
+	"operation",
+	"command",
+	"cwd",
+	"timeoutMs",
+	"args",
+	"path",
+	"content",
+	"pattern",
+	"glob",
+	"ignoreCase",
+	"literal",
+	"context",
+	"limit",
+]);
+
+const WORKER_OPERATION_RESOURCES: readonly PolicyResource[] = [
+	"filesystem.read",
+	"filesystem.write",
+	"filesystem.find",
+	"filesystem.grep",
+	"process.spawn",
+];
+
+/** Convert provider-neutral ToolGateway JSON into the existing Sandbox handle contract. */
+export function resolveWorkerSandboxOperationV1(
+	bindingId: string,
+	payload: FoundationJsonValue | undefined,
+	signal?: AbortSignal,
+): SandboxOperationRequest | undefined {
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+	const value = payload as Record<string, FoundationJsonValue>;
+	if (!Object.keys(value).every((key) => WORKER_OPERATION_PAYLOAD_KEYS.has(key))) return undefined;
+	if (typeof value.resource !== "string" || !WORKER_OPERATION_RESOURCES.includes(value.resource as PolicyResource)) return undefined;
+	const stringFields = ["operation", "command", "cwd", "path", "content", "pattern", "glob"] as const;
+	if (stringFields.some((field) => value[field] !== undefined && typeof value[field] !== "string")) return undefined;
+	const numberFields = ["timeoutMs", "context", "limit"] as const;
+	if (numberFields.some((field) => value[field] !== undefined && (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0))) return undefined;
+	if (["ignoreCase", "literal"].some((field) => value[field] !== undefined && typeof value[field] !== "boolean")) return undefined;
+	if (value.args !== undefined && (!Array.isArray(value.args) || !value.args.every((item) => typeof item === "string"))) return undefined;
+	const operation = value.operation;
+	if (operation !== undefined && !["file.read", "file.write", "directory.list", "filesystem.find", "filesystem.grep"].includes(operation as string)) return undefined;
+	const nonEmptyString = (field: keyof typeof value): boolean => typeof value[field] === "string" && value[field].length > 0;
+	const hasProcessFallbackField = value.command !== undefined || value.cwd !== undefined ||
+		value.args !== undefined || value.timeoutMs !== undefined;
+	const processFallbackShapeValid = !hasProcessFallbackField || nonEmptyString("command") && nonEmptyString("cwd");
+	const operationMatchesResource =
+		value.resource === "filesystem.read"
+			? (operation === "file.read" || operation === "directory.list") && nonEmptyString("path")
+			: value.resource === "filesystem.write"
+				? operation === "file.write" && nonEmptyString("path") && typeof value.content === "string"
+				: value.resource === "filesystem.find"
+					? operation === "filesystem.find" && nonEmptyString("path") && nonEmptyString("pattern") && processFallbackShapeValid
+					: value.resource === "filesystem.grep"
+						? operation === "filesystem.grep" && nonEmptyString("path") && nonEmptyString("pattern") && processFallbackShapeValid
+						: operation === undefined && nonEmptyString("command") && nonEmptyString("cwd");
+	if (!operationMatchesResource) return undefined;
+	const allowedKeys = value.resource === "filesystem.read"
+		? operation === "file.read"
+			? new Set(["resource", "operation", "path"])
+			: new Set(["resource", "operation", "path", "limit"])
+		: value.resource === "filesystem.write"
+			? new Set(["resource", "operation", "path", "content"])
+			: value.resource === "filesystem.find"
+				? new Set(["resource", "operation", "command", "args", "cwd", "timeoutMs", "path", "pattern", "limit"])
+				: value.resource === "filesystem.grep"
+					? new Set(["resource", "operation", "command", "args", "cwd", "timeoutMs", "path", "pattern", "glob", "ignoreCase", "literal", "context", "limit"])
+					: new Set(["resource", "command", "args", "cwd", "timeoutMs"]);
+	if (!Object.keys(value).every((key) => allowedKeys.has(key))) return undefined;
+	return {
+		bindingId,
+		resource: value.resource as PolicyResource,
+		...(operation === undefined ? {} : { operation: operation as SandboxOperationRequest["operation"] }),
+		...(typeof value.command === "string" ? { command: value.command } : {}),
+		...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+		...(typeof value.timeoutMs === "number" ? { timeoutMs: value.timeoutMs } : {}),
+		...(Array.isArray(value.args) ? { args: value.args as string[] } : {}),
+		...(typeof value.path === "string" ? { path: value.path } : {}),
+		...(typeof value.content === "string" ? { content: value.content } : {}),
+		...(typeof value.pattern === "string" ? { pattern: value.pattern } : {}),
+		...(typeof value.glob === "string" ? { glob: value.glob } : {}),
+		...(typeof value.ignoreCase === "boolean" ? { ignoreCase: value.ignoreCase } : {}),
+		...(typeof value.literal === "boolean" ? { literal: value.literal } : {}),
+		...(typeof value.context === "number" ? { context: value.context } : {}),
+		...(typeof value.limit === "number" ? { limit: value.limit } : {}),
+		...(signal === undefined ? {} : { signal }),
+	};
 }
 
 export interface SandboxMCPTransportRequest {

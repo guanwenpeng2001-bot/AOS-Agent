@@ -135,6 +135,7 @@ import { expandPromptTemplate } from "./prompt-templates.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { FoundationControlPlane } from "./foundation-control-plane.ts";
+import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { buildSystemPrompt, type BuildSystemPromptOptions } from "./system-prompt.ts";
@@ -175,6 +176,7 @@ export interface CanonicalAgentSessionOptions {
 	mcpAuthProvider?: AgentSessionConfig["mcpAuthProvider"];
 	mcpAuthManagerOptions?: AgentSessionConfig["mcpAuthManagerOptions"];
 	sandboxProviders?: AgentSessionConfig["sandboxProviders"];
+	workerSandboxProvider?: WorkerSandboxProviderV1;
 	policyProfile?: string;
 	externalAgentRegistry?: AgentSessionConfig["externalAgentRegistry"];
 	taskCredentialProvider?: AgentSessionConfig["taskCredentialProvider"];
@@ -629,6 +631,7 @@ export class CanonicalAgentSessionServices {
 			mcpAuthProvider: canonical.mcpAuthProvider,
 			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
 			sandboxProviders: canonical.sandboxProviders,
+			workerSandboxProvider: canonical.workerSandboxProvider,
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: canonical.externalAgentRegistry,
 			taskCredentialProvider: canonical.taskCredentialProvider,
@@ -2205,11 +2208,32 @@ export class CanonicalAgentSessionServices {
 
 	async abort(): Promise<void> {
 		this.controlPlane.cancelMcpContentOperations();
-		const result = await this.harness.abort();
-		const error = resultError(result);
-		if (error && !/No active operation/.test(error.message)) throw error;
-		await this.harness.waitForIdle();
+		const workerCancellation = (async (): Promise<unknown> => {
+			try {
+				await this.controlPlane.cancelWorkerOperations();
+				return undefined;
+			} catch (error) {
+				return error;
+			}
+		})();
+		const hostCancellation = (async (): Promise<unknown> => {
+			try {
+				const result = await this.harness.abort();
+				const error = resultError(result);
+				return error !== undefined && !/No active operation/.test(error.message) ? error : undefined;
+			} catch (error) {
+				return error;
+			}
+		})();
+		const [workerFailure, hostFailure] = await Promise.all([workerCancellation, hostCancellation]);
+		let failure = workerFailure ?? hostFailure;
+		try {
+			await this.harness.waitForIdle();
+		} catch (error) {
+			failure ??= error;
+		}
 		await Promise.all([...this.activePromptTasks].map((task) => task.catch(() => undefined)));
+		if (failure !== undefined) throw failure;
 	}
 
 	async waitForIdle(): Promise<void> {
