@@ -458,11 +458,11 @@ describe("execution audit task graph contract", () => {
 		// The T0 fixture predates the remote.operation and task.credential
 		// sources; ignoring those known later additions, task.graph must be the
 		// only remaining delta.
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential")).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential")).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 		]);
@@ -1081,12 +1081,12 @@ function credentialSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
 
 describe("execution audit task credential contract", () => {
 	it("adds task.credential as the only additive audit source and event type", () => {
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation")).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 			"task.credential",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation")).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 			"task.credential",
@@ -1362,5 +1362,234 @@ describe("execution audit task credential contract", () => {
 		).replay(CREDENTIAL_RUN_ID);
 		expect(withMalformed.status).toBe("complete");
 		expect(withMalformed.warnings).toEqual([]);
+	});
+});
+
+const WORKER_SESSION_ID = "session-worker";
+const WORKER_RUN_ID = "run-worker";
+const WORKER_TIMES = {
+	starting: "2026-08-16T00:00:00.000Z",
+	ready: "2026-08-16T00:00:01.000Z",
+	running: "2026-08-16T00:00:02.000Z",
+	completed: "2026-08-16T00:00:03.000Z",
+	receipt: "2026-08-16T00:00:04.000Z",
+} as const;
+
+function workerEntry(
+	id: string,
+	timestamp: string,
+	customType: string,
+	data: Record<string, unknown>,
+): Extract<SessionEntry, { type: "custom" }> {
+	return customEntry(id, timestamp, customType, data);
+}
+
+function workerRunEntries(): Extract<SessionEntry, { type: "custom" }>[] {
+	return [
+		customEntry("worker-run-accepted", WORKER_TIMES.starting, "automation.run", {
+			schemaVersion: 1,
+			kind: "accepted",
+			record: {
+				id: WORKER_RUN_ID,
+				sessionId: WORKER_SESSION_ID,
+				attempt: 1,
+				status: "accepted",
+				model: { provider: "provider", id: "model", thinkingLevel: "high" },
+			},
+		}),
+		customEntry("worker-run-terminal", WORKER_TIMES.completed, "automation.run", {
+			schemaVersion: 1,
+			kind: "terminal",
+			endedAt: WORKER_TIMES.completed,
+			receipt: {
+				runId: WORKER_RUN_ID,
+				sessionId: WORKER_SESSION_ID,
+				status: "completed",
+				usage: { input: 1, output: 1, total: 2 },
+			},
+		}),
+	];
+}
+
+function workerLifecycleEntry(
+	id: string,
+	timestamp: string,
+	status: string,
+	revision: number,
+	extra: Record<string, unknown> = {},
+): Extract<SessionEntry, { type: "custom" }> {
+	return workerEntry(id, timestamp, "worker.lifecycle_transitioned", {
+		schemaVersion: 1,
+		class: "durable",
+		category: "worker.lifecycle_transitioned",
+		eventId: `worker-lifecycle:worker-1:${revision}`,
+		streamId: "worker-lifecycle:worker-1",
+		sequence: revision,
+		timestamp,
+		correlation: {
+			sessionId: WORKER_SESSION_ID,
+			laneId: "main",
+			workerId: "worker-1",
+			runId: WORKER_RUN_ID,
+			bindingId: "binding-1",
+			bindingEpochId: "epoch-1",
+			attemptId: "attempt-1",
+			...(extra.operationId === undefined ? {} : { operationId: extra.operationId }),
+			...(extra.receiptId === undefined ? {} : { receiptId: extra.receiptId }),
+		},
+		payload: {
+			schemaVersion: 1,
+			workerId: "worker-1",
+			providerId: "sandbox",
+			sessionId: WORKER_SESSION_ID,
+			laneId: "main",
+			runId: WORKER_RUN_ID,
+			bindingId: "binding-1",
+			bindingEpochId: "epoch-1",
+			attemptId: "attempt-1",
+			profileId: "profile-1",
+			status,
+			revision,
+			createdAt: WORKER_TIMES.starting,
+			...(revision >= 2 ? { readyAt: WORKER_TIMES.ready } : {}),
+			...(revision >= 4 ? { endedAt: WORKER_TIMES.completed } : {}),
+			...(revision === 3 ? { activeOperationId: "operation-1" } : {}),
+			...(revision >= 4 ? { receiptId: "receipt-1" } : {}),
+			...(extra.operationId === undefined ? {} : { operationId: extra.operationId }),
+			...extra,
+		},
+	});
+}
+
+function workerOperationEntry(
+	id: string,
+	timestamp: string,
+	phase: "claimed" | "started" | "terminal",
+	revision: number,
+	extra: Record<string, unknown> = {},
+): Extract<SessionEntry, { type: "custom" }> {
+	return workerEntry(id, timestamp, "worker.operation_recorded", {
+		schemaVersion: 1,
+		class: "durable",
+		category: "worker.operation_recorded",
+		eventId: `worker-operation:worker-1:${revision}`,
+		streamId: "worker-operation:worker-1:operation-1",
+		sequence: revision,
+		timestamp,
+		correlation: {
+			sessionId: WORKER_SESSION_ID,
+			laneId: "main",
+			workerId: "worker-1",
+			operationId: "operation-1",
+			...(extra.receiptId === undefined ? {} : { receiptId: extra.receiptId }),
+		},
+		payload: {
+			schemaVersion: 1,
+			workerId: "worker-1",
+			providerId: "sandbox",
+			sessionId: WORKER_SESSION_ID,
+			laneId: "main",
+			operationId: "operation-1",
+			phase,
+			revision,
+			recordedAt: timestamp,
+			...(phase === "terminal" ? { sideEffectState: "none", receiptId: "receipt-1" } : {}),
+			...extra,
+		},
+	});
+}
+
+function workerReceiptEntry(): Extract<SessionEntry, { type: "custom" }> {
+	return workerEntry("worker-receipt-entry", WORKER_TIMES.receipt, "worker_receipt.written", {
+		schemaVersion: 1,
+		class: "durable",
+		category: "worker_receipt.written",
+		eventId: "worker-receipt:receipt-1",
+		streamId: "worker-receipts:worker-1",
+		sequence: 4,
+		timestamp: WORKER_TIMES.receipt,
+		correlation: {
+			sessionId: WORKER_SESSION_ID,
+			operationId: "operation-1",
+			workerReceiptId: "receipt-1",
+			taskId: "task-1",
+		},
+		payload: {
+			schemaVersion: 1,
+			workerReceiptId: "receipt-1",
+			operationId: "operation-1",
+			taskId: "task-1",
+		},
+	});
+}
+
+function workerSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
+	return { getSessionId: () => WORKER_SESSION_ID, getEntries: () => entries };
+}
+
+function validWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
+	return [
+		...workerRunEntries(),
+		workerLifecycleEntry("worker-starting", WORKER_TIMES.starting, "starting", 1),
+		workerLifecycleEntry("worker-ready", WORKER_TIMES.ready, "ready", 2),
+		workerOperationEntry("worker-claimed", WORKER_TIMES.ready, "claimed", 2),
+		workerLifecycleEntry("worker-running", WORKER_TIMES.running, "running", 3, { operationId: "operation-1" }),
+		workerOperationEntry("worker-started", WORKER_TIMES.running, "started", 3),
+		workerLifecycleEntry("worker-completed", WORKER_TIMES.completed, "completed", 4, { operationId: "operation-1", receiptId: "receipt-1" }),
+		workerOperationEntry("worker-terminal", WORKER_TIMES.completed, "terminal", 4, { receiptId: "receipt-1" }),
+		workerReceiptEntry(),
+	];
+}
+
+describe("execution audit Worker source contract", () => {
+	it("projects every lifecycle, operation, and receipt source with run linkage", () => {
+		const folded = new ExecutionAuditAdapter(workerSession(validWorkerEntries())).fold();
+		const workerEvents = folded.events.filter((event) => event.type.startsWith("worker."));
+		expect(workerEvents.map((event) => event.type)).toEqual([
+			"worker.lifecycle", "worker.operation", "worker.lifecycle", "worker.lifecycle",
+			"worker.operation", "worker.lifecycle", "worker.operation", "worker.receipt",
+		]);
+		expect(workerEvents.every((event) => event.runId === WORKER_RUN_ID)).toBe(true);
+		expect(workerEvents.map((event) => event.sourceEntryId)).toEqual([
+			"worker-starting", "worker-claimed", "worker-ready", "worker-running",
+			"worker-started", "worker-completed", "worker-terminal", "worker-receipt-entry",
+		]);
+		expect(workerEvents[0]).toMatchObject({ type: "worker.lifecycle", summary: { status: "starting", revision: 1, workerId: "worker-1" } });
+		expect(workerEvents[1]).toMatchObject({ type: "worker.operation", summary: { phase: "claimed", operationId: "operation-1", revision: 2 } });
+		expect(workerEvents.at(-1)).toMatchObject({ type: "worker.receipt", summary: { workerReceiptId: "receipt-1", terminalRecordRevision: 4 } });
+		expect(folded.warnings).toEqual([]);
+	});
+
+	it("rejects every forbidden Worker field without echoing its value", () => {
+		const forbidden = ["pid", "executable", "argv", "cwd", "path", "env", "stdout", "stderr", "prompt", "secret", "token", "headers", "providerError", "rawFrame"];
+		for (const key of forbidden) {
+			const tampered = workerLifecycleEntry(`worker-forbidden-${key}`, WORKER_TIMES.starting, "starting", 1, { [key]: `sensitive-${key}` });
+			const folded = new ExecutionAuditAdapter(workerSession([tampered])).fold();
+			expect(folded.events).toEqual([]);
+			expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(true);
+			expect(JSON.stringify(folded)).not.toContain(`sensitive-${key}`);
+		}
+	});
+
+	it("fails closed for malformed, unknown, and out-of-order Worker records", () => {
+		const malformed = workerOperationEntry("worker-malformed", WORKER_TIMES.starting, "started", 1);
+		const unknown = customEntry("worker-unknown", WORKER_TIMES.starting, "worker.unknown", { schemaVersion: 1, pid: 123 });
+		const folded = new ExecutionAuditAdapter(workerSession([malformed, unknown])).fold();
+		expect(folded.events).toEqual([]);
+		expect(folded.warnings.map((warning) => warning.code)).toEqual(["malformed_source", "unknown_source"]);
+	});
+
+	it("keeps replay deterministic and ignores late receipts for Run terminal state", () => {
+		const entries = validWorkerEntries();
+		const adapter = new ExecutionAuditAdapter(workerSession(entries));
+		const first = adapter.replay(WORKER_RUN_ID);
+		const second = adapter.replay(WORKER_RUN_ID);
+		expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+		expect(first.status).toBe("complete");
+		expect(first.run.status).toBe("completed");
+		const lateReceipt = workerReceiptEntry();
+		const withLateReceipt = new ExecutionAuditAdapter(workerSession([...entries, lateReceipt])).replay(WORKER_RUN_ID);
+		expect(withLateReceipt.run.status).toBe("completed");
+		expect(withLateReceipt.events.filter((event) => event.type === "worker.receipt")).toHaveLength(1);
 	});
 });
