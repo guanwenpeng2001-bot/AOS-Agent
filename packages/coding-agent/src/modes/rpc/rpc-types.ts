@@ -969,7 +969,8 @@ export type RpcAutomationCommandType =
 	| RpcAuditCommandType
 	| RpcTaskGateCommandType
 	| RpcTaskGraphCommandType
-	| RpcTaskCredentialCommandType;
+	| RpcTaskCredentialCommandType
+	| RpcWorkerCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {

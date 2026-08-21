@@ -463,4 +463,102 @@ describe("RpcHostController Worker management", () => {
 			await harness.cleanup();
 		}
 	});
+
+	it("fails closed on malformed IDs, registry records, and reclaim outcomes", async () => {
+		const throwingHarness = await createHarness(() => {
+			throw new Error("registry resolver failed");
+		});
+		try {
+			await throwingHarness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
+			const malformedId = await throwingHarness.controller.dispatch({
+				type: "worker.get",
+				workerId: "worker",
+				id: 7,
+			} as unknown as RpcCommand);
+			expect(malformedId).toMatchObject({
+				id: undefined,
+				success: false,
+				error: { code: "worker_invalid" },
+			});
+			expect(JSON.stringify(malformedId)).not.toContain("7");
+			expect(await throwingHarness.controller.dispatch({ type: "worker.list" })).toMatchObject({
+				success: false,
+				error: { code: "worker_unavailable" },
+			});
+		} finally {
+			await throwingHarness.cleanup();
+		}
+
+		let listRecords: readonly unknown[] = [null];
+		const malformedListRegistry: RpcWorkerRegistry = {
+			getWorkerRecord: () => undefined,
+			listWorkerRecords: () => listRecords as unknown as readonly WorkerRecordV1[],
+			reclaimWorker: async () => Result.err(new FoundationError("worker_reclaim_failed", "reclaim failed")),
+		};
+		const listHarness = await createHarness(() => malformedListRegistry);
+		try {
+			await listHarness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
+			for (const malformed of [null, { workerId: "malformed" }]) {
+				listRecords = [malformed];
+				expect(await listHarness.controller.dispatch({ type: "worker.list" })).toMatchObject({
+					success: false,
+					error: { code: "worker_invalid" },
+				});
+			}
+		} finally {
+			await listHarness.cleanup();
+		}
+
+		const sessionId = "session-for-reclaim-negatives";
+		let currentRecord = workerRecord({ workerId: "owned", sessionId, status: "lost" });
+		let reclaimResult: unknown;
+		const reclaimRegistry: RpcWorkerRegistry = {
+			getWorkerRecord: () => currentRecord,
+			listWorkerRecords: () => [],
+			reclaimWorker: async () =>
+				reclaimResult as Awaited<ReturnType<RpcWorkerRegistry["reclaimWorker"]>>,
+		};
+		const reclaimHarness = await createHarness(() => reclaimRegistry);
+		try {
+			const ownedSessionId = reclaimHarness.runtimeHost.session.sessionId;
+			await reclaimHarness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
+			currentRecord = workerRecord({ workerId: "owned", sessionId: ownedSessionId, status: "lost" });
+
+			for (const malformed of [undefined, null, { ok: true }]) {
+				reclaimResult = malformed;
+				expect(await reclaimHarness.controller.dispatch({ type: "worker.reclaim", workerId: "owned" })).toMatchObject({
+					success: false,
+					error: { code: "worker_reclaim_failed" },
+				});
+			}
+
+			reclaimResult = { ok: false, error: new FoundationError("worker_reclaim_failed", "reclaim failed") };
+			expect(await reclaimHarness.controller.dispatch({ type: "worker.reclaim", workerId: "owned" })).toMatchObject({
+				success: false,
+				error: { code: "worker_reclaim_failed" },
+			});
+
+			for (const wrongRecord of [
+				workerRecord({ workerId: "other", sessionId: ownedSessionId, status: "reclaimed" }),
+				workerRecord({ workerId: "owned", sessionId: "other-session", status: "reclaimed" }),
+			]) {
+				reclaimResult = { ok: true, value: wrongRecord };
+				expect(await reclaimHarness.controller.dispatch({ type: "worker.reclaim", workerId: "owned" })).toMatchObject({
+					success: false,
+					error: { code: "worker_reclaim_failed" },
+				});
+			}
+
+			for (const status of ["lost", "completed"] as const) {
+				currentRecord = workerRecord({ workerId: "owned", sessionId: ownedSessionId, status });
+				reclaimResult = { ok: true, value: currentRecord };
+				expect(await reclaimHarness.controller.dispatch({ type: "worker.reclaim", workerId: "owned" })).toMatchObject({
+					success: false,
+					error: { code: "worker_reclaim_failed" },
+				});
+			}
+		} finally {
+			await reclaimHarness.cleanup();
+		}
+	});
 });

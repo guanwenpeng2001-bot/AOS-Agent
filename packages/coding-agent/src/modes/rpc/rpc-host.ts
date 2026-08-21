@@ -401,6 +401,10 @@ const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = ne
 	"reclaimed",
 	"reclaim_unknown",
 ]);
+const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+	"reclaimed",
+	"reclaim_unknown",
+]);
 const RPC_WORKER_COMMAND_KEYS: Readonly<Record<RpcWorkerCommandType, ReadonlySet<string>>> = {
 	"worker.get": new Set(["id", "type", "workerId"]),
 	"worker.list": new Set(["id", "type", "runId", "status", "limit", "cursor"]),
@@ -421,11 +425,27 @@ function isRpcWorkerIdentifier(value: unknown): value is string {
 
 function isRpcWorkerCommandShapeValid(command: RpcCommand): boolean {
 	const allowed = RPC_WORKER_COMMAND_KEYS[command.type as RpcWorkerCommandType];
-	return allowed !== undefined && Object.keys(command).every((key) => allowed.has(key));
+	return (
+		allowed !== undefined &&
+		(command.id === undefined || typeof command.id === "string") &&
+		Object.keys(command).every((key) => allowed.has(key))
+	);
 }
 
 function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatusV1 {
 	return typeof value === "string" && (WORKER_LIFECYCLE_STATUSES as readonly string[]).includes(value);
+}
+
+function isRpcWorkerRecord(value: unknown): value is WorkerRecordV1 {
+	try {
+		return validateWorkerRecordV1(value);
+	} catch {
+		return false;
+	}
+}
+
+function isRpcWorkerRecordList(value: unknown): value is readonly WorkerRecordV1[] {
+	return Array.isArray(value) && value.every(isRpcWorkerRecord);
 }
 
 function toRpcWorkerRecord(record: WorkerRecordV1): RpcWorkerRecord {
@@ -464,11 +484,8 @@ function rpcWorkerError(
 	};
 }
 
-function rpcWorkerReclaimErrorCode(code: string): RpcWorkerErrorCode {
-	if (code === "worker_not_found" || code === "worker_conflict" || code === "worker_reclaim_failed") {
-		return code;
-	}
-	return "worker_reclaim_failed";
+function isRpcResult(value: unknown): value is ResultValue<unknown, unknown> {
+	return typeof value === "object" && value !== null && "ok" in value && typeof value.ok === "boolean";
 }
 
 /** Redacted block summary: text and image payloads never cross the RPC wire. */
@@ -4051,7 +4068,7 @@ export class RpcHostController {
 		): Promise<
 			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
 		> => {
-			const id = command.id;
+			const id = typeof command.id === "string" ? command.id : undefined;
 
 			// Once the Automation Host is initialized, legacy commands that would mutate
 			// session/model/run state are rejected so a run and a legacy command cannot
@@ -4155,10 +4172,13 @@ export class RpcHostController {
 					} catch {
 						return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					}
-					if (record === undefined || record.sessionId !== session.sessionId) {
+					if (record === undefined) {
 						return rpcWorkerError(id, "worker.get", "worker_not_found");
 					}
-					if (!validateWorkerRecordV1(record)) return rpcWorkerError(id, "worker.get", "worker_invalid");
+					if (!isRpcWorkerRecord(record)) return rpcWorkerError(id, "worker.get", "worker_invalid");
+					if (record.sessionId !== session.sessionId) {
+						return rpcWorkerError(id, "worker.get", "worker_not_found");
+					}
 					if (record.workerId !== command.workerId) return rpcWorkerError(id, "worker.get", "worker_invalid");
 					return {
 						id,
@@ -4204,10 +4224,10 @@ export class RpcHostController {
 					} catch {
 						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
-					const currentSessionRecords = records.filter((record) => record.sessionId === session.sessionId);
-					if (currentSessionRecords.some((record) => !validateWorkerRecordV1(record))) {
+					if (!isRpcWorkerRecordList(records)) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
 					}
+					const currentSessionRecords = records.filter((record) => record.sessionId === session.sessionId);
 					const workerIds = new Set(currentSessionRecords.map((record) => record.workerId));
 					if (workerIds.size !== currentSessionRecords.length) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
@@ -4257,28 +4277,32 @@ export class RpcHostController {
 					} catch {
 						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
 					}
-					if (existing === undefined || existing.sessionId !== session.sessionId) {
+					if (existing === undefined) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
 					}
-					if (!validateWorkerRecordV1(existing)) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					if (!isRpcWorkerRecord(existing)) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					if (existing.sessionId !== session.sessionId) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
+					}
 					if (existing.workerId !== command.workerId) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
 					if (!RPC_WORKER_RECLAIMABLE_STATUSES.has(existing.status)) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_conflict");
 					}
 					const idempotent = existing.status === "reclaimed" || existing.status === "reclaim_unknown";
-					let result: ResultValue<WorkerRecordV1, FoundationError>;
+					let result: unknown;
 					try {
 						result = await registry.reclaimWorker(command.workerId);
 					} catch {
 						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
 					}
-					if (!result.ok) {
-						return rpcWorkerError(id, "worker.reclaim", rpcWorkerReclaimErrorCode(result.error.code));
+					if (!isRpcResult(result) || !result.ok) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
 					}
 					if (
-						!validateWorkerRecordV1(result.value) ||
+						!isRpcWorkerRecord(result.value) ||
 						result.value.workerId !== command.workerId ||
-						result.value.sessionId !== session.sessionId
+						result.value.sessionId !== session.sessionId ||
+						!RPC_WORKER_RECLAIM_TERMINAL_STATUSES.has(result.value.status)
 					) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
 					}
@@ -6164,7 +6188,7 @@ export class RpcHostController {
 				if (RPC_WORKER_COMMAND_KEYS[command.type as RpcWorkerCommandType] !== undefined) {
 					const workerCommand = command.type as RpcWorkerCommandType;
 					const response = rpcWorkerError(
-						command.id,
+						typeof command.id === "string" ? command.id : undefined,
 						workerCommand,
 						workerCommand === "worker.reclaim" ? "worker_reclaim_failed" : "worker_unavailable",
 					);
