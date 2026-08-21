@@ -495,6 +495,34 @@ export class WorkerSupervisorV1 {
 		});
 	}
 
+	/** Fail closed after Host credential delivery fails; accepts no credential data. */
+	async failCredentialDelivery(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+		if (this.lifecycle === undefined) {
+			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
+		}
+		if (workerId !== this.lifecycle.binding.workerId) {
+			return Result.err(stableError("worker_conflict", "Operation Worker identity conflicts"));
+		}
+		const status = this.lifecycle.record.status;
+		if (
+			isWorkerExecutionTerminalStatusV1(status) ||
+			status === "reclaiming" ||
+			isWorkerReclaimTerminalStatusV1(status)
+		) {
+			return Result.ok(this.lifecycle.record);
+		}
+		if (status !== "starting" && status !== "ready" && status !== "running" && status !== "cancelling") {
+			return Result.err(stableError("worker_conflict", "Operation Worker cannot fail credential delivery"));
+		}
+		this.markLost("worker_lost");
+		const record = this.lifecycle.record.status === "lost" ? this.lifecycle.record : undefined;
+		await this.ensureProcessStoppedAndCleaned();
+		if (record === undefined) {
+			return Result.err(stableError("worker_persistence_failed", "Operation Worker loss was not persisted"));
+		}
+		return Result.ok(record);
+	}
+
 	async terminate(reason: WorkerCancelReasonV1 = "shutdown"): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
 		if (
 			this.lifecycle !== undefined &&

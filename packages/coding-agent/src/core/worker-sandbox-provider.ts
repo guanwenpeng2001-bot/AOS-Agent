@@ -20,7 +20,13 @@ import {
 	WorkerSupervisorV1,
 	type WorkerSupervisorConfigV1,
 } from "./worker-supervisor.ts";
-import type { WorkerCancelReasonV1 } from "./worker-protocol.ts";
+import {
+	validateSafeLeaseProjectionV1,
+	validateSafeLeaseReferenceV1,
+	type SafeLeaseProjectionV1,
+	type SafeLeaseReferenceV1,
+	type WorkerCancelReasonV1,
+} from "./worker-protocol.ts";
 import {
 	parseWorkerRecordV1,
 	serializeWorkerRecordV1,
@@ -65,6 +71,21 @@ export interface WorkerSandboxProviderOptionsV1 {
 	readonly maxRetainedRecords?: number;
 }
 
+/** Material-free synchronous target used by TaskCredentialService. */
+export interface WorkerCredentialQueueTargetV1 {
+	project(lease: SafeLeaseProjectionV1): { readonly ok: boolean };
+	renew(lease: SafeLeaseProjectionV1): { readonly ok: boolean };
+	revoke(lease: SafeLeaseReferenceV1): { readonly ok: boolean };
+}
+
+export type WorkerCredentialDetachReasonV1 = WorkerInvalidationReasonV1 | "lost" | "reclaim";
+
+export interface WorkerCredentialDetachV1 {
+	readonly workerId: string;
+	readonly runId?: string;
+	readonly reason: WorkerCredentialDetachReasonV1;
+}
+
 export type WorkerSandboxFactV1 =
 	| {
 		readonly type: "record";
@@ -90,6 +111,23 @@ interface ActiveWorkerOperationV1 {
 	readonly runId?: string;
 }
 
+type WorkerCredentialCommandV1 =
+	| { readonly type: "project" | "renew"; readonly lease: SafeLeaseProjectionV1 }
+	| { readonly type: "revoke"; readonly lease: SafeLeaseReferenceV1 };
+
+interface WorkerCredentialQueueV1 {
+	readonly workerId: string;
+	readonly target: WorkerCredentialQueueTargetV1;
+	readonly commands: WorkerCredentialCommandV1[];
+	supervisor?: WorkerSupervisorV1;
+	drain?: Promise<ResultValue<void, FoundationError>>;
+	liveDrain?: Promise<void>;
+	failure?: Promise<FoundationError | undefined>;
+	accepting: boolean;
+	quarantined: boolean;
+	detachNotified: boolean;
+}
+
 interface StagedWorkerFactsV1 {
 	readonly records: Map<string, WorkerRecordV1>;
 	readonly receipts: Map<string, WorkerReceiptV1>;
@@ -98,6 +136,33 @@ interface StagedWorkerFactsV1 {
 }
 
 type WorkerInvalidationReasonV1 = WorkerCancelReasonV1 | "terminal";
+
+class WorkerCredentialTargetRegistryV1 implements ReadonlyMap<string, WorkerCredentialQueueTargetV1> {
+	private readonly targets: Map<string, WorkerCredentialQueueTargetV1>;
+	private readonly resolveTarget: (workerId: string) => WorkerCredentialQueueTargetV1 | undefined;
+
+	constructor(
+		targets: Map<string, WorkerCredentialQueueTargetV1>,
+		resolveTarget: (workerId: string) => WorkerCredentialQueueTargetV1 | undefined,
+	) {
+		this.targets = targets;
+		this.resolveTarget = resolveTarget;
+	}
+
+	get size(): number { return this.targets.size; }
+	get(workerId: string): WorkerCredentialQueueTargetV1 | undefined { return this.resolveTarget(workerId); }
+	has(workerId: string): boolean { return this.targets.has(workerId); }
+	entries(): MapIterator<[string, WorkerCredentialQueueTargetV1]> { return this.targets.entries(); }
+	keys(): MapIterator<string> { return this.targets.keys(); }
+	values(): MapIterator<WorkerCredentialQueueTargetV1> { return this.targets.values(); }
+	[Symbol.iterator](): MapIterator<[string, WorkerCredentialQueueTargetV1]> { return this.targets[Symbol.iterator](); }
+	forEach(
+		callbackfn: (value: WorkerCredentialQueueTargetV1, key: string, map: ReadonlyMap<string, WorkerCredentialQueueTargetV1>) => void,
+		thisArg?: unknown,
+	): void {
+		for (const [key, value] of this.targets) callbackfn.call(thisArg, value, key, this);
+	}
+}
 
 interface WorkerOperationReservationV1 {
 	readonly operationId: string;
@@ -232,9 +297,14 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	private readonly operationPayloads = new Map<string, FoundationJsonValue>();
 	private readonly records = new Map<string, WorkerRecordV1>();
 	private readonly receipts = new Map<string, WorkerReceiptV1>();
+	private readonly credentialQueues = new Map<string, WorkerCredentialQueueV1>();
+	private readonly credentialTargets = new Map<string, WorkerCredentialQueueTargetV1>();
+	private readonly credentialTargetRegistry: ReadonlyMap<string, WorkerCredentialQueueTargetV1>;
 	private readonly factSubscribers = new Set<(fact: WorkerSandboxFactV1) => void>();
 	private durableFactOwner: string | undefined;
 	private durableFactSink: ((fact: WorkerSandboxFactV1) => void) | undefined;
+	private credentialDetachOwner: string | undefined;
+	private credentialDetachSink: ((detach: WorkerCredentialDetachV1) => void) | undefined;
 	private disposed = false;
 	private disposeCompletion: Promise<void> | undefined;
 
@@ -254,6 +324,10 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		if (!Number.isSafeInteger(this.maxRetainedRecords) || this.maxRetainedRecords < 1) {
 			throw new RangeError("maxRetainedRecords must be a positive safe integer");
 		}
+		this.credentialTargetRegistry = new WorkerCredentialTargetRegistryV1(
+			this.credentialTargets,
+			(workerId) => this.resolveCredentialTarget(workerId),
+		);
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
@@ -314,6 +388,25 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 
 	hasDurableFactOwner(): boolean {
 		return this.durableFactSink !== undefined;
+	}
+
+	/** Bind the Host credential lifecycle owner for issuer-side detach revocation. */
+	bindCredentialDetachSink(ownerId: string, sink: (detach: WorkerCredentialDetachV1) => void): () => void {
+		if (this.disposed || ownerId.length === 0 || this.credentialDetachSink !== undefined) {
+			throw providerError("service_conflict", "Operation Worker credential lifecycle owner is already bound");
+		}
+		this.credentialDetachOwner = ownerId;
+		this.credentialDetachSink = sink;
+		return () => {
+			if (this.credentialDetachOwner !== ownerId || this.credentialDetachSink !== sink) return;
+			this.credentialDetachOwner = undefined;
+			this.credentialDetachSink = undefined;
+		};
+	}
+
+	/** Dynamic safe-target registry. Reading a Worker id creates only a bounded Host queue. */
+	getCredentialWorkerTargets(): ReadonlyMap<string, WorkerCredentialQueueTargetV1> {
+		return this.credentialTargetRegistry;
 	}
 
 	/** Validate recovery atomically before a ControlPlane writes convergence facts. */
@@ -437,6 +530,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			) {
 				return Result.err(providerError("worker_conflict", "Live Operation Worker cannot be reclaimed before execution is terminal"));
 			}
+			await this.detachCredentialWorker(active.supervisor, "reclaim");
 			const reclaimed = await active.supervisor.reclaim();
 			const factError = this.publishRecord(active.supervisor);
 			if (factError !== undefined) return Result.err(factError);
@@ -717,6 +811,14 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 					return Result.err(invalidatedAfterActivation);
 				}
 				if (!activated.ok) return activated;
+				const credentialDrain = await this.drainWorkerCredentials(normalizedBinding.workerId, supervisor);
+				if (!credentialDrain.ok) {
+					const convergenceError = await this.failCredentialDrain(normalizedBinding.workerId, supervisor);
+					return Result.err(convergenceError ?? providerError(
+						"task_credential_target_unavailable",
+						"Operation Worker credential projection failed",
+					));
+				}
 				if (signal?.aborted) this.invalidateReservation(reservation, "cancel");
 				const invalidatedBeforeExecute = this.reservationError(reservation);
 				if (invalidatedBeforeExecute !== undefined) {
@@ -769,6 +871,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
 			if (cancellation !== undefined) await cancellation;
 			if (supervisor !== undefined) {
+				const status = supervisor.snapshot.record?.status;
+				await this.detachCredentialWorker(supervisor, status === "lost" ? "lost" : "reclaim");
 				await supervisor.reclaim().catch(() => undefined);
 				const cleanupFactError = this.publishRecord(supervisor);
 				if (cleanupFactError !== undefined) outcome = Result.err(cleanupFactError);
@@ -846,18 +950,213 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				failure = providerError("worker_persistence_failed", "Operation Worker shutdown persistence failed");
 			}
 			await Promise.all(reservations);
+			const convergence = new Set<Promise<unknown>>();
+			for (const queue of this.credentialQueues.values()) {
+				if (queue.liveDrain !== undefined) convergence.add(queue.liveDrain);
+				if (queue.failure !== undefined) convergence.add(queue.failure);
+			}
+			await Promise.all(convergence);
 			try {
 				this.operations.clear();
 				this.reservations.clear();
 				this.operationPayloads.clear();
+				for (const queue of this.credentialQueues.values()) {
+					queue.accepting = false;
+					queue.commands.length = 0;
+				}
+				this.credentialQueues.clear();
+				this.credentialTargets.clear();
 				this.factSubscribers.clear();
 			} finally {
 				this.durableFactOwner = undefined;
 				this.durableFactSink = undefined;
+				this.credentialDetachOwner = undefined;
+				this.credentialDetachSink = undefined;
 			}
 			if (failure !== undefined) throw failure;
 		})();
 		return this.disposeCompletion;
+	}
+
+	private resolveCredentialTarget(workerId: string): WorkerCredentialQueueTargetV1 | undefined {
+		if (this.disposed || workerId.length === 0) return undefined;
+		const existing = this.credentialQueues.get(workerId);
+		if (existing !== undefined) return existing.target;
+		if (this.credentialQueues.size >= this.maxRetainedRecords) return undefined;
+		const queue = {} as WorkerCredentialQueueV1;
+		const enqueueProjection = (
+			type: "project" | "renew",
+			leaseValue: SafeLeaseProjectionV1,
+		): { readonly ok: boolean } => {
+			if (!validateSafeLeaseProjectionV1(leaseValue)) return Object.freeze({ ok: false });
+			const lease = snapshotFoundationJson(
+				leaseValue as unknown as FoundationJsonValue,
+			) as unknown as SafeLeaseProjectionV1;
+			return Object.freeze({ ok: this.enqueueCredentialCommand(queue, Object.freeze({ type, lease })) });
+		};
+		const target: WorkerCredentialQueueTargetV1 = Object.freeze({
+			project: (lease: SafeLeaseProjectionV1) => enqueueProjection("project", lease),
+			renew: (lease: SafeLeaseProjectionV1) => enqueueProjection("renew", lease),
+			revoke: (leaseValue: SafeLeaseReferenceV1) => {
+				if (!validateSafeLeaseReferenceV1(leaseValue)) return Object.freeze({ ok: false });
+				const lease = snapshotFoundationJson(
+					leaseValue as unknown as FoundationJsonValue,
+				) as unknown as SafeLeaseReferenceV1;
+				return Object.freeze({
+					ok: this.enqueueCredentialCommand(queue, Object.freeze({ type: "revoke", lease })),
+				});
+			},
+		});
+		Object.assign(queue, {
+			workerId,
+			target,
+			commands: [],
+			accepting: true,
+			quarantined: false,
+			detachNotified: false,
+		});
+		this.credentialQueues.set(workerId, queue);
+		this.credentialTargets.set(workerId, target);
+		return target;
+	}
+
+	private enqueueCredentialCommand(queue: WorkerCredentialQueueV1, command: WorkerCredentialCommandV1): boolean {
+		if (
+			this.disposed || !queue.accepting || queue.quarantined ||
+			queue.commands.length >= this.maxRetainedRecords
+		) return false;
+		queue.commands.push(command);
+		if (queue.supervisor !== undefined) this.startLiveCredentialDrain(queue, queue.supervisor);
+		return true;
+	}
+
+	private startLiveCredentialDrain(queue: WorkerCredentialQueueV1, supervisor: WorkerSupervisorV1): void {
+		if (queue.liveDrain !== undefined) return;
+		queue.liveDrain = this.convergeLiveCredentialDrain(queue, supervisor);
+	}
+
+	private async convergeLiveCredentialDrain(
+		queue: WorkerCredentialQueueV1,
+		supervisor: WorkerSupervisorV1,
+	): Promise<void> {
+		try {
+			const drained = await this.drainWorkerCredentials(queue.workerId, supervisor);
+			if (!drained.ok) await this.failCredentialDrain(queue.workerId, supervisor);
+		} catch {
+			await this.failCredentialDrain(queue.workerId, supervisor);
+		} finally {
+			queue.liveDrain = undefined;
+			if (queue.accepting && queue.commands.length > 0) this.startLiveCredentialDrain(queue, supervisor);
+		}
+	}
+
+	private async drainWorkerCredentials(
+		workerId: string,
+		supervisor: WorkerSupervisorV1,
+	): Promise<ResultValue<void, FoundationError>> {
+		const queue = this.credentialQueues.get(workerId);
+		if (queue === undefined) return Result.ok(undefined);
+		if (queue.quarantined) {
+			return Result.err(providerError("task_credential_target_unavailable", "Operation Worker credential target is quarantined"));
+		}
+		queue.supervisor ??= supervisor;
+		if (queue.supervisor !== supervisor) {
+			return Result.err(providerError("worker_conflict", "Operation Worker credential queue identity conflicts"));
+		}
+		if (queue.drain !== undefined) return queue.drain;
+		const drain = (async (): Promise<ResultValue<void, FoundationError>> => {
+			while (queue.commands.length > 0) {
+				const command = queue.commands[0]!;
+				const written = command.type === "project"
+					? await supervisor.projectCredential(command.lease)
+					: command.type === "renew"
+						? await supervisor.renewCredential(command.lease)
+						: await supervisor.revokeCredential(command.lease);
+				if (!written.ok) return Result.err(written.error);
+				queue.commands.shift();
+			}
+			return Result.ok(undefined);
+		})();
+		queue.drain = drain;
+		const result = await drain;
+		if (queue.drain === drain) queue.drain = undefined;
+		if (result.ok && queue.commands.length > 0) return this.drainWorkerCredentials(workerId, supervisor);
+		return result;
+	}
+
+	private failCredentialDrain(
+		workerId: string,
+		supervisor: WorkerSupervisorV1,
+	): Promise<FoundationError | undefined> {
+		const queue = this.credentialQueues.get(workerId);
+		if (queue === undefined) return Promise.resolve(undefined);
+		queue.accepting = false;
+		queue.commands.length = 0;
+		queue.failure ??= (async () => {
+			let convergenceError: FoundationError | undefined;
+			let lostPersisted = false;
+			try {
+				const lost = await supervisor.failCredentialDelivery(workerId);
+				if (lost.ok) lostPersisted = lost.value.status === "lost";
+				else convergenceError = lost.error;
+			} catch {
+				convergenceError = providerError(
+					"worker_persistence_failed",
+					"Operation Worker credential failure convergence failed",
+				);
+			}
+			const factError = this.publishRecord(supervisor);
+			convergenceError ??= factError;
+			this.publishCredentialDetach(queue, supervisor, lostPersisted && factError === undefined ? "lost" : "reclaim");
+			queue.quarantined = true;
+			return convergenceError;
+		})();
+		return queue.failure;
+	}
+
+	private async detachCredentialWorker(
+		supervisor: WorkerSupervisorV1,
+		reason: WorkerCredentialDetachReasonV1,
+	): Promise<void> {
+		const record = supervisor.snapshot.record;
+		if (record === undefined) return;
+		const queue = this.credentialQueues.get(record.workerId);
+		if (queue === undefined) return;
+		if (queue.liveDrain !== undefined) await queue.liveDrain;
+		if (queue.detachNotified) return;
+		const currentRecord = supervisor.snapshot.record;
+		const canDrain = !queue.quarantined &&
+			currentRecord !== undefined &&
+			["ready", "running", "cancelling"].includes(currentRecord.status);
+		if (canDrain) {
+			this.publishCredentialDetach(queue, supervisor, reason);
+			const drained = await this.drainWorkerCredentials(record.workerId, supervisor);
+			if (!drained.ok) await this.failCredentialDrain(record.workerId, supervisor);
+			queue.accepting = false;
+			return;
+		}
+		queue.accepting = false;
+		queue.commands.length = 0;
+		this.publishCredentialDetach(queue, supervisor, reason);
+	}
+
+	private publishCredentialDetach(
+		queue: WorkerCredentialQueueV1,
+		supervisor: WorkerSupervisorV1,
+		reason: WorkerCredentialDetachReasonV1,
+	): void {
+		if (queue.detachNotified) return;
+		queue.detachNotified = true;
+		const record = supervisor.snapshot.record;
+		try {
+			this.credentialDetachSink?.(Object.freeze({
+				workerId: queue.workerId,
+				...(record?.runId === undefined ? {} : { runId: record.runId }),
+				reason,
+			}));
+		} catch {
+			// Host teardown remains best effort; queue failure is already fail closed.
+		}
 	}
 
 	private validatePreflight(
@@ -907,6 +1206,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		reason: WorkerInvalidationReasonV1,
 		operationId: string,
 	): Promise<ResultValue<void, FoundationError>> {
+		await this.detachCredentialWorker(supervisor, reason);
 		const status = supervisor.snapshot.record?.status;
 		const converged = status === "running" || status === "cancelling"
 			? reason === "cancel" || reason === "deadline"

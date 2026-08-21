@@ -9,7 +9,9 @@ import {
 	createSandboxOperationToolGatewayProviderV1,
 	EVENT_CATALOG,
 	executeOperationV1,
+	FoundationError,
 	InMemorySessionStorage,
+	Result,
 	Session,
 	type ExecutionCorrelationV1,
 	type FoundationJsonValue,
@@ -36,9 +38,22 @@ import {
 import { resolveWorkerSandboxOperationV1, type SandboxHandle } from "../src/core/sandbox.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
+import {
+	createTaskCredentialTestProvider,
+	type TaskCredentialProviderReceipt,
+	type TaskCredentialTargetCapabilities,
+	type TaskCredentialTargetCapabilitiesRequest,
+	type TaskCredentialTargetRenewRequest,
+	type TaskCredentialTargetRevokeRequest,
+	type TaskCredentialTestProvider,
+} from "../src/core/task-credential-provider.ts";
+import { TaskCredentialService } from "../src/core/task-credential-service.ts";
 import {
 	parseWorkerFrameV1,
 	serializeWorkerFrameLineV1,
+	type SafeLeaseProjectionV1,
+	type SafeLeaseReferenceV1,
 	type WorkerEventFrameV1,
 	type WorkerRequestFrameV1,
 	validateWorkerEventFrameV1,
@@ -47,6 +62,7 @@ import {
 	WorkerSandboxProviderV1,
 	createWorkerRequestFingerprintV1,
 	type WorkerSandboxFactV1,
+	type WorkerCredentialDetachV1,
 	type WorkerSandboxProviderOptionsV1,
 	type WorkerSandboxPreflightFactsV1,
 	type WorkerSandboxProfileV1,
@@ -218,6 +234,7 @@ function provider(
 		readonly createSupervisor?: (config: WorkerSupervisorConfigV1) => WorkerSupervisorV1;
 		readonly durableOwner?: string | false;
 		readonly durableSink?: (fact: WorkerSandboxFactV1) => void;
+		readonly maxRetainedRecords?: number;
 	} = {},
 ): WorkerSandboxProviderV1 {
 	const current = new WorkerSandboxProviderV1({
@@ -250,6 +267,7 @@ function provider(
 		},
 		...(overrides.requireRegisteredPayload === undefined ? {} : { requireRegisteredPayload: overrides.requireRegisteredPayload }),
 		...(overrides.onRecord === undefined ? {} : { onWorkerRecord: overrides.onRecord }),
+		...(overrides.maxRetainedRecords === undefined ? {} : { maxRetainedRecords: overrides.maxRetainedRecords }),
 	});
 	if (overrides.durableOwner !== false) {
 		current.bindDurableFactSink(overrides.durableOwner ?? "session-1", overrides.durableSink ?? (() => undefined));
@@ -337,7 +355,11 @@ function replayableProvider(
 function createWorkerControlPlane(
 	sessionManager: SessionManager,
 	workerSandboxProvider: WorkerSandboxProviderV1,
-	options: { readonly cacheLimit?: number; readonly harness?: AgentHarness } = {},
+	options: {
+		readonly cacheLimit?: number;
+		readonly harness?: AgentHarness;
+		readonly taskCredentialProvider?: TaskCredentialTestProvider;
+	} = {},
 ): FoundationControlPlane {
 	const harness = options.harness ?? ({
 		toolsSnapshot: [],
@@ -358,6 +380,12 @@ function createWorkerControlPlane(
 		cwd: process.cwd(),
 		agentDir: process.cwd(),
 		workerSandboxProvider,
+		...(options.taskCredentialProvider === undefined
+			? {}
+			: {
+				taskCredentialProvider: options.taskCredentialProvider,
+				taskCredentialPolicyMaxTtlMs: 300_000,
+			}),
 		...(options.cacheLimit === undefined ? {} : { workerFactCacheLimit: options.cacheLimit }),
 	});
 }
@@ -425,6 +453,15 @@ async function waitForRecord(records: readonly WorkerRecordV1[], status: WorkerR
 	throw new Error(`Timed out waiting for ${status}`);
 }
 
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+	const expires = Date.now() + 1_000;
+	while (Date.now() < expires) {
+		if (predicate()) return;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	throw new Error(message);
+}
+
 async function waitForWorkerFrame(
 	frames: readonly WorkerEventFrameV1[],
 	predicate: (frame: WorkerEventFrameV1) => boolean,
@@ -436,6 +473,145 @@ async function waitForWorkerFrame(
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	throw new Error(`Timed out waiting for Worker frame: ${JSON.stringify(frames)}`);
+}
+
+const WORKER_CREDENTIAL_NOW = "2026-08-21T00:00:00.000Z";
+const WORKER_CREDENTIAL_SECRET = "credential-material-never-enters-worker-queue";
+const WORKER_CREDENTIAL_SCOPES: readonly TaskCredentialScope[] = Object.freeze([{
+	credentialName: "registry",
+	purpose: "read",
+	operations: ["read"],
+	targetKinds: ["operation_worker"],
+}]);
+
+class WorkerCredentialMaterialTarget {
+	readonly materials: string[] = [];
+
+	getCapabilities(request: TaskCredentialTargetCapabilitiesRequest): TaskCredentialTargetCapabilities {
+		return {
+			schemaVersion: 1,
+			targetId: request.targetId,
+			targetKind: request.targetKind,
+			bindingId: request.bindingId,
+			canReceiveShortLivedCredential: true,
+			canRenewCredential: true,
+			canRevokeCredential: true,
+			supportsPerBindingIsolation: true,
+			supportsDeliveryReceipt: true,
+		};
+	}
+
+	project(request: {
+		readonly schemaVersion: 1;
+		readonly leaseId: string;
+		readonly grantId: string;
+		readonly bindingId: string;
+		readonly targetId?: string;
+		readonly scopes: ReadonlyArray<TaskCredentialScope>;
+		readonly material: Readonly<Record<string, string>>;
+		readonly projectedAt: string;
+	}): TaskCredentialDeliveryReceipt {
+		this.materials.push(...Object.values(request.material));
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			status: "succeeded",
+			recordedAt: WORKER_CREDENTIAL_NOW,
+		};
+	}
+
+	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt {
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			status: "renewed",
+			recordedAt: WORKER_CREDENTIAL_NOW,
+		};
+	}
+
+	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt {
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			status: "revoked",
+			recordedAt: WORKER_CREDENTIAL_NOW,
+		};
+	}
+}
+
+function createWorkerCredentialService(
+	current: WorkerSandboxProviderV1,
+	workerId: string,
+): {
+	readonly service: TaskCredentialService;
+	readonly session: SessionManager;
+	readonly target: WorkerCredentialMaterialTarget;
+	readonly clock: { nowMs: number };
+	readonly detaches: WorkerCredentialDetachV1[];
+	readonly providerRevocation: { readonly leaseIds: string[]; onRevoke?: () => void };
+} {
+	const session = SessionManager.inMemory(process.cwd(), { id: "session-1" });
+	const target = new WorkerCredentialMaterialTarget();
+	const clock = { nowMs: Date.parse(WORKER_CREDENTIAL_NOW) };
+	const providerRevocation: { readonly leaseIds: string[]; onRevoke?: () => void } = { leaseIds: [] };
+	const baseProvider = createTaskCredentialTestProvider({
+		materials: { registry: WORKER_CREDENTIAL_SECRET },
+		target,
+		now: () => new Date(clock.nowMs).toISOString(),
+	});
+	const service = new TaskCredentialService({
+		session,
+		provider: {
+			...baseProvider,
+			issuer: {
+				...baseProvider.issuer,
+				revoke: (request) => {
+					providerRevocation.onRevoke?.();
+					providerRevocation.leaseIds.push(request.leaseId);
+					return baseProvider.issuer.revoke(request);
+				},
+			},
+		},
+		workerTargets: current.getCredentialWorkerTargets(),
+		preflight: { resolve: (input) => ({ allowed: true, boundedTtlMs: input.requestedTtlMs }) },
+		policyMaxTtlMs: 300_000,
+		now: () => new Date(clock.nowMs).toISOString(),
+	});
+	const detaches: WorkerCredentialDetachV1[] = [];
+	current.bindCredentialDetachSink("session-1", (detach) => {
+		detaches.push(detach);
+		service.onWorkerDetach({
+			workerId: detach.workerId,
+			...(detach.runId === undefined ? {} : { runId: detach.runId }),
+		});
+	});
+	const issued = service.issueForTaskRun({
+		taskId: "task-worker-queue",
+		graphRevision: 1,
+		nodeId: "node-worker-queue",
+		stageId: "stage-worker-queue",
+		stageRevision: 1,
+		runId: "run-1",
+		capabilityBindingId: "capability-worker-queue",
+		policyBindingId: "policy-worker-queue",
+		sandboxBindingId: "sandbox-worker-queue",
+		targetId: "worker-target-queue",
+		targetKind: "operation_worker",
+		workerId,
+		scopes: WORKER_CREDENTIAL_SCOPES,
+		requestedTtlMs: 60_000,
+		clientRequestId: "issue-worker-queue",
+		gate: { status: "approved", stageRevision: 1 },
+		nodeAttached: true,
+	});
+	if (!issued.ok) throw new Error(`Expected Worker credential issue: ${issued.code}`);
+	return { service, session, target, clock, detaches, providerRevocation };
 }
 
 describe("WorkerSandboxProviderV1", () => {
@@ -464,6 +640,494 @@ describe("WorkerSandboxProviderV1", () => {
 		expect(hostAbortCalls).toBe(1);
 		rejectWorkerCancellation(workerFailure);
 		await expect(abort).rejects.toBe(workerFailure);
+	});
+
+	it("drains the TaskCredentialService safe projection queue after activation and before execute", async () => {
+		const workerId = "worker-credential-order";
+		const events: string[] = [];
+		const projected: SafeLeaseProjectionV1[] = [];
+		class CredentialOrderSupervisor extends WorkerSupervisorV1 {
+			override projectCredential(lease: SafeLeaseProjectionV1) {
+				events.push("project");
+				projected.push(lease);
+				return Promise.resolve(Result.ok(undefined));
+			}
+
+			override execute(request: SandboxOperationRequestV1) {
+				events.push("execute");
+				return super.execute(request);
+			}
+		}
+		const current = provider("success", {
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: {
+					...binding(request, "success"),
+					workerId,
+					bindingId: request.bindingId,
+				},
+			}),
+			createSupervisor: (config) => new CredentialOrderSupervisor(config),
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-order"), bindingId: grant.bindingId };
+		const result = await current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		});
+		expect(result).toMatchObject({ ok: true });
+		expect(events.slice(0, 2)).toEqual(["project", "execute"]);
+		expect(projected).toHaveLength(1);
+		expect(Object.keys(projected[0] ?? {}).sort()).toEqual([
+			"bindingId",
+			"clientRequestId",
+			"expiresAt",
+			"grantId",
+			"leaseId",
+			"schemaVersion",
+			"scopeDigest",
+		]);
+		expect(JSON.stringify(projected)).not.toContain(WORKER_CREDENTIAL_SECRET);
+		expect(credential.target.materials).toEqual([WORKER_CREDENTIAL_SECRET]);
+	});
+
+	it("injects the dynamic Worker target registry and detach sink through FoundationControlPlane", async () => {
+		const operationId = "operation-credential-control-plane";
+		const workerId = `worker-${operationId}`;
+		const session = SessionManager.inMemory(process.cwd(), { id: "session-1" });
+		const current = provider("success", { durableOwner: false });
+		const credentialProvider = createTaskCredentialTestProvider({
+			materials: { registry: WORKER_CREDENTIAL_SECRET },
+			target: new WorkerCredentialMaterialTarget(),
+			now: () => WORKER_CREDENTIAL_NOW,
+		});
+		const controlPlane = createWorkerControlPlane(session, current, {
+			taskCredentialProvider: credentialProvider,
+		});
+		try {
+			const service = controlPlane.getTaskCredentialService();
+			if (service === undefined) throw new Error("Expected production TaskCredentialService");
+			const detach = vi.spyOn(service, "onWorkerDetach");
+			const issue = service.issueForTaskRun({
+				taskId: "task-control-plane",
+				graphRevision: 1,
+				nodeId: "node-control-plane",
+				runId: "run-1",
+				capabilityBindingId: "capability-control-plane",
+				policyBindingId: "binding-1",
+				sandboxBindingId: "binding-1",
+				targetId: "worker-target-control-plane",
+				targetKind: "operation_worker",
+				workerId,
+				scopes: WORKER_CREDENTIAL_SCOPES,
+				requestedTtlMs: 60_000,
+				clientRequestId: "issue-control-plane",
+				nodeAttached: true,
+			});
+			expect(issue).not.toEqual({ ok: false, code: "task_credential_target_unavailable" });
+			expect(current.getCredentialWorkerTargets().size).toBe(1);
+			const request = operation(operationId);
+			expect(await current.start(request, { correlation: correlation(operationId) })).toMatchObject({ ok: true });
+			expect(detach).toHaveBeenCalledWith(expect.objectContaining({ workerId, runId: "run-1" }));
+		} finally {
+			await controlPlane.dispose();
+		}
+	});
+
+	it("fails a credential drain closed through lost, provider revoke, and Worker quarantine", async () => {
+		const workerId = "worker-credential-failure";
+		let supervisor: WorkerSupervisorV1 | undefined;
+		let executeCalls = 0;
+		class CredentialFailureSupervisor extends WorkerSupervisorV1 {
+			override projectCredential(_lease: SafeLeaseProjectionV1) {
+				return Promise.resolve(Result.err(new FoundationError(
+					"task_credential_target_unavailable",
+					"safe projection failed",
+				)));
+			}
+
+			override execute(request: SandboxOperationRequestV1) {
+				executeCalls += 1;
+				return super.execute(request);
+			}
+		}
+		const current = provider("success", {
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: {
+					...binding(request, "success"),
+					workerId,
+					bindingId: request.bindingId,
+				},
+			}),
+			createSupervisor: (config) => {
+				supervisor = new CredentialFailureSupervisor(config);
+				return supervisor;
+			},
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		credential.providerRevocation.onRevoke = () => {
+			expect(supervisor?.lifecycleState?.transitions.map((transition) => transition.to)).toContain("lost");
+		};
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-failure"), bindingId: grant.bindingId };
+		expect(await current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		})).toMatchObject({ ok: false, error: { code: "task_credential_target_unavailable" } });
+		expect(executeCalls).toBe(0);
+		expect(supervisor?.lifecycleState?.transitions.map((transition) => transition.to)).toContain("lost");
+		expect(credential.detaches).toEqual([expect.objectContaining({ workerId, reason: "lost" })]);
+		expect(credential.service.get(grant.leaseId)?.status).toBe("settled");
+		expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+		expect(credential.service.isTargetQuarantined(workerId)).toBe(true);
+	});
+
+	it("keeps projection execution blocked and revokes when durable loss persistence fails", async () => {
+		const workerId = "worker-credential-loss-fault";
+		let executeCalls = 0;
+		const records: WorkerRecordV1[] = [];
+		class CredentialLossFaultSupervisor extends WorkerSupervisorV1 {
+			override projectCredential(_lease: SafeLeaseProjectionV1) {
+				return Promise.resolve(Result.err(new FoundationError(
+					"task_credential_target_unavailable",
+					"safe projection failed",
+				)));
+			}
+
+			override failCredentialDelivery(_workerId: string) {
+				return Promise.resolve(Result.err(new FoundationError(
+					"worker_persistence_failed",
+					"durable loss write failed",
+				)));
+			}
+
+			override execute(request: SandboxOperationRequestV1) {
+				executeCalls += 1;
+				return super.execute(request);
+			}
+		}
+		const current = provider("success", {
+			onRecord: (record) => records.push(record),
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: { ...binding(request, "success"), workerId, bindingId: request.bindingId },
+			}),
+			createSupervisor: (config) => new CredentialLossFaultSupervisor(config),
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-loss-fault"), bindingId: grant.bindingId };
+		expect(await current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		})).toMatchObject({ ok: false, error: { code: "worker_persistence_failed" } });
+		expect(executeCalls).toBe(0);
+		expect(records.some((record) => record.status === "lost")).toBe(false);
+		expect(credential.detaches).toEqual([expect.objectContaining({ workerId, reason: "reclaim" })]);
+		expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+		expect(credential.service.get(grant.leaseId)?.status).toBe("settled");
+		expect(credential.service.isTargetQuarantined(workerId)).toBe(true);
+	});
+
+	it("serializes live TaskCredentialService renew and revoke queue drains", async () => {
+		const workerId = "worker-credential-serial";
+		const events: string[] = [];
+		let enterRenew: () => void = () => undefined;
+		let releaseRenew: () => void = () => undefined;
+		let releaseExecute: () => void = () => undefined;
+		const renewEntered = new Promise<void>((resolve) => { enterRenew = resolve; });
+		const renewGate = new Promise<void>((resolve) => { releaseRenew = resolve; });
+		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
+		class CredentialSerialSupervisor extends WorkerSupervisorV1 {
+			override projectCredential(_lease: SafeLeaseProjectionV1) {
+				events.push("project");
+				return Promise.resolve(Result.ok(undefined));
+			}
+
+			override async renewCredential(_lease: SafeLeaseProjectionV1) {
+				events.push("renew:start");
+				enterRenew();
+				await renewGate;
+				events.push("renew:end");
+				return Result.ok(undefined);
+			}
+
+			override revokeCredential(_lease: SafeLeaseReferenceV1) {
+				events.push("revoke");
+				return Promise.resolve(Result.ok(undefined));
+			}
+
+			override async execute(request: SandboxOperationRequestV1) {
+				events.push("execute:start");
+				await executeGate;
+				return super.execute(request);
+			}
+		}
+		const current = provider("success", {
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: {
+					...binding(request, "success"),
+					workerId,
+					bindingId: request.bindingId,
+				},
+			}),
+			createSupervisor: (config) => new CredentialSerialSupervisor(config),
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-serial"), bindingId: grant.bindingId };
+		const pending = current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		});
+		await waitForCondition(() => events.includes("execute:start"), "Timed out waiting for Worker execute");
+		credential.clock.nowMs += 10_000;
+		const renewed = credential.service.renew({
+			leaseId: grant.leaseId,
+			grantId: grant.grantId,
+			bindingId: grant.bindingId,
+			heartbeatSequence: 1,
+			requestedTtlMs: 60_000,
+			clientRequestId: "renew-worker-queue",
+			gate: { status: "approved", stageRevision: 1 },
+			nodeAttached: true,
+		});
+		expect(renewed.ok).toBe(true);
+		const revoked = credential.service.revoke({
+			leaseId: grant.leaseId,
+			clientRequestId: "revoke-worker-queue",
+			gate: { status: "approved", stageRevision: 1 },
+			nodeAttached: true,
+		});
+		expect(revoked.ok).toBe(true);
+		await renewEntered;
+		expect(events).not.toContain("revoke");
+		releaseRenew();
+		await waitForCondition(() => events.includes("revoke"), "Timed out waiting for serialized Worker revoke");
+		expect(events).toEqual(["project", "execute:start", "renew:start", "renew:end", "revoke"]);
+		releaseExecute();
+		expect(await pending).toMatchObject({ ok: true });
+	});
+
+	it("fails a live renew through durable lost, provider revoke, and queue quarantine", async () => {
+		const workerId = "worker-credential-renew-failure";
+		const events: string[] = [];
+		let releaseExecute: () => void = () => undefined;
+		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
+		class CredentialRenewFailureSupervisor extends WorkerSupervisorV1 {
+			override async execute(request: SandboxOperationRequestV1) {
+				events.push("execute");
+				await executeGate;
+				return super.execute(request);
+			}
+
+			override renewCredential(_lease: SafeLeaseProjectionV1) {
+				return Promise.resolve(Result.err(new FoundationError(
+					"task_credential_target_unavailable",
+					"safe renewal failed",
+				)));
+			}
+
+			override async failCredentialDelivery(failedWorkerId: string) {
+				const result = await super.failCredentialDelivery(failedWorkerId);
+				events.push("lost");
+				return result;
+			}
+		}
+		const records: WorkerRecordV1[] = [];
+		const current = provider("success", {
+			onRecord: (record) => records.push(record),
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: { ...binding(request, "success"), workerId, bindingId: request.bindingId },
+			}),
+			createSupervisor: (config) => new CredentialRenewFailureSupervisor(config),
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		credential.providerRevocation.onRevoke = () => events.push("provider:revoke");
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-renew-failure"), bindingId: grant.bindingId };
+		const pending = current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		});
+		await waitForCondition(() => events.includes("execute"), "Timed out waiting for Worker execute");
+		credential.clock.nowMs += 10_000;
+		expect(credential.service.renew({
+			leaseId: grant.leaseId,
+			grantId: grant.grantId,
+			bindingId: grant.bindingId,
+			heartbeatSequence: 1,
+			requestedTtlMs: 60_000,
+			clientRequestId: "renew-worker-failure",
+			gate: { status: "approved", stageRevision: 1 },
+			nodeAttached: true,
+		})).toMatchObject({ ok: true });
+		await waitForCondition(
+			() => credential.providerRevocation.leaseIds.length === 1,
+			"Timed out waiting for fail-closed provider revoke",
+		);
+		expect(events.indexOf("lost")).toBeLessThan(events.indexOf("provider:revoke"));
+		expect(records.some((record) => record.status === "lost")).toBe(true);
+		expect(credential.service.isTargetQuarantined(workerId)).toBe(true);
+		releaseExecute();
+		expect(await pending).toMatchObject({ ok: false });
+		expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+	});
+
+	it("converges a live revoke failure after one provider revoke without a false delivery claim", async () => {
+		const workerId = "worker-credential-revoke-failure";
+		const events: string[] = [];
+		let releaseExecute: () => void = () => undefined;
+		let releaseRevoke: () => void = () => undefined;
+		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
+		const revokeGate = new Promise<void>((resolve) => { releaseRevoke = resolve; });
+		class CredentialRevokeFailureSupervisor extends WorkerSupervisorV1 {
+			override async execute(request: SandboxOperationRequestV1) {
+				events.push("execute");
+				await executeGate;
+				return super.execute(request);
+			}
+
+			override async revokeCredential(_lease: SafeLeaseReferenceV1) {
+				events.push("worker-revoke");
+				await revokeGate;
+				return Result.err(new FoundationError(
+					"task_credential_target_unavailable",
+					"safe revocation failed",
+				));
+			}
+
+			override async failCredentialDelivery(failedWorkerId: string) {
+				const result = await super.failCredentialDelivery(failedWorkerId);
+				events.push("lost");
+				return result;
+			}
+		}
+		const records: WorkerRecordV1[] = [];
+		const current = provider("success", {
+			onRecord: (record) => records.push(record),
+			resolvePreflight: (request) => ({
+				...facts(request, "success"),
+				binding: { ...binding(request, "success"), workerId, bindingId: request.bindingId },
+			}),
+			createSupervisor: (config) => new CredentialRevokeFailureSupervisor(config),
+		});
+		const credential = createWorkerCredentialService(current, workerId);
+		credential.providerRevocation.onRevoke = () => events.push("provider:revoke");
+		const grant = credential.service.snapshot()[0];
+		if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+		const request = { ...operation("operation-credential-revoke-failure"), bindingId: grant.bindingId };
+		const pending = current.start(request, {
+			correlation: { ...correlation(request.operationId), bindingId: grant.bindingId },
+		});
+		await waitForCondition(() => events.includes("execute"), "Timed out waiting for Worker execute");
+		expect(credential.service.revoke({
+			leaseId: grant.leaseId,
+			clientRequestId: "revoke-worker-failure",
+			gate: { status: "approved", stageRevision: 1 },
+			nodeAttached: true,
+		})).toMatchObject({ ok: true });
+		expect(events).toEqual(["execute", "worker-revoke", "provider:revoke"]);
+		expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+		const entriesBeforeFailure = credential.session.getEntries().length;
+		releaseRevoke();
+		await waitForCondition(() => events.includes("lost"), "Timed out waiting for Worker loss");
+		expect(records.some((record) => record.status === "lost")).toBe(true);
+		releaseExecute();
+		expect(await pending).toMatchObject({ ok: false });
+		expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+		const asynchronousActions = credential.session.getEntries().slice(entriesBeforeFailure).map((entry) =>
+			entry.type === "custom" && entry.data !== undefined && typeof entry.data === "object" && entry.data !== null
+				? (entry.data as { action?: string }).action
+				: undefined,
+		);
+		expect(asynchronousActions).not.toContain("delivery_succeeded");
+		expect(asynchronousActions).not.toContain("renewed");
+		const queueTarget = current.getCredentialWorkerTargets().get(workerId);
+		if (queueTarget === undefined) throw new Error("Expected retained Worker credential target");
+		expect(queueTarget.revoke({
+			schemaVersion: 1,
+			leaseId: grant.leaseId,
+			grantId: grant.grantId,
+			bindingId: grant.bindingId,
+			clientRequestId: "revoke-after-quarantine",
+		})).toEqual({ ok: false });
+	});
+
+	it("keeps credential delivery failure terminal-idempotent and bounds distinct Worker targets", async () => {
+		let supervisor: WorkerSupervisorV1 | undefined;
+		const current = provider("success", {
+			maxRetainedRecords: 2,
+			createSupervisor: (config) => {
+				supervisor = new WorkerSupervisorV1(config);
+				return supervisor;
+			},
+		});
+		const targets = current.getCredentialWorkerTargets();
+		const first = targets.get("worker-operation-credential-terminal");
+		const second = targets.get("worker-registry-second");
+		expect(first).toBeDefined();
+		expect(second).toBeDefined();
+		expect(targets.get("worker-registry-third")).toBeUndefined();
+		expect(targets.get("worker-operation-credential-terminal")).toBe(first);
+		const request = operation("operation-credential-terminal");
+		expect(await current.start(request, { correlation: correlation(request.operationId) })).toMatchObject({ ok: true });
+		if (supervisor === undefined) throw new Error("Expected Worker supervisor");
+		const before = supervisor.lifecycleState;
+		if (before === undefined) throw new Error("Expected terminal Worker lifecycle");
+		const failed = await supervisor.failCredentialDelivery(before.binding.workerId);
+		expect(failed).toMatchObject({ ok: true, value: { status: before.record.status } });
+		expect(supervisor.lifecycleState?.transitions).toEqual(before.transitions);
+	});
+
+	it("preserves credential detach notifications for cancel, deadline, terminal, lost, and reclaim", async () => {
+		const scenarios = [
+			{ name: "cancel", profileId: "cancel_success", trigger: "cancel", expected: "cancel" },
+			{ name: "deadline", profileId: "deadline_late", trigger: "deadline", expected: "deadline" },
+			{ name: "terminal", profileId: "cancel_success", trigger: "terminal", expected: "terminal" },
+			{ name: "lost", profileId: "disconnect", trigger: "none", expected: "lost" },
+			{ name: "reclaim", profileId: "success", trigger: "none", expected: "reclaim" },
+		] as const;
+		for (const scenario of scenarios) {
+			const operationId = `operation-credential-detach-${scenario.name}`;
+			const workerId = `worker-${operationId}`;
+			const records: WorkerRecordV1[] = [];
+			const current = provider(scenario.profileId, {
+				onRecord: (record) => records.push(record),
+				resolvePreflight: (request) => ({
+					...facts(request, scenario.profileId),
+					binding: {
+						...binding(request, scenario.profileId),
+						workerId,
+						bindingId: request.bindingId,
+					},
+				}),
+			});
+			const credential = createWorkerCredentialService(current, workerId);
+			const grant = credential.service.snapshot()[0];
+			if (grant === undefined) throw new Error("Expected queued Worker credential grant");
+			const request = { ...operation(
+				operationId,
+				scenario.trigger === "deadline" ? Date.now() + 500 : undefined,
+			), bindingId: grant.bindingId };
+			const pending = current.start(request, {
+				correlation: { ...correlation(operationId), bindingId: grant.bindingId },
+			});
+			if (scenario.trigger === "cancel" || scenario.trigger === "terminal") {
+				await waitForRecord(records, "ready");
+				if (scenario.trigger === "cancel") await current.cancel(operationId);
+				else await current.notifyRun("run-1", "terminal");
+			}
+			await pending;
+			expect(credential.detaches.map((detach) => detach.reason)).toEqual([scenario.expected]);
+			expect(credential.providerRevocation.leaseIds).toEqual([grant.leaseId]);
+			expect(credential.service.get(grant.leaseId)?.status).toBe("settled");
+			await current.dispose();
+		}
 	});
 
 	it("runs the real provider through executeOperationV1 and validates success and failure receipts", async () => {

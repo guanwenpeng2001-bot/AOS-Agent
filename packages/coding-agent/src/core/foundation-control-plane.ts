@@ -241,6 +241,7 @@ export class FoundationControlPlane {
 	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
+	private readonly releaseWorkerCredentialDetachSink: (() => void) | undefined;
 	private readonly persistedWorkerFacts = new Map<string, {
 		readonly customType: string;
 		readonly canonicalEnvelope: string;
@@ -335,6 +336,7 @@ export class FoundationControlPlane {
 		this.captureHarnessTools();
 		this.registerConfiguredServers();
 		let releaseWorkerDurableSink: (() => void) | undefined;
+		let releaseWorkerCredentialDetachSink: (() => void) | undefined;
 		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
 		try {
 			if (this.workerSandboxProvider !== undefined) {
@@ -354,16 +356,27 @@ export class FoundationControlPlane {
 					this.sessionManager.getSessionId(),
 					(fact) => this.persistWorkerFact(fact),
 				);
+				releaseWorkerCredentialDetachSink = this.workerSandboxProvider.bindCredentialDetachSink(
+					this.sessionManager.getSessionId(),
+					(detach) => {
+						this.getTaskCredentialService()?.onWorkerDetach({
+							workerId: detach.workerId,
+							...(detach.runId === undefined ? {} : { runId: detach.runId }),
+						});
+					},
+				);
 				for (const fact of history.convergenceFacts) this.persistWorkerFact(fact);
 				const restored = this.workerSandboxProvider.restoreWorkerFacts(history.recovery);
 				if (!restored.ok) throw restored.error;
 			}
 		} catch (error) {
 			unregisterWorkerLifecycleHooks?.();
+			releaseWorkerCredentialDetachSink?.();
 			releaseWorkerDurableSink?.();
 			throw error;
 		}
 		this.releaseWorkerDurableSink = releaseWorkerDurableSink;
+		this.releaseWorkerCredentialDetachSink = releaseWorkerCredentialDetachSink;
 		this.unregisterWorkerLifecycleHooks = unregisterWorkerLifecycleHooks;
 	}
 
@@ -1551,6 +1564,9 @@ export class FoundationControlPlane {
 				provider: this.taskCredentialProvider,
 				policyMaxTtlMs: this.taskCredentialPolicyMaxTtlMs,
 				preflight: { resolve: (input) => this.resolveTaskCredentialPreflight(input) },
+				...(this.workerSandboxProvider === undefined
+					? {}
+					: { workerTargets: this.workerSandboxProvider.getCredentialWorkerTargets() }),
 			});
 		} catch {
 			this.taskCredentialService = undefined;
@@ -1784,6 +1800,7 @@ export class FoundationControlPlane {
 			failure = error;
 		} finally {
 			this.unregisterWorkerLifecycleHooks?.();
+			this.releaseWorkerCredentialDetachSink?.();
 			this.releaseWorkerDurableSink?.();
 		}
 		try {
