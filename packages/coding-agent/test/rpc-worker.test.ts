@@ -3,25 +3,31 @@ import { once } from "node:events";
 import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Writable } from "node:stream";
-import { Agent, AgentHarness, FoundationError, Result, Session } from "@aos-agent/agent-core";
+import { Agent, FoundationError, Result } from "@aos-agent/agent-core";
 import { createModels, type Model, type Models } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentSession, createAgentSessionDelegate } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { createHarnessCompatibilityWriter, SessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { WorkerLifecycleStatusV1, WorkerRecordV1 } from "../src/core/worker.ts";
-import { WorkerSandboxProviderV1 } from "../src/core/worker-sandbox-provider.ts";
+import {
+	createAgentSession,
+	createTrustedWorkerSandboxCompositionV1,
+} from "../src/index.ts";
+import type { WorkerSandboxProviderV1 } from "../src/core/worker-sandbox-provider.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 import type { RpcCommand, RpcWorkerRecord, RpcWorkerResponse } from "../src/modes/rpc/rpc-types.ts";
+
+const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -251,52 +257,54 @@ async function createCanonicalWorkerSession(
 ): Promise<{ session: AgentSession; provider: WorkerSandboxProviderV1 }> {
 	mkdirSync(tempDir, { recursive: true });
 	const sessionManager = SessionManager.create(tempDir);
-	const canonicalStorage = new SessionManagerStorage(sessionManager);
-	const canonicalSession = new Session(canonicalStorage);
 	const models = testModels();
 	const modelRuntime = Object.assign(models, {
+		getModels: () => [TEST_MODEL],
 		getAvailableSnapshot: () => [TEST_MODEL],
+		refresh: async () => ({}),
 		hasConfiguredAuth: () => true,
 		checkAuth: async () => ({ type: "api_key", key: "test-key" }),
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
 	}) as unknown as ModelRuntime;
-	const created = await AgentHarness.create({
-		session: canonicalSession,
-		models,
-		model: TEST_MODEL,
-		drive: "automatic",
-		tools: [],
-		activeToolNames: [],
-		systemPrompt: "Test",
-		streamFunction: () => {
-			throw new Error("The Worker RPC harness does not start model requests");
-		},
-		streamFunctionOverridden: true,
-		compatibilityWriter: createHarnessCompatibilityWriter(canonicalStorage),
-	});
-	const provider = new WorkerSandboxProviderV1({
+	const composition = createTrustedWorkerSandboxCompositionV1({
 		providerId: "sandbox-worker",
+		profile: {
+			profileId: "local-worker",
+			profileRevision: 1,
+			trusted: true,
+			supervisor: {
+				executable: process.execPath,
+				entrypoint: CHILD_ENTRY,
+				profileId: "local-worker",
+				profileRevision: 1,
+				capabilities: [],
+				readyTimeoutMs: 2_000,
+				heartbeatTimeoutMs: 2_000,
+				cancelTimeoutMs: 120,
+				terminateTimeoutMs: 500,
+			},
+		},
 		resolvePreflight: () => {
 			throw new Error("Worker execution is not exercised by this RPC test");
 		},
 	});
-	const restored = provider.restoreWorkerFacts({
+	const restored = composition.provider.restoreWorkerFacts({
 		records: [workerRecord({ workerId, sessionId: sessionManager.getSessionId(), status: "lost" })],
 	});
 	if (!restored.ok) throw restored.error;
-	const delegate = createAgentSessionDelegate({
-		harness: created.harness,
-		canonicalSession,
-		canonicalStorage,
+	const created = await createAgentSession({
+		cwd: tempDir,
+		agentDir: tempDir,
+		model: TEST_MODEL,
+		modelRuntime,
 		sessionManager,
 		settingsManager: SettingsManager.create(tempDir, tempDir),
-		cwd: tempDir,
 		resourceLoader: testResourceLoader(),
-		modelRuntime,
-		workerSandboxProvider: provider,
+		noTools: "all",
+		trustedWorkerSandbox: composition,
 	});
-	return { session: new AgentSession(delegate), provider };
+	return { session: created.session, provider: composition.provider };
 }
 
 async function createProductionRuntimeHarness(): Promise<{
@@ -425,7 +433,7 @@ describe("RpcHostController Worker management", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("advertises additive commands and defaults to no Worker authority", async () => {
+	it("omits Worker capabilities when no registry is available", async () => {
 		const harness = await createHarness();
 		try {
 			expect(harness.runtimeHost.session.getWorkerRegistry()).toBeUndefined();
@@ -438,18 +446,18 @@ describe("RpcHostController Worker management", () => {
 			expect(initialized).toMatchObject({
 				command: "initialize",
 				success: true,
-				data: { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] },
 			});
-			expect(await harness.controller.dispatch({ type: "worker.list" })).toEqual({
-				id: undefined,
-				type: "response",
-				command: "worker.list",
-				success: true,
-				data: { workers: [], truncated: false },
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error("Expected initialize response");
+			}
+			expect(initialized.data).not.toHaveProperty("workerCommands");
+			expect(await harness.controller.dispatch({ type: "worker.list" })).toMatchObject({
+				success: false,
+				error: { code: "worker_unavailable" },
 			});
 			expect(await harness.controller.dispatch({ type: "worker.get", workerId: "missing" })).toMatchObject({
 				success: false,
-				error: { code: "worker_not_found" },
+				error: { code: "worker_unavailable" },
 			});
 			expect(await harness.controller.dispatch({ type: "worker.reclaim", workerId: "missing" })).toMatchObject({
 				success: false,

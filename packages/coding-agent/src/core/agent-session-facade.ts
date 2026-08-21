@@ -176,7 +176,6 @@ export interface CanonicalAgentSessionOptions {
 	mcpAuthProvider?: AgentSessionConfig["mcpAuthProvider"];
 	mcpAuthManagerOptions?: AgentSessionConfig["mcpAuthManagerOptions"];
 	sandboxProviders?: AgentSessionConfig["sandboxProviders"];
-	workerSandboxProvider?: WorkerSandboxProviderV1;
 	policyProfile?: string;
 	externalAgentRegistry?: AgentSessionConfig["externalAgentRegistry"];
 	taskCredentialProvider?: AgentSessionConfig["taskCredentialProvider"];
@@ -185,6 +184,16 @@ export interface CanonicalAgentSessionOptions {
 	noTools?: "all" | "builtin";
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
+}
+
+const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
+
+interface InternalAgentSessionConfig extends AgentSessionConfig {
+	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
+}
+
+interface InternalCanonicalAgentSessionOptions extends CanonicalAgentSessionOptions {
+	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
 }
 
 interface CanonicalAgentCompatibility extends Omit<Agent, "state"> {
@@ -253,7 +262,7 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 	};
 }
 
-function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
+function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): InternalCanonicalAgentSessionOptions {
 	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
 	const canonicalSession = new Session(canonicalStorage);
 	const legacyAgent = options.agent;
@@ -376,6 +385,9 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions: options.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
+		...(options[internalWorkerSandboxProvider] === undefined
+			? {}
+			: { [internalWorkerSandboxProvider]: options[internalWorkerSandboxProvider] }),
 		policyProfile: options.policyProfile,
 		externalAgentRegistry: options.externalAgentRegistry,
 		taskCredentialProvider: options.taskCredentialProvider,
@@ -581,7 +593,7 @@ export class CanonicalAgentSessionServices {
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
 	constructor(options: AgentSessionConfig);
 	constructor(options: CanonicalAgentSessionOptions | AgentSessionConfig) {
-		const canonical = "harness" in options && "canonicalSession" in options
+		const canonical: InternalCanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
 			? options
 			: createCanonicalOptionsFromLegacy(options);
 		const canonicalStorage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
@@ -631,7 +643,7 @@ export class CanonicalAgentSessionServices {
 			mcpAuthProvider: canonical.mcpAuthProvider,
 			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
 			sandboxProviders: canonical.sandboxProviders,
-			workerSandboxProvider: canonical.workerSandboxProvider,
+			workerSandboxProvider: canonical[internalWorkerSandboxProvider],
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: canonical.externalAgentRegistry,
 			taskCredentialProvider: canonical.taskCredentialProvider,
@@ -3726,4 +3738,17 @@ export function createAgentSessionDelegate(options: CanonicalAgentSessionOptions
  */
 export function createLegacyAgentSession(options: AgentSessionConfig): AgentSession {
 	return new AgentSession(options);
+}
+
+/** @internal SDK-only bridge for the branded Worker composition. */
+export function createAgentSessionWithTrustedWorkerSandboxProvider(
+	options: AgentSessionConfig,
+	workerSandboxProvider: WorkerSandboxProviderV1 | undefined,
+): AgentSession {
+	if (workerSandboxProvider === undefined) return new AgentSession(options);
+	const internalOptions: InternalAgentSessionConfig = {
+		...options,
+		[internalWorkerSandboxProvider]: workerSandboxProvider,
+	};
+	return new AgentSession(internalOptions);
 }

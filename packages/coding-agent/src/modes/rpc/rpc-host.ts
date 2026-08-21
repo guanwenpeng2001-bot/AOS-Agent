@@ -4106,6 +4106,13 @@ export class RpcHostController {
 						hostInitialized = true;
 						rebuildAutomationStores();
 					}
+					const workerRegistry = (() => {
+						try {
+							return hostController.workerRegistry?.(session);
+						} catch {
+							return undefined;
+						}
+					})();
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
@@ -4135,7 +4142,7 @@ export class RpcHostController {
 							"task.credential.revoke",
 							"task.credential.settle",
 						],
-						workerCommands: ["worker.get", "worker.list", "worker.reclaim"],
+						...(workerRegistry === undefined ? {} : { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
@@ -4165,7 +4172,7 @@ export class RpcHostController {
 					} catch {
 						return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					}
-					if (registry === undefined) return rpcWorkerError(id, "worker.get", "worker_not_found");
+					if (registry === undefined) return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					let record: WorkerRecordV1 | undefined;
 					try {
 						record = registry.getWorkerRecord(command.workerId);
@@ -4210,13 +4217,7 @@ export class RpcHostController {
 						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
 					if (registry === undefined) {
-						return {
-							id,
-							type: "response",
-							command: "worker.list",
-							success: true,
-							data: { workers: [], truncated: false } satisfies WorkerListData,
-						};
+						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
 					let records: readonly WorkerRecordV1[];
 					try {

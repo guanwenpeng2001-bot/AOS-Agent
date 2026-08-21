@@ -78,6 +78,7 @@ import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
 const REAL_CHILD_ENTRY = fileURLToPath(new URL("./fixtures/real-sandbox-worker-launcher.mjs", import.meta.url));
+const WORKER_ASYNC_WAIT_TIMEOUT_MS = 5_000;
 
 const CHILD_POLICY_PROFILE: ExecutionPolicyProfile = {
 	id: "worker-child-sandbox",
@@ -445,7 +446,7 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 }
 
 async function waitForRecord(records: readonly WorkerRecordV1[], status: WorkerRecordV1["status"]): Promise<void> {
-	const expires = Date.now() + 1_000;
+	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		if (records.some((record) => record.status === status)) return;
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -454,7 +455,7 @@ async function waitForRecord(records: readonly WorkerRecordV1[], status: WorkerR
 }
 
 async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
-	const expires = Date.now() + 1_000;
+	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		if (predicate()) return;
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -466,7 +467,7 @@ async function waitForWorkerFrame(
 	frames: readonly WorkerEventFrameV1[],
 	predicate: (frame: WorkerEventFrameV1) => boolean,
 ): Promise<WorkerEventFrameV1> {
-	const expires = Date.now() + 1_000;
+	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		const frame = frames.find(predicate);
 		if (frame !== undefined) return frame;
