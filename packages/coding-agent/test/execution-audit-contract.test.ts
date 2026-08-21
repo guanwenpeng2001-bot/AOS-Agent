@@ -1724,6 +1724,41 @@ describe("execution audit Worker source contract", () => {
 		}
 	});
 
+	it("rejects newly introduced or advanced heartbeats before the prior lifecycle transition", () => {
+		const prefixes = [
+			validWorkerEntries().slice(0, 5),
+			[
+				...validWorkerEntries().slice(0, 5),
+				workerLifecycleEntry("worker-running-heartbeat-advanced", WORKER_TIMES.running, "running", 3, {
+					operationId: "operation-1",
+					lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
+				}),
+				workerOperationEntry("worker-started-heartbeat-advanced", WORKER_TIMES.running, "started", 3),
+			],
+		];
+		const snapshots = [
+			workerLifecycleEntry("worker-heartbeat-introduced-too-early", WORKER_TIMES.completed, "completed", 4, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+				lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
+			}),
+			workerLifecycleEntry("worker-heartbeat-advanced-too-early", WORKER_TIMES.completed, "completed", 4, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+				lastHeartbeatAt: "2026-08-16T00:00:01.600Z",
+			}),
+		];
+		for (let index = 0; index < snapshots.length; index++) {
+			const snapshot = snapshots[index]!;
+			const folded = new ExecutionAuditAdapter(workerSession([...prefixes[index]!, snapshot])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === snapshot.id), snapshot.id).toBe(false);
+			expect(folded.warnings, snapshot.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: snapshot.id,
+			}));
+		}
+	});
+
 	it("rejects tampered reclaim snapshots and lifecycle transition correlations", () => {
 		const scenarios = [
 			workerLifecycleEntry("worker-reclaim-repeats-receipt", WORKER_TIMES.reclaiming, "reclaiming", 5, {
@@ -1787,6 +1822,103 @@ describe("execution audit Worker source contract", () => {
 			expect(folded.warnings, transition.id).toContainEqual(expect.objectContaining({
 				code: "malformed_source",
 				sourceEntryId: transition.id,
+			}));
+		}
+	});
+
+	it("accepts legal no-operation lifecycle paths without inventing operation facts", () => {
+		const scenarios = [
+			{
+				entries: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-failed", WORKER_TIMES.starting, "starting", 1),
+					workerLifecycleEntry("worker-failed-without-operation", WORKER_TIMES.completed, "failed", 2, {
+						recordReceiptId: null,
+						readyAt: undefined,
+					}),
+				],
+				statuses: ["starting", "failed"],
+			},
+			{
+				entries: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-lost", WORKER_TIMES.starting, "starting", 1),
+					workerLifecycleEntry("worker-ready-for-lost", WORKER_TIMES.ready, "ready", 2),
+					workerLifecycleEntry("worker-lost-without-operation", WORKER_TIMES.completed, "lost", 3, { recordReceiptId: null }),
+				],
+				statuses: ["starting", "ready", "lost"],
+			},
+			{
+				entries: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-for-cancel", WORKER_TIMES.starting, "starting", 1),
+					workerLifecycleEntry("worker-ready-for-cancel", WORKER_TIMES.ready, "ready", 2),
+					workerLifecycleEntry("worker-cancelling-without-operation", WORKER_TIMES.cancelling, "cancelling", 3, {
+						activeOperationId: undefined,
+					}),
+					workerLifecycleEntry("worker-cancelled-without-operation", WORKER_TIMES.completed, "cancelled", 4, {
+						receiptId: "receipt-1",
+					}),
+				],
+				statuses: ["starting", "ready", "cancelling", "cancelled"],
+			},
+		] as const;
+		for (const scenario of scenarios) {
+			const folded = new ExecutionAuditAdapter(workerSession(scenario.entries)).fold();
+			expect(folded.warnings).toEqual([]);
+			const lifecycleEvents = folded.events.filter((event) => event.type === "worker.lifecycle");
+			expect(lifecycleEvents.map((event) => event.summary.status)).toEqual(scenario.statuses);
+			for (const event of lifecycleEvents) {
+				expect(event.summary).not.toHaveProperty("operationId");
+				if (["failed", "lost", "cancelling", "cancelled"].includes(event.summary.status)) {
+					expect(event.summary).not.toHaveProperty("activeOperationId");
+				}
+			}
+		}
+	});
+
+	it("rejects supplied operation IDs when the prior lifecycle has no active operation", () => {
+		const scenarios = [
+			{
+				prefix: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-for-failed-id", WORKER_TIMES.starting, "starting", 1),
+				],
+				entry: workerLifecycleEntry("worker-failed-with-supplied-id", WORKER_TIMES.completed, "failed", 2, {
+					operationId: "operation-1",
+					recordReceiptId: null,
+					readyAt: undefined,
+				}),
+			},
+			{
+				prefix: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-for-lost-id", WORKER_TIMES.starting, "starting", 1),
+					workerLifecycleEntry("worker-ready-for-lost-id", WORKER_TIMES.ready, "ready", 2),
+				],
+				entry: workerLifecycleEntry("worker-lost-with-supplied-id", WORKER_TIMES.completed, "lost", 3, {
+					operationId: "operation-1",
+					recordReceiptId: null,
+				}),
+			},
+			{
+				prefix: [
+					...workerRunEntries(),
+					workerLifecycleEntry("worker-starting-for-cancel-id", WORKER_TIMES.starting, "starting", 1),
+					workerLifecycleEntry("worker-ready-for-cancel-id", WORKER_TIMES.ready, "ready", 2),
+				],
+				entry: workerLifecycleEntry("worker-cancelling-with-supplied-id", WORKER_TIMES.cancelling, "cancelling", 3, {
+					operationId: "operation-1",
+					activeOperationId: undefined,
+				}),
+			},
+		];
+		for (const scenario of scenarios) {
+			const folded = new ExecutionAuditAdapter(workerSession([...scenario.prefix, scenario.entry])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === scenario.entry.id), scenario.entry.id).toBe(false);
+			expect(folded.warnings, scenario.entry.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: scenario.entry.id,
 			}));
 		}
 	});

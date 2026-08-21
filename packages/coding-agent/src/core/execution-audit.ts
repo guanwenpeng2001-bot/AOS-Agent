@@ -2346,7 +2346,7 @@ function parseWorkerFact(
 		const transitionOperationValid = record?.status === "running"
 			? operationId !== undefined && operationId === record.activeOperationId
 			: record?.status === "cancelling" || isExecutionTerminal
-				? operationId !== undefined && operationId === previous?.activeOperationId
+				? operationId === previous?.activeOperationId
 				: operationId === undefined;
 		const transitionReceiptValid = record?.status === "completed" || record?.status === "cancelled"
 			? transitionReceiptId !== undefined
@@ -2356,9 +2356,15 @@ function parseWorkerFact(
 		const heartbeatValid = record === undefined
 			? false
 			: previous === undefined
-				? record.lastHeartbeatAt === undefined
-				: previous.lastHeartbeatAt === undefined ||
-					(record.lastHeartbeatAt !== undefined && record.lastHeartbeatAt >= previous.lastHeartbeatAt);
+				? record.lastHeartbeatAt === undefined ||
+					(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
+				: previous.lastHeartbeatAt === undefined
+					? record.lastHeartbeatAt === undefined ||
+						(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
+					: record.lastHeartbeatAt !== undefined &&
+						record.lastHeartbeatAt >= previous.lastHeartbeatAt &&
+						(record.lastHeartbeatAt === previous.lastHeartbeatAt ||
+							previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp);
 		if (
 			record === undefined ||
 			(operationId !== undefined && !workerString(operationId)) ||
