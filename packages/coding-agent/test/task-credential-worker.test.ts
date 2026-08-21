@@ -226,6 +226,9 @@ describe("Task Credential Worker target wiring", () => {
 	});
 
 	it("fails closed and quarantines a missing or rejecting Worker target", () => {
+		const unconfigured = makeService(new WorkerTarget());
+		expect(unconfigured.service.issueForTaskRun(issueContext())).toEqual({ ok: false, code: "task_credential_target_unavailable" });
+
 		const missingWorker = new WorkerTarget();
 		const missing = makeService(missingWorker, { workerTargets: new Map([["worker_other", missingWorker]]) });
 		const unavailable = missing.service.issueForTaskRun(issueContext());
@@ -237,6 +240,61 @@ describe("Task Credential Worker target wiring", () => {
 		const failed = rejecting.service.issueForTaskRun(issueContext(rejectingWorker));
 		expect(failed).toEqual({ ok: false, code: "task_credential_target_unavailable" });
 		expect(rejecting.service.isTargetQuarantined("worker_1")).toBe(true);
+		expect(rejecting.service.issueForTaskRun(issueContext(new WorkerTarget()))).toEqual({ ok: false, code: "task_credential_target_unavailable" });
+	});
+
+	it("continues authoritative revoke and settlement after Worker revoke failure", () => {
+		const worker = new WorkerTarget();
+		worker.revokeResult = false;
+		const harness = makeService(worker);
+		const issued = harness.service.issueForTaskRun(issueContext(worker));
+		expect(issued.ok).toBe(true);
+		if (!issued.ok) return;
+
+		const command = harness.service.revoke({ leaseId: issued.leaseId, clientRequestId: "revoke_command", gate: { status: "approved", stageRevision: 1 }, nodeAttached: true });
+		expect(command.ok).toBe(true);
+		expect(harness.service.isTargetQuarantined("worker_1")).toBe(true);
+		const settled = harness.service.settle({ leaseId: issued.leaseId, clientRequestId: "settle_command" });
+		expect(settled.ok).toBe(true);
+		expect(harness.service.get(issued.leaseId)?.status).toBe("settled");
+
+		const lifecycleWorker = new WorkerTarget();
+		lifecycleWorker.revokeResult = false;
+		const lifecycle = makeService(lifecycleWorker);
+		const lifecycleIssued = lifecycle.service.issueForTaskRun(issueContext(lifecycleWorker));
+		expect(lifecycleIssued.ok).toBe(true);
+		if (!lifecycleIssued.ok) return;
+		const lifecycleOutcome = lifecycle.service.onRunTerminal({ runId: "run_worker", status: "completed" });
+		expect(lifecycleOutcome[0]).toMatchObject({ action: "revoked", settled: true });
+
+		const cancelWorker = new WorkerTarget();
+		cancelWorker.revokeResult = false;
+		const cancel = makeService(cancelWorker);
+		const cancelIssued = cancel.service.issueForTaskRun(issueContext(cancelWorker));
+		expect(cancelIssued.ok).toBe(true);
+		if (!cancelIssued.ok) return;
+		const cancelOutcome = cancel.service.onRunCancelRequested("run_worker");
+		expect(cancelOutcome[0]).toMatchObject({ action: "revoked", settled: false });
+		expect(cancel.service.onRunTerminal({ runId: "run_worker", status: "cancelled" })[0]).toMatchObject({ settled: true });
+	});
+
+	it("cleans up provider state after project and renew Worker failures", () => {
+		const projectWorker = new WorkerTarget();
+		projectWorker.projectResult = false;
+		const project = makeService(projectWorker);
+		expect(project.service.issueForTaskRun(issueContext(projectWorker))).toEqual({ ok: false, code: "task_credential_target_unavailable" });
+		expect(project.service.getByRunId("run_worker")[0]?.status).toBe("revoked");
+
+		const renewWorker = new WorkerTarget();
+		const renew = makeService(renewWorker);
+		const issued = renew.service.issueForTaskRun(issueContext(renewWorker));
+		expect(issued.ok).toBe(true);
+		if (!issued.ok) return;
+		renewWorker.renewResult = false;
+		renew.clock.nowMs += 10_000;
+		const result = renew.service.renew({ leaseId: issued.leaseId, grantId: issued.grant.grantId, bindingId: issued.bindingId, heartbeatSequence: 1, requestedTtlMs: 60_000, clientRequestId: "renew_worker", gate: { status: "approved", stageRevision: 1 }, nodeAttached: true });
+		expect(result).toEqual({ ok: false, code: "task_credential_target_unavailable" });
+		expect(renew.service.get(issued.leaseId)?.status).toBe("settled");
 	});
 
 	it("does not revive an old Worker target after reload", () => {
@@ -252,10 +310,11 @@ describe("Task Credential Worker target wiring", () => {
 	});
 
 	it("rejects malformed Worker target results without accepting material-bearing input", () => {
+		const malformedSuccess = (): { readonly ok: true; readonly extra: true } => ({ ok: true, extra: true });
 		const worker: TaskCredentialWorkerTarget = {
-			project: () => ({ ok: false }),
-			renew: () => ({ ok: false }),
-			revoke: () => ({ ok: false }),
+			project: malformedSuccess,
+			renew: malformedSuccess,
+			revoke: malformedSuccess,
 		};
 		const { service } = makeService(new WorkerTarget());
 		const failed = service.issueForTaskRun(issueContext(worker));

@@ -683,6 +683,9 @@ export class TaskCredentialService {
 		if (context.targetId !== undefined && this.quarantinedTargets.has(context.targetId)) {
 			return { ok: false, code: "task_credential_binding_invalid" };
 		}
+		if (context.workerId !== undefined && this.quarantinedTargets.has(context.workerId)) {
+			return { ok: false, code: "task_credential_target_unavailable" };
+		}
 		let normalizedScopes: ReadonlyArray<TaskCredentialScope>;
 		try {
 			normalizedScopes = normalizeTaskCredentialScopes(context.scopes);
@@ -986,7 +989,6 @@ export class TaskCredentialService {
 		const workerTarget = this.workerTargetByLeaseId.get(input.leaseId);
 		if (grant !== undefined && workerTarget !== undefined && !this.workerRevoke(grant, input.clientRequestId, workerTarget)) {
 			this.quarantineWorker(input.leaseId);
-			return { ok: false, code: "task_credential_target_unavailable" };
 		}
 		try {
 			const result = this.store.revoke({
@@ -1343,19 +1345,9 @@ export class TaskCredentialService {
 			outcomes.push({ leaseId, grantId, action: "noop", settled: false, reasonCode });
 			return outcomes;
 		}
-		const targetId = grant.targetId;
 		const workerTarget = this.workerTargetByLeaseId.get(leaseId);
 		if (workerTarget !== undefined && !this.workerRevoke(grant, lifecycleRequestId(leaseId, reasonCode), workerTarget)) {
 			this.quarantineWorker(leaseId);
-			outcomes.push({
-				leaseId,
-				grantId,
-				action: "quarantined",
-				settled: false,
-				reasonCode,
-				...(targetId === undefined ? {} : { quarantinedTarget: targetId }),
-			});
-			return outcomes;
 		}
 		// Active / renewing: revoke, then settle on a confirmed outcome.
 		let confirmed = false;
@@ -1401,11 +1393,14 @@ export class TaskCredentialService {
 	): TaskCredentialWorkerTarget | null | undefined {
 		if (workerId === undefined) return requested === undefined ? undefined : null;
 		if (requested !== undefined) return requested;
-		const configured = this.workerTargets !== undefined || this.defaultWorkerTarget !== undefined;
 		const indexed = this.workerTargets?.get(workerId);
 		if (indexed !== undefined) return indexed;
 		if (this.defaultWorkerTarget !== undefined) return this.defaultWorkerTarget;
-		return configured ? null : undefined;
+		return null;
+	}
+
+	private isWorkerSuccessResult(value: unknown): boolean {
+		return isRecord(value) && Object.keys(value).length === 1 && value.ok === true;
 	}
 
 	private workerProject(grant: TaskCredentialGrant, clientRequestId: string, target: TaskCredentialWorkerTarget): boolean {
@@ -1413,7 +1408,7 @@ export class TaskCredentialService {
 		if (this.workerRequestKeys.has(key)) return true;
 		try {
 			const result = target.project({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, scopeDigest: grant.scopeDigest, expiresAt: grant.expiresAt, clientRequestId });
-			if (!isRecord(result) || result.ok !== true) return false;
+			if (!this.isWorkerSuccessResult(result)) return false;
 			this.workerRequestKeys.add(key);
 			return true;
 		} catch {
@@ -1426,7 +1421,7 @@ export class TaskCredentialService {
 		if (this.workerRequestKeys.has(key)) return true;
 		try {
 			const result = target.renew({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, scopeDigest: grant.scopeDigest, expiresAt: grant.expiresAt, clientRequestId });
-			if (!isRecord(result) || result.ok !== true) return false;
+			if (!this.isWorkerSuccessResult(result)) return false;
 			this.workerRequestKeys.add(key);
 			return true;
 		} catch {
@@ -1439,7 +1434,7 @@ export class TaskCredentialService {
 		if (this.workerRequestKeys.has(key)) return true;
 		try {
 			const result = target.revoke({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, clientRequestId });
-			if (!isRecord(result) || result.ok !== true) return false;
+			if (!this.isWorkerSuccessResult(result)) return false;
 			this.workerRequestKeys.add(key);
 			return true;
 		} catch {
@@ -1490,8 +1485,6 @@ export class TaskCredentialService {
 		const workerTarget = this.workerTargetByLeaseId.get(leaseId);
 		if (workerTarget !== undefined && !this.workerRevoke(grant, lifecycleRequestId(leaseId, "run_cancel_requested"), workerTarget)) {
 			this.quarantineWorker(leaseId);
-			outcomes.push({ leaseId, grantId, action: "quarantined", settled: false, reasonCode: "run_cancelled" });
-			return outcomes;
 		}
 		try {
 			const result = this.store.revoke({
