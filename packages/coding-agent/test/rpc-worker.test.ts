@@ -303,7 +303,6 @@ async function createProductionRuntimeHarness(): Promise<{
 	runtimeHost: AgentSessionRuntime;
 	initial: Awaited<ReturnType<typeof createCanonicalWorkerSession>>;
 	replacement: Awaited<ReturnType<typeof createCanonicalWorkerSession>>;
-	replaceSession: () => Promise<void>;
 	cleanup: () => Promise<void>;
 }> {
 	const tempDir = join(tmpdir(), `aos-rpc-worker-production-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -319,7 +318,10 @@ async function createProductionRuntimeHarness(): Promise<{
 		get session(): AgentSession {
 			return currentSession;
 		},
-		newSession: vi.fn(async () => ({ cancelled: true })),
+		newSession: vi.fn(async () => {
+			await replaceSession();
+			return { cancelled: false };
+		}),
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
@@ -331,7 +333,6 @@ async function createProductionRuntimeHarness(): Promise<{
 		runtimeHost,
 		initial,
 		replacement,
-		replaceSession,
 		cleanup: async () => {
 			await Promise.all([initial.session.dispose(), replacement.session.dispose()]);
 			if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
@@ -524,21 +525,25 @@ describe("RpcHostController Worker management", () => {
 			});
 			peer = await connectTcpPeer({ transport: "tcp", host: "127.0.0.1", port });
 
-			await writeTcpRecord(peer.socket, { id: "initialize", type: "initialize", protocolVersion: 1 });
-			await waitForResponse(peer.records, "initialize");
-			await writeTcpRecord(peer.socket, { id: "initial-list", type: "worker.list" });
-			expect(await waitForResponse(peer.records, "initial-list")).toMatchObject({
-				success: true,
-				data: { workers: [{ workerId: "worker-initial" }] },
-			});
-
-			await harness.replaceSession();
+			await writeTcpRecord(peer.socket, { id: "replace", type: "new_session" });
+			expect(await waitForResponse(peer.records, "replace")).toMatchObject({ success: true });
 			expect(harness.runtimeHost.session).toBe(harness.replacement.session);
 
+			await writeTcpRecord(peer.socket, { id: "initialize", type: "initialize", protocolVersion: 1 });
+			await waitForResponse(peer.records, "initialize");
 			await writeTcpRecord(peer.socket, { id: "replacement-list", type: "worker.list" });
 			expect(await waitForResponse(peer.records, "replacement-list")).toMatchObject({
 				success: true,
 				data: { workers: [{ workerId: "worker-replacement" }] },
+			});
+			await writeTcpRecord(peer.socket, {
+				id: "replacement-worker",
+				type: "worker.get",
+				workerId: "worker-replacement",
+			});
+			expect(await waitForResponse(peer.records, "replacement-worker")).toMatchObject({
+				success: true,
+				data: { worker: { workerId: "worker-replacement" } },
 			});
 			await writeTcpRecord(peer.socket, { id: "old-worker", type: "worker.get", workerId: "worker-initial" });
 			expect(await waitForResponse(peer.records, "old-worker")).toMatchObject({
@@ -546,10 +551,11 @@ describe("RpcHostController Worker management", () => {
 				error: { code: "worker_not_found" },
 			});
 
-			expect(initialList).toHaveBeenCalledTimes(1);
+			expect(harness.runtimeHost.newSession).toHaveBeenCalledTimes(1);
+			expect(initialList).not.toHaveBeenCalled();
 			expect(initialGet).not.toHaveBeenCalled();
 			expect(replacementList).toHaveBeenCalledTimes(1);
-			expect(replacementGet).toHaveBeenCalledTimes(1);
+			expect(replacementGet).toHaveBeenCalledTimes(2);
 			expect(rpcIo.outputLines).toEqual([]);
 		} finally {
 			peer?.socket.destroy();
