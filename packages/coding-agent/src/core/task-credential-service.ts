@@ -77,6 +77,7 @@ import {
 	type TaskExecutionBinding,
 } from "./task-credential-lease.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
+import type { SafeLeaseProjectionV1, SafeLeaseReferenceV1 } from "./worker-protocol.ts";
 import {
 	TaskCredentialStore,
 	type TaskCredentialSession,
@@ -119,6 +120,10 @@ export interface TaskCredentialServiceOptions {
 	readonly session: TaskCredentialSession;
 	/** Credential provider owning material; absent fails closed. */
 	readonly provider?: TaskCredentialProvider;
+	/** Optional safe-reference Worker targets, indexed by Worker identity. */
+	readonly workerTargets?: ReadonlyMap<string, TaskCredentialWorkerTarget>;
+	/** Optional default safe-reference Worker target for this Session. */
+	readonly workerTarget?: TaskCredentialWorkerTarget;
 	/**
 	 * Pure T3 preflight resolver supplied by the Session; absent fails every
 	 * issue / renew / revoke command closed (no operation can be proven
@@ -134,6 +139,22 @@ export interface TaskCredentialServiceOptions {
 	/** Server timestamp source; must return a canonical UTC ISO timestamp. */
 	readonly now?: () => string;
 	readonly diagnostics?: (warning: TaskCredentialWarning) => void;
+}
+
+/** Material-free result returned by a Worker credential target. */
+export interface TaskCredentialWorkerTargetResult {
+	readonly ok: boolean;
+}
+
+/**
+ * Host-side bridge to one trusted Worker target. The target receives only the
+ * protocol's safe lease references; it never receives scopes, bindings,
+ * provider receipts, or credential material.
+ */
+export interface TaskCredentialWorkerTarget {
+	project(lease: SafeLeaseProjectionV1): TaskCredentialWorkerTargetResult;
+	renew(lease: SafeLeaseProjectionV1): TaskCredentialWorkerTargetResult;
+	revoke(lease: SafeLeaseReferenceV1): TaskCredentialWorkerTargetResult;
 }
 
 /**
@@ -201,6 +222,8 @@ export interface TaskCredentialRunIssueContext {
 	readonly targetId?: string;
 	readonly targetKind?: string;
 	readonly workerId?: string;
+	/** Optional transient Worker bridge; never serialized into the binding. */
+	readonly workerTarget?: TaskCredentialWorkerTarget;
 	readonly scopes: ReadonlyArray<TaskCredentialScope>;
 	readonly requestedTtlMs: number;
 	readonly clientRequestId: string;
@@ -360,6 +383,11 @@ function isTaskCredentialStatus(value: unknown): value is TaskCredentialStatus {
 	return TASK_CREDENTIAL_STATUS.includes(value as TaskCredentialStatus);
 }
 
+function isWorkerTarget(value: unknown): value is TaskCredentialWorkerTarget {
+	if (!isRecord(value)) return false;
+	return typeof value.project === "function" && typeof value.renew === "function" && typeof value.revoke === "function";
+}
+
 /**
  * Deterministic, collision-safe request id for one lease transition. The same
  * lease + reason always derives the same id, so a replayed signal replays the
@@ -479,6 +507,12 @@ export class TaskCredentialService {
 	private readonly quarantinedTargets = new Set<string>();
 	/** Issue-time worker correlation (grants carry no worker id); lost on restart. */
 	private readonly workerByLeaseId = new Map<string, string>();
+	/** Issue-time Worker target bridge; lost on restart so old targets cannot revive. */
+	private readonly workerTargetByLeaseId = new Map<string, TaskCredentialWorkerTarget>();
+	/** Per-request fence for safe Worker projection/revoke calls. */
+	private readonly workerRequestKeys = new Set<string>();
+	private readonly workerTargets: ReadonlyMap<string, TaskCredentialWorkerTarget> | undefined;
+	private readonly defaultWorkerTarget: TaskCredentialWorkerTarget | undefined;
 	/**
 	 * Issue-time execution facts per live lease: the frozen binding and the
 	 * normalized scope allowlist with its digest/count. In-memory only, never
@@ -513,6 +547,8 @@ export class TaskCredentialService {
 				new Set([
 					"session",
 					"provider",
+					"workerTargets",
+					"workerTarget",
 					"preflight",
 					"policyMaxTtlMs",
 					"taskDeadlineAt",
@@ -527,6 +563,19 @@ export class TaskCredentialService {
 		if (!isPositiveSafeInteger(options.policyMaxTtlMs)) {
 			throw new TaskCredentialError("task_credential_invalid");
 		}
+		if (options.workerTarget !== undefined && !isWorkerTarget(options.workerTarget)) {
+			throw new TaskCredentialError("task_credential_invalid");
+		}
+		if (options.workerTargets !== undefined) {
+			if (typeof options.workerTargets.get !== "function" || typeof options.workerTargets[Symbol.iterator] !== "function") {
+				throw new TaskCredentialError("task_credential_invalid");
+			}
+			for (const [workerId, target] of options.workerTargets) {
+				if (!isTaskCredentialIdentifier(workerId) || !isWorkerTarget(target)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+			}
+		}
 		if (options.taskDeadlineAt !== undefined && !isTaskCredentialIsoTimestamp(options.taskDeadlineAt)) {
 			throw new TaskCredentialError("task_credential_invalid");
 		}
@@ -535,6 +584,8 @@ export class TaskCredentialService {
 		}
 		this.sessionId = options.session.getSessionId();
 		this.preflightResolver = options.preflight;
+		this.workerTargets = options.workerTargets;
+		this.defaultWorkerTarget = options.workerTarget;
 		this.policyMaxTtlMs = options.policyMaxTtlMs;
 		this.taskDeadlineAtMs = options.taskDeadlineAt === undefined ? undefined : Date.parse(options.taskDeadlineAt);
 		this.runDeadlineAtMs = options.runDeadlineAt === undefined ? undefined : Date.parse(options.runDeadlineAt);
@@ -639,6 +690,8 @@ export class TaskCredentialService {
 			return { ok: false, code: "task_credential_invalid" };
 		}
 		const scopeDigest = calculateScopeDigest(normalizedScopes);
+		const workerTarget = this.resolveWorkerTarget(context.workerId, context.workerTarget);
+		if (workerTarget === null) return { ok: false, code: "task_credential_target_unavailable" };
 		const bindingId = bindingIdForContext(context, scopeDigest, normalizedScopes.length);
 		const leaseId = leaseIdForContext(context, scopeDigest, normalizedScopes.length);
 		const grantId = grantIdForContext(leaseId, context.clientRequestId);
@@ -702,8 +755,14 @@ export class TaskCredentialService {
 		});
 		if (context.workerId !== undefined) {
 			this.workerByLeaseId.set(issued.grant.leaseId, context.workerId);
+			if (workerTarget !== undefined) this.workerTargetByLeaseId.set(issued.grant.leaseId, workerTarget);
 		}
 		try {
+			if (!issued.idempotent && workerTarget !== undefined && !this.workerProject(issued.grant, context.clientRequestId, workerTarget)) {
+				this.quarantineWorker(issued.grant.leaseId);
+				this.revokeAndSettleLease(issued.grant.leaseId, "run_interrupted");
+				return { ok: false, code: "task_credential_target_unavailable" };
+			}
 			const projected = this.store.project({
 				leaseId: issued.grant.leaseId,
 				...(context.targetId === undefined ? {} : { targetId: context.targetId }),
@@ -715,6 +774,7 @@ export class TaskCredentialService {
 			if (receipt.status !== "succeeded") {
 				// A confirmed `failed` delivery never leaves active material either.
 				this.revokeAndSettleLease(issued.grant.leaseId, "run_interrupted");
+				this.quarantineWorker(issued.grant.leaseId);
 				if (context.targetId !== undefined) this.quarantinedTargets.add(context.targetId);
 				return { ok: false, code: "task_credential_delivery_failed" };
 			}
@@ -731,6 +791,7 @@ export class TaskCredentialService {
 			// quarantine the target (fail closed; never leave active material
 			// without a confirmed delivery).
 			this.revokeAndSettleLease(issued.grant.leaseId, "run_interrupted");
+			this.quarantineWorker(issued.grant.leaseId);
 			if (context.targetId !== undefined) this.quarantinedTargets.add(context.targetId);
 			return { ok: false, code: this.mapErrorCode(error) };
 		}
@@ -865,6 +926,12 @@ export class TaskCredentialService {
 				ttlBounds: this.ttlBounds(),
 				clientRequestId: input.clientRequestId,
 			});
+			const workerTarget = this.workerTargetByLeaseId.get(input.leaseId);
+			if (workerTarget !== undefined && !this.workerRenew(result.grant, input.clientRequestId, workerTarget)) {
+				this.quarantineWorker(input.leaseId);
+				this.revokeAndSettleLease(input.leaseId, "run_interrupted");
+				return { ok: false, code: "task_credential_target_unavailable" };
+			}
 			return {
 				ok: true,
 				grant: result.grant,
@@ -915,6 +982,11 @@ export class TaskCredentialService {
 				this.leaseTtlMs(grant),
 			);
 			if (!revokePreflight.allowed) return { ok: false, code: revokePreflight.error.code };
+		}
+		const workerTarget = this.workerTargetByLeaseId.get(input.leaseId);
+		if (grant !== undefined && workerTarget !== undefined && !this.workerRevoke(grant, input.clientRequestId, workerTarget)) {
+			this.quarantineWorker(input.leaseId);
+			return { ok: false, code: "task_credential_target_unavailable" };
 		}
 		try {
 			const result = this.store.revoke({
@@ -1026,6 +1098,7 @@ export class TaskCredentialService {
 					"targetId",
 					"targetKind",
 					"workerId",
+					"workerTarget",
 					"scopes",
 					"requestedTtlMs",
 					"clientRequestId",
@@ -1049,6 +1122,7 @@ export class TaskCredentialService {
 			isOptionalIdentifier(context.targetId) &&
 			isOptionalIdentifier(context.targetKind) &&
 			isOptionalIdentifier(context.workerId) &&
+			(context.workerTarget === undefined || isWorkerTarget(context.workerTarget)) &&
 			isScopeList(context.scopes) &&
 			isPositiveSafeInteger(context.requestedTtlMs) &&
 			isTaskCredentialIdentifier(context.clientRequestId) &&
@@ -1253,6 +1327,7 @@ export class TaskCredentialService {
 			// Fail closed: an unknown revocation is never reported as settled.
 			const targetId = grant.targetId;
 			if (targetId !== undefined) this.quarantinedTargets.add(targetId);
+			this.quarantineWorker(leaseId);
 			outcomes.push({
 				leaseId,
 				grantId,
@@ -1266,6 +1341,20 @@ export class TaskCredentialService {
 		if (this.store === undefined) {
 			// No provider: the revoke cannot be performed; degrade to a noop.
 			outcomes.push({ leaseId, grantId, action: "noop", settled: false, reasonCode });
+			return outcomes;
+		}
+		const targetId = grant.targetId;
+		const workerTarget = this.workerTargetByLeaseId.get(leaseId);
+		if (workerTarget !== undefined && !this.workerRevoke(grant, lifecycleRequestId(leaseId, reasonCode), workerTarget)) {
+			this.quarantineWorker(leaseId);
+			outcomes.push({
+				leaseId,
+				grantId,
+				action: "quarantined",
+				settled: false,
+				reasonCode,
+				...(targetId === undefined ? {} : { quarantinedTarget: targetId }),
+			});
 			return outcomes;
 		}
 		// Active / renewing: revoke, then settle on a confirmed outcome.
@@ -1305,6 +1394,64 @@ export class TaskCredentialService {
 		return outcomes;
 	}
 
+	/** Resolve a transient Worker target; absence never counts as success. */
+	private resolveWorkerTarget(
+		workerId: string | undefined,
+		requested: TaskCredentialWorkerTarget | undefined,
+	): TaskCredentialWorkerTarget | null | undefined {
+		if (workerId === undefined) return requested === undefined ? undefined : null;
+		if (requested !== undefined) return requested;
+		const configured = this.workerTargets !== undefined || this.defaultWorkerTarget !== undefined;
+		const indexed = this.workerTargets?.get(workerId);
+		if (indexed !== undefined) return indexed;
+		if (this.defaultWorkerTarget !== undefined) return this.defaultWorkerTarget;
+		return configured ? null : undefined;
+	}
+
+	private workerProject(grant: TaskCredentialGrant, clientRequestId: string, target: TaskCredentialWorkerTarget): boolean {
+		const key = `project\u0000${grant.leaseId}\u0000${clientRequestId}`;
+		if (this.workerRequestKeys.has(key)) return true;
+		try {
+			const result = target.project({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, scopeDigest: grant.scopeDigest, expiresAt: grant.expiresAt, clientRequestId });
+			if (!isRecord(result) || result.ok !== true) return false;
+			this.workerRequestKeys.add(key);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private workerRenew(grant: TaskCredentialGrant, clientRequestId: string, target: TaskCredentialWorkerTarget): boolean {
+		const key = `renew\u0000${grant.leaseId}\u0000${clientRequestId}`;
+		if (this.workerRequestKeys.has(key)) return true;
+		try {
+			const result = target.renew({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, scopeDigest: grant.scopeDigest, expiresAt: grant.expiresAt, clientRequestId });
+			if (!isRecord(result) || result.ok !== true) return false;
+			this.workerRequestKeys.add(key);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private workerRevoke(grant: TaskCredentialGrant, clientRequestId: string, target: TaskCredentialWorkerTarget): boolean {
+		const key = `revoke\u0000${grant.leaseId}\u0000${clientRequestId}`;
+		if (this.workerRequestKeys.has(key)) return true;
+		try {
+			const result = target.revoke({ schemaVersion: 1, leaseId: grant.leaseId, grantId: grant.grantId, bindingId: grant.bindingId, clientRequestId });
+			if (!isRecord(result) || result.ok !== true) return false;
+			this.workerRequestKeys.add(key);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private quarantineWorker(leaseId: string): void {
+		const workerId = this.workerByLeaseId.get(leaseId);
+		if (workerId !== undefined) this.quarantinedTargets.add(workerId);
+	}
+
 	/**
 	 * Revoke one lease because the first cancel request of its Run was
 	 * recorded. The revoke is confirmed without settling: the unique terminal
@@ -1325,6 +1472,7 @@ export class TaskCredentialService {
 		}
 		if (grant.status === "revocation_unknown") {
 			if (targetId !== undefined) this.quarantinedTargets.add(targetId);
+			this.quarantineWorker(leaseId);
 			outcomes.push({
 				leaseId,
 				grantId,
@@ -1337,6 +1485,12 @@ export class TaskCredentialService {
 		}
 		if (this.store === undefined) {
 			outcomes.push({ leaseId, grantId, action: "noop", settled: false, reasonCode: "run_cancelled" });
+			return outcomes;
+		}
+		const workerTarget = this.workerTargetByLeaseId.get(leaseId);
+		if (workerTarget !== undefined && !this.workerRevoke(grant, lifecycleRequestId(leaseId, "run_cancel_requested"), workerTarget)) {
+			this.quarantineWorker(leaseId);
+			outcomes.push({ leaseId, grantId, action: "quarantined", settled: false, reasonCode: "run_cancelled" });
 			return outcomes;
 		}
 		try {
