@@ -69,18 +69,31 @@ async function appendImmutableWorkerFact<TPayload>(
 	objectId: string,
 	payload: TPayload,
 	options: Parameters<SessionLedgerV1["appendFact"]>[3],
+	sessionId: string,
 ): Promise<TPayload> {
+	const stableCorrelation = (correlation: object) => Object.fromEntries(Object.entries(correlation).filter(([key, value]) => key !== "revision" && key !== "fencingToken" && value !== undefined));
+	const expectedCorrelation = {
+		sessionId,
+		laneId: "main",
+		...Object.fromEntries(Object.entries(options.correlation).filter(([, value]) => value !== undefined)),
+		revision: 1,
+	};
+	const matchesExpectedFact = (record: Awaited<ReturnType<SessionLedgerV1["get"]>>): record is Extract<NonNullable<typeof record>, { readonly kind: "fact" }> =>
+		record !== undefined && record.kind === "fact" && record.revision === 1 && record.objectId === objectId && record.clientRequestId === options.clientRequestId &&
+		record.correlation.revision === record.revision && typeof record.fencingToken === "string" && record.fencingToken.length > 0 && record.correlation.fencingToken === record.fencingToken &&
+		canonicalFoundationJson(stableCorrelation(record.correlation)) === canonicalFoundationJson(stableCorrelation(expectedCorrelation)) && canonicalFoundationJson(record.payload) === canonicalFoundationJson(payload);
 	const existing = await ledger.get(objectType, objectId);
+	if (matchesExpectedFact(existing)) return existing.payload as TPayload;
 	if (existing !== undefined) {
-		if (existing.kind === "fact" && canonicalFoundationJson(existing.payload) === canonicalFoundationJson(payload)) return existing.payload as TPayload;
 		throw new FoundationError("session_ledger_conflict", `Worker durable fact ${objectType}/${objectId} conflicts`);
 	}
 	try {
 		const appended = await ledger.appendFact(objectType, objectId, payload, options);
+		if (!matchesExpectedFact(appended.record)) throw new FoundationError("session_ledger_conflict", `Worker durable fact ${objectType}/${objectId} was not accepted at revision 1`);
 		return appended.payload;
 	} catch (error) {
 		const raced = await ledger.get(objectType, objectId);
-		if (raced?.kind === "fact" && canonicalFoundationJson(raced.payload) === canonicalFoundationJson(payload)) return raced.payload as TPayload;
+		if (matchesExpectedFact(raced)) return raced.payload as TPayload;
 		throw error;
 	}
 }
@@ -98,6 +111,7 @@ async function persistWorkerToolExecution(
 	if (!checkedReceipt.ok) throw checkedReceipt.error;
 	const conformedReceipt = validateWorkerReceiptForProviderV1(checkedReceipt.value, { providerId, providerClass: "operation_worker" });
 	if (!conformedReceipt.ok) throw conformedReceipt.error;
+	if (conformedReceipt.value.taskId !== request.taskId || conformedReceipt.value.dispatchId !== request.dispatchId || conformedReceipt.value.attemptId !== request.attemptId) throw new FoundationError("invalid_correlation", "WorkerReceipt does not match the exact Host execution identity");
 	const checkedResult = validateToolExecutionResultV1(result);
 	if (!checkedResult.ok) throw checkedResult.error;
 	const metadata = await session.getMetadata();
@@ -147,7 +161,7 @@ async function persistWorkerToolExecution(
 			bindingEpochId: request.bindingEpochId,
 			...(request.agentInstanceId === undefined ? {} : { agentInstanceId: request.agentInstanceId }),
 		},
-	});
+	}, metadata.id);
 	await appendImmutableWorkerFact(ledger, WORKER_TOOL_EXECUTION_OBJECT_TYPE, request.operationId, fact, {
 		clientRequestId: `worker-tool-execution:${request.operationId}`,
 		expectedRevision: 0,
@@ -163,7 +177,7 @@ async function persistWorkerToolExecution(
 			bindingEpochId: request.bindingEpochId,
 			...(request.agentInstanceId === undefined ? {} : { agentInstanceId: request.agentInstanceId }),
 		},
-	});
+	}, metadata.id);
 }
 
 function createCodingAgentHarnessTool<TParameters extends TSchema, TDetails>(
@@ -329,20 +343,29 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker execution requires the exact Attempt correlation"));
 			}
-			const attemptRecords = await options.session.findFoundationRecords({ kind: "fact", objectType: "attempt", objectId: attemptId, includePruned: true, order: "oldestFirst" });
-			const attemptFacts = attemptRecords.filter((record): record is typeof attemptRecords[number] & { kind: "fact" } => record.kind === "fact" && record.objectId === attemptId);
+			const attemptRecord = await options.session.getFoundationObject("attempt", attemptId);
 			let runId: string | undefined;
-			if (attemptFacts.length > 1) return Result.err(new FoundationError("session_ledger_conflict", "Sandbox Worker Attempt fact is ambiguous"));
-			if (attemptFacts.length === 1) {
-				const attemptFact = attemptFacts[0];
+			if (attemptRecord !== undefined && (attemptRecord.kind !== "fact" || attemptRecord.objectType !== "attempt" || attemptRecord.objectId !== attemptId || attemptRecord.revision !== 1)) {
+				return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt is not the current revision 1 fact"));
+			}
+			if (attemptRecord?.kind === "fact") {
+				const attemptFact = attemptRecord;
 				const checkedAttempt = validateAttemptV1(attemptFact.payload);
-				if (attemptFact.revision !== 1 || !checkedAttempt.ok || checkedAttempt.value.attemptId !== attemptId || checkedAttempt.value.taskId !== taskId || checkedAttempt.value.dispatchId !== dispatchId || checkedAttempt.value.bindingId !== bindingId || checkedAttempt.value.bindingEpochIds[0] !== bindingEpochId || checkedAttempt.value.agentInstanceId !== request.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt fact does not match the request"));
+				const attemptCorrelation = attemptFact.correlation;
+				if (
+					attemptFact.revision !== 1 || !checkedAttempt.ok || attemptCorrelation.revision !== attemptFact.revision || attemptCorrelation.sessionId !== sessionMetadata.id || attemptCorrelation.laneId !== "main" ||
+					attemptCorrelation.taskId !== taskId || attemptCorrelation.dispatchId !== dispatchId || attemptCorrelation.attemptId !== attemptId || attemptCorrelation.bindingId !== bindingId ||
+					attemptCorrelation.bindingEpochId !== bindingEpochId || attemptCorrelation.agentInstanceId !== request.agentInstanceId || attemptCorrelation.runId !== undefined ||
+					attemptCorrelation.operationId !== undefined || attemptCorrelation.providerId !== undefined || attemptCorrelation.toolCallId !== undefined ||
+					checkedAttempt.value.attemptId !== attemptId || checkedAttempt.value.taskId !== taskId || checkedAttempt.value.dispatchId !== dispatchId || checkedAttempt.value.bindingId !== bindingId ||
+					checkedAttempt.value.bindingEpochIds[0] !== bindingEpochId || checkedAttempt.value.agentInstanceId !== request.agentInstanceId
+				) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt fact does not match the request"));
 				const intents = await options.session.findFoundationRecords({ kind: "intent", objectType: "attempt", includePruned: true, order: "oldestFirst" });
 				const matchingIntents = intents.filter((record) => {
 					if (record.kind !== "intent" || record.payload === undefined || record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) return false;
 					const payload = record.payload as { readonly attemptId?: unknown; readonly taskId?: unknown; readonly dispatchId?: unknown; readonly bindingId?: unknown; readonly bindingEpochIds?: unknown; readonly agentInstanceId?: unknown; readonly runId?: unknown };
 					const candidateRunId = payload.runId;
-					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && payload.attemptId === record.objectId && payload.taskId === checkedAttempt.value.taskId && payload.dispatchId === checkedAttempt.value.dispatchId && payload.bindingId === checkedAttempt.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === checkedAttempt.value.bindingEpochIds[0] && payload.agentInstanceId === checkedAttempt.value.agentInstanceId;
+					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.revision === record.revision && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && record.correlation.taskId === checkedAttempt.value.taskId && record.correlation.dispatchId === checkedAttempt.value.dispatchId && record.correlation.attemptId === record.objectId && record.correlation.bindingId === checkedAttempt.value.bindingId && record.correlation.bindingEpochId === checkedAttempt.value.bindingEpochIds[0] && record.correlation.agentInstanceId === checkedAttempt.value.agentInstanceId && record.correlation.providerId === checkedAttempt.value.providerId && record.correlation.toolCallId === undefined && payload.attemptId === record.objectId && payload.taskId === checkedAttempt.value.taskId && payload.dispatchId === checkedAttempt.value.dispatchId && payload.bindingId === checkedAttempt.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === checkedAttempt.value.bindingEpochIds[0] && payload.agentInstanceId === checkedAttempt.value.agentInstanceId;
 				});
 				const matchingIntent = matchingIntents[0];
 				if (matchingIntents.length !== 1 || matchingIntent?.kind !== "intent" || matchingIntent.payload === undefined || matchingIntent.payload === null || typeof matchingIntent.payload !== "object" || Array.isArray(matchingIntent.payload)) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt requires exactly one matching Harness intent"));
@@ -384,7 +407,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 				await persistWorkerToolExecution(options.session, workerSandbox.provider.providerId, request, runId, getHarness().t5.writer, receipt, result);
 			} catch (error) {
 				if (error instanceof FoundationError) return Result.err(error);
-				return Result.err(new FoundationError("worker_persistence_failed", `Sandbox WorkerReceipt persistence failed: ${error instanceof Error ? error.message : "unknown persistence error"}`));
+				return Result.err(new FoundationError("worker_persistence_failed", "Sandbox WorkerReceipt persistence failed"));
 			}
 			return executed;
 		},

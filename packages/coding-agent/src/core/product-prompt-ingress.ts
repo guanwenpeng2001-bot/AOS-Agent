@@ -23,7 +23,6 @@ import {
 	type Result as ResultValue,
 	type ToolExecutionResultV1,
 	type WorkerReceiptRefV1,
-	type WorkerReceiptV1,
 	type ModelProfileV1,
 	type RoleRevisionV1,
 	type Session,
@@ -256,16 +255,6 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		correlation: NonNullable<FoundationProviderExecutionOptionsV1["correlation"]>,
 	): Promise<ResultValue<readonly WorkerReceiptRefV1[], FoundationError>> {
 		const executionRecords = await this.session.findFoundationRecords({ kind: "fact", objectType: WORKER_TOOL_EXECUTION_OBJECT_TYPE, includePruned: true, order: "oldestFirst" });
-		const receiptRecords = await this.session.findFoundationRecords({ kind: "fact", objectType: "worker_receipt", includePruned: true, order: "oldestFirst" });
-		const receiptsById = new Map<string, { readonly record: typeof receiptRecords[number]; readonly value: WorkerReceiptV1 }>();
-		for (const record of receiptRecords) {
-			if (record.kind !== "fact") continue;
-			const payload = record.payload;
-			const payloadRecord = payload !== null && typeof payload === "object" && !Array.isArray(payload) ? payload as { readonly workerReceiptId?: unknown; readonly taskId?: unknown; readonly dispatchId?: unknown; readonly attemptId?: unknown } : undefined;
-			if (payloadRecord?.workerReceiptId === undefined) continue;
-			const generic = validateWorkerReceipt(payload);
-			if (generic.ok) receiptsById.set(generic.value.workerReceiptId, { record, value: generic.value });
-		}
 		const byId = new Map<string, WorkerReceiptRefV1>();
 		for (const record of executionRecords) {
 			if (record.kind !== "fact") continue;
@@ -276,6 +265,14 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 				record.correlation.bindingId === attempt.bindingId && record.correlation.bindingEpochId === attempt.bindingEpochIds[0] &&
 				record.correlation.agentInstanceId === attempt.agentInstanceId;
 			if (!durableCorrelationBelongsToAttempt) continue;
+			const currentExecution = await this.session.getFoundationObject(WORKER_TOOL_EXECUTION_OBJECT_TYPE, record.objectId);
+			if (
+				currentExecution === undefined || currentExecution.kind !== "fact" || currentExecution.objectType !== WORKER_TOOL_EXECUTION_OBJECT_TYPE ||
+				currentExecution.objectId !== record.objectId || currentExecution.revision !== 1 ||
+				canonicalFoundationJson(currentExecution) !== canonicalFoundationJson(record)
+			) {
+				return Result.err(new FoundationError("worker_receipt_invalid", "Durable Worker ToolExecutionResult is not the current revision 1 fact"));
+			}
 			if (!isExactWorkerToolExecutionFactPayload(record.payload)) {
 				return Result.err(new FoundationError("invalid_correlation", "Durable Worker ToolExecutionResult fact is malformed"));
 			}
@@ -296,12 +293,18 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			if (!checkedResult.ok || checkedResult.value.toolReceiptRef === undefined) {
 				return Result.err(new FoundationError("worker_receipt_invalid", "Durable Worker ToolExecutionResult has no validated receipt reference"));
 			}
-			const stored = receiptsById.get(checkedResult.value.toolReceiptRef);
-			if (stored === undefined || stored.record.kind !== "fact" || stored.record.revision !== 1 || stored.record.objectId !== stored.value.workerReceiptId) {
+			const stored = await this.session.getFoundationObject("worker_receipt", checkedResult.value.toolReceiptRef);
+			if (
+				stored === undefined || stored.kind !== "fact" || stored.objectType !== "worker_receipt" || stored.revision !== 1 ||
+				stored.objectId !== checkedResult.value.toolReceiptRef
+			) {
 				return Result.err(new FoundationError("worker_receipt_invalid", "ToolExecutionResult references no durable WorkerReceipt"));
 			}
-			const worker = validateWorkerReceiptForProviderV1(stored.value, { providerId: fact.providerId, providerClass: "operation_worker" });
+			const genericWorker = validateWorkerReceipt(stored.payload);
+			if (!genericWorker.ok) return Result.err(new FoundationError("worker_receipt_invalid", "Durable WorkerReceipt fact is malformed"));
+			const worker = validateWorkerReceiptForProviderV1(genericWorker.value, { providerId: fact.providerId, providerClass: "operation_worker" });
 			if (!worker.ok) return Result.err(worker.error);
+			if (worker.value.taskId !== fact.taskId || worker.value.dispatchId !== fact.dispatchId || worker.value.attemptId !== fact.attemptId) return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
 			const workerCorrelation = worker.value.provenance.correlation;
 			if (
 				worker.value.workerReceiptId !== checkedResult.value.toolReceiptRef ||
@@ -317,12 +320,12 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 				(workerCorrelation.bindingId !== undefined && workerCorrelation.bindingId !== attempt.bindingId) ||
 				(workerCorrelation.bindingEpochId !== undefined && workerCorrelation.bindingEpochId !== attempt.bindingEpochIds[0]) ||
 				workerCorrelation.agentInstanceId !== undefined ||
-				stored.record.correlation.sessionId !== workerCorrelation.sessionId || stored.record.correlation.laneId !== workerCorrelation.laneId ||
-				stored.record.correlation.runId !== fact.runId || stored.record.correlation.operationId !== fact.operationId ||
-				stored.record.correlation.providerId !== fact.providerId || stored.record.correlation.toolCallId !== checkedResult.value.toolCallId ||
-				stored.record.correlation.taskId !== fact.taskId || stored.record.correlation.dispatchId !== fact.dispatchId ||
-				stored.record.correlation.attemptId !== fact.attemptId || stored.record.correlation.bindingId !== fact.bindingId ||
-				stored.record.correlation.bindingEpochId !== fact.bindingEpochId || stored.record.correlation.agentInstanceId !== fact.agentInstanceId
+				stored.correlation.sessionId !== workerCorrelation.sessionId || stored.correlation.laneId !== workerCorrelation.laneId ||
+				stored.correlation.runId !== fact.runId || stored.correlation.operationId !== fact.operationId ||
+				stored.correlation.providerId !== fact.providerId || stored.correlation.toolCallId !== checkedResult.value.toolCallId ||
+				stored.correlation.taskId !== fact.taskId || stored.correlation.dispatchId !== fact.dispatchId ||
+				stored.correlation.attemptId !== fact.attemptId || stored.correlation.bindingId !== fact.bindingId ||
+				stored.correlation.bindingEpochId !== fact.bindingEpochId || stored.correlation.agentInstanceId !== fact.agentInstanceId
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
 			}
@@ -330,7 +333,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 				schemaVersion: 1,
 				type: "worker_receipt",
 				id: worker.value.workerReceiptId,
-				revision: stored.record.revision,
+				revision: stored.revision,
 				providerId: worker.value.sandboxProviderId,
 				fingerprint: fingerprintFoundationValue(worker.value),
 			};

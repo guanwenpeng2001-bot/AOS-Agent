@@ -128,6 +128,8 @@ describe("ProductPromptIngressV1", () => {
 			expect(calls).toBe(2);
 			expect(first.run.runId).toBe("product-run-1");
 			expect(second.run.runId).toBe("product-run-2");
+			expect(first.attemptReceipt.workerReceiptRefs).toEqual([]);
+			expect(second.attemptReceipt.workerReceiptRefs).toEqual([]);
 			expect(replay).toEqual(first);
 			expect(contexts[0]?.messages[0]?.role).toBe("user");
 			expect(contexts[0]?.messages[0]?.content).toEqual([
@@ -229,6 +231,7 @@ describe("ProductPromptIngressV1", () => {
 			expect(execution.taskResult.provenance.producerKind).toBe("host");
 			expect(execution.runReceipt.terminalStatus).toBe("completed");
 			expect(execution.runReceipt.taskResultId).toBe(execution.taskResult.taskResultId);
+			expect(execution.runReceipt.attemptReceiptIds).toContain(execution.attemptReceipt.attemptReceiptId);
 			expect(await session.findFoundationRecords({ kind: "fact", objectType: "worker_receipt" })).toHaveLength(1);
 			const replay = await ingress.execute({ prompt: "worker chain", surface: "sdk", runId });
 			expect(replay.attemptReceipt.workerReceiptRefs).toEqual(execution.attemptReceipt.workerReceiptRefs);
@@ -252,13 +255,13 @@ describe("ProductPromptIngressV1", () => {
 				attemptId: forgedAttemptId,
 				status: "succeeded",
 				sideEffectState: "none",
-				provenance: { producerKind: "operation_worker", providerId: "wrong.operation-worker", producedAt: "2026-08-21T00:00:00.000Z", correlation: { sessionId: "product-worker-chain", laneId: "main", revision: 0, runId: forgedRunId, operationId: forgedOperationId, providerId: "wrong.operation-worker", toolCallId: "forged-call", taskId: forgedTaskId, dispatchId: forgedDispatchId, attemptId: forgedAttemptId, bindingId: forgedBindingId, bindingEpochId: forgedBindingEpochId, agentInstanceId: forgedAgentInstanceId } },
+				provenance: { producerKind: "operation_worker", providerId: "wrong.operation-worker", producedAt: "2026-08-21T00:00:00.000Z", correlation: { sessionId: "product-worker-chain", laneId: "main", revision: 0, runId: forgedRunId, operationId: forgedOperationId, providerId: "wrong.operation-worker", toolCallId: "forged-call", taskId: forgedTaskId, dispatchId: forgedDispatchId, attemptId: forgedAttemptId, bindingId: forgedBindingId, bindingEpochId: forgedBindingEpochId } },
 				startedAt: "2026-08-21T00:00:00.000Z",
 				completedAt: "2026-08-21T00:00:01.000Z",
 			}, {
 				clientRequestId: "worker-receipt:bad-receipt",
 				expectedRevision: 0,
-				correlation: { operationId: forgedOperationId, runId: forgedRunId, providerId: "wrong.operation-worker", toolCallId: "forged-call", taskId: forgedTaskId, dispatchId: forgedDispatchId, attemptId: forgedAttemptId, bindingId: forgedBindingId, bindingEpochId: forgedBindingEpochId },
+				correlation: { operationId: forgedOperationId, runId: forgedRunId, providerId: "wrong.operation-worker", toolCallId: "forged-call", taskId: forgedTaskId, dispatchId: forgedDispatchId, attemptId: forgedAttemptId, bindingId: forgedBindingId, bindingEpochId: forgedBindingEpochId, agentInstanceId: forgedAgentInstanceId },
 			});
 			await ledger.appendFact("coding_agent.worker_tool_execution", forgedOperationId, {
 				schemaVersion: 1,
@@ -283,6 +286,7 @@ describe("ProductPromptIngressV1", () => {
 				correlation: { operationId: forgedOperationId, runId: forgedRunId, providerId: "test.operation-worker", toolCallId: "forged-call", taskId: forgedTaskId, dispatchId: forgedDispatchId, attemptId: forgedAttemptId, bindingId: forgedBindingId, bindingEpochId: forgedBindingEpochId, agentInstanceId: forgedAgentInstanceId },
 			});
 			await expect(ingress.execute({ prompt: "forged worker ref", surface: "sdk", runId: forgedRunId })).rejects.toMatchObject({ cause: { code: "worker_receipt_invalid_producer" } });
+			expect(await session.getFoundationObject("attempt_receipt", `attempt_receipt_${forgedRunId}`)).toBeUndefined();
 		} finally {
 			await created.operationToolGateway.dispose();
 			await created.harness.close();
