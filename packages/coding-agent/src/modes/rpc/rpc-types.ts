@@ -63,6 +63,7 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
+import type { WorkerLifecycleStatusV1 } from "../../core/worker.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -361,7 +362,19 @@ export type RpcCommand =
 			leaseId: string;
 			reasonCode?: string;
 			clientRequestId: string;
-	  };
+	  }
+
+	// Operation Worker management (safe current-Session projection only)
+	| { id?: string; type: "worker.get"; workerId: string }
+	| {
+			id?: string;
+			type: "worker.list";
+			runId?: string;
+			status?: WorkerLifecycleStatusV1;
+			limit?: number;
+			cursor?: string;
+	  }
+	| { id?: string; type: "worker.reclaim"; workerId: string };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -946,6 +959,9 @@ export type RpcTaskCredentialCommandType =
 	| "task.credential.revoke"
 	| "task.credential.settle";
 
+/** Operation Worker management commands. No start or cancel authority is exposed. */
+export type RpcWorkerCommandType = "worker.get" | "worker.list" | "worker.reclaim";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
@@ -969,6 +985,8 @@ export interface InitializeData {
 	taskGraphCommands?: RpcTaskGraphCommandType[];
 	/** Additive Task Credential control-plane command list. */
 	taskCredentialCommands?: RpcTaskCredentialCommandType[];
+	/** Additive current-Session Operation Worker management command list. */
+	workerCommands?: RpcWorkerCommandType[];
 	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
 	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
 }
@@ -1102,6 +1120,76 @@ export interface TaskCredentialSettleData {
 	grant: TaskCredentialGrant;
 	idempotent: boolean;
 }
+
+// ============================================================================
+// Operation Worker management wire contract
+// ============================================================================
+
+/** Public-safe Worker record. Receipt references and execution resources are omitted. */
+export interface RpcWorkerRecord {
+	schemaVersion: 1;
+	workerId: string;
+	providerId: string;
+	sessionId: string;
+	laneId: string;
+	runId?: string;
+	bindingId?: string;
+	bindingEpochId?: string;
+	attemptId?: string;
+	profileId: string;
+	status: WorkerLifecycleStatusV1;
+	revision: number;
+	createdAt: string;
+	readyAt?: string;
+	endedAt?: string;
+	lastHeartbeatAt?: string;
+	activeOperationId?: string;
+}
+
+/** Data returned by a successful `worker.get`. */
+export interface WorkerGetData {
+	worker: RpcWorkerRecord;
+}
+
+/** Bounded page returned by a successful `worker.list`. */
+export interface WorkerListData {
+	workers: RpcWorkerRecord[];
+	truncated: boolean;
+	nextCursor?: string;
+}
+
+/** Data returned by a successful idempotent `worker.reclaim`. */
+export interface WorkerReclaimData {
+	worker: RpcWorkerRecord;
+	idempotent: boolean;
+}
+
+/** Stable error codes of the Worker management surface. */
+export type RpcWorkerErrorCode =
+	| "host_not_initialized"
+	| "worker_invalid"
+	| "worker_not_found"
+	| "worker_unavailable"
+	| "worker_conflict"
+	| "worker_reclaim_failed";
+
+export interface RpcWorkerError {
+	code: RpcWorkerErrorCode;
+	message: string;
+	retryable: boolean;
+}
+
+export type RpcWorkerResponse =
+	| { id?: string; type: "response"; command: "worker.get"; success: true; data: WorkerGetData }
+	| { id?: string; type: "response"; command: "worker.list"; success: true; data: WorkerListData }
+	| { id?: string; type: "response"; command: "worker.reclaim"; success: true; data: WorkerReclaimData }
+	| {
+			id?: string;
+			type: "response";
+			command: RpcWorkerCommandType;
+			success: false;
+			error: RpcWorkerError;
+	  };
 
 /**
  * Automation Host v1 responses.
