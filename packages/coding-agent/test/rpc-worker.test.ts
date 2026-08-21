@@ -1,25 +1,75 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { once } from "node:events";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, FoundationError, Result } from "@aos-agent/agent-core";
-import type { Model } from "@aos-agent/ai";
+import type { Writable } from "node:stream";
+import { Agent, AgentHarness, FoundationError, Result, Session } from "@aos-agent/agent-core";
+import { createModels, type Model, type Models } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession, createAgentSessionDelegate } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { createHarnessCompatibilityWriter, SessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { WorkerLifecycleStatusV1, WorkerRecordV1 } from "../src/core/worker.ts";
+import { WorkerSandboxProviderV1 } from "../src/core/worker-sandbox-provider.ts";
+import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
+import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 import type { RpcCommand, RpcWorkerRecord, RpcWorkerResponse } from "../src/modes/rpc/rpc-types.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
 	lineHandler: undefined as ((line: string) => void) | undefined,
 }));
+
+const TestJsonlFrameError = vi.hoisted(() => {
+	class HoistedTestJsonlFrameError extends Error {
+		readonly frameBytes = 0;
+		readonly maxFrameBytes = 0;
+	}
+	return HoistedTestJsonlFrameError;
+});
+
+function attachTestJsonlLineReader(stream: NodeJS.ReadableStream, onLine: (line: string) => void): () => void {
+	if (stream === process.stdin) {
+		rpcIo.lineHandler = onLine;
+		return () => {};
+	}
+	let buffer = "";
+	const onData = (chunk: string | Buffer): void => {
+		buffer += chunk.toString();
+		let newlineIndex = buffer.indexOf("\n");
+		while (newlineIndex !== -1) {
+			const line = buffer.slice(0, newlineIndex);
+			buffer = buffer.slice(newlineIndex + 1);
+			onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+			newlineIndex = buffer.indexOf("\n");
+		}
+	};
+	stream.on("data", onData);
+	return () => stream.off("data", onData);
+}
+
+function createTestJsonlLineWriter(stream: NodeJS.ReadableStream) {
+	const writable = stream as unknown as Writable;
+	return {
+		write: (value: unknown): Promise<void> =>
+			new Promise<void>((resolve, reject) => {
+				writable.write(`${JSON.stringify(value)}\n`, "utf8", (error?: Error | null) => {
+					if (error) reject(error);
+					else resolve();
+				});
+			}),
+		close: (): Promise<void> => new Promise<void>((resolve) => writable.end(resolve)),
+		detach: (): void => {},
+	};
+}
 
 vi.mock("../src/core/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
@@ -31,11 +81,10 @@ vi.mock("../src/core/output-guard.js", () => ({
 vi.mock("../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
 
 vi.mock("../src/modes/rpc/jsonl.js", () => ({
-	attachJsonlLineReader: vi.fn((_stream: NodeJS.ReadableStream, onLine: (line: string) => void) => {
-		rpcIo.lineHandler = onLine;
-		return () => {};
-	}),
+	attachJsonlLineReader: vi.fn(attachTestJsonlLineReader),
+	createJsonlLineWriter: createTestJsonlLineWriter,
 	DEFAULT_MAX_JSONL_FRAME_BYTES: 1024 * 1024,
+	JsonlFrameError: TestJsonlFrameError,
 	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
 }));
 
@@ -188,6 +237,152 @@ function workerRecord(input: {
 	}
 }
 
+function testModels(): Models {
+	const base = createModels();
+	const models = Object.create(base) as Models;
+	models.getModel = (provider, id) =>
+		provider === TEST_MODEL.provider && id === TEST_MODEL.id ? TEST_MODEL : base.getModel(provider, id);
+	return models;
+}
+
+async function createCanonicalWorkerSession(
+	tempDir: string,
+	workerId: string,
+): Promise<{ session: AgentSession; provider: WorkerSandboxProviderV1 }> {
+	mkdirSync(tempDir, { recursive: true });
+	const sessionManager = SessionManager.create(tempDir);
+	const canonicalStorage = new SessionManagerStorage(sessionManager);
+	const canonicalSession = new Session(canonicalStorage);
+	const models = testModels();
+	const modelRuntime = Object.assign(models, {
+		getAvailableSnapshot: () => [TEST_MODEL],
+		hasConfiguredAuth: () => true,
+		checkAuth: async () => ({ type: "api_key", key: "test-key" }),
+		isUsingOAuth: () => false,
+		getAuth: async () => ({ type: "api_key", key: "test-key" }),
+	}) as unknown as ModelRuntime;
+	const created = await AgentHarness.create({
+		session: canonicalSession,
+		models,
+		model: TEST_MODEL,
+		drive: "automatic",
+		tools: [],
+		activeToolNames: [],
+		systemPrompt: "Test",
+		streamFunction: () => {
+			throw new Error("The Worker RPC harness does not start model requests");
+		},
+		streamFunctionOverridden: true,
+		compatibilityWriter: createHarnessCompatibilityWriter(canonicalStorage),
+	});
+	const provider = new WorkerSandboxProviderV1({
+		providerId: "sandbox-worker",
+		resolvePreflight: () => {
+			throw new Error("Worker execution is not exercised by this RPC test");
+		},
+	});
+	const restored = provider.restoreWorkerFacts({
+		records: [workerRecord({ workerId, sessionId: sessionManager.getSessionId(), status: "lost" })],
+	});
+	if (!restored.ok) throw restored.error;
+	const delegate = createAgentSessionDelegate({
+		harness: created.harness,
+		canonicalSession,
+		canonicalStorage,
+		sessionManager,
+		settingsManager: SettingsManager.create(tempDir, tempDir),
+		cwd: tempDir,
+		resourceLoader: testResourceLoader(),
+		modelRuntime,
+		workerSandboxProvider: provider,
+	});
+	return { session: new AgentSession(delegate), provider };
+}
+
+async function createProductionRuntimeHarness(): Promise<{
+	runtimeHost: AgentSessionRuntime;
+	initial: Awaited<ReturnType<typeof createCanonicalWorkerSession>>;
+	replacement: Awaited<ReturnType<typeof createCanonicalWorkerSession>>;
+	replaceSession: () => Promise<void>;
+	cleanup: () => Promise<void>;
+}> {
+	const tempDir = join(tmpdir(), `aos-rpc-worker-production-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	const initial = await createCanonicalWorkerSession(join(tempDir, "initial"), "worker-initial");
+	const replacement = await createCanonicalWorkerSession(join(tempDir, "replacement"), "worker-replacement");
+	let currentSession = initial.session;
+	let rebindSession: (() => Promise<void>) | undefined;
+	const replaceSession = async (): Promise<void> => {
+		currentSession = replacement.session;
+		await rebindSession?.();
+	};
+	const runtimeHost = {
+		get session(): AgentSession {
+			return currentSession;
+		},
+		newSession: vi.fn(async () => ({ cancelled: true })),
+		switchSession: vi.fn(async () => ({ cancelled: true })),
+		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
+		dispose: vi.fn(async () => {}),
+		setRebindSession: vi.fn((callback?: () => Promise<void>) => {
+			rebindSession = callback;
+		}),
+	} as unknown as AgentSessionRuntime;
+	return {
+		runtimeHost,
+		initial,
+		replacement,
+		replaceSession,
+		cleanup: async () => {
+			await Promise.all([initial.session.dispose(), replacement.session.dispose()]);
+			if (existsSync(tempDir)) rmSync(tempDir, { recursive: true, force: true });
+		},
+	};
+}
+
+type ParsedRecord = Record<string, unknown>;
+
+function parseOutputLines(): ParsedRecord[] {
+	return rpcIo.outputLines
+		.flatMap((line) => line.split("\n"))
+		.filter((line) => line.length > 0)
+		.map((line) => JSON.parse(line) as ParsedRecord);
+}
+
+async function getAvailablePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen({ host: "127.0.0.1", port: 0 }, resolve);
+	});
+	const address = server.address();
+	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
+	await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+	return address.port;
+}
+
+async function connectTcpPeer(address: TcpRpcAddress): Promise<{ socket: Socket; records: ParsedRecord[] }> {
+	const socket = createConnection({ host: address.host, port: address.port });
+	await once(socket, "connect");
+	const records: ParsedRecord[] = [];
+	attachJsonlLineReader(socket, (line) => records.push(JSON.parse(line) as ParsedRecord));
+	return { socket, records };
+}
+
+function writeTcpRecord(socket: Socket, value: unknown): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		socket.write(`${JSON.stringify(value)}\n`, (error) => (error ? reject(error) : resolve()));
+	});
+}
+
+async function waitForResponse(records: ParsedRecord[], id: string): Promise<ParsedRecord> {
+	let response: ParsedRecord | undefined;
+	await vi.waitFor(() => {
+		response = records.find((record) => record.type === "response" && record.id === id);
+		expect(response).toBeDefined();
+	});
+	return response!;
+}
+
 function asWorkerResponse(response: unknown): RpcWorkerResponse {
 	return response as RpcWorkerResponse;
 }
@@ -265,18 +460,13 @@ describe("RpcHostController Worker management", () => {
 	});
 
 	it("wires the current Session control-plane registry through stdio RPC", async () => {
-		const harness = await createHarness();
+		const harness = await createProductionRuntimeHarness();
 		const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
 		const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
 		const stdinEndListenersBefore = new Set(process.stdin.listeners("end"));
 		try {
-			const listWorkerRecords = vi.fn(() => []);
-			const registry: RpcWorkerRegistry = {
-				getWorkerRecord: () => undefined,
-				listWorkerRecords,
-				reclaimWorker: async () => Result.err(new FoundationError("worker_reclaim_failed", "reclaim failed")),
-			};
-			const registryAccessor = vi.spyOn(harness.runtimeHost.session, "getWorkerRegistry").mockReturnValue(registry);
+			expect(harness.runtimeHost.session.getWorkerRegistry()).toBeDefined();
+			const listWorkerRecords = vi.spyOn(harness.initial.provider, "listWorkerRecords");
 			void runRpcMode(harness.runtimeHost);
 			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
@@ -287,8 +477,13 @@ describe("RpcHostController Worker management", () => {
 				await vi.waitFor(() => expect(rpcIo.outputLines.join("\n")).toContain(`"id":"${id}"`));
 			}
 
-			expect(registryAccessor).toHaveBeenCalledTimes(2);
 			expect(listWorkerRecords).toHaveBeenCalledTimes(2);
+			for (const id of ["list-1", "list-2"]) {
+				expect(parseOutputLines().find((record) => record.id === id)).toMatchObject({
+					success: true,
+					data: { workers: [{ workerId: "worker-initial" }] },
+				});
+			}
 		} finally {
 			for (const [signal, listenersBefore] of signalListenersBefore) {
 				for (const listener of process.listeners(signal)) {
@@ -297,6 +492,75 @@ describe("RpcHostController Worker management", () => {
 			}
 			for (const listener of process.stdin.listeners("end")) {
 				if (!stdinEndListenersBefore.has(listener)) process.stdin.off("end", listener as (...args: unknown[]) => void);
+			}
+			await harness.cleanup();
+		}
+	});
+
+	it("uses only the replacement Session control-plane registry through TCP RPC", async () => {
+		const harness = await createProductionRuntimeHarness();
+		const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
+		const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
+		const initialList = vi.spyOn(harness.initial.provider, "listWorkerRecords");
+		const initialGet = vi.spyOn(harness.initial.provider, "getWorkerRecord");
+		const replacementList = vi.spyOn(harness.replacement.provider, "listWorkerRecords");
+		const replacementGet = vi.spyOn(harness.replacement.provider, "getWorkerRecord");
+		const port = await getAvailablePort();
+		const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
+		let exitCode: number | undefined;
+		const exit = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+			exitCode = typeof code === "number" ? code : 0;
+			return undefined as never;
+		}) as typeof process.exit);
+		let peer: Awaited<ReturnType<typeof connectTcpPeer>> | undefined;
+		try {
+			expect(harness.initial.session.getWorkerRegistry()).toBeDefined();
+			expect(harness.replacement.session.getWorkerRegistry()).toBeDefined();
+			void runRpcMode(harness.runtimeHost, {
+				listen: { transport: "tcp", host: "127.0.0.1", port },
+			});
+			await vi.waitFor(() => {
+				expect(diagnostics.mock.calls.flat().join("\n")).toContain(`RPC TCP listening on tcp://127.0.0.1:${port}`);
+			});
+			peer = await connectTcpPeer({ transport: "tcp", host: "127.0.0.1", port });
+
+			await writeTcpRecord(peer.socket, { id: "initialize", type: "initialize", protocolVersion: 1 });
+			await waitForResponse(peer.records, "initialize");
+			await writeTcpRecord(peer.socket, { id: "initial-list", type: "worker.list" });
+			expect(await waitForResponse(peer.records, "initial-list")).toMatchObject({
+				success: true,
+				data: { workers: [{ workerId: "worker-initial" }] },
+			});
+
+			await harness.replaceSession();
+			expect(harness.runtimeHost.session).toBe(harness.replacement.session);
+
+			await writeTcpRecord(peer.socket, { id: "replacement-list", type: "worker.list" });
+			expect(await waitForResponse(peer.records, "replacement-list")).toMatchObject({
+				success: true,
+				data: { workers: [{ workerId: "worker-replacement" }] },
+			});
+			await writeTcpRecord(peer.socket, { id: "old-worker", type: "worker.get", workerId: "worker-initial" });
+			expect(await waitForResponse(peer.records, "old-worker")).toMatchObject({
+				success: false,
+				error: { code: "worker_not_found" },
+			});
+
+			expect(initialList).toHaveBeenCalledTimes(1);
+			expect(initialGet).not.toHaveBeenCalled();
+			expect(replacementList).toHaveBeenCalledTimes(1);
+			expect(replacementGet).toHaveBeenCalledTimes(1);
+			expect(rpcIo.outputLines).toEqual([]);
+		} finally {
+			peer?.socket.destroy();
+			process.emit("SIGTERM");
+			await vi.waitFor(() => expect(exitCode).toBeDefined());
+			exit.mockRestore();
+			diagnostics.mockRestore();
+			for (const [signal, listenersBefore] of signalListenersBefore) {
+				for (const listener of process.listeners(signal)) {
+					if (!listenersBefore.has(listener)) process.off(signal, listener as (...args: unknown[]) => void);
+				}
 			}
 			await harness.cleanup();
 		}
