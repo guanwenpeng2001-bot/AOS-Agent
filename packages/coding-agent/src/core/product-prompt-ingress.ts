@@ -7,7 +7,11 @@ import {
 	FoundationError,
 	Result,
 	sha256HexValue,
+	validateAttemptReceiptForProviderV1,
 	validateAndVerifyToolReceiptV1,
+	validateToolExecutionResultV1,
+	validateWorkerReceipt,
+	validateWorkerReceiptForProviderV1,
 	type AgentBindingV1,
 	type AgentHarness,
 	type AttemptReceiptV1,
@@ -16,6 +20,10 @@ import {
 	type FoundationJsonValue,
 	type FoundationProviderCapabilityV1,
 	type FoundationProviderExecutionOptionsV1,
+	type Result as ResultValue,
+	type ToolExecutionResultV1,
+	type WorkerReceiptRefV1,
+	type WorkerReceiptV1,
 	type ModelProfileV1,
 	type RoleRevisionV1,
 	type Session,
@@ -38,6 +46,52 @@ import { isRuntimeSessionSurfaceV1, type RuntimeSessionSurfaceV1 } from "./runti
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
 const PRODUCT_PROMPT_INGRESS_OBJECT_TYPE = "coding_agent.product_prompt_ingress";
+const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
+
+interface WorkerToolExecutionFactV1 {
+	readonly schemaVersion: 1;
+	readonly type: typeof WORKER_TOOL_EXECUTION_OBJECT_TYPE;
+	readonly id: string;
+	readonly revision: 1;
+	readonly sessionId: string;
+	readonly laneId: string;
+	readonly operationId: string;
+	readonly runId?: string;
+	readonly providerId: string;
+	readonly taskId: string;
+	readonly dispatchId: string;
+	readonly attemptId: string;
+	readonly bindingId: string;
+	readonly bindingEpochId: string;
+	readonly agentInstanceId?: string;
+	readonly result: ToolExecutionResultV1;
+}
+
+const WORKER_TOOL_EXECUTION_FACT_KEYS = new Set([
+	"schemaVersion",
+	"type",
+	"id",
+	"revision",
+	"sessionId",
+	"laneId",
+	"operationId",
+	"runId",
+	"providerId",
+	"taskId",
+	"dispatchId",
+	"attemptId",
+	"bindingId",
+	"bindingEpochId",
+	"agentInstanceId",
+	"result",
+]);
+const REQUIRED_WORKER_TOOL_EXECUTION_FACT_KEYS = new Set([...WORKER_TOOL_EXECUTION_FACT_KEYS].filter((key) => key !== "runId" && key !== "agentInstanceId"));
+
+function isExactWorkerToolExecutionFactPayload(value: unknown): value is WorkerToolExecutionFactV1 {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const keys = Object.keys(value);
+	return keys.every((key) => WORKER_TOOL_EXECUTION_FACT_KEYS.has(key)) && [...REQUIRED_WORKER_TOOL_EXECUTION_FACT_KEYS].every((key) => keys.includes(key));
+}
 
 const DEPENDENCY_FACT_TYPES = {
 	context: "context_snapshot",
@@ -197,6 +251,97 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		this.session = session;
 	}
 
+	private async workerReceiptRefs(
+		attempt: AttemptV1,
+		correlation: NonNullable<FoundationProviderExecutionOptionsV1["correlation"]>,
+	): Promise<ResultValue<readonly WorkerReceiptRefV1[], FoundationError>> {
+		const executionRecords = await this.session.findFoundationRecords({ kind: "fact", objectType: WORKER_TOOL_EXECUTION_OBJECT_TYPE, includePruned: true, order: "oldestFirst" });
+		const receiptRecords = await this.session.findFoundationRecords({ kind: "fact", objectType: "worker_receipt", includePruned: true, order: "oldestFirst" });
+		const receiptsById = new Map<string, { readonly record: typeof receiptRecords[number]; readonly value: WorkerReceiptV1 }>();
+		for (const record of receiptRecords) {
+			if (record.kind !== "fact") continue;
+			const payload = record.payload;
+			const payloadRecord = payload !== null && typeof payload === "object" && !Array.isArray(payload) ? payload as { readonly workerReceiptId?: unknown; readonly taskId?: unknown; readonly dispatchId?: unknown; readonly attemptId?: unknown } : undefined;
+			if (payloadRecord?.workerReceiptId === undefined) continue;
+			const generic = validateWorkerReceipt(payload);
+			if (generic.ok) receiptsById.set(generic.value.workerReceiptId, { record, value: generic.value });
+		}
+		const byId = new Map<string, WorkerReceiptRefV1>();
+		for (const record of executionRecords) {
+			if (record.kind !== "fact") continue;
+			const durableCorrelationBelongsToAttempt =
+				record.correlation.sessionId === correlation.sessionId && record.correlation.laneId === correlation.laneId &&
+				record.correlation.runId === correlation.runId && record.correlation.taskId === attempt.taskId &&
+				record.correlation.dispatchId === attempt.dispatchId && record.correlation.attemptId === attempt.attemptId &&
+				record.correlation.bindingId === attempt.bindingId && record.correlation.bindingEpochId === attempt.bindingEpochIds[0] &&
+				record.correlation.agentInstanceId === attempt.agentInstanceId;
+			if (!durableCorrelationBelongsToAttempt) continue;
+			if (!isExactWorkerToolExecutionFactPayload(record.payload)) {
+				return Result.err(new FoundationError("invalid_correlation", "Durable Worker ToolExecutionResult fact is malformed"));
+			}
+			const fact = record.payload;
+			if (
+				record.revision !== 1 || fact.schemaVersion !== 1 || fact.type !== WORKER_TOOL_EXECUTION_OBJECT_TYPE || fact.revision !== 1 || typeof fact.id !== "string" || fact.id !== fact.operationId || record.objectId !== fact.id ||
+				fact.sessionId !== correlation.sessionId || fact.laneId !== correlation.laneId || fact.runId !== correlation.runId || typeof fact.operationId !== "string" ||
+				typeof fact.providerId !== "string" || typeof fact.taskId !== "string" || typeof fact.dispatchId !== "string" ||
+				typeof fact.attemptId !== "string" || fact.bindingId !== attempt.bindingId || fact.bindingEpochId !== attempt.bindingEpochIds[0] || fact.agentInstanceId !== attempt.agentInstanceId ||
+				record.correlation.sessionId !== fact.sessionId || record.correlation.laneId !== fact.laneId || record.correlation.runId !== fact.runId ||
+				record.correlation.operationId !== fact.operationId || record.correlation.providerId !== fact.providerId || record.correlation.toolCallId !== fact.result?.toolCallId ||
+				record.correlation.taskId !== fact.taskId || record.correlation.dispatchId !== fact.dispatchId || record.correlation.attemptId !== fact.attemptId ||
+				record.correlation.bindingId !== fact.bindingId || record.correlation.bindingEpochId !== fact.bindingEpochId || record.correlation.agentInstanceId !== fact.agentInstanceId
+			) {
+				return Result.err(new FoundationError("invalid_correlation", "Durable Worker ToolExecutionResult does not match the current Attempt"));
+			}
+			const checkedResult = validateToolExecutionResultV1(fact.result);
+			if (!checkedResult.ok || checkedResult.value.toolReceiptRef === undefined) {
+				return Result.err(new FoundationError("worker_receipt_invalid", "Durable Worker ToolExecutionResult has no validated receipt reference"));
+			}
+			const stored = receiptsById.get(checkedResult.value.toolReceiptRef);
+			if (stored === undefined || stored.record.kind !== "fact" || stored.record.revision !== 1 || stored.record.objectId !== stored.value.workerReceiptId) {
+				return Result.err(new FoundationError("worker_receipt_invalid", "ToolExecutionResult references no durable WorkerReceipt"));
+			}
+			const worker = validateWorkerReceiptForProviderV1(stored.value, { providerId: fact.providerId, providerClass: "operation_worker" });
+			if (!worker.ok) return Result.err(worker.error);
+			const workerCorrelation = worker.value.provenance.correlation;
+			if (
+				worker.value.workerReceiptId !== checkedResult.value.toolReceiptRef ||
+				worker.value.operationId !== fact.operationId ||
+				workerCorrelation === undefined || workerCorrelation.sessionId !== correlation.sessionId || workerCorrelation.laneId !== correlation.laneId ||
+				workerCorrelation.runId !== correlation.runId ||
+				workerCorrelation.operationId !== fact.operationId ||
+				(workerCorrelation.providerId !== undefined && workerCorrelation.providerId !== fact.providerId) ||
+				(workerCorrelation.toolCallId !== undefined && workerCorrelation.toolCallId !== checkedResult.value.toolCallId) ||
+				(workerCorrelation.taskId !== undefined && workerCorrelation.taskId !== attempt.taskId) ||
+				(workerCorrelation.dispatchId !== undefined && workerCorrelation.dispatchId !== attempt.dispatchId) ||
+				(workerCorrelation.attemptId !== undefined && workerCorrelation.attemptId !== attempt.attemptId) ||
+				(workerCorrelation.bindingId !== undefined && workerCorrelation.bindingId !== attempt.bindingId) ||
+				(workerCorrelation.bindingEpochId !== undefined && workerCorrelation.bindingEpochId !== attempt.bindingEpochIds[0]) ||
+				workerCorrelation.agentInstanceId !== undefined ||
+				stored.record.correlation.sessionId !== workerCorrelation.sessionId || stored.record.correlation.laneId !== workerCorrelation.laneId ||
+				stored.record.correlation.runId !== fact.runId || stored.record.correlation.operationId !== fact.operationId ||
+				stored.record.correlation.providerId !== fact.providerId || stored.record.correlation.toolCallId !== checkedResult.value.toolCallId ||
+				stored.record.correlation.taskId !== fact.taskId || stored.record.correlation.dispatchId !== fact.dispatchId ||
+				stored.record.correlation.attemptId !== fact.attemptId || stored.record.correlation.bindingId !== fact.bindingId ||
+				stored.record.correlation.bindingEpochId !== fact.bindingEpochId || stored.record.correlation.agentInstanceId !== fact.agentInstanceId
+			) {
+				return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
+			}
+			const reference: WorkerReceiptRefV1 = {
+				schemaVersion: 1,
+				type: "worker_receipt",
+				id: worker.value.workerReceiptId,
+				revision: stored.record.revision,
+				providerId: worker.value.sandboxProviderId,
+				fingerprint: fingerprintFoundationValue(worker.value),
+			};
+			const prior = byId.get(reference.id);
+			if (prior !== undefined && canonicalFoundationJson(prior) !== canonicalFoundationJson(reference)) return Result.err(new FoundationError("session_ledger_conflict", "Durable WorkerReceipt identity conflicts"));
+			byId.set(reference.id, reference);
+		}
+		if (byId.size > 64) return Result.err(new FoundationError("worker_conflict", "WorkerReceipt reference bound exceeded"));
+		return Result.ok([...byId.values()].sort((left, right) => left.id.localeCompare(right.id)));
+	}
+
 	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
 		return [{ schemaVersion: 1, id: "foundation.prompt-task", version: 1 }];
 	}
@@ -295,6 +440,8 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 				: "succeeded" as const;
 		const attemptReceiptId = `attempt_receipt_${correlation.runId}`;
 		const producedAt = new Date(assistant.timestamp).toISOString();
+		const workerReceiptRefs = await this.workerReceiptRefs(attempt, correlation);
+		if (!workerReceiptRefs.ok) return workerReceiptRefs;
 		const receipt: AttemptReceiptV1 = {
 			schemaVersion: 1,
 			attemptReceiptId,
@@ -306,7 +453,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			bindingId: attempt.bindingId,
 			bindingEpochIds: [...attempt.bindingEpochIds],
 			status,
-			workerReceiptRefs: [],
+			workerReceiptRefs: workerReceiptRefs.value,
 			artifacts: uniqueArtifacts,
 			...(status === "succeeded" ? {} : {
 				error: {
@@ -324,7 +471,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			},
 			sideEffectState: sideEffectUnknown ? "side_effect_unknown" : "none",
 		};
-		return Result.ok(receipt);
+		return validateAttemptReceiptForProviderV1(receipt, { providerId: this.providerId, providerClass: this.providerClass });
 	}
 
 	async cancelAttempt(_attemptId: string) {
