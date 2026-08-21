@@ -1371,8 +1371,11 @@ const WORKER_TIMES = {
 	starting: "2026-08-16T00:00:00.000Z",
 	ready: "2026-08-16T00:00:01.000Z",
 	running: "2026-08-16T00:00:02.000Z",
+	cancelling: "2026-08-16T00:00:02.500Z",
 	completed: "2026-08-16T00:00:03.000Z",
 	receipt: "2026-08-16T00:00:04.000Z",
+	reclaiming: "2026-08-16T00:00:05.000Z",
+	reclaimed: "2026-08-16T00:00:06.000Z",
 } as const;
 
 function workerEntry(
@@ -1419,6 +1422,22 @@ function workerLifecycleEntry(
 	extra: Record<string, unknown> = {},
 	entryTimestamp = timestamp,
 ): Extract<SessionEntry, { type: "custom" }> {
+	const {
+		operationId,
+		receiptId: transitionReceiptId,
+		recordReceiptId,
+		...recordExtra
+	} = extra;
+	const persistedReceiptId = recordReceiptId === null
+		? undefined
+		: recordReceiptId ??
+			(["completed", "cancelled"].includes(status)
+				? transitionReceiptId ?? "receipt-1"
+				: status === "failed"
+					? transitionReceiptId
+					: ["reclaiming", "reclaimed", "reclaim_unknown"].includes(status)
+						? "receipt-1"
+						: undefined);
 	return workerEntry(id, entryTimestamp, "worker.lifecycle_transitioned", {
 		schemaVersion: 1,
 		class: "durable",
@@ -1435,8 +1454,8 @@ function workerLifecycleEntry(
 			bindingId: "binding-1",
 			bindingEpochId: "epoch-1",
 			attemptId: "attempt-1",
-			...(extra.operationId === undefined ? {} : { operationId: extra.operationId }),
-			...(extra.receiptId === undefined ? {} : { receiptId: extra.receiptId }),
+			...(operationId === undefined ? {} : { operationId }),
+			...(transitionReceiptId === undefined ? {} : { receiptId: transitionReceiptId }),
 		},
 		payload: {
 			schemaVersion: 1,
@@ -1453,11 +1472,13 @@ function workerLifecycleEntry(
 			revision,
 			createdAt: WORKER_TIMES.starting,
 			...(revision >= 2 ? { readyAt: WORKER_TIMES.ready } : {}),
-			...(revision >= 4 ? { endedAt: WORKER_TIMES.completed } : {}),
-			...(revision === 3 ? { activeOperationId: "operation-1" } : {}),
-			...(revision >= 4 ? { receiptId: "receipt-1" } : {}),
-			...(extra.operationId === undefined ? {} : { operationId: extra.operationId }),
-			...extra,
+			...(["completed", "failed", "cancelled", "lost", "reclaiming", "reclaimed", "reclaim_unknown"].includes(status)
+				? { endedAt: WORKER_TIMES.completed }
+				: {}),
+			...(status === "running" || status === "cancelling" ? { activeOperationId: "operation-1" } : {}),
+			...(persistedReceiptId === undefined ? {} : { receiptId: persistedReceiptId }),
+			...(operationId === undefined ? {} : { operationId }),
+			...recordExtra,
 		},
 	});
 }
@@ -1469,6 +1490,11 @@ function workerOperationEntry(
 	revision: number,
 	extra: Record<string, unknown> = {},
 ): Extract<SessionEntry, { type: "custom" }> {
+	const { sideEffectState, receiptId: suppliedReceiptId, ...payloadExtra } = extra;
+	const receiptId = suppliedReceiptId === null
+		? undefined
+		: suppliedReceiptId ?? (phase === "terminal" ? "receipt-1" : undefined);
+	const effectiveSideEffectState = sideEffectState ?? (phase === "terminal" ? "none" : undefined);
 	return workerEntry(id, timestamp, "worker.operation_recorded", {
 		schemaVersion: 1,
 		class: "durable",
@@ -1482,7 +1508,7 @@ function workerOperationEntry(
 			laneId: "main",
 			workerId: "worker-1",
 			operationId: "operation-1",
-			...(extra.receiptId === undefined ? {} : { receiptId: extra.receiptId }),
+			...(receiptId === undefined ? {} : { receiptId }),
 		},
 		payload: {
 			schemaVersion: 1,
@@ -1494,8 +1520,9 @@ function workerOperationEntry(
 			phase,
 			revision,
 			recordedAt: timestamp,
-			...(phase === "terminal" ? { sideEffectState: "none", receiptId: "receipt-1" } : {}),
-			...extra,
+			...(effectiveSideEffectState === undefined ? {} : { sideEffectState: effectiveSideEffectState }),
+			...(receiptId === undefined ? {} : { receiptId }),
+			...payloadExtra,
 		},
 	});
 }
@@ -1542,6 +1569,52 @@ function validWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 	];
 }
 
+function reclaimedWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
+	return [
+		...validWorkerEntries(),
+		workerLifecycleEntry("worker-reclaiming", WORKER_TIMES.reclaiming, "reclaiming", 5),
+		workerLifecycleEntry("worker-reclaimed", WORKER_TIMES.reclaimed, "reclaimed", 6),
+	];
+}
+
+function reclaimUnknownWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
+	return [
+		...workerRunEntries(),
+		workerLifecycleEntry("worker-starting", WORKER_TIMES.starting, "starting", 1),
+		workerLifecycleEntry("worker-ready", WORKER_TIMES.ready, "ready", 2),
+		workerOperationEntry("worker-claimed", WORKER_TIMES.ready, "claimed", 2),
+		workerLifecycleEntry("worker-running", WORKER_TIMES.running, "running", 3, { operationId: "operation-1" }),
+		workerOperationEntry("worker-started", WORKER_TIMES.running, "started", 3),
+		workerLifecycleEntry("worker-lost", WORKER_TIMES.completed, "lost", 4, {
+			operationId: "operation-1",
+			recordReceiptId: null,
+		}),
+		workerOperationEntry("worker-terminal-lost", WORKER_TIMES.completed, "terminal", 4, {
+			sideEffectState: "side_effect_unknown",
+			receiptId: null,
+		}),
+		workerLifecycleEntry("worker-reclaiming", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+			recordReceiptId: null,
+		}),
+		workerLifecycleEntry("worker-reclaim-unknown", WORKER_TIMES.reclaimed, "reclaim_unknown", 6, {
+			recordReceiptId: null,
+		}),
+	];
+}
+
+function workerEnvelopeParts(entry: Extract<SessionEntry, { type: "custom" }>): {
+	readonly data: Record<string, unknown>;
+	readonly correlation: Record<string, unknown>;
+	readonly payload: Record<string, unknown>;
+} {
+	const data = entry.data as Record<string, unknown>;
+	return {
+		data,
+		correlation: data.correlation as Record<string, unknown>,
+		payload: data.payload as Record<string, unknown>,
+	};
+}
+
 describe("execution audit Worker source contract", () => {
 	it("projects every lifecycle, operation, and receipt source with run linkage", () => {
 		const folded = new ExecutionAuditAdapter(workerSession(validWorkerEntries())).fold();
@@ -1559,6 +1632,255 @@ describe("execution audit Worker source contract", () => {
 		expect(workerEvents[1]).toMatchObject({ type: "worker.operation", summary: { phase: "claimed", operationId: "operation-1", revision: 2 } });
 		expect(workerEvents.at(-1)).toMatchObject({ type: "worker.receipt", summary: { workerReceiptId: "receipt-1", terminalRecordRevision: 4 } });
 		expect(folded.warnings).toEqual([]);
+	});
+
+	it("accepts production-shape reclaimed and reclaim_unknown lifecycles", () => {
+		const reclaimedEntries = reclaimedWorkerEntries();
+		const reclaiming = workerEnvelopeParts(reclaimedEntries.at(-2)!);
+		const reclaimed = workerEnvelopeParts(reclaimedEntries.at(-1)!);
+		expect(reclaiming.payload.receiptId).toBe("receipt-1");
+		expect(reclaimed.payload.receiptId).toBe("receipt-1");
+		expect(reclaiming.correlation.receiptId).toBeUndefined();
+		expect(reclaimed.correlation.receiptId).toBeUndefined();
+
+		const reclaimedFold = new ExecutionAuditAdapter(workerSession(reclaimedEntries)).fold();
+		expect(reclaimedFold.warnings).toEqual([]);
+		expect(reclaimedFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2)).toMatchObject([
+			{ summary: { status: "reclaiming", endedAt: WORKER_TIMES.completed, receiptId: "receipt-1" } },
+			{ summary: { status: "reclaimed", endedAt: WORKER_TIMES.completed, receiptId: "receipt-1" } },
+		]);
+
+		const unknownEntries = reclaimUnknownWorkerEntries();
+		const unknownFold = new ExecutionAuditAdapter(workerSession(unknownEntries)).fold();
+		expect(unknownFold.warnings).toEqual([]);
+		expect(unknownFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2)).toMatchObject([
+			{ summary: { status: "reclaiming", endedAt: WORKER_TIMES.completed } },
+			{ summary: { status: "reclaim_unknown", endedAt: WORKER_TIMES.completed } },
+		]);
+		expect(JSON.stringify(unknownFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2))).not.toContain("receiptId");
+	});
+
+	it("preserves lifecycle facts while allowing only monotonic heartbeat snapshots", () => {
+		const entries = [
+			...workerRunEntries(),
+			workerLifecycleEntry("worker-starting", WORKER_TIMES.starting, "starting", 1),
+			workerLifecycleEntry("worker-ready", WORKER_TIMES.ready, "ready", 2),
+			workerOperationEntry("worker-claimed", WORKER_TIMES.ready, "claimed", 2),
+			workerLifecycleEntry("worker-running", WORKER_TIMES.running, "running", 3, {
+				operationId: "operation-1",
+				lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
+			}),
+			workerOperationEntry("worker-started", WORKER_TIMES.running, "started", 3),
+			workerLifecycleEntry("worker-completed", WORKER_TIMES.completed, "completed", 4, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+				lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+			}),
+			workerOperationEntry("worker-terminal", WORKER_TIMES.completed, "terminal", 4),
+			workerReceiptEntry(),
+			workerLifecycleEntry("worker-reclaiming", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+			}),
+			workerLifecycleEntry("worker-reclaimed", WORKER_TIMES.reclaimed, "reclaimed", 6, {
+				lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+			}),
+		];
+		const folded = new ExecutionAuditAdapter(workerSession(entries)).fold();
+		expect(folded.warnings).toEqual([]);
+		expect(folded.events.filter((event) => event.type === "worker.lifecycle").slice(-3)).toMatchObject([
+			{ summary: { status: "completed", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
+			{ summary: { status: "reclaiming", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
+			{ summary: { status: "reclaimed", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
+		]);
+	});
+
+	it("rejects heartbeat rollback or disappearance from later lifecycle snapshots", () => {
+		const prefix = [
+			...validWorkerEntries().slice(0, 5),
+			workerLifecycleEntry("worker-running-heartbeat", WORKER_TIMES.running, "running", 3, {
+				operationId: "operation-1",
+				lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
+			}),
+			workerOperationEntry("worker-started-heartbeat", WORKER_TIMES.running, "started", 3),
+		];
+		const invalidSnapshots = [
+			workerLifecycleEntry("worker-heartbeat-rollback", WORKER_TIMES.completed, "completed", 4, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+				lastHeartbeatAt: "2026-08-16T00:00:01.400Z",
+			}),
+			workerLifecycleEntry("worker-heartbeat-disappeared", WORKER_TIMES.completed, "completed", 4, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+			}),
+		];
+		for (const snapshot of invalidSnapshots) {
+			const folded = new ExecutionAuditAdapter(workerSession([...prefix, snapshot])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === snapshot.id), snapshot.id).toBe(false);
+			expect(folded.warnings, snapshot.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: snapshot.id,
+			}));
+		}
+	});
+
+	it("rejects tampered reclaim snapshots and lifecycle transition correlations", () => {
+		const scenarios = [
+			workerLifecycleEntry("worker-reclaim-repeats-receipt", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				receiptId: "receipt-1",
+			}),
+			workerLifecycleEntry("worker-reclaim-changes-receipt", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				recordReceiptId: "receipt-other",
+			}),
+			workerLifecycleEntry("worker-reclaim-has-operation", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				operationId: "operation-1",
+			}),
+			workerLifecycleEntry("worker-reclaim-changes-ready", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				readyAt: WORKER_TIMES.running,
+			}),
+			workerLifecycleEntry("worker-reclaim-changes-ended", WORKER_TIMES.reclaiming, "reclaiming", 5, {
+				endedAt: WORKER_TIMES.reclaiming,
+			}),
+		];
+		for (const scenario of scenarios) {
+			const folded = new ExecutionAuditAdapter(workerSession([...validWorkerEntries(), scenario])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === scenario.id), scenario.id).toBe(false);
+			expect(folded.warnings, scenario.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: scenario.id,
+			}));
+		}
+	});
+
+	it("binds lifecycle operation correlation to running, cancelling, and execution-terminal transitions", () => {
+		const cancellingEntries = [
+			...validWorkerEntries().slice(0, 7),
+			workerLifecycleEntry("worker-cancelling", WORKER_TIMES.cancelling, "cancelling", 4, {
+				operationId: "operation-1",
+			}),
+			workerLifecycleEntry("worker-cancelled", WORKER_TIMES.completed, "cancelled", 5, {
+				operationId: "operation-1",
+				receiptId: "receipt-1",
+			}),
+			workerOperationEntry("worker-terminal-cancelled", WORKER_TIMES.completed, "terminal", 5),
+		];
+		const cancellingFold = new ExecutionAuditAdapter(workerSession(cancellingEntries)).fold();
+		expect(cancellingFold.warnings).toEqual([]);
+		expect(cancellingFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2)).toMatchObject([
+			{ summary: { status: "cancelling", operationId: "operation-1", activeOperationId: "operation-1" } },
+			{ summary: { status: "cancelled", operationId: "operation-1", receiptId: "receipt-1" } },
+		]);
+
+		const invalidTransitions = [
+			workerLifecycleEntry("worker-running-wrong-operation", WORKER_TIMES.running, "running", 3, {
+				operationId: "operation-other",
+			}),
+			workerLifecycleEntry("worker-completed-no-operation", WORKER_TIMES.completed, "completed", 4, {
+				receiptId: "receipt-1",
+			}),
+		];
+		const prefixes = [validWorkerEntries().slice(0, 5), validWorkerEntries().slice(0, 7)];
+		for (let index = 0; index < invalidTransitions.length; index++) {
+			const transition = invalidTransitions[index]!;
+			const folded = new ExecutionAuditAdapter(workerSession([...prefixes[index]!, transition])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === transition.id), transition.id).toBe(false);
+			expect(folded.warnings, transition.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: transition.id,
+			}));
+		}
+	});
+
+	it("enforces phase-specific operation side-effect and receipt facts", () => {
+		const claimedWithFacts = workerOperationEntry("worker-claimed-with-facts", WORKER_TIMES.ready, "claimed", 2, {
+			sideEffectState: "none",
+			receiptId: "receipt-1",
+		});
+		const startedWithFacts = workerOperationEntry("worker-started-with-facts", WORKER_TIMES.running, "started", 3, {
+			receiptId: "receipt-1",
+		});
+		const completedWrongReceipt = workerOperationEntry(
+			"worker-terminal-wrong-receipt",
+			WORKER_TIMES.completed,
+			"terminal",
+			4,
+			{ receiptId: "receipt-other" },
+		);
+		const completedMissingState = workerOperationEntry(
+			"worker-terminal-missing-state",
+			WORKER_TIMES.completed,
+			"terminal",
+			4,
+		);
+		delete workerEnvelopeParts(completedMissingState).payload.sideEffectState;
+		const scenarios = [
+			{ entry: claimedWithFacts, prefix: validWorkerEntries().slice(0, 4) },
+			{ entry: startedWithFacts, prefix: validWorkerEntries().slice(0, 6) },
+			{ entry: completedWrongReceipt, prefix: validWorkerEntries().slice(0, 8) },
+			{ entry: completedMissingState, prefix: validWorkerEntries().slice(0, 8) },
+		];
+		for (const { entry, prefix } of scenarios) {
+			const folded = new ExecutionAuditAdapter(workerSession([...prefix, entry])).fold();
+			expect(folded.events.some((event) => event.sourceEntryId === entry.id), entry.id).toBe(false);
+			expect(folded.warnings, entry.id).toContainEqual(expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: entry.id,
+			}));
+		}
+
+		const failedEntries = [
+			...validWorkerEntries().slice(0, 7),
+			workerLifecycleEntry("worker-failed", WORKER_TIMES.completed, "failed", 4, {
+				operationId: "operation-1",
+				recordReceiptId: null,
+			}),
+			workerOperationEntry("worker-terminal-failed", WORKER_TIMES.completed, "terminal", 4, {
+				sideEffectState: "unknown",
+				receiptId: null,
+			}),
+		];
+		const failedFold = new ExecutionAuditAdapter(workerSession(failedEntries)).fold();
+		expect(failedFold.warnings).toEqual([]);
+		expect(failedFold.events.find((event) => event.sourceEntryId === "worker-terminal-failed")).toMatchObject({
+			type: "worker.operation",
+			summary: { phase: "terminal", sideEffectState: "unknown" },
+		});
+
+		const failedMissingState = workerOperationEntry(
+			"worker-terminal-failed-missing-state",
+			WORKER_TIMES.completed,
+			"terminal",
+			4,
+			{ receiptId: null },
+		);
+		delete workerEnvelopeParts(failedMissingState).payload.sideEffectState;
+		const missingFold = new ExecutionAuditAdapter(workerSession([...failedEntries.slice(0, -1), failedMissingState])).fold();
+		expect(missingFold.events.some((event) => event.sourceEntryId === failedMissingState.id)).toBe(false);
+		expect(missingFold.warnings).toContainEqual(expect.objectContaining({
+			code: "malformed_source",
+			sourceEntryId: failedMissingState.id,
+		}));
+	});
+
+	it("binds a receipt marker to the terminal operation record receipt", () => {
+		const original = workerReceiptEntry();
+		const { data, correlation, payload } = workerEnvelopeParts(original);
+		const mismatched = {
+			...original,
+			id: "worker-receipt-entry-other",
+			data: {
+				...data,
+				eventId: "worker-receipt:receipt-other",
+				correlation: { ...correlation, workerReceiptId: "receipt-other" },
+				payload: { ...payload, workerReceiptId: "receipt-other" },
+			},
+		};
+		const folded = new ExecutionAuditAdapter(workerSession([...validWorkerEntries(), mismatched])).fold();
+		expect(folded.events.some((event) => event.sourceEntryId === mismatched.id)).toBe(false);
+		expect(folded.warnings).toContainEqual(expect.objectContaining({
+			code: "malformed_source",
+			sourceEntryId: mismatched.id,
+		}));
 	});
 
 	it("rejects every forbidden Worker field without echoing its value", () => {

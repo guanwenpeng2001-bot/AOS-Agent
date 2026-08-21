@@ -2215,10 +2215,11 @@ interface WorkerAuditOperationState {
 	readonly claimedRevision: number;
 	readonly startedRevision?: number;
 	readonly terminalRevision?: number;
+	readonly terminalReceiptId?: string;
 }
 
 interface WorkerAuditFold {
-	readonly lifecycleByRevision: Map<string, WorkerRecordV1>;
+	readonly lifecycleByRevision: Map<string, WorkerLifecycleAuditRecord>;
 	readonly currentByWorker: Map<string, WorkerRecordV1>;
 	readonly lastLifecycleEnvelopeByWorker: Map<string, { readonly revision: number; readonly timestamp: string }>;
 	readonly operations: Map<string, WorkerAuditOperationState>;
@@ -2332,6 +2333,32 @@ function parseWorkerFact(
 					: isExecutionTerminal
 						? record.endedAt !== undefined && timestamp === record.endedAt
 						: true;
+		const previous = record === undefined ? undefined : fold.currentByWorker.get(record.workerId);
+		const expectedReadyAt = previous?.readyAt ?? (record?.status === "ready" ? timestamp : undefined);
+		const expectedEndedAt = previous?.endedAt ?? (isExecutionTerminal ? timestamp : undefined);
+		const transitionReceiptId = workerString(correlation.receiptId) ? correlation.receiptId : undefined;
+		const expectedReceiptId = transitionReceiptId ?? previous?.receiptId;
+		const expectedActiveOperationId = record?.status === "running"
+			? operationId
+			: record?.status === "cancelling"
+				? previous?.activeOperationId
+				: undefined;
+		const transitionOperationValid = record?.status === "running"
+			? operationId !== undefined && operationId === record.activeOperationId
+			: record?.status === "cancelling" || isExecutionTerminal
+				? operationId !== undefined && operationId === previous?.activeOperationId
+				: operationId === undefined;
+		const transitionReceiptValid = record?.status === "completed" || record?.status === "cancelled"
+			? transitionReceiptId !== undefined
+			: record?.status === "lost" || !isExecutionTerminal
+				? transitionReceiptId === undefined
+				: true;
+		const heartbeatValid = record === undefined
+			? false
+			: previous === undefined
+				? record.lastHeartbeatAt === undefined
+				: previous.lastHeartbeatAt === undefined ||
+					(record.lastHeartbeatAt !== undefined && record.lastHeartbeatAt >= previous.lastHeartbeatAt);
 		if (
 			record === undefined ||
 			(operationId !== undefined && !workerString(operationId)) ||
@@ -2345,19 +2372,25 @@ function parseWorkerFact(
 			correlation.bindingEpochId !== record.bindingEpochId ||
 			correlation.attemptId !== record.attemptId ||
 			correlation.operationId !== operationId ||
-			correlation.receiptId !== record.receiptId ||
 			sequence !== record.revision ||
 			envelope.eventId !== `worker-lifecycle:${record.workerId}:${record.revision}` ||
 			envelope.streamId !== `worker-lifecycle:${record.workerId}` ||
 			!workerString(record.profileId) ||
 			!lifecycleTimeValid ||
+			!transitionOperationValid ||
+			!transitionReceiptValid ||
+			record.readyAt !== expectedReadyAt ||
+			record.endedAt !== expectedEndedAt ||
+			record.activeOperationId !== expectedActiveOperationId ||
+			record.receiptId !== expectedReceiptId ||
+			!heartbeatValid ||
+			(record.lastHeartbeatAt !== undefined && record.lastHeartbeatAt > timestamp) ||
 			(previousLifecycle !== undefined &&
 				(record.revision !== previousLifecycle.revision + 1 || timestamp < previousLifecycle.timestamp))
 		) {
 			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 			return;
 		}
-		const previous = fold.currentByWorker.get(record.workerId);
 		if (
 			(previous === undefined && (record.revision !== 1 || record.status !== "starting")) ||
 			(previous !== undefined &&
@@ -2381,7 +2414,10 @@ function parseWorkerFact(
 			internalWarnings.push(warning(sessionId, "duplicate_source", entry, eventType, version, undefined, true));
 			return;
 		}
-		fold.lifecycleByRevision.set(revisionKey, record);
+		fold.lifecycleByRevision.set(revisionKey, {
+			record,
+			...(operationId === undefined ? {} : { operationId }),
+		});
 		fold.currentByWorker.set(record.workerId, record);
 		fold.lastLifecycleEnvelopeByWorker.set(record.workerId, { revision: record.revision, timestamp });
 		candidates.push({
@@ -2408,22 +2444,38 @@ function parseWorkerFact(
 			...(sideEffectState === undefined ? {} : { sideEffectState: sideEffectState as WorkerOperationAuditRecord["sideEffectState"] }),
 			...(receiptId === undefined ? {} : { receiptId: String(receiptId) }),
 		};
-		const record = fold.lifecycleByRevision.get(`${value.workerId}:${value.revision}`);
+		const lifecycle = fold.lifecycleByRevision.get(`${value.workerId}:${value.revision}`);
+		const record = lifecycle?.record;
 		const operationState = fold.operations.get(`${value.workerId}:${value.operationId}`);
 		const validPhase = phase === "claimed" || phase === "started" || phase === "terminal";
 		const phaseValid = phase === "claimed"
-			? record?.status === "ready" && operationState === undefined
+			? record?.status === "ready" && lifecycle?.operationId === undefined && operationState === undefined
 			: phase === "started"
-				? record?.status === "running" && record.activeOperationId === value.operationId && operationState?.startedRevision === undefined && operationState?.terminalRevision === undefined
-				: record !== undefined && ["completed", "failed", "cancelled", "lost"].includes(record.status) && record.activeOperationId === undefined && operationState?.startedRevision !== undefined && operationState.terminalRevision === undefined;
+				? record?.status === "running" && lifecycle?.operationId === value.operationId &&
+					record.activeOperationId === value.operationId && operationState?.startedRevision === undefined &&
+					operationState?.terminalRevision === undefined
+				: record !== undefined && ["completed", "failed", "cancelled", "lost"].includes(record.status) &&
+					lifecycle?.operationId === value.operationId && record.activeOperationId === undefined &&
+					operationState?.startedRevision !== undefined && operationState.terminalRevision === undefined;
+		const sideEffectStateValid = sideEffectState === undefined || sideEffectState === "none" ||
+			sideEffectState === "unknown" || sideEffectState === "side_effect_unknown";
+		const operationFactsValid = phase === "claimed" || phase === "started"
+			? sideEffectState === undefined && receiptId === undefined && correlation.receiptId === undefined
+			: record?.status === "completed" || record?.status === "cancelled"
+				? sideEffectState === "none" && receiptId === record.receiptId && correlation.receiptId === record.receiptId
+				: record?.status === "lost"
+					? sideEffectState === "side_effect_unknown" && receiptId === undefined && correlation.receiptId === undefined
+					: record?.status === "failed" && sideEffectState !== undefined &&
+						receiptId === record.receiptId && correlation.receiptId === record.receiptId;
 		if (
 			!validPhase || !phaseValid || !workerString(value.workerId) || !workerString(value.providerId) ||
 			!workerString(value.sessionId) || value.sessionId !== sessionId || !workerString(value.laneId) ||
 			!workerString(value.operationId) || !isCount(value.revision) ||
-			(payload.sideEffectState !== undefined && payload.sideEffectState !== "none" && payload.sideEffectState !== "unknown" && payload.sideEffectState !== "side_effect_unknown") ||
+			!sideEffectStateValid || !operationFactsValid ||
 			(payload.receiptId !== undefined && !workerString(payload.receiptId)) ||
+			value.providerId !== record?.providerId || value.sessionId !== record?.sessionId || value.laneId !== record?.laneId ||
 			correlation.sessionId !== value.sessionId || correlation.laneId !== value.laneId || correlation.workerId !== value.workerId ||
-			correlation.operationId !== value.operationId || correlation.receiptId !== value.receiptId ||
+			correlation.operationId !== value.operationId ||
 			envelope.eventId !== `worker-operation:${value.workerId}:${value.revision}` ||
 			envelope.streamId !== `worker-operation:${value.workerId}:${value.operationId}` ||
 			payload.revision !== sequence ||
@@ -2437,7 +2489,11 @@ function parseWorkerFact(
 			? { workerId: value.workerId, operationId: value.operationId, claimedRevision: value.revision }
 			: phase === "started"
 				? { ...operationState!, startedRevision: value.revision }
-				: { ...operationState!, terminalRevision: value.revision });
+				: {
+					...operationState!,
+					terminalRevision: value.revision,
+					...(value.receiptId === undefined ? {} : { terminalReceiptId: value.receiptId }),
+				});
 		candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId: value.workerId } });
 		return;
 	}
@@ -2454,6 +2510,7 @@ function parseWorkerFact(
 	if (
 		!workerString(workerId) || !workerString(value.workerReceiptId) || !workerString(value.operationId) ||
 		(value.taskId !== undefined && !workerString(value.taskId)) || operationState?.terminalRevision !== value.terminalRecordRevision ||
+		operationState?.terminalReceiptId !== value.workerReceiptId ||
 		envelope.eventId !== `worker-receipt:${value.workerReceiptId}` ||
 		envelope.streamId !== `worker-receipts:${workerId}` ||
 		correlation.sessionId !== sessionId || correlation.operationId !== value.operationId ||
