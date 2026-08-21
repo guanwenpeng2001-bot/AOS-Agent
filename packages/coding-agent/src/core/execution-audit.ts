@@ -2185,11 +2185,12 @@ function createBase(
 	entry: Extract<SessionEntry, { type: "custom" }>,
 	external?: ExternalExecutionRef,
 	adapter?: ExternalAdapterIdentity,
+	recordedAt = entry.timestamp,
 ): AuditEventBase {
 	const base = {
 		schemaVersion: 1,
 		eventId: entry.id,
-		recordedAt: entry.timestamp,
+		recordedAt,
 		sessionId,
 		sourceEntryId: entry.id,
 	} as DeepMutable<AuditEventBase>;
@@ -2219,6 +2220,7 @@ interface WorkerAuditOperationState {
 interface WorkerAuditFold {
 	readonly lifecycleByRevision: Map<string, WorkerRecordV1>;
 	readonly currentByWorker: Map<string, WorkerRecordV1>;
+	readonly lastLifecycleEnvelopeByWorker: Map<string, { readonly revision: number; readonly timestamp: string }>;
 	readonly operations: Map<string, WorkerAuditOperationState>;
 }
 
@@ -2235,7 +2237,7 @@ function workerEnvelope(
 	customType: string,
 	allowedPayload: ReadonlySet<string>,
 	allowedCorrelation: ReadonlySet<string>,
-): { readonly eventId: string; readonly streamId: string; readonly payload: Record<string, unknown>; readonly correlation: Record<string, unknown>; readonly sequence: number } | undefined {
+): { readonly eventId: string; readonly streamId: string; readonly payload: Record<string, unknown>; readonly correlation: Record<string, unknown>; readonly sequence: number; readonly timestamp: string } | undefined {
 	const data = entry.data;
 	if (
 		!isRecord(data) ||
@@ -2261,6 +2263,7 @@ function workerEnvelope(
 		payload: data.payload,
 		correlation: data.correlation,
 		sequence: data.sequence,
+		timestamp: data.timestamp,
 	};
 }
 
@@ -2314,14 +2317,26 @@ function parseWorkerFact(
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 		return;
 	}
-	const { payload, correlation, sequence } = envelope;
+	const { payload, correlation, sequence, timestamp } = envelope;
 	if (eventType === "worker.lifecycle") {
 		const record = workerLifecyclePayloadRecord(payload);
 		const operationId = payload.operationId;
+		const previousLifecycle = fold.lastLifecycleEnvelopeByWorker.get(record?.workerId ?? "");
+		const isExecutionTerminal = ["completed", "failed", "cancelled", "lost"].includes(record?.status ?? "");
+		const lifecycleTimeValid = record === undefined
+			? false
+			: record.status === "starting"
+				? timestamp >= record.createdAt
+				: record.status === "ready"
+					? record.readyAt !== undefined && timestamp === record.readyAt
+					: isExecutionTerminal
+						? record.endedAt !== undefined && timestamp === record.endedAt
+						: true;
 		if (
 			record === undefined ||
 			(operationId !== undefined && !workerString(operationId)) ||
 			!workerString(correlation.sessionId) ||
+			record.sessionId !== sessionId ||
 			correlation.sessionId !== record.sessionId ||
 			correlation.laneId !== record.laneId ||
 			correlation.workerId !== record.workerId ||
@@ -2331,10 +2346,13 @@ function parseWorkerFact(
 			correlation.attemptId !== record.attemptId ||
 			correlation.operationId !== operationId ||
 			correlation.receiptId !== record.receiptId ||
-			entry.data !== undefined && sequence !== record.revision ||
+			sequence !== record.revision ||
 			envelope.eventId !== `worker-lifecycle:${record.workerId}:${record.revision}` ||
 			envelope.streamId !== `worker-lifecycle:${record.workerId}` ||
-			!workerString(record.profileId)
+			!workerString(record.profileId) ||
+			!lifecycleTimeValid ||
+			(previousLifecycle !== undefined &&
+				(record.revision !== previousLifecycle.revision + 1 || timestamp < previousLifecycle.timestamp))
 		) {
 			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 			return;
@@ -2353,8 +2371,7 @@ function parseWorkerFact(
 					record.bindingEpochId !== previous.bindingEpochId ||
 					record.attemptId !== previous.attemptId ||
 					record.profileId !== previous.profileId ||
-					!workerTransitionAllowedV1(previous.status, record.status) ||
-					entry.timestamp < (previous.endedAt ?? previous.createdAt)))
+					!workerTransitionAllowedV1(previous.status, record.status)))
 		) {
 			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 			return;
@@ -2366,10 +2383,11 @@ function parseWorkerFact(
 		}
 		fold.lifecycleByRevision.set(revisionKey, record);
 		fold.currentByWorker.set(record.workerId, record);
+		fold.lastLifecycleEnvelopeByWorker.set(record.workerId, { revision: record.revision, timestamp });
 		candidates.push({
 			eventType,
 			entry,
-			recordedAt: entry.timestamp,
+			recordedAt: timestamp,
 			value: { record, ...(operationId === undefined ? {} : { operationId }) },
 			relation: { kind: "worker", workerId: record.workerId, runId: record.runId },
 		});
@@ -2408,7 +2426,8 @@ function parseWorkerFact(
 			correlation.operationId !== value.operationId || correlation.receiptId !== value.receiptId ||
 			envelope.eventId !== `worker-operation:${value.workerId}:${value.revision}` ||
 			envelope.streamId !== `worker-operation:${value.workerId}:${value.operationId}` ||
-			entry.data !== undefined && payload.recordedAt !== entry.timestamp
+			payload.revision !== sequence ||
+			payload.recordedAt !== timestamp
 		) {
 			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 			return;
@@ -2419,7 +2438,7 @@ function parseWorkerFact(
 			: phase === "started"
 				? { ...operationState!, startedRevision: value.revision }
 				: { ...operationState!, terminalRevision: value.revision });
-		candidates.push({ eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "worker", workerId: value.workerId } });
+		candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId: value.workerId } });
 		return;
 	}
 	const streamId = isRecord(entry.data) && typeof entry.data.streamId === "string" ? entry.data.streamId : "";
@@ -2443,7 +2462,7 @@ function parseWorkerFact(
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 		return;
 	}
-	candidates.push({ eventType, entry, recordedAt: entry.timestamp, value, relation: { kind: "worker", workerId } });
+	candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId } });
 }
 
 function parseSourceCandidate(
@@ -3368,7 +3387,7 @@ function sourceEventForCandidate(
 	runId: string | undefined,
 	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
-	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter);
+	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter, candidate.recordedAt);
 	if (candidate.eventType === "model.binding") {
 		const summary = safeModelBinding(candidate.value);
 		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
@@ -3542,6 +3561,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const workerFold: WorkerAuditFold = {
 		lifecycleByRevision: new Map(),
 		currentByWorker: new Map(),
+		lastLifecycleEnvelopeByWorker: new Map(),
 		operations: new Map(),
 	};
 	const seenEntryIds = new Set<string>();

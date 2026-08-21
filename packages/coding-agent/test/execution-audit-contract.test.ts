@@ -1417,8 +1417,9 @@ function workerLifecycleEntry(
 	status: string,
 	revision: number,
 	extra: Record<string, unknown> = {},
+	entryTimestamp = timestamp,
 ): Extract<SessionEntry, { type: "custom" }> {
-	return workerEntry(id, timestamp, "worker.lifecycle_transitioned", {
+	return workerEntry(id, entryTimestamp, "worker.lifecycle_transitioned", {
 		schemaVersion: 1,
 		class: "durable",
 		category: "worker.lifecycle_transitioned",
@@ -1591,5 +1592,63 @@ describe("execution audit Worker source contract", () => {
 		const withLateReceipt = new ExecutionAuditAdapter(workerSession([...entries, lateReceipt])).replay(WORKER_RUN_ID);
 		expect(withLateReceipt.run.status).toBe("completed");
 		expect(withLateReceipt.events.filter((event) => event.type === "worker.receipt")).toHaveLength(1);
+	});
+
+	it("uses the durable envelope timestamp instead of the SessionEntry clock", () => {
+		const entry = workerLifecycleEntry(
+			"worker-starting-late-entry",
+			WORKER_TIMES.starting,
+			"starting",
+			1,
+			{},
+			"2026-08-16T00:00:10.000Z",
+		);
+		const folded = new ExecutionAuditAdapter(workerSession([entry])).fold();
+		expect(folded.events).toHaveLength(1);
+		expect(folded.events[0]).toMatchObject({ recordedAt: WORKER_TIMES.starting });
+		expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(false);
+	});
+
+	it("rejects lifecycle records from another audited session", () => {
+		const entry = workerLifecycleEntry("worker-cross-session", WORKER_TIMES.starting, "starting", 1);
+		const data = entry.data as Record<string, unknown>;
+		const payload = data.payload as Record<string, unknown>;
+		const correlation = data.correlation as Record<string, unknown>;
+		const crossSession = {
+			...entry,
+			data: {
+				...data,
+				payload: { ...payload, sessionId: "other-session" },
+				correlation: { ...correlation, sessionId: "other-session" },
+			},
+		};
+		const folded = new ExecutionAuditAdapter(workerSession([crossSession])).fold();
+		expect(folded.events).toEqual([]);
+		expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(true);
+	});
+
+	it("rejects an operation payload whose revision differs from the envelope sequence", () => {
+		const entry = workerOperationEntry("worker-claimed-revision-mismatch", WORKER_TIMES.ready, "claimed", 2);
+		const data = entry.data as Record<string, unknown>;
+		const payload = data.payload as Record<string, unknown>;
+		const mismatched = { ...entry, data: { ...data, payload: { ...payload, revision: 99 } } };
+		const folded = new ExecutionAuditAdapter(workerSession([
+			workerLifecycleEntry("worker-starting-for-revision", WORKER_TIMES.starting, "starting", 1),
+			workerLifecycleEntry("worker-ready-for-revision", WORKER_TIMES.ready, "ready", 2),
+			mismatched,
+		])).fold();
+		expect(folded.events.filter((event) => event.type === "worker.operation")).toEqual([]);
+		expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(true);
+	});
+
+	it("rejects lifecycle envelope time rollback for a worker", () => {
+		const folded = new ExecutionAuditAdapter(workerSession([
+			workerLifecycleEntry("worker-starting-time-order", "2026-08-16T00:00:00.500Z", "starting", 1),
+			workerLifecycleEntry("worker-ready-time-rollback", "2026-08-16T00:00:00.400Z", "ready", 2, {
+				readyAt: "2026-08-16T00:00:00.400Z",
+			}),
+		])).fold();
+		expect(folded.events.map((event) => event.sourceEntryId)).toEqual(["worker-starting-time-order"]);
+		expect(folded.warnings.some((warning) => warning.sourceEntryId === "worker-ready-time-rollback" && warning.code === "malformed_source")).toBe(true);
 	});
 });
