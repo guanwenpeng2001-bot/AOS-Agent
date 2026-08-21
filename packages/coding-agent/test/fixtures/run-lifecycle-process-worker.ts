@@ -7,6 +7,8 @@ if (sessionFile === undefined || (phase !== "accepted" && phase !== "started" &&
 	throw new Error("Expected a session file and accepted, started, or terminal phase");
 }
 
+process.stdout.write("startup-ready\n");
+
 const model: RunModelReference = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" };
 const session = SessionManager.open(sessionFile, dirname(sessionFile));
 const coordinator = createRunLifecycleCoordinator(session, { now: () => "2026-08-14T00:00:00.000Z" });
@@ -22,5 +24,5 @@ const run = coordinator.reserve().accept({
 if (phase === "started" || phase === "terminal") run.start();
 if (phase === "terminal") run.settle({ outcome: "completed" });
 
-process.stdout.write("ready\n");
+process.stdout.write("boundary-ready\n");
 setInterval(() => {}, 1_000);
