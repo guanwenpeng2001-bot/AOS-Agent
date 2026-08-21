@@ -12,7 +12,12 @@
  */
 
 import * as crypto from "node:crypto";
-import { AgentOperationError, type ThinkingLevel } from "@aos-agent/agent-core";
+import {
+	AgentOperationError,
+	type FoundationError,
+	type Result as ResultValue,
+	type ThinkingLevel,
+} from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import { CapabilityError } from "../../core/capability-registry.ts";
 import { PolicyError } from "../../core/execution-policy.ts";
@@ -148,6 +153,12 @@ import {
 	serializePublicSessionTreeNode,
 } from "../../core/run-lifecycle.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import {
+	WORKER_LIFECYCLE_STATUSES,
+	validateWorkerRecordV1,
+	type WorkerLifecycleStatusV1,
+	type WorkerRecordV1,
+} from "../../core/worker.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent, type JsonAgentSessionEvent } from "../json-event.ts";
 import type {
@@ -182,6 +193,10 @@ import type {
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
+	RpcWorkerCommandType,
+	RpcWorkerErrorCode,
+	RpcWorkerRecord,
+	RpcWorkerResponse,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -200,6 +215,9 @@ import type {
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphMutationData,
+	WorkerGetData,
+	WorkerListData,
+	WorkerReclaimData,
 } from "./rpc-types.ts";
 
 /** Public records emitted by the transport-neutral RPC controller. */
@@ -208,6 +226,7 @@ export type RpcWireRecord =
 	| RpcAutomationResponse
 	| RpcMcpAuthResponse
 	| RpcMcpContentResponse
+	| RpcWorkerResponse
 	| RpcExtensionUIRequest
 	| JsonAgentSessionEvent
 	| RpcHostRunStreamEvent
@@ -239,6 +258,15 @@ export interface RpcHostControllerOptions {
 	output?: RpcHostOutputSink | RpcOutputSink;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
+	/** Resolve the authoritative Worker registry for the current Session. */
+	workerRegistry?: (session: AgentSessionRuntime["session"]) => RpcWorkerRegistry | undefined;
+}
+
+/** Minimal authoritative Worker registry seam supplied by Host composition. */
+export interface RpcWorkerRegistry {
+	getWorkerRecord(workerId: string): WorkerRecordV1 | undefined;
+	listWorkerRecords(): readonly WorkerRecordV1[];
+	reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>>;
 }
 
 type RpcOutputSinkLike = RpcHostOutputSink | RpcOutputSink;
@@ -324,6 +352,11 @@ export type {
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
+	RpcWorkerCommandType,
+	RpcWorkerError,
+	RpcWorkerErrorCode,
+	RpcWorkerRecord,
+	RpcWorkerResponse,
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
@@ -342,6 +375,9 @@ export type {
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphMutationData,
+	WorkerGetData,
+	WorkerListData,
+	WorkerReclaimData,
 } from "./rpc-types.ts";
 
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
@@ -351,6 +387,105 @@ function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
 	return { scope: sourceInfo.scope, origin: sourceInfo.origin };
+}
+
+const RPC_WORKER_DEFAULT_LIMIT = 50;
+const RPC_WORKER_MAX_LIMIT = 100;
+const RPC_WORKER_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+	"completed",
+	"failed",
+	"cancelled",
+	"lost",
+	"reclaiming",
+	"reclaimed",
+	"reclaim_unknown",
+]);
+const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+	"reclaimed",
+	"reclaim_unknown",
+]);
+const RPC_WORKER_COMMAND_KEYS: Readonly<Record<RpcWorkerCommandType, ReadonlySet<string>>> = {
+	"worker.get": new Set(["id", "type", "workerId"]),
+	"worker.list": new Set(["id", "type", "runId", "status", "limit", "cursor"]),
+	"worker.reclaim": new Set(["id", "type", "workerId"]),
+};
+const RPC_WORKER_ERROR_MESSAGES: Readonly<Record<RpcWorkerErrorCode, string>> = {
+	host_not_initialized: "Automation Host is not initialized. Send initialize with protocolVersion 1 first.",
+	worker_invalid: "The Worker request is invalid.",
+	worker_not_found: "The Worker was not found in the current Session.",
+	worker_unavailable: "The Worker registry is unavailable in the current Session.",
+	worker_conflict: "The Worker cannot be reclaimed in its current state.",
+	worker_reclaim_failed: "The Worker reclaim outcome is unknown.",
+};
+
+function isRpcWorkerIdentifier(value: unknown): value is string {
+	return typeof value === "string" && RPC_WORKER_IDENTIFIER_PATTERN.test(value);
+}
+
+function isRpcWorkerCommandShapeValid(command: RpcCommand): boolean {
+	const allowed = RPC_WORKER_COMMAND_KEYS[command.type as RpcWorkerCommandType];
+	return (
+		allowed !== undefined &&
+		(command.id === undefined || typeof command.id === "string") &&
+		Object.keys(command).every((key) => allowed.has(key))
+	);
+}
+
+function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatusV1 {
+	return typeof value === "string" && (WORKER_LIFECYCLE_STATUSES as readonly string[]).includes(value);
+}
+
+function isRpcWorkerRecord(value: unknown): value is WorkerRecordV1 {
+	try {
+		return validateWorkerRecordV1(value);
+	} catch {
+		return false;
+	}
+}
+
+function isRpcWorkerRecordList(value: unknown): value is readonly WorkerRecordV1[] {
+	return Array.isArray(value) && value.every(isRpcWorkerRecord);
+}
+
+function toRpcWorkerRecord(record: WorkerRecordV1): RpcWorkerRecord {
+	return {
+		schemaVersion: record.schemaVersion,
+		workerId: record.workerId,
+		providerId: record.providerId,
+		sessionId: record.sessionId,
+		laneId: record.laneId,
+		...(record.runId === undefined ? {} : { runId: record.runId }),
+		...(record.bindingId === undefined ? {} : { bindingId: record.bindingId }),
+		...(record.bindingEpochId === undefined ? {} : { bindingEpochId: record.bindingEpochId }),
+		...(record.attemptId === undefined ? {} : { attemptId: record.attemptId }),
+		profileId: record.profileId,
+		status: record.status,
+		revision: record.revision,
+		createdAt: record.createdAt,
+		...(record.readyAt === undefined ? {} : { readyAt: record.readyAt }),
+		...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
+		...(record.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: record.lastHeartbeatAt }),
+		...(record.activeOperationId === undefined ? {} : { activeOperationId: record.activeOperationId }),
+	};
+}
+
+function rpcWorkerError(
+	id: string | undefined,
+	command: RpcWorkerCommandType,
+	code: RpcWorkerErrorCode,
+): RpcWorkerResponse {
+	return {
+		id,
+		type: "response",
+		command,
+		success: false,
+		error: { code, message: RPC_WORKER_ERROR_MESSAGES[code], retryable: false },
+	};
+}
+
+function isRpcResult(value: unknown): value is ResultValue<unknown, unknown> {
+	return typeof value === "object" && value !== null && "ok" in value && typeof value.ok === "boolean";
 }
 
 /** Redacted block summary: text and image payloads never cross the RPC wire. */
@@ -523,11 +658,14 @@ export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHan
  */
 export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
+	private readonly workerRegistry?: RpcHostControllerOptions["workerRegistry"];
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
 	private commandHandler?: (
 		command: RpcCommand,
-	) => Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined>;
+	) => Promise<
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+	>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
 	private detachTransportHandler?: () => Promise<void>;
@@ -538,6 +676,7 @@ export class RpcHostController {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: RpcHostControllerOptions = {}) {
 		this.runtimeHost = runtimeHost;
+		this.workerRegistry = options.workerRegistry;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
 	}
@@ -3926,8 +4065,10 @@ export class RpcHostController {
 		// Handle a single command
 		const handleCommand = async (
 			command: RpcCommand,
-		): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> => {
-			const id = command.id;
+		): Promise<
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+		> => {
+			const id = typeof command.id === "string" ? command.id : undefined;
 
 			// Once the Automation Host is initialized, legacy commands that would mutate
 			// session/model/run state are rejected so a run and a legacy command cannot
@@ -3965,6 +4106,13 @@ export class RpcHostController {
 						hostInitialized = true;
 						rebuildAutomationStores();
 					}
+					const workerRegistry = (() => {
+						try {
+							return hostController.workerRegistry?.(session);
+						} catch {
+							return undefined;
+						}
+					})();
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
@@ -3994,6 +4142,7 @@ export class RpcHostController {
 							"task.credential.revoke",
 							"task.credential.settle",
 						],
+						...(workerRegistry === undefined ? {} : { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
@@ -4010,6 +4159,161 @@ export class RpcHostController {
 						data: initializeData,
 					};
 					return initializeResponse;
+				}
+
+				case "worker.get": {
+					if (!hostInitialized) return rpcWorkerError(id, "worker.get", "host_not_initialized");
+					if (!isRpcWorkerCommandShapeValid(command) || !isRpcWorkerIdentifier(command.workerId)) {
+						return rpcWorkerError(id, "worker.get", "worker_invalid");
+					}
+					let registry: RpcWorkerRegistry | undefined;
+					try {
+						registry = hostController.workerRegistry?.(session);
+					} catch {
+						return rpcWorkerError(id, "worker.get", "worker_unavailable");
+					}
+					if (registry === undefined) return rpcWorkerError(id, "worker.get", "worker_unavailable");
+					let record: WorkerRecordV1 | undefined;
+					try {
+						record = registry.getWorkerRecord(command.workerId);
+					} catch {
+						return rpcWorkerError(id, "worker.get", "worker_unavailable");
+					}
+					if (record === undefined) {
+						return rpcWorkerError(id, "worker.get", "worker_not_found");
+					}
+					if (!isRpcWorkerRecord(record)) return rpcWorkerError(id, "worker.get", "worker_invalid");
+					if (record.sessionId !== session.sessionId) {
+						return rpcWorkerError(id, "worker.get", "worker_not_found");
+					}
+					if (record.workerId !== command.workerId) return rpcWorkerError(id, "worker.get", "worker_invalid");
+					return {
+						id,
+						type: "response",
+						command: "worker.get",
+						success: true,
+						data: { worker: toRpcWorkerRecord(record) } satisfies WorkerGetData,
+					};
+				}
+
+				case "worker.list": {
+					if (!hostInitialized) return rpcWorkerError(id, "worker.list", "host_not_initialized");
+					const limit = command.limit ?? RPC_WORKER_DEFAULT_LIMIT;
+					if (
+						!isRpcWorkerCommandShapeValid(command) ||
+						(command.runId !== undefined && !isRpcWorkerIdentifier(command.runId)) ||
+						(command.status !== undefined && !isRpcWorkerStatus(command.status)) ||
+						!Number.isInteger(limit) ||
+						limit < 1 ||
+						limit > RPC_WORKER_MAX_LIMIT ||
+						(command.cursor !== undefined && !isRpcWorkerIdentifier(command.cursor))
+					) {
+						return rpcWorkerError(id, "worker.list", "worker_invalid");
+					}
+					let registry: RpcWorkerRegistry | undefined;
+					try {
+						registry = hostController.workerRegistry?.(session);
+					} catch {
+						return rpcWorkerError(id, "worker.list", "worker_unavailable");
+					}
+					if (registry === undefined) {
+						return rpcWorkerError(id, "worker.list", "worker_unavailable");
+					}
+					let records: readonly WorkerRecordV1[];
+					try {
+						records = registry.listWorkerRecords();
+					} catch {
+						return rpcWorkerError(id, "worker.list", "worker_unavailable");
+					}
+					if (!isRpcWorkerRecordList(records)) {
+						return rpcWorkerError(id, "worker.list", "worker_invalid");
+					}
+					const currentSessionRecords = records.filter((record) => record.sessionId === session.sessionId);
+					const workerIds = new Set(currentSessionRecords.map((record) => record.workerId));
+					if (workerIds.size !== currentSessionRecords.length) {
+						return rpcWorkerError(id, "worker.list", "worker_invalid");
+					}
+					const filtered = currentSessionRecords
+						.filter((record) => command.runId === undefined || record.runId === command.runId)
+						.filter((record) => command.status === undefined || record.status === command.status);
+					filtered.sort(
+						(left, right) => left.createdAt.localeCompare(right.createdAt) || left.workerId.localeCompare(right.workerId),
+					);
+					let offset = 0;
+					if (command.cursor !== undefined) {
+						const cursorIndex = filtered.findIndex((record) => record.workerId === command.cursor);
+						if (cursorIndex < 0) return rpcWorkerError(id, "worker.list", "worker_invalid");
+						offset = cursorIndex + 1;
+					}
+					const page = filtered.slice(offset, offset + limit);
+					const truncated = offset + page.length < filtered.length;
+					return {
+						id,
+						type: "response",
+						command: "worker.list",
+						success: true,
+						data: {
+							workers: page.map(toRpcWorkerRecord),
+							truncated,
+							...(truncated && page.length > 0 ? { nextCursor: page[page.length - 1]?.workerId } : {}),
+						} satisfies WorkerListData,
+					};
+				}
+
+				case "worker.reclaim": {
+					if (!hostInitialized) return rpcWorkerError(id, "worker.reclaim", "host_not_initialized");
+					if (!isRpcWorkerCommandShapeValid(command) || !isRpcWorkerIdentifier(command.workerId)) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					}
+					let registry: RpcWorkerRegistry | undefined;
+					try {
+						registry = hostController.workerRegistry?.(session);
+					} catch {
+						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
+					}
+					if (registry === undefined) return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
+					let existing: WorkerRecordV1 | undefined;
+					try {
+						existing = registry.getWorkerRecord(command.workerId);
+					} catch {
+						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
+					}
+					if (existing === undefined) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
+					}
+					if (!isRpcWorkerRecord(existing)) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					if (existing.sessionId !== session.sessionId) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
+					}
+					if (existing.workerId !== command.workerId) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					if (!RPC_WORKER_RECLAIMABLE_STATUSES.has(existing.status)) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_conflict");
+					}
+					const idempotent = existing.status === "reclaimed" || existing.status === "reclaim_unknown";
+					let result: unknown;
+					try {
+						result = await registry.reclaimWorker(command.workerId);
+					} catch {
+						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
+					}
+					if (!isRpcResult(result) || !result.ok) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
+					}
+					if (
+						!isRpcWorkerRecord(result.value) ||
+						result.value.workerId !== command.workerId ||
+						result.value.sessionId !== session.sessionId ||
+						!RPC_WORKER_RECLAIM_TERMINAL_STATUSES.has(result.value.status)
+					) {
+						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
+					}
+					return {
+						id,
+						type: "response",
+						command: "worker.reclaim",
+						success: true,
+						data: { worker: toRpcWorkerRecord(result.value), idempotent } satisfies WorkerReclaimData,
+					};
 				}
 
 				case "audit.query": {
@@ -5869,7 +6173,9 @@ export class RpcHostController {
 
 		this.commandHandler = async (
 			command: RpcCommand,
-		): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> => {
+		): Promise<
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+		> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
 				const response = await handleCommand(command);
@@ -5880,6 +6186,17 @@ export class RpcHostController {
 				await checkShutdownRequested();
 				return response;
 			} catch (commandError: unknown) {
+				if (RPC_WORKER_COMMAND_KEYS[command.type as RpcWorkerCommandType] !== undefined) {
+					const workerCommand = command.type as RpcWorkerCommandType;
+					const response = rpcWorkerError(
+						typeof command.id === "string" ? command.id : undefined,
+						workerCommand,
+						workerCommand === "worker.reclaim" ? "worker_reclaim_failed" : "worker_unavailable",
+					);
+					output(response);
+					await waitForOutput();
+					return response;
+				}
 				const response = error(
 					command.id,
 					command.type,
@@ -5903,7 +6220,15 @@ export class RpcHostController {
 	}
 
 	/** Dispatch a typed command, publish its response or error record, and return it. */
-	async dispatch(command: RpcCommand): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined> {
+	async dispatch(command: Extract<RpcCommand, { type: RpcWorkerCommandType }>): Promise<RpcWorkerResponse>;
+	async dispatch(
+		command: RpcCommand,
+	): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined>;
+	async dispatch(
+		command: RpcCommand,
+	): Promise<
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+	> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");
 		}

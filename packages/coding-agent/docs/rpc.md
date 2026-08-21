@@ -2581,6 +2581,51 @@ Each transition is persisted as a Session custom entry with `customType: "task.c
 
 `task.credential.*` commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot issue or revoke a grant. Host-side Runtime Credentials and MCP OAuth stay on their own contracts. `gondolin-local` does not declare `credentialDelivery` and never falls back to Host environment, command-line, or temporary-file projection.
 
+### Sandbox Operation Worker commands (worker.*)
+
+Worker commands are optional Automation Host capabilities. `initialize`
+advertises `workerCommands` only when trusted Host composition supplies a
+Worker registry:
+
+```text
+worker.get
+worker.list
+worker.reclaim
+```
+
+There is no public start, execute, cancel, credential, protocol, or raw-receipt
+command. The Worker process itself uses private stdio; `worker.*` is the
+Host-owned observation/reclaim surface and cannot write a Run terminal.
+
+`worker.get` accepts `workerId`. `worker.list` accepts optional exact-match
+`runId` and `status`, a server-bounded `limit` (default 50, maximum 100), and an
+opaque Worker cursor. Both are current-session reads and do not mutate Worker
+or Session state. `worker.reclaim` accepts `workerId`, applies only to a
+reclaimable terminal Worker, and returns whether the successful result was
+idempotent.
+
+The public Worker record allowlists:
+
+```text
+schemaVersion, workerId, providerId, sessionId, laneId, runId, bindingId,
+bindingEpochId, attemptId, profileId, status, revision, createdAt, readyAt,
+endedAt, lastHeartbeatAt, activeOperationId
+```
+
+Optional fields are omitted when absent. Records never contain
+`agentInstanceId`, `receiptId`, `workerReceiptId`, receipt references,
+credential material, protocol tokens, executable/arguments, process/VM/QEMU
+details, environment, workspace/path data, raw receipt bodies, or provider
+errors. Worker-side request correlation does not turn an upstream
+`agentInstanceId` into Worker durable provenance; Host-owned Attempt/audit joins
+remain separate facts.
+
+Stable errors are `host_not_initialized`, `worker_invalid`,
+`worker_not_found`, `worker_unavailable`, `worker_conflict`, and
+`worker_reclaim_failed`. Reclaim is idempotent for already reclaimed or
+`reclaim_unknown` records but cannot settle a Run. See
+[Sandbox Operation Worker contract](worker-contract.md).
+
 ### External Agent Adapter selection (`externalAgent`)
 
 `run.start` and `run.resume` accept an optional `externalAgent` selection

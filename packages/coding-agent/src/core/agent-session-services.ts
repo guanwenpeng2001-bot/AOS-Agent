@@ -21,7 +21,12 @@ import {
 } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
+import {
+	type CreateAgentSessionOptions,
+	type CreateAgentSessionResult,
+	type TrustedWorkerSandboxFactoryV1,
+	createAgentSession,
+} from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 
@@ -72,6 +77,8 @@ export interface CreateAgentSessionServicesOptions {
 	taskCredentialProvider?: TaskCredentialProvider;
 	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
 	taskCredentialPolicyMaxTtlMs?: number;
+	/** Trusted composition factory invoked once for each Session created from these services. */
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
 }
 
 /**
@@ -97,6 +104,9 @@ export interface CreateAgentSessionFromServicesOptions {
 	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
 	taskCredentialProvider?: CreateAgentSessionOptions["taskCredentialProvider"];
 	taskCredentialPolicyMaxTtlMs?: CreateAgentSessionOptions["taskCredentialPolicyMaxTtlMs"];
+	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"];
+	/** Per-call trusted composition factory; invoked once for this created Session. */
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
 }
 
 /**
@@ -131,6 +141,8 @@ export interface AgentSessionServices {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	taskCredentialProvider?: TaskCredentialProvider;
 	taskCredentialPolicyMaxTtlMs?: number;
+	/** Trusted composition factory invoked once for each Session created from these services. */
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -273,6 +285,7 @@ export async function createAgentSessionServices(
 		sandboxProviders: options.sandboxProviders,
 		taskCredentialProvider: options.taskCredentialProvider,
 		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
+		trustedWorkerSandboxFactory: options.trustedWorkerSandboxFactory,
 		diagnostics,
 	};
 }
@@ -303,6 +316,8 @@ export async function createAgentSessionFromServices(
 		taskCredentialProvider: options.taskCredentialProvider ?? options.services.taskCredentialProvider,
 		taskCredentialPolicyMaxTtlMs:
 			options.taskCredentialPolicyMaxTtlMs ?? options.services.taskCredentialPolicyMaxTtlMs,
+		trustedWorkerSandbox: options.trustedWorkerSandbox ??
+			(options.trustedWorkerSandboxFactory ?? options.services.trustedWorkerSandboxFactory)?.(),
 		sessionManager: options.sessionManager,
 		model: options.model,
 		modelRoute: options.modelRoute,

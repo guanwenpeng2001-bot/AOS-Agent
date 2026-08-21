@@ -3,7 +3,8 @@ import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@aos-agent/ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import { AgentSession } from "./agent-session.ts";
+import type { AgentSession } from "./agent-session.ts";
+import { createAgentSessionWithTrustedWorkerSandboxProvider } from "./agent-session-facade.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
@@ -27,6 +28,11 @@ import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
+import {
+	WorkerSandboxProviderV1,
+	type WorkerSandboxProfileV1,
+	type WorkerSandboxProviderOptionsV1,
+} from "./worker-sandbox-provider.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -51,6 +57,38 @@ import {
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
 // provider-agnostic and does not import the AI compatibility entrypoint itself.
 setDefaultStreamFn(streamSimple);
+
+export type TrustedWorkerSandboxProviderOptionsV1 = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
+	readonly profile: WorkerSandboxProfileV1;
+};
+
+const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
+
+export interface TrustedWorkerSandboxCompositionV1 {
+	readonly provider: WorkerSandboxProviderV1;
+	readonly [trustedWorkerSandboxBrand]: true;
+}
+
+export type TrustedWorkerSandboxFactoryV1 = () => TrustedWorkerSandboxCompositionV1;
+
+/** Construct a Worker provider only from trusted programmatic composition. */
+export function createTrustedWorkerSandboxCompositionV1(
+	options: TrustedWorkerSandboxProviderOptionsV1,
+): TrustedWorkerSandboxCompositionV1 {
+	return Object.freeze({
+		provider: new WorkerSandboxProviderV1(options),
+		[trustedWorkerSandboxBrand]: true as const,
+	});
+}
+
+function requireTrustedWorkerSandboxProvider(
+	composition: TrustedWorkerSandboxCompositionV1,
+): WorkerSandboxProviderV1 {
+	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProviderV1)) {
+		throw new TypeError("Trusted Worker composition is invalid");
+	}
+	return composition.provider;
+}
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -128,6 +166,8 @@ export interface CreateAgentSessionOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Branded trusted programmatic Operation Worker composition; never read from config or RPC. */
+	trustedWorkerSandbox?: TrustedWorkerSandboxCompositionV1;
 	/** Trusted External Agent Adapter registry composed by the Host. */
 	externalAgentRegistry?: ExternalAgentAdapterRegistry;
 	/**
@@ -262,6 +302,9 @@ function getDefaultAgentDir(): string {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	const workerSandboxProvider = options.trustedWorkerSandbox === undefined
+		? undefined
+		: requireTrustedWorkerSandboxProvider(options.trustedWorkerSandbox);
 	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	let resourceLoader = options.resourceLoader;
@@ -568,7 +611,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const capabilityRegistry =
 		options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir));
 
-	const session = new AgentSession({
+	const session = createAgentSessionWithTrustedWorkerSandboxProvider({
 		agent,
 		sessionManager,
 		settingsManager,
@@ -597,7 +640,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		taskCredentialProvider: options.taskCredentialProvider,
 		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		noTools: options.noTools,
-	});
+	}, workerSandboxProvider);
 	sessionForToolEnvironment = session;
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
 		const selection = modelBroker.resolveResult({

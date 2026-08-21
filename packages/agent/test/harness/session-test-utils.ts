@@ -15,6 +15,6 @@ export function createTempDir(): string {
 afterEach(() => {
 	while (tempDirs.length > 0) {
 		const dir = tempDirs.pop()!;
-		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+		if (existsSync(dir)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	}
 });

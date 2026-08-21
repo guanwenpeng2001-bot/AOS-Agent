@@ -105,6 +105,13 @@ import {
 	type TaskGraphNodeStatus,
 	type TaskGraphTransition,
 } from "./task-graph.ts";
+import {
+	WORKER_FORBIDDEN_KEYS,
+	workerTransitionAllowedV1,
+	validateWorkerRecordV1,
+	type WorkerLifecycleStatusV1,
+	type WorkerRecordV1,
+} from "./worker.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -125,6 +132,9 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"task.gate",
 	"task.graph",
 	"task.credential",
+	"worker.lifecycle_transitioned",
+	"worker.operation_recorded",
+	"worker_receipt.written",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 /**
@@ -158,6 +168,9 @@ export const AUDIT_EVENT_TYPES = [
 	"task.gate",
 	"task.graph",
 	"task.credential",
+	"worker.lifecycle",
+	"worker.operation",
+	"worker.receipt",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -511,6 +524,50 @@ export interface AuditTaskCredentialSummary {
 	readonly reasonCode?: string;
 }
 
+/** Safe projection of one persisted Operation Worker lifecycle record. */
+export interface AuditWorkerLifecycleSummary {
+	readonly workerId: string;
+	readonly providerId: string;
+	readonly sessionId: string;
+	readonly laneId: string;
+	readonly runId?: string;
+	readonly bindingId?: string;
+	readonly bindingEpochId?: string;
+	readonly attemptId?: string;
+	readonly profileId: string;
+	readonly status: WorkerLifecycleStatusV1;
+	readonly revision: number;
+	readonly createdAt: string;
+	readonly readyAt?: string;
+	readonly endedAt?: string;
+	readonly lastHeartbeatAt?: string;
+	readonly activeOperationId?: string;
+	readonly receiptId?: string;
+	readonly operationId?: string;
+}
+
+/** Safe projection of an operation fence or terminal operation fact. */
+export interface AuditWorkerOperationSummary {
+	readonly workerId: string;
+	readonly providerId: string;
+	readonly sessionId: string;
+	readonly laneId: string;
+	readonly operationId: string;
+	readonly phase: "claimed" | "started" | "terminal";
+	readonly revision: number;
+	readonly sideEffectState?: "none" | "unknown" | "side_effect_unknown";
+	readonly receiptId?: string;
+}
+
+/** Safe projection of the receipt-written marker (the receipt body is never persisted here). */
+export interface AuditWorkerReceiptSummary {
+	readonly workerId: string;
+	readonly workerReceiptId: string;
+	readonly operationId: string;
+	readonly taskId?: string;
+	readonly terminalRecordRevision: number;
+}
+
 export interface AuditEventBase {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
@@ -598,6 +655,21 @@ export type AuditEvent =
 			readonly type: "task.credential";
 			readonly runId?: string;
 			readonly summary: AuditTaskCredentialSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "worker.lifecycle";
+			readonly runId?: string;
+			readonly summary: AuditWorkerLifecycleSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "worker.operation";
+			readonly runId?: string;
+			readonly summary: AuditWorkerOperationSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "worker.receipt";
+			readonly runId?: string;
+			readonly summary: AuditWorkerReceiptSummary;
 	  });
 
 export interface AuditWarning {
@@ -787,6 +859,55 @@ const EXTERNAL_MAPPING_KEYS = new Set([
 	"correlationId",
 	"adapter",
 ]);
+const WORKER_LIFECYCLE_CUSTOM_TYPE = "worker.lifecycle_transitioned";
+const WORKER_OPERATION_CUSTOM_TYPE = "worker.operation_recorded";
+const WORKER_RECEIPT_CUSTOM_TYPE = "worker_receipt.written";
+const WORKER_AUDIT_FORBIDDEN_KEYS = new Set<string>([
+	...WORKER_FORBIDDEN_KEYS,
+	"environment",
+	"executablePath",
+	"command",
+	"args",
+	"secret",
+	"token",
+	"header",
+	"headers",
+	"authorization",
+	"prompt",
+	"message",
+	"content",
+	"output",
+	"raw",
+	"stack",
+	"error",
+	"details",
+]);
+const WORKER_ENVELOPE_KEYS = new Set([
+	"schemaVersion",
+	"class",
+	"category",
+	"eventId",
+	"streamId",
+	"sequence",
+	"timestamp",
+	"correlation",
+	"payload",
+]);
+const WORKER_LIFECYCLE_PAYLOAD_KEYS = new Set([
+	"schemaVersion", "workerId", "providerId", "sessionId", "laneId", "status", "revision", "runId",
+	"bindingId", "bindingEpochId", "attemptId", "profileId", "createdAt", "readyAt", "endedAt",
+	"lastHeartbeatAt", "activeOperationId", "operationId", "receiptId",
+]);
+const WORKER_OPERATION_PAYLOAD_KEYS = new Set([
+	"schemaVersion", "workerId", "providerId", "sessionId", "laneId", "operationId", "phase", "revision",
+	"sideEffectState", "receiptId", "recordedAt",
+]);
+const WORKER_RECEIPT_PAYLOAD_KEYS = new Set(["schemaVersion", "workerReceiptId", "operationId", "taskId"]);
+const WORKER_LIFECYCLE_CORRELATION_KEYS = new Set([
+	"sessionId", "laneId", "workerId", "runId", "bindingId", "bindingEpochId", "attemptId", "operationId", "receiptId",
+]);
+const WORKER_OPERATION_CORRELATION_KEYS = new Set(["sessionId", "laneId", "workerId", "operationId", "receiptId"]);
+const WORKER_RECEIPT_CORRELATION_KEYS = new Set(["sessionId", "operationId", "workerReceiptId", "taskId"]);
 const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -795,6 +916,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
 	return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function hasForbiddenWorkerValue(value: unknown, seen = new WeakSet<object>()): boolean {
+	if (value === null || typeof value !== "object") return false;
+	if (seen.has(value)) return true;
+	seen.add(value);
+	if (Array.isArray(value)) return value.some((item) => hasForbiddenWorkerValue(item, seen));
+	for (const [key, item] of Object.entries(value)) {
+		if (WORKER_AUDIT_FORBIDDEN_KEYS.has(key) || hasForbiddenWorkerValue(item, seen)) return true;
+	}
+	return false;
+}
+
+function workerString(value: unknown): value is string {
+	return isSafeIdentifier(value);
 }
 
 function isSafeIdentifier(value: unknown): value is string {
@@ -1731,6 +1867,52 @@ function safeTaskCredentialSummary(value: TaskCredentialTransition): AuditTaskCr
 	return summary;
 }
 
+function safeWorkerLifecycleSummary(value: WorkerLifecycleAuditRecord): AuditWorkerLifecycleSummary {
+	const record = value.record;
+	const summary = {
+		workerId: record.workerId,
+		providerId: record.providerId,
+		sessionId: record.sessionId,
+		laneId: record.laneId,
+		profileId: record.profileId,
+		status: record.status,
+		revision: record.revision,
+		createdAt: record.createdAt,
+	} as DeepMutable<AuditWorkerLifecycleSummary>;
+	for (const key of ["runId", "bindingId", "bindingEpochId", "attemptId", "readyAt", "endedAt", "lastHeartbeatAt", "activeOperationId", "receiptId"] as const) {
+		const item = record[key];
+		if (item !== undefined) summary[key] = item;
+	}
+	if (value.operationId !== undefined) summary.operationId = value.operationId;
+	return summary;
+}
+
+function safeWorkerOperationSummary(value: WorkerOperationAuditRecord): AuditWorkerOperationSummary {
+	const summary = {
+		workerId: value.workerId,
+		providerId: value.providerId,
+		sessionId: value.sessionId,
+		laneId: value.laneId,
+		operationId: value.operationId,
+		phase: value.phase,
+		revision: value.revision,
+	} as DeepMutable<AuditWorkerOperationSummary>;
+	if (value.sideEffectState !== undefined) summary.sideEffectState = value.sideEffectState;
+	if (value.receiptId !== undefined) summary.receiptId = value.receiptId;
+	return summary;
+}
+
+function safeWorkerReceiptSummary(value: WorkerReceiptAuditRecord): AuditWorkerReceiptSummary {
+	const summary = {
+		workerId: value.workerId,
+		workerReceiptId: value.workerReceiptId,
+		operationId: value.operationId,
+		terminalRecordRevision: value.terminalRecordRevision,
+	} as DeepMutable<AuditWorkerReceiptSummary>;
+	if (value.taskId !== undefined) summary.taskId = value.taskId;
+	return summary;
+}
+
 function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
 	const external = {
 		namespace: value.namespace,
@@ -1795,6 +1977,31 @@ interface SourceCandidateBase {
 	readonly relation?: Relation;
 }
 
+interface WorkerLifecycleAuditRecord {
+	readonly record: WorkerRecordV1;
+	readonly operationId?: string;
+}
+
+interface WorkerOperationAuditRecord {
+	readonly workerId: string;
+	readonly providerId: string;
+	readonly sessionId: string;
+	readonly laneId: string;
+	readonly operationId: string;
+	readonly phase: "claimed" | "started" | "terminal";
+	readonly revision: number;
+	readonly sideEffectState?: "none" | "unknown" | "side_effect_unknown";
+	readonly receiptId?: string;
+}
+
+interface WorkerReceiptAuditRecord {
+	readonly workerId: string;
+	readonly workerReceiptId: string;
+	readonly operationId: string;
+	readonly taskId?: string;
+	readonly terminalRecordRevision: number;
+}
+
 type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "model.binding"; readonly value: ModelBindingLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "model.attempt"; readonly value: ModelAttemptLedgerRecord })
@@ -1809,7 +2016,10 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
 	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition })
 	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition })
-	| (SourceCandidateBase & { readonly eventType: "task.credential"; readonly value: TaskCredentialTransition });
+	| (SourceCandidateBase & { readonly eventType: "task.credential"; readonly value: TaskCredentialTransition })
+	| (SourceCandidateBase & { readonly eventType: "worker.lifecycle"; readonly value: WorkerLifecycleAuditRecord })
+	| (SourceCandidateBase & { readonly eventType: "worker.operation"; readonly value: WorkerOperationAuditRecord })
+	| (SourceCandidateBase & { readonly eventType: "worker.receipt"; readonly value: WorkerReceiptAuditRecord });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -1822,7 +2032,8 @@ type Relation =
 	| { readonly kind: "remote-operation"; readonly runId?: string }
 	| { readonly kind: "task-gate"; readonly runId?: string }
 	| { readonly kind: "task-graph"; readonly runId?: string }
-	| { readonly kind: "task-credential"; readonly runId?: string };
+	| { readonly kind: "task-credential"; readonly runId?: string }
+	| { readonly kind: "worker"; readonly workerId: string; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -1888,6 +2099,9 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "task.gate") return "task.gate";
 	if (customType === "task.graph") return "task.graph";
 	if (customType === "task.credential") return "task.credential";
+	if (customType === WORKER_LIFECYCLE_CUSTOM_TYPE) return "worker.lifecycle";
+	if (customType === WORKER_OPERATION_CUSTOM_TYPE) return "worker.operation";
+	if (customType === WORKER_RECEIPT_CUSTOM_TYPE) return "worker.receipt";
 	return undefined;
 }
 
@@ -1910,6 +2124,10 @@ function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): 
 	) {
 		return relation.runId === undefined ? undefined : new Set([relation.runId]);
 	}
+	if (relation.kind === "worker") {
+		if (relation.runId !== undefined) return new Set([relation.runId]);
+		return maps.workers.get(relation.workerId);
+	}
 	const map =
 		relation.kind === "model-binding" || relation.kind === "model-attempt"
 			? maps.modelBindings
@@ -1923,13 +2141,14 @@ interface AssociationMaps {
 	readonly modelBindings: Map<string, Set<string>>;
 	readonly capabilities: Map<string, Set<string>>;
 	readonly policies: Map<string, Set<string>>;
+	readonly workers: Map<string, Set<string>>;
 }
 
 function buildAssociationMaps(
 	states: Map<string, RunState>,
 	candidates: ReadonlyArray<SourceCandidate>,
 ): AssociationMaps {
-	const maps: AssociationMaps = { modelBindings: new Map(), capabilities: new Map(), policies: new Map() };
+	const maps: AssociationMaps = { modelBindings: new Map(), capabilities: new Map(), policies: new Map(), workers: new Map() };
 	for (const state of states.values()) {
 		const record = state.accepted?.record;
 		if (record === undefined) continue;
@@ -1955,6 +2174,8 @@ function buildAssociationMaps(
 	}
 	for (const candidate of candidates) {
 		if (candidate.eventType === "policy.binding") addMapSet(maps.policies, candidate.value.id, candidate.value.runId);
+		if (candidate.eventType === "worker.lifecycle" && candidate.value.record.runId !== undefined)
+			addMapSet(maps.workers, candidate.value.record.workerId, candidate.value.record.runId);
 	}
 	return maps;
 }
@@ -1964,11 +2185,12 @@ function createBase(
 	entry: Extract<SessionEntry, { type: "custom" }>,
 	external?: ExternalExecutionRef,
 	adapter?: ExternalAdapterIdentity,
+	recordedAt = entry.timestamp,
 ): AuditEventBase {
 	const base = {
 		schemaVersion: 1,
 		eventId: entry.id,
-		recordedAt: entry.timestamp,
+		recordedAt,
 		sessionId,
 		sourceEntryId: entry.id,
 	} as DeepMutable<AuditEventBase>;
@@ -1985,6 +2207,325 @@ function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSum
 	} as DeepMutable<AuditRunSummary>;
 	if (summary.startedAt === undefined && state.started !== undefined) summary.startedAt = state.started.startedAt;
 	return summary;
+}
+
+interface WorkerAuditOperationState {
+	readonly workerId: string;
+	readonly operationId: string;
+	readonly claimedRevision: number;
+	readonly startedRevision?: number;
+	readonly terminalRevision?: number;
+	readonly terminalReceiptId?: string;
+}
+
+interface WorkerAuditFold {
+	readonly lifecycleByRevision: Map<string, WorkerLifecycleAuditRecord>;
+	readonly currentByWorker: Map<string, WorkerRecordV1>;
+	readonly lastLifecycleEnvelopeByWorker: Map<string, { readonly revision: number; readonly timestamp: string }>;
+	readonly operations: Map<string, WorkerAuditOperationState>;
+}
+
+function workerCorrelationIsSafe(
+	correlation: Record<string, unknown>,
+	allowed: ReadonlySet<string>,
+	): boolean {
+	if (!hasOnlyKeys(correlation, allowed)) return false;
+	return Object.values(correlation).every((item) => workerString(item));
+}
+
+function workerEnvelope(
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	customType: string,
+	allowedPayload: ReadonlySet<string>,
+	allowedCorrelation: ReadonlySet<string>,
+): { readonly eventId: string; readonly streamId: string; readonly payload: Record<string, unknown>; readonly correlation: Record<string, unknown>; readonly sequence: number; readonly timestamp: string } | undefined {
+	const data = entry.data;
+	if (
+		!isRecord(data) ||
+		hasForbiddenWorkerValue(data) ||
+		!hasOnlyKeys(data, WORKER_ENVELOPE_KEYS) ||
+		data.schemaVersion !== AUDIT_SCHEMA_VERSION ||
+		data.class !== "durable" ||
+		data.category !== customType ||
+		!workerString(data.eventId) ||
+		!workerString(data.streamId) ||
+		!isCount(data.sequence) ||
+		!isCanonicalTimestamp(data.timestamp) ||
+		!isRecord(data.correlation) ||
+		!isRecord(data.payload) ||
+		!workerCorrelationIsSafe(data.correlation, allowedCorrelation) ||
+		!hasOnlyKeys(data.payload, allowedPayload) ||
+		data.payload.schemaVersion !== AUDIT_SCHEMA_VERSION
+	) return undefined;
+	if (data.correlation.sessionId === "") return undefined;
+	return {
+		eventId: data.eventId,
+		streamId: data.streamId,
+		payload: data.payload,
+		correlation: data.correlation,
+		sequence: data.sequence,
+		timestamp: data.timestamp,
+	};
+}
+
+function workerLifecyclePayloadRecord(payload: Record<string, unknown>): WorkerRecordV1 | undefined {
+	const recordValue = { ...payload };
+	delete recordValue.operationId;
+	return validateWorkerRecordV1(recordValue) ? recordValue : undefined;
+}
+
+function parseWorkerFact(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	fold: WorkerAuditFold,
+	internalWarnings: InternalWarning[],
+	candidates: SourceCandidate[],
+): void {
+	const customType = entry.customType;
+	const eventType = customType === WORKER_LIFECYCLE_CUSTOM_TYPE
+		? "worker.lifecycle"
+		: customType === WORKER_OPERATION_CUSTOM_TYPE
+			? "worker.operation"
+			: "worker.receipt";
+	const version = schemaVersion(entry.data);
+	if (version === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, undefined, undefined, true));
+		return;
+	}
+	if (version !== AUDIT_SCHEMA_VERSION) {
+		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, eventType, version, undefined, true));
+		return;
+	}
+	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+		return;
+	}
+	const envelope = workerEnvelope(
+		entry,
+		customType,
+		eventType === "worker.lifecycle"
+			? WORKER_LIFECYCLE_PAYLOAD_KEYS
+			: eventType === "worker.operation"
+				? WORKER_OPERATION_PAYLOAD_KEYS
+				: WORKER_RECEIPT_PAYLOAD_KEYS,
+		eventType === "worker.lifecycle"
+			? WORKER_LIFECYCLE_CORRELATION_KEYS
+			: eventType === "worker.operation"
+				? WORKER_OPERATION_CORRELATION_KEYS
+				: WORKER_RECEIPT_CORRELATION_KEYS,
+	);
+	if (envelope === undefined) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+		return;
+	}
+	const { payload, correlation, sequence, timestamp } = envelope;
+	if (eventType === "worker.lifecycle") {
+		const record = workerLifecyclePayloadRecord(payload);
+		const operationId = payload.operationId;
+		const previousLifecycle = fold.lastLifecycleEnvelopeByWorker.get(record?.workerId ?? "");
+		const isExecutionTerminal = ["completed", "failed", "cancelled", "lost"].includes(record?.status ?? "");
+		const lifecycleTimeValid = record === undefined
+			? false
+			: record.status === "starting"
+				? timestamp >= record.createdAt
+				: record.status === "ready"
+					? record.readyAt !== undefined && timestamp === record.readyAt
+					: isExecutionTerminal
+						? record.endedAt !== undefined && timestamp === record.endedAt
+						: true;
+		const previous = record === undefined ? undefined : fold.currentByWorker.get(record.workerId);
+		const expectedReadyAt = previous?.readyAt ?? (record?.status === "ready" ? timestamp : undefined);
+		const expectedEndedAt = previous?.endedAt ?? (isExecutionTerminal ? timestamp : undefined);
+		const transitionReceiptId = workerString(correlation.receiptId) ? correlation.receiptId : undefined;
+		const expectedReceiptId = transitionReceiptId ?? previous?.receiptId;
+		const expectedActiveOperationId = record?.status === "running"
+			? operationId
+			: record?.status === "cancelling"
+				? previous?.activeOperationId
+				: undefined;
+		const transitionOperationValid = record?.status === "running"
+			? operationId !== undefined && operationId === record.activeOperationId
+			: record?.status === "cancelling" || isExecutionTerminal
+				? operationId === previous?.activeOperationId
+				: operationId === undefined;
+		const transitionReceiptValid = record?.status === "completed" || record?.status === "cancelled"
+			? transitionReceiptId !== undefined
+			: record?.status === "lost" || !isExecutionTerminal
+				? transitionReceiptId === undefined
+				: true;
+		const heartbeatValid = record === undefined
+			? false
+			: previous === undefined
+				? record.lastHeartbeatAt === undefined ||
+					(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
+				: previous.lastHeartbeatAt === undefined
+					? record.lastHeartbeatAt === undefined ||
+						(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
+					: record.lastHeartbeatAt !== undefined &&
+						record.lastHeartbeatAt >= previous.lastHeartbeatAt &&
+						(record.lastHeartbeatAt === previous.lastHeartbeatAt ||
+							previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp);
+		if (
+			record === undefined ||
+			(operationId !== undefined && !workerString(operationId)) ||
+			!workerString(correlation.sessionId) ||
+			record.sessionId !== sessionId ||
+			correlation.sessionId !== record.sessionId ||
+			correlation.laneId !== record.laneId ||
+			correlation.workerId !== record.workerId ||
+			correlation.runId !== record.runId ||
+			correlation.bindingId !== record.bindingId ||
+			correlation.bindingEpochId !== record.bindingEpochId ||
+			correlation.attemptId !== record.attemptId ||
+			correlation.operationId !== operationId ||
+			sequence !== record.revision ||
+			envelope.eventId !== `worker-lifecycle:${record.workerId}:${record.revision}` ||
+			envelope.streamId !== `worker-lifecycle:${record.workerId}` ||
+			!workerString(record.profileId) ||
+			!lifecycleTimeValid ||
+			!transitionOperationValid ||
+			!transitionReceiptValid ||
+			record.readyAt !== expectedReadyAt ||
+			record.endedAt !== expectedEndedAt ||
+			record.activeOperationId !== expectedActiveOperationId ||
+			record.receiptId !== expectedReceiptId ||
+			!heartbeatValid ||
+			(record.lastHeartbeatAt !== undefined && record.lastHeartbeatAt > timestamp) ||
+			(previousLifecycle !== undefined &&
+				(record.revision !== previousLifecycle.revision + 1 || timestamp < previousLifecycle.timestamp))
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+			return;
+		}
+		if (
+			(previous === undefined && (record.revision !== 1 || record.status !== "starting")) ||
+			(previous !== undefined &&
+				(record.revision !== previous.revision + 1 ||
+					record.createdAt !== previous.createdAt ||
+					record.providerId !== previous.providerId ||
+					record.sessionId !== previous.sessionId ||
+					record.laneId !== previous.laneId ||
+					record.runId !== previous.runId ||
+					record.bindingId !== previous.bindingId ||
+					record.bindingEpochId !== previous.bindingEpochId ||
+					record.attemptId !== previous.attemptId ||
+					record.profileId !== previous.profileId ||
+					!workerTransitionAllowedV1(previous.status, record.status)))
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+			return;
+		}
+		const revisionKey = `${record.workerId}:${record.revision}`;
+		if (fold.lifecycleByRevision.has(revisionKey)) {
+			internalWarnings.push(warning(sessionId, "duplicate_source", entry, eventType, version, undefined, true));
+			return;
+		}
+		fold.lifecycleByRevision.set(revisionKey, {
+			record,
+			...(operationId === undefined ? {} : { operationId }),
+		});
+		fold.currentByWorker.set(record.workerId, record);
+		fold.lastLifecycleEnvelopeByWorker.set(record.workerId, { revision: record.revision, timestamp });
+		candidates.push({
+			eventType,
+			entry,
+			recordedAt: timestamp,
+			value: { record, ...(operationId === undefined ? {} : { operationId }) },
+			relation: { kind: "worker", workerId: record.workerId, runId: record.runId },
+		});
+		return;
+	}
+	if (eventType === "worker.operation") {
+		const phase = payload.phase;
+		const sideEffectState = payload.sideEffectState;
+		const receiptId = payload.receiptId;
+		const value: WorkerOperationAuditRecord = {
+			workerId: String(payload.workerId),
+			providerId: String(payload.providerId),
+			sessionId: String(payload.sessionId),
+			laneId: String(payload.laneId),
+			operationId: String(payload.operationId),
+			phase: phase as WorkerOperationAuditRecord["phase"],
+			revision: sequence,
+			...(sideEffectState === undefined ? {} : { sideEffectState: sideEffectState as WorkerOperationAuditRecord["sideEffectState"] }),
+			...(receiptId === undefined ? {} : { receiptId: String(receiptId) }),
+		};
+		const lifecycle = fold.lifecycleByRevision.get(`${value.workerId}:${value.revision}`);
+		const record = lifecycle?.record;
+		const operationState = fold.operations.get(`${value.workerId}:${value.operationId}`);
+		const validPhase = phase === "claimed" || phase === "started" || phase === "terminal";
+		const phaseValid = phase === "claimed"
+			? record?.status === "ready" && lifecycle?.operationId === undefined && operationState === undefined
+			: phase === "started"
+				? record?.status === "running" && lifecycle?.operationId === value.operationId &&
+					record.activeOperationId === value.operationId && operationState?.startedRevision === undefined &&
+					operationState?.terminalRevision === undefined
+				: record !== undefined && ["completed", "failed", "cancelled", "lost"].includes(record.status) &&
+					lifecycle?.operationId === value.operationId && record.activeOperationId === undefined &&
+					operationState?.startedRevision !== undefined && operationState.terminalRevision === undefined;
+		const sideEffectStateValid = sideEffectState === undefined || sideEffectState === "none" ||
+			sideEffectState === "unknown" || sideEffectState === "side_effect_unknown";
+		const operationFactsValid = phase === "claimed" || phase === "started"
+			? sideEffectState === undefined && receiptId === undefined && correlation.receiptId === undefined
+			: record?.status === "completed" || record?.status === "cancelled"
+				? sideEffectState === "none" && receiptId === record.receiptId && correlation.receiptId === record.receiptId
+				: record?.status === "lost"
+					? sideEffectState === "side_effect_unknown" && receiptId === undefined && correlation.receiptId === undefined
+					: record?.status === "failed" && sideEffectState !== undefined &&
+						receiptId === record.receiptId && correlation.receiptId === record.receiptId;
+		if (
+			!validPhase || !phaseValid || !workerString(value.workerId) || !workerString(value.providerId) ||
+			!workerString(value.sessionId) || value.sessionId !== sessionId || !workerString(value.laneId) ||
+			!workerString(value.operationId) || !isCount(value.revision) ||
+			!sideEffectStateValid || !operationFactsValid ||
+			(payload.receiptId !== undefined && !workerString(payload.receiptId)) ||
+			value.providerId !== record?.providerId || value.sessionId !== record?.sessionId || value.laneId !== record?.laneId ||
+			correlation.sessionId !== value.sessionId || correlation.laneId !== value.laneId || correlation.workerId !== value.workerId ||
+			correlation.operationId !== value.operationId ||
+			envelope.eventId !== `worker-operation:${value.workerId}:${value.revision}` ||
+			envelope.streamId !== `worker-operation:${value.workerId}:${value.operationId}` ||
+			payload.revision !== sequence ||
+			payload.recordedAt !== timestamp
+		) {
+			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+			return;
+		}
+		const key = `${value.workerId}:${value.operationId}`;
+		fold.operations.set(key, phase === "claimed"
+			? { workerId: value.workerId, operationId: value.operationId, claimedRevision: value.revision }
+			: phase === "started"
+				? { ...operationState!, startedRevision: value.revision }
+				: {
+					...operationState!,
+					terminalRevision: value.revision,
+					...(value.receiptId === undefined ? {} : { terminalReceiptId: value.receiptId }),
+				});
+		candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId: value.workerId } });
+		return;
+	}
+	const streamId = isRecord(entry.data) && typeof entry.data.streamId === "string" ? entry.data.streamId : "";
+	const workerId = streamId.startsWith("worker-receipts:") ? streamId.slice("worker-receipts:".length) : "";
+	const value: WorkerReceiptAuditRecord = {
+		workerId,
+		workerReceiptId: String(payload.workerReceiptId),
+		operationId: String(payload.operationId),
+		...(payload.taskId === undefined ? {} : { taskId: String(payload.taskId) }),
+		terminalRecordRevision: sequence,
+	};
+	const operationState = fold.operations.get(`${workerId}:${value.operationId}`);
+	if (
+		!workerString(workerId) || !workerString(value.workerReceiptId) || !workerString(value.operationId) ||
+		(value.taskId !== undefined && !workerString(value.taskId)) || operationState?.terminalRevision !== value.terminalRecordRevision ||
+		operationState?.terminalReceiptId !== value.workerReceiptId ||
+		envelope.eventId !== `worker-receipt:${value.workerReceiptId}` ||
+		envelope.streamId !== `worker-receipts:${workerId}` ||
+		correlation.sessionId !== sessionId || correlation.operationId !== value.operationId ||
+		correlation.workerReceiptId !== value.workerReceiptId || correlation.taskId !== value.taskId
+	) {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
+		return;
+	}
+	candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId } });
 }
 
 function parseSourceCandidate(
@@ -2909,7 +3450,7 @@ function sourceEventForCandidate(
 	runId: string | undefined,
 	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
-	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter);
+	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter, candidate.recordedAt);
 	if (candidate.eventType === "model.binding") {
 		const summary = safeModelBinding(candidate.value);
 		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
@@ -3000,6 +3541,30 @@ function sourceEventForCandidate(
 			summary: safeTaskCredentialSummary(candidate.value),
 		};
 	}
+	if (candidate.eventType === "worker.lifecycle") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeWorkerLifecycleSummary(candidate.value),
+		};
+	}
+	if (candidate.eventType === "worker.operation") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeWorkerOperationSummary(candidate.value),
+		};
+	}
+	if (candidate.eventType === "worker.receipt") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeWorkerReceiptSummary(candidate.value),
+		};
+	}
 	return {
 		...base,
 		type: candidate.eventType,
@@ -3056,6 +3621,12 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		byGrantId: new Map(),
 		byIdempotency: new Map(),
 	};
+	const workerFold: WorkerAuditFold = {
+		lifecycleByRevision: new Map(),
+		currentByWorker: new Map(),
+		lastLifecycleEnvelopeByWorker: new Map(),
+		operations: new Map(),
+	};
 	const seenEntryIds = new Set<string>();
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
@@ -3081,6 +3652,12 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			parseTaskGraphFact(sessionId, entry, graphFold, internalWarnings, candidates);
 		else if (entry.customType === TASK_CREDENTIAL_CUSTOM_TYPE)
 			parseTaskCredentialFact(sessionId, entry, credentialFold, internalWarnings, candidates);
+		else if (
+			entry.customType === WORKER_LIFECYCLE_CUSTOM_TYPE ||
+			entry.customType === WORKER_OPERATION_CUSTOM_TYPE ||
+			entry.customType === WORKER_RECEIPT_CUSTOM_TYPE
+		)
+			parseWorkerFact(sessionId, entry, workerFold, internalWarnings, candidates);
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
@@ -3237,7 +3814,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			candidate.relation?.kind === "policy-binding" ||
 			candidate.relation?.kind === "context" ||
 			candidate.relation?.kind === "external" ||
-			candidate.relation?.kind === "remote-operation"
+				candidate.relation?.kind === "remote-operation" ||
+				candidate.relation?.kind === "worker"
 				? candidate.relation.runId
 				: undefined;
 		if (directRunId !== undefined && !states.has(directRunId)) {
@@ -3272,6 +3850,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				: candidate.relation?.kind === "context" ||
 						candidate.relation?.kind === "external" ||
 						candidate.relation?.kind === "remote-operation" ||
+						candidate.relation?.kind === "worker" ||
 						candidate.relation?.kind === "task-gate" ||
 						candidate.relation?.kind === "task-graph" ||
 						candidate.relation?.kind === "task-credential"

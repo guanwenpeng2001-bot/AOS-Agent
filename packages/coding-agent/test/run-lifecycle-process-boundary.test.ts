@@ -11,6 +11,13 @@ const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("./fixtures/run-lifecycle-process-worker.ts", import.meta.url));
 const tempDirs: string[] = [];
 const phases = ["accepted", "started", "terminal"] as const;
+// Windows full-suite contention can delay the test-only tsx loader beyond 15s.
+// Once the fixture is loaded, keep the production persistence and process-close
+// budgets narrow so those regressions cannot hide inside loader headroom.
+const startupTimeoutMs = 45_000;
+const boundaryTimeoutMs = 5_000;
+const closeTimeoutMs = 5_000;
+const testTimeoutMs = startupTimeoutMs + boundaryTimeoutMs + closeTimeoutMs;
 
 type Phase = (typeof phases)[number];
 
@@ -43,26 +50,58 @@ function createPersistedSession(): { readonly directory: string; readonly sessio
 
 function killAfterReady(sessionFile: string, phase: Phase): Promise<void> {
 	return new Promise((resolvePromise, reject) => {
+		const spawnedAt = Date.now();
 		const child = spawn(process.execPath, ["--import", "tsx", workerPath, sessionFile, phase], {
 			cwd: repoRoot,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		let ready = false;
+		let startupReadyAt: number | undefined;
+		let boundaryReadyAt: number | undefined;
 		let settled = false;
 		let output = "";
-		const timeout = setTimeout(() => {
+		let timeout = setTimeout(() => {
 			if (!settled) {
 				settled = true;
 				child.kill();
-				reject(new Error(`Timed out waiting for ${phase} process boundary: ${output}`));
+				reject(
+					new Error(
+						`Timed out waiting for worker startup readiness after ${Date.now() - spawnedAt}ms: ${output}`,
+					),
+				);
 			}
-		}, 15_000);
+		}, startupTimeoutMs);
 
 		child.stdout.on("data", (chunk: Buffer) => {
 			output += chunk.toString();
-			if (!ready && output.includes("ready\n")) {
-				ready = true;
+			if (startupReadyAt === undefined && output.includes("startup-ready\n")) {
+				const readyAt = Date.now();
+				startupReadyAt = readyAt;
+				clearTimeout(timeout);
+				timeout = setTimeout(() => {
+					if (settled) return;
+					settled = true;
+					child.kill();
+					reject(
+						new Error(
+							`Timed out waiting for durable ${phase} boundary after ${Date.now() - readyAt}ms: ${output}`,
+						),
+					);
+				}, boundaryTimeoutMs);
+			}
+			if (boundaryReadyAt === undefined && output.includes("boundary-ready\n")) {
+				const readyAt = Date.now();
+				boundaryReadyAt = readyAt;
+				clearTimeout(timeout);
 				child.kill();
+				timeout = setTimeout(() => {
+					if (settled) return;
+					settled = true;
+					reject(
+						new Error(
+							`Timed out waiting for process close after durable ${phase} boundary after ${Date.now() - readyAt}ms: ${output}`,
+						),
+					);
+				}, closeTimeoutMs);
 			}
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
@@ -78,8 +117,9 @@ function killAfterReady(sessionFile: string, phase: Phase): Promise<void> {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeout);
-			if (!ready) {
-				reject(new Error(`Process exited before ${phase} boundary: code=${code} signal=${signal} output=${output}`));
+			if (boundaryReadyAt === undefined) {
+				const stage = startupReadyAt === undefined ? "startup readiness" : `durable ${phase} boundary`;
+				reject(new Error(`Process exited before ${stage}: code=${code} signal=${signal} output=${output}`));
 				return;
 			}
 			resolvePromise();
@@ -113,5 +153,5 @@ describe("Run ledger process boundaries", () => {
 			expect(result?.receipt?.status).toBe("completed");
 			expect(result?.recovery).toBeUndefined();
 		}
-	});
+	}, testTimeoutMs);
 });

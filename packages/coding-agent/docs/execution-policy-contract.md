@@ -371,6 +371,33 @@ For `enforcement: "sandbox"`:
 The handle is bound to one PolicyBinding. After dispose, it is invalid and
 cannot be reused by a later Run.
 
+### Sandbox Operation Worker composition
+
+The optional Sandbox Operation Worker moves a bounded operation into a trusted
+child process. It is composed only through `trustedWorkerSandboxFactory`; no
+project or user setting may select an executable, module path, command,
+arguments, environment, or protocol endpoint. The packaged Worker uses private
+stdio and never exposes a listener or public transport.
+
+Worker preflight is side-effect-free: it validates the selected profile,
+required sandbox capabilities, protocol support, and Task Credential target.
+The Host activates the child and projects credentials only after the Run is
+accepted. A missing capability fails closed with
+`sandbox_capability_insufficient`; a missing Worker credential target fails
+with `task_credential_target_unavailable`. These canonical errors were added
+to close sealed-contract omissions; they are additive vocabulary, not a schema
+redesign. Neither failure falls back to Host execution.
+
+Heartbeat is process liveness only. Task Credential lease/heartbeat governs
+credential TTL and revocation, while the Session writer lease/fencing contract
+governs durable Host writes. None renews or substitutes for another. The
+Worker cannot create an `AgentInstance`, write a Run terminal, or produce the
+Host-owned `RunReceipt`.
+
+Gondolin/QEMU is an optional local Sandbox Provider adapter. The Worker
+contract does not require it, and an unavailable adapter does not authorize a
+less-isolated fallback. See [Sandbox Operation Worker contract](worker-contract.md).
+
 ### Provider registration and optional capabilities
 
 Provider registration is trusted host composition, not project configuration.

@@ -13,6 +13,7 @@
 - AgentHarness compatibility lifecycle: durable user/assistant/tool event ordering, extension tool and compaction hooks, bounded retry cancellation, automatic overflow compaction continuations, and model invocation context-snapshot provenance.
 - T11 recovery and migration conformance: atomic v4-to-v5 rollback, torn-tail refolding, single-writer fencing, duplicate-request rejection, semantic corruption detection, and unknown-schema fail-closed behavior.
 - T12 Foundation seal: local Workflow evaluation datasets and strict versioned quality, cost, and recovery regression snapshots, with all 79 Foundation closure capabilities backed by implementation evidence.
+- Line 11 Sandbox Operation Worker capability ledger: closes capabilities 74–87, 135, and 136, consumes sealed Foundation capabilities 6, 32, 47, 52, and 61, and preserves explicit later ownership for 88, 89, 132, and 137 without closing capability 140.
 
 ### Fixed
 
@@ -26,6 +27,7 @@
 - Foundation model calls now durably record route-bound intent/fact pairs and fail closed on unsupported service tiers or pending/unknown restart state without replaying provider side effects.
 - Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
 - AgentHarness compatibility retry and external-message state now reflects active retry attempts and pending writes instead of fixed false values.
+- Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResultV1.toolReceiptRef`, closing two sealed-contract omissions without a schema redesign.
 
 ## [0.84.3] - 2026-08-10
 

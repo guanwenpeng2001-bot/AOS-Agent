@@ -15,7 +15,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import { FoundationError, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import {
@@ -1028,6 +1028,37 @@ export interface RunLifecycleCoordinatorOptions {
 	 * facts and never participate in the ledger fold.
 	 */
 	credentialHooks?: RunCredentialLifecycleHooks;
+	/** Operation Worker observers; they cannot write or replace Run terminal facts. */
+	workerHooks?: RunWorkerLifecycleHooks;
+}
+
+export interface RunWorkerLifecycleHooks {
+	onRunCancelRequested?: (runId: RunId) => void;
+	onRunDeadlineExceeded?: (runId: RunId) => void;
+	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+	onRunInterrupted?: (runId: RunId) => void;
+}
+
+const registeredRunWorkerHooks = new Map<string, {
+	readonly token: symbol;
+	readonly session: RunLedgerSession;
+	readonly hooks: RunWorkerLifecycleHooks;
+}>();
+
+/** Bind one session's production coordinator construction path to its Worker owner. */
+export function registerRunWorkerLifecycleHooks(
+	session: RunLedgerSession,
+	hooks: RunWorkerLifecycleHooks,
+): () => void {
+	const sessionId = session.getSessionId();
+	if (registeredRunWorkerHooks.has(sessionId)) {
+		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks already have an owner");
+	}
+	const token = Symbol(sessionId);
+	registeredRunWorkerHooks.set(sessionId, { token, session, hooks });
+	return () => {
+		if (registeredRunWorkerHooks.get(sessionId)?.token === token) registeredRunWorkerHooks.delete(sessionId);
+	};
 }
 
 /**
@@ -3130,6 +3161,9 @@ class RunHandleImpl implements RunHandle {
 		// at most once per Run) and never writes a Run fact itself.
 		if (intent === "cancel") {
 			this.coordinator.credentialHooks?.onRunCancelRequested?.(this.runId);
+			this.coordinator.workerHooks?.onRunCancelRequested?.(this.runId);
+		} else {
+			this.coordinator.workerHooks?.onRunDeadlineExceeded?.(this.runId);
 		}
 	}
 }
@@ -3333,6 +3367,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly runIdFn: () => RunId;
 	private readonly diagnosticsSink: (message: string) => void;
 	readonly credentialHooks: RunCredentialLifecycleHooks | undefined;
+	readonly workerHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
@@ -3352,6 +3387,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.runIdFn = options.runId ?? (() => randomUUID());
 		this.diagnosticsSink = options.diagnostics ?? ((message) => console.error(message));
 		this.credentialHooks = options.credentialHooks;
+		this.workerHooks = options.workerHooks;
 		try {
 			this.externalMappings = new ExternalSessionMappingStore(session, {
 				now: () => this.now(),
@@ -3583,6 +3619,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (!this.interruptedSignaled.has(result.record.id)) {
 					this.interruptedSignaled.add(result.record.id);
 					this.credentialHooks?.onRunInterrupted?.(result.record.id);
+					this.workerHooks?.onRunInterrupted?.(result.record.id);
 				}
 			}
 			const policySummary = result.receipt?.policySummary ?? result.record.policySummary;
@@ -3866,7 +3903,10 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		// Side-channel observer: the Run ledger is already terminal at this
 		// point, so the hook can never rewrite RunStatus / RunReceipt facts.
 		const receipt = run.receipt();
-		if (receipt !== undefined) this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
+		if (receipt !== undefined) {
+			this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
+			this.workerHooks?.onRunTerminal?.(run.runId, receipt);
+		}
 	}
 
 	private emitIfNew(entryId: string, diag: LedgerDiagnostic): void {
@@ -3889,5 +3929,17 @@ export function createRunLifecycleCoordinator(
 	session: RunLedgerSession,
 	options?: RunLifecycleCoordinatorOptions,
 ): RunLifecycleCoordinator {
-	return new RunLifecycleCoordinatorImpl(session, options);
+	const registeredOwner = registeredRunWorkerHooks.get(session.getSessionId());
+	const registeredWorkerHooks = registeredOwner?.session === session ? registeredOwner.hooks : undefined;
+	if (registeredOwner !== undefined && options?.workerHooks !== undefined && options.workerHooks !== registeredOwner.hooks) {
+		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks cannot override the registered owner");
+	}
+	return new RunLifecycleCoordinatorImpl(session, {
+		...options,
+		...(options?.workerHooks !== undefined
+			? { workerHooks: options.workerHooks }
+			: registeredWorkerHooks === undefined
+				? {}
+				: { workerHooks: registeredWorkerHooks }),
+	});
 }

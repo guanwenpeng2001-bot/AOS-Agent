@@ -763,6 +763,10 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createTrustedWorkerSandboxCompositionV1,
+	type TrustedWorkerSandboxCompositionV1,
+	type TrustedWorkerSandboxFactoryV1,
+	type TrustedWorkerSandboxProviderOptionsV1,
 	createBashTool,
 	// Tool factories (for custom cwd)
 	createCodingTools,

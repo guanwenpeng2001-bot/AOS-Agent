@@ -1488,7 +1488,7 @@ describe("task credential automation host rpc", () => {
 			});
 			const issued = await dispatchCommand(
 				controller,
-				issueCommand(runId, "issue-detach", boundary, { workerId: "worker_1" }),
+				issueCommand(runId, "issue-detach", boundary),
 			);
 			const leaseId = expectGrantResponse(issued, "task.credential.issue").leaseId!;
 

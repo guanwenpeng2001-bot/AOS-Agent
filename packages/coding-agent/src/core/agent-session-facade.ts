@@ -135,6 +135,7 @@ import { expandPromptTemplate } from "./prompt-templates.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { FoundationControlPlane } from "./foundation-control-plane.ts";
+import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { buildSystemPrompt, type BuildSystemPromptOptions } from "./system-prompt.ts";
@@ -183,6 +184,16 @@ export interface CanonicalAgentSessionOptions {
 	noTools?: "all" | "builtin";
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
+}
+
+const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
+
+interface InternalAgentSessionConfig extends AgentSessionConfig {
+	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
+}
+
+interface InternalCanonicalAgentSessionOptions extends CanonicalAgentSessionOptions {
+	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
 }
 
 interface CanonicalAgentCompatibility extends Omit<Agent, "state"> {
@@ -251,7 +262,7 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 	};
 }
 
-function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
+function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): InternalCanonicalAgentSessionOptions {
 	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
 	const canonicalSession = new Session(canonicalStorage);
 	const legacyAgent = options.agent;
@@ -374,6 +385,9 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions: options.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
+		...(options[internalWorkerSandboxProvider] === undefined
+			? {}
+			: { [internalWorkerSandboxProvider]: options[internalWorkerSandboxProvider] }),
 		policyProfile: options.policyProfile,
 		externalAgentRegistry: options.externalAgentRegistry,
 		taskCredentialProvider: options.taskCredentialProvider,
@@ -579,7 +593,7 @@ export class CanonicalAgentSessionServices {
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
 	constructor(options: AgentSessionConfig);
 	constructor(options: CanonicalAgentSessionOptions | AgentSessionConfig) {
-		const canonical = "harness" in options && "canonicalSession" in options
+		const canonical: InternalCanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
 			? options
 			: createCanonicalOptionsFromLegacy(options);
 		const canonicalStorage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
@@ -629,6 +643,7 @@ export class CanonicalAgentSessionServices {
 			mcpAuthProvider: canonical.mcpAuthProvider,
 			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
 			sandboxProviders: canonical.sandboxProviders,
+			workerSandboxProvider: canonical[internalWorkerSandboxProvider],
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: canonical.externalAgentRegistry,
 			taskCredentialProvider: canonical.taskCredentialProvider,
@@ -2205,11 +2220,32 @@ export class CanonicalAgentSessionServices {
 
 	async abort(): Promise<void> {
 		this.controlPlane.cancelMcpContentOperations();
-		const result = await this.harness.abort();
-		const error = resultError(result);
-		if (error && !/No active operation/.test(error.message)) throw error;
-		await this.harness.waitForIdle();
+		const workerCancellation = (async (): Promise<unknown> => {
+			try {
+				await this.controlPlane.cancelWorkerOperations();
+				return undefined;
+			} catch (error) {
+				return error;
+			}
+		})();
+		const hostCancellation = (async (): Promise<unknown> => {
+			try {
+				const result = await this.harness.abort();
+				const error = resultError(result);
+				return error !== undefined && !/No active operation/.test(error.message) ? error : undefined;
+			} catch (error) {
+				return error;
+			}
+		})();
+		const [workerFailure, hostFailure] = await Promise.all([workerCancellation, hostCancellation]);
+		let failure = workerFailure ?? hostFailure;
+		try {
+			await this.harness.waitForIdle();
+		} catch (error) {
+			failure ??= error;
+		}
 		await Promise.all([...this.activePromptTasks].map((task) => task.catch(() => undefined)));
+		if (failure !== undefined) throw failure;
 	}
 
 	async waitForIdle(): Promise<void> {
@@ -3034,6 +3070,22 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getExternalAgentRegistry();
 	}
 
+	getWorkerRegistry():
+		| Pick<WorkerSandboxProviderV1, "getWorkerRecord" | "listWorkerRecords" | "reclaimWorker">
+		| undefined {
+		if (this.controlPlane.getWorkerSandboxProvider() === undefined) return undefined;
+
+		return {
+			getWorkerRecord: (workerId) => this.controlPlane.getWorkerRecord(workerId),
+			listWorkerRecords: () => this.controlPlane.listWorkerRecords(),
+			reclaimWorker: async (workerId) => {
+				const result = await this.controlPlane.reclaimWorker(workerId);
+				if (result === undefined) throw new Error("Worker registry became unavailable");
+				return result;
+			},
+		};
+	}
+
 	getTaskCredentialService(): TaskCredentialService | undefined {
 		return this.controlPlane.getTaskCredentialService();
 	}
@@ -3402,6 +3454,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"setModelBrokerResolution",
 	"getActiveBindingHandles",
 	"getExternalAgentRegistry",
+	"getWorkerRegistry",
 	"getTaskCredentialService",
 	"getActiveSandboxSessionForCompatibility",
 	"setAutoCompactionEnabled",
@@ -3611,6 +3664,7 @@ export class AgentSession {
 	declare readonly setModelBrokerResolution: CanonicalAgentSessionServices["setModelBrokerResolution"];
 	declare readonly getActiveBindingHandles: CanonicalAgentSessionServices["getActiveBindingHandles"];
 	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
+	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];
 	declare readonly getActiveSandboxSessionForCompatibility: CanonicalAgentSessionServices["getActiveSandboxSessionForCompatibility"];
 	declare readonly setAutoCompactionEnabled: CanonicalAgentSessionServices["setAutoCompactionEnabled"];
@@ -3684,4 +3738,17 @@ export function createAgentSessionDelegate(options: CanonicalAgentSessionOptions
  */
 export function createLegacyAgentSession(options: AgentSessionConfig): AgentSession {
 	return new AgentSession(options);
+}
+
+/** @internal SDK-only bridge for the branded Worker composition. */
+export function createAgentSessionWithTrustedWorkerSandboxProvider(
+	options: AgentSessionConfig,
+	workerSandboxProvider: WorkerSandboxProviderV1 | undefined,
+): AgentSession {
+	if (workerSandboxProvider === undefined) return new AgentSession(options);
+	const internalOptions: InternalAgentSessionConfig = {
+		...options,
+		[internalWorkerSandboxProvider]: workerSandboxProvider,
+	};
+	return new AgentSession(internalOptions);
 }

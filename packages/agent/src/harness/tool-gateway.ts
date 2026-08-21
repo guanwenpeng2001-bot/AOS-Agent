@@ -346,6 +346,7 @@ export function createSandboxOperationToolGatewayProviderV1(
 					toolName: request.toolName,
 					ok: receipt.status === "succeeded",
 					sideEffectState: receipt.sideEffectState,
+					toolReceiptRef: receipt.workerReceiptId,
 					...(receipt.artifacts === undefined ? {} : { artifacts: [...receipt.artifacts] }),
 					...(receipt.error === undefined ? {} : { error: receipt.error }),
 				};

@@ -487,6 +487,33 @@ only writes it after a confirmed provider revoke) and converges to the safer
 status. Replay and query never backfill a missing transition, never call the
 credential provider, and never fabricate a grant or a lease.
 
+### Sandbox Operation Worker summaries
+
+Worker custom entries project into three bounded audit event families:
+
+- `worker.lifecycle` records Worker identity, provider/session/lane
+  correlation, optional Host Run/Binding/Attempt correlation, lifecycle status,
+  revision, timestamps, heartbeat, and the active operation/receipt references
+  present on the lifecycle record.
+- `worker.operation` records `workerId`, `providerId`, `sessionId`, `laneId`,
+  `operationId`, the `claimed`/`started`/`terminal` phase, revision, and optional
+  side-effect/receipt reference.
+- `worker.receipt` records `workerId`, `workerReceiptId`, `operationId`, optional
+  `taskId`, and the terminal record revision.
+
+Worker durable records, events, and receipt provenance omit `agentInstanceId`.
+A request-side value is upstream correlation only. Host-owned Attempt join and
+audit records may contain Agent identity, but those are Host facts rather than
+Worker durable records and do not change the Worker provenance boundary.
+
+Worker summaries never contain credential material, protocol tokens, process
+IDs, executable/arguments, environment, workspace/path data, VM or QEMU launch
+details, raw protocol frames, raw receipt bodies, stdout/stderr, or free-form
+provider errors. The receipt-summary allowlist names `workerReceiptId`; public
+Worker RPC records separately omit receipt IDs and references. Replay reads and
+correlates these facts but never starts, cancels, reclaims, or settles a Worker
+or Run. See [Sandbox Operation Worker contract](worker-contract.md).
+
 ### Forbidden keys
 
 The following keys are forbidden at every summary nesting level:
