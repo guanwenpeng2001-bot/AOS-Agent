@@ -48,6 +48,7 @@ import {
 	type TaskCredentialRunIssueContext,
 	type TaskCredentialRunTerminalInput,
 	type TaskCredentialServiceOptions,
+	type TaskCredentialWorkerTarget,
 } from "../src/core/task-credential-service.ts";
 import type { TaskCredentialPreflightOperation } from "../src/core/execution-policy.ts";
 
@@ -272,7 +273,6 @@ function issueContext(overrides: Partial<TaskCredentialRunIssueContext> = {}): T
 		policyBindingId: "policy_001",
 		sandboxBindingId: "policy_001",
 		targetId: "target_sandbox",
-		workerId: "worker_001",
 		scopes: SCOPES,
 		requestedTtlMs: 60_000,
 		clientRequestId: "req_issue_1",
@@ -1305,7 +1305,12 @@ describe("worker detach", () => {
 
 	it("revokes by issue-time worker correlation when no run is given", () => {
 		const harness = makeService();
-		const result = harness.service.issueForTaskRun(issueContext());
+		const workerTarget: TaskCredentialWorkerTarget = {
+			project: () => ({ ok: true }),
+			renew: () => ({ ok: true }),
+			revoke: () => ({ ok: true }),
+		};
+		const result = harness.service.issueForTaskRun(issueContext({ workerId: "worker_001", workerTarget }));
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		const outcomes = harness.service.onWorkerDetach({ workerId: "worker_001" });
