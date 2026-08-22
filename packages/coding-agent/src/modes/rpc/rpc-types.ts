@@ -8,6 +8,8 @@
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
+import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -374,7 +376,17 @@ export type RpcCommand =
 			limit?: number;
 			cursor?: string;
 	  }
-	| { id?: string; type: "worker.reclaim"; workerId: string };
+	| { id?: string; type: "worker.reclaim"; workerId: string }
+	| { id?: string; type: "subagent.get"; runId: string; childAgentInstanceId: string }
+	| {
+			id?: string;
+			type: "subagent.list";
+			runId: string;
+			parentAgentInstanceId?: string;
+			status?: ChildLifecycleStatusV1;
+			limit?: number;
+	  }
+	| { id?: string; type: "subagent.cancel"; runId: string; childAgentInstanceId: string };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -962,6 +974,8 @@ export type RpcTaskCredentialCommandType =
 /** Operation Worker management commands. No start or cancel authority is exposed. */
 export type RpcWorkerCommandType = "worker.get" | "worker.list" | "worker.reclaim";
 
+export type RpcSubagentCommandType = "subagent.get" | "subagent.list" | "subagent.cancel";
+
 /** The full Automation Host v1 command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
@@ -970,7 +984,8 @@ export type RpcAutomationCommandType =
 	| RpcTaskGateCommandType
 	| RpcTaskGraphCommandType
 	| RpcTaskCredentialCommandType
-	| RpcWorkerCommandType;
+	| RpcWorkerCommandType
+	| RpcSubagentCommandType;
 
 /** Data returned by a successful `initialize` (advertises the host contract). */
 export interface InitializeData {
@@ -988,6 +1003,8 @@ export interface InitializeData {
 	taskCredentialCommands?: RpcTaskCredentialCommandType[];
 	/** Additive current-Session Operation Worker management command list. */
 	workerCommands?: RpcWorkerCommandType[];
+	/** Exact safe current-Session Child Agent surface. */
+	subagentCommands?: RpcSubagentCommandType[];
 	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
 	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
 }
@@ -1191,6 +1208,34 @@ export type RpcWorkerResponse =
 			success: false;
 			error: RpcWorkerError;
 	  };
+
+export interface SubagentGetData {
+	subagent: SafeSubagentLifecycleProjectionV1;
+}
+
+export interface SubagentListData {
+	subagents: SafeSubagentLifecycleProjectionV1[];
+	truncated: boolean;
+}
+
+export interface SubagentCancelData {
+	subagent: SafeSubagentLifecycleProjectionV1;
+	idempotent: boolean;
+}
+
+export type RpcSubagentErrorCode = "host_not_initialized" | "subagent_invalid" | "subagent_not_found" | "subagent_unavailable" | "subagent_cancel_failed";
+
+export interface RpcSubagentError {
+	code: RpcSubagentErrorCode;
+	message: string;
+	retryable: boolean;
+}
+
+export type RpcSubagentResponse =
+	| { id?: string; type: "response"; command: "subagent.get"; success: true; data: SubagentGetData }
+	| { id?: string; type: "response"; command: "subagent.list"; success: true; data: SubagentListData }
+	| { id?: string; type: "response"; command: "subagent.cancel"; success: true; data: SubagentCancelData }
+	| { id?: string; type: "response"; command: RpcSubagentCommandType; success: false; error: RpcSubagentError };
 
 /**
  * Automation Host v1 responses.

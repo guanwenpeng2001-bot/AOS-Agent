@@ -105,13 +105,16 @@ function sourceEntries(includeTerminal = true): SessionEntry[] {
 			createdAt: times.context,
 			sources: [
 				{
-					sourceId: "internal-source",
-					kind: "system",
-					scope: "session",
-					trust: "builtin",
-					contentDigest: "digest-1",
+					sourceId: "subagent:next-turn:run-audit-1",
+					kind: "session_message",
+					scope: "turn",
+					trust: "untrusted_child_output",
+					contentDigest: "child-safe-digest-1",
 					estimatedTokens: 20,
 					disposition: "included",
+					reason: "within_budget",
+					body: "raw-child-body-must-not-escape",
+					correlation: "raw-child-correlation-must-not-escape",
 				},
 			],
 			budget: { contextWindow: 1000, reserveTokens: 100, inputLimit: 900, estimatedInputTokens: 20 },
@@ -281,6 +284,15 @@ describe("single-session execution audit adapter", () => {
 		]);
 		expect(result.events.find((event) => event.type === "capability.binding")?.summary).toMatchObject({ id: CAPABILITY_BINDING_ID });
 		expect(result.events.find((event) => event.type === "model.attempt")?.runId).toBe(RUN_ID);
+		expect(result.events.find((event) => event.type === "context.snapshot")?.summary).toMatchObject({
+			sources: [
+				{
+					trust: "untrusted_child_output",
+					disposition: "included",
+					reason: "within_budget",
+				},
+			],
+		});
 		expect(result.events.find((event) => event.type === "policy.decision")?.summary).toMatchObject({
 			bindingId: POLICY_BINDING_ID,
 			sandboxStatus: "not_required",
@@ -298,6 +310,8 @@ describe("single-session execution audit adapter", () => {
 		const encoded = JSON.stringify(result.events);
 		expect(encoded).not.toContain("must-not-escape");
 		expect(encoded).not.toContain("private");
+		expect(encoded).not.toContain("raw-child-body-must-not-escape");
+		expect(encoded).not.toContain("raw-child-correlation-must-not-escape");
 		expect(result.warnings.map((item) => item.code)).toEqual(["malformed_source", "unknown_source"]);
 	});
 

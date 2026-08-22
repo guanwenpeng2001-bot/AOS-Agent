@@ -3,6 +3,7 @@ import {
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
+	InMemoryRoleRegistryV1,
 	Result,
 	Session,
 	type AgentBindingV1,
@@ -196,6 +197,49 @@ class PromptTaskProvider implements TaskExecutorProvider {
 }
 
 describe("Foundation Prompt Task adapter", () => {
+	it.each([
+		["explicit @agent", "@agent reviewer inspect this boundary"],
+		["description", "Please review security boundaries and unsafe output"],
+	])("routes %s selection through the Role Resolver before the agent provider", async (_selection, prompt) => {
+		const calls: PromptTaskDependencyNameV1[] = [];
+		const session = new Session(new InMemorySessionStorage({ id: "session-prompt-subagent", createdAt: 1 }));
+		const provider = new PromptTaskProvider();
+		const runtime = createModelsWithResponse();
+		const registry = new InMemoryRoleRegistryV1({ now: () => NOW });
+		const created = registry.create({ definition: {
+			schemaVersion: 1,
+			roleId: "reviewer",
+			scope: "project",
+			slug: "reviewer",
+			name: "Security reviewer",
+			description: "Review security boundaries and unsafe output",
+			revision: 0,
+			persona: "Review the implementation",
+			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "model-profile-prompt-task", revision: 1 },
+			capabilitySelector: { policy: "none" },
+			skillSelector: { policy: "none" },
+			mcpSelector: { policy: "none" },
+		} });
+		if (!created.ok) throw created.error;
+		let selectedRoleId: string | undefined;
+		const adapter = createPromptTaskAdapter({
+			dependencies: dependencies(calls),
+			provider,
+			subagentRoles: {
+				registry,
+				scope: "project",
+				parentLaneId: "main",
+				spawn: async (input) => {
+					selectedRoleId = input.selectedRoleRevision.roleId;
+					return Result.err(new FoundationError("subagent_lost", "selection-only fixture stops before parent execution"));
+				},
+			},
+			harness: { session, env: executionEnv(), models: runtime.models, model: runtime.model, tools: [], activeToolNames: [], systemPrompt: "Prompt Task test" },
+		});
+		await expect(adapter.execute({ ...promptInput(), runId: "run-prompt-subagent", prompt })).rejects.toMatchObject({ code: "prompt_task_binding_invalid" });
+		expect(selectedRoleId).toBe("reviewer");
+		expect(provider.receivedRoleRevision?.roleId).toBe("role-prompt-task");
+	});
 	it("drives the only Prompt Task chain through all injected dependencies and AgentHarness receipts", async () => {
 		const calls: PromptTaskDependencyNameV1[] = [];
 		const session = new Session(new InMemorySessionStorage({ id: "session-prompt-task", createdAt: 1 }));

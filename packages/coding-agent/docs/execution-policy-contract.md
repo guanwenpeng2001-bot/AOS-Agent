@@ -398,6 +398,26 @@ Gondolin/QEMU is an optional local Sandbox Provider adapter. The Worker
 contract does not require it, and an unavailable adapter does not authorize a
 less-isolated fallback. See [Sandbox Operation Worker contract](worker-contract.md).
 
+### Native child-agent projection
+
+Line 12A child agents receive a distinct immutable Binding. Before spawn, the
+Host projects instructions, Skills, MCP selection, model, Sandbox, Git, and
+Budget from the parent Binding and persists a digest-bound proof that every
+field is equal or narrower. Resource selectors use the sealed
+`selectorsNarrow` relation, Budget fields use minimum limits, managed locks
+cannot be removed, and Policy or Capability revision changes require an
+explicit Host tightening proof. A widening fails with
+`subagent_binding_projection_invalid` before provider execution.
+
+The projection does not copy credentials, environment/header values, MCP
+material, provider handles, or a Sandbox authority into the child. Child tool
+operations still pass through the existing Tool Gateway and Execution Policy;
+an optional Operation Worker remains a separate non-Agent execution boundary.
+`in_process` and `fork` are the Line 12A implementations. The
+`agent_runtime_host`, `acp`, and `sdk` descriptors freeze registration and
+capability-negotiation contracts only and remain fail-closed unavailable. See
+[Native Subagent Runtime Contract](subagent-contract.md).
+
 ### Provider registration and optional capabilities
 
 Provider registration is trusted host composition, not project configuration.

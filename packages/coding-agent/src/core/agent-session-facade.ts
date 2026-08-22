@@ -22,6 +22,7 @@ import {
 	type ProvisionedEntry,
 	type PrepareNextTurnContext,
 	type QueueMode,
+	type SessionLedgerWriter,
 	type StreamFn,
 	type ThinkingLevel,
 	createCompactionSummaryMessage,
@@ -146,6 +147,7 @@ import {
 } from "./product-prompt-ingress.ts";
 import type { PromptTaskDependencyNameV1 } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
+import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -184,6 +186,8 @@ export interface CanonicalAgentSessionOptions {
 	noTools?: "all" | "builtin";
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
+	/** Explicit trusted Host-only opt-in; omission preserves the original runtime path. */
+	subagents?: TrustedSubagentCompositionOptionsV1;
 }
 
 const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
@@ -644,6 +648,7 @@ export class CanonicalAgentSessionServices {
 			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
 			sandboxProviders: canonical.sandboxProviders,
 			workerSandboxProvider: canonical[internalWorkerSandboxProvider],
+			subagents: canonical.subagents,
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: canonical.externalAgentRegistry,
 			taskCredentialProvider: canonical.taskCredentialProvider,
@@ -653,6 +658,7 @@ export class CanonicalAgentSessionServices {
 			allowedToolNames: canonical.allowedToolNames,
 			excludedToolNames: canonical.excludedToolNames,
 		});
+		const subagents = this.controlPlane.getSubagentComposition();
 		this.productPromptIngress = new ProductPromptIngressV1({
 			session: this.canonicalSession,
 			harness: this.harness,
@@ -665,6 +671,7 @@ export class CanonicalAgentSessionServices {
 			},
 			currentThinkingLevel: () => this.thinkingLevel,
 			dependencySnapshot: (name, context) => this.productPromptDependencySnapshot(name, context),
+			...(subagents === undefined ? {} : { subagents }),
 		});
 		if (canonical.extensionRunnerRef !== undefined) canonical.extensionRunnerRef.current = this._extensionRunner;
 		this.compatibilityAgent = this.createCompatibilityAgent();
@@ -903,6 +910,31 @@ export class CanonicalAgentSessionServices {
 			content: input.context.systemPrompt,
 			required: true,
 		}];
+		if (input.purpose === "agent_turn") {
+			const subagents = this.controlPlane.getSubagentComposition();
+			if (subagents !== undefined) {
+				const childContext = await subagents.consumeParentNextTurnForRun(input.operationId);
+				if (!childContext.ok) {
+					throw contextEngineError(createContextError(
+						"context_source_unavailable",
+						"Child Agent next-turn Context projection failed closed",
+						false,
+					));
+				}
+				if (childContext.value.contextText.length > 0) {
+					sources.push({
+						sourceId: `subagent:next-turn:${input.operationId}`,
+						kind: "session_message",
+						scope: "turn",
+						trust: "untrusted_child_output",
+						content: childContext.value.contextText,
+						required: true,
+						placement: "message",
+						message: { role: "user", content: childContext.value.contextText, timestamp: Date.now() },
+					});
+				}
+			}
+		}
 		for (const source of this._resourceLoader.toContextSourceInputs()) {
 			if (source.kind !== "system") sources.push(source);
 		}
@@ -3322,6 +3354,8 @@ export class CanonicalAgentSessionServices {
 			await this.initializeExtensions();
 		}
 		await this.controlPlane.reload();
+		const subagentRecovery = await this.controlPlane.getSubagentComposition()?.reload();
+		if (subagentRecovery !== undefined && !subagentRecovery.ok) throw subagentRecovery.error;
 		await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 	}
 
@@ -3751,4 +3785,14 @@ export function createAgentSessionWithTrustedWorkerSandboxProvider(
 		[internalWorkerSandboxProvider]: workerSandboxProvider,
 	};
 	return new AgentSession(internalOptions);
+}
+
+/** Trusted Host composition root for default-off Child Agent product wiring. */
+export function createAgentSessionWithTrustedSubagents(
+	options: AgentSessionConfig,
+	createSubagents: (session: Session, sessionId: string, writer: SessionLedgerWriter) => TrustedSubagentCompositionOptionsV1,
+): AgentSession {
+	const canonical = createCanonicalOptionsFromLegacy(options);
+	const subagents = createSubagents(canonical.canonicalSession, canonical.sessionManager.getSessionId(), canonical.harness.t5.writer);
+	return new AgentSession(new CanonicalAgentSessionServices({ ...canonical, subagents }));
 }

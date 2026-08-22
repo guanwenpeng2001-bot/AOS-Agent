@@ -112,7 +112,16 @@ import {
 	isTaskExecutionBinding,
 } from "./task-credential-lease.ts";
 import { TaskCredentialService, type TaskCredentialPreflightFactsInput } from "./task-credential-service.ts";
-import { registerRunWorkerLifecycleHooks, type RunWorkerLifecycleHooks } from "./run-lifecycle.ts";
+import {
+	registerRunSubagentLifecycleHooks,
+	registerRunWorkerLifecycleHooks,
+	type RunWorkerLifecycleHooks,
+} from "./run-lifecycle.ts";
+import {
+	createTrustedSubagentCompositionV1,
+	type TrustedSubagentCompositionOptionsV1,
+	type TrustedSubagentCompositionV1,
+} from "./subagent-composition.ts";
 import {
 	parseWorkerRecordV1,
 	workerTransitionAllowedV1,
@@ -150,6 +159,8 @@ export interface FoundationControlPlaneOptions {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Explicit Operation Worker profile/provider. Omission preserves the inline/Host path. */
 	workerSandboxProvider?: WorkerSandboxProviderV1;
+	/** Explicit trusted Host opt-in. Project/model/RPC configuration cannot populate this option. */
+	subagents?: TrustedSubagentCompositionOptionsV1;
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
 	workerFactCacheLimit?: number;
 	policyProfile?: string;
@@ -242,6 +253,8 @@ export class FoundationControlPlane {
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
 	private readonly releaseWorkerCredentialDetachSink: (() => void) | undefined;
+	private readonly subagents: TrustedSubagentCompositionV1 | undefined;
+	private readonly unregisterSubagentLifecycleHooks: (() => void) | undefined;
 	private readonly persistedWorkerFacts = new Map<string, {
 		readonly customType: string;
 		readonly canonicalEnvelope: string;
@@ -310,6 +323,10 @@ export class FoundationControlPlane {
 		this.policyProfileSelection = options.policyProfile;
 		this.sandboxProviders = normalizeSandboxProviders(options.sandboxProviders);
 		this.workerSandboxProvider = options.workerSandboxProvider;
+		if (options.subagents !== undefined && options.subagents.sessionId !== this.sessionManager.getSessionId()) {
+			throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the control-plane Session");
+		}
+		this.subagents = createTrustedSubagentCompositionV1(options.subagents);
 		this.workerFactCacheLimit = options.workerFactCacheLimit ?? 4_096;
 		if (!Number.isSafeInteger(this.workerFactCacheLimit) || this.workerFactCacheLimit < 1) {
 			throw new RangeError("workerFactCacheLimit must be a positive safe integer");
@@ -338,7 +355,14 @@ export class FoundationControlPlane {
 		let releaseWorkerDurableSink: (() => void) | undefined;
 		let releaseWorkerCredentialDetachSink: (() => void) | undefined;
 		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
+		let unregisterSubagentLifecycleHooks: (() => void) | undefined;
 		try {
+			if (this.subagents !== undefined) {
+				unregisterSubagentLifecycleHooks = registerRunSubagentLifecycleHooks(
+					this.sessionManager,
+					this.subagents.lifecycleHooks(),
+				);
+			}
 			if (this.workerSandboxProvider !== undefined) {
 				if (this.workerLifecycleHooks !== undefined) {
 					unregisterWorkerLifecycleHooks = registerRunWorkerLifecycleHooks(
@@ -370,6 +394,7 @@ export class FoundationControlPlane {
 				if (!restored.ok) throw restored.error;
 			}
 		} catch (error) {
+			unregisterSubagentLifecycleHooks?.();
 			unregisterWorkerLifecycleHooks?.();
 			releaseWorkerCredentialDetachSink?.();
 			releaseWorkerDurableSink?.();
@@ -378,6 +403,7 @@ export class FoundationControlPlane {
 		this.releaseWorkerDurableSink = releaseWorkerDurableSink;
 		this.releaseWorkerCredentialDetachSink = releaseWorkerCredentialDetachSink;
 		this.unregisterWorkerLifecycleHooks = unregisterWorkerLifecycleHooks;
+		this.unregisterSubagentLifecycleHooks = unregisterSubagentLifecycleHooks;
 	}
 
 	private registerConfiguredServers(): void {
@@ -1754,6 +1780,7 @@ export class FoundationControlPlane {
 	reclaimWorker(workerId: string) { return this.workerSandboxProvider?.reclaimWorker(workerId); }
 	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
 	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
+	getSubagentComposition(): TrustedSubagentCompositionV1 | undefined { return this.subagents; }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to
 	 * dispose the live sandbox before a credential preflight. The control plane
@@ -1802,6 +1829,13 @@ export class FoundationControlPlane {
 			this.unregisterWorkerLifecycleHooks?.();
 			this.releaseWorkerCredentialDetachSink?.();
 			this.releaseWorkerDurableSink?.();
+		}
+		try {
+			await this.subagents?.dispose();
+		} catch (error) {
+			failure ??= error;
+		} finally {
+			this.unregisterSubagentLifecycleHooks?.();
 		}
 		try {
 			await this.disposeSandbox();

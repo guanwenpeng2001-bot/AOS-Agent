@@ -43,7 +43,9 @@ import {
 	serializePublicModelAttempt,
 } from "../../core/model-broker-ledger.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
-import { ExecutionAuditError } from "../../core/execution-audit.ts";
+import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
+import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
 import type {
 	MCPGetPromptResult,
@@ -197,6 +199,9 @@ import type {
 	RpcWorkerErrorCode,
 	RpcWorkerRecord,
 	RpcWorkerResponse,
+	RpcSubagentCommandType,
+	RpcSubagentErrorCode,
+	RpcSubagentResponse,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -218,6 +223,9 @@ import type {
 	WorkerGetData,
 	WorkerListData,
 	WorkerReclaimData,
+	SubagentCancelData,
+	SubagentGetData,
+	SubagentListData,
 } from "./rpc-types.ts";
 
 /** Public records emitted by the transport-neutral RPC controller. */
@@ -227,6 +235,7 @@ export type RpcWireRecord =
 	| RpcMcpAuthResponse
 	| RpcMcpContentResponse
 	| RpcWorkerResponse
+	| RpcSubagentResponse
 	| RpcExtensionUIRequest
 	| JsonAgentSessionEvent
 	| RpcHostRunStreamEvent
@@ -260,6 +269,8 @@ export interface RpcHostControllerOptions {
 	onShutdown?: () => void;
 	/** Resolve the authoritative Worker registry for the current Session. */
 	workerRegistry?: (session: AgentSessionRuntime["session"]) => RpcWorkerRegistry | undefined;
+	/** Resolve the active Run-owned Child Agent authority for the current Session. */
+	subagentRegistry?: (session: AgentSessionRuntime["session"]) => RpcSubagentRegistry | undefined;
 }
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
@@ -267,6 +278,12 @@ export interface RpcWorkerRegistry {
 	getWorkerRecord(workerId: string): WorkerRecordV1 | undefined;
 	listWorkerRecords(): readonly WorkerRecordV1[];
 	reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>>;
+}
+
+export interface RpcSubagentRegistry {
+	get(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
+	list(runId: string, filter: { readonly parentAgentInstanceId?: string; readonly status?: ChildLifecycleStatusV1; readonly limit: number }): Promise<ResultValue<readonly SafeSubagentLifecycleProjectionV1[], FoundationError>>;
+	cancel(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
 }
 
 type RpcOutputSinkLike = RpcHostOutputSink | RpcOutputSink;
@@ -378,6 +395,9 @@ export type {
 	WorkerGetData,
 	WorkerListData,
 	WorkerReclaimData,
+	SubagentCancelData,
+	SubagentGetData,
+	SubagentListData,
 } from "./rpc-types.ts";
 
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
@@ -418,6 +438,33 @@ const RPC_WORKER_ERROR_MESSAGES: Readonly<Record<RpcWorkerErrorCode, string>> = 
 	worker_conflict: "The Worker cannot be reclaimed in its current state.",
 	worker_reclaim_failed: "The Worker reclaim outcome is unknown.",
 };
+const RPC_SUBAGENT_DEFAULT_LIMIT = 50;
+const RPC_SUBAGENT_MAX_LIMIT = 100;
+const RPC_SUBAGENT_COMMAND_KEYS: Readonly<Record<RpcSubagentCommandType, ReadonlySet<string>>> = {
+	"subagent.get": new Set(["id", "type", "runId", "childAgentInstanceId"]),
+	"subagent.list": new Set(["id", "type", "runId", "parentAgentInstanceId", "status", "limit"]),
+	"subagent.cancel": new Set(["id", "type", "runId", "childAgentInstanceId"]),
+};
+const RPC_SUBAGENT_ERROR_MESSAGES: Readonly<Record<RpcSubagentErrorCode, string>> = {
+	host_not_initialized: "Automation Host is not initialized. Send initialize with protocolVersion 1 first.",
+	subagent_invalid: "The Subagent request is invalid.",
+	subagent_not_found: "The Subagent was not found in the requested active Run and current Session.",
+	subagent_unavailable: "The Subagent authority is unavailable in the current Session.",
+	subagent_cancel_failed: "The Subagent cancellation was not confirmed by the Run Supervisor.",
+};
+
+function rpcSubagentError(id: string | undefined, command: RpcSubagentCommandType, code: RpcSubagentErrorCode): RpcSubagentResponse {
+	return { id, type: "response", command, success: false, error: { code, message: RPC_SUBAGENT_ERROR_MESSAGES[code], retryable: code === "subagent_unavailable" || code === "subagent_cancel_failed" } };
+}
+
+function isRpcSubagentCommandShapeValid(command: RpcCommand): boolean {
+	const allowed = RPC_SUBAGENT_COMMAND_KEYS[command.type as RpcSubagentCommandType];
+	return allowed !== undefined && (command.id === undefined || typeof command.id === "string") && Object.keys(command).every((key) => allowed.has(key));
+}
+
+function isRpcSubagentStatus(value: unknown): value is ChildLifecycleStatusV1 {
+	return typeof value === "string" && (CHILD_LIFECYCLE_STATUSES as readonly string[]).includes(value);
+}
 
 function isRpcWorkerIdentifier(value: unknown): value is string {
 	return typeof value === "string" && RPC_WORKER_IDENTIFIER_PATTERN.test(value);
@@ -659,12 +706,13 @@ export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHan
 export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly workerRegistry?: RpcHostControllerOptions["workerRegistry"];
+	private readonly subagentRegistry?: RpcHostControllerOptions["subagentRegistry"];
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
 	>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
@@ -677,6 +725,7 @@ export class RpcHostController {
 	constructor(runtimeHost: AgentSessionRuntime, options: RpcHostControllerOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		this.workerRegistry = options.workerRegistry;
+		this.subagentRegistry = options.subagentRegistry;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
 	}
@@ -4066,7 +4115,7 @@ export class RpcHostController {
 		const handleCommand = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
 		> => {
 			const id = typeof command.id === "string" ? command.id : undefined;
 
@@ -4113,6 +4162,13 @@ export class RpcHostController {
 							return undefined;
 						}
 					})();
+					const subagentRegistry = (() => {
+						try {
+							return hostController.subagentRegistry?.(session);
+						} catch {
+							return undefined;
+						}
+					})();
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
@@ -4143,6 +4199,7 @@ export class RpcHostController {
 							"task.credential.settle",
 						],
 						...(workerRegistry === undefined ? {} : { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
+						...(subagentRegistry === undefined ? {} : { subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"] }),
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
@@ -4159,6 +4216,73 @@ export class RpcHostController {
 						data: initializeData,
 					};
 					return initializeResponse;
+				}
+
+				case "subagent.get": {
+					if (!hostInitialized) return rpcSubagentError(id, "subagent.get", "host_not_initialized");
+					if (!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) || !isRpcWorkerIdentifier(command.childAgentInstanceId)) {
+						return rpcSubagentError(id, "subagent.get", "subagent_invalid");
+					}
+					const registry = hostController.subagentRegistry?.(session);
+					if (registry === undefined) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
+					const result = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
+					if (result === undefined || !result.ok) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
+					const subagent = projectSubagentAuditSourceV1(result.value);
+					if (subagent === undefined || subagent.sessionId !== session.sessionId || subagent.runId !== command.runId || subagent.childAgentInstanceId !== command.childAgentInstanceId) {
+						return rpcSubagentError(id, "subagent.get", "subagent_not_found");
+					}
+					return { id, type: "response", command: "subagent.get", success: true, data: { subagent } satisfies SubagentGetData };
+				}
+
+				case "subagent.list": {
+					if (!hostInitialized) return rpcSubagentError(id, "subagent.list", "host_not_initialized");
+					const limit = command.limit ?? RPC_SUBAGENT_DEFAULT_LIMIT;
+					if (
+						!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) ||
+						(command.parentAgentInstanceId !== undefined && !isRpcWorkerIdentifier(command.parentAgentInstanceId)) ||
+						(command.status !== undefined && !isRpcSubagentStatus(command.status)) ||
+						!Number.isSafeInteger(limit) || limit < 1 || limit > RPC_SUBAGENT_MAX_LIMIT
+					) return rpcSubagentError(id, "subagent.list", "subagent_invalid");
+					const registry = hostController.subagentRegistry?.(session);
+					if (registry === undefined) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
+					const result = await registry.list(command.runId, {
+						...(command.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: command.parentAgentInstanceId }),
+						...(command.status === undefined ? {} : { status: command.status }),
+						limit,
+					}).catch(() => undefined);
+					if (result === undefined || !result.ok) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
+					const subagents = result.value.map(projectSubagentAuditSourceV1);
+					if (subagents.some((entry) => entry === undefined || entry.sessionId !== session.sessionId || entry.runId !== command.runId)) {
+						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
+					}
+					return {
+						id,
+						type: "response",
+						command: "subagent.list",
+						success: true,
+						data: { subagents: subagents as SafeSubagentLifecycleProjectionV1[], truncated: result.value.length === limit } satisfies SubagentListData,
+					};
+				}
+
+				case "subagent.cancel": {
+					if (!hostInitialized) return rpcSubagentError(id, "subagent.cancel", "host_not_initialized");
+					if (!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) || !isRpcWorkerIdentifier(command.childAgentInstanceId)) {
+						return rpcSubagentError(id, "subagent.cancel", "subagent_invalid");
+					}
+					const registry = hostController.subagentRegistry?.(session);
+					if (registry === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_unavailable");
+					const before = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
+					if (before === undefined || !before.ok || before.value === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
+					const previous = projectSubagentAuditSourceV1(before.value);
+					if (previous === undefined || previous.sessionId !== session.sessionId || previous.runId !== command.runId) return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
+					const idempotent = previous.status === "cancelling" || ["succeeded", "failed", "cancelled", "lost", "closed"].includes(previous.status);
+					const result = await registry.cancel(command.runId, command.childAgentInstanceId).catch(() => undefined);
+					if (result === undefined || !result.ok || result.value === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
+					const subagent = projectSubagentAuditSourceV1(result.value);
+					if (subagent === undefined || subagent.sessionId !== session.sessionId || subagent.runId !== command.runId || subagent.childAgentInstanceId !== command.childAgentInstanceId) {
+						return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
+					}
+					return { id, type: "response", command: "subagent.cancel", success: true, data: { subagent, idempotent } satisfies SubagentCancelData };
 				}
 
 				case "worker.get": {
@@ -6174,7 +6298,7 @@ export class RpcHostController {
 		this.commandHandler = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
 		> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
@@ -6186,6 +6310,17 @@ export class RpcHostController {
 				await checkShutdownRequested();
 				return response;
 			} catch (commandError: unknown) {
+				if (RPC_SUBAGENT_COMMAND_KEYS[command.type as RpcSubagentCommandType] !== undefined) {
+					const subagentCommand = command.type as RpcSubagentCommandType;
+					const response = rpcSubagentError(
+						typeof command.id === "string" ? command.id : undefined,
+						subagentCommand,
+						subagentCommand === "subagent.cancel" ? "subagent_cancel_failed" : "subagent_unavailable",
+					);
+					output(response);
+					await waitForOutput();
+					return response;
+				}
 				if (RPC_WORKER_COMMAND_KEYS[command.type as RpcWorkerCommandType] !== undefined) {
 					const workerCommand = command.type as RpcWorkerCommandType;
 					const response = rpcWorkerError(
@@ -6221,13 +6356,14 @@ export class RpcHostController {
 
 	/** Dispatch a typed command, publish its response or error record, and return it. */
 	async dispatch(command: Extract<RpcCommand, { type: RpcWorkerCommandType }>): Promise<RpcWorkerResponse>;
+	async dispatch(command: Extract<RpcCommand, { type: RpcSubagentCommandType }>): Promise<RpcSubagentResponse>;
 	async dispatch(
 		command: RpcCommand,
 	): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined>;
 	async dispatch(
 		command: RpcCommand,
 	): Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | undefined
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
 	> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");

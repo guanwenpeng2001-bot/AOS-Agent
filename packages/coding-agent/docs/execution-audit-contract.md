@@ -84,6 +84,8 @@ The source files that establish these facts are:
 - `src/core/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
 - `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
   for Task Credential grant, transition, and fold facts;
+- `src/core/subagent-composition.ts` and `src/core/execution-audit.ts` for the
+  digest-bound child lifecycle projection and its read-only replay guard;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
@@ -513,6 +515,27 @@ provider errors. The receipt-summary allowlist names `workerReceiptId`; public
 Worker RPC records separately omit receipt IDs and references. Replay reads and
 correlates these facts but never starts, cancels, reclaims, or settles a Worker
 or Run. See [Sandbox Operation Worker contract](worker-contract.md).
+
+### Native child-agent lifecycle projection
+
+Line 12A exposes a separate digest-bound `subagent.lifecycle` projection for
+Audit and RPC consumers. It is not a new Audit event family and does not alter
+the v1 `AuditEventType` or Session custom-source unions. Its exact allowlist is:
+
+```text
+schemaVersion, source, sessionId, runId, childAgentInstanceId,
+parentAgentInstanceId, taskId, status, providerKind, safeSummary,
+correlation, digest
+```
+
+`correlation` contains only `attemptId` and `spawnId`. The reader validates
+the lifecycle and provider enums, safe identifiers, exact keys, and the digest
+before returning a deep-frozen projection. Replay applies the same pure guard
+and has no spawn, cancel, resume, mailbox, settlement, or provider side
+effect. Process IDs, executable/arguments, cwd, environment, transcript and
+prompt text, tokens, secrets, headers, provider stacks, raw protocol frames,
+and child result bodies are rejected at every nesting level. See
+[Native Subagent Runtime Contract](subagent-contract.md).
 
 ### Forbidden keys
 

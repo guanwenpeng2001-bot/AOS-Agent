@@ -1,3 +1,4 @@
+import { fingerprintFoundationValue } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +6,8 @@ import {
 	AUDIT_EVENT_TYPES as SRC_AUDIT_EVENT_TYPES,
 	AUDIT_SOURCE_CUSTOM_TYPES as SRC_AUDIT_SOURCE_CUSTOM_TYPES,
 	TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS,
+	projectSubagentAuditSourceV1,
+	replaySubagentAuditSourceV1,
 	type AuditEvent,
 	type AuditSession,
 } from "../src/core/execution-audit.ts";
@@ -33,6 +36,38 @@ import {
 } from "./fixtures/execution-audit-contract.ts";
 
 describe("execution audit T0 contract", () => {
+	it("projects and replays only digest-bound safe child lifecycle fields", () => {
+		const base = {
+			schemaVersion: 1 as const,
+			source: "subagent.lifecycle" as const,
+			sessionId: "session-audit",
+			runId: "run-audit",
+			childAgentInstanceId: "child-audit",
+			parentAgentInstanceId: "parent-audit",
+			taskId: "task-audit",
+			status: "running" as const,
+			providerKind: "in_process" as const,
+			safeSummary: "Child child-audit is running",
+			correlation: { attemptId: "attempt-audit", spawnId: "spawn-audit" },
+		};
+		const safe = { ...base, digest: fingerprintFoundationValue(base) };
+		expect(projectSubagentAuditSourceV1(safe)).toEqual(safe);
+		expect(replaySubagentAuditSourceV1(safe)).toEqual(safe);
+		expect(projectSubagentAuditSourceV1({ ...safe, prompt: "raw child prompt" })).toBeUndefined();
+		expect(projectSubagentAuditSourceV1({ ...safe, safeSummary: "mutated" })).toBeUndefined();
+		const { digest: _digest, ...safeBase } = safe;
+		const forgedStatusBase = { ...safeBase, status: "forged_status" };
+		const forgedProviderBase = { ...safeBase, providerKind: "forged_provider" };
+		expect(projectSubagentAuditSourceV1({
+			...forgedStatusBase,
+			digest: fingerprintFoundationValue(forgedStatusBase),
+		})).toBeUndefined();
+		expect(projectSubagentAuditSourceV1({
+			...forgedProviderBase,
+			digest: fingerprintFoundationValue(forgedProviderBase),
+		})).toBeUndefined();
+		expect(Object.keys(replaySubagentAuditSourceV1(safe) ?? {})).not.toEqual(expect.arrayContaining(["pid", "executable", "argv", "cwd", "env", "transcript", "prompt", "token", "secret", "header", "providerStack", "rawFrame"]));
+	});
 	it("freezes the v1 commands, event union, and source types", () => {
 		expect(AUDIT_SCHEMA_VERSION).toBe(1);
 		expect(AUDIT_QUERY_COMMAND).toBe("audit.query");

@@ -2,9 +2,9 @@
 
 Foundation v1 closes Atlas rows 01–10 and 10A. Delivery status is a sealed
 integration candidate whose promotion requires exact-range external review and
-protected-branch CI. The user authorized that promotion workflow. Line 11 is
-the next implementation line. Lines 12A, 12B, 13, 14, and 15 remain future
-work.
+protected-branch CI. The user authorized that promotion workflow. Line 11 and
+Line 12A now have separate machine-checked implementation ledgers. Lines 12B,
+13, 14, and 15 remain later work.
 
 ## Sealed rows
 
@@ -18,13 +18,14 @@ work.
 | 06 | Session JSONL, migration, reducer replay, fencing, and single-writer ordering | Foundation v1 sealed |
 | 07 | Plugins, MCP selection, runtime services, and extension lifecycle | Foundation v1 sealed |
 | 08 | Goal, Plan, Stage, Todo, Ask, Workflow, gates, and task graph contracts | Foundation v1 sealed |
-| 09 | Role, model profile, binding, provider, transport, and execution boundaries | Foundation v1 sealed |
+| 09 | Role, model profile, binding, provider, transport, and execution boundaries | Foundation v1 sealed; Line 12A native consumer implemented |
 | 10 | SDK/RPC/local-surface parity and contract conformance | Foundation v1 sealed |
 | 10A | Capability ledger, control APIs, evaluation, and future-owner accounting | Foundation v1 sealed |
 
-The seal closes Foundation contracts and their local runtime behavior. It does
-not claim that a future Operation Worker, child-agent provider, distributed
-scheduler, remote integration, or product UI has been implemented.
+The Foundation seal closes contracts and their local runtime behavior. Line 11
+implements the local Operation Worker consumer. Line 12A implements native
+`in_process` and `fork` child-agent providers; it does not claim a distributed
+scheduler, remote Runtime Host, ACP/SDK connector, or product UI.
 
 ## Canonical relations
 
@@ -78,6 +79,59 @@ The machine-readable ledger is
 The next-owner distribution is line 11: 17 capabilities, 12A: 28, 12B: 10,
 13: 3, 14: 11, and 15: 2.
 
+Implemented consumer ledgers do not rewrite the sealed Foundation manifest:
+
+- Line 11 closes `74-87`, `135`, and `136` in
+  `packages/agent/src/harness/line11-worker-capabilities.ts`.
+- Line 12A closes `90-97` and `99-118` in
+  `packages/agent/src/harness/line12a-subagent-capabilities.ts`, and directly
+  references the sealed Foundation closures `2`, `6`, `8`, `9`, `17-20`,
+  `26`, `29-34`, and `98`.
+
+## Section 09: Line 12A implementation status
+
+Line 12A is implemented for a single Host and Session. Spawn creates a
+distinct child Task, Dispatch, Attempt, `AgentInstance`, Binding, Context, and
+mailbox identity. Child resources are machine-proven equal or narrower than
+the parent; raw child output can enter the parent Context only through the
+digest-bound untrusted result projection. A child writes an AttemptReceipt;
+Host settlement remains the only TaskResult and RunReceipt authority.
+
+The provider registry freezes five kinds. `in_process` and `fork` are real
+Line 12A implementations. `agent_runtime_host`, `acp`, and `sdk` freeze the
+registration/capability-negotiation contract and have consumer-shaped fake
+conformance only; `implementedInThisLine` remains false and selection fails
+closed. Their real implementations remain with Lines 13 and 14.
+
+Trusted Host composition now supplies the production closure for Atlas C108
+and C118. An explicitly configured `in_process` child can execute in an owned
+ephemeral worktree whose raw path is passed only to its Harness; successful
+terminal receipts apply before close, while conflict and unknown state fail
+closed into cleanup or quarantine. The exact provider descriptor advertises
+worktree support only when this Host adapter exists, and `fork` does not.
+
+The same public composition path runs real parallel and chain plans. Parallel
+joins use all-succeed, explicit quorum, or partial policy; chains accept only a
+safe prior child projection or `task_package` input and stop on the first
+failure. Child AttemptReceipts remain on child lanes, the joined TaskResult is
+written once on the parent lane, and per-child result references re-enter the
+parent only through next-turn safe projection. A fixed trusted product policy
+can route the Prompt Task Adapter through this composition independently of
+prompt text. The Adapter remains the sole parent terminal owner: its unique
+RunReceipt contains the parent AttemptReceipt plus exactly the child receipts
+accepted by the configured join.
+
+### Mainline map
+
+| Line | Status | Capability ownership |
+| --- | --- | --- |
+| 11 Sandbox Operation Worker | Implemented | `74-87`, `135`, `136`; capability `140` remains on its extension track |
+| 12A Native Subagent Runtime / Agent Team | Implemented for `in_process` and `fork`; Runtime Host/ACP/SDK contract-only | `90-97`, `99-118` |
+| 12B Task Scheduler / Handoff | Deferred | `119-126`, `130`, `131` |
+| 13 External Agent Connector / Tool Gateway | Deferred | `132`, `133`, `138` |
+| 14 Integration / Hardening | Deferred | `134`, `137`, `139`, `141-144`, `149`, `150` |
+| 15 Product Delivery | Deferred | `147`, `148` |
+
 ## Recovery and evaluation evidence
 
 Recovery fails closed for unknown durable schemas and types, preserves
@@ -92,8 +146,7 @@ extra data is rejected rather than counted as success.
 
 ## Future lines
 
-Line 11 may implement the Sandbox Operation Worker by consuming the sealed
-worker, credential, fencing, policy, audit, and receipt contracts. Lines
-12A–15 may implement only the consumers assigned by the future-owner map. They
-must not create new Foundation state authorities or redefine the sealed
-relations above.
+Lines 12B-15 may implement only the consumers assigned by the future-owner
+map. Line 12B remains an independent scheduling/handoff line that reads shared
+contracts without redefining Line 12A. Later lines must not create new
+Foundation state authorities or redefine the sealed relations above.

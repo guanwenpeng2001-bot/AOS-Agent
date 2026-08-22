@@ -4,6 +4,7 @@ import type { Result as ResultValue } from "../../src/harness/result.ts";
 import {
 	ArtifactRefV1Schema,
 	DURABLE_LEDGER_ERROR_CODES,
+	SUBAGENT_ERROR_CODES,
 	FoundationError,
 	foundationErrorCategory,
 	FOUNDATION_ERROR_CODES,
@@ -199,10 +200,11 @@ describe("Foundation identity, schemas, and redaction", () => {
 	it("keeps Foundation and durable-ledger error catalogs exhaustive and single-source", () => {
 		expect(new Set(FOUNDATION_ERROR_CODES).size).toBe(FOUNDATION_ERROR_CODES.length);
 		const coreErrorCodes = FOUNDATION_ERROR_CODES.slice(0, -DURABLE_LEDGER_ERROR_CODES.length);
-		expect(coreErrorCodes.slice(-2)).toEqual([
+		expect(coreErrorCodes.slice(0, -SUBAGENT_ERROR_CODES.length).slice(-2)).toEqual([
 			"sandbox_capability_insufficient",
 			"task_credential_target_unavailable",
 		]);
+		expect(coreErrorCodes.slice(-SUBAGENT_ERROR_CODES.length)).toEqual(SUBAGENT_ERROR_CODES);
 		expect(foundationErrorCategory("sandbox_capability_insufficient")).toBe("validation");
 		expect(foundationErrorCategory("task_credential_target_unavailable")).toBe("validation");
 		expect(new Set(DURABLE_LEDGER_ERROR_CODES).size).toBe(DURABLE_LEDGER_ERROR_CODES.length);

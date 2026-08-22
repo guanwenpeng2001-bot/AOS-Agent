@@ -1030,6 +1030,8 @@ export interface RunLifecycleCoordinatorOptions {
 	credentialHooks?: RunCredentialLifecycleHooks;
 	/** Operation Worker observers; they cannot write or replace Run terminal facts. */
 	workerHooks?: RunWorkerLifecycleHooks;
+	/** Child Agent observers; they may notify the Supervisor but never write Run terminal facts. */
+	subagentHooks?: RunSubagentLifecycleHooks;
 }
 
 export interface RunWorkerLifecycleHooks {
@@ -1039,10 +1041,18 @@ export interface RunWorkerLifecycleHooks {
 	onRunInterrupted?: (runId: RunId) => void;
 }
 
+export interface RunSubagentLifecycleHooks extends RunWorkerLifecycleHooks {}
+
 const registeredRunWorkerHooks = new Map<string, {
 	readonly token: symbol;
 	readonly session: RunLedgerSession;
 	readonly hooks: RunWorkerLifecycleHooks;
+}>();
+
+const registeredRunSubagentHooks = new Map<string, {
+	readonly token: symbol;
+	readonly session: RunLedgerSession;
+	readonly hooks: RunSubagentLifecycleHooks;
 }>();
 
 /** Bind one session's production coordinator construction path to its Worker owner. */
@@ -1058,6 +1068,21 @@ export function registerRunWorkerLifecycleHooks(
 	registeredRunWorkerHooks.set(sessionId, { token, session, hooks });
 	return () => {
 		if (registeredRunWorkerHooks.get(sessionId)?.token === token) registeredRunWorkerHooks.delete(sessionId);
+	};
+}
+
+export function registerRunSubagentLifecycleHooks(
+	session: RunLedgerSession,
+	hooks: RunSubagentLifecycleHooks,
+): () => void {
+	const sessionId = session.getSessionId();
+	if (registeredRunSubagentHooks.has(sessionId)) {
+		throw new FoundationError("service_conflict", "Run Subagent lifecycle hooks already have an owner");
+	}
+	const token = Symbol(sessionId);
+	registeredRunSubagentHooks.set(sessionId, { token, session, hooks });
+	return () => {
+		if (registeredRunSubagentHooks.get(sessionId)?.token === token) registeredRunSubagentHooks.delete(sessionId);
 	};
 }
 
@@ -3162,8 +3187,10 @@ class RunHandleImpl implements RunHandle {
 		if (intent === "cancel") {
 			this.coordinator.credentialHooks?.onRunCancelRequested?.(this.runId);
 			this.coordinator.workerHooks?.onRunCancelRequested?.(this.runId);
+			this.coordinator.subagentHooks?.onRunCancelRequested?.(this.runId);
 		} else {
 			this.coordinator.workerHooks?.onRunDeadlineExceeded?.(this.runId);
+			this.coordinator.subagentHooks?.onRunDeadlineExceeded?.(this.runId);
 		}
 	}
 }
@@ -3368,6 +3395,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly diagnosticsSink: (message: string) => void;
 	readonly credentialHooks: RunCredentialLifecycleHooks | undefined;
 	readonly workerHooks: RunWorkerLifecycleHooks | undefined;
+	readonly subagentHooks: RunSubagentLifecycleHooks | undefined;
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
@@ -3388,6 +3416,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.diagnosticsSink = options.diagnostics ?? ((message) => console.error(message));
 		this.credentialHooks = options.credentialHooks;
 		this.workerHooks = options.workerHooks;
+		this.subagentHooks = options.subagentHooks;
 		try {
 			this.externalMappings = new ExternalSessionMappingStore(session, {
 				now: () => this.now(),
@@ -3620,6 +3649,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 					this.interruptedSignaled.add(result.record.id);
 					this.credentialHooks?.onRunInterrupted?.(result.record.id);
 					this.workerHooks?.onRunInterrupted?.(result.record.id);
+					this.subagentHooks?.onRunInterrupted?.(result.record.id);
 				}
 			}
 			const policySummary = result.receipt?.policySummary ?? result.record.policySummary;
@@ -3906,6 +3936,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		if (receipt !== undefined) {
 			this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
 			this.workerHooks?.onRunTerminal?.(run.runId, receipt);
+			this.subagentHooks?.onRunTerminal?.(run.runId, receipt);
 		}
 	}
 
@@ -3931,8 +3962,13 @@ export function createRunLifecycleCoordinator(
 ): RunLifecycleCoordinator {
 	const registeredOwner = registeredRunWorkerHooks.get(session.getSessionId());
 	const registeredWorkerHooks = registeredOwner?.session === session ? registeredOwner.hooks : undefined;
+	const registeredSubagentOwner = registeredRunSubagentHooks.get(session.getSessionId());
+	const registeredSubagentHooks = registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
 	if (registeredOwner !== undefined && options?.workerHooks !== undefined && options.workerHooks !== registeredOwner.hooks) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks cannot override the registered owner");
+	}
+	if (registeredSubagentOwner !== undefined && options?.subagentHooks !== undefined && options.subagentHooks !== registeredSubagentOwner.hooks) {
+		throw new FoundationError("service_conflict", "Run Subagent lifecycle hooks cannot override the registered owner");
 	}
 	return new RunLifecycleCoordinatorImpl(session, {
 		...options,
@@ -3941,5 +3977,10 @@ export function createRunLifecycleCoordinator(
 			: registeredWorkerHooks === undefined
 				? {}
 				: { workerHooks: registeredWorkerHooks }),
+		...(options?.subagentHooks !== undefined
+			? { subagentHooks: options.subagentHooks }
+			: registeredSubagentHooks === undefined
+				? {}
+				: { subagentHooks: registeredSubagentHooks }),
 	});
 }

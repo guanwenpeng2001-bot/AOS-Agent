@@ -34,7 +34,12 @@ export type ContextSourceKind =
 	| "extension"
 	| "attachment";
 
-export type ContextTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project";
+export type ContextTrust =
+	| "builtin"
+	| "user_owned"
+	| "trusted_project"
+	| "untrusted_project"
+	| "untrusted_child_output";
 
 export type ContextScope = "global" | "project" | "directory" | "session" | "turn";
 

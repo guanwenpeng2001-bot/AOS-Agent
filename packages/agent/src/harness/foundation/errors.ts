@@ -95,6 +95,29 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"task_credential_target_unavailable",
 ] as const;
 
+/** Canonical line-12A Child Agent error catalog. Keep this tuple as the only source for its union. */
+export const SUBAGENT_ERROR_CODES = Object.freeze([
+	"subagent_spawn_invalid",
+	"subagent_provider_unavailable",
+	"subagent_capability_unsupported",
+	"subagent_binding_projection_invalid",
+	"subagent_context_fork_invalid",
+	"subagent_depth_exceeded",
+	"subagent_concurrency_exceeded",
+	"subagent_max_turns_exceeded",
+	"subagent_not_found",
+	"subagent_mailbox_invalid",
+	"subagent_wait_timeout",
+	"subagent_cancel_failed",
+	"subagent_lost",
+	"subagent_resume_failed",
+	"subagent_result_untrusted",
+	"subagent_worktree_conflict",
+	"subagent_close_unknown",
+	"subagent_conflict",
+	"subagent_persistence_failed",
+] as const);
+
 /** Canonical durable-ledger error catalog. Keep this tuple as the only source for its union. */
 export const DURABLE_LEDGER_ERROR_CODES = Object.freeze([
 	"session_writer_lease_lost",
@@ -118,10 +141,12 @@ export const DURABLE_LEDGER_ERROR_CODES = Object.freeze([
 /** Exhaustive Foundation and durable-ledger error catalog. */
 export const FOUNDATION_ERROR_CODES = Object.freeze([
 	...FOUNDATION_CORE_ERROR_CODES,
+	...SUBAGENT_ERROR_CODES,
 	...DURABLE_LEDGER_ERROR_CODES,
 ] as const);
 export type FoundationErrorCode = (typeof FOUNDATION_ERROR_CODES)[number];
 export type DurableLedgerErrorCode = (typeof DURABLE_LEDGER_ERROR_CODES)[number];
+export type SubagentErrorCode = (typeof SUBAGENT_ERROR_CODES)[number];
 
 export interface StableErrorRecord { _tag: string; code: string; message: string; category?: string; retryable?: boolean; }
 

@@ -10,6 +10,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { cloneDeepFrozen, fingerprintFoundationValue } from "@aos-agent/agent-core";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
 import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
 import {
@@ -112,6 +113,13 @@ import {
 	type WorkerLifecycleStatusV1,
 	type WorkerRecordV1,
 } from "./worker.ts";
+import type { SafeSubagentLifecycleProjectionV1 } from "./subagent-composition.ts";
+import {
+	CHILD_LIFECYCLE_STATUSES,
+	SUBAGENT_PROVIDER_KINDS,
+	type ChildLifecycleStatusV1,
+	type SubagentProviderKindV1,
+} from "./subagent.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -837,7 +845,13 @@ const CONTEXT_KINDS = new Set([
 	"attachment",
 ]);
 const CONTEXT_SCOPES = new Set(["global", "project", "directory", "session", "turn"]);
-const CONTEXT_TRUSTS = new Set(["builtin", "user_owned", "trusted_project", "untrusted_project"]);
+const CONTEXT_TRUSTS = new Set([
+	"builtin",
+	"user_owned",
+	"trusted_project",
+	"untrusted_project",
+	"untrusted_child_output",
+]);
 const CONTEXT_DISPOSITIONS = new Set(["included", "trimmed", "excluded"]);
 const CONTEXT_REASONS = new Set([
 	"within_budget",
@@ -882,6 +896,16 @@ const WORKER_AUDIT_FORBIDDEN_KEYS = new Set<string>([
 	"error",
 	"details",
 ]);
+export const SUBAGENT_AUDIT_FORBIDDEN_KEYS = Object.freeze([
+	"pid", "executable", "argv", "cwd", "env", "environment", "transcript", "prompt", "token", "secret",
+	"header", "headers", "providerStack", "provider_stack", "rawFrame", "raw_frame", "body", "message", "content", "output", "stack",
+]);
+const SUBAGENT_AUDIT_KEYS = new Set([
+	"schemaVersion", "source", "sessionId", "runId", "childAgentInstanceId", "parentAgentInstanceId", "taskId",
+	"status", "providerKind", "safeSummary", "correlation", "digest",
+]);
+const SUBAGENT_AUDIT_CORRELATION_KEYS = new Set(["attemptId", "spawnId"]);
+const SUBAGENT_AUDIT_DIGEST_KEYS = new Set(["algorithm", "value"]);
 const WORKER_ENVELOPE_KEYS = new Set([
 	"schemaVersion",
 	"class",
@@ -927,6 +951,36 @@ function hasForbiddenWorkerValue(value: unknown, seen = new WeakSet<object>()): 
 		if (WORKER_AUDIT_FORBIDDEN_KEYS.has(key) || hasForbiddenWorkerValue(item, seen)) return true;
 	}
 	return false;
+}
+
+export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
+	if (!isRecord(value) || !hasOnlyKeys(value, SUBAGENT_AUDIT_KEYS) || Object.keys(value).length !== SUBAGENT_AUDIT_KEYS.size) return undefined;
+	const forbidden = new Set<string>(SUBAGENT_AUDIT_FORBIDDEN_KEYS);
+	const containsForbidden = (candidate: unknown): boolean => {
+		if (candidate === null || typeof candidate !== "object") return false;
+		if (Array.isArray(candidate)) return candidate.some(containsForbidden);
+		return Object.entries(candidate).some(([key, child]) => forbidden.has(key) || containsForbidden(child));
+	};
+	if (
+		containsForbidden(value) || value.schemaVersion !== 1 || value.source !== "subagent.lifecycle" ||
+		!isSafeIdentifier(value.sessionId) || !isSafeIdentifier(value.runId) || !isSafeIdentifier(value.childAgentInstanceId) ||
+		!isSafeIdentifier(value.parentAgentInstanceId) || !isSafeIdentifier(value.taskId) || !isSafeText(value.safeSummary) ||
+		!CHILD_LIFECYCLE_STATUSES.includes(value.status as ChildLifecycleStatusV1) ||
+		!SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as SubagentProviderKindV1) ||
+		!isRecord(value.correlation) || !hasOnlyKeys(value.correlation, SUBAGENT_AUDIT_CORRELATION_KEYS) || Object.keys(value.correlation).length !== SUBAGENT_AUDIT_CORRELATION_KEYS.size ||
+		!isSafeIdentifier(value.correlation.attemptId) || !isSafeIdentifier(value.correlation.spawnId) ||
+		!isRecord(value.digest) || !hasOnlyKeys(value.digest, SUBAGENT_AUDIT_DIGEST_KEYS) || Object.keys(value.digest).length !== SUBAGENT_AUDIT_DIGEST_KEYS.size ||
+		value.digest.algorithm !== "sha256" || typeof value.digest.value !== "string" || !/^[0-9a-f]{64}$/.test(value.digest.value)
+	) return undefined;
+	const { digest, ...base } = value;
+	const expected = fingerprintFoundationValue(base);
+	if (digest.algorithm !== expected.algorithm || digest.value !== expected.value) return undefined;
+	return cloneDeepFrozen(value) as unknown as SafeSubagentLifecycleProjectionV1;
+}
+
+/** Replay projection is deliberately read-only and has no spawn/cancel/resume surface. */
+export function replaySubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
+	return projectSubagentAuditSourceV1(value);
 }
 
 function workerString(value: unknown): value is string {

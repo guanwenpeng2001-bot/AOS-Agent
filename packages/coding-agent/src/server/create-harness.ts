@@ -36,6 +36,10 @@ import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "../core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "../core/tools/write.ts";
+import {
+	createTrustedSubagentCompositionV1,
+	type TrustedSubagentCompositionOptionsV1,
+} from "../core/subagent-composition.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
@@ -206,6 +210,8 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 		readonly routes: readonly ToolGatewayRouteV1[];
 		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
 	};
+	/** Trusted Host-only opt-in; omitted by every default product path. */
+	subagents?: TrustedSubagentCompositionOptionsV1;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -246,6 +252,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		sessionFile,
 		systemPromptOptions,
 		workerSandbox,
+		subagents,
 		tools: providedTools,
 		activeToolNames: providedActiveToolNames,
 		systemPrompt: providedSystemPrompt,
@@ -320,7 +327,14 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
-	if (workerSandbox === undefined) return created;
+	if (subagents !== undefined && subagents.session !== options.session) {
+		await created.harness.close();
+		throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the Harness Session");
+	}
+	const subagentComposition = createTrustedSubagentCompositionV1(subagents);
+	if (workerSandbox === undefined) {
+		return subagentComposition === undefined ? created : { ...created, subagentComposition };
+	}
 	const workerCapabilities = Object.freeze((await workerSandbox.provider.capabilities()).map((capability) => {
 		const validated = validateFoundationProviderCapabilityV1(capability);
 		if (!validated.ok) throw validated.error;
@@ -425,6 +439,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 	});
 	return {
 		...created,
+		...(subagentComposition === undefined ? {} : { subagentComposition }),
 		operationToolGateway: createFoundationToolGatewayV1({
 			gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
 			providers: [sandboxProvider],
