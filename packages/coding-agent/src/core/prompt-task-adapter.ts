@@ -4,13 +4,16 @@ import {
 	type AgentHarnessFoundationExecution,
 	createAgentInstance,
 	createHostTerminalGateAuthorityV1,
+	LayeredResultSettlementV1,
 	createOrderedBindingEpochV1,
 	createTaskEnvelopeV1,
 	fingerprintFoundationValue,
+	type FoundationError,
 	persistTaskEnvelopeBeforeResolverV1,
 	resolveAgentBinding,
 	SessionLedgerV1,
 	validateDispatchV1,
+	validateAgentInstanceV1,
 	validateProviderJsonV1,
 	validateRoleRevisionV1,
 	validateSecretFreeModelProfileV1,
@@ -22,10 +25,13 @@ import {
 	type AttemptReceiptV1,
 	type BindingEpochV1,
 	type DispatchV1,
+	type ExecutionCorrelationV1,
 	type FoundationJsonValue,
 	type ModelProfileV1,
 	type RevisionReferenceV1,
+	type Result as ResultValue,
 	type RoleRevisionV1,
+	type RoleRegistryV1,
 	type RunOutcome,
 	type RunReceiptV1,
 	type SessionLedgerWriter,
@@ -169,6 +175,40 @@ export interface PromptTaskCompositionRootOptionsV1 {
 	readonly ownerId?: string;
 	/** Shared durable writer for composition into a long-lived Harness. */
 	readonly writer?: SessionLedgerWriter;
+	/** Explicit product ingress for @agent and description selection. Omission preserves the existing path. */
+	readonly subagentRoles?: {
+		readonly registry: Pick<RoleRegistryV1, "get" | "search" | "resolve">;
+		readonly scope: "global" | "project";
+		readonly parentLaneId: string;
+		spawn(input: PromptTaskSubagentSpawnInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
+		/** Fixed trusted Host composition. Presence makes composition independent of prompt/model selection. */
+		compose?(input: PromptTaskSubagentCompositionInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
+	};
+}
+
+export interface PromptTaskSubagentSpawnResultV1 {
+	readonly attemptReceiptIds: readonly string[];
+}
+
+export interface PromptTaskSubagentCompositionInputV1 {
+	readonly schemaVersion: 1;
+	readonly runId: string;
+	readonly prompt: string;
+	readonly parentTask: TaskEnvelopeV1;
+	readonly parentBinding: AgentBindingV1;
+	readonly parentRoleRevision: RoleRevisionV1;
+	readonly parentModelProfile: ModelProfileV1;
+	readonly parentDispatch: DispatchV1;
+	readonly parentBindingEpoch: BindingEpochV1;
+	readonly parentAgentInstance: AgentInstanceV1;
+	readonly parentCorrelation: ExecutionCorrelationV1;
+	readonly signal?: AbortSignal;
+	readonly deadlineMs?: number;
+	readonly timestamp: string;
+}
+
+export interface PromptTaskSubagentSpawnInputV1 extends PromptTaskSubagentCompositionInputV1 {
+	readonly selectedRoleRevision: RoleRevisionV1;
 }
 
 export interface PromptTaskAdapterV1 {
@@ -339,6 +379,34 @@ function createBinding(
 	return binding.value;
 }
 
+function explicitAgentQuery(prompt: string): string | undefined {
+	const match = /^\s*@agent\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,255})(?:\s|$)/u.exec(prompt);
+	return match?.[1];
+}
+
+function selectSubagentRole(
+	options: NonNullable<PromptTaskCompositionRootOptionsV1["subagentRoles"]>,
+	prompt: string,
+): RoleRevisionV1 | undefined {
+	const explicit = explicitAgentQuery(prompt);
+	if (explicit !== undefined) {
+		const byId = options.registry.get({ roleId: explicit, scope: options.scope });
+		if (byId.ok) return byId.value.currentRevision;
+		const byDescription = options.registry.search({ text: explicit, scope: options.scope });
+		if (!byDescription.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Explicit @agent role could not be resolved", undefined, byDescription.error);
+		const exact = byDescription.value.find((record) => record.definition.slug === explicit || record.roleId === explicit);
+		if (exact === undefined) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Explicit @agent role was not found");
+		return exact.currentRevision;
+	}
+	const terms = prompt.toLocaleLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/gu) ?? [];
+	for (const term of terms) {
+		const found = options.registry.search({ text: term, scope: options.scope });
+		if (!found.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Subagent description selection failed", undefined, found.error);
+		if (found.value.length > 0) return found.value[0]!.currentRevision;
+	}
+	return undefined;
+}
+
 function createDispatch(input: PromptTaskInputV1, task: TaskEnvelopeV1, provider: TaskExecutorProvider, timestamp: string): DispatchV1 {
 	const dispatch = validateDispatchV1({ schemaVersion: 1, dispatchId: input.identity.dispatchId, taskId: task.taskId, bindingId: input.identity.bindingId, taskExecutorProviderId: provider.providerId, status: "pending", createdAt: timestamp });
 	if (!dispatch.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Prompt Task input could not create a Dispatch", undefined, dispatch.error);
@@ -399,6 +467,10 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			validateSettlementPrerequisites(input);
 			const timestamp = (input.now ?? (() => new Date().toISOString()))();
 			if (Number.isNaN(Date.parse(timestamp))) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task clock must return an ISO timestamp");
+			const selectedRole = options.subagentRoles === undefined || options.subagentRoles.compose !== undefined
+				? undefined
+				: selectSubagentRole(options.subagentRoles, input.prompt);
+			const childExecutionConfigured = selectedRole !== undefined || options.subagentRoles?.compose !== undefined;
 			const checkedRole = validateRoleRevisionV1(input.roleRevision);
 			if (!checkedRole.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision is invalid", undefined, checkedRole.error);
 			const { fingerprint: _roleFingerprint, ...roleBase } = checkedRole.value;
@@ -425,8 +497,10 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				initialBindingEpoch: identity.epoch,
 				bindingEpochIds: [identity.epoch.bindingEpochId],
 				...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId, agentInstance: identity.agentInstance }),
-				settlement: input.settlement,
-				hostAuthority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+				...(childExecutionConfigured ? {} : {
+					settlement: input.settlement,
+					hostAuthority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+				}),
 			};
 			let created: { harness: AgentHarness };
 			if (options.runtimeHarness === undefined) {
@@ -443,6 +517,89 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			}
 			if (options.runtimeHarness !== undefined) {
 				await created.harness.activateFoundationExecution(foundationExecution, options.provider);
+			}
+			let childAttemptReceiptIds: readonly string[] = [];
+			let parentCorrelationForSettlement: ExecutionCorrelationV1 | undefined;
+			if (childExecutionConfigured && options.subagentRoles !== undefined) {
+				if (input.runId === undefined) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Selected Child Agent execution requires a stable runId");
+				if (identity.agentInstance === undefined) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent execution requires a parent AgentInstance");
+				const checkedSelectedRole = selectedRole === undefined ? undefined : validateRoleRevisionV1(selectedRole);
+				if (checkedSelectedRole !== undefined && !checkedSelectedRole.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is invalid", undefined, checkedSelectedRole.error);
+				const metadata = await options.harness.session.getMetadata();
+				const parentCorrelation: ExecutionCorrelationV1 = {
+					sessionId: metadata.id,
+					laneId: options.subagentRoles.parentLaneId,
+					runId: input.runId,
+					operationId: input.runId,
+					taskId: persistedTask.value.taskId,
+					dispatchId: dispatch.dispatchId,
+					attemptId: identity.epoch.attemptId,
+					bindingId: binding.bindingId,
+					bindingEpochId: identity.epoch.bindingEpochId,
+					agentInstanceId: identity.agentInstance.agentInstanceId,
+					providerId: options.provider.providerId,
+					revision: 0,
+				};
+				parentCorrelationForSettlement = parentCorrelation;
+				const settlement = new LayeredResultSettlementV1(options.harness.session, {
+					ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
+					writer: options.writer ?? created.harness.t5.writer,
+				});
+				try {
+					const started = await settlement.startDispatch({
+						dispatch,
+						binding,
+						initialBindingEpoch: identity.epoch,
+						provider: options.provider,
+						agentInstance: identity.agentInstance,
+						correlation: parentCorrelation,
+						...(input.signal === undefined ? {} : { signal: input.signal }),
+					});
+					if (!started.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent Attempt could not be persisted before Child Agent spawn", undefined, started.error);
+					const durableParent = await options.harness.session.getFoundationObject("agent_instance", identity.agentInstance.agentInstanceId);
+					const checkedDurableParent = durableParent?.kind === "fact"
+						? validateAgentInstanceV1(durableParent.payload)
+						: undefined;
+					if (checkedDurableParent === undefined || !checkedDurableParent.ok) {
+						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent AgentInstance proof is not durable before Child Agent spawn");
+					}
+					const childInput: PromptTaskSubagentCompositionInputV1 = {
+						schemaVersion: 1,
+						runId: input.runId,
+						prompt: input.prompt,
+						parentTask: persistedTask.value,
+						parentBinding: binding,
+						parentRoleRevision: checkedRole.value,
+						parentModelProfile: checkedProfile.value,
+						parentDispatch: dispatch,
+						parentBindingEpoch: identity.epoch,
+						parentAgentInstance: checkedDurableParent.value,
+						parentCorrelation,
+						...(input.signal === undefined ? {} : { signal: input.signal }),
+						...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
+						timestamp,
+					};
+					let spawned: ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>;
+					if (options.subagentRoles.compose !== undefined) {
+						spawned = await options.subagentRoles.compose(childInput);
+					} else {
+						if (checkedSelectedRole === undefined || !checkedSelectedRole.ok) {
+							throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is missing");
+						}
+						spawned = await options.subagentRoles.spawn({ ...childInput, selectedRoleRevision: checkedSelectedRole.value });
+					}
+					if (!spawned.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent execution failed", undefined, spawned.error);
+					if (
+						spawned.value.attemptReceiptIds.length === 0 ||
+						new Set(spawned.value.attemptReceiptIds).size !== spawned.value.attemptReceiptIds.length ||
+						spawned.value.attemptReceiptIds.some((id) => typeof id !== "string" || id.length === 0)
+					) {
+						throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Selected Child Agent did not return unique durable AttemptReceipt ids");
+					}
+					childAttemptReceiptIds = [...spawned.value.attemptReceiptIds];
+				} finally {
+					await settlement.release();
+				}
 			}
 			if (input.signal?.aborted) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task was aborted before provider execution");
 			let execution: PromptTaskExecutionV1 | undefined;
@@ -464,8 +621,66 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					});
 				if (!run.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task Harness rejected the prompt: ${run.error.message}`, undefined, run.error);
 				const attemptReceipt = await findAttemptReceipt(options.harness.session, input.identity.attemptId);
-				const taskResult = await requireReceipt<TaskResultV1>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
-				const runReceipt = await requireReceipt<RunReceiptV1>(options.harness.session, "run_receipt", run.value.runId);
+				let taskResult: TaskResultV1;
+				let runReceipt: RunReceiptV1;
+				if (childAttemptReceiptIds.length === 0) {
+					taskResult = await requireReceipt<TaskResultV1>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
+					runReceipt = await requireReceipt<RunReceiptV1>(options.harness.session, "run_receipt", run.value.runId);
+				} else {
+					if (parentCorrelationForSettlement === undefined) {
+						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent parent settlement correlation is missing");
+					}
+					const settlement = new LayeredResultSettlementV1(options.harness.session, {
+						ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
+						writer: options.writer ?? created.harness.t5.writer,
+					});
+					try {
+						const taskResultId = `task_result_${run.value.runId}`;
+						const settled = await settlement.settle({
+							taskResultId,
+							task: persistedTask.value,
+							sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
+							summary: input.settlement.summary ?? (run.value.kind === "completed" ? "Agent run completed" : "Agent run did not complete successfully"),
+							artifacts: input.settlement.artifacts,
+							...(input.settlement.diff === undefined ? {} : { diff: input.settlement.diff }),
+							tests: input.settlement.tests,
+							evidence: input.settlement.evidence,
+							producer: {
+								producerKind: "host",
+								providerId: resolved.gate.reference.id,
+								producedAt: timestamp,
+								correlation: { ...parentCorrelationForSettlement, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId },
+							},
+						});
+						if (!settled.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent Host settlement rejected the Prompt Task result", undefined, settled.error);
+						taskResult = settled.value;
+						const terminalStatus = run.value.kind === "completed" && taskResult.status === "succeeded"
+							? "completed"
+							: run.value.kind === "aborted"
+								? "cancelled"
+								: "failed";
+						const attemptReceiptIds = [attemptReceipt.attemptReceiptId, ...childAttemptReceiptIds];
+						if (new Set(attemptReceiptIds).size !== attemptReceiptIds.length) {
+							throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent and accepted Child AttemptReceipt ids must be unique");
+						}
+						const finalized = await settlement.finalize({
+							runReceiptId: `run_receipt_${run.value.runId}`,
+							runId: run.value.runId,
+							terminalStatus,
+							authority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+							attemptReceiptIds,
+							taskResultId: taskResult.taskResultId,
+							...(terminalStatus === "completed" ? {} : {
+								terminalErrorCode: run.value.kind === "failed" ? run.value.error.code : run.value.kind === "aborted" ? "user_aborted" : "agent_run_failed",
+							}),
+							completedAt: timestamp,
+						});
+						if (!finalized.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent Host terminal gate rejected the Prompt Task RunReceipt", undefined, finalized.error);
+						runReceipt = finalized.value;
+					} finally {
+						await settlement.release();
+					}
+				}
 				execution = { task: persistedTask.value, binding, dispatch, initialBindingEpoch: identity.epoch, ...(identity.agentInstance === undefined ? {} : { agentInstance: identity.agentInstance }), run: run.value, attemptReceipt, taskResult, runReceipt };
 			} catch (error) {
 				executionError = error;

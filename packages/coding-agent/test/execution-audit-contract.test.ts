@@ -1,3 +1,4 @@
+import { fingerprintFoundationValue } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +6,9 @@ import {
 	AUDIT_EVENT_TYPES as SRC_AUDIT_EVENT_TYPES,
 	AUDIT_SOURCE_CUSTOM_TYPES as SRC_AUDIT_SOURCE_CUSTOM_TYPES,
 	TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS,
+	projectSubagentAuditSourceV1,
+	replaySubagentAuditSourceV1,
+	hasForbiddenSchedulerAuditValue,
 	type AuditEvent,
 	type AuditSession,
 } from "../src/core/execution-audit.ts";
@@ -33,6 +37,38 @@ import {
 } from "./fixtures/execution-audit-contract.ts";
 
 describe("execution audit T0 contract", () => {
+	it("projects and replays only digest-bound safe child lifecycle fields", () => {
+		const base = {
+			schemaVersion: 1 as const,
+			source: "subagent.lifecycle" as const,
+			sessionId: "session-audit",
+			runId: "run-audit",
+			childAgentInstanceId: "child-audit",
+			parentAgentInstanceId: "parent-audit",
+			taskId: "task-audit",
+			status: "running" as const,
+			providerKind: "in_process" as const,
+			safeSummary: "Child child-audit is running",
+			correlation: { attemptId: "attempt-audit", spawnId: "spawn-audit" },
+		};
+		const safe = { ...base, digest: fingerprintFoundationValue(base) };
+		expect(projectSubagentAuditSourceV1(safe)).toEqual(safe);
+		expect(replaySubagentAuditSourceV1(safe)).toEqual(safe);
+		expect(projectSubagentAuditSourceV1({ ...safe, prompt: "raw child prompt" })).toBeUndefined();
+		expect(projectSubagentAuditSourceV1({ ...safe, safeSummary: "mutated" })).toBeUndefined();
+		const { digest: _digest, ...safeBase } = safe;
+		const forgedStatusBase = { ...safeBase, status: "forged_status" };
+		const forgedProviderBase = { ...safeBase, providerKind: "forged_provider" };
+		expect(projectSubagentAuditSourceV1({
+			...forgedStatusBase,
+			digest: fingerprintFoundationValue(forgedStatusBase),
+		})).toBeUndefined();
+		expect(projectSubagentAuditSourceV1({
+			...forgedProviderBase,
+			digest: fingerprintFoundationValue(forgedProviderBase),
+		})).toBeUndefined();
+		expect(Object.keys(replaySubagentAuditSourceV1(safe) ?? {})).not.toEqual(expect.arrayContaining(["pid", "executable", "argv", "cwd", "env", "transcript", "prompt", "token", "secret", "header", "providerStack", "rawFrame"]));
+	});
 	it("freezes the v1 commands, event union, and source types", () => {
 		expect(AUDIT_SCHEMA_VERSION).toBe(1);
 		expect(AUDIT_QUERY_COMMAND).toBe("audit.query");
@@ -458,11 +494,11 @@ describe("execution audit task graph contract", () => {
 		// The T0 fixture predates the remote.operation and task.credential
 		// sources; ignoring those known later additions, task.graph must be the
 		// only remaining delta.
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 		]);
@@ -1081,12 +1117,12 @@ function credentialSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
 
 describe("execution audit task credential contract", () => {
 	it("adds task.credential as the only additive audit source and event type", () => {
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 			"task.credential",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 			"task.credential",
@@ -2104,5 +2140,66 @@ describe("execution audit Worker source contract", () => {
 		])).fold();
 		expect(folded.events.map((event) => event.sourceEntryId)).toEqual(["worker-starting-time-order"]);
 		expect(folded.warnings.some((warning) => warning.sourceEntryId === "worker-ready-time-rollback" && warning.code === "malformed_source")).toBe(true);
+	});
+});
+
+describe("execution audit Scheduler source contract", () => {
+	const schedulerEntry = (dataOverride: Record<string, unknown> = {}): Extract<SessionEntry, { type: "custom" }> => customEntry(
+		"scheduler-entry-1",
+		"2026-08-22T00:00:00.000Z",
+		"scheduler.executor_selected",
+		{
+			schemaVersion: 1,
+			class: "durable",
+			category: "scheduler.executor_selected",
+			eventId: "scheduler-event-1",
+			streamId: "scheduler-stream-1",
+			sequence: 1,
+			timestamp: "2026-08-22T00:00:00.000Z",
+			correlation: { sessionId: "scheduler-session", taskId: "task-1" },
+			payload: {
+				schemaVersion: 1,
+				queueEntryId: "queue-1",
+				taskId: "task-1",
+				chosenProviderId: "provider-1",
+				inputsDigest: "sha256:selection",
+				decidedAt: "2026-08-22T00:00:00.000Z",
+				scoreCount: 1,
+			},
+			...dataOverride,
+		},
+	);
+
+	it("projects validated scheduler metadata without payload material", () => {
+		const session: AuditSession = { getSessionId: () => "scheduler-session", getEntries: () => [schedulerEntry()] };
+		const folded = new ExecutionAuditAdapter(session).fold();
+		expect(folded.warnings).toEqual([]);
+		expect(folded.events).toHaveLength(1);
+		expect(folded.events[0]).toMatchObject({
+			type: "scheduler.event",
+			recordedAt: "2026-08-22T00:00:00.000Z",
+			summary: {
+				category: "scheduler.executor_selected",
+				eventId: "scheduler-event-1",
+				sequence: 1,
+				safeSummary: "scheduler.executor_selected revision 1",
+				correlation: { sessionId: "scheduler-session", taskId: "task-1" },
+			},
+		});
+		expect(JSON.stringify(folded.events[0])).not.toContain("chosenProviderId");
+	});
+
+	it("rejects forbidden scheduler fields recursively", () => {
+		expect(hasForbiddenSchedulerAuditValue({ nested: { prompt: "secret" } })).toBe(true);
+		const clean = schedulerEntry();
+		const data = clean.data as Record<string, unknown>;
+		const payload = data.payload as Record<string, unknown>;
+		const session: AuditSession = {
+			getSessionId: () => "scheduler-session",
+			getEntries: () => [{ ...clean, data: { ...data, payload: { ...payload, prompt: "secret" } } }],
+		};
+		const folded = new ExecutionAuditAdapter(session).fold();
+		expect(folded.events).toEqual([]);
+		expect(folded.warnings).toContainEqual(expect.objectContaining({ code: "malformed_source" }));
 	});
 });

@@ -1606,7 +1606,7 @@ loopback-only, so it is not a remotely exposed service.
 
 Automation Host is strictly opt-in. A client that never sends `initialize` sees exactly the legacy RPC behavior described above: `prompt`, bare session events, the string `error` field, the extension UI sub-protocol, and so on. No existing client has to migrate.
 
-All `run.*`, `task.gate.*`, `task.graph.*`, and `task.credential.*` commands require a successful `initialize` first. If a client sends a `run.*`, `task.gate.*`, `task.graph.*`, or `task.credential.*` command before initializing, the host replies with the structured error `host_not_initialized`.
+All `run.*`, `task.gate.*`, `task.graph.*`, `task.credential.*`, `worker.*`, and `subagent.*` commands require a successful `initialize` first. If a client sends one before initializing, the host replies with the structured error `host_not_initialized`.
 
 `initialize` accepts exactly `protocolVersion: 1`. Any other version is rejected with `unsupported_protocol_version`; there is no silent downgrade and no fallback to an older contract.
 
@@ -1632,6 +1632,7 @@ Response:
     "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"],
     "taskGraphCommands": ["task.graph.create", "task.graph.get", "task.graph.list", "task.graph.node.attach", "task.graph.node.settle"],
     "taskCredentialCommands": ["task.credential.issue", "task.credential.get", "task.credential.list", "task.credential.heartbeat", "task.credential.revoke", "task.credential.settle"],
+    "subagentCommands": ["subagent.get", "subagent.list", "subagent.cancel"],
     "externalAgentAdapters": [
       {"adapterId": "trusted-adapter", "displayName": "Trusted Adapter", "version": "1"}
     ]
@@ -1639,7 +1640,7 @@ Response:
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 `externalAgentAdapters` is an optional additive summary of adapters registered
 by the trusted Host composition; each entry contains only `adapterId`,
@@ -2626,6 +2627,51 @@ Stable errors are `host_not_initialized`, `worker_invalid`,
 `reclaim_unknown` records but cannot settle a Run. See
 [Sandbox Operation Worker contract](worker-contract.md).
 
+### Native Subagent commands (subagent.*)
+
+Subagent commands are optional Automation Host capabilities. `initialize`
+advertises `subagentCommands` only when trusted Host composition supplies a
+Run-owned subagent registry:
+
+```text
+subagent.get
+subagent.list
+subagent.cancel
+```
+
+There is no public spawn, resume, mailbox, provider-registration, executable,
+protocol, transcript, or raw-receipt command. Spawn remains a trusted product
+ingress, and child terminal settlement remains Host-owned.
+
+`subagent.get` accepts `runId` and `childAgentInstanceId`. `subagent.list`
+requires `runId`, accepts optional exact-match `parentAgentInstanceId` and
+`status`, and has a server-bounded limit (default 50, maximum 100).
+`subagent.cancel` accepts the same Run/child identity as `get`, routes through
+the Run Supervisor, and reports whether the request was idempotent. All three
+commands enforce the current Session plus the supplied Run ownership; a child
+from another Run is not visible.
+
+The returned lifecycle projection contains only:
+
+```text
+schemaVersion, source, sessionId, runId, childAgentInstanceId,
+parentAgentInstanceId, taskId, status, providerKind, safeSummary,
+correlation, digest
+```
+
+The Host revalidates the exact shape, enum values, safe identifiers, and
+digest. It rejects process IDs, executable/arguments, cwd, environment,
+transcript or prompt text, tokens, secrets, headers, provider stacks, and raw
+protocol frames. Stable command errors are `subagent_invalid`,
+`subagent_not_found`, `subagent_unavailable`, and
+`subagent_cancel_failed` (plus `host_not_initialized`).
+
+The `agent_runtime_host`, `acp`, and `sdk` provider descriptors are
+registration contracts with consumer-shaped fake conformance only. Their
+`implementedInThisLine` flag remains false and registry resolution fails with
+`subagent_provider_unavailable`; RPC does not turn them into implementations.
+See [Native Subagent Runtime Contract](subagent-contract.md).
+
 ### External Agent Adapter selection (`externalAgent`)
 
 `run.start` and `run.resume` accept an optional `externalAgent` selection
@@ -2708,7 +2754,7 @@ Error codes:
 | Code | Meaning | Retryable |
 |------|---------|-----------|
 | `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
-| `host_not_initialized` | A `run.*`, `task.gate.*`, `task.graph.*`, or `task.credential.*` command was sent before a successful `initialize` | no |
+| `host_not_initialized` | A versioned Automation Host command was sent before a successful `initialize` | no |
 | `session_busy` | A run is already active in the session; only one run per session at a time | yes |
 | `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
 | `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
@@ -2765,6 +2811,10 @@ Error codes:
 | `task_credential_revocation_unknown` | Provider did not confirm revoke; the target is quarantined | no |
 | `task_credential_persistence_failed` | The grant transition could not be durably appended; re-read before retrying | no |
 | `task_credential_unavailable` | The Session has no Task Credential provider / service | no |
+| `subagent_invalid` | Subagent command shape, identifier, filter, or limit is invalid | no |
+| `subagent_not_found` | The child is not owned by the requested Run in the current Session | no |
+| `subagent_unavailable` | The current Session has no available Subagent authority | yes |
+| `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
 | `external_agent_adapter_invalid` | Adapter selection or registration is invalid (unsafe `adapterId` / `targetId` / descriptor) | no |
 | `external_agent_target_not_found` | The trusted registry has no such target | no |
 | `external_agent_probe_failed` | Target probe failed or timed out; probe has no business side effects by contract | yes |
@@ -2990,7 +3040,7 @@ checkpoints; it never resends `run.start` or `run.resume`.
 - Before `initialize`, behavior is unchanged: `prompt`, bare session events, string errors, and the extension UI sub-protocol all work exactly as documented above.
 - After `initialize`, the read-only commands `get_state`, `get_session_stats`, `get_context`, `get_entries`, `get_tree`, and `get_messages` remain available.
 - Terminal run receipts may include additive `contextSnapshotId` linking the run to a Context Engine snapshot (see [Context Engine](context.md)).
-- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, and the `task.gate.*` / `task.graph.*` / `task.credential.*` control-plane write commands (`task.gate.request`, `task.gate.approve`, `task.gate.reject`, `task.gate.cancel`, `task.graph.create`, `task.graph.node.attach`, `task.graph.node.settle`, `task.credential.issue`, `task.credential.heartbeat`, `task.credential.revoke`, `task.credential.settle`); `task.gate.get`, `task.gate.list`, `task.graph.get`, `task.graph.list`, `task.credential.get`, and `task.credential.list` are read-only.
+- After `initialize`, legacy commands that would change the current session, model, or run state (for example `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `switch_session`, `set_model`, `bash`, `fork`, `clone`) are rejected with an explicit error, so a run and a legacy command cannot compete for session ownership. The only state-changing commands still accepted are `run.cancel`, `run.resume`, the Task Gate/Graph/Credential control-plane writes, `worker.reclaim`, and Run-owned `subagent.cancel`; `task.gate.get`, `task.gate.list`, `task.graph.get`, `task.graph.list`, `task.credential.get`, `task.credential.list`, `worker.get`, `worker.list`, `subagent.get`, and `subagent.list` are read-only.
 - While a run is active, session events claimed by that run are emitted only as `run.event`; they are never duplicated as bare session events.
 - Clients that never `initialize` always see the bare session events, as before.
 - Extension UI requests/responses continue to use the existing sub-protocol and are not disguised as run events.
@@ -3047,6 +3097,7 @@ Source files:
 - [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
 - [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
 - [`src/core/task-graph.ts`](../src/core/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
+- [`src/core/subagent-composition.ts`](../src/core/subagent-composition.ts), [`src/core/subagent-supervisor.ts`](../src/core/subagent-supervisor.ts), and [`src/core/subagent-registry.ts`](../src/core/subagent-registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts
 - [`src/core/external-agent-adapter.ts`](../src/core/external-agent-adapter.ts) and [`src/core/external-agent-registry.ts`](../src/core/external-agent-registry.ts) - External Agent Adapter contract and trusted registry (probe, prepared binding, events, terminal receipt, driver handle, stable `external_agent_*` errors); the fact guards and persistence live in [`src/core/external-session-mapping.ts`](../src/core/external-session-mapping.ts), [`src/core/remote-operation.ts`](../src/core/remote-operation.ts), [`src/core/execution-audit.ts`](../src/core/execution-audit.ts) / [`src/core/execution-audit-query.ts`](../src/core/execution-audit-query.ts), with host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
 
 ### Model

@@ -5,9 +5,12 @@ import {
 	canonicalFoundationJson,
 	FoundationError,
 	validateDurableEventV1,
+	type AgentBindingV1,
 	type AgentHarness,
 	type FoundationEventEnvelopeV1,
 	type HarnessTool,
+	type Session,
+	type TaskEnvelopeV1,
 } from "@aos-agent/agent-core";
 import {
 	CapabilityError,
@@ -112,7 +115,38 @@ import {
 	isTaskExecutionBinding,
 } from "./task-credential-lease.ts";
 import { TaskCredentialService, type TaskCredentialPreflightFactsInput } from "./task-credential-service.ts";
-import { registerRunWorkerLifecycleHooks, type RunWorkerLifecycleHooks } from "./run-lifecycle.ts";
+import {
+	registerRunSubagentLifecycleHooks,
+	registerRunWorkerLifecycleHooks,
+	type RunWorkerLifecycleHooks,
+	createRunLifecycleCoordinator,
+	registerRunSchedulerLifecycleHooks,
+	type RunLifecycleCoordinator,
+	type RunSchedulerLifecycleHooks,
+} from "./run-lifecycle.ts";
+import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
+import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
+import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
+import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
+import type { SchedulerMessageOrchestratorV1 } from "./scheduler-messages.ts";
+import { SchedulerWorkflowController } from "./scheduler-workflow.ts";
+import {
+	SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS,
+	SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
+	SCHEDULER_HOST_MIN_POLL_INTERVAL_MS,
+	SchedulerHostV1,
+	type SchedulerHostEventSourceV1,
+	type SchedulerHostOptionsV1,
+} from "./scheduler.ts";
+import {
+	TaskGraphStore,
+	type TaskGraphGateLookup,
+} from "./task-graph.ts";
+import {
+	createTrustedSubagentCompositionV1,
+	type TrustedSubagentCompositionOptionsV1,
+	type TrustedSubagentCompositionV1,
+} from "./subagent-composition.ts";
 import {
 	parseWorkerRecordV1,
 	workerTransitionAllowedV1,
@@ -150,6 +184,10 @@ export interface FoundationControlPlaneOptions {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Explicit Operation Worker profile/provider. Omission preserves the inline/Host path. */
 	workerSandboxProvider?: WorkerSandboxProviderV1;
+	/** Explicit trusted Host opt-in. Project/model/RPC configuration cannot populate this option. */
+	subagents?: TrustedSubagentCompositionOptionsV1;
+	/** Explicit trusted Host-only Scheduler opt-in. Omission preserves the original runtime path. */
+	scheduler?: TrustedSchedulerCompositionOptionsV1;
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
 	workerFactCacheLimit?: number;
 	policyProfile?: string;
@@ -160,6 +198,361 @@ export interface FoundationControlPlaneOptions {
 	noTools?: "all" | "builtin";
 	allowedToolNames?: ReadonlyArray<string>;
 	excludedToolNames?: ReadonlyArray<string>;
+}
+
+export interface TrustedSchedulerCompositionOptionsV1 {
+	readonly schemaVersion: 1;
+	readonly enabled: true;
+	readonly sourceSession: Session;
+	readonly targetSession: Session;
+	readonly targetSessionId: string;
+	readonly targetGraph: TaskGraphStore;
+	readonly runLifecycleSession: SessionManager;
+	readonly ownerId: string;
+	readonly registry: SchedulerExecutorRegistry;
+	readonly task: TaskEnvelopeV1;
+	readonly binding: AgentBindingV1;
+	readonly gateLookup: TaskGraphGateLookup;
+	readonly resolveRunAssociation: SchedulerHostOptionsV1["resolveRunAssociation"];
+	readonly settlementEvidence?: SchedulerHostOptionsV1["settlementEvidence"];
+	readonly settleRunAtHost: SchedulerHostOptionsV1["settleRunAtHost"];
+	readonly eventSource?: SchedulerHostEventSourceV1;
+	readonly pollIntervalMs?: number;
+	readonly now?: () => string;
+}
+
+export interface SchedulerSafeStatusV1 {
+	readonly schemaVersion: 1;
+	readonly source: "scheduler";
+	readonly sessionId: string;
+	readonly enabled: boolean;
+	readonly started: boolean;
+	readonly tickInFlight: boolean;
+	readonly components: readonly ["messages", "handoff", "workflow", "deadlock", "host", "fan_in"];
+	readonly ticksCompleted: number;
+	readonly tickFailures: number;
+	readonly lastTick?: {
+		readonly workflow: {
+			readonly enabled: boolean;
+			readonly workflows: number;
+			readonly scheduled: number;
+			readonly completed: number;
+			readonly stopped: number;
+			readonly wakesFired: number;
+			readonly errorCount: number;
+		};
+		readonly host: {
+			readonly enabled: boolean;
+			readonly scannedGraphs: number;
+			readonly scannedNodes: number;
+			readonly enqueued: number;
+			readonly claimed: number;
+			readonly dispatched: number;
+			readonly settled: number;
+			readonly rejected: number;
+			readonly errorCount: number;
+		};
+		readonly deadlock: {
+			readonly enabled: boolean;
+			readonly scannedGraphs: number;
+			readonly scannedNodes: number;
+			readonly scannedEdges: number;
+			readonly cycles: number;
+			readonly failed: number;
+			readonly facts: number;
+			readonly signals: number;
+			readonly retained: number;
+			readonly ready: number;
+			readonly timedOut: boolean;
+			readonly errorCount: number;
+		};
+	};
+}
+
+/**
+ * Trusted production Scheduler composition. One coalescing driver owns every
+ * tick; component-local drivers remain stopped. Run hooks are registered
+ * before the Run coordinator is created so the T4 observation contract cannot
+ * be bypassed by construction order.
+ */
+export class TrustedSchedulerCompositionV1 {
+	readonly runLifecycle: RunLifecycleCoordinator;
+	readonly graph: TaskGraphStore;
+	readonly workflow: SchedulerWorkflowController;
+	readonly messages: SchedulerMessageOrchestratorV1;
+	readonly handoff: SchedulerHandoffController;
+	readonly fanIn: SchedulerFanInController;
+	readonly deadlock: SchedulerDeadlockController;
+	private readonly host: SchedulerHostV1;
+	private readonly sessionId: string;
+	private readonly pollIntervalMs: number;
+	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
+	private readonly unregisterRunHooks: () => void;
+	private readonly sourceSession: Session;
+	private readonly targetSession: Session;
+	private readonly targetSessionId: string;
+	private identityProof: Promise<void> | undefined;
+	private unsubscribe: (() => void) | undefined;
+	private timer: ReturnType<typeof setTimeout> | undefined;
+	private currentTick: Promise<void> | undefined;
+	private wakeQueued = false;
+	private started = false;
+	private ticksCompleted = 0;
+	private tickFailures = 0;
+	private lastTick: SchedulerSafeStatusV1["lastTick"];
+
+	constructor(options: TrustedSchedulerCompositionOptionsV1) {
+		if (options.schemaVersion !== 1 || options.enabled !== true) {
+			throw new FoundationError("scheduler_queue_invalid", "Scheduler requires an explicit trusted Host opt-in");
+		}
+		if (options.pollIntervalMs !== undefined && !Number.isFinite(options.pollIntervalMs)) {
+			throw new FoundationError("scheduler_queue_invalid", "Scheduler poll interval must be finite");
+		}
+		this.sessionId = options.runLifecycleSession.getSessionId();
+		this.pollIntervalMs = Math.min(
+			SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
+			Math.max(SCHEDULER_HOST_MIN_POLL_INTERVAL_MS, options.pollIntervalMs ?? SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS),
+		);
+		this.eventSource = options.eventSource;
+		this.sourceSession = options.sourceSession;
+		this.targetSession = options.targetSession;
+		this.targetSessionId = options.targetSessionId;
+		const wake = (): void => this.wake();
+		let unregisterRunHooks: (() => void) | undefined;
+		let dispatchLifecycleHooks: RunSchedulerLifecycleHooks | undefined;
+		let workflow: SchedulerWorkflowController | undefined;
+		let host: SchedulerHostV1 | undefined;
+		try {
+			unregisterRunHooks = registerRunSchedulerLifecycleHooks(options.runLifecycleSession, {
+				onRunCancelRequested: (runId) => {
+					wake();
+					dispatchLifecycleHooks?.onRunCancelRequested?.(runId);
+				},
+				onRunDeadlineExceeded: (runId) => {
+					wake();
+					dispatchLifecycleHooks?.onRunDeadlineExceeded?.(runId);
+				},
+				onRunTerminal: (runId, receipt) => {
+					wake();
+					dispatchLifecycleHooks?.onRunTerminal?.(runId, receipt);
+				},
+			});
+			this.unregisterRunHooks = unregisterRunHooks;
+			this.runLifecycle = createRunLifecycleCoordinator(options.runLifecycleSession);
+			this.graph = new TaskGraphStore(
+				options.runLifecycleSession,
+				{
+					get: (runId) => {
+						const run = this.runLifecycle.getRun(runId);
+						return run === undefined ? undefined : {
+							sessionId: run.record.sessionId,
+							runId: run.record.id,
+							status: run.record.status,
+							...(run.receipt === undefined ? {} : { receiptStatus: run.receipt.status }),
+						};
+					},
+				},
+				options.gateLookup,
+				{ ...(options.now === undefined ? {} : { now: options.now }), onNodeTerminal: wake },
+			);
+			workflow = new SchedulerWorkflowController({
+				enabled: true,
+				sourceSession: options.sourceSession,
+				targetSession: options.targetSession,
+				sourceSessionId: this.sessionId,
+				targetSessionId: options.targetSessionId,
+				sourceGraph: this.graph,
+				targetGraph: options.targetGraph,
+				ownerId: options.ownerId,
+				registry: options.registry,
+				task: options.task,
+				binding: options.binding,
+				runLifecycleSession: options.runLifecycleSession,
+				runLifecycleHookOwnership: "host",
+				...(options.now === undefined ? {} : { now: options.now }),
+			});
+			this.workflow = workflow;
+			dispatchLifecycleHooks = this.workflow.dispatch.runLifecycleHooks();
+			this.messages = this.workflow.messages;
+			this.handoff = this.workflow.handoff;
+			this.fanIn = this.workflow.fanIn;
+			host = new SchedulerHostV1({
+				enabled: true,
+				sessionId: this.sessionId,
+				ownerId: options.ownerId,
+				graph: this.graph,
+				queue: this.workflow.queue,
+				dispatch: this.workflow.dispatch,
+				fanIn: this.fanIn,
+				resolveRunAssociation: options.resolveRunAssociation,
+				...(options.settlementEvidence === undefined ? {} : { settlementEvidence: options.settlementEvidence }),
+				settleRunAtHost: options.settleRunAtHost,
+				...(options.now === undefined ? {} : { now: options.now }),
+			});
+			this.host = host;
+			this.deadlock = new SchedulerDeadlockController({
+				enabled: true,
+				sessionId: this.sessionId,
+				ownerId: options.ownerId,
+				ledger: options.sourceSession,
+				graph: this.graph,
+				queue: this.workflow.queue,
+				handoff: this.handoff,
+				...(options.now === undefined ? {} : { now: options.now }),
+			});
+			this.start();
+		} catch (error) {
+			this.started = false;
+			this.wakeQueued = false;
+			try {
+				this.unsubscribe?.();
+			} catch {
+				// Continue releasing every construction-owned resource.
+			}
+			this.unsubscribe = undefined;
+			host?.stop();
+			if (workflow !== undefined) void workflow.dispose().catch(() => undefined);
+			unregisterRunHooks?.();
+			throw error;
+		}
+	}
+
+	private async verifySessionIdentity(): Promise<void> {
+		this.identityProof ??= Promise.all([
+			this.sourceSession.getMetadata(),
+			this.targetSession.getMetadata(),
+		]).then(([source, target]) => {
+			if (source.id !== this.sessionId) {
+				throw new FoundationError("scheduler_queue_invalid", "Scheduler source Session identity is inconsistent");
+			}
+			if (target.id !== this.targetSessionId) {
+				throw new FoundationError("scheduler_queue_invalid", "Scheduler target Session identity is inconsistent");
+			}
+		});
+		await this.identityProof;
+	}
+
+	private start(): void {
+		if (this.started) return;
+		this.started = true;
+		this.unsubscribe = this.eventSource?.subscribe(() => this.wake());
+		this.wake();
+	}
+
+	wake(): void {
+		if (!this.started || this.wakeQueued) return;
+		this.wakeQueued = true;
+		queueMicrotask(() => {
+			if (!this.started || !this.wakeQueued) return;
+			this.wakeQueued = false;
+			void this.tick().catch(() => { this.tickFailures += 1; });
+		});
+	}
+
+	async tick(): Promise<void> {
+		if (this.currentTick !== undefined) return this.currentTick;
+		this.currentTick = (async () => {
+			await this.verifySessionIdentity();
+			const workflow = await this.workflow.tick();
+			const host = await this.host.tick();
+			const deadlock = await this.deadlock.tick();
+			this.lastTick = {
+				workflow: {
+					enabled: workflow.enabled,
+					workflows: workflow.workflows,
+					scheduled: workflow.scheduled,
+					completed: workflow.completed,
+					stopped: workflow.stopped,
+					wakesFired: workflow.wakesFired,
+					errorCount: workflow.errors.length,
+				},
+				host: {
+					enabled: host.enabled,
+					scannedGraphs: host.scannedGraphs,
+					scannedNodes: host.scannedNodes,
+					enqueued: host.enqueued,
+					claimed: host.claimed,
+					dispatched: host.dispatched,
+					settled: host.settled,
+					rejected: host.rejected,
+					errorCount: host.errors.length,
+				},
+				deadlock: {
+					enabled: deadlock.enabled,
+					scannedGraphs: deadlock.scannedGraphs,
+					scannedNodes: deadlock.scannedNodes,
+					scannedEdges: deadlock.scannedEdges,
+					cycles: deadlock.cycles,
+					failed: deadlock.failedTaskIds.length,
+					facts: deadlock.facts.length,
+					signals: deadlock.signals.length,
+					retained: deadlock.retained.length,
+					ready: deadlock.readyOrder.length,
+					timedOut: deadlock.timedOut,
+					errorCount: deadlock.errors.length,
+				},
+			};
+			this.ticksCompleted += 1;
+		})().finally(() => {
+			this.currentTick = undefined;
+			if (this.started) this.schedulePoll();
+		});
+		return this.currentTick;
+	}
+
+	private schedulePoll(): void {
+		if (this.timer !== undefined) return;
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			this.wake();
+		}, this.pollIntervalMs);
+		this.timer.unref();
+	}
+
+	status(): SchedulerSafeStatusV1 {
+		return {
+			schemaVersion: 1,
+			source: "scheduler",
+			sessionId: this.sessionId,
+			enabled: true,
+			started: this.started,
+			tickInFlight: this.currentTick !== undefined,
+			components: ["messages", "handoff", "workflow", "deadlock", "host", "fan_in"],
+			ticksCompleted: this.ticksCompleted,
+			tickFailures: this.tickFailures,
+			...(this.lastTick === undefined ? {} : {
+				lastTick: {
+					workflow: { ...this.lastTick.workflow },
+					host: { ...this.lastTick.host },
+					deadlock: { ...this.lastTick.deadlock },
+				},
+			}),
+		};
+	}
+
+	async dispose(): Promise<void> {
+		if (!this.started) return;
+		this.started = false;
+		this.wakeQueued = false;
+		this.unsubscribe?.();
+		this.unsubscribe = undefined;
+		if (this.timer !== undefined) clearTimeout(this.timer);
+		this.timer = undefined;
+		let failure: unknown;
+		try {
+			await this.currentTick;
+		} catch (error) {
+			failure = error;
+		}
+		this.host.stop();
+		try {
+			await this.workflow.dispose();
+		} catch (error) {
+			failure ??= error;
+		}
+		this.unregisterRunHooks();
+		if (failure !== undefined) throw failure;
+	}
 }
 
 interface CapabilityToolSource {
@@ -238,10 +631,13 @@ export class FoundationControlPlane {
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
 	private readonly sandboxProviders: ReadonlyMap<string, SandboxProvider>;
 	private readonly workerSandboxProvider: WorkerSandboxProviderV1 | undefined;
+	private readonly scheduler: TrustedSchedulerCompositionV1 | undefined;
 	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
 	private readonly releaseWorkerCredentialDetachSink: (() => void) | undefined;
+	private readonly subagents: TrustedSubagentCompositionV1 | undefined;
+	private readonly unregisterSubagentLifecycleHooks: (() => void) | undefined;
 	private readonly persistedWorkerFacts = new Map<string, {
 		readonly customType: string;
 		readonly canonicalEnvelope: string;
@@ -310,6 +706,10 @@ export class FoundationControlPlane {
 		this.policyProfileSelection = options.policyProfile;
 		this.sandboxProviders = normalizeSandboxProviders(options.sandboxProviders);
 		this.workerSandboxProvider = options.workerSandboxProvider;
+		if (options.subagents !== undefined && options.subagents.sessionId !== this.sessionManager.getSessionId()) {
+			throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the control-plane Session");
+		}
+		this.subagents = createTrustedSubagentCompositionV1(options.subagents);
 		this.workerFactCacheLimit = options.workerFactCacheLimit ?? 4_096;
 		if (!Number.isSafeInteger(this.workerFactCacheLimit) || this.workerFactCacheLimit < 1) {
 			throw new RangeError("workerFactCacheLimit must be a positive safe integer");
@@ -338,7 +738,15 @@ export class FoundationControlPlane {
 		let releaseWorkerDurableSink: (() => void) | undefined;
 		let releaseWorkerCredentialDetachSink: (() => void) | undefined;
 		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
+		let unregisterSubagentLifecycleHooks: (() => void) | undefined;
+		let scheduler: TrustedSchedulerCompositionV1 | undefined;
 		try {
+			if (this.subagents !== undefined) {
+				unregisterSubagentLifecycleHooks = registerRunSubagentLifecycleHooks(
+					this.sessionManager,
+					this.subagents.lifecycleHooks(),
+				);
+			}
 			if (this.workerSandboxProvider !== undefined) {
 				if (this.workerLifecycleHooks !== undefined) {
 					unregisterWorkerLifecycleHooks = registerRunWorkerLifecycleHooks(
@@ -369,7 +777,14 @@ export class FoundationControlPlane {
 				const restored = this.workerSandboxProvider.restoreWorkerFacts(history.recovery);
 				if (!restored.ok) throw restored.error;
 			}
+			if (options.scheduler !== undefined) {
+				if (options.scheduler.runLifecycleSession !== this.sessionManager) {
+					throw new FoundationError("scheduler_queue_invalid", "Scheduler must use the control-plane Session");
+				}
+				scheduler = new TrustedSchedulerCompositionV1(options.scheduler);
+			}
 		} catch (error) {
+			unregisterSubagentLifecycleHooks?.();
 			unregisterWorkerLifecycleHooks?.();
 			releaseWorkerCredentialDetachSink?.();
 			releaseWorkerDurableSink?.();
@@ -378,6 +793,8 @@ export class FoundationControlPlane {
 		this.releaseWorkerDurableSink = releaseWorkerDurableSink;
 		this.releaseWorkerCredentialDetachSink = releaseWorkerCredentialDetachSink;
 		this.unregisterWorkerLifecycleHooks = unregisterWorkerLifecycleHooks;
+		this.unregisterSubagentLifecycleHooks = unregisterSubagentLifecycleHooks;
+		this.scheduler = scheduler;
 	}
 
 	private registerConfiguredServers(): void {
@@ -1754,6 +2171,8 @@ export class FoundationControlPlane {
 	reclaimWorker(workerId: string) { return this.workerSandboxProvider?.reclaimWorker(workerId); }
 	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
 	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
+	getSubagentComposition(): TrustedSubagentCompositionV1 | undefined { return this.subagents; }
+	getSchedulerStatus(): SchedulerSafeStatusV1 | undefined { return this.scheduler?.status(); }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to
 	 * dispose the live sandbox before a credential preflight. The control plane
@@ -1795,13 +2214,25 @@ export class FoundationControlPlane {
 		}
 		await this.mcpLifecycle.closeAll().catch(() => undefined);
 		try {
-			await this.workerSandboxProvider?.dispose();
+			await this.scheduler?.dispose();
 		} catch (error) {
 			failure = error;
+		}
+		try {
+			await this.workerSandboxProvider?.dispose();
+		} catch (error) {
+			failure ??= error;
 		} finally {
 			this.unregisterWorkerLifecycleHooks?.();
 			this.releaseWorkerCredentialDetachSink?.();
 			this.releaseWorkerDurableSink?.();
+		}
+		try {
+			await this.subagents?.dispose();
+		} catch (error) {
+			failure ??= error;
+		} finally {
+			this.unregisterSubagentLifecycleHooks?.();
 		}
 		try {
 			await this.disposeSandbox();

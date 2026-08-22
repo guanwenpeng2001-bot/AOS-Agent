@@ -41,6 +41,7 @@ import {
 	type PromptTaskExecutionV1,
 } from "./prompt-task-adapter.ts";
 import { isRuntimeSessionSurfaceV1, type RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
+import type { TrustedSubagentCompositionV1 } from "./subagent-composition.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
@@ -137,6 +138,8 @@ export interface ProductPromptIngressOptionsV1 {
 		name: PromptTaskDependencyNameV1,
 		context: ProductPromptDependencySnapshotContextV1,
 	) => FoundationJsonValue;
+	/** Explicit trusted Host opt-in. Omission keeps product prompts on the existing path. */
+	readonly subagents?: TrustedSubagentCompositionV1;
 	readonly now?: () => string;
 }
 
@@ -579,6 +582,7 @@ export class ProductPromptIngressV1 {
 			model,
 			thinkingLevel,
 		};
+		const subagentRoles = this.options.subagents?.productPromptRoles();
 		const adapter = createPromptTaskAdapter({
 			dependencies: dependencies(token, this.provider.providerId, this.options.dependencySnapshot, dependencyContext),
 			provider: this.provider,
@@ -590,6 +594,7 @@ export class ProductPromptIngressV1 {
 			runtimeHarness: this.options.harness,
 			writer: this.options.harness.t5.writer,
 			ownerId: `product-prompt:${metadata.id}`,
+			...(subagentRoles === undefined ? {} : { subagentRoles }),
 		});
 		return adapter.execute({
 			prompt: input.prompt,

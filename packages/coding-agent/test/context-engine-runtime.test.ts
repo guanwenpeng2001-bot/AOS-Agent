@@ -91,6 +91,7 @@ describe("context-engine runtime persistence", () => {
 				expect.objectContaining({ sourceId: "instruction:trusted", disposition: "included" }),
 				expect.objectContaining({
 					sourceId: "instruction:untrusted",
+					trust: "untrusted_project",
 					disposition: "excluded",
 					reason: "untrusted",
 				}),

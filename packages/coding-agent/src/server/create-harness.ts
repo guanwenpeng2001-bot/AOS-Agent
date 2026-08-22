@@ -31,15 +31,31 @@ import {
 	type WorkerReceiptV1,
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
+import type { AgentSessionConfig } from "../core/agent-session.ts";
+import { createAgentSessionWithTrustedScheduler } from "../core/agent-session-facade.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "../core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "../core/tools/write.ts";
+import {
+	createTrustedSubagentCompositionV1,
+	type TrustedSubagentCompositionOptionsV1,
+} from "../core/subagent-composition.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
 	promptGuidelines?: readonly string[];
+}
+
+export type CreateCodingAgentTrustedScheduler = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
+
+/** Trusted Host-only Scheduler bridge. The ordinary Harness path remains Scheduler-off. */
+export function createCodingAgentSessionWithTrustedScheduler(
+	options: AgentSessionConfig,
+	createScheduler: CreateCodingAgentTrustedScheduler,
+): ReturnType<typeof createAgentSessionWithTrustedScheduler> {
+	return createAgentSessionWithTrustedScheduler(options, createScheduler);
 }
 
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
@@ -206,6 +222,8 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 		readonly routes: readonly ToolGatewayRouteV1[];
 		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
 	};
+	/** Trusted Host-only opt-in; omitted by every default product path. */
+	subagents?: TrustedSubagentCompositionOptionsV1;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -246,6 +264,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		sessionFile,
 		systemPromptOptions,
 		workerSandbox,
+		subagents,
 		tools: providedTools,
 		activeToolNames: providedActiveToolNames,
 		systemPrompt: providedSystemPrompt,
@@ -320,7 +339,14 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
-	if (workerSandbox === undefined) return created;
+	if (subagents !== undefined && subagents.session !== options.session) {
+		await created.harness.close();
+		throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the Harness Session");
+	}
+	const subagentComposition = createTrustedSubagentCompositionV1(subagents);
+	if (workerSandbox === undefined) {
+		return subagentComposition === undefined ? created : { ...created, subagentComposition };
+	}
 	const workerCapabilities = Object.freeze((await workerSandbox.provider.capabilities()).map((capability) => {
 		const validated = validateFoundationProviderCapabilityV1(capability);
 		if (!validated.ok) throw validated.error;
@@ -425,6 +451,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 	});
 	return {
 		...created,
+		...(subagentComposition === undefined ? {} : { subagentComposition }),
 		operationToolGateway: createFoundationToolGatewayV1({
 			gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
 			providers: [sandboxProvider],

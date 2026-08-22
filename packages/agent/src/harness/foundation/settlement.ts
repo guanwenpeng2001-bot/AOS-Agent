@@ -466,7 +466,7 @@ export class LayeredResultSettlementV1 {
 	/** Resume a durable Attempt through an optional provider resume surface. */
 	async resumeDispatch(input: DispatchExecutionInputV1 & { readonly agentInstance?: AgentInstanceV1 }): Promise<ResultValue<DispatchStartResultV1, FoundationError>> {
 		const started = await this.startDispatch(input);
-		if (!started.ok || started.value.receipt !== undefined) return started;
+		if (!started.ok || started.value.receipt !== undefined && started.value.receipt.status !== "suspended") return started;
 		const provider = input.provider as TaskExecutorProviderResumeSurface;
 		try {
 			let resumed: ResultValue<AttemptReceiptV1, FoundationError>;
@@ -506,9 +506,12 @@ export class LayeredResultSettlementV1 {
 			const worker = validateWorkerReceipt(stored.payload);
 			if (!worker.ok || (reference.revision > 0 && stored.revision !== reference.revision) || (reference.providerId !== undefined && worker.ok && worker.value.provenance.providerId !== reference.providerId) || (reference.fingerprint !== undefined && worker.ok && fingerprintFoundationValue(worker.value).value !== reference.fingerprint.value)) return Result.err(new FoundationError("invalid_correlation", "AttemptReceipt WorkerReceipt reference does not match the durable WorkerReceipt", { details: { attemptReceiptId: checked.value.attemptReceiptId, workerReceiptId: reference.id } }));
 		}
+		const correlation = checked.value.provenance.correlation;
+		if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Provider AttemptReceipt provenance is missing its required correlation"));
+		if (providerClass === "agent" && checked.value.status === "suspended") {
+			return Result.ok({ ...execution, receipt: cloneDeepFrozen(checked.value) });
+		}
 		try {
-			const correlation = checked.value.provenance.correlation;
-			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Provider AttemptReceipt provenance is missing its required correlation"));
 			await this.persistFact("attempt_receipt", checked.value.attemptReceiptId, checked.value, correlationRecord(correlation), { immutable: true });
 			return Result.ok({ ...execution, receipt: cloneDeepFrozen(checked.value) });
 		} catch (error) {

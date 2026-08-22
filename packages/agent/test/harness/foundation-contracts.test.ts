@@ -4,6 +4,7 @@ import type { Result as ResultValue } from "../../src/harness/result.ts";
 import {
 	ArtifactRefV1Schema,
 	DURABLE_LEDGER_ERROR_CODES,
+	SUBAGENT_ERROR_CODES,
 	FoundationError,
 	foundationErrorCategory,
 	FOUNDATION_ERROR_CODES,
@@ -199,12 +200,24 @@ describe("Foundation identity, schemas, and redaction", () => {
 	it("keeps Foundation and durable-ledger error catalogs exhaustive and single-source", () => {
 		expect(new Set(FOUNDATION_ERROR_CODES).size).toBe(FOUNDATION_ERROR_CODES.length);
 		const coreErrorCodes = FOUNDATION_ERROR_CODES.slice(0, -DURABLE_LEDGER_ERROR_CODES.length);
-		expect(coreErrorCodes.slice(-2)).toEqual([
+		const coreWithoutSubagent = coreErrorCodes.slice(0, -SUBAGENT_ERROR_CODES.length);
+		const schedulerErrorCodes = coreWithoutSubagent.filter((code) => code.startsWith("scheduler_"));
+		expect(coreWithoutSubagent.slice(0, -schedulerErrorCodes.length).slice(-2)).toEqual([
 			"sandbox_capability_insufficient",
 			"task_credential_target_unavailable",
 		]);
+		expect(schedulerErrorCodes).toHaveLength(22);
+		expect(schedulerErrorCodes.slice(0, 2)).toEqual(["scheduler_queue_invalid", "scheduler_queue_conflict"]);
+		expect(schedulerErrorCodes.slice(-2)).toEqual(["scheduler_not_found", "scheduler_persistence_failed"]);
+		expect(coreWithoutSubagent.slice(-schedulerErrorCodes.length)).toEqual(schedulerErrorCodes);
+		expect(coreErrorCodes.slice(-SUBAGENT_ERROR_CODES.length)).toEqual(SUBAGENT_ERROR_CODES);
 		expect(foundationErrorCategory("sandbox_capability_insufficient")).toBe("validation");
 		expect(foundationErrorCategory("task_credential_target_unavailable")).toBe("validation");
+		expect(foundationErrorCategory("scheduler_queue_conflict")).toBe("conflict");
+		expect(foundationErrorCategory("scheduler_not_found")).toBe("not_found");
+		expect(foundationErrorCategory("scheduler_budget_exhausted_wait")).toBe("permission");
+		expect(foundationErrorCategory("scheduler_lease_lost")).toBe("concurrency");
+		expect(foundationErrorCategory("scheduler_no_executor")).toBe("provider");
 		expect(new Set(DURABLE_LEDGER_ERROR_CODES).size).toBe(DURABLE_LEDGER_ERROR_CODES.length);
 		expect([...FOUNDATION_LEDGER_ERROR_CODES]).toEqual([...DURABLE_LEDGER_ERROR_CODES]);
 		expect([...FOUNDATION_ERROR_CODES].filter((code) => code.startsWith("session_")).sort()).toEqual([...DURABLE_LEDGER_ERROR_CODES].sort());

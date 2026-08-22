@@ -41,6 +41,21 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
+export { createAgentSessionWithTrustedScheduler } from "./core/agent-session-facade.ts";
+export {
+	TrustedSchedulerCompositionV1,
+	type SchedulerSafeStatusV1,
+	type TrustedSchedulerCompositionOptionsV1,
+} from "./core/foundation-control-plane.ts";
+export { SchedulerHostV1, type SchedulerHostOptionsV1, type SchedulerHostTickResultV1 } from "./core/scheduler.ts";
+export { SchedulerQueueStore } from "./core/scheduler-queue.ts";
+export { SchedulerExecutorRegistry, SchedulerInProcessTaskExecutorProvider } from "./core/scheduler-executors.ts";
+export { SchedulerDispatchController } from "./core/scheduler-dispatch.ts";
+export { SchedulerFanInController } from "./core/scheduler-fan-in.ts";
+export { SchedulerMessageOrchestratorV1 } from "./core/scheduler-messages.ts";
+export { SchedulerHandoffController } from "./core/scheduler-handoff.ts";
+export { SchedulerWorkflowController, type SchedulerWorkflowTickResultV1 } from "./core/scheduler-workflow.ts";
+export { SchedulerDeadlockController, type SchedulerDeadlockTickResultV1 } from "./core/scheduler-deadlock.ts";
 // Task Credential lifecycle service (session-owned; RPC Host registers it via AgentSession.getTaskCredentialService())
 export {
 	TaskCredentialService,
@@ -960,6 +975,8 @@ export type {
 	RpcTransportSink,
 	TcpRpcAddress,
 	RpcRunCommandType,
+	RpcSchedulerCommandType,
+	RpcSchedulerResponse,
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RunAcceptedData,
@@ -971,6 +988,7 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	SchedulerStatusData,
 	TaskCredentialGetData,
 	TaskCredentialHeartbeatData,
 	TaskCredentialIssueData,
