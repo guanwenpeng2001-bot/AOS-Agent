@@ -37,6 +37,7 @@ import {
 	type SchedulerMessageSessionEndpointV1,
 } from "./scheduler-messages.ts";
 import { SchedulerQueueStore } from "./scheduler-queue.ts";
+import type { RunLedgerSession } from "./run-lifecycle.ts";
 import {
 	applySchedulerWakeFire,
 	isSchedulerQueueTerminal,
@@ -135,6 +136,8 @@ export interface SchedulerWorkflowControllerOptionsV1 {
 	readonly registry: SchedulerExecutorRegistry;
 	readonly task: TaskEnvelopeV1;
 	readonly binding: AgentBindingV1;
+	readonly runLifecycleSession?: RunLedgerSession;
+	readonly runLifecycleHookOwnership?: "dispatch" | "host";
 	readonly executorOwnerId?: string;
 	readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
 	readonly maxAttempts?: number;
@@ -358,6 +361,8 @@ export class SchedulerWorkflowController {
 			registry: options.registry,
 			sessionId: options.sourceSessionId,
 			ownerId: options.ownerId,
+			...(options.runLifecycleSession === undefined ? {} : { runLifecycleSession: options.runLifecycleSession }),
+			...(options.runLifecycleHookOwnership === undefined ? {} : { runLifecycleHookOwnership: options.runLifecycleHookOwnership }),
 			now: this.nowFn,
 		});
 		this.fanIn = new SchedulerFanInController({

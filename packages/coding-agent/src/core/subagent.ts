@@ -188,7 +188,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ChildLifecycleStatusV1, readonly Chil
 	spawning: ["running", "failed", "lost"],
 	running: ["awaiting_input", "background", "cancelling", "succeeded", "failed", "lost"],
 	awaiting_input: ["background", "cancelling", "failed", "lost"],
-	background: ["cancelling", "succeeded", "failed", "lost"],
+	background: ["awaiting_input", "cancelling", "succeeded", "failed", "lost"],
 	cancelling: ["failed", "cancelled", "lost"],
 	succeeded: ["closed"],
 	failed: ["closed"],

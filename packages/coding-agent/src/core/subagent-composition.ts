@@ -200,6 +200,20 @@ export interface TrustedSubagentExecutionV1 {
 		: never;
 }
 
+export interface ResumeTrustedSubagentInputV1 {
+	readonly schemaVersion: 1;
+	readonly runId: string;
+	readonly childAgentInstanceId: string;
+	readonly expectedTurnCount?: number;
+	readonly additionalTurns?: number;
+	readonly signal?: AbortSignal;
+}
+
+export interface TrustedSubagentResumeV1 {
+	readonly lifecycle: SafeSubagentLifecycleProjectionV1;
+	readonly receipt: AttemptReceiptV1;
+}
+
 export type TrustedSubagentChainStepV1 =
 	| {
 			readonly input: "root" | "task_package";
@@ -472,7 +486,7 @@ export class TrustedSubagentCompositionV1 {
 			["in_process", inProcess],
 			["fork", fork],
 		]);
-		this.recovery = this.recoverDurableStateFailClosed();
+		this.recovery = this.recoverDurableState();
 	}
 
 	providerDescriptors(): readonly SubagentProviderDescriptorV1[] {
@@ -494,7 +508,7 @@ export class TrustedSubagentCompositionV1 {
 
 	async reload(): Promise<ResultValue<void, FoundationError>> {
 		if (this.disposed) return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
-		this.recovery = this.recoverDurableStateFailClosed();
+		this.recovery = this.recoverDurableState();
 		return this.recovery;
 	}
 
@@ -513,6 +527,7 @@ export class TrustedSubagentCompositionV1 {
 		const spawn = await this.supervisor.executeSpawn(input.plan, provider, settlement);
 		if (!spawn.ok) return spawn;
 		const childAgentInstanceId = input.plan.agentInstance.agentInstanceId;
+		this.planByChild.set(childAgentInstanceId, input.plan);
 		this.runByChild.set(childAgentInstanceId, input.runId);
 		const boundParent = this.bindTrustedParentRun({
 			schemaVersion: 1,
@@ -566,6 +581,107 @@ export class TrustedSubagentCompositionV1 {
 			}
 		}
 		return Result.ok(cloneDeepFrozen({ spawn: spawn.value, receipt: receipt.value }));
+	}
+
+	async resumeChild(input: ResumeTrustedSubagentInputV1): Promise<ResultValue<TrustedSubagentResumeV1, FoundationError>> {
+		if (
+			input.schemaVersion !== 1 ||
+			typeof input.runId !== "string" ||
+			input.runId.length === 0 ||
+			typeof input.childAgentInstanceId !== "string" ||
+			input.childAgentInstanceId.length === 0 ||
+			(input.expectedTurnCount === undefined) !== (input.additionalTurns === undefined) ||
+			(input.expectedTurnCount !== undefined && (!Number.isSafeInteger(input.expectedTurnCount) || input.expectedTurnCount < 0)) ||
+			(input.additionalTurns !== undefined && (!Number.isSafeInteger(input.additionalTurns) || input.additionalTurns < 1))
+		) {
+			return Result.err(new FoundationError("subagent_resume_failed", "Child Agent continuation input is invalid"));
+		}
+		if (this.disposed) return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
+		const recovered = await this.recovery;
+		if (!recovered.ok) return recovered;
+		if (this.runByChild.get(input.childAgentInstanceId) !== input.runId) {
+			return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found for this Run"));
+		}
+		let record = this.supervisor.get(input.childAgentInstanceId);
+		if (record === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
+		const provider = providerForKind(this.providers, record.providerKind);
+		const spawn = await this.lookupProviderHandle(record, provider, input.signal);
+		if (spawn === undefined) {
+			const marked = await this.markUnrecoverableChild(record);
+			if (!marked.ok) return marked;
+			return Result.err(new FoundationError("subagent_resume_failed", "Child Agent provider handle could not be recovered"));
+		}
+		const plan = this.planByChild.get(input.childAgentInstanceId);
+		if (
+			plan === undefined ||
+			plan.providerId !== record.providerId ||
+			plan.initialBindingEpoch.attemptId !== record.attemptId
+		) {
+			const marked = await this.markUnrecoverableChild(record);
+			if (!marked.ok) return marked;
+			return Result.err(new FoundationError("subagent_resume_failed", "Child Agent continuation plan could not be recovered"));
+		}
+		if (input.expectedTurnCount !== undefined && input.additionalTurns !== undefined) {
+			const decided = await this.supervisor.decideMaxTurns({
+				schemaVersion: 1,
+				childAgentInstanceId: input.childAgentInstanceId,
+				expectedTurnCount: input.expectedTurnCount,
+				decision: "continue",
+				additionalTurns: input.additionalTurns,
+			});
+			if (!decided.ok) return decided;
+			record = decided.value;
+		}
+		let acceptedReceipt: AttemptReceiptV1 | undefined;
+		const lookupSpawn = provider.lookupSpawn?.bind(provider);
+		const resumed = await this.supervisor.resume(input.childAgentInstanceId, {
+			providerId: provider.providerId,
+			...(lookupSpawn === undefined ? {} : { lookupSpawn }),
+			resume: async (attemptId: string) => {
+				if (attemptId !== plan.initialBindingEpoch.attemptId) {
+					return Result.err(new FoundationError("subagent_resume_failed", "Child Agent continuation Attempt identity changed"));
+				}
+				const continued = await this.settlementForLane(plan.childLaneId).resumeDispatch({
+					provider,
+					dispatch: {
+						schemaVersion: 1,
+						dispatchId: spawn.attempt.dispatchId,
+						taskId: spawn.attempt.taskId,
+						bindingId: spawn.attempt.bindingId,
+						taskExecutorProviderId: spawn.attempt.providerId,
+						status: "pending",
+						createdAt: spawn.attempt.startedAt,
+					},
+					binding: plan.childBinding,
+					initialBindingEpoch: spawn.initialBindingEpoch,
+					agentInstance: spawn.agentInstance,
+					correlation: plan.correlation,
+					...(input.signal === undefined ? {} : { signal: input.signal }),
+				});
+				if (!continued.ok) return continued;
+				if (continued.value.receipt === undefined) {
+					return Result.err(new FoundationError("subagent_resume_failed", "Child Agent continuation produced no receipt"));
+				}
+				acceptedReceipt = continued.value.receipt;
+				return Result.ok(continued.value.receipt);
+			},
+		});
+		if (!resumed.ok) {
+			if (this.supervisor.get(input.childAgentInstanceId)?.status === "lost") {
+				const sealed = this.mailbox.sealEndpoint(input.childAgentInstanceId);
+				if (!sealed.ok) return sealed;
+			}
+			return resumed;
+		}
+		if (acceptedReceipt === undefined) {
+			const marked = await this.markUnrecoverableChild(record);
+			if (!marked.ok) return marked;
+			return Result.err(new FoundationError("subagent_resume_failed", "Child Agent continuation receipt was not accepted"));
+		}
+		return Result.ok(cloneDeepFrozen({
+			lifecycle: this.safeProjection(input.runId, resumed.value),
+			receipt: acceptedReceipt,
+		}));
 	}
 
 	async executeComposition(
@@ -1373,26 +1489,51 @@ export class TrustedSubagentCompositionV1 {
 		}
 	}
 
-	/**
-	 * Provider handles and parent Run mailbox bindings are process-local. Reload
-	 * discards them, then durably marks every recovered active child lost and
-	 * closed; this is the explicit fail-closed boundary until provider rehydrate
-	 * support exists.
-	 */
-	private async recoverDurableStateFailClosed(): Promise<ResultValue<void, FoundationError>> {
-		this.runByChild.clear();
-		this.parentByRun.clear();
+	/** Reload restores safe facts only. Provider handles must pass lookup before explicit transcript resume. */
+	private async recoverDurableState(): Promise<ResultValue<void, FoundationError>> {
 		const reloaded = await this.supervisor.reload();
 		if (!reloaded.ok) return reloaded;
 		for (const record of reloaded.value) {
 			if (!ACTIVE_STATUSES.has(record.status)) continue;
+			const provider = providerForKind(this.providers, record.providerKind);
+			if (await this.lookupProviderHandle(record, provider) !== undefined) continue;
+			const marked = await this.markUnrecoverableChild(record);
+			if (!marked.ok) return marked;
+		}
+		return Result.ok(undefined);
+	}
+
+	private async lookupProviderHandle(
+		record: ChildAgentRecordV1,
+		provider: ExecutableChildProviderV1,
+		signal?: AbortSignal,
+	): Promise<ChildSpawnResultV1 | undefined> {
+		if (provider.lookupSpawn === undefined) return undefined;
+		try {
+			const found = await provider.lookupSpawn(record.spawnId, signal === undefined ? undefined : { signal });
+			if (
+				!found.ok ||
+				found.value === undefined ||
+				found.value.agentInstance.agentInstanceId !== record.childAgentInstanceId ||
+				found.value.attempt.attemptId !== record.attemptId ||
+				found.value.attempt.providerId !== record.providerId
+			) {
+				return undefined;
+			}
+			return found.value;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async markUnrecoverableChild(record: ChildAgentRecordV1): Promise<ResultValue<void, FoundationError>> {
+		const current = this.supervisor.get(record.childAgentInstanceId);
+		if (current !== undefined && ACTIVE_STATUSES.has(current.status)) {
 			const lost = await this.supervisor.markLost(record.childAgentInstanceId);
 			if (!lost.ok) return lost;
-			const closed = await this.supervisor.close(record.childAgentInstanceId, true);
-			if (!closed.ok) return closed;
-			const sealed = this.mailbox.sealEndpoint(record.childAgentInstanceId);
-			if (!sealed.ok) return sealed;
 		}
+		const sealed = this.mailbox.sealEndpoint(record.childAgentInstanceId);
+		if (!sealed.ok) return sealed;
 		return Result.ok(undefined);
 	}
 
@@ -1424,20 +1565,23 @@ export class TrustedSubagentCompositionV1 {
 	): Promise<void> {
 		const record = this.supervisor.get(childAgentInstanceId);
 		if (record === undefined) return;
+		let cleanupConfirmed = provider !== undefined;
 		if (ACTIVE_STATUSES.has(record.status) && provider !== undefined) {
 			const cancelled = await this.supervisor.cancel(childAgentInstanceId, provider).catch(() => undefined);
 			if (cancelled?.ok !== true) await this.supervisor.markLost(childAgentInstanceId).catch(() => undefined);
 		}
 		if (provider !== undefined) {
-			await provider.close(record.attemptId).catch(() => undefined);
+			const closed = await provider.close(record.attemptId).catch(() => undefined);
+			cleanupConfirmed = closed?.ok === true;
 		}
 		const plan = this.planByChild.get(childAgentInstanceId);
 		if (plan !== undefined) {
-			await this.cleanupExecutionWorktree(plan).catch(() => undefined);
+			const cleaned = await this.cleanupExecutionWorktree(plan).catch(() => undefined);
+			cleanupConfirmed = cleanupConfirmed && cleaned?.ok === true;
 		}
 		const terminal = this.supervisor.get(childAgentInstanceId);
 		if (terminal !== undefined && terminal.status !== "closed") {
-			await this.supervisor.close(childAgentInstanceId, true).catch(() => undefined);
+			await this.supervisor.forceClose(childAgentInstanceId, cleanupConfirmed).catch(() => undefined);
 		}
 		this.mailbox.sealEndpoint(childAgentInstanceId);
 	}
@@ -1446,19 +1590,7 @@ export class TrustedSubagentCompositionV1 {
 		childAgentInstanceId: string,
 		provider: ExecutableChildProviderV1,
 	): Promise<void> {
-		let cancellationConfirmed = false;
-		try {
-			cancellationConfirmed = (await this.supervisor.cancel(childAgentInstanceId, provider)).ok;
-		} catch {
-			// Cleanup is best effort and must not replace the post-spawn error.
-		}
-		if (!cancellationConfirmed) {
-			try {
-				await this.supervisor.markLost(childAgentInstanceId);
-			} catch {
-				// Preserve the original bind, dispatch, or settlement error.
-			}
-		}
+		await this.convergeProductTerminal(childAgentInstanceId, provider);
 		this.runByChild.delete(childAgentInstanceId);
 	}
 

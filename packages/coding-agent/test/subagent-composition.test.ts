@@ -256,6 +256,7 @@ async function planInput(
 	suffix = "",
 	providerDescriptor: SubagentProviderDescriptorV1 = descriptor,
 	forkScope: "none" | "task_package" = "none",
+	maxTurns?: number,
 ): Promise<PlanSubagentSpawnInputV1> {
 	const id = (value: string): string => suffix.length === 0 ? value : `${value}-${suffix}`;
 	const parent = rootAgent(roleRevision);
@@ -346,6 +347,7 @@ async function planInput(
 		bindingEpochId: id("child-epoch"),
 		activatedByCommandId: id("child-command"),
 		queue: { mode: "fail" },
+		...(maxTurns === undefined ? {} : { maxTurns }),
 	};
 }
 
@@ -355,6 +357,8 @@ async function correctionHarness(options: {
 	readonly worktreeAdapter?: FakeHostWorktreeAdapter;
 	readonly productionPath?: boolean;
 	readonly failedChildren?: readonly string[];
+	readonly suspendThenResume?: boolean;
+	readonly planMaxTurns?: number;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 	const ledgers = new Map<string, SessionLedgerV1>();
@@ -411,6 +415,7 @@ async function correctionHarness(options: {
 		dispose: async () => {},
 	} as unknown as ArtifactStoreProvider;
 	const harnessWorkspaces: Array<string | undefined> = [];
+	let resumeCalls = 0;
 	const compositionOptions: TrustedSubagentCompositionOptionsV1 = {
 		schemaVersion: 1,
 		enabled: true,
@@ -436,7 +441,12 @@ async function correctionHarness(options: {
 			if (options.failDispatch === true) throw new FoundationError("subagent_lost", "dispatch-failure-sentinel");
 			const failChild = options.failedChildren?.includes(input.agentInstance.agentInstanceId) === true;
 			return {
-				promptOnLane: async () => failChild
+				promptOnLane: async () => options.suspendThenResume === true
+					? Result.ok({
+							runId: `child-run-${input.agentInstance.agentInstanceId}`,
+							kind: "suspended" as const,
+						})
+					: failChild
 					? Result.ok({
 							runId: `child-run-${input.agentInstance.agentInstanceId}`,
 							kind: "failed" as const,
@@ -449,7 +459,19 @@ async function correctionHarness(options: {
 							finalEntryId: "child-entry",
 							finalMessage: { role: "assistant" as const, content: [{ type: "text" as const, text: "done" }] },
 						}),
-				resumeOnLane: async () => Result.err({ message: "not used" }),
+				resumeOnLane: async () => {
+					resumeCalls += 1;
+					return options.suspendThenResume === true
+						? Result.ok({
+								operation: "run" as const,
+								runId: `child-run-${input.agentInstance.agentInstanceId}`,
+								kind: "completed" as const,
+								leafId: "child-leaf-resumed",
+								finalEntryId: "child-entry-resumed",
+								finalMessage: { role: "assistant" as const, content: [{ type: "text" as const, text: "resumed" }] },
+							})
+						: Result.err({ message: "not used" });
+				},
 				createLane: async () => Result.ok({ name: "child-lane" }),
 				abort: async () => Result.ok({ runId: "child-run", steer: [], followUp: [] }),
 				close: async () => undefined,
@@ -493,13 +515,22 @@ async function correctionHarness(options: {
 	}
 	const inProcessDescriptor = composition.providerDescriptors().find((candidate) => candidate.providerKind === "in_process");
 	if (inProcessDescriptor === undefined) throw new Error("Expected in-process provider descriptor");
-	const planned = await composition.planSpawn(await planInput(ledgerForLane("parent-lane"), role(), profile(), "", inProcessDescriptor));
+	const planned = await composition.planSpawn(await planInput(
+		ledgerForLane("parent-lane"),
+		role(),
+		profile(),
+		"",
+		inProcessDescriptor,
+		"none",
+		options.planMaxTurns,
+	));
 	if (!planned.ok) throw planned.error;
 	return {
 		session,
 		composition,
 		plan: planned.value,
 		harnessWorkspaces,
+		resumeCalls: () => resumeCalls,
 		ledgerForLane,
 		async close() {
 			await composition.dispose();
@@ -859,7 +890,7 @@ describe("trusted Subagent product composition", () => {
 		await composition.dispose();
 	});
 
-	it("converges a spawned Child after parent Run binding conflict and removes RPC ownership", async () => {
+	it("closes a spawned Child after parent Run binding conflict and removes RPC ownership", async () => {
 		const fixture = await correctionHarness();
 		expect(fixture.composition.bindTrustedParentRun({
 			schemaVersion: 1,
@@ -881,13 +912,13 @@ describe("trusted Subagent product composition", () => {
 				message: "A Run cannot consume Child mailbox data for different parent authorities",
 			},
 		});
-		expect((await fixture.statuses()).at(-1)).toBe("cancelling");
+		expect((await fixture.statuses()).at(-1)).toBe("closed");
 		expect(await fixture.composition.get("run-bind-conflict", "child-faux")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-bind-conflict", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
 	});
 
-	it("preserves the dispatch error while marking the spawned Child lost and removing RPC ownership", async () => {
+	it("preserves the dispatch error while closing the spawned Child and removing RPC ownership", async () => {
 		const fixture = await correctionHarness({ failDispatch: true });
 		const result = await fixture.composition.executePlan({
 			schemaVersion: 1,
@@ -898,7 +929,7 @@ describe("trusted Subagent product composition", () => {
 			ok: false,
 			error: { code: "subagent_lost", message: "dispatch-failure-sentinel" },
 		});
-		expect((await fixture.statuses()).at(-1)).toBe("lost");
+		expect((await fixture.statuses()).at(-1)).toBe("closed");
 		expect(await fixture.composition.get("run-dispatch-failure", "child-faux")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-dispatch-failure", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
@@ -918,9 +949,59 @@ describe("trusted Subagent product composition", () => {
 				message: "Child Agent receipt is missing or differs from its immutable durable fact",
 			},
 		});
-		expect((await fixture.statuses()).at(-1)).toBe("lost");
+		expect((await fixture.statuses()).at(-1)).toBe("closed");
 		expect(await fixture.composition.get("run-settlement-failure", "child-faux")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-settlement-failure", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
+	});
+
+	it("closes a successful no-worktree Child during composition disposal", async () => {
+		const fixture = await correctionHarness();
+		const result = await fixture.composition.executePlan({
+			schemaVersion: 1,
+			runId: "run-dispose-no-worktree",
+			plan: fixture.plan,
+		});
+		if (!result.ok) throw result.error;
+		expect((await fixture.statuses()).at(-1)).toBe("succeeded");
+
+		await fixture.composition.dispose();
+
+		expect((await fixture.statuses()).at(-1)).toBe("closed");
+	});
+
+	it("recovers a suspended Child handle across reload and resumes from its transcript", async () => {
+		const fixture = await correctionHarness({ suspendThenResume: true, planMaxTurns: 1 });
+		const suspended = await fixture.composition.executePlan({
+			schemaVersion: 1,
+			runId: "run-resume-after-reload",
+			plan: fixture.plan,
+		});
+		if (!suspended.ok) throw suspended.error;
+		expect(suspended.value.receipt.receipt.status).toBe("suspended");
+		expect((await fixture.statuses()).at(-1)).toBe("awaiting_input");
+		expect(await fixture.ledgerForLane("child-lane").get(
+			"attempt_receipt",
+			suspended.value.receipt.receipt.attemptReceiptId,
+		)).toBeUndefined();
+
+		expect(await fixture.composition.reload()).toEqual(Result.ok(undefined));
+		expect((await fixture.statuses()).at(-1)).toBe("awaiting_input");
+		const resumed = await fixture.composition.resumeChild({
+			schemaVersion: 1,
+			runId: "run-resume-after-reload",
+			childAgentInstanceId: "child-faux",
+			expectedTurnCount: 1,
+			additionalTurns: 1,
+		});
+		if (!resumed.ok) throw resumed.error;
+		expect(resumed.value.receipt.status).toBe("succeeded");
+		expect(resumed.value.lifecycle.status).toBe("succeeded");
+		expect(fixture.resumeCalls()).toBe(1);
+		expect(await fixture.ledgerForLane("child-lane").get(
+			"attempt_receipt",
+			resumed.value.receipt.attemptReceiptId,
+		)).toMatchObject({ kind: "fact", payload: { status: "succeeded" } });
+		await fixture.close();
 	});
 });

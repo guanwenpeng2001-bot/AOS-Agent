@@ -55,6 +55,7 @@ import {
 	registerRunSchedulerLifecycleHooks,
 	type RunId,
 	type RunLedgerSession,
+	type RunSchedulerLifecycleHooks,
 } from "./run-lifecycle.ts";
 import type { SchedulerCancelAttemptV1, SchedulerQueueStore } from "./scheduler-queue.ts";
 import {
@@ -114,6 +115,8 @@ export interface SchedulerDispatchControllerOptionsV1 {
 	 * Omission preserves the existing default-off Scheduler composition.
 	 */
 	readonly runLifecycleSession?: RunLedgerSession;
+	/** The production composition owns the one Session hook and forwards it here. */
+	readonly runLifecycleHookOwnership?: "dispatch" | "host";
 	readonly laneId?: string;
 	readonly now?: () => string;
 	readonly requiredCapabilities?: readonly FoundationProviderCapabilityV1[];
@@ -488,6 +491,7 @@ export class SchedulerDispatchController {
 	private readonly settlement: LayeredResultSettlementV1;
 	private readonly sessionId: string;
 	private readonly runLifecycleSession: RunLedgerSession | undefined;
+	private readonly schedulerLifecycleHooks: RunSchedulerLifecycleHooks;
 	private readonly unregisterRunLifecycleHooks: (() => void) | undefined;
 	private readonly laneId: string;
 	private readonly nowFn: () => string;
@@ -515,17 +519,22 @@ export class SchedulerDispatchController {
 			);
 		}
 		this.runLifecycleSession = options.runLifecycleSession;
-		this.unregisterRunLifecycleHooks = options.runLifecycleSession === undefined
+		this.schedulerLifecycleHooks = Object.freeze({
+			onRunCancelRequested: (runId: RunId) => this.observeRunCancellation(runId),
+			onRunDeadlineExceeded: (runId: RunId) => this.observeRunCancellation(runId),
+			onRunTerminal: (runId: RunId) => this.observeRunCancellation(runId, true),
+		});
+		this.unregisterRunLifecycleHooks = options.runLifecycleSession === undefined || options.runLifecycleHookOwnership === "host"
 			? undefined
-			: registerRunSchedulerLifecycleHooks(options.runLifecycleSession, {
-					onRunCancelRequested: (runId) => this.observeRunCancellation(runId),
-					onRunDeadlineExceeded: (runId) => this.observeRunCancellation(runId),
-					onRunTerminal: (runId) => this.observeRunCancellation(runId, true),
-				});
+			: registerRunSchedulerLifecycleHooks(options.runLifecycleSession, this.schedulerLifecycleHooks);
 		this.laneId = options.laneId ?? "main";
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 		this.requiredCapabilities = options.requiredCapabilities ?? [inProcessCapability()];
 		this.workspaceDigest = options.workspaceDigest;
+	}
+
+	runLifecycleHooks(): RunSchedulerLifecycleHooks {
+		return this.schedulerLifecycleHooks;
 	}
 
 	/** Queue recoverExpired / handoff / deadlock cancel hook. Goes through settlement.cancelAttempt only. */

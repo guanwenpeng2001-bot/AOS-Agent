@@ -6,6 +6,8 @@ The Line 12B Scheduler is a trusted Host composition over the existing Foundatio
 
 `TrustedSchedulerCompositionV1` registers Run lifecycle observers, creates the Run lifecycle coordinator, and then creates the source Task Graph in that order. It then wires the durable queue and executor dispatch to fan-in settlement, cross-Session messages, fenced handoff, Workflow progression, deadlock/backpressure control, and the Scheduler Host.
 
+The composition owns the Session's single Scheduler lifecycle hook and forwards cancellation, deadline, and terminal observations to executor dispatch. Dispatch uses that same Run ledger for claim validation and never registers a competing hook owner.
+
 One coalescing driver calls Workflow, Host, and deadlock ticks in order. Component-local Host drivers remain stopped. Event wakes and the bounded recovery poll only request that driver; concurrent wakes share the in-flight tick.
 
 The Scheduler never writes a Run terminal fact directly. `settleRunAtHost` remains an injected Host authority, and registered Run hooks are read-only wake signals. Queue claims, dispatches, handoffs, messages, joins, wakes, and deadlock decisions remain durable scheduler facts with Foundation correlation and fencing.

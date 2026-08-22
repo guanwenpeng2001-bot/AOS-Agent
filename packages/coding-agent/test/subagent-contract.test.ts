@@ -108,6 +108,7 @@ const LEGAL_EDGES = new Set([
 	"awaiting_input->cancelling",
 	"awaiting_input->failed",
 	"awaiting_input->lost",
+	"background->awaiting_input",
 	"background->cancelling",
 	"background->succeeded",
 	"background->failed",

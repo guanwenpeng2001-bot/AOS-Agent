@@ -75,6 +75,7 @@ The supervised lifecycle is:
 
 ```text
 spawning -> running -> awaiting_input | background | cancelling
+                     background -> awaiting_input (continued suspension)
          -> succeeded | failed | cancelled | lost -> closed
 ```
 
@@ -89,10 +90,16 @@ are bounded durable facts within the current Session. A wait timeout does not
 cancel a child. Cross-Session messaging, queue ownership, claim, handoff, and
 DAG scheduling remain Line 12B work.
 
-Resume rebuilds from the durable child transcript and Context boundary. It
-does not revive an old process or provider handle. Optional worktree apply is
-fail-closed; an apply conflict or unknown cleanup result cannot overwrite the
-parent workspace and leaves the target quarantined.
+Reload restores safe supervisor facts and validates an active `spawnId` through
+the provider's `lookupSpawn` surface before trusted continuation. A missing or
+invalid handle is durably marked `lost` and its mailbox is sealed; it is never
+reported as live or falsely `closed`. Resume rebuilds execution context from the
+durable child transcript and Context boundary. A fork resume starts a new
+process rather than reviving the old process. Agent-provider suspension receipts
+remain provisional; only the continued terminal receipt becomes the immutable
+AttemptReceipt. Optional worktree apply is fail-closed; an apply conflict or
+unknown cleanup result cannot overwrite the parent workspace and leaves the
+target quarantined.
 
 Worktree isolation is production-reachable only through explicit trusted Host
 configuration. Capability negotiation advertises it only for the configured

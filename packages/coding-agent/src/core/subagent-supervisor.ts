@@ -1109,35 +1109,6 @@ export class SubagentSupervisorV1 {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child Agent receipt control is missing"));
 		}
 		const receiptCorrelation = receipt.value.provenance.correlation;
-		let durableReceipt: Awaited<ReturnType<SessionLedgerV1["get"]>>;
-		try {
-			durableReceipt = await this.ledger.get("attempt_receipt", receipt.value.attemptReceiptId);
-		} catch {
-			return this.rejectUntrustedReceipt(
-				record,
-				new FoundationError("subagent_persistence_failed", "Durable Child Agent receipt could not be read"),
-			);
-		}
-		if (
-			durableReceipt?.kind !== "fact" ||
-			durableReceipt.objectId !== receipt.value.attemptReceiptId ||
-			durableReceipt.revision !== 1 ||
-			durableReceipt.correlation.sessionId !== this.sessionId ||
-			durableReceipt.correlation.laneId !== control.childLaneId ||
-			durableReceipt.correlation.taskId !== record.taskId ||
-			durableReceipt.correlation.dispatchId !== record.dispatchId ||
-			durableReceipt.correlation.attemptId !== record.attemptId ||
-			durableReceipt.correlation.bindingId !== record.bindingId ||
-			durableReceipt.correlation.bindingEpochId !== receiptCorrelation?.bindingEpochId ||
-			durableReceipt.correlation.attemptReceiptId !== receipt.value.attemptReceiptId ||
-			durableReceipt.correlation.agentInstanceId !== record.childAgentInstanceId ||
-			canonicalFoundationJson(durableReceipt.payload) !== canonicalFoundationJson(receipt.value)
-		) {
-			return this.rejectUntrustedReceipt(
-				record,
-				new FoundationError("subagent_conflict", "Child Agent receipt is missing or differs from its immutable durable fact"),
-			);
-		}
 		if (
 			receipt.value.agentInstanceId !== record.childAgentInstanceId ||
 			receipt.value.attemptId !== record.attemptId ||
@@ -1153,6 +1124,38 @@ export class SubagentSupervisorV1 {
 			return this.rejectUntrustedReceipt(
 				record,
 				new FoundationError("subagent_conflict", "Child Agent receipt identity does not match"),
+			);
+		}
+		let durableReceipt: Awaited<ReturnType<SessionLedgerV1["get"]>>;
+		try {
+			durableReceipt = await this.ledger.get("attempt_receipt", receipt.value.attemptReceiptId);
+		} catch {
+			return this.rejectUntrustedReceipt(
+				record,
+				new FoundationError("subagent_persistence_failed", "Durable Child Agent receipt could not be read"),
+			);
+		}
+		const durableReceiptMismatch =
+			durableReceipt?.kind !== "fact" ||
+			durableReceipt.objectId !== receipt.value.attemptReceiptId ||
+			durableReceipt.revision !== 1 ||
+			durableReceipt.correlation.sessionId !== this.sessionId ||
+			durableReceipt.correlation.laneId !== control.childLaneId ||
+			durableReceipt.correlation.taskId !== record.taskId ||
+			durableReceipt.correlation.dispatchId !== record.dispatchId ||
+			durableReceipt.correlation.attemptId !== record.attemptId ||
+			durableReceipt.correlation.bindingId !== record.bindingId ||
+			durableReceipt.correlation.bindingEpochId !== receiptCorrelation?.bindingEpochId ||
+			durableReceipt.correlation.attemptReceiptId !== receipt.value.attemptReceiptId ||
+			durableReceipt.correlation.agentInstanceId !== record.childAgentInstanceId ||
+			canonicalFoundationJson(durableReceipt.payload) !== canonicalFoundationJson(receipt.value);
+		if (
+			(receipt.value.status !== "suspended" && durableReceiptMismatch) ||
+			(receipt.value.status === "suspended" && durableReceipt !== undefined && durableReceiptMismatch)
+		) {
+			return this.rejectUntrustedReceipt(
+				record,
+				new FoundationError("subagent_conflict", "Child Agent receipt is missing or differs from its immutable durable fact"),
 			);
 		}
 		if (receipt.value.status === "cancelled" && receipt.value.sideEffectState !== "none") {
@@ -1171,7 +1174,7 @@ export class SubagentSupervisorV1 {
 				updatedAt: this.now(),
 			});
 			if (!persisted.ok) return persisted;
-			if (record.status === "awaiting_input" || record.status === "background") {
+			if (record.status === "awaiting_input") {
 				return Result.ok(this.records.get(childAgentInstanceId) ?? record);
 			}
 			const awaiting = await this.transition(childAgentInstanceId, "awaiting_input");

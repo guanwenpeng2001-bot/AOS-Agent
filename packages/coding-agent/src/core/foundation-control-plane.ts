@@ -122,6 +122,7 @@ import {
 	createRunLifecycleCoordinator,
 	registerRunSchedulerLifecycleHooks,
 	type RunLifecycleCoordinator,
+	type RunSchedulerLifecycleHooks,
 } from "./run-lifecycle.ts";
 import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
@@ -318,13 +319,23 @@ export class TrustedSchedulerCompositionV1 {
 		this.targetSessionId = options.targetSessionId;
 		const wake = (): void => this.wake();
 		let unregisterRunHooks: (() => void) | undefined;
+		let dispatchLifecycleHooks: RunSchedulerLifecycleHooks | undefined;
 		let workflow: SchedulerWorkflowController | undefined;
 		let host: SchedulerHostV1 | undefined;
 		try {
 			unregisterRunHooks = registerRunSchedulerLifecycleHooks(options.runLifecycleSession, {
-				onRunCancelRequested: wake,
-				onRunDeadlineExceeded: wake,
-				onRunTerminal: wake,
+				onRunCancelRequested: (runId) => {
+					wake();
+					dispatchLifecycleHooks?.onRunCancelRequested?.(runId);
+				},
+				onRunDeadlineExceeded: (runId) => {
+					wake();
+					dispatchLifecycleHooks?.onRunDeadlineExceeded?.(runId);
+				},
+				onRunTerminal: (runId, receipt) => {
+					wake();
+					dispatchLifecycleHooks?.onRunTerminal?.(runId, receipt);
+				},
 			});
 			this.unregisterRunHooks = unregisterRunHooks;
 			this.runLifecycle = createRunLifecycleCoordinator(options.runLifecycleSession);
@@ -356,9 +367,12 @@ export class TrustedSchedulerCompositionV1 {
 				registry: options.registry,
 				task: options.task,
 				binding: options.binding,
+				runLifecycleSession: options.runLifecycleSession,
+				runLifecycleHookOwnership: "host",
 				...(options.now === undefined ? {} : { now: options.now }),
 			});
 			this.workflow = workflow;
+			dispatchLifecycleHooks = this.workflow.dispatch.runLifecycleHooks();
 			this.messages = this.workflow.messages;
 			this.handoff = this.workflow.handoff;
 			this.fanIn = this.workflow.fanIn;
