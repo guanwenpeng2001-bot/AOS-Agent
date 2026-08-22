@@ -8,6 +8,7 @@ import {
 	TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS,
 	projectSubagentAuditSourceV1,
 	replaySubagentAuditSourceV1,
+	hasForbiddenSchedulerAuditValue,
 	type AuditEvent,
 	type AuditSession,
 } from "../src/core/execution-audit.ts";
@@ -493,11 +494,11 @@ describe("execution audit task graph contract", () => {
 		// The T0 fixture predates the remote.operation and task.credential
 		// sources; ignoring those known later additions, task.graph must be the
 		// only remaining delta.
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 		]);
@@ -1116,12 +1117,12 @@ function credentialSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
 
 describe("execution audit task credential contract", () => {
 	it("adds task.credential as the only additive audit source and event type", () => {
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_SOURCE_CUSTOM_TYPES,
 			"task.graph",
 			"task.credential",
 		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker"))).toEqual([
+		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
 			...AUDIT_EVENT_TYPES,
 			"task.graph",
 			"task.credential",
@@ -2139,5 +2140,66 @@ describe("execution audit Worker source contract", () => {
 		])).fold();
 		expect(folded.events.map((event) => event.sourceEntryId)).toEqual(["worker-starting-time-order"]);
 		expect(folded.warnings.some((warning) => warning.sourceEntryId === "worker-ready-time-rollback" && warning.code === "malformed_source")).toBe(true);
+	});
+});
+
+describe("execution audit Scheduler source contract", () => {
+	const schedulerEntry = (dataOverride: Record<string, unknown> = {}): Extract<SessionEntry, { type: "custom" }> => customEntry(
+		"scheduler-entry-1",
+		"2026-08-22T00:00:00.000Z",
+		"scheduler.executor_selected",
+		{
+			schemaVersion: 1,
+			class: "durable",
+			category: "scheduler.executor_selected",
+			eventId: "scheduler-event-1",
+			streamId: "scheduler-stream-1",
+			sequence: 1,
+			timestamp: "2026-08-22T00:00:00.000Z",
+			correlation: { sessionId: "scheduler-session", taskId: "task-1" },
+			payload: {
+				schemaVersion: 1,
+				queueEntryId: "queue-1",
+				taskId: "task-1",
+				chosenProviderId: "provider-1",
+				inputsDigest: "sha256:selection",
+				decidedAt: "2026-08-22T00:00:00.000Z",
+				scoreCount: 1,
+			},
+			...dataOverride,
+		},
+	);
+
+	it("projects validated scheduler metadata without payload material", () => {
+		const session: AuditSession = { getSessionId: () => "scheduler-session", getEntries: () => [schedulerEntry()] };
+		const folded = new ExecutionAuditAdapter(session).fold();
+		expect(folded.warnings).toEqual([]);
+		expect(folded.events).toHaveLength(1);
+		expect(folded.events[0]).toMatchObject({
+			type: "scheduler.event",
+			recordedAt: "2026-08-22T00:00:00.000Z",
+			summary: {
+				category: "scheduler.executor_selected",
+				eventId: "scheduler-event-1",
+				sequence: 1,
+				safeSummary: "scheduler.executor_selected revision 1",
+				correlation: { sessionId: "scheduler-session", taskId: "task-1" },
+			},
+		});
+		expect(JSON.stringify(folded.events[0])).not.toContain("chosenProviderId");
+	});
+
+	it("rejects forbidden scheduler fields recursively", () => {
+		expect(hasForbiddenSchedulerAuditValue({ nested: { prompt: "secret" } })).toBe(true);
+		const clean = schedulerEntry();
+		const data = clean.data as Record<string, unknown>;
+		const payload = data.payload as Record<string, unknown>;
+		const session: AuditSession = {
+			getSessionId: () => "scheduler-session",
+			getEntries: () => [{ ...clean, data: { ...data, payload: { ...payload, prompt: "secret" } } }],
+		};
+		const folded = new ExecutionAuditAdapter(session).fold();
+		expect(folded.events).toEqual([]);
+		expect(folded.warnings).toContainEqual(expect.objectContaining({ code: "malformed_source" }));
 	});
 });

@@ -135,7 +135,11 @@ import { calculateContextTokens, estimateContextTokens, shouldCompact, type Comp
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
-import { FoundationControlPlane } from "./foundation-control-plane.ts";
+import {
+	FoundationControlPlane,
+	type SchedulerSafeStatusV1,
+	type TrustedSchedulerCompositionOptionsV1,
+} from "./foundation-control-plane.ts";
 import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
@@ -188,6 +192,8 @@ export interface CanonicalAgentSessionOptions {
 	excludedToolNames?: string[];
 	/** Explicit trusted Host-only opt-in; omission preserves the original runtime path. */
 	subagents?: TrustedSubagentCompositionOptionsV1;
+	/** Explicit trusted Host-only opt-in; omission keeps scheduling disabled. */
+	scheduler?: TrustedSchedulerCompositionOptionsV1;
 }
 
 const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
@@ -649,6 +655,7 @@ export class CanonicalAgentSessionServices {
 			sandboxProviders: canonical.sandboxProviders,
 			workerSandboxProvider: canonical[internalWorkerSandboxProvider],
 			subagents: canonical.subagents,
+			scheduler: canonical.scheduler,
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: canonical.externalAgentRegistry,
 			taskCredentialProvider: canonical.taskCredentialProvider,
@@ -3122,6 +3129,10 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getTaskCredentialService();
 	}
 
+	getSchedulerStatus(): SchedulerSafeStatusV1 | undefined {
+		return this.controlPlane.getSchedulerStatus();
+	}
+
 	/**
 	 * Narrow compatibility projection used by the RPC credential regression
 	 * tests. The live sandbox remains owned by FoundationControlPlane; this
@@ -3490,6 +3501,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getExternalAgentRegistry",
 	"getWorkerRegistry",
 	"getTaskCredentialService",
+	"getSchedulerStatus",
 	"getActiveSandboxSessionForCompatibility",
 	"setAutoCompactionEnabled",
 	"setAutoRetryEnabled",
@@ -3700,6 +3712,7 @@ export class AgentSession {
 	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
 	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];
+	declare readonly getSchedulerStatus: CanonicalAgentSessionServices["getSchedulerStatus"];
 	declare readonly getActiveSandboxSessionForCompatibility: CanonicalAgentSessionServices["getActiveSandboxSessionForCompatibility"];
 	declare readonly setAutoCompactionEnabled: CanonicalAgentSessionServices["setAutoCompactionEnabled"];
 	declare readonly setAutoRetryEnabled: CanonicalAgentSessionServices["setAutoRetryEnabled"];
@@ -3795,4 +3808,22 @@ export function createAgentSessionWithTrustedSubagents(
 	const canonical = createCanonicalOptionsFromLegacy(options);
 	const subagents = createSubagents(canonical.canonicalSession, canonical.sessionManager.getSessionId(), canonical.harness.t5.writer);
 	return new AgentSession(new CanonicalAgentSessionServices({ ...canonical, subagents }));
+}
+
+/** Trusted Host composition root for the explicitly default-off Scheduler. */
+export function createAgentSessionWithTrustedScheduler(
+	options: AgentSessionConfig,
+	createScheduler: (
+		session: Session,
+		sessionId: string,
+		runLifecycleSession: SessionManager,
+	) => TrustedSchedulerCompositionOptionsV1,
+): AgentSession {
+	const canonical = createCanonicalOptionsFromLegacy(options);
+	const scheduler = createScheduler(
+		canonical.canonicalSession,
+		canonical.sessionManager.getSessionId(),
+		canonical.sessionManager,
+	);
+	return new AgentSession(new CanonicalAgentSessionServices({ ...canonical, scheduler }));
 }

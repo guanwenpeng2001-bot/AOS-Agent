@@ -10,7 +10,12 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { cloneDeepFrozen, fingerprintFoundationValue } from "@aos-agent/agent-core";
+import {
+	cloneDeepFrozen,
+	fingerprintFoundationValue,
+	validateDurableEventV1,
+	type FoundationEventEnvelopeV1,
+} from "@aos-agent/agent-core";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
 import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
 import {
@@ -120,6 +125,11 @@ import {
 	type ChildLifecycleStatusV1,
 	type SubagentProviderKindV1,
 } from "./subagent.ts";
+import {
+	SCHEDULER_DURABLE_EVENT_CATEGORIES,
+	SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
+	type SchedulerDurableEventCategoryV1,
+} from "./scheduler.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
@@ -143,6 +153,7 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"worker.lifecycle_transitioned",
 	"worker.operation_recorded",
 	"worker_receipt.written",
+	...SCHEDULER_DURABLE_EVENT_CATEGORIES,
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
 /**
@@ -179,6 +190,7 @@ export const AUDIT_EVENT_TYPES = [
 	"worker.lifecycle",
 	"worker.operation",
 	"worker.receipt",
+	"scheduler.event",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
 
@@ -576,6 +588,17 @@ export interface AuditWorkerReceiptSummary {
 	readonly terminalRecordRevision: number;
 }
 
+/** Public-safe metadata projection of one validated scheduler durable event. */
+export interface AuditSchedulerSummary {
+	readonly category: SchedulerDurableEventCategoryV1;
+	readonly eventId: string;
+	readonly streamId: string;
+	readonly sequence: number;
+	readonly safeSummary: string;
+	readonly payloadDigest: ReturnType<typeof fingerprintFoundationValue>;
+	readonly correlation: Readonly<Record<string, string>>;
+}
+
 export interface AuditEventBase {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
@@ -678,6 +701,11 @@ export type AuditEvent =
 			readonly type: "worker.receipt";
 			readonly runId?: string;
 			readonly summary: AuditWorkerReceiptSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "scheduler.event";
+			readonly runId?: string;
+			readonly summary: AuditSchedulerSummary;
 	  });
 
 export interface AuditWarning {
@@ -906,6 +934,12 @@ const SUBAGENT_AUDIT_KEYS = new Set([
 ]);
 const SUBAGENT_AUDIT_CORRELATION_KEYS = new Set(["attemptId", "spawnId"]);
 const SUBAGENT_AUDIT_DIGEST_KEYS = new Set(["algorithm", "value"]);
+export const SCHEDULER_AUDIT_FORBIDDEN_KEYS = Object.freeze([
+	...SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
+	"environment", "executable", "argv", "cwd", "secret", "token", "authorization", "header", "headers",
+	"prompt", "message", "content", "output", "raw", "stack", "error", "details",
+]);
+const SCHEDULER_AUDIT_FORBIDDEN_KEY_SET = new Set<string>(SCHEDULER_AUDIT_FORBIDDEN_KEYS);
 const WORKER_ENVELOPE_KEYS = new Set([
 	"schemaVersion",
 	"class",
@@ -981,6 +1015,15 @@ export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecy
 /** Replay projection is deliberately read-only and has no spawn/cancel/resume surface. */
 export function replaySubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
 	return projectSubagentAuditSourceV1(value);
+}
+
+export function hasForbiddenSchedulerAuditValue(value: unknown, seen = new WeakSet<object>()): boolean {
+	if (value === null || typeof value !== "object") return false;
+	if (seen.has(value)) return true;
+	seen.add(value);
+	if (Array.isArray(value)) return value.some((item) => hasForbiddenSchedulerAuditValue(item, seen));
+	return Object.entries(value).some(([key, item]) =>
+		SCHEDULER_AUDIT_FORBIDDEN_KEY_SET.has(key) || hasForbiddenSchedulerAuditValue(item, seen));
 }
 
 function workerString(value: unknown): value is string {
@@ -1967,6 +2010,23 @@ function safeWorkerReceiptSummary(value: WorkerReceiptAuditRecord): AuditWorkerR
 	return summary;
 }
 
+function safeSchedulerSummary(value: SchedulerAuditRecord): AuditSchedulerSummary {
+	const event = value.envelope;
+	const correlation: Record<string, string> = {};
+	for (const [key, item] of Object.entries(event.correlation)) {
+		if (typeof item === "string" && isSafeIdentifier(item)) correlation[key] = item;
+	}
+	return {
+		category: event.category as SchedulerDurableEventCategoryV1,
+		eventId: event.eventId,
+		streamId: event.streamId,
+		sequence: event.sequence,
+		safeSummary: `${event.category} revision ${event.sequence}`,
+		payloadDigest: fingerprintFoundationValue(event.payload),
+		correlation,
+	};
+}
+
 function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
 	const external = {
 		namespace: value.namespace,
@@ -2056,6 +2116,10 @@ interface WorkerReceiptAuditRecord {
 	readonly terminalRecordRevision: number;
 }
 
+interface SchedulerAuditRecord {
+	readonly envelope: Extract<FoundationEventEnvelopeV1, { readonly class: "durable" }>;
+}
+
 type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "model.binding"; readonly value: ModelBindingLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "model.attempt"; readonly value: ModelAttemptLedgerRecord })
@@ -2073,7 +2137,8 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "task.credential"; readonly value: TaskCredentialTransition })
 	| (SourceCandidateBase & { readonly eventType: "worker.lifecycle"; readonly value: WorkerLifecycleAuditRecord })
 	| (SourceCandidateBase & { readonly eventType: "worker.operation"; readonly value: WorkerOperationAuditRecord })
-	| (SourceCandidateBase & { readonly eventType: "worker.receipt"; readonly value: WorkerReceiptAuditRecord });
+	| (SourceCandidateBase & { readonly eventType: "worker.receipt"; readonly value: WorkerReceiptAuditRecord })
+	| (SourceCandidateBase & { readonly eventType: "scheduler.event"; readonly value: SchedulerAuditRecord });
 
 type Relation =
 	| { readonly kind: "model-binding"; readonly bindingId: string }
@@ -2087,7 +2152,8 @@ type Relation =
 	| { readonly kind: "task-gate"; readonly runId?: string }
 	| { readonly kind: "task-graph"; readonly runId?: string }
 	| { readonly kind: "task-credential"; readonly runId?: string }
-	| { readonly kind: "worker"; readonly workerId: string; readonly runId?: string };
+	| { readonly kind: "worker"; readonly workerId: string; readonly runId?: string }
+	| { readonly kind: "scheduler"; readonly runId?: string };
 
 interface InternalWarning {
 	readonly warning: AuditWarning;
@@ -2156,6 +2222,7 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === WORKER_LIFECYCLE_CUSTOM_TYPE) return "worker.lifecycle";
 	if (customType === WORKER_OPERATION_CUSTOM_TYPE) return "worker.operation";
 	if (customType === WORKER_RECEIPT_CUSTOM_TYPE) return "worker.receipt";
+	if ((SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(customType)) return "scheduler.event";
 	return undefined;
 }
 
@@ -2174,7 +2241,8 @@ function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): 
 		relation.kind === "remote-operation" ||
 		relation.kind === "task-gate" ||
 		relation.kind === "task-graph" ||
-		relation.kind === "task-credential"
+		relation.kind === "task-credential" ||
+		relation.kind === "scheduler"
 	) {
 		return relation.runId === undefined ? undefined : new Set([relation.runId]);
 	}
@@ -2580,6 +2648,52 @@ function parseWorkerFact(
 		return;
 	}
 	candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId } });
+}
+
+function parseSchedulerFact(
+	sessionId: string,
+	entry: Extract<SessionEntry, { type: "custom" }>,
+	internalWarnings: InternalWarning[],
+	candidates: SourceCandidate[],
+): void {
+	const version = schemaVersion(entry.data);
+	const malformed = (): void => {
+		internalWarnings.push(warning(sessionId, "malformed_source", entry, "scheduler.event", version, undefined, true));
+	};
+	if (
+		version !== AUDIT_SCHEMA_VERSION ||
+		!isRecord(entry.data) ||
+		hasForbiddenSchedulerAuditValue(entry.data.payload) ||
+		!isCanonicalTimestamp(entry.timestamp) ||
+		!isSafeIdentifier(entry.id)
+	) {
+		malformed();
+		return;
+	}
+	const parsed = validateDurableEventV1(entry.data);
+	if (!parsed.ok || parsed.value.class !== "durable" || parsed.value.category !== entry.customType || !(SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(parsed.value.category)) {
+		malformed();
+		return;
+	}
+	const event = parsed.value;
+	if (
+		event.correlation.sessionId !== sessionId ||
+		event.timestamp !== entry.timestamp ||
+		!isSafeIdentifier(event.eventId) ||
+		!isSafeIdentifier(event.streamId) ||
+		Object.values(event.correlation).some((item) => !isSafeIdentifier(item))
+	) {
+		malformed();
+		return;
+	}
+	const runId = typeof event.correlation.runId === "string" ? event.correlation.runId : undefined;
+	candidates.push({
+		eventType: "scheduler.event",
+		entry,
+		recordedAt: event.timestamp,
+		value: { envelope: event },
+		relation: { kind: "scheduler", ...(runId === undefined ? {} : { runId }) },
+	});
 }
 
 function parseSourceCandidate(
@@ -3619,6 +3733,14 @@ function sourceEventForCandidate(
 			summary: safeWorkerReceiptSummary(candidate.value),
 		};
 	}
+	if (candidate.eventType === "scheduler.event") {
+		return {
+			...base,
+			type: candidate.eventType,
+			...(runId === undefined ? {} : { runId }),
+			summary: safeSchedulerSummary(candidate.value),
+		};
+	}
 	return {
 		...base,
 		type: candidate.eventType,
@@ -3712,6 +3834,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			entry.customType === WORKER_RECEIPT_CUSTOM_TYPE
 		)
 			parseWorkerFact(sessionId, entry, workerFold, internalWarnings, candidates);
+		else if ((SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(entry.customType))
+			parseSchedulerFact(sessionId, entry, internalWarnings, candidates);
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
@@ -3869,7 +3993,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			candidate.relation?.kind === "context" ||
 			candidate.relation?.kind === "external" ||
 				candidate.relation?.kind === "remote-operation" ||
-				candidate.relation?.kind === "worker"
+				candidate.relation?.kind === "worker" ||
+				candidate.relation?.kind === "scheduler"
 				? candidate.relation.runId
 				: undefined;
 		if (directRunId !== undefined && !states.has(directRunId)) {
@@ -3907,7 +4032,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 						candidate.relation?.kind === "worker" ||
 						candidate.relation?.kind === "task-gate" ||
 						candidate.relation?.kind === "task-graph" ||
-						candidate.relation?.kind === "task-credential"
+						candidate.relation?.kind === "task-credential" ||
+						candidate.relation?.kind === "scheduler"
 					? candidate.relation.runId
 					: undefined;
 		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);

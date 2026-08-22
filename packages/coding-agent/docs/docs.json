@@ -98,6 +98,14 @@
           "path": "foundation-v1-final-audit.md"
         },
         {
+          "title": "Native Subagent Contract",
+          "path": "subagent-contract.md"
+        },
+        {
+          "title": "Scheduler Contract",
+          "path": "scheduler-contract.md"
+        },
+        {
           "title": "Session Format",
           "path": "session-format.md"
         },

@@ -2,8 +2,8 @@
 
 Foundation v1 closes Atlas rows 01–10 and 10A. Delivery status is a sealed
 integration candidate whose promotion requires exact-range external review and
-protected-branch CI. The user authorized that promotion workflow. Line 11 and
-Line 12A now have separate machine-checked implementation ledgers. Lines 12B,
+protected-branch CI. The user authorized that promotion workflow. Lines 11,
+12A, and 12B now have separate machine-checked implementation ledgers. Lines
 13, 14, and 15 remain later work.
 
 ## Sealed rows
@@ -24,8 +24,9 @@ Line 12A now have separate machine-checked implementation ledgers. Lines 12B,
 
 The Foundation seal closes contracts and their local runtime behavior. Line 11
 implements the local Operation Worker consumer. Line 12A implements native
-`in_process` and `fork` child-agent providers; it does not claim a distributed
-scheduler, remote Runtime Host, ACP/SDK connector, or product UI.
+`in_process` and `fork` child-agent providers. Line 12B implements the trusted,
+explicitly enabled single-Host scheduler composition; it does not claim a
+distributed scheduler, remote Runtime Host, ACP/SDK connector, or product UI.
 
 ## Canonical relations
 
@@ -87,6 +88,10 @@ Implemented consumer ledgers do not rewrite the sealed Foundation manifest:
   `packages/agent/src/harness/line12a-subagent-capabilities.ts`, and directly
   references the sealed Foundation closures `2`, `6`, `8`, `9`, `17-20`,
   `26`, `29-34`, and `98`.
+- Line 12B closes `119-126`, `130`, and `131` in
+  `packages/agent/src/harness/line12b-scheduler-capabilities.ts`, and directly
+  references the sealed Foundation closures `3`, `5`, `6`, `10`, `16`, `26`,
+  `47`, `51`, `53`, `55-58`, `61`, `98`, and `127-129`.
 
 ## Section 09: Line 12A implementation status
 
@@ -127,7 +132,7 @@ accepted by the configured join.
 | --- | --- | --- |
 | 11 Sandbox Operation Worker | Implemented | `74-87`, `135`, `136`; capability `140` remains on its extension track |
 | 12A Native Subagent Runtime / Agent Team | Implemented for `in_process` and `fork`; Runtime Host/ACP/SDK contract-only | `90-97`, `99-118` |
-| 12B Task Scheduler / Handoff | Deferred | `119-126`, `130`, `131` |
+| 12B Task Scheduler / Handoff | Implemented as trusted, explicit single-Host composition | `119-126`, `130`, `131` |
 | 13 External Agent Connector / Tool Gateway | Deferred | `132`, `133`, `138` |
 | 14 Integration / Hardening | Deferred | `134`, `137`, `139`, `141-144`, `149`, `150` |
 | 15 Product Delivery | Deferred | `147`, `148` |
@@ -146,7 +151,6 @@ extra data is rejected rather than counted as success.
 
 ## Future lines
 
-Lines 12B-15 may implement only the consumers assigned by the future-owner
-map. Line 12B remains an independent scheduling/handoff line that reads shared
-contracts without redefining Line 12A. Later lines must not create new
-Foundation state authorities or redefine the sealed relations above.
+Lines 13-15 may implement only the consumers assigned by the future-owner
+map. Later lines must not create new Foundation state authorities or redefine
+the sealed relations above.

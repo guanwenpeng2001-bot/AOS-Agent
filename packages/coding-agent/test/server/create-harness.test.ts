@@ -15,10 +15,21 @@ import { anthropicProvider } from "@aos-agent/ai/providers/anthropic";
 import { googleProvider } from "@aos-agent/ai/providers/google";
 import { Type } from "typebox";
 import { describe, expect, test, vi } from "vitest";
+
+const trustedSchedulerBridge = vi.hoisted(() => {
+	const session = { kind: "trusted-scheduler-session" };
+	return { create: vi.fn(() => session), session };
+});
+
+vi.mock("../../src/core/agent-session-facade.ts", () => ({
+	createAgentSessionWithTrustedScheduler: trustedSchedulerBridge.create,
+}));
+
 import {
 	buildCodingAgentHarnessSystemPrompt,
 	type CodingAgentHarnessTool,
 	createCodingAgentHarness,
+	createCodingAgentSessionWithTrustedScheduler,
 } from "../../src/server/create-harness.ts";
 
 class CapturingExecutionEnv extends NodeExecutionEnv {
@@ -68,7 +79,8 @@ const defaultPromptTools = [
 ];
 
 describe("coding-agent Harness construction", () => {
-	test("adds coding-agent policy to explicit Harness options", async () => {
+	test("adds coding-agent policy and keeps Scheduler off by omission", async () => {
+		trustedSchedulerBridge.create.mockClear();
 		const session = new Session(new InMemorySessionStorage({ id: "harness-session", createdAt: 1 }));
 		const env = new NodeExecutionEnv({ cwd: "/workspace" });
 		const created = await createCodingAgentHarness({
@@ -90,10 +102,29 @@ describe("coding-agent Harness construction", () => {
 			expect(await created.harness.getRetryPolicy()).toEqual({ enabled: true, maxRetries: 2, baseDelayMs: 10 });
 			expect(await created.harness.getSteeringMode()).toBe("all");
 			expect(await created.harness.getFollowUpMode()).toBe("all");
+			expect((await session.findFoundationRecords({ includePruned: true })).some((record) =>
+				"objectType" in record && record.objectType.startsWith("scheduler."))).toBe(false);
+			expect(trustedSchedulerBridge.create).not.toHaveBeenCalled();
 		} finally {
 			await created.harness.close();
 			await env.cleanup();
 		}
+	});
+
+	test("delegates explicit trusted Scheduler opt-in exactly once", () => {
+		trustedSchedulerBridge.create.mockClear();
+		const options = { kind: "legacy-agent-session-options" } as unknown as Parameters<
+			typeof createCodingAgentSessionWithTrustedScheduler
+		>[0];
+		const createScheduler = vi.fn() as unknown as Parameters<
+			typeof createCodingAgentSessionWithTrustedScheduler
+		>[1];
+
+		const session = createCodingAgentSessionWithTrustedScheduler(options, createScheduler);
+
+		expect(session).toBe(trustedSchedulerBridge.session);
+		expect(trustedSchedulerBridge.create).toHaveBeenCalledOnce();
+		expect(trustedSchedulerBridge.create).toHaveBeenCalledWith(options, createScheduler);
 	});
 
 	test("preserves coding-agent prompt snippets and guideline order", () => {

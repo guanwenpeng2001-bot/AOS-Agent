@@ -20,6 +20,22 @@ const SUBAGENT_CATEGORIES = [
 	"subagent.worktree_recorded",
 ] as const;
 
+const SCHEDULER_CATEGORIES = [
+	"scheduler.queue_transitioned",
+	"scheduler.claim_acquired",
+	"scheduler.claim_renewed",
+	"scheduler.claim_released",
+	"scheduler.dispatch_transitioned",
+	"scheduler.executor_selected",
+	"scheduler.join_recorded",
+	"scheduler.message_posted",
+	"scheduler.message_acked",
+	"scheduler.handoff_transitioned",
+	"scheduler.wake_scheduled",
+	"scheduler.wake_fired",
+	"scheduler.deadlock_detected",
+] as const;
+
 const EXISTING_DURABLE_CATEGORIES = [
 	"session.created", "session.closed", "lane.created", "lane.moved", "message.persisted", "operation.started", "operation.finished", "abort.requested", "step.checkpointed", "write.deferred", "tool.started", "tool.finished", "queue.enqueued", "queue.cancelled", "usage.recorded", "model.request", "compaction.persisted", "navigation.completed", "binding.activated", "binding.created", "binding.revised", "binding.epoch_activated", "attempt.started", "attempt.finished", "attempt_receipt.written", "task_result.settled", "run_receipt.written", "role.created", "role.revised", "role.tombstoned", "profile.created", "profile.revised", "profile.tombstoned", "task.created", "task.updated", "dispatch.created", "dispatch.updated", "worker.lifecycle_transitioned", "worker.operation_recorded", "worker_receipt.written", "goal.created", "goal.updated", "plan.created", "plan.updated", "todo.created", "todo.updated", "todo.completed", "ask.created", "ask.answered", "ask.expired", "ask.escalated", "ask.cancelled", "workflow.started", "workflow.paused", "workflow.resumed", "workflow.stopped", "workflow.step_transitioned", "artifact.registered", "migration.applied",
 ] as const;
@@ -73,11 +89,12 @@ describe("line 12A Foundation additions", () => {
 		expect(new Set(FOUNDATION_ERROR_CODES).size).toBe(FOUNDATION_ERROR_CODES.length);
 	});
 
-	it("appends four durable categories and preserves the existing catalog order and classes", () => {
+	it("preserves the subagent additions before the later Scheduler catalog entries", () => {
 		const partitions = eventCatalogEntriesV1();
 		expect(partitions.filter((entry) => entry.class === "durable").map((entry) => entry.category)).toEqual([
 			...EXISTING_DURABLE_CATEGORIES,
 			...SUBAGENT_CATEGORIES,
+			...SCHEDULER_CATEGORIES,
 		]);
 		expect(partitions.filter((entry) => entry.class === "live").map((entry) => entry.category)).toEqual([
 			"stream.text", "stream.thinking", "stream.tool_progress", "stream.partial_result", "turn.started", "turn.finished",
@@ -128,6 +145,27 @@ describe("line 12A Foundation additions", () => {
 		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, rawFrame: "forbidden" })).toBe(false);
 		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, status: "terminal" })).toBe(false);
 		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, ancestorIds: ["parent-2"] })).toBe(false);
+	});
+
+	it("requires Scheduler payload identities to match the durable correlation", () => {
+		const event = createDurableEventV1({
+			category: "scheduler.queue_transitioned",
+			eventId: "event-scheduler-1",
+			streamId: "session-1",
+			sequence: 1,
+			timestamp,
+			correlation: { sessionId: "session-1", taskId: "task-1" },
+			payload: {
+				schemaVersion: 1,
+				queueEntryId: "queue-1",
+				sessionId: "session-1",
+				taskId: "task-1",
+				state: "queued",
+				revision: 1,
+			},
+		});
+		expect(validateDurableEventV1({ ...event, correlation: { sessionId: "session-2", taskId: "task-1" } }).ok).toBe(false);
+		expect(validateDurableEventV1({ ...event, correlation: { sessionId: "session-1", taskId: "task-2" } }).ok).toBe(false);
 	});
 
 	it("validates sent and acknowledged mailbox events and redacts message bodies", () => {

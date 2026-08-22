@@ -31,6 +31,8 @@ import {
 	type WorkerReceiptV1,
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
+import type { AgentSessionConfig } from "../core/agent-session.ts";
+import { createAgentSessionWithTrustedScheduler } from "../core/agent-session-facade.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
@@ -44,6 +46,16 @@ import {
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
 	promptGuidelines?: readonly string[];
+}
+
+export type CreateCodingAgentTrustedScheduler = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
+
+/** Trusted Host-only Scheduler bridge. The ordinary Harness path remains Scheduler-off. */
+export function createCodingAgentSessionWithTrustedScheduler(
+	options: AgentSessionConfig,
+	createScheduler: CreateCodingAgentTrustedScheduler,
+): ReturnType<typeof createAgentSessionWithTrustedScheduler> {
+	return createAgentSessionWithTrustedScheduler(options, createScheduler);
 }
 
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";

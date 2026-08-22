@@ -1087,6 +1087,42 @@ export function registerRunSubagentLifecycleHooks(
 }
 
 /**
+ * Read-only Run lifecycle observers used by the Scheduler. These observe only
+ * cancellation intent and persisted terminal facts; they never participate in
+ * the Run ledger fold or receive authority to write RunStatus / RunReceipt.
+ */
+export interface RunSchedulerLifecycleHooks {
+	/** The first cancel request for a live Run was recorded. */
+	onRunCancelRequested?: (runId: RunId) => void;
+	/** The first deadline-exceeded request for a live Run was recorded. */
+	onRunDeadlineExceeded?: (runId: RunId) => void;
+	/** A Run reached a terminal status through settle() (status is final). */
+	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+}
+
+const registeredRunSchedulerHooks = new Map<string, {
+	readonly token: symbol;
+	readonly session: RunLedgerSession;
+	readonly hooks: RunSchedulerLifecycleHooks;
+}>();
+
+/** Bind one Session's production coordinator construction path to its Scheduler owner. */
+export function registerRunSchedulerLifecycleHooks(
+	session: RunLedgerSession,
+	hooks: RunSchedulerLifecycleHooks,
+): () => void {
+	const sessionId = session.getSessionId();
+	if (registeredRunSchedulerHooks.has(sessionId)) {
+		throw new FoundationError("service_conflict", "Run Scheduler lifecycle hooks already have an owner");
+	}
+	const token = Symbol(sessionId);
+	registeredRunSchedulerHooks.set(sessionId, { token, session, hooks });
+	return () => {
+		if (registeredRunSchedulerHooks.get(sessionId)?.token === token) registeredRunSchedulerHooks.delete(sessionId);
+	};
+}
+
+/**
  * Read-only Run lifecycle observers used by the Task Credential service.
  * Each hook fires exactly once per Run per coordinator instance, only after
  * the Run fact it observes has been persisted (or, for the cancel intent,
@@ -3188,9 +3224,11 @@ class RunHandleImpl implements RunHandle {
 			this.coordinator.credentialHooks?.onRunCancelRequested?.(this.runId);
 			this.coordinator.workerHooks?.onRunCancelRequested?.(this.runId);
 			this.coordinator.subagentHooks?.onRunCancelRequested?.(this.runId);
+			this.coordinator.schedulerHooks?.onRunCancelRequested?.(this.runId);
 		} else {
 			this.coordinator.workerHooks?.onRunDeadlineExceeded?.(this.runId);
 			this.coordinator.subagentHooks?.onRunDeadlineExceeded?.(this.runId);
+			this.coordinator.schedulerHooks?.onRunDeadlineExceeded?.(this.runId);
 		}
 	}
 }
@@ -3386,6 +3424,11 @@ class RunReservationImpl implements RunReservation {
 
 // ---- Coordinator --------------------------------------------------------------
 
+interface RunLifecycleCoordinatorImplOptions extends RunLifecycleCoordinatorOptions {
+	/** Resolved only from the Session-owned Scheduler registration. */
+	readonly schedulerHooks?: RunSchedulerLifecycleHooks;
+}
+
 class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	readonly sessionId: SessionId;
 	readonly session: RunLedgerSession;
@@ -3396,6 +3439,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	readonly credentialHooks: RunCredentialLifecycleHooks | undefined;
 	readonly workerHooks: RunWorkerLifecycleHooks | undefined;
 	readonly subagentHooks: RunSubagentLifecycleHooks | undefined;
+	readonly schedulerHooks: RunSchedulerLifecycleHooks | undefined;
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
@@ -3408,7 +3452,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private _active: RunHandleImpl | undefined;
 	private _reserved: RunReservationImpl | undefined;
 
-	constructor(session: RunLedgerSession, options: RunLifecycleCoordinatorOptions = {}) {
+	constructor(session: RunLedgerSession, options: RunLifecycleCoordinatorImplOptions = {}) {
 		this.session = session;
 		this.sessionId = session.getSessionId();
 		this.nowFn = options.now ?? (() => new Date().toISOString());
@@ -3417,6 +3461,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.credentialHooks = options.credentialHooks;
 		this.workerHooks = options.workerHooks;
 		this.subagentHooks = options.subagentHooks;
+		this.schedulerHooks = options.schedulerHooks;
 		try {
 			this.externalMappings = new ExternalSessionMappingStore(session, {
 				now: () => this.now(),
@@ -3937,6 +3982,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
 			this.workerHooks?.onRunTerminal?.(run.runId, receipt);
 			this.subagentHooks?.onRunTerminal?.(run.runId, receipt);
+			this.schedulerHooks?.onRunTerminal?.(run.runId, receipt);
 		}
 	}
 
@@ -3964,6 +4010,9 @@ export function createRunLifecycleCoordinator(
 	const registeredWorkerHooks = registeredOwner?.session === session ? registeredOwner.hooks : undefined;
 	const registeredSubagentOwner = registeredRunSubagentHooks.get(session.getSessionId());
 	const registeredSubagentHooks = registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
+	const registeredSchedulerOwner = registeredRunSchedulerHooks.get(session.getSessionId());
+	const registeredSchedulerHooks =
+		registeredSchedulerOwner?.session === session ? registeredSchedulerOwner.hooks : undefined;
 	if (registeredOwner !== undefined && options?.workerHooks !== undefined && options.workerHooks !== registeredOwner.hooks) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks cannot override the registered owner");
 	}
@@ -3982,5 +4031,6 @@ export function createRunLifecycleCoordinator(
 			: registeredSubagentHooks === undefined
 				? {}
 				: { subagentHooks: registeredSubagentHooks }),
+		...(registeredSchedulerHooks === undefined ? {} : { schedulerHooks: registeredSchedulerHooks }),
 	});
 }

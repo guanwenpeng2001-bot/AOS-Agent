@@ -93,6 +93,28 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"observer_cursor_gap",
 	"sandbox_capability_insufficient",
 	"task_credential_target_unavailable",
+	"scheduler_queue_invalid",
+	"scheduler_queue_conflict",
+	"scheduler_claim_conflict",
+	"scheduler_claim_expired",
+	"scheduler_lease_lost",
+	"scheduler_no_executor",
+	"scheduler_executor_unavailable",
+	"scheduler_budget_exhausted_wait",
+	"scheduler_dispatch_invalid",
+	"scheduler_attempt_recovery_failed",
+	"scheduler_fanin_invalid",
+	"scheduler_settlement_rejected",
+	"scheduler_handoff_invalid",
+	"scheduler_handoff_timeout",
+	"scheduler_handoff_target_unavailable",
+	"scheduler_message_invalid",
+	"scheduler_message_timeout",
+	"scheduler_wake_invalid",
+	"scheduler_deadlock_detected",
+	"scheduler_backpressure",
+	"scheduler_not_found",
+	"scheduler_persistence_failed",
 ] as const;
 
 /** Canonical line-12A Child Agent error catalog. Keep this tuple as the only source for its union. */
@@ -159,6 +181,8 @@ export function foundationErrorCategory(code: FoundationErrorCode): FoundationEr
 	if (code.endsWith("_conflict")) return "conflict";
 	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
 	if (code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
+	if (code === "scheduler_lease_lost" || code === "scheduler_claim_expired") return "concurrency";
+	if (code === "scheduler_no_executor" || code === "scheduler_executor_unavailable") return "provider";
 	return "validation";
 }
 export const REDACTED = "[redacted]";

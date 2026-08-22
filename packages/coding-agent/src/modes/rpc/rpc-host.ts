@@ -202,6 +202,7 @@ import type {
 	RpcSubagentCommandType,
 	RpcSubagentErrorCode,
 	RpcSubagentResponse,
+	RpcSchedulerResponse,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
@@ -226,6 +227,7 @@ import type {
 	SubagentCancelData,
 	SubagentGetData,
 	SubagentListData,
+	SchedulerStatusData,
 } from "./rpc-types.ts";
 
 /** Public records emitted by the transport-neutral RPC controller. */
@@ -236,6 +238,7 @@ export type RpcWireRecord =
 	| RpcMcpContentResponse
 	| RpcWorkerResponse
 	| RpcSubagentResponse
+	| RpcSchedulerResponse
 	| RpcExtensionUIRequest
 	| JsonAgentSessionEvent
 	| RpcHostRunStreamEvent
@@ -365,6 +368,8 @@ export type {
 	RpcResponse,
 	RpcExternalMapCommand,
 	RpcRunCommandType,
+	RpcSchedulerCommandType,
+	RpcSchedulerResponse,
 	RpcSessionState,
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
@@ -383,6 +388,7 @@ export type {
 	RunStatus,
 	RunStreamEvent,
 	RunTerminalStatus,
+	SchedulerStatusData,
 	TaskCredentialGetData,
 	TaskCredentialHeartbeatData,
 	TaskCredentialIssueData,
@@ -464,6 +470,22 @@ function isRpcSubagentCommandShapeValid(command: RpcCommand): boolean {
 
 function isRpcSubagentStatus(value: unknown): value is ChildLifecycleStatusV1 {
 	return typeof value === "string" && (CHILD_LIFECYCLE_STATUSES as readonly string[]).includes(value);
+}
+
+function rpcSchedulerError(id: string | undefined, code: "host_not_initialized" | "scheduler_unavailable"): RpcSchedulerResponse {
+	return {
+		id,
+		type: "response",
+		command: "scheduler.status",
+		success: false,
+		error: {
+			code,
+			message: code === "host_not_initialized"
+				? "Automation Host is not initialized. Send initialize with protocolVersion 1 first."
+				: "The trusted Scheduler is unavailable in the current Session.",
+			retryable: false,
+		},
+	};
 }
 
 function isRpcWorkerIdentifier(value: unknown): value is string {
@@ -712,7 +734,7 @@ export class RpcHostController {
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
 	>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
@@ -4115,7 +4137,7 @@ export class RpcHostController {
 		const handleCommand = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
 		> => {
 			const id = typeof command.id === "string" ? command.id : undefined;
 
@@ -4169,6 +4191,7 @@ export class RpcHostController {
 							return undefined;
 						}
 					})();
+					const schedulerStatus = session.getSchedulerStatus?.();
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
@@ -4200,6 +4223,7 @@ export class RpcHostController {
 						],
 						...(workerRegistry === undefined ? {} : { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
 						...(subagentRegistry === undefined ? {} : { subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"] }),
+						...(schedulerStatus === undefined ? {} : { schedulerCommands: ["scheduler.status"] }),
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
@@ -4283,6 +4307,16 @@ export class RpcHostController {
 						return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
 					}
 					return { id, type: "response", command: "subagent.cancel", success: true, data: { subagent, idempotent } satisfies SubagentCancelData };
+				}
+
+				case "scheduler.status": {
+					if (!hostInitialized) return rpcSchedulerError(id, "host_not_initialized");
+					if (Object.keys(command).some((key) => key !== "id" && key !== "type")) {
+						return rpcSchedulerError(id, "scheduler_unavailable");
+					}
+					const scheduler = session.getSchedulerStatus?.();
+					if (scheduler === undefined) return rpcSchedulerError(id, "scheduler_unavailable");
+					return { id, type: "response", command: "scheduler.status", success: true, data: { scheduler } satisfies SchedulerStatusData };
 				}
 
 				case "worker.get": {
@@ -6298,7 +6332,7 @@ export class RpcHostController {
 		this.commandHandler = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
+			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
 		> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
@@ -6357,13 +6391,14 @@ export class RpcHostController {
 	/** Dispatch a typed command, publish its response or error record, and return it. */
 	async dispatch(command: Extract<RpcCommand, { type: RpcWorkerCommandType }>): Promise<RpcWorkerResponse>;
 	async dispatch(command: Extract<RpcCommand, { type: RpcSubagentCommandType }>): Promise<RpcSubagentResponse>;
+	async dispatch(command: Extract<RpcCommand, { type: "scheduler.status" }>): Promise<RpcSchedulerResponse>;
 	async dispatch(
 		command: RpcCommand,
 	): Promise<RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | undefined>;
 	async dispatch(
 		command: RpcCommand,
 	): Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | undefined
+		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
 	> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");

@@ -174,6 +174,17 @@ async function startPublicBoundaryHarness(): Promise<{
 			preview: false,
 		}),
 		getActiveCapabilityBinding: () => currentBinding,
+		getSchedulerStatus: () => ({
+			schemaVersion: 1,
+			source: "scheduler",
+			sessionId: "session-1",
+			enabled: true,
+			started: true,
+			tickInFlight: false,
+			components: ["messages", "handoff", "workflow", "deadlock", "host", "fan_in"],
+			ticksCompleted: 1,
+			tickFailures: 0,
+		}),
 		inspectCapabilityCatalog: () => ({
 			version: 1,
 			descriptors: [
@@ -430,6 +441,7 @@ describe("RPC capability public boundary", () => {
 				{ id: "commands", type: "get_commands" },
 				{ id: "capabilities", type: "get_capabilities" },
 				{ id: "initialize", type: "initialize", protocolVersion: 1 },
+				{ id: "scheduler", type: "scheduler.status" },
 				{ id: "state", type: "get_state" },
 				{ id: "stats", type: "get_session_stats" },
 				{ id: "missing", type: "get_capabilities", bindingId: PATH_MARKER_POSIX },
@@ -463,6 +475,12 @@ describe("RPC capability public boundary", () => {
 			expect((capabilities.binding as { id?: string } | null)?.id).toBe(OPAQUE_BINDING_ID);
 			expect(capabilities.bindings).toEqual([]);
 			expect(responseFor("initialize").data.sessionFile).toBeUndefined();
+			expect(responseFor("initialize").data.schedulerCommands).toEqual(["scheduler.status"]);
+			expect(responseFor("scheduler").data.scheduler).toMatchObject({
+				source: "scheduler",
+				sessionId: "session-1",
+				components: ["messages", "handoff", "workflow", "deadlock", "host", "fan_in"],
+			});
 			expect(responseFor("state").data.sessionFile).toBeUndefined();
 			expect(responseFor("stats").data.sessionFile).toBeUndefined();
 			expect((lines.find((line) => line.id === "missing") as { error?: string }).error).toBe(
