@@ -30,16 +30,16 @@ function requireFoundationClosure(id: number): FoundationCapabilityClosureV1 {
 }
 
 const implemented = [
-	{ id: 119, ownerModule: "packages/coding-agent/src/core/scheduler-queue.ts", publicContract: "Durable scheduler queue and claim fencing", tests: ["packages/coding-agent/test/scheduler-queue.test.ts"] },
-	{ id: 120, ownerModule: "packages/coding-agent/src/core/scheduler-executors.ts", publicContract: "Deterministic scheduler executor registration and selection", tests: ["packages/coding-agent/test/scheduler-executors.test.ts"] },
-	{ id: 121, ownerModule: "packages/coding-agent/src/core/scheduler-dispatch.ts", publicContract: "Fenced scheduler dispatch and attempt recovery", tests: ["packages/coding-agent/test/scheduler-dispatch.test.ts"] },
-	{ id: 122, ownerModule: "packages/coding-agent/src/core/scheduler.ts", publicContract: "Default-off bounded Scheduler Host tick", tests: ["packages/coding-agent/test/scheduler-queue.test.ts", "packages/coding-agent/test/scheduler-composition.test.ts"] },
-	{ id: 123, ownerModule: "packages/coding-agent/src/core/scheduler-fan-in.ts", publicContract: "Deterministic fan-in and layered result settlement", tests: ["packages/coding-agent/test/scheduler-fan-in.test.ts"] },
-	{ id: 124, ownerModule: "packages/coding-agent/src/core/scheduler-handoff.ts", publicContract: "Durable ownership handoff with source cancellation fencing", tests: ["packages/coding-agent/test/scheduler-handoff.test.ts"] },
-	{ id: 125, ownerModule: "packages/coding-agent/src/core/scheduler-messages.ts", publicContract: "Cross-Session scheduler messaging and acknowledgements", tests: ["packages/coding-agent/test/scheduler-messages.test.ts"] },
-	{ id: 126, ownerModule: "packages/coding-agent/src/core/scheduler-workflow.ts", publicContract: "Default-off production Workflow scheduler controller", tests: ["packages/coding-agent/test/scheduler-workflow.test.ts", "packages/coding-agent/test/scheduler-composition.test.ts"] },
-	{ id: 130, ownerModule: "packages/coding-agent/src/core/scheduler-deadlock.ts", publicContract: "Bounded wait-for graph deadlock detection and resolution", tests: ["packages/coding-agent/test/scheduler-deadlock.test.ts"] },
-	{ id: 131, ownerModule: "packages/coding-agent/src/core/scheduler-deadlock.ts", publicContract: "Scheduler backpressure, fairness, and retained-work recovery", tests: ["packages/coding-agent/test/scheduler-deadlock.test.ts"] },
+	{ id: 119, ownerModule: "packages/coding-agent/src/core/scheduler.ts", publicContract: "Default-off bounded Scheduler Host advances durable Task DAG nodes", tests: ["packages/coding-agent/test/scheduler-fan-in.test.ts", "packages/coding-agent/test/scheduler-composition.test.ts"] },
+	{ id: 120, ownerModule: "packages/coding-agent/src/core/scheduler-queue.ts", publicContract: "Durable scheduler queue, claim ownership, leases, and fencing", tests: ["packages/coding-agent/test/scheduler-queue.test.ts"] },
+	{ id: 121, ownerModule: "packages/coding-agent/src/core/scheduler-executors.ts", publicContract: "Deterministic executor selection with fenced dispatch and Attempt recovery", tests: ["packages/coding-agent/test/scheduler-executors.test.ts", "packages/coding-agent/test/scheduler-dispatch.test.ts"] },
+	{ id: 122, ownerModule: "packages/coding-agent/src/core/scheduler-fan-in.ts", publicContract: "Deterministic DAG fan-out, fan-in, join, and layered result settlement", tests: ["packages/coding-agent/test/scheduler-fan-in.test.ts", "packages/coding-agent/test/scheduler-composition.test.ts"] },
+	{ id: 123, ownerModule: "packages/coding-agent/src/core/scheduler-workflow.ts", publicContract: "Single-Host cross-Session task orchestration and Workflow progression", tests: ["packages/coding-agent/test/scheduler-messages.test.ts", "packages/coding-agent/test/scheduler-workflow.test.ts"] },
+	{ id: 124, ownerModule: "packages/coding-agent/src/core/scheduler-messages.ts", publicContract: "Durable cross-Session scheduler messages with acknowledgement and replay", tests: ["packages/coding-agent/test/scheduler-messages.test.ts"] },
+	{ id: 125, ownerModule: "packages/coding-agent/src/core/scheduler-messages.ts", publicContract: "Foundation Ask, Reply, and escalation orchestration across Sessions", tests: ["packages/coding-agent/test/scheduler-messages.test.ts"] },
+	{ id: 126, ownerModule: "packages/coding-agent/src/core/scheduler-handoff.ts", publicContract: "Fenced ownership handoff with source cancellation and safe audit lineage", tests: ["packages/coding-agent/test/scheduler-handoff.test.ts"] },
+	{ id: 130, ownerModule: "packages/coding-agent/src/core/scheduler-deadlock.ts", publicContract: "Bounded wait-for deadlock resolution, fairness, and backpressure", tests: ["packages/coding-agent/test/scheduler-deadlock.test.ts"] },
+	{ id: 131, ownerModule: "packages/coding-agent/src/core/foundation-control-plane.ts", publicContract: "Single coalescing driver for event wakes and bounded retained-work recovery", tests: ["packages/coding-agent/test/scheduler-composition.test.ts", "packages/coding-agent/test/scheduler-workflow.test.ts", "packages/coding-agent/test/scheduler-deadlock.test.ts"] },
 ] as const;
 
 const consumedIds = [3, 5, 6, 10, 16, 26, 47, 51, 53, 55, 56, 57, 58, 61, 98, 127, 128, 129] as const;
