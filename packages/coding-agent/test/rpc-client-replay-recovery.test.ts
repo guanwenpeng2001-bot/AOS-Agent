@@ -32,6 +32,7 @@ function streamEvent(type: "run.started" | "run.completed" | "run.failed" | "run
 function auditEvent(
 	type: "run.accepted" | "run.started" | "run.completed" | "run.failed" | "run.cancelled",
 	key: string,
+	terminalError?: { readonly code: string; readonly retryable: boolean },
 ): AuditEvent {
 	const status =
 		type === "run.accepted"
@@ -55,6 +56,10 @@ function auditEvent(
 			status,
 			attempt: 1,
 			model: { provider: "provider", id: "model", thinkingLevel: "low" },
+			...(type === "run.completed" || type === "run.failed" || type === "run.cancelled"
+				? { usage: RECEIPT.usage }
+				: {}),
+			...(terminalError === undefined ? {} : { terminalError }),
 		},
 	} as AuditEvent;
 }
@@ -158,6 +163,38 @@ describe("RunReplayRecovery audit cursor alignment", () => {
 		expect(live.disposition).toBe("terminal_duplicate");
 		expect(live.terminalConfirmation).toBeUndefined();
 		expect(live.state.lastEventSequence).toBe(2);
+	});
+
+	it("requires terminal usage and error parity across audit replay and the live timeline", () => {
+		const usageRecovery = new RunReplayRecovery({ runId: RUN_ID, initialEventSequence: 1 });
+		usageRecovery.consumeReplayPage(replayResult([auditEvent("run.completed", "completed")], "complete"));
+		const liveUsageConflict = streamEvent("run.completed", 2);
+		if (liveUsageConflict.type !== "run.completed") throw new Error("expected completed event");
+		const usageResult = usageRecovery.consumeRunEvent({
+			...liveUsageConflict,
+			receipt: { ...liveUsageConflict.receipt, usage: { input: 9, output: 2, total: 11 } },
+		});
+		expect(usageResult.terminalConflict).toEqual({
+			confirmed: "completed",
+			received: "completed",
+			source: "run.event",
+			reason: "usage",
+		});
+
+		const errorRecovery = new RunReplayRecovery({ runId: RUN_ID, initialEventSequence: 1 });
+		errorRecovery.consumeReplayPage(replayResult([
+			auditEvent("run.failed", "failed", { code: "canonical_failure", retryable: false }),
+		], "complete"));
+		const liveErrorConflict = streamEvent("run.failed", 2);
+		if (liveErrorConflict.type !== "run.failed") throw new Error("expected failed event");
+		const errorResult = errorRecovery.consumeRunEvent({
+			...liveErrorConflict,
+			receipt: {
+				...liveErrorConflict.receipt,
+				terminalError: { code: "model_error", message: "different", retryable: false },
+			},
+		});
+		expect(errorResult.terminalConflict?.reason).toBe("terminal_error");
 	});
 });
 

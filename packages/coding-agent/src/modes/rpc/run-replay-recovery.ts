@@ -51,9 +51,22 @@ export type RpcRunStreamEvent =
 
 export type RunReplayTerminalStatus = "completed" | "failed" | "cancelled";
 
+export interface RunReplayTerminalUsage {
+	readonly input: number;
+	readonly output: number;
+	readonly total: number;
+}
+
+export interface RunReplayTerminalError {
+	readonly code: string;
+	readonly retryable?: boolean;
+}
+
 /** The one terminal confirmation exposed by a recovery instance. */
 export interface RunReplayTerminalConfirmation {
 	readonly status: RunReplayTerminalStatus;
+	readonly terminalError?: RunReplayTerminalError;
+	readonly usage?: RunReplayTerminalUsage;
 	readonly source: "run.event" | "audit.replay" | "run.get";
 	readonly sequence?: number;
 	readonly receipt?: RunReceipt;
@@ -64,6 +77,7 @@ export interface RunReplayTerminalConflict {
 	readonly confirmed: RunReplayTerminalStatus;
 	readonly received: RunReplayTerminalStatus;
 	readonly source: RunReplayTerminalConfirmation["source"];
+	readonly reason: "status" | "terminal_error" | "usage";
 }
 
 /**
@@ -170,18 +184,58 @@ function isTerminalStatus(value: string): value is RunReplayTerminalStatus {
 	return value === "completed" || value === "failed" || value === "cancelled";
 }
 
-function terminalStatusFromStreamEvent(event: RpcRunStreamEvent): RunReplayTerminalStatus | undefined {
-	if (event.type === "run.completed") return "completed";
-	if (event.type === "run.failed") return "failed";
-	if (event.type === "run.cancelled") return "cancelled";
+interface TerminalObservation {
+	readonly status: RunReplayTerminalStatus;
+	readonly terminalError?: RunReplayTerminalError;
+	readonly usage?: RunReplayTerminalUsage;
+}
+
+function terminalObservation(
+	status: RunReplayTerminalStatus,
+	receipt: RunReceipt | undefined,
+): TerminalObservation {
+	return {
+		status,
+		...(receipt?.terminalError === undefined
+			? {}
+			: { terminalError: { code: receipt.terminalError.code, retryable: receipt.terminalError.retryable } }),
+		...(receipt?.usage === undefined
+			? {}
+			: { usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total } }),
+	};
+}
+
+function terminalFromStreamEvent(event: RpcRunStreamEvent): TerminalObservation | undefined {
+	if (event.type === "run.completed") return terminalObservation("completed", event.receipt);
+	if (event.type === "run.failed") return terminalObservation("failed", event.receipt);
+	if (event.type === "run.cancelled") return terminalObservation("cancelled", event.receipt);
 	return undefined;
 }
 
-function terminalStatusFromAuditEvent(event: AuditEvent): RunReplayTerminalStatus | undefined {
-	if (event.type === "run.completed") return "completed";
-	if (event.type === "run.failed") return "failed";
-	if (event.type === "run.cancelled") return "cancelled";
-	return undefined;
+function terminalFromAuditEvent(event: AuditEvent): TerminalObservation | undefined {
+	if (event.type !== "run.completed" && event.type !== "run.failed" && event.type !== "run.cancelled") return undefined;
+	return {
+		status: event.type === "run.completed" ? "completed" : event.type === "run.failed" ? "failed" : "cancelled",
+		...(event.summary.terminalError === undefined
+			? {}
+			: {
+					terminalError: {
+						code: event.summary.terminalError.code,
+						...(event.summary.terminalError.retryable === undefined
+							? {}
+							: { retryable: event.summary.terminalError.retryable }),
+					},
+				}),
+		...(event.summary.usage === undefined
+			? {}
+			: {
+					usage: {
+						input: event.summary.usage.input,
+						output: event.summary.usage.output,
+						total: event.summary.usage.total,
+					},
+				}),
+	};
 }
 
 function auditEventKey(event: AuditEvent): string {
@@ -199,7 +253,13 @@ function cloneGap(gap: RunReplayGap | undefined): RunReplayGap | undefined {
 function cloneTerminal(
 	terminal: RunReplayTerminalConfirmation | undefined,
 ): RunReplayTerminalConfirmation | undefined {
-	return terminal === undefined ? undefined : { ...terminal };
+	return terminal === undefined
+		? undefined
+		: {
+				...terminal,
+				...(terminal.terminalError === undefined ? {} : { terminalError: { ...terminal.terminalError } }),
+				...(terminal.usage === undefined ? {} : { usage: { ...terminal.usage } }),
+			};
 }
 
 /**
@@ -280,7 +340,7 @@ export class RunReplayRecovery {
 			auditReplayComplete: this.auditReplayComplete,
 			...(this.auditStatus === undefined ? {} : { auditStatus: this.auditStatus }),
 			...(this.gap === undefined ? {} : { gap: { ...this.gap } }),
-			...(this.terminal === undefined ? {} : { terminal: { ...this.terminal } }),
+			...(this.terminal === undefined ? {} : { terminal: cloneTerminal(this.terminal)! }),
 			...(this.terminalConflict === undefined ? {} : { terminalConflict: { ...this.terminalConflict } }),
 			consumedAuditEventKeys: [...this.consumedAuditEventKeys].sort(),
 		};
@@ -314,12 +374,12 @@ export class RunReplayRecovery {
 			};
 		}
 
-		const streamTerminalStatus = terminalStatusFromStreamEvent(event);
+		const streamTerminal = terminalFromStreamEvent(event);
 		if (event.sequence <= this.lastEventSequence) {
 			const terminalConflict =
-				streamTerminalStatus === undefined ? undefined : this.recordTerminalConflict(streamTerminalStatus, "run.event");
+				streamTerminal === undefined ? undefined : this.recordTerminalConflict(streamTerminal, "run.event");
 			return {
-				disposition: streamTerminalStatus === undefined ? "duplicate" : "terminal_duplicate",
+				disposition: streamTerminal === undefined ? "duplicate" : "terminal_duplicate",
 				accepted: false,
 				duplicate: true,
 				...(terminalConflict === undefined ? {} : { terminalConflict }),
@@ -328,7 +388,7 @@ export class RunReplayRecovery {
 			};
 		}
 
-		if (this.terminal?.source === "run.event" && streamTerminalStatus === undefined) {
+		if (this.terminal?.source === "run.event" && streamTerminal === undefined) {
 			return {
 				disposition: "after_terminal",
 				accepted: false,
@@ -340,7 +400,7 @@ export class RunReplayRecovery {
 
 		this.lastEventSequence = event.sequence;
 		this.gap = undefined;
-		if (streamTerminalStatus === undefined) {
+		if (streamTerminal === undefined) {
 			return {
 				disposition: "accepted",
 				accepted: true,
@@ -350,7 +410,7 @@ export class RunReplayRecovery {
 			};
 		}
 
-		const terminalConflict = this.recordTerminalConflict(streamTerminalStatus, "run.event");
+		const terminalConflict = this.recordTerminalConflict(streamTerminal, "run.event");
 		if (this.terminal !== undefined) {
 			return {
 				disposition: "terminal_duplicate",
@@ -362,7 +422,7 @@ export class RunReplayRecovery {
 			};
 		}
 		const terminalConfirmation = this.confirmTerminal({
-			status: streamTerminalStatus,
+			...streamTerminal,
 			source: "run.event",
 			sequence: event.sequence,
 			receipt: "receipt" in event ? event.receipt : undefined,
@@ -398,13 +458,13 @@ export class RunReplayRecovery {
 			this.consumedAuditEventKeys.add(key);
 			events.push(event);
 
-			const status = terminalStatusFromAuditEvent(event);
-			if (status === undefined) continue;
-			const conflict = this.recordTerminalConflict(status, "audit.replay");
+			const observation = terminalFromAuditEvent(event);
+			if (observation === undefined) continue;
+			const conflict = this.recordTerminalConflict(observation, "audit.replay");
 			if (conflict !== undefined) terminalConflict ??= conflict;
 			if (this.terminal === undefined) {
 				terminalConfirmation = this.confirmTerminal({
-					status,
+					...observation,
 					source: "audit.replay",
 					auditEventKey: key,
 				});
@@ -443,18 +503,23 @@ export class RunReplayRecovery {
 		let terminalConfirmation: RunReplayTerminalConfirmation | undefined;
 		let terminalConflict: RunReplayTerminalConflict | undefined;
 		if (isTerminalStatus(status)) {
-			terminalConflict = this.recordTerminalConflict(status, "run.get");
+			const observation = terminalObservation(status, run.receipt);
+			terminalConflict = this.recordTerminalConflict(observation, "run.get");
 			if (this.terminal === undefined) {
 				terminalConfirmation = this.confirmTerminal({
-					status,
+					...observation,
 					source: "run.get",
 					...(run.receipt === undefined ? {} : { receipt: run.receipt }),
 				});
-			} else if (run.receipt !== undefined && this.terminal.receipt === undefined) {
+			} else if (terminalConflict === undefined && run.receipt !== undefined && this.terminal.receipt === undefined) {
 				// Audit replay intentionally omits receipt payloads. A later read-only
 				// run.get may provide the durable receipt without emitting a second
 				// terminal confirmation.
-				this.terminal = { ...this.terminal, receipt: run.receipt };
+				this.terminal = {
+					...this.terminal,
+					...observation,
+					receipt: run.receipt,
+				};
 			}
 		}
 		return {
@@ -530,11 +595,43 @@ export class RunReplayRecovery {
 	}
 
 	private recordTerminalConflict(
-		status: RunReplayTerminalStatus,
+		observation: TerminalObservation,
 		source: RunReplayTerminalConfirmation["source"],
 	): RunReplayTerminalConflict | undefined {
-		if (this.terminal === undefined || this.terminal.status === status) return undefined;
-		this.terminalConflict ??= { confirmed: this.terminal.status, received: status, source };
+		if (this.terminal === undefined) return undefined;
+		let reason: RunReplayTerminalConflict["reason"] | undefined;
+		if (this.terminal.status !== observation.status) reason = "status";
+		else if (
+			this.terminal.terminalError !== undefined &&
+			observation.terminalError !== undefined &&
+			(this.terminal.terminalError.code !== observation.terminalError.code ||
+				(this.terminal.terminalError.retryable ?? undefined) !== (observation.terminalError.retryable ?? undefined))
+		) {
+			reason = "terminal_error";
+		} else if (
+			this.terminal.usage !== undefined &&
+			observation.usage !== undefined &&
+			(this.terminal.usage.input !== observation.usage.input ||
+				this.terminal.usage.output !== observation.usage.output ||
+				this.terminal.usage.total !== observation.usage.total)
+		) {
+			reason = "usage";
+		}
+		if (reason === undefined) {
+			if (this.terminal.terminalError === undefined && observation.terminalError !== undefined) {
+				this.terminal = { ...this.terminal, terminalError: { ...observation.terminalError } };
+			}
+			if (this.terminal.usage === undefined && observation.usage !== undefined) {
+				this.terminal = { ...this.terminal, usage: { ...observation.usage } };
+			}
+			return undefined;
+		}
+		this.terminalConflict ??= {
+			confirmed: this.terminal.status,
+			received: observation.status,
+			source,
+			reason,
+		};
 		return this.terminalConflict;
 	}
 }
