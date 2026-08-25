@@ -53,6 +53,12 @@ function appendTerminalRun(session: SessionManager): void {
 	});
 	session.appendCustomEntry("automation.run", {
 		schemaVersion: 1,
+		kind: "started",
+		runId: RUN_ID,
+		startedAt: endedAt,
+	});
+	session.appendCustomEntry("automation.run", {
+		schemaVersion: 1,
 		kind: "terminal",
 		endedAt,
 		receipt: {
@@ -123,7 +129,9 @@ describe("execution audit/replay PR acceptance regression", () => {
 
 		const replay = query.replay(RUN_ID);
 		expect(replay.status).toBe("incomplete");
-		expect(new Set(replay.events.map((event) => event.type))).toEqual(new Set(["run.accepted", "run.completed"]));
+		expect(new Set(replay.events.map((event) => event.type))).toEqual(
+			new Set(["run.accepted", "run.started", "run.completed"]),
+		);
 		expect(replay.warnings).toEqual([expect.objectContaining({ code: "unknown_source" })]);
 		expect(JSON.stringify(replay)).not.toContain(PROMPT_SECRET);
 		expect(JSON.stringify(replay)).not.toContain("secret-command");

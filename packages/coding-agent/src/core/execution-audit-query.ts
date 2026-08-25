@@ -280,7 +280,10 @@ function mergeEvents(events: ReadonlyArray<AuditEvent>): AuditEvent[] {
 	for (const event of events) {
 		const key = eventIdentity(event);
 		const existing = unique.get(key);
-		if (existing === undefined || JSON.stringify(event) < JSON.stringify(existing)) unique.set(key, event);
+		if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(event)) {
+			throw new ExecutionAuditError("audit_replay_incomplete");
+		}
+		unique.set(key, event);
 	}
 	return [...unique.values()].sort(compareEvents);
 }
@@ -399,14 +402,15 @@ export class ExecutionAuditQuery {
 
 	private foldCurrentSession(sessionId: string): FoldedSession {
 		try {
-			const entries = [...this.source.getEntries()];
+			const entries = [...(this.source.getPhysicalEntries?.() ?? this.source.getEntries())];
 			const snapshot: AuditSession = {
 				getSessionId: () => sessionId,
 				getEntries: () => entries,
 			};
 			const adapter = new ExecutionAuditAdapter(snapshot);
 			return { sessionId, adapter, fold: adapter.fold() };
-		} catch {
+		} catch (error) {
+			if (error instanceof ExecutionAuditError) throw error;
 			throw new ExecutionAuditError("audit_scope_unavailable");
 		}
 	}
@@ -472,7 +476,8 @@ export class ExecutionAuditQuery {
 			try {
 				const adapter = new ExecutionAuditAdapter(session);
 				sessions.push({ sessionId, adapter, fold: adapter.fold() });
-			} catch {
+			} catch (error) {
+				if (error instanceof ExecutionAuditError && error.code === "audit_replay_incomplete") throw error;
 				warnings.push(unavailableWarning(sessionId));
 				unavailable = true;
 			}
@@ -533,7 +538,8 @@ export class ExecutionAuditQuery {
 				const local = session.adapter.replay(runId);
 				replayWarnings.push(...local.warnings);
 				if (local.status === "incomplete") incomplete = true;
-			} catch {
+			} catch (error) {
+				if (error instanceof ExecutionAuditError && error.code === "audit_replay_incomplete") throw error;
 				incomplete = true;
 			}
 		}

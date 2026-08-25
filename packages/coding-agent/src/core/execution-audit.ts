@@ -11,10 +11,26 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
+	canonicalFoundationJson,
 	cloneDeepFrozen,
+	createDurableEvent,
 	fingerprintFoundationValue,
+	FoundationLedgerState,
+	parseFoundationMutation,
+	validateAttempt,
+	validateAttemptReceipt,
 	validateDurableEvent,
+	validateRunReceipt,
+	validateTaskEnvelope,
+	validateTaskResult,
+	type Attempt,
+	type CanonicalRunResult,
+	type DurableEventEnvelope,
+	type ExecutionCorrelation,
+	type FoundationRecord,
 	type FoundationEventEnvelope,
+	type RunReceipt as CanonicalRunReceipt,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
 import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
@@ -23,17 +39,7 @@ import {
 	isOpaqueCapabilityDescriptorId,
 	isOpaqueCapabilityRevision,
 } from "./run-lifecycle.ts";
-import type {
-	CapabilityBindingLedgerRecord,
-	PersistedRunLedgerEntry,
-	RunAttachmentSummary,
-	RunFinalModelReference,
-	RunModelAttemptSummary,
-	RunModelBudgetSummary,
-	RunModelReference,
-	RunReceipt,
-	RunRecord,
-} from "./run-lifecycle.ts";
+import type { CapabilityBindingLedgerRecord } from "./run-lifecycle.ts";
 import type {
 	ModelAttemptLedgerRecord,
 	ModelBindingLedgerRecord,
@@ -62,6 +68,33 @@ import type {
 	WorkspaceScope,
 } from "./execution-policy.ts";
 import type { SessionEntry } from "./session-manager.ts";
+import {
+	FOUNDATION_DURABLE_CUSTOM_TYPE,
+	FOUNDATION_ENTRY_CUSTOM_TYPE,
+	FOUNDATION_FACT_CUSTOM_TYPE,
+	FOUNDATION_LANE_CUSTOM_TYPE,
+	FOUNDATION_RECORD_CUSTOM_TYPE,
+} from "./session-manager-storage.ts";
+import {
+	AutomationRunProjectionError,
+	projectAutomationRuns,
+	type AutomationRunErrorProjection,
+	type AutomationRunProjection,
+	type AutomationRunUsageProjection,
+	type CanonicalAutomationRunProjection,
+} from "./automation-run-projection.ts";
+import {
+	decodeLegacyAutomationRunLedgerEntryV1,
+	reconcileLegacyAutomationRunLedgerV1,
+	type LegacyAutomationRunFinalModelReferenceV1,
+	type LegacyAutomationRunLedgerEntryV1,
+	type LegacyAutomationRunLedgerSourceEntryV1,
+	type LegacyAutomationRunModelAttemptSummaryV1,
+	type LegacyAutomationRunModelBudgetSummaryV1,
+	type LegacyAutomationRunModelReferenceV1,
+	type LegacyAutomationRunReceiptV1,
+	type LegacyAutomationRunRecordV1,
+} from "./migrations/automation-run-ledger.ts";
 import {
 	isExternalAdapterIdentity,
 	sameExternalAdapterIdentity,
@@ -135,7 +168,6 @@ export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
 export const AUDIT_MAX_LIMIT = 200 as const;
 export const AUDIT_SOURCE_CUSTOM_TYPES = [
-	"automation.run",
 	"model.binding",
 	"model.attempt",
 	"context.snapshot",
@@ -330,10 +362,31 @@ export interface AuditModelBudgetSummary {
 
 export type AuditRunEventStatus = "accepted" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
+export interface AuditRunTerminalErrorSummary {
+	readonly code: string;
+	readonly category?: AutomationRunErrorProjection["category"];
+	readonly retryable?: boolean;
+}
+
+export interface AuditRunAttachmentSummary {
+	readonly sourceId: string;
+	readonly kind: "resource" | "prompt";
+	readonly descriptorId?: string;
+	readonly revision?: string;
+	readonly capabilityBindingId?: string;
+	readonly policyBindingId?: string;
+	readonly contentDigest: string;
+	readonly byteCount: number;
+	readonly blockCount: number;
+	readonly mimeTypes?: ReadonlyArray<string>;
+}
+
 export interface AuditRunSummary {
 	readonly status: AuditRunEventStatus;
-	readonly attempt: number;
-	readonly model: AuditRunModelReference;
+	/** Present only for a migrated historical Run projection. */
+	readonly attempt?: number;
+	/** Present only for a migrated historical Run projection. */
+	readonly model?: AuditRunModelReference;
 	readonly deadlineAt?: string;
 	readonly sourceRunId?: string;
 	readonly previousBindingId?: string;
@@ -345,11 +398,12 @@ export interface AuditRunSummary {
 	readonly contextSnapshotId?: string;
 	readonly startedAt?: string;
 	readonly endedAt?: string;
-	readonly terminalError?: { readonly code: string; readonly retryable: boolean };
+	readonly terminalError?: AuditRunTerminalErrorSummary;
+	readonly usage?: AutomationRunUsageProjection;
 	readonly finalModel?: AuditRunFinalModelReference;
 	readonly modelBudget?: AuditModelBudgetSummary;
 	readonly bindingAssociation?: RunBindingAssociation;
-	readonly attachments?: ReadonlyArray<RunAttachmentSummary>;
+	readonly attachments?: ReadonlyArray<AuditRunAttachmentSummary>;
 }
 
 export interface AuditModelBudgetLimitSummary {
@@ -777,6 +831,8 @@ export type AuditCursorSecret = string | Uint8Array;
 export interface AuditSession {
 	getSessionId(): string;
 	getEntries(): ReadonlyArray<SessionEntry>;
+	/** Physical entries expose canonical Foundation records hidden by compatibility projections. */
+	getPhysicalEntries?(): ReadonlyArray<SessionEntry>;
 }
 
 export interface AuditSessionInput {
@@ -1197,184 +1253,6 @@ function isModelAttemptRecord(value: unknown): value is ModelAttemptLedgerRecord
 	return value.summary === undefined || isSafeText(value.summary);
 }
 
-function isRunModelReference(value: unknown): value is RunModelReference {
-	if (!isRecord(value) || !isSafeModelText(value.provider) || !isSafeModelText(value.id)) return false;
-	return isThinkingLevel(value.thinkingLevel);
-}
-
-function isRunFinalModelReference(value: unknown): value is RunFinalModelReference {
-	if (!isRecord(value) || !isSafeModelText(value.provider)) return false;
-	if (value.id === undefined && value.modelId === undefined) return false;
-	if (value.id !== undefined && !isSafeModelText(value.id)) return false;
-	if (value.modelId !== undefined && !isSafeModelText(value.modelId)) return false;
-	return value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel);
-}
-
-function isRunUsage(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	return isFiniteNonNegative(value.input) && isFiniteNonNegative(value.output) && isFiniteNonNegative(value.total);
-}
-
-function isRunModelAttemptSummary(value: unknown): value is RunModelAttemptSummary {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.attemptId) ||
-		!isSafeIdentifier(value.bindingId) ||
-		!isRunFinalModelReference(value.candidate) ||
-		!isCount(value.order) ||
-		(value.status !== "started" && value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") ||
-		!isCanonicalTimestamp(value.startedAt)
-	) {
-		return false;
-	}
-	if (value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) return false;
-	if (value.failureCategory !== undefined && !isSafeIdentifier(value.failureCategory)) return false;
-	if (value.usage !== undefined && !isRecord(value.usage)) return false;
-	if (value.visibleOutput !== undefined && typeof value.visibleOutput !== "boolean") return false;
-	if (value.contextSnapshotId !== undefined && !isSafeIdentifier(value.contextSnapshotId)) return false;
-	return value.summary === undefined || isSafeText(value.summary);
-}
-
-function isRunModelBudgetSummary(value: unknown): value is RunModelBudgetSummary {
-	if (!isRecord(value)) return false;
-	for (const key of [
-		"modelCalls",
-		"inputTokens",
-		"outputTokens",
-		"totalTokens",
-		"costUsd",
-		"maxModelCalls",
-		"maxInputTokens",
-		"maxOutputTokens",
-		"maxTotalTokens",
-		"maxCostUsd",
-	] as const) {
-		if (value[key] !== undefined && !isFiniteNonNegative(value[key])) return false;
-	}
-	return value.exceeded === undefined || typeof value.exceeded === "boolean";
-}
-
-function isAutomationError(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	return isSafeIdentifier(value.code) && typeof value.retryable === "boolean" && typeof value.message === "string";
-}
-
-function isPolicySummary(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.bindingId) ||
-		!isSafeIdentifier(value.profileId) ||
-		!isSafeIdentifier(value.profileRevision) ||
-		!isPolicyTrust(value.projectTrust) ||
-		!isPolicyEnforcement(value.enforcement) ||
-		!isSandboxStatus(value.sandboxStatus) ||
-		!isSandboxCapabilities(value.sandboxCapabilities)
-	) {
-		return false;
-	}
-	if (value.sandboxProviderId !== undefined && !isSafeIdentifier(value.sandboxProviderId)) return false;
-	if (value.resource !== undefined && !isPolicyResource(value.resource)) return false;
-	if (value.action !== undefined && !isPolicyAction(value.action)) return false;
-	if (value.outcome !== undefined && !isPolicyOutcome(value.outcome)) return false;
-	if (value.reasonCode !== undefined && !isPolicyErrorCode(value.reasonCode)) return false;
-	if (value.requestId !== undefined && !isSafeIdentifier(value.requestId)) return false;
-	return value.timestamp === undefined || isCanonicalTimestamp(value.timestamp);
-}
-
-function isRunRecord(value: unknown): value is RunRecord {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.id) ||
-		!isSafeIdentifier(value.sessionId) ||
-		!isCount(value.attempt) ||
-		!isRunModelReference(value.model)
-	)
-		return false;
-	if (
-		value.status !== "accepted" &&
-		value.status !== "running" &&
-		value.status !== "completed" &&
-		value.status !== "failed" &&
-		value.status !== "cancelled"
-	)
-		return false;
-	for (const key of [
-		"sourceRunId",
-		"previousBindingId",
-		"capabilityBindingId",
-		"modelBindingId",
-		"previousModelBindingId",
-		"policyBindingId",
-		"previousPolicyBindingId",
-		"contextSnapshotId",
-	] as const) {
-		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
-	}
-	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (
-		value.modelAttempts !== undefined &&
-		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
-	)
-		return false;
-	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
-	if (value.policySummary !== undefined && !isPolicySummary(value.policySummary)) return false;
-	if (value.startedAt !== undefined && !isCanonicalTimestamp(value.startedAt)) return false;
-	if (value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) return false;
-	return value.terminalError === undefined || isAutomationError(value.terminalError);
-}
-
-function isRunReceipt(value: unknown): value is RunReceipt {
-	if (!isRecord(value) || !isSafeIdentifier(value.runId) || !isSafeIdentifier(value.sessionId)) return false;
-	if (value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") return false;
-	if (!isRunUsage(value.usage)) return false;
-	if (value.finalText !== undefined && typeof value.finalText !== "string") return false;
-	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
-	if (value.terminalError !== undefined && !isAutomationError(value.terminalError)) return false;
-	for (const key of [
-		"contextSnapshotId",
-		"capabilityBindingId",
-		"modelBindingId",
-		"previousModelBindingId",
-		"policyBindingId",
-		"previousPolicyBindingId",
-	] as const) {
-		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
-	}
-	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (
-		value.modelAttempts !== undefined &&
-		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
-	)
-		return false;
-	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
-	if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some((attachment) => !isRunAttachmentAuditSummary(attachment)))) {
-		return false;
-	}
-	return value.policySummary === undefined || isPolicySummary(value.policySummary);
-}
-
-const RUN_ATTACHMENT_KINDS = new Set(["resource", "prompt"]);
-const RUN_ATTACHMENT_DIGEST_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-
-/** Validate one public-safe run attachment summary (digest/opaque metadata only). */
-function isRunAttachmentAuditSummary(value: unknown): value is RunAttachmentSummary {
-	if (!isRecord(value)) return false;
-	if (typeof value.sourceId !== "string" || !RUN_ATTACHMENT_DIGEST_ID_PATTERN.test(value.sourceId)) return false;
-	if (typeof value.kind !== "string" || !RUN_ATTACHMENT_KINDS.has(value.kind)) return false;
-	if (value.descriptorId !== undefined && !isOpaqueCapabilityDescriptorId(value.descriptorId)) return false;
-	if (value.revision !== undefined && !isOpaqueCapabilityRevision(value.revision)) return false;
-	if (value.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(value.capabilityBindingId)) return false;
-	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (typeof value.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(value.contentDigest)) return false;
-	if (!isCount(value.byteCount) || !isCount(value.blockCount)) return false;
-	if (value.mimeTypes !== undefined) {
-		if (!Array.isArray(value.mimeTypes) || value.mimeTypes.length > 16) return false;
-		if (value.mimeTypes.some((mimeType) => !isSafeText(mimeType))) return false;
-	}
-	return true;
-}
-
 function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
 	if (!isRecord(value)) return false;
 	if (
@@ -1522,15 +1400,6 @@ function isExternalMapping(value: unknown): value is ExternalExecutionMapping {
 	return value.adapter === undefined || isExternalAdapterIdentity(value.adapter);
 }
 
-/** Explicit guard for the `automation.run` accepted/started/terminal payload. */
-export function isAutomationRunEntryData(value: unknown): value is PersistedRunLedgerEntry {
-	if (!isRecord(value) || value.schemaVersion !== AUDIT_SCHEMA_VERSION || typeof value.kind !== "string") return false;
-	if (value.kind === "accepted") return isRunRecord(value.record);
-	if (value.kind === "started") return isSafeIdentifier(value.runId) && isCanonicalTimestamp(value.startedAt);
-	if (value.kind === "terminal") return isCanonicalTimestamp(value.endedAt) && isRunReceipt(value.receipt);
-	return false;
-}
-
 /** Explicit guard for a `model.binding` source record. */
 export function isModelBindingAuditRecord(value: unknown): value is ModelBindingLedgerRecord {
 	return isModelBindingRecord(value);
@@ -1595,11 +1464,11 @@ function safeModelReference(value: ModelReference): AuditModelReference {
 	return model;
 }
 
-function safeRunModelReference(value: RunModelReference): AuditRunModelReference {
+function safeRunModelReference(value: LegacyAutomationRunModelReferenceV1): AuditRunModelReference {
 	return { provider: value.provider, id: value.id, thinkingLevel: value.thinkingLevel };
 }
 
-function safeFinalModelReference(value: RunFinalModelReference): AuditRunFinalModelReference {
+function safeFinalModelReference(value: LegacyAutomationRunFinalModelReferenceV1): AuditRunFinalModelReference {
 	const model = { provider: value.provider } as DeepMutable<AuditRunFinalModelReference>;
 	if (value.id !== undefined) model.id = value.id;
 	if (value.modelId !== undefined) model.modelId = value.modelId;
@@ -1607,7 +1476,7 @@ function safeFinalModelReference(value: RunFinalModelReference): AuditRunFinalMo
 	return model;
 }
 
-function safeUsage(value: ModelUsage | RunModelAttemptSummary["usage"]): AuditModelUsageSummary {
+function safeUsage(value: ModelUsage | LegacyAutomationRunModelAttemptSummaryV1["usage"]): AuditModelUsageSummary {
 	const usage = {} as DeepMutable<AuditModelUsageSummary>;
 	for (const key of [
 		"inputTokens",
@@ -1625,7 +1494,9 @@ function safeUsage(value: ModelUsage | RunModelAttemptSummary["usage"]): AuditMo
 	return usage;
 }
 
-function safeAttempt(value: ModelAttemptLedgerRecord | RunModelAttemptSummary): AuditModelAttemptSummary | undefined {
+function safeAttempt(
+	value: ModelAttemptLedgerRecord | LegacyAutomationRunModelAttemptSummaryV1,
+): AuditModelAttemptSummary | undefined {
 	const candidate = value.candidate;
 	const model: AuditModelReference = "modelId" in candidate
 		? safeModelReference(candidate as ModelReference)
@@ -1648,7 +1519,7 @@ function safeAttempt(value: ModelAttemptLedgerRecord | RunModelAttemptSummary): 
 	return attempt;
 }
 
-function safeBudget(value: ModelBudgetLimit | RunModelBudgetSummary): AuditModelBudgetSummary {
+function safeBudget(value: ModelBudgetLimit | LegacyAutomationRunModelBudgetSummaryV1): AuditModelBudgetSummary {
 	const budget = {} as DeepMutable<AuditModelBudgetSummary>;
 	for (const key of [
 		"modelCalls",
@@ -1706,9 +1577,9 @@ function safePolicySummary(
 }
 
 function safeRunSummary(
-	record: RunRecord,
+	record: LegacyAutomationRunRecordV1,
 	status: AuditRunEventStatus,
-	receipt?: RunReceipt,
+	receipt?: LegacyAutomationRunReceiptV1,
 	endedAt?: string,
 ): AuditRunSummary {
 	const summary = {
@@ -1739,7 +1610,7 @@ function safeRunSummary(
 	if (contextSnapshotId !== undefined) summary.contextSnapshotId = contextSnapshotId;
 	if (receipt?.attachments !== undefined && receipt.attachments.length > 0) {
 		const attachments = receipt.attachments.map((attachment) => {
-			const copy: DeepMutable<RunAttachmentSummary> = {
+			const copy: DeepMutable<AuditRunAttachmentSummary> = {
 				sourceId: attachment.sourceId,
 				kind: attachment.kind,
 				contentDigest: attachment.contentDigest,
@@ -2054,19 +1925,442 @@ interface RunFactBase {
 }
 
 type RunFact =
-	| (RunFactBase & { readonly kind: "accepted"; readonly record: RunRecord })
+	| (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 })
 	| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
-	| (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string });
+	| (RunFactBase & {
+			readonly kind: "terminal";
+			readonly receipt: LegacyAutomationRunReceiptV1;
+			readonly endedAt: string;
+	  });
 
 interface RunState {
 	readonly runId: string;
-	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: RunRecord }) | undefined;
+	projection?: AutomationRunProjection;
+	canonicalSource?: CanonicalAuditRunSource;
+	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 }) | undefined;
 	started:
 		| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
 		| undefined;
 	terminal:
-		| (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string })
+		| (RunFactBase & {
+				readonly kind: "terminal";
+				readonly receipt: LegacyAutomationRunReceiptV1;
+				readonly endedAt: string;
+		  })
 		| undefined;
+}
+
+interface FoundationFactSource<TValue> {
+	readonly entry: Extract<SessionEntry, { type: "custom" }>;
+	readonly record: Extract<FoundationRecord, { kind: "fact" }>;
+	readonly value: TValue;
+}
+
+interface CanonicalAuditRunSource {
+	readonly terminal: FoundationFactSource<CanonicalRunReceipt>;
+	readonly task: FoundationFactSource<TaskEnvelope>;
+	readonly attempts: ReadonlyArray<FoundationFactSource<Attempt>>;
+	readonly projection: CanonicalAutomationRunProjection;
+}
+
+interface RunSourceProjection {
+	readonly canonicalByRunId: ReadonlyMap<string, CanonicalAuditRunSource>;
+	readonly legacyEntries: ReadonlyArray<Extract<SessionEntry, { type: "custom" }>>;
+	readonly projections: ReadonlyArray<AutomationRunProjection>;
+}
+
+const CANONICAL_RUN_OBJECT_TYPES = new Set(["task", "attempt", "attempt_receipt", "task_result", "run_receipt"]);
+const FOUNDATION_RESERVED_CUSTOM_TYPE_PREFIX = "__aos.foundation.";
+const FOUNDATION_RESERVED_CUSTOM_TYPES = new Set([
+	FOUNDATION_ENTRY_CUSTOM_TYPE,
+	FOUNDATION_RECORD_CUSTOM_TYPE,
+	FOUNDATION_LANE_CUSTOM_TYPE,
+	FOUNDATION_FACT_CUSTOM_TYPE,
+	FOUNDATION_DURABLE_CUSTOM_TYPE,
+]);
+
+function canonicalEqual(left: unknown, right: unknown): boolean {
+	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
+}
+
+function failRunProjection(): never {
+	throw new ExecutionAuditError("audit_replay_incomplete");
+}
+
+function parseFoundationRecordEntry(
+	entry: Extract<SessionEntry, { type: "custom" }>,
+): FoundationRecord {
+	const data = entry.data;
+	if (
+		!isRecord(data) ||
+		!hasOnlyKeys(data, new Set(["schemaVersion", "kind", "record"])) ||
+		data.schemaVersion !== 1 ||
+		data.kind !== "durable" ||
+		!isRecord(data.record)
+	) {
+		return failRunProjection();
+	}
+	let encoded: string;
+	try {
+		encoded = canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: data.record });
+	} catch {
+		return failRunProjection();
+	}
+	const decoded = parseFoundationMutation(encoded);
+	if (!decoded.ok) return failRunProjection();
+	return decoded.value;
+}
+
+function foundationTimestamp(record: FoundationRecord): string {
+	const value = new Date(record.timestamp);
+	if (!Number.isFinite(value.valueOf())) return failRunProjection();
+	return value.toISOString();
+}
+
+function selectFoundationFacts(
+	sessionId: string,
+	entries: ReadonlyArray<SessionEntry>,
+): Map<string, FoundationFactSource<unknown>> {
+	const state = new FoundationLedgerState({ sessionId });
+	const entriesByRecordId = new Map<string, Extract<SessionEntry, { type: "custom" }>>();
+	for (let index = 0; index < entries.length; index += 1) {
+		const candidate = entries[index]!;
+		const physicalSequence = index + 1;
+		if (
+			isCustomEntry(candidate) &&
+			candidate.customType.startsWith(FOUNDATION_RESERVED_CUSTOM_TYPE_PREFIX) &&
+			!FOUNDATION_RESERVED_CUSTOM_TYPES.has(candidate.customType)
+		) {
+			return failRunProjection();
+		}
+		if (!isCustomEntry(candidate) || candidate.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) {
+			state.observeExternalSequence(physicalSequence);
+			continue;
+		}
+		const record = parseFoundationRecordEntry(candidate);
+		state.applyPersistedRecord(record);
+		entriesByRecordId.set(record.id, candidate);
+	}
+
+	const current = new Map<string, FoundationFactSource<unknown>>();
+	for (const record of state.getRecords()) {
+		if (record.kind === "retention") continue;
+		if (!CANONICAL_RUN_OBJECT_TYPES.has(record.objectType)) continue;
+		if (!isSafeIdentifier(record.id) || !isSafeIdentifier(record.objectType) || !isSafeIdentifier(record.objectId)) {
+			return failRunProjection();
+		}
+		const key = `${record.objectType}\u0000${record.objectId}`;
+		if (record.kind === "tombstone") {
+			current.delete(key);
+			continue;
+		}
+		if (record.kind === "intent") continue;
+		const entry = entriesByRecordId.get(record.id);
+		if (entry === undefined) return failRunProjection();
+		current.set(key, { entry, record, value: record.payload });
+	}
+	return current;
+}
+
+function requireFoundationFact<TValue>(
+	facts: ReadonlyMap<string, FoundationFactSource<unknown>>,
+	objectType: string,
+	objectId: string,
+	validate: (value: unknown) => { readonly ok: boolean; readonly value?: TValue },
+): FoundationFactSource<TValue> {
+	const source = facts.get(`${objectType}\u0000${objectId}`);
+	if (source === undefined || source.record.objectType !== objectType || source.record.objectId !== objectId) {
+		return failRunProjection();
+	}
+	const checked = validate(source.value);
+	if (!checked.ok || checked.value === undefined) return failRunProjection();
+	return { entry: source.entry, record: source.record, value: checked.value };
+}
+
+function sourceMatchesProvenance(
+	source: FoundationFactSource<unknown>,
+	provenance: ExecutionCorrelation | undefined,
+): boolean {
+	if (provenance === undefined) return false;
+	const sourceCorrelation = source.record.correlation as unknown as Record<string, unknown>;
+	const provenanceCorrelation = provenance as unknown as Record<string, unknown>;
+	for (const [field, value] of Object.entries(provenanceCorrelation)) {
+		if (typeof value === "string" && sourceCorrelation[field] !== value) return false;
+	}
+	for (const [field, value] of Object.entries(sourceCorrelation)) {
+		if (field !== "fencingToken" && typeof value === "string" && provenanceCorrelation[field] !== value) return false;
+	}
+	return true;
+}
+
+function sourceBelongsToRunLane(
+	source: FoundationFactSource<unknown>,
+	sessionId: string,
+	laneId: string,
+): boolean {
+	return (
+		source.record.lane === laneId &&
+		source.record.correlation.sessionId === sessionId &&
+		source.record.correlation.laneId === laneId
+	);
+}
+
+function canonicalRunSources(
+	sessionId: string,
+	facts: ReadonlyMap<string, FoundationFactSource<unknown>>,
+): {
+	readonly results: ReadonlyArray<CanonicalRunResult>;
+	readonly events: ReadonlyArray<DurableEventEnvelope>;
+	readonly sourcesByRunId: ReadonlyMap<string, Omit<CanonicalAuditRunSource, "projection">>;
+} {
+	const results: CanonicalRunResult[] = [];
+	const events: DurableEventEnvelope[] = [];
+	const sourcesByRunId = new Map<string, Omit<CanonicalAuditRunSource, "projection">>();
+	const runFacts = [...facts.values()]
+		.filter((source) => source.record.objectType === "run_receipt")
+		.sort((left, right) => left.record.seq - right.record.seq || left.record.id.localeCompare(right.record.id));
+	for (const candidate of runFacts) {
+		const checkedReceipt = validateRunReceipt(candidate.value);
+		if (!checkedReceipt.ok) return failRunProjection();
+		const receipt = checkedReceipt.value;
+		const sourceLaneId = candidate.record.correlation.laneId;
+		if (
+			receipt.runId !== candidate.record.objectId ||
+			sourcesByRunId.has(receipt.runId) ||
+			typeof sourceLaneId !== "string" ||
+			sourceLaneId.length === 0
+		) {
+			return failRunProjection();
+		}
+		const attemptReceipts = receipt.attemptReceiptIds.map((attemptReceiptId) => {
+			const source = requireFoundationFact(facts, "attempt_receipt", attemptReceiptId, (value) =>
+				validateAttemptReceipt(value),
+			);
+			const provenance = source.value.provenance.correlation;
+			if (
+				source.value.attemptReceiptId !== attemptReceiptId ||
+				!sourceBelongsToRunLane(source, sessionId, sourceLaneId) ||
+				provenance === undefined ||
+				!sourceMatchesProvenance(source, provenance) ||
+				provenance.taskId !== source.value.taskId ||
+				provenance.dispatchId !== source.value.dispatchId ||
+				provenance.attemptId !== source.value.attemptId ||
+				provenance.bindingId !== source.value.bindingId ||
+				provenance.bindingEpochId !== source.value.bindingEpochIds[0] ||
+				provenance.agentInstanceId !== source.value.agentInstanceId ||
+				(provenance.attemptReceiptId !== undefined && provenance.attemptReceiptId !== attemptReceiptId) ||
+				(provenance.runId !== undefined && provenance.runId !== receipt.runId)
+			) {
+				return failRunProjection();
+			}
+			return source;
+		});
+		if (attemptReceipts.length === 0) return failRunProjection();
+		const attempts = attemptReceipts.map(({ value: attemptReceipt }) => {
+			const source = requireFoundationFact(facts, "attempt", attemptReceipt.attemptId, (value) => validateAttempt(value));
+			if (
+				source.value.attemptId !== attemptReceipt.attemptId ||
+				source.value.taskId !== attemptReceipt.taskId ||
+				source.value.dispatchId !== attemptReceipt.dispatchId ||
+				source.value.providerId !== attemptReceipt.providerId ||
+				source.value.bindingId !== attemptReceipt.bindingId ||
+				source.value.agentInstanceId !== attemptReceipt.agentInstanceId ||
+				!canonicalEqual(source.value.bindingEpochIds, attemptReceipt.bindingEpochIds) ||
+				!sourceBelongsToRunLane(source, sessionId, sourceLaneId) ||
+				source.record.correlation.taskId !== source.value.taskId ||
+				source.record.correlation.dispatchId !== source.value.dispatchId ||
+				source.record.correlation.attemptId !== source.value.attemptId ||
+				source.record.correlation.bindingId !== source.value.bindingId ||
+				!source.value.bindingEpochIds.includes(source.record.correlation.bindingEpochId ?? "") ||
+				source.record.correlation.agentInstanceId !== source.value.agentInstanceId ||
+				(source.record.correlation.runId !== undefined && source.record.correlation.runId !== receipt.runId)
+			) {
+				return failRunProjection();
+			}
+			return source;
+		});
+		const taskId = attemptReceipts[0]!.value.taskId;
+		const task = requireFoundationFact(facts, "task", taskId, (value) => validateTaskEnvelope(value));
+		if (
+			task.value.taskId !== taskId ||
+			attemptReceipts.some(({ value }) => value.taskId !== taskId) ||
+			!sourceBelongsToRunLane(task, sessionId, sourceLaneId) ||
+			task.record.correlation.taskId !== taskId ||
+			(task.record.correlation.goalId !== undefined && task.record.correlation.goalId !== task.value.goalId) ||
+			(task.record.correlation.runId !== undefined && task.record.correlation.runId !== receipt.runId)
+		) {
+			return failRunProjection();
+		}
+		const taskResult = receipt.taskResultId === undefined
+			? undefined
+			: requireFoundationFact(facts, "task_result", receipt.taskResultId, (value) => validateTaskResult(value));
+		const taskResultCorrelation = taskResult?.value.provenance.correlation;
+		if (
+			taskResult !== undefined &&
+			(
+				taskResult.value.taskResultId !== receipt.taskResultId ||
+				taskResult.value.taskId !== taskId ||
+				taskResult.value.provenance.producerKind !== "host" ||
+				!sourceBelongsToRunLane(taskResult, sessionId, sourceLaneId) ||
+				taskResultCorrelation === undefined ||
+				!sourceMatchesProvenance(taskResult, taskResultCorrelation) ||
+				taskResultCorrelation.taskId !== taskId ||
+				taskResultCorrelation.taskResultId !== receipt.taskResultId ||
+				(taskResultCorrelation.runId !== undefined && taskResultCorrelation.runId !== receipt.runId) ||
+				taskResult.value.sourceAttemptReceiptIds.length === 0 ||
+				taskResult.value.sourceAttemptReceiptIds.some((id) => !receipt.attemptReceiptIds.includes(id))
+			)
+		) {
+			return failRunProjection();
+		}
+		const firstAttemptReceipt = attemptReceipts[0]!.value;
+		const sourceCorrelation = candidate.record.correlation;
+		if (
+			candidate.record.lane !== sourceLaneId ||
+			sourceCorrelation.sessionId !== sessionId ||
+			sourceCorrelation.laneId !== sourceLaneId ||
+			sourceCorrelation.taskId !== taskId ||
+			sourceCorrelation.runId !== receipt.runId ||
+			sourceCorrelation.runReceiptId !== receipt.runReceiptId ||
+			sourceCorrelation.taskResultId !== receipt.taskResultId ||
+			sourceCorrelation.attemptId !== firstAttemptReceipt.attemptId ||
+			sourceCorrelation.attemptReceiptId !== firstAttemptReceipt.attemptReceiptId
+		) {
+			return failRunProjection();
+		}
+		const writtenEvent = createDurableEvent({
+			category: "run_receipt.written",
+			eventId: candidate.record.id,
+			streamId: sessionId,
+			sequence: candidate.record.seq,
+			timestamp: foundationTimestamp(candidate.record),
+			correlation: {
+				sessionId,
+				laneId: sourceLaneId,
+				taskId,
+				runId: receipt.runId,
+				runReceiptId: receipt.runReceiptId,
+				...(receipt.taskResultId === undefined ? {} : { taskResultId: receipt.taskResultId }),
+				attemptId: firstAttemptReceipt.attemptId,
+				attemptReceiptId: firstAttemptReceipt.attemptReceiptId,
+			},
+			payload: { schemaVersion: 1, runReceiptId: receipt.runReceiptId, runId: receipt.runId },
+		});
+		for (const attempt of attempts) {
+			events.push(createDurableEvent({
+				category: "attempt.started",
+				eventId: `${attempt.record.id}:run:${receipt.runId}`,
+				streamId: sessionId,
+				sequence: attempt.record.seq,
+				timestamp: attempt.value.startedAt,
+				correlation: {
+					sessionId,
+					...(attempt.record.correlation.laneId === undefined ? {} : { laneId: attempt.record.correlation.laneId }),
+					runId: receipt.runId,
+					taskId: attempt.value.taskId,
+					dispatchId: attempt.value.dispatchId,
+					attemptId: attempt.value.attemptId,
+				},
+				payload: {
+					schemaVersion: 1,
+					taskId: attempt.value.taskId,
+					dispatchId: attempt.value.dispatchId,
+					attemptId: attempt.value.attemptId,
+				},
+			}));
+		}
+		results.push({
+			schemaVersion: 1,
+			runReceipt: receipt,
+			...(taskResult === undefined ? {} : { taskResult: taskResult.value }),
+			attemptReceipts: attemptReceipts.map(({ value }) => value),
+			writtenEvent,
+		});
+		sourcesByRunId.set(receipt.runId, {
+			terminal: { entry: candidate.entry, record: candidate.record, value: receipt },
+			task,
+			attempts,
+		});
+	}
+	return { results, events, sourcesByRunId };
+}
+
+function legacyRunEntries(entries: ReadonlyArray<SessionEntry>): ReadonlyArray<Extract<SessionEntry, { type: "custom" }>> {
+	const byId = new Map<string, Extract<SessionEntry, { type: "custom" }>>();
+	for (const entry of entries) {
+		if (!isCustomEntry(entry) || entry.customType !== "automation.run") continue;
+		const existing = byId.get(entry.id);
+		if (existing !== undefined) {
+			if (!canonicalEqual(existing, entry)) return failRunProjection();
+			continue;
+		}
+		byId.set(entry.id, entry);
+	}
+	return [...byId.values()].sort((left, right) => {
+		const leftRunId = legacyRunId(left.data);
+		const rightRunId = legacyRunId(right.data);
+		if (leftRunId !== undefined && rightRunId !== undefined) {
+			const runOrder = leftRunId.localeCompare(rightRunId);
+			if (runOrder !== 0) return runOrder;
+			const leftKind = isRecord(left.data) ? left.data.kind : undefined;
+			const rightKind = isRecord(right.data) ? right.data.kind : undefined;
+			const leftOrder = leftKind === "accepted" ? 0 : leftKind === "started" ? 1 : leftKind === "terminal" ? 2 : 3;
+			const rightOrder = rightKind === "accepted" ? 0 : rightKind === "started" ? 1 : rightKind === "terminal" ? 2 : 3;
+			if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+			return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id);
+		}
+		if (leftRunId !== undefined || rightRunId !== undefined) return leftRunId === undefined ? 1 : -1;
+		return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id);
+	});
+}
+
+function legacyRunId(data: unknown): string | undefined {
+	if (!isRecord(data)) return undefined;
+	if (data.kind === "accepted" && isRecord(data.record) && typeof data.record.id === "string") return data.record.id;
+	if (data.kind === "started" && typeof data.runId === "string") return data.runId;
+	if (data.kind === "terminal" && isRecord(data.receipt) && typeof data.receipt.runId === "string") {
+		return data.receipt.runId;
+	}
+	return undefined;
+}
+
+function legacyMigrationSource(
+	entries: ReadonlyArray<Extract<SessionEntry, { type: "custom" }>>,
+): ReadonlyArray<LegacyAutomationRunLedgerSourceEntryV1> {
+	const decoded = entries.map((entry) => ({
+		entry,
+		fact: decodeLegacyAutomationRunLedgerEntryV1(entry.data),
+	}));
+	const startedRunIds = new Set(
+		decoded.flatMap(({ fact }) => fact.kind === "started" ? [fact.runId] : []),
+	);
+	return decoded
+		.filter(({ fact }) => fact.kind !== "terminal" || startedRunIds.has(fact.receipt.runId))
+		.map(({ entry, fact }, index) => ({ sequence: index + 1, entryId: entry.id, data: fact }));
+}
+
+function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntry>): RunSourceProjection {
+	try {
+		const facts = selectFoundationFacts(sessionId, entries);
+		const canonicalSources = canonicalRunSources(sessionId, facts);
+		const canonical = projectAutomationRuns({
+			canonicalRuns: canonicalSources.results,
+			events: canonicalSources.events,
+		});
+		const legacyEntries = legacyRunEntries(entries);
+		const reconciled = reconcileLegacyAutomationRunLedgerV1(sessionId, legacyMigrationSource(legacyEntries), canonical);
+		const canonicalByRunId = new Map<string, CanonicalAuditRunSource>();
+		for (const projection of canonical) {
+			const source = canonicalSources.sourcesByRunId.get(projection.id);
+			if (source === undefined) return failRunProjection();
+			canonicalByRunId.set(projection.id, { ...source, projection });
+		}
+		return { canonicalByRunId, legacyEntries, projections: reconciled.runs };
+	} catch (error) {
+		if (error instanceof ExecutionAuditError) throw error;
+		if (error instanceof AutomationRunProjectionError) throw new ExecutionAuditError("audit_replay_incomplete");
+		throw new ExecutionAuditError("audit_replay_incomplete");
+	}
 }
 
 /** Append-order fold state for `task.gate` custom entries. */
@@ -2272,6 +2566,7 @@ function buildAssociationMaps(
 ): AssociationMaps {
 	const maps: AssociationMaps = { modelBindings: new Map(), capabilities: new Map(), policies: new Map(), workers: new Map() };
 	for (const state of states.values()) {
+		if (state.canonicalSource !== undefined) continue;
 		const record = state.accepted?.record;
 		if (record === undefined) continue;
 		const receipt = state.terminal?.receipt;
@@ -2322,6 +2617,27 @@ function createBase(
 }
 
 function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSummary | undefined {
+	if (state.projection !== undefined) {
+		const projection = state.projection;
+		const usage = projection.terminal.usage;
+		if (usage === undefined) return failRunProjection();
+		const summary = projection.migration !== undefined && state.accepted !== undefined
+			? { ...safeRunSummary(state.accepted.record, projection.status, state.terminal?.receipt, projection.endedAt) }
+			: { status: projection.status };
+		const mutable = summary as DeepMutable<AuditRunSummary>;
+		mutable.status = projection.status;
+		if (projection.startedAt !== undefined) mutable.startedAt = projection.startedAt;
+		mutable.endedAt = projection.endedAt;
+		mutable.usage = { input: usage.input, output: usage.output, total: usage.total };
+		if (projection.terminalError !== undefined) {
+			mutable.terminalError = {
+				code: projection.terminalError.code,
+				...(projection.terminalError.category === undefined ? {} : { category: projection.terminalError.category }),
+				...(projection.terminalError.retryable === undefined ? {} : { retryable: projection.terminalError.retryable }),
+			};
+		}
+		return mutable;
+	}
 	const accepted = state.accepted;
 	if (accepted === undefined) return undefined;
 	const summary = {
@@ -3496,11 +3812,13 @@ function parseRunFact(
 		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, undefined, version, undefined, true));
 		return;
 	}
-	if (!isAutomationRunEntryData(entry.data) || !isRecord(entry.data)) {
+	let data: LegacyAutomationRunLedgerEntryV1;
+	try {
+		data = decodeLegacyAutomationRunLedgerEntryV1(entry.data);
+	} catch {
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, undefined, version, undefined, true));
 		return;
 	}
-	const data = entry.data;
 	if (data.kind === "accepted") {
 		if (data.record.sessionId !== sessionId) {
 			internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, undefined, false));
@@ -3552,7 +3870,7 @@ function parseRunFact(
 	}
 	const runId = data.receipt.runId;
 	const state = states.get(runId);
-	if (state === undefined || state.accepted === undefined) {
+	if (state === undefined || state.accepted === undefined || state.started === undefined) {
 		internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, new Set([runId]), false));
 		return;
 	}
@@ -3577,6 +3895,7 @@ function runEventForFact(
 	state: RunState,
 	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
+	if (state.canonicalSource !== undefined) return undefined;
 	if (fact.kind === "accepted") {
 		const summary = safeRunSummary(fact.record, "accepted");
 		return { ...createBase(sessionId, fact.entry, external), type: "run.accepted", runId: fact.record.id, summary };
@@ -3599,7 +3918,7 @@ function runEventForFact(
 }
 
 function interruptedEvent(sessionId: string, state: RunState, external?: ExternalExecutionRef): AuditEvent | undefined {
-	if (state.accepted === undefined || state.terminal !== undefined) return undefined;
+	if (state.accepted === undefined || state.terminal !== undefined || state.projection !== undefined) return undefined;
 	const source = state.started ?? state.accepted;
 	const summary = runSummaryAt(state, "interrupted");
 	if (summary === undefined) return undefined;
@@ -3610,6 +3929,50 @@ function interruptedEvent(sessionId: string, state: RunState, external?: Externa
 		runId: state.runId,
 		summary,
 	};
+}
+
+function canonicalRunEvents(
+	sessionId: string,
+	state: RunState,
+	external?: ExternalExecutionRef,
+): ReadonlyArray<AuditEvent> {
+	const source = state.canonicalSource;
+	if (source === undefined) return [];
+	const accepted: AuditEvent = {
+		...createBase(sessionId, source.task.entry, external, undefined, foundationTimestamp(source.task.record)),
+		eventId: `${source.task.record.id}:run:${state.runId}`,
+		sourceEntryId: source.task.record.id,
+		type: "run.accepted",
+		runId: state.runId,
+		summary: { status: "accepted" },
+	};
+	const started = source.attempts.map((attempt): AuditEvent => ({
+		...createBase(sessionId, attempt.entry, external, undefined, attempt.value.startedAt),
+		eventId: `${attempt.record.id}:run:${state.runId}`,
+		sourceEntryId: attempt.record.id,
+		type: "run.started",
+		runId: state.runId,
+		summary: {
+			status: "running",
+			startedAt: source.projection.startedAt ?? attempt.value.startedAt,
+		},
+	}));
+	const summary = runSummaryAt(state, source.projection.status);
+	if (summary === undefined) return failRunProjection();
+	const terminalType = source.projection.status === "completed"
+		? "run.completed"
+		: source.projection.status === "failed"
+			? "run.failed"
+			: "run.cancelled";
+	const terminal: AuditEvent = {
+		...createBase(sessionId, source.terminal.entry, external, undefined, foundationTimestamp(source.terminal.record)),
+		eventId: source.terminal.record.id,
+		sourceEntryId: source.terminal.record.id,
+		type: terminalType,
+		runId: state.runId,
+		summary,
+	};
+	return [accepted, ...started, terminal];
 }
 
 function sourceEventForCandidate(
@@ -3777,7 +4140,10 @@ function sessionAndEntries(
 		return { sessionId, entries: input };
 	}
 	if ("getSessionId" in input && "getEntries" in input)
-		return { sessionId: input.getSessionId(), entries: input.getEntries() };
+		return {
+			sessionId: input.getSessionId(),
+			entries: input.getPhysicalEntries?.() ?? input.getEntries(),
+		};
 	if ("sessionId" in input && "entries" in input) return { sessionId: input.sessionId, entries: input.entries };
 	throw new ExecutionAuditError("audit_scope_unavailable");
 }
@@ -3785,6 +4151,7 @@ function sessionAndEntries(
 function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const sessionId = input.sessionId;
 	if (!isSafeIdentifier(sessionId)) throw new ExecutionAuditError("audit_scope_unavailable");
+	const runSources = projectRunSources(sessionId, input.entries);
 	const internalWarnings: InternalWarning[] = [];
 	const candidates: SourceCandidate[] = [];
 	const states = new Map<string, RunState>();
@@ -3803,6 +4170,18 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		lastLifecycleEnvelopeByWorker: new Map(),
 		operations: new Map(),
 	};
+	for (const entry of runSources.legacyEntries) parseRunFact(sessionId, entry, states, facts, internalWarnings);
+	for (const projection of runSources.projections) {
+		const state = states.get(projection.id) ?? {
+			runId: projection.id,
+			accepted: undefined,
+			started: undefined,
+			terminal: undefined,
+		};
+		state.projection = projection;
+		state.canonicalSource = runSources.canonicalByRunId.get(projection.id);
+		states.set(projection.id, state);
+	}
 	const seenEntryIds = new Set<string>();
 	for (const entry of input.entries) {
 		if (!isCustomEntry(entry)) continue;
@@ -3821,8 +4200,8 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			continue;
 		}
 		seenEntryIds.add(entry.id);
-		if (entry.customType === "automation.run") parseRunFact(sessionId, entry, states, facts, internalWarnings);
-		else if (entry.customType === TASK_GATE_CUSTOM_TYPE)
+		if (entry.customType === "automation.run" || entry.customType.startsWith("__aos.foundation.")) continue;
+		if (entry.customType === TASK_GATE_CUSTOM_TYPE)
 			parseTaskGateFact(sessionId, entry, gateFold, internalWarnings, candidates);
 		else if (entry.customType === TASK_GRAPH_CUSTOM_TYPE)
 			parseTaskGraphFact(sessionId, entry, graphFold, internalWarnings, candidates);
@@ -3842,6 +4221,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const externalByRun = new Map<string, ExternalExecutionRef>();
 	const conflictedRunIds = new Set<string>();
 	for (const state of states.values()) {
+		if (state.canonicalSource !== undefined) continue;
 		const refs = [state.accepted?.record.external, state.terminal?.receipt.external].filter(
 			(ref): ref is ExternalExecutionRef => ref !== undefined,
 		);
@@ -3955,6 +4335,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		const external = conflictedRunIds.has(state.runId) ? undefined : externalByRun.get(state.runId);
 		const event = interruptedEvent(sessionId, state, external);
 		if (event !== undefined) events.push(event);
+		events.push(...canonicalRunEvents(sessionId, state, external));
 	}
 	for (const candidate of candidates) {
 		const runIds = relationRunIds(candidate.relation, maps);
@@ -4055,8 +4436,12 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		events.push(event);
 	}
 	const uniqueEvents = new Map<string, AuditEvent>();
-	for (const event of events)
-		uniqueEvents.set(`${event.sessionId}\u0000${event.sourceEntryId}\u0000${event.eventId}`, event);
+	for (const event of events) {
+		const key = `${event.sessionId}\u0000${event.sourceEntryId}\u0000${event.eventId}`;
+		const existing = uniqueEvents.get(key);
+		if (existing !== undefined && !canonicalEqual(existing, event)) return failRunProjection();
+		uniqueEvents.set(key, event);
+	}
 	const sortedEvents = [...uniqueEvents.values()].sort(compareEvents);
 	internalWarnings.sort((left, right) => {
 		const leftKey = `${left.warning.sessionId ?? ""}\u0000${left.warning.sourceEntryId ?? ""}\u0000${left.warning.code}`;
@@ -4066,7 +4451,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const runSummaries = new Map<string, AuditRunSummary>();
 	const runIds = new Set<string>();
 	for (const state of states.values()) {
-		const status: AuditRunEventStatus = state.terminal?.receipt.status ?? (state.started === undefined ? "accepted" : "running");
+		const status: AuditRunEventStatus = state.projection?.status ?? state.terminal?.receipt.status ?? (state.started === undefined ? "accepted" : "running");
 		const summary = runSummaryAt(state, status);
 		if (summary !== undefined) {
 			runSummaries.set(state.runId, summary);
@@ -4351,8 +4736,12 @@ export class ExecutionAuditAdapter {
 
 	fold(): AuditFoldResult {
 		try {
-			return foldInternal({ sessionId: this.session.getSessionId(), entries: this.session.getEntries() });
-		} catch {
+			return foldInternal({
+				sessionId: this.session.getSessionId(),
+				entries: this.session.getPhysicalEntries?.() ?? this.session.getEntries(),
+			});
+		} catch (error) {
+			if (error instanceof ExecutionAuditError) throw error;
 			throw new ExecutionAuditError("audit_scope_unavailable");
 		}
 	}
