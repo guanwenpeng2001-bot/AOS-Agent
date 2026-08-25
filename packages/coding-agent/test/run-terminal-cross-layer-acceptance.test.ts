@@ -8,7 +8,6 @@ import {
 	createRunLifecycleCoordinator,
 	RUN_LEDGER_CUSTOM_TYPE,
 	serializePublicRunReceipt,
-	serializePublicRunStreamEvent,
 	type PublicRunReceipt,
 	type RunHandle,
 	type RunLifecycleCoordinator,
@@ -181,7 +180,7 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		expect(await canonicalReceiptCount(session)).toBe(1);
 	});
 
-	it("keeps SDK, RPC, local TUI, Audit, duplicate, out-of-order, and restart views equal", async () => {
+	it("keeps SDK, Audit, projection, duplicate, out-of-order, and restart views equal", async () => {
 		const session = SessionManager.inMemory("/workspace/cross-layer-parity");
 		const coordinator = createRunLifecycleCoordinator(session, { diagnostics: () => {} });
 		const run = acceptRun(coordinator, "run-cross-layer-parity");
@@ -195,12 +194,9 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		if (receipt === undefined) throw new Error("missing public receipt");
 
 		const sdkView = businessTerminalView(run.runId, serializePublicRunReceipt(receipt));
-		const rpcEvent = serializePublicRunStreamEvent(observed.event);
-		if (!("receipt" in rpcEvent)) throw new Error("missing RPC receipt");
-		const rpcView = businessTerminalView(run.runId, rpcEvent.receipt);
 		const restarted = createRunLifecycleCoordinator(session, { diagnostics: () => {} }).getRun(run.runId);
 		if (restarted?.receipt === undefined) throw new Error("missing restarted receipt");
-		const tuiView = businessTerminalView(run.runId, serializePublicRunReceipt(restarted.receipt));
+		const restartView = businessTerminalView(run.runId, serializePublicRunReceipt(restarted.receipt));
 		const audit = new ExecutionAuditQuery(session).replay(run.runId).run;
 		const auditView = {
 			runId: run.runId,
@@ -213,8 +209,7 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 			events: [structuredClone(observed.canonical.writtenEvent), observed.canonical.writtenEvent].reverse(),
 		});
 
-		expect(rpcView).toEqual(sdkView);
-		expect(tuiView).toEqual(sdkView);
+		expect(restartView).toEqual(sdkView);
 		expect(auditView).toEqual(sdkView);
 		expect(businessTerminalView(run.runId, projected[0]!.terminal)).toEqual(sdkView);
 		expect(run.observeCanonicalResult(observed.canonical)).toBeUndefined();

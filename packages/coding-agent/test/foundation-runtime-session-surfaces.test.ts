@@ -18,6 +18,7 @@ import {
 	createRuntimeSessionSurfaceAdapter,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -32,6 +33,38 @@ function settledResponse(text: string): AssistantMessage {
 		...message
 	} = fauxAssistantMessage(text);
 	return message;
+}
+
+interface AuditBusinessTerminal {
+	readonly status: string;
+	readonly usage?: { readonly input: number; readonly output: number; readonly total: number };
+	readonly terminalError?: { readonly code: string; readonly retryable?: boolean };
+}
+
+function canonicalBusinessTerminal(receipt: RunReceipt) {
+	return {
+		status: receipt.terminalStatus,
+		usage: {
+			input: receipt.usage.inputTokens,
+			output: receipt.usage.outputTokens,
+			total: receipt.usage.totalTokens,
+		},
+		terminalError:
+			receipt.terminalError === undefined
+				? undefined
+				: { code: receipt.terminalError.code, retryable: receipt.terminalError.retryable },
+	};
+}
+
+function auditBusinessTerminal(run: AuditBusinessTerminal) {
+	return {
+		status: run.status,
+		usage: run.usage,
+		terminalError:
+			run.terminalError === undefined
+				? undefined
+				: { code: run.terminalError.code, retryable: run.terminalError.retryable },
+	};
 }
 
 describe("Foundation RuntimeSession public surfaces", () => {
@@ -98,7 +131,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 			if (record?.kind !== "fact") throw new Error(`Missing ${objectType} fact`);
 			return record.payload as unknown as T;
 		};
-		const assertLatestChain = async (surface: string): Promise<void> => {
+		const assertLatestChain = async (surface: string): Promise<RunReceipt> => {
 			const ingress = await latestFact<{ readonly surface: string }>("coding_agent.product_prompt_ingress");
 			const task = await latestFact<TaskEnvelope>("task");
 			const binding = await latestFact<AgentBinding>("agent_binding");
@@ -116,14 +149,18 @@ describe("Foundation RuntimeSession public surfaces", () => {
 				task: "succeeded",
 				run: "completed",
 			});
+			return runReceipt;
 		};
 
 		try {
 			for (const surface of RUNTIME_SESSION_SURFACES) {
 				const adapter = createRuntimeSessionSurfaceAdapter(result.session, surface);
 				expect(adapter.session).toBe(result.session);
-				await adapter.prompt(`prompt from ${surface}`, { runId: `surface-${surface}` });
-				await assertLatestChain(surface);
+				const runId = `surface-${surface}`;
+				await adapter.prompt(`prompt from ${surface}`, { runId });
+				const canonical = canonicalBusinessTerminal(await assertLatestChain(surface));
+				const audit = new ExecutionAuditQuery(result.session.sessionManager).replay(runId).run;
+				expect(auditBusinessTerminal(audit)).toEqual(canonical);
 			}
 
 			await result.session.prompt("sdk default", { runId: "surface-sdk-default" });
@@ -136,12 +173,91 @@ describe("Foundation RuntimeSession public surfaces", () => {
 				["print", "print"],
 			] as const) {
 				await result.session.bindExtensions({ mode });
-				await result.session.prompt(`prompt from ${mode} binding`, { runId: `surface-binding-${mode}` });
-				await assertLatestChain(surface);
+				const runId = `surface-binding-${mode}`;
+				await result.session.prompt(`prompt from ${mode} binding`, { runId });
+				const canonical = canonicalBusinessTerminal(await assertLatestChain(surface));
+				const audit = new ExecutionAuditQuery(result.session.sessionManager).replay(runId).run;
+				expect(auditBusinessTerminal(audit)).toEqual(canonical);
 			}
 		} finally {
 			result.session.dispose();
 			await result.session.waitForDispose();
+		}
+	}, 90_000);
+
+	it("keeps the SDK adapter, local TUI binding, canonical receipt, and Audit business terminal equal", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-surface-parity-"));
+		const faux = registerFauxProvider();
+		faux.setResponses([settledResponse("same response"), settledResponse("same response")]);
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
+		const model = faux.getModel();
+		modelRuntime.registerProvider(model.provider, {
+			baseUrl: model.baseUrl,
+			api: model.api,
+			models: [model],
+		});
+
+		const createSurfaceSession = async () => {
+			const settingsManager = SettingsManager.inMemory();
+			const resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: cwd,
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+			});
+			await resourceLoader.reload();
+			return await createAgentSession({
+				cwd,
+				agentDir: cwd,
+				model,
+				modelRuntime,
+				resourceLoader,
+				settingsManager,
+				sessionManager: SessionManager.inMemory(cwd),
+				noTools: "all",
+			});
+		};
+		const sdk = await createSurfaceSession();
+		const tui = await createSurfaceSession();
+		const runId = "surface-parity";
+
+		const readSurface = async (sessionManager: SessionManager, expectedSurface: "sdk" | "tui") => {
+			const durable = new Session(new SessionManagerStorage(sessionManager));
+			const latestFact = async <T>(objectType: string): Promise<T> => {
+				const records = await durable.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" });
+				const record = records.at(-1);
+				if (record?.kind !== "fact") throw new Error(`Missing ${objectType} fact`);
+				return record.payload as unknown as T;
+			};
+			const ingress = await latestFact<{ readonly surface: string }>("coding_agent.product_prompt_ingress");
+			const receipt = await latestFact<RunReceipt>("run_receipt");
+			const canonical = canonicalBusinessTerminal(receipt);
+			const audit = new ExecutionAuditQuery(sessionManager).replay(runId).run;
+			expect(ingress.surface).toBe(expectedSurface);
+			expect(auditBusinessTerminal(audit)).toEqual(canonical);
+			return canonical;
+		};
+
+		try {
+			await createRuntimeSessionSurfaceAdapter(sdk.session, "sdk").prompt("same prompt", { runId });
+			await tui.session.bindExtensions({ mode: "tui" });
+			await tui.session.prompt("same prompt", { runId });
+
+			const sdkView = await readSurface(sdk.session.sessionManager, "sdk");
+			const tuiView = await readSurface(tui.session.sessionManager, "tui");
+			expect(tuiView).toEqual(sdkView);
+		} finally {
+			sdk.session.dispose();
+			tui.session.dispose();
+			await Promise.all([sdk.session.waitForDispose(), tui.session.waitForDispose()]);
+			faux.unregister();
+			rmSync(cwd, { recursive: true, force: true });
 		}
 	}, 90_000);
 });

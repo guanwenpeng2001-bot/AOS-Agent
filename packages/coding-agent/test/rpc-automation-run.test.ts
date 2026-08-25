@@ -292,6 +292,23 @@ function terminalEvents(lines: ParsedOutputLine[]): ParsedOutputLine[] {
 	);
 }
 
+interface BusinessTerminal {
+	readonly status: string;
+	readonly usage?: { readonly input: number; readonly output: number; readonly total: number };
+	readonly terminalError?: { readonly code: string; readonly retryable?: boolean };
+}
+
+function businessTerminalView(terminal: BusinessTerminal) {
+	return {
+		status: terminal.status,
+		usage: terminal.usage,
+		terminalError:
+			terminal.terminalError === undefined
+				? undefined
+				: { code: terminal.terminalError.code, retryable: terminal.terminalError.retryable },
+	};
+}
+
 function transportRunRecord(sessionManager: SessionManager, runId: string): Record<string, unknown> | undefined {
 	for (const entry of sessionManager.getEntries()) {
 		if (entry.type !== "custom" || entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
@@ -1201,6 +1218,29 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(receipt.status).toBe("completed");
 			expect("finalText" in receipt).toBe(false);
 			expect(events.some((event) => JSON.stringify(event).includes("done"))).toBe(true);
+
+			lineHandler(JSON.stringify({ id: "r2-get", type: "run.get", runId: acceptedData.runId }));
+			lineHandler(
+				JSON.stringify({
+					id: "r2-audit",
+					type: "audit.replay",
+					runId: acceptedData.runId,
+					scope: "current-session",
+				}),
+			);
+			await vi.waitFor(() => {
+				expect(responsesFor(rpcIo.outputLines, "r2-get")).toHaveLength(1);
+				expect(responsesFor(rpcIo.outputLines, "r2-audit")).toHaveLength(1);
+			});
+			const getResponse = responsesFor(rpcIo.outputLines, "r2-get")[0];
+			const auditResponse = responsesFor(rpcIo.outputLines, "r2-audit")[0];
+			expect(getResponse.success).toBe(true);
+			expect(auditResponse.success).toBe(true);
+			const getReceipt = (getResponse.data as { receipt: BusinessTerminal }).receipt;
+			const auditRun = (auditResponse.data as { run: BusinessTerminal }).run;
+			const terminalView = businessTerminalView(receipt as unknown as BusinessTerminal);
+			expect(businessTerminalView(getReceipt)).toEqual(terminalView);
+			expect(businessTerminalView(auditRun)).toEqual(terminalView);
 		} finally {
 			await cleanup();
 		}
