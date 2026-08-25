@@ -49,6 +49,44 @@ function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
 	return { kind: value.kind, schemaVersion: 1, record: value.record };
 }
 
+const PRIVATE_CORRELATION_FIELDS = ["operationId", "providerId", "toolCallId"] as const;
+
+/**
+ * Decode a writer-produced record while keeping current durable decoding
+ * authoritative for every field it already owns. These three correlation
+ * fields are handled only here because current writers can emit them while the
+ * current durable decoder does not recognize them.
+ */
+export function decodeLegacyFoundationRecordV1(value: unknown): FoundationRecord {
+	try {
+		canonicalFoundationJson(value);
+	} catch {
+		throw new LegacyFoundationSchemaMigrationError("Historical Foundation record is not canonical JSON");
+	}
+	const extensions: Partial<Record<(typeof PRIVATE_CORRELATION_FIELDS)[number], string>> = {};
+	let candidate = value;
+	if (isRecord(value) && isRecord(value.correlation)) {
+		const correlation = { ...value.correlation };
+		for (const key of PRIVATE_CORRELATION_FIELDS) {
+			if (!Object.hasOwn(correlation, key)) continue;
+			if (typeof correlation[key] !== "string") {
+				throw new LegacyFoundationSchemaMigrationError(`Historical Foundation correlation.${key} is invalid`);
+			}
+			extensions[key] = correlation[key];
+			delete correlation[key];
+		}
+		candidate = { ...value, correlation };
+	}
+	const decoded = parseFoundationMutation(canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: candidate }));
+	if (!decoded.ok) {
+		throw new LegacyFoundationSchemaMigrationError(`Historical Foundation record is invalid: ${decoded.error.message}`);
+	}
+	return structuredClone({
+		...decoded.value,
+		correlation: { ...decoded.value.correlation, ...extensions },
+	} as FoundationRecord);
+}
+
 /**
  * Decode a historical schemaVersion 1 wrapper through the current durable
  * Foundation record decoder. The conversion is deliberately an identity
@@ -56,17 +94,12 @@ function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
  */
 export function decodeLegacyFoundationSchemaWrapperV1(value: unknown): FoundationRecord {
 	const wrapper = decodeWrapper(value);
-	let encoded: string;
 	try {
-		encoded = canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: wrapper.record });
+		canonicalFoundationJson(wrapper);
 	} catch {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation wrapper is not canonical JSON");
 	}
-	const decoded = parseFoundationMutation(encoded);
-	if (!decoded.ok) {
-		throw new LegacyFoundationSchemaMigrationError(`Historical Foundation record is invalid: ${decoded.error.message}`);
-	}
-	return structuredClone(decoded.value);
+	return decodeLegacyFoundationRecordV1(wrapper.record);
 }
 
 /** Build a clock-free plan whose identity is stable for one physical record. */

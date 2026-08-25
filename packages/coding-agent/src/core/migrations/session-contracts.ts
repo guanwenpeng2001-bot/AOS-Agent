@@ -1,7 +1,6 @@
 import { canonicalFoundationJson, type AgentMessage, type Entry, type LaneRecord } from "@aos-agent/agent-core";
 import type { Usage } from "@aos-agent/ai";
-import { parseFoundationMutation } from "../../../../agent/src/harness/session/durable/codec.ts";
-import type { FoundationRecord } from "../../../../agent/src/harness/session/durable/types.ts";
+import { decodeLegacyFoundationRecordV1 } from "../../../../agent/src/harness/foundation/migrations/legacy-foundation-schema.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { PrivateMigrationError } from "./session-entry.ts";
 
@@ -589,10 +588,9 @@ export function decodeReservedFoundationCompatibilityWrapper(
 		if (!hasExactKeys(value, ["schemaVersion", "kind", "record"]) || value.kind !== "durable" || !isRecord(value.record)) {
 			throw new PrivateMigrationError("Historical Foundation durable wrapper has an invalid exact shape");
 		}
-		let decoded: FoundationRecord | undefined;
+		let decoded: ReturnType<typeof decodeLegacyFoundationRecordV1> | undefined;
 		try {
-			const parsed = parseFoundationMutation(canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: value.record }));
-			if (parsed.ok) decoded = parsed.value;
+			decoded = decodeLegacyFoundationRecordV1(value.record);
 		} catch {
 			decoded = undefined;
 		}

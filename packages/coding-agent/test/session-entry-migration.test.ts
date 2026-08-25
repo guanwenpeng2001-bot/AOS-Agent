@@ -1,5 +1,6 @@
 import {
 	type AppendFoundationFactOptions,
+	FoundationLedgerState,
 	InMemorySessionStorage,
 	Session,
 	SessionLedger,
@@ -68,6 +69,30 @@ function durableRecord() {
 		},
 		payload: { value: "fixture" },
 	};
+}
+
+function writerProducedDurableRecord() {
+	const state = new FoundationLedgerState({ sessionId: "session-3", clock: () => 1 });
+	state.acquireWriterLease({ ownerId: "session-migration-fixture" });
+	return state.appendFoundationRecord({
+		schemaVersion: 1,
+		kind: "fact",
+		id: "writer-foundation-record-1",
+		lane: "main",
+		objectType: "fixture",
+		objectId: "writer-fixture-1",
+		clientRequestId: "writer-fixture-create",
+		expectedRevision: 0,
+		correlation: {
+			sessionId: "session-3",
+			laneId: "main",
+			revision: 0,
+			operationId: "operation-1",
+			providerId: "provider-1",
+			toolCallId: "tool-call-1",
+		},
+		payload: { value: "fixture" },
+	}).record;
 }
 
 class InterleavedConflictLedger extends SessionLedger {
@@ -283,6 +308,52 @@ describe("private historical Session entry migration", () => {
 		for (const invalid of invalidWrappers) {
 			expect(() => migrateLegacySessionEntriesV1([header, invalid])).toThrow(PrivateMigrationError);
 		}
+	});
+
+	it("accepts and preserves current writer correlation fields in the durable wrapper", () => {
+		const header = { type: "session", version: 3, id: "session-3", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" };
+		const record = writerProducedDurableRecord();
+		const data = { schemaVersion: 1, kind: "durable", record };
+		const entry = {
+			type: "custom",
+			id: "writer-durable-wrapper",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:01.000Z",
+			customType: "__aos.foundation.durable.v1",
+			data,
+		};
+		const migrated = migrateLegacySessionEntriesV1([header, entry]);
+		expect(migrated.compatibilityViews).toEqual([{ entryId: entry.id, kind: "durable", value: data }]);
+		expect(record.correlation).toMatchObject({
+			operationId: "operation-1",
+			providerId: "provider-1",
+			toolCallId: "tool-call-1",
+		});
+
+		for (const [key, invalid] of [
+			["operationId", 1],
+			["providerId", null],
+			["toolCallId", false],
+		] as const) {
+			expect(() =>
+				migrateLegacySessionEntriesV1([
+					header,
+					{
+						...entry,
+						data: { ...data, record: { ...record, correlation: { ...record.correlation, [key]: invalid } } },
+					},
+				]),
+			).toThrow(PrivateMigrationError);
+		}
+		expect(() =>
+			migrateLegacySessionEntriesV1([
+				header,
+				{
+					...entry,
+					data: { ...data, record: { ...record, correlation: { ...record.correlation, authority: "forged" } } },
+				},
+			]),
+		).toThrow(PrivateMigrationError);
 	});
 
 	it("rejects invalid v1, v2, and v3 entry contracts after conversion", () => {

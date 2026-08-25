@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { encodeFoundationMutation } from "../../src/harness/session/durable/codec.ts";
+import { FoundationLedgerState } from "../../src/harness/session/durable/state.ts";
 import {
 	LegacyFoundationSchemaMigrationError,
 	decodeLegacyFoundationSchemaWrapperV1,
@@ -27,6 +29,30 @@ function historicalRecord(name = "Alice") {
 		},
 		payload: { name },
 	};
+}
+
+function writerProducedRecord() {
+	const state = new FoundationLedgerState({ sessionId: "session-1", clock: () => 100 });
+	state.acquireWriterLease({ ownerId: "migration-fixture" });
+	return state.appendFoundationRecord({
+		schemaVersion: 1,
+		kind: "fact",
+		id: "writer-record-1",
+		lane: "main",
+		objectType: "identity",
+		objectId: "writer-alice",
+		clientRequestId: "writer-identity-create",
+		expectedRevision: 0,
+		correlation: {
+			sessionId: "session-1",
+			laneId: "main",
+			revision: 0,
+			operationId: "operation-1",
+			providerId: "provider-1",
+			toolCallId: "tool-call-1",
+		},
+		payload: { name: "Alice" },
+	}).record;
 }
 
 describe("private legacy Foundation schema migration", () => {
@@ -68,6 +94,39 @@ describe("private legacy Foundation schema migration", () => {
 				cwd: "/workspace",
 				migratedFromVersion: 4,
 				migratedAt: 2,
+			}),
+		).toThrow(LegacyFoundationSchemaMigrationError);
+	});
+
+	it("accepts and preserves current writer correlation fields from Foundation JSONL", () => {
+		const record = writerProducedRecord();
+		const wrapper = JSON.parse(encodeFoundationMutation(record)) as unknown;
+		expect(decodeLegacyFoundationSchemaWrapperV1(wrapper)).toEqual(record);
+		expect(planLegacyFoundationSchemaMigrationV1(wrapper).result).toEqual(record);
+		expect(record.correlation).toMatchObject({
+			operationId: "operation-1",
+			providerId: "provider-1",
+			toolCallId: "tool-call-1",
+		});
+
+		for (const [key, invalid] of [
+			["operationId", 1],
+			["providerId", null],
+			["toolCallId", false],
+		] as const) {
+			expect(() =>
+				decodeLegacyFoundationSchemaWrapperV1({
+					kind: "foundation",
+					schemaVersion: 1,
+					record: { ...record, correlation: { ...record.correlation, [key]: invalid } },
+				}),
+			).toThrow(LegacyFoundationSchemaMigrationError);
+		}
+		expect(() =>
+			decodeLegacyFoundationSchemaWrapperV1({
+				kind: "foundation",
+				schemaVersion: 1,
+				record: { ...record, correlation: { ...record.correlation, authority: "forged" } },
 			}),
 		).toThrow(LegacyFoundationSchemaMigrationError);
 	});

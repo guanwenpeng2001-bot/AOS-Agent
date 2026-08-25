@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createBindingHandle, createRunBindingAssociation } from "../src/core/binding-handles.ts";
 import {
+	POLICY_RESOURCE_CATEGORIES,
+	resolveExecutionPolicy,
+	toPublicPolicySummary,
+	type PolicyDecision,
+} from "../src/core/execution-policy.ts";
+import {
 	decodeLegacyAutomationRunLedgerEntryV1,
 	migrateLegacyAutomationRunLedgerV1,
 	planLegacyAutomationRunLedgerMigrationV1,
@@ -142,6 +148,34 @@ function fullAccepted() {
 	};
 }
 
+function producerPolicySummary(resource: PolicyDecision["resource"]) {
+	const resolution = resolveExecutionPolicy({
+		operation: { resource: "capability.invoke", source: "builtin" },
+		createdAt: "2026-01-01T00:00:00.000Z",
+		runId: RUN_ID,
+		workspaceIdentity: "workspace-1",
+	});
+	if (!resolution.ok) throw new Error("Expected the policy fixture to resolve");
+	const binding = {
+		...resolution.binding,
+		sandboxCapabilities: { ...resolution.binding.sandboxCapabilities, credentialDelivery: true },
+	};
+	const decision = {
+		bindingId: binding.id,
+		profileId: binding.profileId,
+		profileRevision: binding.profileRevision,
+		projectTrust: binding.projectTrust,
+		enforcement: binding.enforcement,
+		resource,
+		source: "system",
+		action: "allow",
+		outcome: "allow",
+		hardDeny: false,
+		timestamp: "2026-01-01T00:00:00.000Z",
+	} satisfies PolicyDecision;
+	return toPublicPolicySummary(binding, decision);
+}
+
 function fullTerminal() {
 	const entry = terminal("failed");
 	return {
@@ -262,6 +296,18 @@ describe("private automation.run ledger migration", () => {
 		expect(result.runs[0]?.terminal).not.toHaveProperty("bindingAssociation");
 	});
 
+	it("accepts every producer policy resource and optional credential delivery capability", () => {
+		for (const resource of POLICY_RESOURCE_CATEGORIES) {
+			const policySummary = producerPolicySummary(resource);
+			const entry = fullAccepted();
+			const producerEntry = { ...entry, record: { ...entry.record, policySummary } };
+			const decoded = decodeLegacyAutomationRunLedgerEntryV1(producerEntry);
+			if (decoded.kind !== "accepted") throw new Error("Expected an accepted automation fact");
+			expect(decoded.record.policySummary).toEqual(policySummary);
+			expect(decoded.record.policySummary?.sandboxCapabilities.credentialDelivery).toBe(true);
+		}
+	});
+
 	it("fails closed on invalid nested T0 metadata", () => {
 		const acceptedEntry = fullAccepted();
 		const terminalEntry = fullTerminal();
@@ -283,6 +329,26 @@ describe("private automation.run ledger migration", () => {
 						...acceptedEntry.record.policySummary,
 						sandboxCapabilities: { ...acceptedEntry.record.policySummary.sandboxCapabilities, authority: true },
 					},
+				},
+			},
+			{
+				...acceptedEntry,
+				record: {
+					...acceptedEntry.record,
+					policySummary: {
+						...acceptedEntry.record.policySummary,
+						sandboxCapabilities: {
+							...acceptedEntry.record.policySummary.sandboxCapabilities,
+							credentialDelivery: "yes",
+						},
+					},
+				},
+			},
+			{
+				...acceptedEntry,
+				record: {
+					...acceptedEntry.record,
+					policySummary: { ...acceptedEntry.record.policySummary, resource: "credential.task.rotate" },
 				},
 			},
 			{

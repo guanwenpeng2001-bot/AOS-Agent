@@ -4,6 +4,7 @@ import {
 	type RunBindingAssociation,
 } from "../binding-handles.ts";
 import { isExternalExecutionRef } from "../external-session-mapping.ts";
+import { POLICY_RESOURCE_CATEGORIES } from "../execution-policy.ts";
 import {
 	isAutomationErrorCode,
 	isRunClientRequestId,
@@ -143,7 +144,9 @@ const POLICY_OPTIONAL_KEYS = [
 	"requestId",
 	"timestamp",
 ] as const;
-const SANDBOX_CAPABILITY_KEYS = ["filesystem", "process", "network", "credentialIsolation"] as const;
+const SANDBOX_CAPABILITY_REQUIRED_KEYS = ["filesystem", "process", "network", "credentialIsolation"] as const;
+const SANDBOX_CAPABILITY_OPTIONAL_KEYS = ["credentialDelivery"] as const;
+const POLICY_RESOURCES = new Set<string>(POLICY_RESOURCE_CATEGORIES);
 const ATTACHMENT_REQUIRED_KEYS = ["sourceId", "kind", "contentDigest", "byteCount", "blockCount"] as const;
 const ATTACHMENT_OPTIONAL_KEYS = [
 	"descriptorId",
@@ -381,24 +384,11 @@ function decodePolicySummary(value: unknown): NonNullable<RunRecord["policySumma
 			value.sandboxStatus !== "failed" &&
 			value.sandboxStatus !== "disposed") ||
 		!isRecord(value.sandboxCapabilities) ||
-		!hasExactKeys(value.sandboxCapabilities, SANDBOX_CAPABILITY_KEYS) ||
-		SANDBOX_CAPABILITY_KEYS.some((key) => typeof (value.sandboxCapabilities as Record<string, unknown>)[key] !== "boolean") ||
-		(value.resource !== undefined &&
-			value.resource !== "capability.invoke" &&
-			value.resource !== "filesystem.read" &&
-			value.resource !== "filesystem.find" &&
-			value.resource !== "filesystem.grep" &&
-			value.resource !== "filesystem.write" &&
-			value.resource !== "process.spawn" &&
-			value.resource !== "network.connect" &&
-			value.resource !== "credential.expose" &&
-			value.resource !== "sandbox.prepare" &&
-			value.resource !== "mcp.auth" &&
-			value.resource !== "resource.list" &&
-			value.resource !== "resource.read" &&
-			value.resource !== "prompt.list" &&
-			value.resource !== "prompt.get" &&
-			value.resource !== "context.attach") ||
+		!hasExactKeys(value.sandboxCapabilities, SANDBOX_CAPABILITY_REQUIRED_KEYS, SANDBOX_CAPABILITY_OPTIONAL_KEYS) ||
+		SANDBOX_CAPABILITY_REQUIRED_KEYS.some((key) => typeof (value.sandboxCapabilities as Record<string, unknown>)[key] !== "boolean") ||
+		((value.sandboxCapabilities as Record<string, unknown>).credentialDelivery !== undefined &&
+			typeof (value.sandboxCapabilities as Record<string, unknown>).credentialDelivery !== "boolean") ||
+		(value.resource !== undefined && (typeof value.resource !== "string" || !POLICY_RESOURCES.has(value.resource))) ||
 		(value.action !== undefined && value.action !== "allow" && value.action !== "ask" && value.action !== "deny") ||
 		(value.outcome !== undefined &&
 			value.outcome !== "allow" &&
