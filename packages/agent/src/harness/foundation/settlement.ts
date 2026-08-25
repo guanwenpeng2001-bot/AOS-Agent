@@ -101,7 +101,10 @@ export async function validateDurableBindingSources(session: Session, binding: A
 export interface LayeredTaskSettlementInput {
 	readonly taskResultId: string;
 	readonly task: TaskEnvelope;
+	/** Receipts that determine the TaskResult status for this Task. */
 	readonly sourceAttemptReceiptIds: readonly string[];
+	/** Additional Host-selected composition receipts retained only as provenance. */
+	readonly provenanceAttemptReceiptIds?: readonly string[];
 	readonly summary: string;
 	readonly artifacts?: SettleTaskResultInput["artifacts"];
 	readonly diff?: SettleTaskResultInput["diff"];
@@ -701,12 +704,13 @@ export class LayeredResultSettlement {
 	}
 
 	async settle(input: LayeredTaskSettlementInput): Promise<ResultValue<TaskResult, FoundationError>> {
-		if (input.sourceAttemptReceiptIds.length === 0 || new Set(input.sourceAttemptReceiptIds).size !== input.sourceAttemptReceiptIds.length) return Result.err(new FoundationError("task_result_no_source_receipts", "Task settlement requires unique provider AttemptReceipt sources", { details: { taskResultId: input.taskResultId } }));
+		const allSourceAttemptReceiptIds = [...input.sourceAttemptReceiptIds, ...(input.provenanceAttemptReceiptIds ?? [])];
+		if (input.sourceAttemptReceiptIds.length === 0 || new Set(allSourceAttemptReceiptIds).size !== allSourceAttemptReceiptIds.length) return Result.err(new FoundationError("task_result_no_source_receipts", "Task settlement requires unique provider AttemptReceipt sources", { details: { taskResultId: input.taskResultId } }));
 		try {
 			const durableTask = await this.requireExistingTask(input.task.taskId);
 			if (canonicalFoundationJson(durableTask) !== canonicalFoundationJson(input.task)) return Result.err(new FoundationError("role_resolver_task_required", "Task settlement must consume the durable TaskEnvelope", { details: { taskId: input.task.taskId } }));
 			const receipts: AttemptReceipt[] = [];
-			for (const id of input.sourceAttemptReceiptIds) {
+			for (const id of allSourceAttemptReceiptIds) {
 				const stored = await this.ledger.get("attempt_receipt", id);
 				if (stored === undefined || stored.kind !== "fact") return Result.err(new FoundationError("task_result_no_source_receipts", "Task settlement source was not produced by a provider consumer", { details: { taskResultId: input.taskResultId, attemptReceiptId: id } }));
 				const checked = validateAttemptReceipt(stored.payload);
@@ -714,11 +718,16 @@ export class LayeredResultSettlement {
 				await this.requireWorkerReceiptRefs(checked.value);
 				receipts.push(checked.value);
 			}
-			const settled = settleTaskResult({ taskResultId: input.taskResultId, task: input.task, receipts, summary: input.summary, ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }), ...(input.diff === undefined ? {} : { diff: input.diff }), tests: input.tests, evidence: input.evidence, producer: input.producer, ...(input.validation === undefined ? {} : { validation: input.validation }) });
+			// Composition receipts remain durable TaskResult provenance, but only the
+			// explicitly identified parent receipts determine the parent outcome.
+			const outcomeReceipts = receipts.slice(0, input.sourceAttemptReceiptIds.length);
+			const settled = settleTaskResult({ taskResultId: input.taskResultId, task: input.task, receipts: outcomeReceipts, summary: input.summary, ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }), ...(input.diff === undefined ? {} : { diff: input.diff }), tests: input.tests, evidence: input.evidence, producer: input.producer, ...(input.validation === undefined ? {} : { validation: input.validation }) });
 			if (!settled.ok) return settled;
+			const withProvenance = validateTaskResult({ ...settled.value, sourceAttemptReceiptIds: allSourceAttemptReceiptIds });
+			if (!withProvenance.ok) return withProvenance;
 			const correlation = input.producer.correlation;
 			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Host TaskResult provenance is missing its required correlation"));
-			const stored = await this.persistFact("task_result", settled.value.taskResultId, settled.value, correlationRecord(correlation), { immutable: true });
+			const stored = await this.persistFact("task_result", withProvenance.value.taskResultId, withProvenance.value, correlationRecord(correlation), { immutable: true });
 			return Result.ok(cloneDeepFrozen(stored.payload));
 		} catch (error) {
 			return this.persistenceError(error, "task_result_validation_failed");
@@ -741,7 +750,6 @@ export class LayeredResultSettlement {
 				const checkedAttempt = validateAttemptReceipt(stored.payload);
 				if (!checkedAttempt.ok) return Result.err(checkedAttempt.error);
 				if (checkedAttempt.value.attemptReceiptId !== id) return Result.err(new FoundationError("invalid_correlation", "Run finalization source identity does not match its durable key", { details: { runId: input.runId, attemptReceiptId: id } }));
-				if (sourceTaskId !== undefined && sourceTaskId !== checkedAttempt.value.taskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization sources must belong to one Task", { details: { runId: input.runId, attemptReceiptId: id } }));
 				sourceTaskId ??= checkedAttempt.value.taskId;
 				sourceAttempts.push(checkedAttempt.value);
 			}
@@ -754,6 +762,11 @@ export class LayeredResultSettlement {
 				if (checkedTaskResult.value.taskResultId !== input.taskResultId || sourceTaskId !== undefined && checkedTaskResult.value.taskId !== sourceTaskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization TaskResult does not match its durable key or source Task", { details: { runId: input.runId, taskResultId: checkedTaskResult.value.taskResultId } }));
 				taskResult = checkedTaskResult.value;
 			}
+			const crossTaskAttempts = sourceAttempts.filter((receipt) => receipt.taskId !== sourceTaskId);
+			if (
+				crossTaskAttempts.length > 0 &&
+				(taskResult === undefined || crossTaskAttempts.some((receipt) => !taskResult.sourceAttemptReceiptIds.includes(receipt.attemptReceiptId)))
+			) return Result.err(new FoundationError("invalid_correlation", "Cross-task RunReceipt sources must be Host-settled TaskResult provenance", { details: { runId: input.runId } }));
 			const unresolvedSideEffect = sourceAttempts.find((receipt) => receipt.sideEffectState !== "none");
 			if (unresolvedSideEffect !== undefined && input.terminalStatus !== "failed") return Result.err(new FoundationError("side_effect_unknown", "A Run with unresolved side effects must fail closed", { details: { runId: input.runId, attemptReceiptId: unresolvedSideEffect.attemptReceiptId, sideEffectState: unresolvedSideEffect.sideEffectState } }));
 			if (input.terminalStatus === "completed" && (input.terminalErrorCode !== undefined || input.terminalError !== undefined)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A completed run cannot carry a terminal error", { details: { runId: input.runId } }));

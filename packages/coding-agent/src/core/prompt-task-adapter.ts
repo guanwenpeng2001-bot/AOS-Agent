@@ -429,19 +429,6 @@ function createExecutionIdentity(
 	return { epoch: epoch.value, agentInstance: { ...created.value, bindingEpochIds: [epoch.value.bindingEpochId] } };
 }
 
-async function requireReceipt<T>(session: CreateCodingAgentHarnessOptions["session"], objectType: string, objectId: string): Promise<T> {
-	const record = await session.getFoundationObject(objectType, objectId);
-	if (record?.kind !== "fact") throw new PromptTaskCompositionError("prompt_task_receipt_missing", `Prompt Task execution did not persist ${objectType} ${objectId}`);
-	return record.payload as unknown as T;
-}
-
-async function findAttemptReceipt(session: CreateCodingAgentHarnessOptions["session"], attemptId: string): Promise<AttemptReceipt> {
-	const records = await session.findFoundationRecords({ kind: "fact", objectType: "attempt_receipt", order: "oldestFirst" });
-	const record = records.find((candidate) => candidate.kind === "fact" && (candidate.payload as { attemptId?: unknown }).attemptId === attemptId);
-	if (record?.kind !== "fact") throw new PromptTaskCompositionError("prompt_task_receipt_missing", `Prompt Task execution did not persist an AttemptReceipt for ${attemptId}`);
-	return record.payload as unknown as AttemptReceipt;
-}
-
 async function findRunReceiptUsage(
 	session: CreateCodingAgentHarnessOptions["session"],
 	runId: string,
@@ -510,10 +497,6 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				initialBindingEpoch: identity.epoch,
 				bindingEpochIds: [identity.epoch.bindingEpochId],
 				...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId, agentInstance: identity.agentInstance }),
-				...(childExecutionConfigured ? {} : {
-					settlement: input.settlement,
-					hostAuthority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
-				}),
 			};
 			let created: { harness: AgentHarness };
 			if (options.runtimeHarness === undefined) {
@@ -633,62 +616,103 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						...(input.images === undefined ? {} : { images: [...input.images] }),
 					});
 				if (!run.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task Harness rejected the prompt: ${run.error.message}`, undefined, run.error);
-				const attemptReceipt = await findAttemptReceipt(options.harness.session, input.identity.attemptId);
+				const metadata = await options.harness.session.getMetadata();
+				const settlementCorrelation: ExecutionCorrelation = parentCorrelationForSettlement ?? {
+					sessionId: metadata.id,
+					laneId: "main",
+					runId: run.value.runId,
+					operationId: run.value.runId,
+					goalId: persistedTask.value.goalId,
+					taskId: persistedTask.value.taskId,
+					dispatchId: dispatch.dispatchId,
+					attemptId: identity.epoch.attemptId,
+					bindingId: binding.bindingId,
+					bindingEpochId: identity.epoch.bindingEpochId,
+					...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId }),
+					providerId: options.provider.providerId,
+					revision: 0,
+				};
+				const settlement = new LayeredResultSettlement(options.harness.session, {
+					ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
+					writer: options.writer ?? created.harness.t5.writer,
+				});
+				let attemptReceipt: AttemptReceipt;
 				let taskResult: TaskResult;
 				let runReceipt: RunReceipt;
-				if (childAttemptReceiptIds.length === 0) {
-					taskResult = await requireReceipt<TaskResult>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
-					runReceipt = await requireReceipt<RunReceipt>(options.harness.session, "run_receipt", run.value.runId);
-				} else {
-					if (parentCorrelationForSettlement === undefined) {
-						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent parent settlement correlation is missing");
-					}
-					const settlement = new LayeredResultSettlement(options.harness.session, {
-						ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
-						writer: options.writer ?? created.harness.t5.writer,
+				try {
+					const attemptRecords = await options.harness.session.findFoundationRecords({
+						kind: "fact",
+						objectType: "attempt_receipt",
+						order: "oldestFirst",
 					});
-					try {
-						const taskResultId = `task_result_${run.value.runId}`;
-						const settled = await settlement.settle({
-							taskResultId,
-							task: persistedTask.value,
-							sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
-							summary: input.settlement.summary ?? (run.value.kind === "completed" ? "Agent run completed" : "Agent run did not complete successfully"),
-							artifacts: input.settlement.artifacts,
-							...(input.settlement.diff === undefined ? {} : { diff: input.settlement.diff }),
-							tests: input.settlement.tests,
-							evidence: input.settlement.evidence,
-							producer: {
-								producerKind: "host",
-								providerId: resolved.gate.reference.id,
-								producedAt: timestamp,
-								correlation: { ...parentCorrelationForSettlement, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId },
-							},
+					const attemptRecord = attemptRecords.find((candidate) =>
+						candidate.kind === "fact" &&
+						(candidate.payload as { attemptId?: unknown }).attemptId === input.identity.attemptId,
+					);
+					if (attemptRecord?.kind === "fact") {
+						attemptReceipt = attemptRecord.payload as unknown as AttemptReceipt;
+					} else {
+						// AgentHarness already performed and durably recorded the model/tool work. This
+						// fallback only asks the coding-agent provider to project those records into
+						// the missing parent AttemptReceipt; it never prompts the Harness or provider
+						// model again. executeDispatch also replays a receipt that became durable first.
+						const executed = await settlement.executeDispatch({
+							provider: options.provider,
+							dispatch,
+							binding,
+							initialBindingEpoch: identity.epoch,
+							...(identity.agentInstance === undefined ? {} : { agentInstance: identity.agentInstance }),
+							correlation: settlementCorrelation,
 						});
-						if (!settled.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent Host settlement rejected the Prompt Task result", undefined, settled.error);
-						taskResult = settled.value;
-						const terminalStatus = run.value.kind === "completed" && taskResult.status === "succeeded"
+						if (!executed.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Provider consumer rejected the Prompt Task AttemptReceipt", undefined, executed.error);
+						attemptReceipt = executed.value.receipt;
+					}
+					const sourceAttemptReceiptIds = [attemptReceipt.attemptReceiptId, ...childAttemptReceiptIds];
+					if (new Set(sourceAttemptReceiptIds).size !== sourceAttemptReceiptIds.length) {
+						throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent and accepted Child AttemptReceipt ids must be unique");
+					}
+					const taskResultId = `task_result_${run.value.runId}`;
+					const settled = await settlement.settle({
+						taskResultId,
+						task: persistedTask.value,
+						sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
+						...(childAttemptReceiptIds.length === 0 ? {} : { provenanceAttemptReceiptIds: childAttemptReceiptIds }),
+						summary: input.settlement.summary ?? (run.value.kind === "completed" ? "Agent run completed" : "Agent run did not complete successfully"),
+						artifacts: input.settlement.artifacts,
+						...(input.settlement.diff === undefined ? {} : { diff: input.settlement.diff }),
+						tests: input.settlement.tests,
+						evidence: input.settlement.evidence,
+						producer: {
+							producerKind: "host",
+							providerId: resolved.gate.reference.id,
+							producedAt: timestamp,
+							correlation: { ...settlementCorrelation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId },
+						},
+					});
+					if (!settled.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Host settlement rejected the Prompt Task result", undefined, settled.error);
+					taskResult = settled.value;
+					const terminalStatus = attemptReceipt.sideEffectState !== "none"
+						? "failed"
+						: run.value.kind === "completed" && taskResult.status === "succeeded"
 							? "completed"
-							: run.value.kind === "aborted"
+							: run.value.kind === "aborted" && taskResult.status === "cancelled"
 								? "cancelled"
 								: "failed";
-						const attemptReceiptIds = [attemptReceipt.attemptReceiptId];
-						const usage = await findRunReceiptUsage(options.harness.session, run.value.runId);
-						const finalized = await settlement.finalize({
-							runReceiptId: `run_receipt_${run.value.runId}`,
-							runId: run.value.runId,
-							terminalStatus,
-							authority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
-							attemptReceiptIds,
-							taskResultId: taskResult.taskResultId,
-							usage,
-							completedAt: timestamp,
-						});
-						if (!finalized.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent Host terminal gate rejected the Prompt Task RunReceipt", undefined, finalized.error);
-						runReceipt = finalized.value;
-					} finally {
-						await settlement.release();
-					}
+					const usage = await findRunReceiptUsage(options.harness.session, run.value.runId);
+					const finalized = await settlement.finalize({
+						runReceiptId: `run_receipt_${run.value.runId}`,
+						runId: run.value.runId,
+						terminalStatus,
+						authority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
+						attemptReceiptIds: sourceAttemptReceiptIds,
+						taskResultId: taskResult.taskResultId,
+						usage,
+						completedAt: timestamp,
+					});
+					if (!finalized.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Host terminal gate rejected the Prompt Task RunReceipt", undefined, finalized.error);
+					runReceipt = finalized.value;
+				} finally {
+					await settlement.release();
 				}
 				execution = { task: persistedTask.value, binding, dispatch, initialBindingEpoch: identity.epoch, ...(identity.agentInstance === undefined ? {} : { agentInstance: identity.agentInstance }), run: run.value, attemptReceipt, taskResult, runReceipt };
 			} catch (error) {
