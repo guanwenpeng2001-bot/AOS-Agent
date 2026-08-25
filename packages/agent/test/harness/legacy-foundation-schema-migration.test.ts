@@ -30,14 +30,14 @@ function historicalRecord(name = "Alice") {
 }
 
 describe("private legacy Foundation schema migration", () => {
-	it("decodes schemaVersion 1 JSONL and compatibility wrappers through the current decoder", () => {
+	it("decodes only schemaVersion 1 Foundation JSONL through the current decoder", () => {
 		const record = historicalRecord();
 		expect(
 			decodeLegacyFoundationSchemaWrapperV1({ kind: "foundation", schemaVersion: 1, record }),
 		).toEqual(record);
-		expect(
+		expect(() =>
 			decodeLegacyFoundationSchemaWrapperV1({ kind: "durable", schemaVersion: 1, record }),
-		).toEqual(record);
+		).toThrow(LegacyFoundationSchemaMigrationError);
 	});
 
 	it("keeps exact current validation and JSONL format migration separate", () => {

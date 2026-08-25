@@ -60,6 +60,128 @@ function terminal(status: "completed" | "failed" | "cancelled" = "completed") {
 	};
 }
 
+function fullAccepted() {
+	const entry = accepted();
+	return {
+		...entry,
+		record: {
+			...entry.record,
+			requestScope: "start" as const,
+			clientRequestId: "request-1",
+			requestFingerprint: "a".repeat(64),
+			external: { namespace: "test", externalSessionId: "external-session", externalRunId: "external-run" },
+			deadlineAt: "2026-01-01T00:01:00.000Z",
+			sourceRunId: "run-0",
+			previousBindingId: "binding-0",
+			capabilityBindingId: `binding:${"b".repeat(43)}`,
+			modelBindingId: "model-binding-1",
+			previousModelBindingId: "model-binding-0",
+			policyBindingId: "policy-binding-1",
+			previousPolicyBindingId: "policy-binding-0",
+			finalModel: { provider: "test", id: "selected", modelId: "model", thinkingLevel: "high" as const },
+			modelAttempts: [
+				{
+					attemptId: "attempt-1",
+					bindingId: "model-binding-1",
+					candidate: { provider: "test", modelId: "model" },
+					order: 0,
+					status: "completed" as const,
+					startedAt: "2026-01-01T00:00:00.000Z",
+					endedAt: "2026-01-01T00:00:01.000Z",
+					failureCategory: "none",
+					usage: {
+						input: 1,
+						output: 2,
+						total: 3,
+						inputTokens: 1,
+						outputTokens: 2,
+						totalTokens: 3,
+						costUsd: 0.1,
+						cost: 0.1,
+					},
+					visibleOutput: true,
+					contextSnapshotId: "context-1",
+					summary: "selected candidate",
+				},
+			],
+			modelBudget: {
+				modelCalls: 1,
+				inputTokens: 1,
+				outputTokens: 2,
+				totalTokens: 3,
+				costUsd: 0.1,
+				maxModelCalls: 2,
+				maxInputTokens: 10,
+				maxOutputTokens: 10,
+				maxTotalTokens: 20,
+				maxCostUsd: 1,
+				exceeded: false,
+			},
+			policySummary: {
+				bindingId: "policy-binding-1",
+				profileId: "profile-1",
+				profileRevision: "revision-1",
+				projectTrust: "trusted" as const,
+				enforcement: "sandbox" as const,
+				sandboxProviderId: "sandbox-1",
+				sandboxStatus: "ready" as const,
+				sandboxCapabilities: {
+					filesystem: true,
+					process: true,
+					network: false,
+					credentialIsolation: true,
+				},
+				resource: "filesystem.read" as const,
+				action: "allow" as const,
+				outcome: "allow" as const,
+				reasonCode: "policy_denied" as const,
+				requestId: "policy-request-1",
+				timestamp: "2026-01-01T00:00:00.000Z",
+			},
+		},
+	};
+}
+
+function fullTerminal() {
+	const entry = terminal("failed");
+	return {
+		...entry,
+		receipt: {
+			...entry.receipt,
+			external: { namespace: "test", externalSessionId: "external-session", externalRunId: "external-run" },
+			deadlineAt: "2026-01-01T00:01:00.000Z",
+			finalText: "failed safely",
+			sessionFile: "session.jsonl",
+			terminalError: { code: "task_credential_unavailable" as const, message: "unavailable", retryable: false },
+			contextSnapshotId: "context-1",
+			capabilityBindingId: `binding:${"b".repeat(43)}`,
+			modelBindingId: "model-binding-1",
+			previousModelBindingId: "model-binding-0",
+			policyBindingId: "policy-binding-1",
+			previousPolicyBindingId: "policy-binding-0",
+			attachments: [
+				{
+					sourceId: "s".repeat(43),
+					kind: "resource" as const,
+					descriptorId: `mcp_resource:source:${"d".repeat(43)}:resource`,
+					revision: `rev:${"r".repeat(43)}`,
+					capabilityBindingId: `binding:${"b".repeat(43)}`,
+					policyBindingId: "policy-binding-1",
+					contentDigest: "c".repeat(64),
+					byteCount: 10,
+					blockCount: 1,
+					mimeTypes: ["text/plain"],
+				},
+			],
+			finalModel: fullAccepted().record.finalModel,
+			modelAttempts: fullAccepted().record.modelAttempts,
+			modelBudget: fullAccepted().record.modelBudget,
+			policySummary: fullAccepted().record.policySummary,
+			bindingAssociation: accepted().record.bindingAssociation,
+		},
+	};
+}
+
 function source(sequence: number, entryId: string, data: unknown): LegacyAutomationRunLedgerSourceEntryV1 {
 	return { sequence, entryId, data };
 }
@@ -106,10 +228,88 @@ describe("private automation.run ledger migration", () => {
 		expect(() =>
 			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
 				source(1, "accepted", accepted()),
-				source(2, "completed", terminal("completed")),
-				source(3, "failed", terminal("failed")),
+				source(2, "started", started()),
+				source(3, "completed", terminal("completed")),
+				source(4, "failed", terminal("failed")),
 			]),
 		).toThrow("terminal fact conflicts");
+	});
+
+	it("decodes the complete T0 record, receipt, error, and nested metadata contracts", () => {
+		expect(decodeLegacyAutomationRunLedgerEntryV1(fullAccepted())).toEqual(fullAccepted());
+		expect(decodeLegacyAutomationRunLedgerEntryV1(fullTerminal())).toEqual(fullTerminal());
+		const result = migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+			source(1, "accepted", fullAccepted()),
+			source(2, "started", started()),
+			source(3, "terminal", fullTerminal()),
+		]);
+		expect(result.runs[0]?.terminal).toMatchObject({
+			terminalError: { code: "task_credential_unavailable" },
+			attachments: [{ kind: "resource", mimeTypes: ["text/plain"] }],
+			policySummary: { bindingId: "policy-binding-1" },
+		});
+		expect(result.runs[0]).toMatchObject({
+			requestScope: "start",
+			clientRequestId: "request-1",
+			requestFingerprint: "a".repeat(64),
+			external: { namespace: "test", externalSessionId: "external-session", externalRunId: "external-run" },
+			finalModel: { provider: "test", id: "selected", modelId: "model", thinkingLevel: "high" },
+			modelAttempts: [{ attemptId: "attempt-1", status: "completed" }],
+			modelBudget: { maxModelCalls: 2, exceeded: false },
+			policySummary: { bindingId: "policy-binding-1" },
+		});
+		expect(result.runs[0]?.bindingAssociationView).toEqual(accepted().record.bindingAssociation);
+		expect(result.runs[0]?.terminal).not.toHaveProperty("bindingAssociation");
+	});
+
+	it("fails closed on invalid nested T0 metadata", () => {
+		const acceptedEntry = fullAccepted();
+		const terminalEntry = fullTerminal();
+		const invalidEntries = [
+			{ ...acceptedEntry, record: { ...acceptedEntry.record, model: { ...acceptedEntry.record.model, extra: true } } },
+			{ ...acceptedEntry, record: { ...acceptedEntry.record, finalModel: { provider: "https://unsafe", modelId: "model" } } },
+			{
+				...acceptedEntry,
+				record: {
+					...acceptedEntry.record,
+					modelAttempts: [{ ...acceptedEntry.record.modelAttempts[0], usage: { input: -1 } }],
+				},
+			},
+			{
+				...acceptedEntry,
+				record: {
+					...acceptedEntry.record,
+					policySummary: {
+						...acceptedEntry.record.policySummary,
+						sandboxCapabilities: { ...acceptedEntry.record.policySummary.sandboxCapabilities, authority: true },
+					},
+				},
+			},
+			{
+				...terminalEntry,
+				receipt: { ...terminalEntry.receipt, terminalError: { code: "not_real", message: "bad", retryable: false } },
+			},
+			{
+				...terminalEntry,
+				receipt: {
+					...terminalEntry.receipt,
+					attachments: [{ ...terminalEntry.receipt.attachments[0], contentDigest: "bad" }],
+				},
+			},
+		];
+		for (const entry of invalidEntries) {
+			expect(() => decodeLegacyAutomationRunLedgerEntryV1(entry)).toThrow(PrivateMigrationError);
+		}
+	});
+
+	it("rejects terminal before started while retaining orphan handling", () => {
+		expect(() =>
+			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+				source(1, "accepted", accepted()),
+				source(2, "terminal", terminal()),
+			]),
+		).toThrow("precedes started");
+		expect(() => migrateLegacyAutomationRunLedgerV1(SESSION_ID, [source(1, "terminal", terminal())])).toThrow("orphaned");
 	});
 
 	it("fails closed on orphan facts, duplicate order, and non-exact historical shapes", () => {

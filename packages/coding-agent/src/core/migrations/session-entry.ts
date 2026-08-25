@@ -6,18 +6,14 @@ import {
 	type SessionLedger,
 } from "@aos-agent/agent-core";
 import type { FileEntry, SessionEntry } from "../session-manager.ts";
+import {
+	decodeCurrentSessionEntry,
+	decodeReservedFoundationCompatibilityWrapper,
+} from "./session-contracts.ts";
 
 const CURRENT_HISTORICAL_SESSION_VERSION = 3 as const;
 const MIGRATION_MARKER_OBJECT_TYPE = "migration.applied";
 const FOUNDATION_CUSTOM_PREFIX = "__aos.foundation.";
-
-const FOUNDATION_COMPATIBILITY_TYPES = new Map<string, string>([
-	["__aos.foundation.entry.v1", "entry"],
-	["__aos.foundation.record.v1", "record"],
-	["__aos.foundation.lane.v1", "lane"],
-	["__aos.foundation.fact.v1", "fact"],
-	["__aos.foundation.durable.v1", "durable"],
-]);
 
 export interface MigrationAppliedMarkerV1 {
 	readonly schemaVersion: 1;
@@ -94,10 +90,6 @@ function cloneCanonical<TValue>(value: TValue, label: string): TValue {
 	}
 }
 
-function isPositiveSafeInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
 function isNonNegativeSafeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -110,6 +102,54 @@ function isFingerprint(value: unknown): value is Fingerprint {
 		typeof value.value === "string" &&
 		/^[a-f0-9]{64}$/u.test(value.value)
 	);
+}
+
+const PRIVATE_MIGRATION_PLAN_KEYS = [
+	"schemaVersion",
+	"migrationId",
+	"sourceKind",
+	"sourceSchemaVersion",
+	"targetSchemaVersion",
+	"sourceFingerprint",
+	"resultFingerprint",
+	"status",
+	"source",
+	"result",
+] as const;
+
+function validatePrivateMigrationPlan<TResult>(plan: PrivateMigrationPlanV1<TResult>): void {
+	if (
+		!isRecord(plan) ||
+		!hasExactRequiredKeys(plan, PRIVATE_MIGRATION_PLAN_KEYS) ||
+		plan.schemaVersion !== 1 ||
+		typeof plan.migrationId !== "string" ||
+		!/^migration:[a-z][a-z0-9.-]{0,63}:[a-f0-9]{64}$/u.test(plan.migrationId) ||
+		typeof plan.sourceKind !== "string" ||
+		plan.sourceKind.length === 0 ||
+		!isNonNegativeSafeInteger(plan.sourceSchemaVersion) ||
+		!isNonNegativeSafeInteger(plan.targetSchemaVersion) ||
+		!isFingerprint(plan.sourceFingerprint) ||
+		!isFingerprint(plan.resultFingerprint) ||
+		plan.status !== "applied"
+	) {
+		throw new PrivateMigrationError("Migration plan has an invalid exact shape");
+	}
+	let sourceFingerprint: Fingerprint;
+	let resultFingerprint: Fingerprint;
+	try {
+		sourceFingerprint = fingerprintFoundationValue(plan.source);
+		resultFingerprint = fingerprintFoundationValue(plan.result);
+	} catch {
+		throw new PrivateMigrationError("Migration plan source or result is not canonical JSON");
+	}
+	if (
+		sourceFingerprint.algorithm !== plan.sourceFingerprint.algorithm ||
+		sourceFingerprint.value !== plan.sourceFingerprint.value ||
+		resultFingerprint.algorithm !== plan.resultFingerprint.algorithm ||
+		resultFingerprint.value !== plan.resultFingerprint.value
+	) {
+		throw new PrivateMigrationError("Migration plan fingerprints do not match its source or result");
+	}
 }
 
 function markerFromPlan<TResult>(plan: PrivateMigrationPlanV1<TResult>): MigrationAppliedMarkerV1 {
@@ -175,6 +215,7 @@ export function createPrivateMigrationPlanV1<TResult>(input: {
 	readonly result: TResult;
 }): PrivateMigrationPlanV1<TResult> {
 	if (
+		typeof input.sourceKind !== "string" ||
 		input.sourceKind.length === 0 ||
 		!isNonNegativeSafeInteger(input.sourceSchemaVersion) ||
 		!isNonNegativeSafeInteger(input.targetSchemaVersion)
@@ -206,16 +247,8 @@ export async function runPrivateMigrationV1<TResult>(
 	ledger: SessionLedger,
 	plan: PrivateMigrationPlanV1<TResult>,
 ): Promise<PrivateMigrationRunResultV1<TResult>> {
+	validatePrivateMigrationPlan(plan);
 	const expectedMarker = markerFromPlan(plan);
-	if (
-		!isFingerprint(plan.sourceFingerprint) ||
-		!isFingerprint(plan.resultFingerprint) ||
-		fingerprintFoundationValue(plan.source).value !== plan.sourceFingerprint.value ||
-		fingerprintFoundationValue(plan.result).value !== plan.resultFingerprint.value
-	) {
-		throw new PrivateMigrationError("Migration plan fingerprints do not match its source or result");
-	}
-
 	const existing = await ledger.get(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId);
 	if (existing !== undefined) {
 		if (existing.kind !== "fact") {
@@ -228,11 +261,10 @@ export async function runPrivateMigrationV1<TResult>(
 		return { status: "replayed", marker, result: cloneCanonical(plan.result, "Migration result") };
 	}
 
-	const expectedRevision = await ledger.revision(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId);
 	try {
 		const appended = await ledger.appendFact(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId, expectedMarker, {
 			clientRequestId: `migration:${plan.migrationId}`,
-			expectedRevision,
+			expectedRevision: 0,
 			correlation: {},
 		});
 		const marker = decodeMigrationMarker(appended.payload);
@@ -245,12 +277,16 @@ export async function runPrivateMigrationV1<TResult>(
 			result: cloneCanonical(plan.result, "Migration result"),
 		};
 	} catch (error) {
-		const raced = await ledger.getFact<unknown>(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId);
+		const raced = await ledger.get(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId);
 		if (raced !== undefined) {
-			const marker = decodeMigrationMarker(raced.payload);
-			if (markersEqual(marker, expectedMarker)) {
-				return { status: "replayed", marker, result: cloneCanonical(plan.result, "Migration result") };
+			if (raced.kind !== "fact") {
+				throw new PrivateMigrationError("migration.applied identity is occupied by a non-fact record");
 			}
+			const marker = decodeMigrationMarker(raced.payload);
+			if (!markersEqual(marker, expectedMarker)) {
+				throw new PrivateMigrationError("migration.applied marker conflicts with the requested migration");
+			}
+			return { status: "replayed", marker, result: cloneCanonical(plan.result, "Migration result") };
 		}
 		throw error;
 	}
@@ -374,65 +410,14 @@ function deterministicLegacyEntryId(sessionId: string, index: number, entry: unk
 	throw new PrivateMigrationError("Historical Session entry id digest collision");
 }
 
-function compatibilityView(entry: Record<string, unknown>): LegacySessionCompatibilityViewV1 | undefined {
-	if (entry.type !== "custom" || typeof entry.customType !== "string") return undefined;
+function compatibilityView(entry: SessionEntry): LegacySessionCompatibilityViewV1 | undefined {
+	if (entry.type !== "custom") return undefined;
 	if (!entry.customType.startsWith(FOUNDATION_CUSTOM_PREFIX)) return undefined;
-	const expectedKind = FOUNDATION_COMPATIBILITY_TYPES.get(entry.customType);
-	if (expectedKind === undefined) {
-		throw new PrivateMigrationError(`Unknown historical Foundation compatibility type ${entry.customType}`);
-	}
-	if (!isRecord(entry.data) || entry.data.schemaVersion !== 1 || typeof entry.data.kind !== "string") {
-		throw new PrivateMigrationError(`Historical Foundation compatibility wrapper ${entry.customType} is invalid`);
-	}
-	const data = entry.data;
-	let kind: LegacySessionCompatibilityViewV1["kind"];
-	if (expectedKind === "entry") {
-		if (!hasExactRequiredKeys(data, ["schemaVersion", "kind", "entry"]) || data.kind !== "entry") {
-			throw new PrivateMigrationError("Historical Foundation entry wrapper has an invalid exact shape");
-		}
-		kind = "entry";
-	} else if (expectedKind === "record") {
-		if (!hasExactRequiredKeys(data, ["schemaVersion", "kind", "record"]) || data.kind !== "record") {
-			throw new PrivateMigrationError("Historical Foundation record wrapper has an invalid exact shape");
-		}
-		kind = "record";
-	} else if (expectedKind === "lane") {
-		if (
-			!hasExactRequiredKeys(data, ["schemaVersion", "kind", "lane", "leafId"]) ||
-			data.kind !== "lane" ||
-			typeof data.lane !== "string" ||
-			(data.leafId !== null && typeof data.leafId !== "string")
-		) {
-			throw new PrivateMigrationError("Historical Foundation lane wrapper has an invalid exact shape");
-		}
-		kind = "lane";
-	} else if (expectedKind === "fact") {
-		if (data.kind === "name") {
-			if (!hasExactRequiredKeys(data, ["schemaVersion", "kind"], ["name"]) || (data.name !== undefined && typeof data.name !== "string")) {
-				throw new PrivateMigrationError("Historical Foundation name wrapper has an invalid exact shape");
-			}
-			kind = "name";
-		} else {
-			if (
-				!hasExactRequiredKeys(data, ["schemaVersion", "kind", "targetId"], ["label"]) ||
-				data.kind !== "label" ||
-				typeof data.targetId !== "string" ||
-				(data.label !== undefined && typeof data.label !== "string")
-			) {
-				throw new PrivateMigrationError("Historical Foundation label wrapper has an invalid exact shape");
-			}
-			kind = "label";
-		}
-	} else {
-		if (!hasExactRequiredKeys(data, ["schemaVersion", "kind", "record"]) || data.kind !== "durable") {
-			throw new PrivateMigrationError("Historical Foundation durable wrapper has an invalid exact shape");
-		}
-		kind = "durable";
-	}
+	const decoded = decodeReservedFoundationCompatibilityWrapper(entry.customType, entry.data);
 	return {
-		entryId: entry.id as string,
-		kind,
-		value: cloneCanonical(data, "Historical Foundation compatibility wrapper"),
+		entryId: entry.id,
+		kind: decoded.kind,
+		value: decoded.value,
 	};
 }
 
@@ -473,13 +458,14 @@ export function migrateLegacySessionEntriesV1(source: readonly unknown[]): Legac
 	});
 
 	const header = { ...decodedHeader.header, version: CURRENT_HISTORICAL_SESSION_VERSION };
-	const compatibilityViews = migratedEntries
+	const validatedEntries = migratedEntries.map((entry) => decodeCurrentSessionEntry(entry));
+	const compatibilityViews = validatedEntries
 		.map(compatibilityView)
 		.filter((view): view is LegacySessionCompatibilityViewV1 => view !== undefined);
 	return {
 		schemaVersion: 1,
 		sessionVersion: CURRENT_HISTORICAL_SESSION_VERSION,
-		entries: cloneCanonical([header, ...migratedEntries], "Migrated Session entries") as FileEntry[],
+		entries: cloneCanonical([header, ...validatedEntries], "Migrated Session entries") as FileEntry[],
 		compatibilityViews,
 	};
 }
@@ -527,13 +513,12 @@ export function decodeLegacyUnavailableProviderDescriptorV1(value: unknown): Leg
 	}
 	if (
 		value.schemaVersion !== 1 ||
-		!isPositiveSafeInteger(value.revision) ||
+		value.revision !== 1 ||
 		value.implementedInThisLine !== false ||
 		!isRecord(value.descriptor) ||
 		!hasExactRequiredKeys(value.descriptor, ["schemaVersion", "providerId", "providerClass"]) ||
 		value.descriptor.schemaVersion !== 1 ||
-		typeof value.descriptor.providerId !== "string" ||
-		value.descriptor.providerId.length === 0 ||
+		value.descriptor.providerId !== `connector.${providerKind}` ||
 		value.descriptor.providerClass !== "agent" ||
 		!isRecord(value.capabilities) ||
 		!hasExactRequiredKeys(value.capabilities, [
@@ -543,11 +528,11 @@ export function decodeLegacyUnavailableProviderDescriptorV1(value: unknown): Leg
 			"worktreeSupported",
 			"maxDepth",
 		]) ||
-		typeof value.capabilities.resumeSupported !== "boolean" ||
-		typeof value.capabilities.mailboxSupported !== "boolean" ||
-		typeof value.capabilities.backgroundSupported !== "boolean" ||
-		typeof value.capabilities.worktreeSupported !== "boolean" ||
-		!isPositiveSafeInteger(value.capabilities.maxDepth)
+		value.capabilities.resumeSupported !== false ||
+		value.capabilities.mailboxSupported !== false ||
+		value.capabilities.backgroundSupported !== false ||
+		value.capabilities.worktreeSupported !== false ||
+		value.capabilities.maxDepth !== 1
 	) {
 		throw new PrivateMigrationError("Historical ACP/SDK descriptor has an invalid exact shape");
 	}

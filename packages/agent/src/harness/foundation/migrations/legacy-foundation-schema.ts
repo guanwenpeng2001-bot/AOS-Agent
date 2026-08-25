@@ -3,7 +3,7 @@ import { parseFoundationMutation } from "../../session/durable/codec.ts";
 import { canonicalFoundationJson, fingerprintFoundationValue, type Fingerprint } from "../identity.ts";
 
 /** Historical names stay private to the decoder that owns their persisted shape. */
-export type LegacyFoundationWrapperKindV1 = "foundation" | "durable";
+export type LegacyFoundationWrapperKindV1 = "foundation";
 
 export interface LegacyFoundationSchemaWrapperV1 {
 	readonly kind: LegacyFoundationWrapperKindV1;
@@ -43,7 +43,7 @@ function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
 	if (!isRecord(value) || !hasExactKeys(value, ["kind", "schemaVersion", "record"])) {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation wrapper has an invalid exact shape");
 	}
-	if ((value.kind !== "foundation" && value.kind !== "durable") || value.schemaVersion !== 1) {
+	if (value.kind !== "foundation" || value.schemaVersion !== 1) {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation wrapper has an unsupported kind or schemaVersion");
 	}
 	return { kind: value.kind, schemaVersion: 1, record: value.record };
