@@ -63,6 +63,7 @@ const LINE13_SHARD_AC_IDS = {
 
 declare const line13KnownGapEntryBrand: unique symbol;
 declare const line13KnownGapCaseBrand: unique symbol;
+declare const line13ResolvedCaseBrand: unique symbol;
 
 export interface Line13KnownGapEntry {
 	readonly [line13KnownGapEntryBrand]: true;
@@ -90,11 +91,19 @@ export interface Line13KnownGapCase {
 	readonly scenario: Line13KnownGapScenario<unknown>;
 }
 
+export interface Line13ResolvedCase {
+	readonly [line13ResolvedCaseBrand]: true;
+	readonly ac: Line13AcceptanceCriterion;
+	readonly fullTestName: string;
+	readonly scenario: Line13KnownGapScenario<unknown>;
+}
+
 export interface Line13KnownGapCaseShard {
 	readonly schemaVersion: 1;
 	readonly shardId: Line13KnownGapShardId;
 	readonly complete: boolean;
 	readonly cases: readonly Line13KnownGapCase[];
+	readonly resolvedCases: readonly Line13ResolvedCase[];
 }
 
 export interface Line13KnownGapManifest {
@@ -102,6 +111,11 @@ export interface Line13KnownGapManifest {
 	readonly baseSha: typeof LINE13_T0_BASE_SHA;
 	readonly cases: readonly Line13KnownGapCase[];
 	readonly entries: readonly Line13KnownGapEntry[];
+}
+
+export interface Line13KnownGapTransition {
+	readonly knownGapManifest: Line13KnownGapManifest;
+	readonly resolvedCases: readonly Line13ResolvedCase[];
 }
 
 export interface Line13ExpectedFailureTestApi {
@@ -130,6 +144,7 @@ const FAILURE_REASON_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 const MANIFEST_CASE_MARKER = Symbol("line13-known-gap-manifest-case");
+const RESOLVED_CASE_MARKER = Symbol("line13-resolved-manifest-case");
 
 function invalidEntry(problem: string): never {
 	throw new Error(`Invalid Line 13 known-gap entry: ${problem}`);
@@ -137,6 +152,10 @@ function invalidEntry(problem: string): never {
 
 function invalidCase(problem: string): never {
 	throw new Error(`Invalid Line 13 known-gap case: ${problem}`);
+}
+
+function invalidResolvedCase(problem: string): never {
+	throw new Error(`Invalid Line 13 resolved case: ${problem}`);
 }
 
 function invalidShard(problem: string): never {
@@ -175,6 +194,29 @@ function validateFailureReason(reason: unknown): string {
 		return invalidEntry("entry.expectedFailure.reason must be a stable lowercase reason code");
 	}
 	return reason;
+}
+
+function validateAcceptanceCriterion(
+	ac: unknown,
+	fail: (problem: string) => never,
+): Line13AcceptanceCriterion {
+	if (typeof ac !== "string" || !AC_ID_SET.has(ac)) {
+		return fail("ac must be AC-01 through AC-24");
+	}
+	return ac as Line13AcceptanceCriterion;
+}
+
+function validateFullTestName(fullTestName: unknown, fail: (problem: string) => never): string {
+	if (
+		typeof fullTestName !== "string" ||
+		fullTestName.length === 0 ||
+		fullTestName.length > 300 ||
+		fullTestName.trim() !== fullTestName ||
+		CONTROL_CHARACTER_PATTERN.test(fullTestName)
+	) {
+		return fail("fullTestName must be a complete, trimmed, single-line test name");
+	}
+	return fullTestName;
 }
 
 function normalizeAssertionMessage(message: string): string {
@@ -227,18 +269,8 @@ export function defineLine13KnownGapEntry(value: unknown): Line13KnownGapEntry {
 	}
 	assertExactKeys(entry, ["ac", "fullTestName", "baseSha", "ownerStage", "mode", "expectedFailure"], "entry", invalidEntry);
 
-	if (typeof entry.ac !== "string" || !AC_ID_SET.has(entry.ac)) {
-		return invalidEntry("entry.ac must be AC-01 through AC-24");
-	}
-	if (
-		typeof entry.fullTestName !== "string" ||
-		entry.fullTestName.length === 0 ||
-		entry.fullTestName.length > 300 ||
-		entry.fullTestName.trim() !== entry.fullTestName ||
-		CONTROL_CHARACTER_PATTERN.test(entry.fullTestName)
-	) {
-		return invalidEntry("entry.fullTestName must be a complete, trimmed, single-line test name");
-	}
+	const ac = validateAcceptanceCriterion(entry.ac, (problem) => invalidEntry(`entry.${problem}`));
+	const fullTestName = validateFullTestName(entry.fullTestName, (problem) => invalidEntry(`entry.${problem}`));
 	if (entry.baseSha !== LINE13_T0_BASE_SHA) {
 		return invalidEntry("entry.baseSha must match the Line 13 T0 base SHA");
 	}
@@ -260,8 +292,8 @@ export function defineLine13KnownGapEntry(value: unknown): Line13KnownGapEntry {
 	}
 
 	return Object.freeze({
-		ac: entry.ac as Line13AcceptanceCriterion,
-		fullTestName: entry.fullTestName,
+		ac,
+		fullTestName,
 		baseSha: LINE13_T0_BASE_SHA,
 		ownerStage: entry.ownerStage as Line13OwnerStage,
 		mode: "fails",
@@ -272,16 +304,19 @@ export function defineLine13KnownGapEntry(value: unknown): Line13KnownGapEntry {
 	}) as Line13KnownGapEntry;
 }
 
-function validateLine13KnownGapScenario(value: unknown): Line13KnownGapScenario<unknown> {
-	const scenario = asRecord(value, "scenario", invalidCase);
-	assertExactKeys(scenario, ["fixture", "assertion"], "scenario", invalidCase, ["setup", "cleanup"]);
-	if (typeof scenario.fixture !== "function") return invalidCase("scenario.fixture must be a function");
-	if (typeof scenario.assertion !== "function") return invalidCase("scenario.assertion must be a function");
+function validateLine13Scenario(
+	value: unknown,
+	fail: (problem: string) => never,
+): Line13KnownGapScenario<unknown> {
+	const scenario = asRecord(value, "scenario", fail);
+	assertExactKeys(scenario, ["fixture", "assertion"], "scenario", fail, ["setup", "cleanup"]);
+	if (typeof scenario.fixture !== "function") return fail("scenario.fixture must be a function");
+	if (typeof scenario.assertion !== "function") return fail("scenario.assertion must be a function");
 	if (scenario.setup !== undefined && typeof scenario.setup !== "function") {
-		return invalidCase("scenario.setup must be a function when provided");
+		return fail("scenario.setup must be a function when provided");
 	}
 	if (scenario.cleanup !== undefined && typeof scenario.cleanup !== "function") {
-		return invalidCase("scenario.cleanup must be a function when provided");
+		return fail("scenario.cleanup must be a function when provided");
 	}
 	return Object.freeze({
 		fixture: scenario.fixture as () => unknown | Promise<unknown>,
@@ -303,8 +338,22 @@ export function defineLine13KnownGapCase<TFixture>(value: {
 	assertExactKeys(knownGapCase, ["entry", "scenario"], "case", invalidCase);
 	return Object.freeze({
 		entry: defineLine13KnownGapEntry(knownGapCase.entry),
-		scenario: validateLine13KnownGapScenario(knownGapCase.scenario),
+		scenario: validateLine13Scenario(knownGapCase.scenario, invalidCase),
 	}) as Line13KnownGapCase;
+}
+
+export function defineLine13ResolvedCase<TFixture>(value: {
+	readonly ac: Line13AcceptanceCriterion;
+	readonly fullTestName: string;
+	readonly scenario: Line13KnownGapScenario<TFixture>;
+}): Line13ResolvedCase {
+	const resolvedCase = asRecord(value, "case", invalidResolvedCase);
+	assertExactKeys(resolvedCase, ["ac", "fullTestName", "scenario"], "case", invalidResolvedCase);
+	return Object.freeze({
+		ac: validateAcceptanceCriterion(resolvedCase.ac, (problem) => invalidResolvedCase(`case.${problem}`)),
+		fullTestName: validateFullTestName(resolvedCase.fullTestName, (problem) => invalidResolvedCase(`case.${problem}`)),
+		scenario: validateLine13Scenario(resolvedCase.scenario, invalidResolvedCase),
+	}) as Line13ResolvedCase;
 }
 
 function assertCaseBelongsToShard(knownGapCase: Line13KnownGapCase, shardId: Line13KnownGapShardId): void {
@@ -313,28 +362,46 @@ function assertCaseBelongsToShard(knownGapCase: Line13KnownGapCase, shardId: Lin
 	}
 }
 
+function assertResolvedCaseBelongsToShard(resolvedCase: Line13ResolvedCase, shardId: Line13KnownGapShardId): void {
+	if (!LINE13_SHARD_AC_IDS[shardId].includes(resolvedCase.ac)) {
+		invalidShard(`resolved case ${resolvedCase.ac} does not belong to ${shardId}`);
+	}
+}
+
 export function defineLine13KnownGapCaseShard(value: {
 	readonly schemaVersion: 1;
 	readonly shardId: Line13KnownGapShardId;
 	readonly complete: boolean;
 	readonly cases: readonly Line13KnownGapCase[];
+	readonly resolvedCases?: readonly Line13ResolvedCase[];
 }): Line13KnownGapCaseShard {
 	const shard = asRecord(value, "shard", invalidShard);
-	assertExactKeys(shard, ["schemaVersion", "shardId", "complete", "cases"], "shard", invalidShard);
+	assertExactKeys(
+		shard,
+		["schemaVersion", "shardId", "complete", "cases"],
+		"shard",
+		invalidShard,
+		["resolvedCases"],
+	);
 	if (shard.schemaVersion !== 1) return invalidShard("shard.schemaVersion must be 1");
 	if (typeof shard.shardId !== "string" || !SHARD_ID_SET.has(shard.shardId)) {
 		return invalidShard("shard.shardId must name a Line 13 AC range");
 	}
 	if (typeof shard.complete !== "boolean") return invalidShard("shard.complete must be a boolean");
 	if (!Array.isArray(shard.cases)) return invalidShard("shard.cases must be an array");
+	if (shard.resolvedCases !== undefined && !Array.isArray(shard.resolvedCases)) {
+		return invalidShard("shard.resolvedCases must be an array when provided");
+	}
 
 	const shardId = shard.shardId as Line13KnownGapShardId;
-	if (!shard.complete && shard.cases.length > 0) {
+	const unresolvedCases = shard.cases;
+	const resolvedCaseValues = shard.resolvedCases ?? [];
+	if (!shard.complete && (unresolvedCases.length > 0 || resolvedCaseValues.length > 0)) {
 		return invalidShard(`incomplete shard ${shardId} must be empty`);
 	}
 	const acceptanceCriteria = new Set<Line13AcceptanceCriterion>();
 	const fullTestNames = new Set<string>();
-	const cases = shard.cases.map((item) => {
+	const cases = unresolvedCases.map((item) => {
 		const knownGapCase = defineLine13KnownGapCase(item as { entry: unknown; scenario: Line13KnownGapScenario<unknown> });
 		assertCaseBelongsToShard(knownGapCase, shardId);
 		if (acceptanceCriteria.has(knownGapCase.entry.ac)) {
@@ -347,6 +414,23 @@ export function defineLine13KnownGapCaseShard(value: {
 		fullTestNames.add(knownGapCase.entry.fullTestName);
 		return Object.freeze({ ...knownGapCase, [MANIFEST_CASE_MARKER]: true }) as Line13KnownGapCase;
 	});
+	const resolvedCases = resolvedCaseValues.map((item) => {
+		const resolvedCase = defineLine13ResolvedCase(item as {
+			ac: Line13AcceptanceCriterion;
+			fullTestName: string;
+			scenario: Line13KnownGapScenario<unknown>;
+		});
+		assertResolvedCaseBelongsToShard(resolvedCase, shardId);
+		if (acceptanceCriteria.has(resolvedCase.ac)) {
+			invalidShard(`duplicate acceptance criterion ${resolvedCase.ac} across known-gap and resolved cases in ${shardId}`);
+		}
+		if (fullTestNames.has(resolvedCase.fullTestName)) {
+			invalidShard(`duplicate full test name ${resolvedCase.fullTestName} across known-gap and resolved cases in ${shardId}`);
+		}
+		acceptanceCriteria.add(resolvedCase.ac);
+		fullTestNames.add(resolvedCase.fullTestName);
+		return Object.freeze({ ...resolvedCase, [RESOLVED_CASE_MARKER]: true }) as Line13ResolvedCase;
+	});
 	if (shard.complete) {
 		const missingAcceptanceCriteria = LINE13_SHARD_AC_IDS[shardId].filter((ac) => !acceptanceCriteria.has(ac));
 		if (missingAcceptanceCriteria.length > 0) {
@@ -355,15 +439,22 @@ export function defineLine13KnownGapCaseShard(value: {
 			);
 		}
 	}
-	return Object.freeze({ schemaVersion: 1, shardId, complete: shard.complete, cases: Object.freeze(cases) });
+	return Object.freeze({
+		schemaVersion: 1,
+		shardId,
+		complete: shard.complete,
+		cases: Object.freeze(cases),
+		resolvedCases: Object.freeze(resolvedCases),
+	});
 }
 
-export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13KnownGapManifest {
+export function loadLine13KnownGapTransition(shards: readonly unknown[]): Line13KnownGapTransition {
 	if (!Array.isArray(shards)) throw new Error("Invalid Line 13 known-gap manifest: shards must be an array");
 	const shardIds = new Set<Line13KnownGapShardId>();
 	const acceptanceCriteria = new Set<Line13AcceptanceCriterion>();
 	const fullTestNames = new Set<string>();
 	const cases: Line13KnownGapCase[] = [];
+	const resolvedCases: Line13ResolvedCase[] = [];
 	let completedShardCount = 0;
 
 	for (const value of shards) {
@@ -385,6 +476,21 @@ export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13Kn
 			fullTestNames.add(entry.fullTestName);
 			cases.push(knownGapCase);
 		}
+		for (const resolvedCase of shard.resolvedCases) {
+			if (acceptanceCriteria.has(resolvedCase.ac)) {
+				throw new Error(
+					`Duplicate Line 13 acceptance criterion across known-gap and resolved cases: ${resolvedCase.ac}`,
+				);
+			}
+			if (fullTestNames.has(resolvedCase.fullTestName)) {
+				throw new Error(
+					`Duplicate Line 13 full test name across known-gap and resolved cases: ${resolvedCase.fullTestName}`,
+				);
+			}
+			acceptanceCriteria.add(resolvedCase.ac);
+			fullTestNames.add(resolvedCase.fullTestName);
+			resolvedCases.push(resolvedCase);
+		}
 	}
 
 	const missingShards = LINE13_KNOWN_GAP_SHARD_IDS.filter((shardId) => !shardIds.has(shardId));
@@ -393,19 +499,28 @@ export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13Kn
 	}
 	if (completedShardCount === LINE13_KNOWN_GAP_SHARD_IDS.length) {
 		const missingAcceptanceCriteria = LINE13_AC_IDS.filter((ac) => !acceptanceCriteria.has(ac));
-		if (cases.length !== LINE13_AC_IDS.length || missingAcceptanceCriteria.length > 0) {
+		if (cases.length + resolvedCases.length !== LINE13_AC_IDS.length || missingAcceptanceCriteria.length > 0) {
 			throw new Error(`Incomplete Line 13 known-gap manifest; missing ${missingAcceptanceCriteria.join(", ")}`);
 		}
 	}
 
 	cases.sort((left, right) => left.entry.ac.localeCompare(right.entry.ac));
+	resolvedCases.sort((left, right) => left.ac.localeCompare(right.ac));
 	const frozenCases = Object.freeze(cases);
-	return Object.freeze({
-		schemaVersion: 1,
+	const knownGapManifest = Object.freeze({
+		schemaVersion: 1 as const,
 		baseSha: LINE13_T0_BASE_SHA,
 		cases: frozenCases,
 		entries: Object.freeze(frozenCases.map((knownGapCase) => knownGapCase.entry)),
 	});
+	return Object.freeze({
+		knownGapManifest,
+		resolvedCases: Object.freeze(resolvedCases),
+	});
+}
+
+export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13KnownGapManifest {
+	return loadLine13KnownGapTransition(shards).knownGapManifest;
 }
 
 async function runScenario<TFixture>(scenario: Line13KnownGapScenario<TFixture>): Promise<ScenarioOutcome> {
@@ -497,6 +612,18 @@ export function registerLine13KnownGapCaseWith(
 	});
 }
 
+export function registerLine13ResolvedCaseWith(
+	resolvedCase: Line13ResolvedCase,
+	testApi: Line13ExpectedFailureTestApi,
+): void {
+	if (!(RESOLVED_CASE_MARKER in resolvedCase)) {
+		throw new Error("Line 13 resolved registration requires a case exported through a manifest shard");
+	}
+	testApi.normal(resolvedCase.fullTestName, async () => {
+		await runRawScenario(resolvedCase.scenario);
+	});
+}
+
 const vitestApi: Line13ExpectedFailureTestApi = {
 	normal: (name, body) => test(name, body),
 	fails: (name, body) => test.fails(name, body),
@@ -504,4 +631,8 @@ const vitestApi: Line13ExpectedFailureTestApi = {
 
 export function registerLine13KnownGapCase(knownGapCase: Line13KnownGapCase): void {
 	registerLine13KnownGapCaseWith(knownGapCase, vitestApi);
+}
+
+export function registerLine13ResolvedCase(resolvedCase: Line13ResolvedCase): void {
+	registerLine13ResolvedCaseWith(resolvedCase, vitestApi);
 }
