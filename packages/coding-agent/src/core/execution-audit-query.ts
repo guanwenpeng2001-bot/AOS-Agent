@@ -538,7 +538,8 @@ export class ExecutionAuditQuery {
 				const local = session.adapter.replay(runId);
 				replayWarnings.push(...local.warnings);
 				if (local.status === "incomplete") incomplete = true;
-			} catch {
+			} catch (error) {
+				if (error instanceof ExecutionAuditError && error.code === "audit_replay_incomplete") throw error;
 				incomplete = true;
 			}
 		}

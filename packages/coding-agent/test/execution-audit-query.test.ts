@@ -15,6 +15,7 @@ import type { FileEntry, SessionEntry } from "../src/core/session-manager.ts";
 const CURRENT_SESSION_ID = "session-query-current";
 const RUN_ID = "run-query-1";
 const ACCEPTED_AT = "2026-08-13T00:00:00.000Z";
+const STARTED_AT = "2026-08-13T00:00:00.500Z";
 const TERMINAL_AT = "2026-08-13T00:00:01.000Z";
 const GATE_REQUESTED_AT = "2026-08-13T00:00:02.000Z";
 const GATE_DECIDED_AT = "2026-08-13T00:00:03.000Z";
@@ -48,6 +49,15 @@ function terminalEntry(entryId = "terminal"): SessionEntry {
 			status: "completed",
 			usage: { input: 1, output: 1, total: 2 },
 		},
+	});
+}
+
+function startedEntry(entryId = "started"): SessionEntry {
+	return customEntry(entryId, STARTED_AT, "automation.run", {
+		schemaVersion: 1,
+		kind: "started",
+		runId: RUN_ID,
+		startedAt: STARTED_AT,
 	});
 }
 
@@ -171,7 +181,7 @@ describe("cross-session execution audit query", () => {
 	});
 
 	it("returns complete and interrupted replay without invoking execution", () => {
-		const completeEntries = [acceptedEntry(CURRENT_SESSION_ID), terminalEntry()];
+		const completeEntries = [acceptedEntry(CURRENT_SESSION_ID), startedEntry(), terminalEntry()];
 		const complete = new ExecutionAuditQuery(source(CURRENT_SESSION_ID, completeEntries, ""));
 		expect(complete.replay(RUN_ID).status).toBe("complete");
 
@@ -205,6 +215,7 @@ describe("cross-session execution audit query", () => {
 	it("folds task.gate entries into allowlisted events and filters them by type", () => {
 		const entries = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			gateEntry("gate-request", "requested", "gate_001", { runId: RUN_ID }),
 			gateEntry("gate-approve", "approved", "gate_001", { runId: RUN_ID }),
@@ -247,6 +258,7 @@ describe("cross-session execution audit query", () => {
 	it("correlates a gate into replay only by exact runId without changing terminal status", () => {
 		const entries = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			gateEntry("gate-request", "requested", "gate_001", { runId: RUN_ID }),
 			gateEntry("gate-approve", "approved", "gate_001", { runId: RUN_ID }),
@@ -268,6 +280,7 @@ describe("cross-session execution audit query", () => {
 	it("skips malformed and mismatched task.gate entries with warnings and no raw data", () => {
 		const entries: SessionEntry[] = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			customEntry("gate-unsupported", GATE_REQUESTED_AT, "task.gate", { schemaVersion: 2, action: "requested" }),
 			customEntry("gate-garbage", GATE_REQUESTED_AT, "task.gate", "raw secret payload"),
@@ -441,6 +454,7 @@ describe("cross-session execution audit query task graph", () => {
 	it("folds task.graph entries into allowlisted events and filters them by type", () => {
 		const entries = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			graphCreated(),
 			graphAttached(),
@@ -486,6 +500,7 @@ describe("cross-session execution audit query task graph", () => {
 	it("correlates a graph into replay only by exact runId without changing terminal status", () => {
 		const entries = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			graphCreated(),
 			graphAttached(),
@@ -512,6 +527,7 @@ describe("cross-session execution audit query task graph", () => {
 	it("skips malformed, unsupported, session-mismatched, and duplicate graph entries with safe warnings", () => {
 		const entries: SessionEntry[] = [
 			acceptedEntry(),
+			startedEntry(),
 			terminalEntry(),
 			customEntry("graph-unsupported", GRAPH_CREATED_AT, "task.graph", { schemaVersion: 2, action: "created" }),
 			customEntry("graph-garbage", GRAPH_CREATED_AT, "task.graph", "raw graph secret"),
@@ -574,6 +590,7 @@ describe("cross-session execution audit query task graph", () => {
 		expect(replay.status).toBe("complete");
 		expect(replay.events.map((event: AuditEvent) => event.sourceEntryId)).toEqual([
 			"accepted",
+			"started",
 			"terminal",
 			"graph-attached",
 			"graph-settled",

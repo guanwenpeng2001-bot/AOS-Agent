@@ -10,12 +10,13 @@ import type {
 	TaskEnvelope,
 	TaskResult,
 } from "@aos-agent/agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+	AUDIT_SOURCE_CUSTOM_TYPES,
 	ExecutionAuditAdapter,
+	ExecutionAuditError,
 	type AuditSession,
-	type ExecutionAuditError,
 } from "../src/core/execution-audit.ts";
 import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
@@ -159,6 +160,10 @@ function canonicalFixture(scenario: Scenario): CanonicalFixture {
 				attemptReceiptId,
 				bindingId: attempt.bindingId,
 				bindingEpochId: attempt.bindingEpochIds[0],
+				runId,
+				operationId: `operation-${suffix}`,
+				providerId: attempt.providerId,
+				toolCallId: `tool-call-${suffix}`,
 			}),
 		},
 		sideEffectState: scenario.sideEffectState,
@@ -178,7 +183,7 @@ function canonicalFixture(scenario: Scenario): CanonicalFixture {
 			producerKind: "host",
 			providerId: "host.fixture",
 			producedAt: new Date(BASE_TIME + 4_000).toISOString(),
-			correlation: provenanceCorrelation({ taskId, taskResultId }),
+			correlation: provenanceCorrelation({ taskId, taskResultId, runId }),
 		},
 		validation: {
 			schemaValid: scenario.resultStatus === "succeeded",
@@ -202,8 +207,26 @@ function canonicalFixture(scenario: Scenario): CanonicalFixture {
 	};
 	const records = [
 		fact("task", taskId, 1, task, { taskId }),
-		fact("attempt", attemptId, 2, attempt, { taskId, dispatchId, attemptId, runId }),
-		fact("attempt_receipt", attemptReceiptId, 3, attemptReceipt, { taskId, dispatchId, attemptId, attemptReceiptId, runId }),
+		fact("attempt", attemptId, 2, attempt, {
+			taskId,
+			dispatchId,
+			attemptId,
+			bindingId: attempt.bindingId,
+			bindingEpochId: attempt.bindingEpochIds[0],
+			runId,
+		}),
+		fact("attempt_receipt", attemptReceiptId, 3, attemptReceipt, {
+			taskId,
+			dispatchId,
+			attemptId,
+			attemptReceiptId,
+			bindingId: attempt.bindingId,
+			bindingEpochId: attempt.bindingEpochIds[0],
+			runId,
+			operationId: `operation-${suffix}`,
+			providerId: attempt.providerId,
+			toolCallId: `tool-call-${suffix}`,
+		}),
 		fact("task_result", taskResultId, 4, taskResult, { taskId, taskResultId, runId }),
 		fact("run_receipt", runId, 5, runReceipt, { taskId, runId, runReceiptId, taskResultId, attemptId, attemptReceiptId }),
 	];
@@ -333,11 +356,10 @@ describe("canonical Execution Audit integration", () => {
 		expect(replay.run).not.toHaveProperty("model");
 	});
 
-	it("deduplicates out-of-order canonical records and preserves restart cursors", () => {
+	it("preserves canonical replay and cursors across restart", () => {
 		const fixture = canonicalFixture(scenarios[0]!);
-		const duplicate = physicalEntry(fixture.records[0]!, "-duplicate");
-		const firstSession = auditSession([...fixture.entries, duplicate].reverse());
-		const restartedSession = auditSession([duplicate, ...fixture.entries]);
+		const firstSession = auditSession(fixture.entries);
+		const restartedSession = auditSession(structuredClone(fixture.entries));
 		const first = new ExecutionAuditQuery(firstSession, { cursorSecret: "canonical-audit-secret" });
 		const restarted = new ExecutionAuditQuery(restartedSession, { cursorSecret: "canonical-audit-secret" });
 		const firstPage = first.query({ scope: "current-session", runId: fixture.runId, limit: 1 });
@@ -346,6 +368,149 @@ describe("canonical Execution Audit integration", () => {
 		expect(firstPage).toEqual(restartedPage);
 		expect(firstPage.nextCursor).toBeDefined();
 		expect(first.replay(fixture.runId)).toEqual(restarted.replay(fixture.runId));
+	});
+
+	it("observes non-Foundation physical entries in the shared sequence", () => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const external: SessionEntry = {
+			type: "label",
+			id: "physical-external-entry",
+			parentId: null,
+			timestamp: new Date(BASE_TIME).toISOString(),
+			targetId: "physical-target-entry",
+			label: "external",
+		};
+		const shifted = fixture.records.map((record) => physicalEntry({
+			...record,
+			seq: record.seq + 1,
+		}));
+
+		expect(new ExecutionAuditAdapter(auditSession([external, ...shifted])).replay(fixture.runId)).toMatchObject({
+			status: "complete",
+			run: { status: "completed", usage: { input: 21, output: 8, total: 29 } },
+		});
+	});
+
+	it.each([
+		"duplicate-id",
+		"duplicate-sequence",
+		"duplicate-revision",
+		"duplicate-client-request",
+	] as const)("fails closed on FoundationLedgerState %s conflicts", (conflict) => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const task = fixture.records[0]!;
+		const appended: FoundationFactRecord = {
+			...task,
+			id: `${task.id}-next`,
+			seq: 6,
+			timestamp: BASE_TIME + 6_000,
+			revision: 2,
+			clientRequestId: `${task.clientRequestId}-next`,
+			correlation: { ...task.correlation, revision: 2 },
+			...(conflict === "duplicate-id" ? { id: task.id } : {}),
+			...(conflict === "duplicate-sequence" ? { seq: 5 } : {}),
+			...(conflict === "duplicate-revision"
+				? { revision: 1, correlation: { ...task.correlation, revision: 1 } }
+				: {}),
+			...(conflict === "duplicate-client-request" ? { clientRequestId: task.clientRequestId } : {}),
+		};
+
+		expect(() => new ExecutionAuditAdapter(
+			auditSession([...fixture.entries, physicalEntry(appended, `-${conflict}`)]),
+		).fold()).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+			code: "audit_replay_incomplete",
+		}));
+	});
+
+	it.each(["fencing", "session", "lane"] as const)(
+		"fails closed on Foundation %s envelope conflicts",
+		(conflict) => {
+			const fixture = canonicalFixture(scenarios[0]!);
+			const task = fixture.records[0]!;
+			const conflicting: FoundationFactRecord = {
+				...task,
+				...(conflict === "lane" ? { lane: "conflicting-lane" } : {}),
+				correlation: {
+					...task.correlation,
+					...(conflict === "fencing" ? { fencingToken: "conflicting-fence" } : {}),
+					...(conflict === "session" ? { sessionId: "conflicting-session" } : {}),
+				},
+			};
+
+			expect(() => new ExecutionAuditAdapter(
+				auditSession([physicalEntry(conflicting), ...fixture.entries.slice(1)]),
+			).fold()).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+				code: "audit_replay_incomplete",
+			}));
+		},
+	);
+
+	it("fails closed when a Foundation record violates its exact key schema", () => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const malformed = {
+			...fixture.records[0]!,
+			unexpected: "field",
+		} as unknown as FoundationFactRecord;
+
+		expect(() => new ExecutionAuditAdapter(
+			auditSession([physicalEntry(malformed), ...fixture.entries.slice(1)]),
+		).fold()).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+			code: "audit_replay_incomplete",
+		}));
+	});
+
+	it("fails closed on an unknown reserved Foundation custom type", () => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const reservedConflict = {
+			...fixture.entries[0]!,
+			customType: "__aos.foundation.conflict.v1",
+		} as SessionEntry;
+
+		expect(() => new ExecutionAuditAdapter(
+			auditSession([reservedConflict, ...fixture.entries.slice(1)]),
+		).fold()).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+			code: "audit_replay_incomplete",
+		}));
+	});
+
+	it.each([
+		{ index: 0, field: "taskId" },
+		{ index: 1, field: "attemptId" },
+		{ index: 2, field: "attemptReceiptId" },
+		{ index: 3, field: "taskResultId" },
+	] as const)(
+		"fails closed when canonical $field source correlation conflicts with its payload or provenance",
+		({ index, field }) => {
+			const fixture = canonicalFixture(scenarios[0]!);
+			const source = fixture.records[index]!;
+			const conflicting: FoundationFactRecord = {
+				...source,
+				correlation: { ...source.correlation, [field]: `conflicting-${field}` },
+			};
+			const entries = fixture.entries.map((entry, entryIndex) =>
+				entryIndex === index ? physicalEntry(conflicting) : entry,
+			);
+
+			expect(() => new ExecutionAuditAdapter(auditSession(entries)).fold()).toThrow(
+				expect.objectContaining<Partial<ExecutionAuditError>>({ code: "audit_replay_incomplete" }),
+			);
+		},
+	);
+
+	it("propagates audit_replay_incomplete from the local replay fold", () => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const query = new ExecutionAuditQuery(auditSession(fixture.entries));
+		const replay = vi.spyOn(ExecutionAuditAdapter.prototype, "replay").mockImplementationOnce(() => {
+			throw new ExecutionAuditError("audit_replay_incomplete");
+		});
+
+		try {
+			expect(() => query.replay(fixture.runId)).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+				code: "audit_replay_incomplete",
+			}));
+		} finally {
+			replay.mockRestore();
+		}
 	});
 
 	it("fails closed when a duplicate canonical record conflicts", () => {
@@ -368,6 +533,30 @@ describe("canonical Execution Audit integration", () => {
 		}));
 	});
 
+	it.each([
+		"sessionId",
+		"laneId",
+		"taskId",
+		"runId",
+		"runReceiptId",
+		"taskResultId",
+		"attemptId",
+		"attemptReceiptId",
+	] as const)("fails closed when canonical RunReceipt correlation.%s conflicts with its chain", (field) => {
+		const fixture = canonicalFixture(scenarios[0]!);
+		const terminal = fixture.records.at(-1)!;
+		const conflicting = {
+			...terminal,
+			correlation: { ...terminal.correlation, [field]: `conflicting-${field}` },
+		};
+
+		expect(() => new ExecutionAuditAdapter(
+			auditSession([...fixture.entries.slice(0, -1), physicalEntry(conflicting)]),
+		).fold()).toThrow(expect.objectContaining<Partial<ExecutionAuditError>>({
+			code: "audit_replay_incomplete",
+		}));
+	});
+
 	it("keeps an equal legacy terminal private behind the canonical projection", () => {
 		const fixture = canonicalFixture(scenarios[0]!);
 		const canonicalOnly = new ExecutionAuditAdapter(auditSession(fixture.entries)).replay(fixture.runId);
@@ -376,18 +565,20 @@ describe("canonical Execution Audit integration", () => {
 		).replay(fixture.runId);
 
 		expect(reconciled).toEqual(canonicalOnly);
+		expect(AUDIT_SOURCE_CUSTOM_TYPES).not.toContain("automation.run");
 		expect(reconciled.run).not.toHaveProperty("attempt");
 		expect(reconciled.run).not.toHaveProperty("model");
 	});
 
-	it("migrates a legacy-only terminal when its terminal clock precedes the audit append clock", () => {
+	it("keeps legacy terminal evidence without started incomplete", () => {
 		const runId = "run-legacy-only";
 		const [accepted, , terminal] = legacyTerminalEntries(runId, 21, new Date(BASE_TIME + 6_000).toISOString());
 		const replay = new ExecutionAuditAdapter(auditSession([accepted!, terminal!])).replay(runId);
 
-		expect(replay.status).toBe("complete");
-		expect(replay.run).toMatchObject({ status: "completed", usage: { input: 21, output: 8, total: 29 } });
-		expect(new Set(replay.events.map((event) => event.type))).toEqual(new Set(["run.accepted", "run.completed"]));
+		expect(replay.status).toBe("incomplete");
+		expect(replay.run).toMatchObject({ status: "accepted" });
+		expect(replay.run).not.toHaveProperty("usage");
+		expect(new Set(replay.events.map((event) => event.type))).toEqual(new Set(["run.accepted", "run.interrupted"]));
 	});
 
 	it("fails closed when legacy terminal migration conflicts with the canonical Run", () => {

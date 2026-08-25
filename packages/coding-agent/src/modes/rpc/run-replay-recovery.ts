@@ -1,3 +1,4 @@
+import type { DurableEventEnvelope } from "@aos-agent/agent-core";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type {
 	AuditEvent,
@@ -14,40 +15,34 @@ import type {
  * from an audit replay cursor: audit cursors order persisted audit facts and do
  * not encode a run stream sequence.
  */
+interface RpcRunStreamEnvelope {
+	readonly runId: string;
+	readonly sessionId: string;
+	readonly sequence: number;
+	readonly timestamp: string;
+	readonly eventId: string;
+	readonly streamId: string;
+	readonly correlation: DurableEventEnvelope["correlation"];
+}
+
 export type RpcRunStreamEvent =
-	| { type: "run.started"; runId: string; sessionId: string; sequence: number; timestamp: string }
-	| {
+	| (RpcRunStreamEnvelope & { readonly type: "run.started" })
+	| (RpcRunStreamEnvelope & {
 			type: "run.event";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
 			event: JsonAgentSessionEvent;
-	  }
-	| {
+	  })
+	| (RpcRunStreamEnvelope & {
 			type: "run.completed";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
 			receipt: RunReceipt;
-	  }
-	| {
+	  })
+	| (RpcRunStreamEnvelope & {
 			type: "run.failed";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
 			receipt: RunReceipt;
-	  }
-	| {
+	  })
+	| (RpcRunStreamEnvelope & {
 			type: "run.cancelled";
-			runId: string;
-			sessionId: string;
-			sequence: number;
-			timestamp: string;
 			receipt: RunReceipt;
-	  };
+	  });
 
 export type RunReplayTerminalStatus = "completed" | "failed" | "cancelled";
 
@@ -78,6 +73,20 @@ export interface RunReplayTerminalConflict {
 	readonly received: RunReplayTerminalStatus;
 	readonly source: RunReplayTerminalConfirmation["source"];
 	readonly reason: "status" | "terminal_error" | "usage";
+}
+
+export type RunReplayRecoveryErrorCode = "run_replay_terminal_conflict";
+
+export class RunReplayRecoveryError extends Error {
+	readonly code: RunReplayRecoveryErrorCode;
+	readonly conflict: RunReplayTerminalConflict;
+
+	constructor(conflict: RunReplayTerminalConflict) {
+		super("Run replay terminal evidence conflicts");
+		this.name = "RunReplayRecoveryError";
+		this.code = "run_replay_terminal_conflict";
+		this.conflict = { ...conflict };
+	}
 }
 
 /**
@@ -147,7 +156,12 @@ export interface RunReplayEventResult {
 	readonly gap?: RunReplayGap;
 	readonly terminalConfirmation?: RunReplayTerminalConfirmation;
 	readonly terminalConflict?: RunReplayTerminalConflict;
-	readonly ignoredReason?: "run_mismatch" | "session_mismatch" | "invalid_sequence";
+	readonly ignoredReason?:
+		| "run_mismatch"
+		| "session_mismatch"
+		| "invalid_sequence"
+		| "invalid_envelope"
+		| "correlation_mismatch";
 	readonly state: RunReplayRecoveryState;
 }
 
@@ -246,6 +260,48 @@ function validateSequence(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function streamEnvelopeError(
+	event: RpcRunStreamEvent,
+): Exclude<RunReplayEventResult["ignoredReason"], undefined> | undefined {
+	if (
+		typeof event.eventId !== "string" ||
+		event.eventId.length === 0 ||
+		typeof event.streamId !== "string" ||
+		event.streamId.length === 0 ||
+		typeof event.timestamp !== "string" ||
+		event.timestamp.length === 0 ||
+		!isRecord(event.correlation)
+	) {
+		return "invalid_envelope";
+	}
+	if (
+		event.streamId !== event.sessionId ||
+		event.correlation.sessionId !== event.sessionId ||
+		event.correlation.runId !== event.runId
+	) {
+		return "correlation_mismatch";
+	}
+	if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled") {
+		const expectedStatus = event.type === "run.completed" ? "completed" : event.type === "run.failed" ? "failed" : "cancelled";
+		if (
+			!isRecord(event.receipt) ||
+			typeof event.receipt.runReceiptId !== "string" ||
+			event.receipt.runReceiptId.length === 0 ||
+			event.receipt.runId !== event.runId ||
+			event.receipt.sessionId !== event.sessionId ||
+			event.receipt.status !== expectedStatus ||
+			event.correlation.runReceiptId !== event.receipt.runReceiptId
+		) {
+			return "correlation_mismatch";
+		}
+	}
+	return undefined;
+}
+
 function cloneGap(gap: RunReplayGap | undefined): RunReplayGap | undefined {
 	return gap === undefined ? undefined : { ...gap };
 }
@@ -310,8 +366,8 @@ export class RunReplayRecovery {
 		this.auditReplayComplete = state?.auditReplayComplete ?? false;
 		this.auditStatus = state?.auditStatus;
 		this.gap = cloneGap(state?.gap);
-		this.terminal = cloneTerminal(state?.terminal);
 		this.terminalConflict = state?.terminalConflict === undefined ? undefined : { ...state.terminalConflict };
+		this.terminal = this.terminalConflict === undefined ? cloneTerminal(state?.terminal) : undefined;
 		this.consumedAuditEventKeys = new Set(state?.consumedAuditEventKeys ?? []);
 	}
 
@@ -348,10 +404,13 @@ export class RunReplayRecovery {
 
 	/** Consume one live run event, enforcing a contiguous sequence watermark. */
 	consumeRunEvent(event: RpcRunStreamEvent): RunReplayEventResult {
+		this.assertUsable();
 		if (event.runId !== this.runId) return this.ignoredEvent(event, "run_mismatch");
 		if (this.sessionId !== undefined && event.sessionId !== this.sessionId) {
 			return this.ignoredEvent(event, "session_mismatch");
 		}
+		const envelopeError = streamEnvelopeError(event);
+		if (envelopeError !== undefined) return this.ignoredEvent(event, envelopeError);
 		if (!validateSequence(event.sequence)) return this.ignoredEvent(event, "invalid_sequence");
 		this.sessionId ??= event.sessionId;
 
@@ -439,6 +498,7 @@ export class RunReplayRecovery {
 
 	/** Consume one audit.replay page and advance only its opaque cursor. */
 	consumeReplayPage(result: AuditReplayResult): RunReplayPageResult {
+		this.assertUsable();
 		const events: AuditEvent[] = [];
 		const duplicateEventKeys: string[] = [];
 		let ignoredEventCount = 0;
@@ -494,6 +554,7 @@ export class RunReplayRecovery {
 
 	/** Reconcile a read-only run.get snapshot without inventing a stream sequence. */
 	reconcileRun(run: RunGetData): RunReplayRunSnapshotResult {
+		this.assertUsable();
 		if (run.run.id !== this.runId) throw new Error(`Run snapshot belongs to ${run.run.id}, not ${this.runId}`);
 		if (this.sessionId !== undefined && run.run.sessionId !== this.sessionId) {
 			throw new Error(`Run snapshot belongs to session ${run.run.sessionId}, not ${this.sessionId}`);
@@ -534,6 +595,7 @@ export class RunReplayRecovery {
 	 * exhausted or the configured page bound is reached. All calls are read-only.
 	 */
 	async reconnect(): Promise<RunReplayReconnectResult> {
+		this.assertUsable();
 		if (this.source === undefined) throw new Error("Run replay recovery has no read-only source");
 		const run = await this.source.getRun(this.runId);
 		const runSnapshot = this.reconcileRun(run);
@@ -594,6 +656,10 @@ export class RunReplayRecovery {
 		return this.terminal;
 	}
 
+	private assertUsable(): void {
+		if (this.terminalConflict !== undefined) throw new RunReplayRecoveryError(this.terminalConflict);
+	}
+
 	private recordTerminalConflict(
 		observation: TerminalObservation,
 		source: RunReplayTerminalConfirmation["source"],
@@ -626,13 +692,15 @@ export class RunReplayRecovery {
 			}
 			return undefined;
 		}
-		this.terminalConflict ??= {
+		const conflict: RunReplayTerminalConflict = {
 			confirmed: this.terminal.status,
 			received: observation.status,
 			source,
 			reason,
 		};
-		return this.terminalConflict;
+		this.terminal = undefined;
+		this.terminalConflict = conflict;
+		throw new RunReplayRecoveryError(conflict);
 	}
 }
 

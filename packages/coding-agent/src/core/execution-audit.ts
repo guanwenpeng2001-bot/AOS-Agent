@@ -15,6 +15,8 @@ import {
 	cloneDeepFrozen,
 	createDurableEvent,
 	fingerprintFoundationValue,
+	FoundationLedgerState,
+	parseFoundationMutation,
 	validateAttempt,
 	validateAttemptReceipt,
 	validateDurableEvent,
@@ -24,6 +26,7 @@ import {
 	type Attempt,
 	type CanonicalRunResult,
 	type DurableEventEnvelope,
+	type ExecutionCorrelation,
 	type FoundationRecord,
 	type FoundationEventEnvelope,
 	type RunReceipt as CanonicalRunReceipt,
@@ -36,17 +39,7 @@ import {
 	isOpaqueCapabilityDescriptorId,
 	isOpaqueCapabilityRevision,
 } from "./run-lifecycle.ts";
-import type {
-	CapabilityBindingLedgerRecord,
-	PersistedRunLedgerEntry,
-	RunAttachmentSummary,
-	RunFinalModelReference,
-	RunModelAttemptSummary,
-	RunModelBudgetSummary,
-	RunModelReference,
-	RunReceipt,
-	RunRecord,
-} from "./run-lifecycle.ts";
+import type { CapabilityBindingLedgerRecord } from "./run-lifecycle.ts";
 import type {
 	ModelAttemptLedgerRecord,
 	ModelBindingLedgerRecord,
@@ -75,7 +68,13 @@ import type {
 	WorkspaceScope,
 } from "./execution-policy.ts";
 import type { SessionEntry } from "./session-manager.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "./session-manager-storage.ts";
+import {
+	FOUNDATION_DURABLE_CUSTOM_TYPE,
+	FOUNDATION_ENTRY_CUSTOM_TYPE,
+	FOUNDATION_FACT_CUSTOM_TYPE,
+	FOUNDATION_LANE_CUSTOM_TYPE,
+	FOUNDATION_RECORD_CUSTOM_TYPE,
+} from "./session-manager-storage.ts";
 import {
 	AutomationRunProjectionError,
 	projectAutomationRuns,
@@ -85,8 +84,16 @@ import {
 	type CanonicalAutomationRunProjection,
 } from "./automation-run-projection.ts";
 import {
+	decodeLegacyAutomationRunLedgerEntryV1,
 	reconcileLegacyAutomationRunLedgerV1,
+	type LegacyAutomationRunFinalModelReferenceV1,
+	type LegacyAutomationRunLedgerEntryV1,
 	type LegacyAutomationRunLedgerSourceEntryV1,
+	type LegacyAutomationRunModelAttemptSummaryV1,
+	type LegacyAutomationRunModelBudgetSummaryV1,
+	type LegacyAutomationRunModelReferenceV1,
+	type LegacyAutomationRunReceiptV1,
+	type LegacyAutomationRunRecordV1,
 } from "./migrations/automation-run-ledger.ts";
 import {
 	isExternalAdapterIdentity,
@@ -161,7 +168,6 @@ export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;
 export const AUDIT_MAX_LIMIT = 200 as const;
 export const AUDIT_SOURCE_CUSTOM_TYPES = [
-	"automation.run",
 	"model.binding",
 	"model.attempt",
 	"context.snapshot",
@@ -362,11 +368,24 @@ export interface AuditRunTerminalErrorSummary {
 	readonly retryable?: boolean;
 }
 
+export interface AuditRunAttachmentSummary {
+	readonly sourceId: string;
+	readonly kind: "resource" | "prompt";
+	readonly descriptorId?: string;
+	readonly revision?: string;
+	readonly capabilityBindingId?: string;
+	readonly policyBindingId?: string;
+	readonly contentDigest: string;
+	readonly byteCount: number;
+	readonly blockCount: number;
+	readonly mimeTypes?: ReadonlyArray<string>;
+}
+
 export interface AuditRunSummary {
 	readonly status: AuditRunEventStatus;
-	/** Present only for a migrated historical automation.run projection. */
+	/** Present only for a migrated historical Run projection. */
 	readonly attempt?: number;
-	/** Present only for a migrated historical automation.run projection. */
+	/** Present only for a migrated historical Run projection. */
 	readonly model?: AuditRunModelReference;
 	readonly deadlineAt?: string;
 	readonly sourceRunId?: string;
@@ -384,7 +403,7 @@ export interface AuditRunSummary {
 	readonly finalModel?: AuditRunFinalModelReference;
 	readonly modelBudget?: AuditModelBudgetSummary;
 	readonly bindingAssociation?: RunBindingAssociation;
-	readonly attachments?: ReadonlyArray<RunAttachmentSummary>;
+	readonly attachments?: ReadonlyArray<AuditRunAttachmentSummary>;
 }
 
 export interface AuditModelBudgetLimitSummary {
@@ -1234,184 +1253,6 @@ function isModelAttemptRecord(value: unknown): value is ModelAttemptLedgerRecord
 	return value.summary === undefined || isSafeText(value.summary);
 }
 
-function isRunModelReference(value: unknown): value is RunModelReference {
-	if (!isRecord(value) || !isSafeModelText(value.provider) || !isSafeModelText(value.id)) return false;
-	return isThinkingLevel(value.thinkingLevel);
-}
-
-function isRunFinalModelReference(value: unknown): value is RunFinalModelReference {
-	if (!isRecord(value) || !isSafeModelText(value.provider)) return false;
-	if (value.id === undefined && value.modelId === undefined) return false;
-	if (value.id !== undefined && !isSafeModelText(value.id)) return false;
-	if (value.modelId !== undefined && !isSafeModelText(value.modelId)) return false;
-	return value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel);
-}
-
-function isRunUsage(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	return isFiniteNonNegative(value.input) && isFiniteNonNegative(value.output) && isFiniteNonNegative(value.total);
-}
-
-function isRunModelAttemptSummary(value: unknown): value is RunModelAttemptSummary {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.attemptId) ||
-		!isSafeIdentifier(value.bindingId) ||
-		!isRunFinalModelReference(value.candidate) ||
-		!isCount(value.order) ||
-		(value.status !== "started" && value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") ||
-		!isCanonicalTimestamp(value.startedAt)
-	) {
-		return false;
-	}
-	if (value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) return false;
-	if (value.failureCategory !== undefined && !isSafeIdentifier(value.failureCategory)) return false;
-	if (value.usage !== undefined && !isRecord(value.usage)) return false;
-	if (value.visibleOutput !== undefined && typeof value.visibleOutput !== "boolean") return false;
-	if (value.contextSnapshotId !== undefined && !isSafeIdentifier(value.contextSnapshotId)) return false;
-	return value.summary === undefined || isSafeText(value.summary);
-}
-
-function isRunModelBudgetSummary(value: unknown): value is RunModelBudgetSummary {
-	if (!isRecord(value)) return false;
-	for (const key of [
-		"modelCalls",
-		"inputTokens",
-		"outputTokens",
-		"totalTokens",
-		"costUsd",
-		"maxModelCalls",
-		"maxInputTokens",
-		"maxOutputTokens",
-		"maxTotalTokens",
-		"maxCostUsd",
-	] as const) {
-		if (value[key] !== undefined && !isFiniteNonNegative(value[key])) return false;
-	}
-	return value.exceeded === undefined || typeof value.exceeded === "boolean";
-}
-
-function isAutomationError(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	return isSafeIdentifier(value.code) && typeof value.retryable === "boolean" && typeof value.message === "string";
-}
-
-function isPolicySummary(value: unknown): boolean {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.bindingId) ||
-		!isSafeIdentifier(value.profileId) ||
-		!isSafeIdentifier(value.profileRevision) ||
-		!isPolicyTrust(value.projectTrust) ||
-		!isPolicyEnforcement(value.enforcement) ||
-		!isSandboxStatus(value.sandboxStatus) ||
-		!isSandboxCapabilities(value.sandboxCapabilities)
-	) {
-		return false;
-	}
-	if (value.sandboxProviderId !== undefined && !isSafeIdentifier(value.sandboxProviderId)) return false;
-	if (value.resource !== undefined && !isPolicyResource(value.resource)) return false;
-	if (value.action !== undefined && !isPolicyAction(value.action)) return false;
-	if (value.outcome !== undefined && !isPolicyOutcome(value.outcome)) return false;
-	if (value.reasonCode !== undefined && !isPolicyErrorCode(value.reasonCode)) return false;
-	if (value.requestId !== undefined && !isSafeIdentifier(value.requestId)) return false;
-	return value.timestamp === undefined || isCanonicalTimestamp(value.timestamp);
-}
-
-function isRunRecord(value: unknown): value is RunRecord {
-	if (!isRecord(value)) return false;
-	if (
-		!isSafeIdentifier(value.id) ||
-		!isSafeIdentifier(value.sessionId) ||
-		!isCount(value.attempt) ||
-		!isRunModelReference(value.model)
-	)
-		return false;
-	if (
-		value.status !== "accepted" &&
-		value.status !== "running" &&
-		value.status !== "completed" &&
-		value.status !== "failed" &&
-		value.status !== "cancelled"
-	)
-		return false;
-	for (const key of [
-		"sourceRunId",
-		"previousBindingId",
-		"capabilityBindingId",
-		"modelBindingId",
-		"previousModelBindingId",
-		"policyBindingId",
-		"previousPolicyBindingId",
-		"contextSnapshotId",
-	] as const) {
-		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
-	}
-	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (
-		value.modelAttempts !== undefined &&
-		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
-	)
-		return false;
-	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
-	if (value.policySummary !== undefined && !isPolicySummary(value.policySummary)) return false;
-	if (value.startedAt !== undefined && !isCanonicalTimestamp(value.startedAt)) return false;
-	if (value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) return false;
-	return value.terminalError === undefined || isAutomationError(value.terminalError);
-}
-
-function isRunReceipt(value: unknown): value is RunReceipt {
-	if (!isRecord(value) || !isSafeIdentifier(value.runId) || !isSafeIdentifier(value.sessionId)) return false;
-	if (value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") return false;
-	if (!isRunUsage(value.usage)) return false;
-	if (value.finalText !== undefined && typeof value.finalText !== "string") return false;
-	if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") return false;
-	if (value.terminalError !== undefined && !isAutomationError(value.terminalError)) return false;
-	for (const key of [
-		"contextSnapshotId",
-		"capabilityBindingId",
-		"modelBindingId",
-		"previousModelBindingId",
-		"policyBindingId",
-		"previousPolicyBindingId",
-	] as const) {
-		if (value[key] !== undefined && !isSafeIdentifier(value[key])) return false;
-	}
-	if (value.finalModel !== undefined && !isRunFinalModelReference(value.finalModel)) return false;
-	if (
-		value.modelAttempts !== undefined &&
-		(!Array.isArray(value.modelAttempts) || value.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
-	)
-		return false;
-	if (value.modelBudget !== undefined && !isRunModelBudgetSummary(value.modelBudget)) return false;
-	if (value.attachments !== undefined && (!Array.isArray(value.attachments) || value.attachments.some((attachment) => !isRunAttachmentAuditSummary(attachment)))) {
-		return false;
-	}
-	return value.policySummary === undefined || isPolicySummary(value.policySummary);
-}
-
-const RUN_ATTACHMENT_KINDS = new Set(["resource", "prompt"]);
-const RUN_ATTACHMENT_DIGEST_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-
-/** Validate one public-safe run attachment summary (digest/opaque metadata only). */
-function isRunAttachmentAuditSummary(value: unknown): value is RunAttachmentSummary {
-	if (!isRecord(value)) return false;
-	if (typeof value.sourceId !== "string" || !RUN_ATTACHMENT_DIGEST_ID_PATTERN.test(value.sourceId)) return false;
-	if (typeof value.kind !== "string" || !RUN_ATTACHMENT_KINDS.has(value.kind)) return false;
-	if (value.descriptorId !== undefined && !isOpaqueCapabilityDescriptorId(value.descriptorId)) return false;
-	if (value.revision !== undefined && !isOpaqueCapabilityRevision(value.revision)) return false;
-	if (value.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(value.capabilityBindingId)) return false;
-	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (typeof value.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(value.contentDigest)) return false;
-	if (!isCount(value.byteCount) || !isCount(value.blockCount)) return false;
-	if (value.mimeTypes !== undefined) {
-		if (!Array.isArray(value.mimeTypes) || value.mimeTypes.length > 16) return false;
-		if (value.mimeTypes.some((mimeType) => !isSafeText(mimeType))) return false;
-	}
-	return true;
-}
-
 function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
 	if (!isRecord(value)) return false;
 	if (
@@ -1559,15 +1400,6 @@ function isExternalMapping(value: unknown): value is ExternalExecutionMapping {
 	return value.adapter === undefined || isExternalAdapterIdentity(value.adapter);
 }
 
-/** Explicit guard for the `automation.run` accepted/started/terminal payload. */
-export function isAutomationRunEntryData(value: unknown): value is PersistedRunLedgerEntry {
-	if (!isRecord(value) || value.schemaVersion !== AUDIT_SCHEMA_VERSION || typeof value.kind !== "string") return false;
-	if (value.kind === "accepted") return isRunRecord(value.record);
-	if (value.kind === "started") return isSafeIdentifier(value.runId) && isCanonicalTimestamp(value.startedAt);
-	if (value.kind === "terminal") return isCanonicalTimestamp(value.endedAt) && isRunReceipt(value.receipt);
-	return false;
-}
-
 /** Explicit guard for a `model.binding` source record. */
 export function isModelBindingAuditRecord(value: unknown): value is ModelBindingLedgerRecord {
 	return isModelBindingRecord(value);
@@ -1632,11 +1464,11 @@ function safeModelReference(value: ModelReference): AuditModelReference {
 	return model;
 }
 
-function safeRunModelReference(value: RunModelReference): AuditRunModelReference {
+function safeRunModelReference(value: LegacyAutomationRunModelReferenceV1): AuditRunModelReference {
 	return { provider: value.provider, id: value.id, thinkingLevel: value.thinkingLevel };
 }
 
-function safeFinalModelReference(value: RunFinalModelReference): AuditRunFinalModelReference {
+function safeFinalModelReference(value: LegacyAutomationRunFinalModelReferenceV1): AuditRunFinalModelReference {
 	const model = { provider: value.provider } as DeepMutable<AuditRunFinalModelReference>;
 	if (value.id !== undefined) model.id = value.id;
 	if (value.modelId !== undefined) model.modelId = value.modelId;
@@ -1644,7 +1476,7 @@ function safeFinalModelReference(value: RunFinalModelReference): AuditRunFinalMo
 	return model;
 }
 
-function safeUsage(value: ModelUsage | RunModelAttemptSummary["usage"]): AuditModelUsageSummary {
+function safeUsage(value: ModelUsage | LegacyAutomationRunModelAttemptSummaryV1["usage"]): AuditModelUsageSummary {
 	const usage = {} as DeepMutable<AuditModelUsageSummary>;
 	for (const key of [
 		"inputTokens",
@@ -1662,7 +1494,9 @@ function safeUsage(value: ModelUsage | RunModelAttemptSummary["usage"]): AuditMo
 	return usage;
 }
 
-function safeAttempt(value: ModelAttemptLedgerRecord | RunModelAttemptSummary): AuditModelAttemptSummary | undefined {
+function safeAttempt(
+	value: ModelAttemptLedgerRecord | LegacyAutomationRunModelAttemptSummaryV1,
+): AuditModelAttemptSummary | undefined {
 	const candidate = value.candidate;
 	const model: AuditModelReference = "modelId" in candidate
 		? safeModelReference(candidate as ModelReference)
@@ -1685,7 +1519,7 @@ function safeAttempt(value: ModelAttemptLedgerRecord | RunModelAttemptSummary): 
 	return attempt;
 }
 
-function safeBudget(value: ModelBudgetLimit | RunModelBudgetSummary): AuditModelBudgetSummary {
+function safeBudget(value: ModelBudgetLimit | LegacyAutomationRunModelBudgetSummaryV1): AuditModelBudgetSummary {
 	const budget = {} as DeepMutable<AuditModelBudgetSummary>;
 	for (const key of [
 		"modelCalls",
@@ -1743,9 +1577,9 @@ function safePolicySummary(
 }
 
 function safeRunSummary(
-	record: RunRecord,
+	record: LegacyAutomationRunRecordV1,
 	status: AuditRunEventStatus,
-	receipt?: RunReceipt,
+	receipt?: LegacyAutomationRunReceiptV1,
 	endedAt?: string,
 ): AuditRunSummary {
 	const summary = {
@@ -1776,7 +1610,7 @@ function safeRunSummary(
 	if (contextSnapshotId !== undefined) summary.contextSnapshotId = contextSnapshotId;
 	if (receipt?.attachments !== undefined && receipt.attachments.length > 0) {
 		const attachments = receipt.attachments.map((attachment) => {
-			const copy: DeepMutable<RunAttachmentSummary> = {
+			const copy: DeepMutable<AuditRunAttachmentSummary> = {
 				sourceId: attachment.sourceId,
 				kind: attachment.kind,
 				contentDigest: attachment.contentDigest,
@@ -2091,20 +1925,28 @@ interface RunFactBase {
 }
 
 type RunFact =
-	| (RunFactBase & { readonly kind: "accepted"; readonly record: RunRecord })
+	| (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 })
 	| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
-	| (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string });
+	| (RunFactBase & {
+			readonly kind: "terminal";
+			readonly receipt: LegacyAutomationRunReceiptV1;
+			readonly endedAt: string;
+	  });
 
 interface RunState {
 	readonly runId: string;
 	projection?: AutomationRunProjection;
 	canonicalSource?: CanonicalAuditRunSource;
-	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: RunRecord }) | undefined;
+	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 }) | undefined;
 	started:
 		| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
 		| undefined;
 	terminal:
-		| (RunFactBase & { readonly kind: "terminal"; readonly receipt: RunReceipt; readonly endedAt: string })
+		| (RunFactBase & {
+				readonly kind: "terminal";
+				readonly receipt: LegacyAutomationRunReceiptV1;
+				readonly endedAt: string;
+		  })
 		| undefined;
 }
 
@@ -2128,6 +1970,14 @@ interface RunSourceProjection {
 }
 
 const CANONICAL_RUN_OBJECT_TYPES = new Set(["task", "attempt", "attempt_receipt", "task_result", "run_receipt"]);
+const FOUNDATION_RESERVED_CUSTOM_TYPE_PREFIX = "__aos.foundation.";
+const FOUNDATION_RESERVED_CUSTOM_TYPES = new Set([
+	FOUNDATION_ENTRY_CUSTOM_TYPE,
+	FOUNDATION_RECORD_CUSTOM_TYPE,
+	FOUNDATION_LANE_CUSTOM_TYPE,
+	FOUNDATION_FACT_CUSTOM_TYPE,
+	FOUNDATION_DURABLE_CUSTOM_TYPE,
+]);
 
 function canonicalEqual(left: unknown, right: unknown): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
@@ -2137,8 +1987,7 @@ function failRunProjection(): never {
 	throw new ExecutionAuditError("audit_replay_incomplete");
 }
 
-function foundationRecordFromEntry(
-	sessionId: string,
+function parseFoundationRecordEntry(
 	entry: Extract<SessionEntry, { type: "custom" }>,
 ): FoundationRecord {
 	const data = entry.data;
@@ -2151,49 +2000,15 @@ function foundationRecordFromEntry(
 	) {
 		return failRunProjection();
 	}
-	const record = data.record;
-	if (
-		record.schemaVersion !== 1 ||
-		(record.kind !== "fact" && record.kind !== "intent" && record.kind !== "tombstone" && record.kind !== "retention") ||
-		typeof record.id !== "string" ||
-		record.id.length === 0 ||
-		!Number.isSafeInteger(record.seq) ||
-		(record.seq as number) < 1 ||
-		typeof record.lane !== "string" ||
-		record.lane.length === 0 ||
-		!Number.isSafeInteger(record.timestamp) ||
-		(record.timestamp as number) < 0 ||
-		typeof record.clientRequestId !== "string" ||
-		record.clientRequestId.length === 0 ||
-		typeof record.fencingToken !== "string" ||
-		record.fencingToken.length === 0 ||
-		!isRecord(record.correlation) ||
-		record.correlation.sessionId !== sessionId ||
-		record.correlation.revision === undefined ||
-		!Number.isSafeInteger(record.correlation.revision) ||
-		record.correlation.fencingToken !== record.fencingToken
-	) {
-		return failRunProjection();
-	}
-	if (record.kind !== "retention") {
-		if (
-			typeof record.objectType !== "string" ||
-			record.objectType.length === 0 ||
-			typeof record.objectId !== "string" ||
-			record.objectId.length === 0 ||
-			!Number.isSafeInteger(record.revision) ||
-			(record.revision as number) < 1 ||
-			record.correlation.revision !== record.revision
-		) {
-			return failRunProjection();
-		}
-	}
+	let encoded: string;
 	try {
-		canonicalFoundationJson(record);
+		encoded = canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: data.record });
 	} catch {
 		return failRunProjection();
 	}
-	return record as unknown as FoundationRecord;
+	const decoded = parseFoundationMutation(encoded);
+	if (!decoded.ok) return failRunProjection();
+	return decoded.value;
 }
 
 function foundationTimestamp(record: FoundationRecord): string {
@@ -2206,48 +2021,43 @@ function selectFoundationFacts(
 	sessionId: string,
 	entries: ReadonlyArray<SessionEntry>,
 ): Map<string, FoundationFactSource<unknown>> {
-	const recordsById = new Map<string, { entry: Extract<SessionEntry, { type: "custom" }>; record: FoundationRecord }>();
-	const recordsBySequence = new Map<number, FoundationRecord>();
-	for (const candidate of entries) {
-		if (!isCustomEntry(candidate) || candidate.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) continue;
-		const record = foundationRecordFromEntry(sessionId, candidate);
-		const existingId = recordsById.get(record.id);
-		if (existingId !== undefined) {
-			if (!canonicalEqual(existingId.record, record)) return failRunProjection();
-			if (candidate.id.localeCompare(existingId.entry.id) < 0) recordsById.set(record.id, { entry: candidate, record });
+	const state = new FoundationLedgerState({ sessionId });
+	const entriesByRecordId = new Map<string, Extract<SessionEntry, { type: "custom" }>>();
+	for (let index = 0; index < entries.length; index += 1) {
+		const candidate = entries[index]!;
+		const physicalSequence = index + 1;
+		if (
+			isCustomEntry(candidate) &&
+			candidate.customType.startsWith(FOUNDATION_RESERVED_CUSTOM_TYPE_PREFIX) &&
+			!FOUNDATION_RESERVED_CUSTOM_TYPES.has(candidate.customType)
+		) {
+			return failRunProjection();
+		}
+		if (!isCustomEntry(candidate) || candidate.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) {
+			state.observeExternalSequence(physicalSequence);
 			continue;
 		}
-		const existingSequence = recordsBySequence.get(record.seq);
-		if (existingSequence !== undefined && !canonicalEqual(existingSequence, record)) return failRunProjection();
-		recordsById.set(record.id, { entry: candidate, record });
-		recordsBySequence.set(record.seq, record);
+		const record = parseFoundationRecordEntry(candidate);
+		state.applyPersistedRecord(record);
+		entriesByRecordId.set(record.id, candidate);
 	}
 
 	const current = new Map<string, FoundationFactSource<unknown>>();
-	const latestRevisions = new Map<string, number>();
-	const terminalObjects = new Set<string>();
-	const ordered = [...recordsById.values()].sort(
-		(left, right) => left.record.seq - right.record.seq || left.record.id.localeCompare(right.record.id),
-	);
-	for (const source of ordered) {
-		const record = source.record;
+	for (const record of state.getRecords()) {
 		if (record.kind === "retention") continue;
 		if (!CANONICAL_RUN_OBJECT_TYPES.has(record.objectType)) continue;
 		if (!isSafeIdentifier(record.id) || !isSafeIdentifier(record.objectType) || !isSafeIdentifier(record.objectId)) {
 			return failRunProjection();
 		}
 		const key = `${record.objectType}\u0000${record.objectId}`;
-		if (terminalObjects.has(key)) return failRunProjection();
-		const previousRevision = latestRevisions.get(key);
-		if (record.revision !== (previousRevision ?? 0) + 1) return failRunProjection();
-		latestRevisions.set(key, record.revision);
 		if (record.kind === "tombstone") {
 			current.delete(key);
-			terminalObjects.add(key);
 			continue;
 		}
 		if (record.kind === "intent") continue;
-		current.set(key, { entry: source.entry, record, value: record.payload });
+		const entry = entriesByRecordId.get(record.id);
+		if (entry === undefined) return failRunProjection();
+		current.set(key, { entry, record, value: record.payload });
 	}
 	return current;
 }
@@ -2265,6 +2075,34 @@ function requireFoundationFact<TValue>(
 	const checked = validate(source.value);
 	if (!checked.ok || checked.value === undefined) return failRunProjection();
 	return { entry: source.entry, record: source.record, value: checked.value };
+}
+
+function sourceMatchesProvenance(
+	source: FoundationFactSource<unknown>,
+	provenance: ExecutionCorrelation | undefined,
+): boolean {
+	if (provenance === undefined) return false;
+	const sourceCorrelation = source.record.correlation as unknown as Record<string, unknown>;
+	const provenanceCorrelation = provenance as unknown as Record<string, unknown>;
+	for (const [field, value] of Object.entries(provenanceCorrelation)) {
+		if (typeof value === "string" && sourceCorrelation[field] !== value) return false;
+	}
+	for (const [field, value] of Object.entries(sourceCorrelation)) {
+		if (field !== "fencingToken" && typeof value === "string" && provenanceCorrelation[field] !== value) return false;
+	}
+	return true;
+}
+
+function sourceBelongsToRunLane(
+	source: FoundationFactSource<unknown>,
+	sessionId: string,
+	laneId: string,
+): boolean {
+	return (
+		source.record.lane === laneId &&
+		source.record.correlation.sessionId === sessionId &&
+		source.record.correlation.laneId === laneId
+	);
 }
 
 function canonicalRunSources(
@@ -2294,16 +2132,48 @@ function canonicalRunSources(
 		) {
 			return failRunProjection();
 		}
-		const attemptReceipts = receipt.attemptReceiptIds.map((attemptReceiptId) =>
-			requireFoundationFact(facts, "attempt_receipt", attemptReceiptId, (value) => validateAttemptReceipt(value)),
-		);
+		const attemptReceipts = receipt.attemptReceiptIds.map((attemptReceiptId) => {
+			const source = requireFoundationFact(facts, "attempt_receipt", attemptReceiptId, (value) =>
+				validateAttemptReceipt(value),
+			);
+			const provenance = source.value.provenance.correlation;
+			if (
+				source.value.attemptReceiptId !== attemptReceiptId ||
+				!sourceBelongsToRunLane(source, sessionId, sourceLaneId) ||
+				provenance === undefined ||
+				!sourceMatchesProvenance(source, provenance) ||
+				provenance.taskId !== source.value.taskId ||
+				provenance.dispatchId !== source.value.dispatchId ||
+				provenance.attemptId !== source.value.attemptId ||
+				provenance.bindingId !== source.value.bindingId ||
+				provenance.bindingEpochId !== source.value.bindingEpochIds[0] ||
+				provenance.agentInstanceId !== source.value.agentInstanceId ||
+				(provenance.attemptReceiptId !== undefined && provenance.attemptReceiptId !== attemptReceiptId) ||
+				(provenance.runId !== undefined && provenance.runId !== receipt.runId)
+			) {
+				return failRunProjection();
+			}
+			return source;
+		});
 		if (attemptReceipts.length === 0) return failRunProjection();
 		const attempts = attemptReceipts.map(({ value: attemptReceipt }) => {
 			const source = requireFoundationFact(facts, "attempt", attemptReceipt.attemptId, (value) => validateAttempt(value));
 			if (
 				source.value.attemptId !== attemptReceipt.attemptId ||
 				source.value.taskId !== attemptReceipt.taskId ||
-				source.value.dispatchId !== attemptReceipt.dispatchId
+				source.value.dispatchId !== attemptReceipt.dispatchId ||
+				source.value.providerId !== attemptReceipt.providerId ||
+				source.value.bindingId !== attemptReceipt.bindingId ||
+				source.value.agentInstanceId !== attemptReceipt.agentInstanceId ||
+				!canonicalEqual(source.value.bindingEpochIds, attemptReceipt.bindingEpochIds) ||
+				!sourceBelongsToRunLane(source, sessionId, sourceLaneId) ||
+				source.record.correlation.taskId !== source.value.taskId ||
+				source.record.correlation.dispatchId !== source.value.dispatchId ||
+				source.record.correlation.attemptId !== source.value.attemptId ||
+				source.record.correlation.bindingId !== source.value.bindingId ||
+				!source.value.bindingEpochIds.includes(source.record.correlation.bindingEpochId ?? "") ||
+				source.record.correlation.agentInstanceId !== source.value.agentInstanceId ||
+				(source.record.correlation.runId !== undefined && source.record.correlation.runId !== receipt.runId)
 			) {
 				return failRunProjection();
 			}
@@ -2311,14 +2181,53 @@ function canonicalRunSources(
 		});
 		const taskId = attemptReceipts[0]!.value.taskId;
 		const task = requireFoundationFact(facts, "task", taskId, (value) => validateTaskEnvelope(value));
-		if (task.value.taskId !== taskId || attemptReceipts.some(({ value }) => value.taskId !== taskId)) {
+		if (
+			task.value.taskId !== taskId ||
+			attemptReceipts.some(({ value }) => value.taskId !== taskId) ||
+			!sourceBelongsToRunLane(task, sessionId, sourceLaneId) ||
+			task.record.correlation.taskId !== taskId ||
+			(task.record.correlation.goalId !== undefined && task.record.correlation.goalId !== task.value.goalId) ||
+			(task.record.correlation.runId !== undefined && task.record.correlation.runId !== receipt.runId)
+		) {
 			return failRunProjection();
 		}
 		const taskResult = receipt.taskResultId === undefined
 			? undefined
 			: requireFoundationFact(facts, "task_result", receipt.taskResultId, (value) => validateTaskResult(value));
-		if (taskResult !== undefined && taskResult.value.taskResultId !== receipt.taskResultId) return failRunProjection();
+		const taskResultCorrelation = taskResult?.value.provenance.correlation;
+		if (
+			taskResult !== undefined &&
+			(
+				taskResult.value.taskResultId !== receipt.taskResultId ||
+				taskResult.value.taskId !== taskId ||
+				taskResult.value.provenance.producerKind !== "host" ||
+				!sourceBelongsToRunLane(taskResult, sessionId, sourceLaneId) ||
+				taskResultCorrelation === undefined ||
+				!sourceMatchesProvenance(taskResult, taskResultCorrelation) ||
+				taskResultCorrelation.taskId !== taskId ||
+				taskResultCorrelation.taskResultId !== receipt.taskResultId ||
+				(taskResultCorrelation.runId !== undefined && taskResultCorrelation.runId !== receipt.runId) ||
+				taskResult.value.sourceAttemptReceiptIds.length === 0 ||
+				taskResult.value.sourceAttemptReceiptIds.some((id) => !receipt.attemptReceiptIds.includes(id))
+			)
+		) {
+			return failRunProjection();
+		}
 		const firstAttemptReceipt = attemptReceipts[0]!.value;
+		const sourceCorrelation = candidate.record.correlation;
+		if (
+			candidate.record.lane !== sourceLaneId ||
+			sourceCorrelation.sessionId !== sessionId ||
+			sourceCorrelation.laneId !== sourceLaneId ||
+			sourceCorrelation.taskId !== taskId ||
+			sourceCorrelation.runId !== receipt.runId ||
+			sourceCorrelation.runReceiptId !== receipt.runReceiptId ||
+			sourceCorrelation.taskResultId !== receipt.taskResultId ||
+			sourceCorrelation.attemptId !== firstAttemptReceipt.attemptId ||
+			sourceCorrelation.attemptReceiptId !== firstAttemptReceipt.attemptReceiptId
+		) {
+			return failRunProjection();
+		}
 		const writtenEvent = createDurableEvent({
 			category: "run_receipt.written",
 			eventId: candidate.record.id,
@@ -2417,51 +2326,17 @@ function legacyRunId(data: unknown): string | undefined {
 
 function legacyMigrationSource(
 	entries: ReadonlyArray<Extract<SessionEntry, { type: "custom" }>>,
-	canonical: ReadonlyArray<CanonicalAutomationRunProjection>,
-): {
-	readonly source: ReadonlyArray<LegacyAutomationRunLedgerSourceEntryV1>;
-	readonly synthesizedStartRunIds: ReadonlySet<string>;
-} {
-	const acceptedAt = new Map<string, string>();
-	const started = new Set<string>();
-	for (const entry of entries) {
-		const runId = legacyRunId(entry.data);
-		if (runId === undefined || !isRecord(entry.data)) continue;
-		if (entry.data.kind === "accepted") acceptedAt.set(runId, entry.timestamp);
-		if (entry.data.kind === "started") started.add(runId);
-	}
-	const canonicalByRunId = new Map(canonical.map((projection) => [projection.id, projection]));
-	const synthesizedStartRunIds = new Set<string>();
-	const values: Array<{ readonly entryId: string; readonly data: unknown }> = [];
-	for (const entry of entries) {
-		const runId = legacyRunId(entry.data);
-		if (
-			runId !== undefined &&
-			isRecord(entry.data) &&
-			entry.data.kind === "terminal" &&
-			!started.has(runId) &&
-			acceptedAt.has(runId)
-		) {
-			const acceptedTimestamp = acceptedAt.get(runId);
-			const terminalEndedAt = typeof entry.data.endedAt === "string" ? entry.data.endedAt : undefined;
-			const historicalStartedAt =
-				acceptedTimestamp !== undefined && terminalEndedAt !== undefined && terminalEndedAt < acceptedTimestamp
-					? terminalEndedAt
-					: acceptedTimestamp;
-			const startedAt = canonicalByRunId.get(runId)?.startedAt ?? historicalStartedAt;
-			if (startedAt === undefined || !isCanonicalTimestamp(startedAt)) return failRunProjection();
-			values.push({
-				entryId: `${entry.id}:migration-started`,
-				data: { schemaVersion: 1, kind: "started", runId, startedAt },
-			});
-			synthesizedStartRunIds.add(runId);
-		}
-		values.push({ entryId: entry.id, data: entry.data });
-	}
-	return {
-		source: values.map((entry, index) => ({ sequence: index + 1, entryId: entry.entryId, data: entry.data })),
-		synthesizedStartRunIds,
-	};
+): ReadonlyArray<LegacyAutomationRunLedgerSourceEntryV1> {
+	const decoded = entries.map((entry) => ({
+		entry,
+		fact: decodeLegacyAutomationRunLedgerEntryV1(entry.data),
+	}));
+	const startedRunIds = new Set(
+		decoded.flatMap(({ fact }) => fact.kind === "started" ? [fact.runId] : []),
+	);
+	return decoded
+		.filter(({ fact }) => fact.kind !== "terminal" || startedRunIds.has(fact.receipt.runId))
+		.map(({ entry, fact }, index) => ({ sequence: index + 1, entryId: entry.id, data: fact }));
 }
 
 function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntry>): RunSourceProjection {
@@ -2473,22 +2348,14 @@ function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntr
 			events: canonicalSources.events,
 		});
 		const legacyEntries = legacyRunEntries(entries);
-		const legacyMigration = legacyMigrationSource(legacyEntries, canonical);
-		const reconciled = reconcileLegacyAutomationRunLedgerV1(sessionId, legacyMigration.source, canonical);
+		const reconciled = reconcileLegacyAutomationRunLedgerV1(sessionId, legacyMigrationSource(legacyEntries), canonical);
 		const canonicalByRunId = new Map<string, CanonicalAuditRunSource>();
 		for (const projection of canonical) {
 			const source = canonicalSources.sourcesByRunId.get(projection.id);
 			if (source === undefined) return failRunProjection();
 			canonicalByRunId.set(projection.id, { ...source, projection });
 		}
-		const projections = reconciled.runs.map((projection): AutomationRunProjection => {
-			if (projection.migration === undefined || !legacyMigration.synthesizedStartRunIds.has(projection.id)) {
-				return projection;
-			}
-			const { startedAt: _startedAt, ...withoutSynthesizedStart } = projection;
-			return withoutSynthesizedStart;
-		});
-		return { canonicalByRunId, legacyEntries, projections };
+		return { canonicalByRunId, legacyEntries, projections: reconciled.runs };
 	} catch (error) {
 		if (error instanceof ExecutionAuditError) throw error;
 		if (error instanceof AutomationRunProjectionError) throw new ExecutionAuditError("audit_replay_incomplete");
@@ -3945,11 +3812,13 @@ function parseRunFact(
 		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, undefined, version, undefined, true));
 		return;
 	}
-	if (!isAutomationRunEntryData(entry.data) || !isRecord(entry.data)) {
+	let data: LegacyAutomationRunLedgerEntryV1;
+	try {
+		data = decodeLegacyAutomationRunLedgerEntryV1(entry.data);
+	} catch {
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, undefined, version, undefined, true));
 		return;
 	}
-	const data = entry.data;
 	if (data.kind === "accepted") {
 		if (data.record.sessionId !== sessionId) {
 			internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, undefined, false));
@@ -4001,7 +3870,7 @@ function parseRunFact(
 	}
 	const runId = data.receipt.runId;
 	const state = states.get(runId);
-	if (state === undefined || state.accepted === undefined) {
+	if (state === undefined || state.accepted === undefined || state.started === undefined) {
 		internalWarnings.push(warning(sessionId, "orphan_source", entry, undefined, version, new Set([runId]), false));
 		return;
 	}
