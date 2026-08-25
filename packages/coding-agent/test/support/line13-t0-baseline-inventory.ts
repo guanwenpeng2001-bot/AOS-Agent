@@ -18,7 +18,7 @@ export const LINE13_T0_BASELINE = Object.freeze({
 	capturedOnBranch: "guanwenpeng2001-bot/T0_BASELINE_INVENTORY",
 	nodeVersion: "v24.18.1",
 	npmVersion: "12.0.2",
-	installCommand: "npm install --ignore-scripts",
+	installCommand: "npm ci --ignore-scripts",
 	installExitCode: 0,
 	installAddedPackages: 408,
 	installAuditedPackages: 428,
@@ -339,7 +339,7 @@ export const LINE13_T0_PUBLIC_ROOTS = Object.freeze([
 export const LINE13_T0_EXPECTED = Object.freeze({
 	factCount: 146,
 	publicExportCount: 1965,
-	inventoryDigest: "8f94f9c5c12b7a36b15b64b532b1b2daec7fa5330ede4cf5a209920b197da685",
+	inventoryDigest: "4f9082c3e2dc3385d2c710608b5a0548371fb3c480d85eddce0cd94cd1b33174",
 	dependencyDigest: "ead81d7793fff1fa2ce8cdd9b44d8e1d7610e29ec9ef7a17107f70c4290abee2",
 });
 
@@ -865,7 +865,7 @@ export function loadLine13T0Inventory(root = line13RepoRoot()): readonly Line13I
 		{
 			id: "install-baseline",
 			category: "baseline",
-			currentCodeLocation: "process:npm install --ignore-scripts",
+			currentCodeLocation: "process:npm ci --ignore-scripts",
 			acceptanceCriterionOwner: "AC-01–AC-24 shared T0 baseline",
 			targetAuthorityOwner: "T0 dependency audit environment",
 			migrationStrategy: "Reproduce dependency hydration with lifecycle scripts disabled and compare the recorded exit and package counts.",

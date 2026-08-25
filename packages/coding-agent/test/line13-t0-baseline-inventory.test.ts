@@ -49,7 +49,7 @@ describe("Line 13 T0 baseline and inventories", () => {
 			capturedOnBranch: "guanwenpeng2001-bot/T0_BASELINE_INVENTORY",
 			nodeVersion: "v24.18.1",
 			npmVersion: "12.0.2",
-			installCommand: "npm install --ignore-scripts",
+			installCommand: "npm ci --ignore-scripts",
 			installExitCode: 0,
 			installAddedPackages: 408,
 			installAuditedPackages: 428,
