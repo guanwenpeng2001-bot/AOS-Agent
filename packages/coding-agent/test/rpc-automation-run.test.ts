@@ -16,7 +16,8 @@ import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
+import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
@@ -30,6 +31,7 @@ import type { RpcCommand, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-ty
 import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -288,6 +290,32 @@ function terminalEvents(lines: ParsedOutputLine[]): ParsedOutputLine[] {
 	return lines.filter(
 		(record) => record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled",
 	);
+}
+
+interface BusinessTerminal {
+	readonly status: string;
+	readonly usage?: { readonly input: number; readonly output: number; readonly total: number };
+	readonly terminalError?: { readonly code: string; readonly retryable?: boolean };
+}
+
+function businessTerminalView(terminal: BusinessTerminal) {
+	return {
+		status: terminal.status,
+		usage: terminal.usage,
+		terminalError:
+			terminal.terminalError === undefined
+				? undefined
+				: { code: terminal.terminalError.code, retryable: terminal.terminalError.retryable },
+	};
+}
+
+function transportRunRecord(sessionManager: SessionManager, runId: string): Record<string, unknown> | undefined {
+	for (const entry of sessionManager.getEntries()) {
+		if (entry.type !== "custom" || entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
+		const data = entry.data as { kind?: string; record?: Record<string, unknown> };
+		if (data.kind === "accepted" && data.record?.id === runId) return data.record;
+	}
+	return undefined;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -827,13 +855,11 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			const ledgerEntries = harness.runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
-			const terminalEntries = ledgerEntries.filter(
-				(entry) => entry.type === "custom" && (entry.data as { kind?: string }).kind === "terminal",
-			);
-			expect(ledgerEntries).toHaveLength(3);
-			expect(terminalEntries).toHaveLength(1);
-			expect(terminalEntries[0]).toMatchObject({ data: { kind: "terminal", receipt: { runId, status: "cancelled" } } });
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
+			expect(ledgerEntries).toHaveLength(2);
+			expect(
+				ledgerEntries.some((entry) => entry.type === "custom" && (entry.data as { kind?: string }).kind === "terminal"),
+			).toBe(false);
 		} finally {
 			first?.socket.destroy();
 			second?.socket.destroy();
@@ -867,7 +893,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			);
 			const seedRunLedgerCount = harness.runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE).length;
 
 			const sessionPath = harness.runtimeHost.session.sessionFile;
 			expect(sessionPath).toBeTruthy();
@@ -911,7 +937,7 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			const runLedgerEntries = harness.runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
 			expect(runLedgerEntries).toHaveLength(seedRunLedgerCount);
 
 			second = await connectTcpPeer(harness.address);
@@ -1188,9 +1214,33 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(typeof (events[0].event as { type?: string }).type).toBe("string");
 
 			const terminal = terminals[0];
-			const receipt = terminal.receipt as { status: string; finalText?: string };
+			const receipt = terminal.receipt as Record<string, unknown> & { status: string };
 			expect(receipt.status).toBe("completed");
-			expect(receipt.finalText).toBe("done");
+			expect("finalText" in receipt).toBe(false);
+			expect(events.some((event) => JSON.stringify(event).includes("done"))).toBe(true);
+
+			lineHandler(JSON.stringify({ id: "r2-get", type: "run.get", runId: acceptedData.runId }));
+			lineHandler(
+				JSON.stringify({
+					id: "r2-audit",
+					type: "audit.replay",
+					runId: acceptedData.runId,
+					scope: "current-session",
+				}),
+			);
+			await vi.waitFor(() => {
+				expect(responsesFor(rpcIo.outputLines, "r2-get")).toHaveLength(1);
+				expect(responsesFor(rpcIo.outputLines, "r2-audit")).toHaveLength(1);
+			});
+			const getResponse = responsesFor(rpcIo.outputLines, "r2-get")[0];
+			const auditResponse = responsesFor(rpcIo.outputLines, "r2-audit")[0];
+			expect(getResponse.success).toBe(true);
+			expect(auditResponse.success).toBe(true);
+			const getReceipt = (getResponse.data as { receipt: BusinessTerminal }).receipt;
+			const auditRun = (auditResponse.data as { run: BusinessTerminal }).run;
+			const terminalView = businessTerminalView(receipt as unknown as BusinessTerminal);
+			expect(businessTerminalView(getReceipt)).toEqual(terminalView);
+			expect(businessTerminalView(auditRun)).toEqual(terminalView);
 		} finally {
 			await cleanup();
 		}
@@ -1219,7 +1269,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const ledgerEntries = () =>
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
 			const ledgerCount = ledgerEntries().length;
 			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
 
@@ -1260,7 +1310,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
 			const ledgerCount = runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE).length;
 			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
 
 			lineHandler(
@@ -1284,7 +1334,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCount);
 		} finally {
 			await cleanup();
@@ -1311,7 +1361,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			).toBe(false);
 			const ledgerEntries = runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
 			expect(ledgerEntries).toHaveLength(0);
 		} finally {
 			await cleanup();
@@ -1337,7 +1387,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(0);
 
 			// The early rejection releases no Session ownership and a valid request can
@@ -1361,7 +1411,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const appendCustomEntry = sessionManager.appendCustomEntry.bind(sessionManager);
 			const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
 				if (
-					customType === "automation.run" &&
+					customType === RUN_LEDGER_CUSTOM_TYPE &&
 					typeof data === "object" &&
 					data !== null &&
 					"kind" in data &&
@@ -1403,7 +1453,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const appendCustomEntry = sessionManager.appendCustomEntry.bind(sessionManager);
 			const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
 				if (
-					customType === "automation.run" &&
+					customType === RUN_LEDGER_CUSTOM_TYPE &&
 					typeof data === "object" &&
 					data !== null &&
 					"kind" in data &&
@@ -1482,7 +1532,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(terminal.type).toBe("run.failed");
 			const receipt = terminal.receipt as { status: string; terminalError?: { code: string } };
 			expect(receipt.status).toBe("failed");
-			expect(receipt.terminalError?.code).toBe("model_error");
+			expect(receipt.terminalError?.code).toBe("side_effect_unknown");
 		} finally {
 			await cleanup();
 		}
@@ -1563,7 +1613,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(0);
 		} finally {
 			await cleanup();
@@ -1591,7 +1641,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(0);
 		} finally {
 			await cleanup();
@@ -1647,7 +1697,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(0);
 
 			lineHandler(JSON.stringify({ id: "retry", type: "run.start", message: "Retry" }));
@@ -1711,7 +1761,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("propagates the Run deadline, aborts the prompt, and fails the terminal receipt", async () => {
+	it("propagates the Run deadline, aborts the prompt, and keeps receipt metadata minimal", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
 		const modelHandle = createBindingHandle({
 			domain: "model",
@@ -1750,10 +1800,10 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(terminal.type).toBe("run.failed");
 			expect(terminal.receipt).toMatchObject({
 				status: "failed",
-				deadlineAt,
-				bindingAssociation: acceptedData!.bindingAssociation,
 				terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
 			});
+			expect("deadlineAt" in (terminal.receipt as Record<string, unknown>)).toBe(false);
+			expect("bindingAssociation" in (terminal.receipt as Record<string, unknown>)).toBe(false);
 			expect(abortSpy).toHaveBeenCalledTimes(1);
 			expect(runEventsOfType(currentLines(), "run.cancelled")).toHaveLength(0);
 
@@ -1765,7 +1815,6 @@ describe("RPC Automation Host run lifecycle", () => {
 					run: { id: acceptedData!.runId, status: "failed", deadlineAt },
 					receipt: {
 						status: "failed",
-						deadlineAt,
 						terminalError: { code: "run_deadline_exceeded", retryable: false },
 					},
 				},
@@ -1790,12 +1839,16 @@ describe("RPC Automation Host run lifecycle", () => {
 						runId: acceptedData!.runId,
 						summary: expect.objectContaining({
 							status: "failed",
-							deadlineAt,
-							terminalError: { code: "run_deadline_exceeded", retryable: false },
+							terminalError: expect.objectContaining({
+								code: "run_deadline_exceeded",
+								retryable: false,
+							}),
 						}),
 					}),
 				]),
 			);
+			const auditFailure = (auditQuery.data as { events: Array<{ summary: Record<string, unknown> }> }).events[0];
+			expect("deadlineAt" in auditFailure.summary).toBe(false);
 
 			lineHandler(
 				JSON.stringify({
@@ -1813,11 +1866,14 @@ describe("RPC Automation Host run lifecycle", () => {
 					status: "incomplete",
 					run: {
 						status: "failed",
-						deadlineAt,
 						terminalError: { code: "run_deadline_exceeded", retryable: false },
 					},
 				},
 			});
+			const auditReplay = responsesFor(rpcIo.outputLines, "deadline-audit-replay")[0].data as {
+				run: Record<string, unknown>;
+			};
+			expect("deadlineAt" in auditReplay.run).toBe(false);
 			expect(terminalEvents(currentLines())).toHaveLength(1);
 		} finally {
 			await cleanup();
@@ -1869,8 +1925,21 @@ describe("RPC Automation Host run lifecycle", () => {
 				runId: runId!,
 				receipt: {
 					status: "failed",
-					deadlineAt,
 					terminalError: { code: "run_deadline_exceeded", retryable: false },
+				},
+			});
+			const terminalReceipt = terminalEvents(currentLines())[0].receipt as Record<string, unknown>;
+			expect("deadlineAt" in terminalReceipt).toBe(false);
+			lineHandler(JSON.stringify({ id: "deadline-race-get", type: "run.get", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-race-get")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "deadline-race-get")[0]).toMatchObject({
+				success: true,
+				data: {
+					run: { id: runId!, status: "failed", deadlineAt },
+					receipt: {
+						status: "failed",
+						terminalError: { code: "run_deadline_exceeded", retryable: false },
+					},
 				},
 			});
 			expect(runEventsOfType(currentLines(), "run.cancelled")).toHaveLength(0);
@@ -1923,22 +1992,13 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("clears deadline state and releases the session after terminal persistence fails", async () => {
+	it("settles a deadline through Foundation without a transport terminal append and releases the session", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
 		const sessionManager = runtimeHost.session.sessionManager;
 		const appendCustomEntry = sessionManager.appendCustomEntry.bind(sessionManager);
-		const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
-			if (
-				customType === "automation.run" &&
-				typeof data === "object" &&
-				data !== null &&
-				"kind" in data &&
-				data.kind === "terminal"
-			) {
-				throw new Error("terminal ledger unavailable");
-			}
-			return appendCustomEntry(customType, data);
-		});
+		const appendSpy = vi
+			.spyOn(sessionManager, "appendCustomEntry")
+			.mockImplementation((customType, data) => appendCustomEntry(customType, data));
 
 		try {
 			lineHandler(JSON.stringify({ id: "i-deadline-persist", type: "initialize", protocolVersion: 1 }));
@@ -1958,34 +2018,30 @@ describe("RPC Automation Host run lifecycle", () => {
 				expect(response?.success).toBe(true);
 				runId = (response.data as { runId: string }).runId;
 			});
-			await vi.waitFor(
-				() =>
-					expect(
-						appendSpy.mock.calls.some(
-							([customType, data]) =>
-								customType === "automation.run" &&
-								typeof data === "object" &&
-								data !== null &&
-								"kind" in data &&
-								data.kind === "terminal",
-						),
-					).toBe(true),
-				{ timeout: 3000 },
-			);
-			expect(terminalEvents(currentLines())).toHaveLength(0);
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
+			expect(terminalEvents(currentLines())[0].type).toBe("run.failed");
+			expect(
+				appendSpy.mock.calls.some(
+					([customType, data]) =>
+						customType === RUN_LEDGER_CUSTOM_TYPE &&
+						typeof data === "object" &&
+						data !== null &&
+						"kind" in data &&
+						data.kind === "terminal",
+				),
+			).toBe(false);
 
-			appendSpy.mockRestore();
 			lineHandler(JSON.stringify({ id: "deadline-persist-get", type: "run.get", runId: runId! }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-persist-get")).toHaveLength(1));
 			expect(responsesFor(rpcIo.outputLines, "deadline-persist-get")[0]).toMatchObject({
 				success: true,
-				data: { run: { id: runId!, status: "running" }, recovery: "interrupted" },
+				data: { run: { id: runId!, status: "failed" }, receipt: { runId: runId!, status: "failed" } },
 			});
 
 			lineHandler(JSON.stringify({ id: "deadline-persist-retry", type: "run.start", message: "Retry" }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-persist-retry")[0]?.success).toBe(true));
-			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
-			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(2), { timeout: 3000 });
+			expect(terminalEvents(currentLines())[1].type).toBe("run.completed");
 		} finally {
 			appendSpy.mockRestore();
 			await cleanup();
@@ -2215,7 +2271,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const firstData = responsesFor(rpcIo.outputLines, "resume-first")[0].data as { runId: string };
 			const ledgerCount = runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE).length;
 			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
 
 			lineHandler(JSON.stringify({ id: "resume-duplicate", ...request }));
@@ -2234,7 +2290,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCount);
 		} finally {
 			await cleanup();
@@ -2256,7 +2312,7 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			const sessionFile = runtimeHost.session.sessionFile;
 			expect(sessionFile).toBeTruthy();
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+			runtimeHost.session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
 				record: {
@@ -2361,7 +2417,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			).toBe(false);
 			const ledgerEntries = runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
 			expect(ledgerEntries).toHaveLength(0);
 		} finally {
 			await cleanup();
@@ -2435,7 +2491,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("records capabilityBindingId on the terminal receipt when a binding is frozen", async () => {
+	it("records capabilityBindingId on the RunRecord and omits it from the minimal receipt", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
 		try {
@@ -2449,7 +2505,9 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			const terminal = terminalEvents(currentLines())[0];
 			expect(terminal.type).toBe("run.completed");
-			expect((terminal.receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(BINDING.id);
+			const runId = (responsesFor(rpcIo.outputLines, "r1")[0].data as { runId: string }).runId;
+			expect(transportRunRecord(runtimeHost.session.sessionManager, runId)?.capabilityBindingId).toBe(BINDING.id);
+			expect("capabilityBindingId" in (terminal.receipt as Record<string, unknown>)).toBe(false);
 		} finally {
 			await cleanup();
 		}
@@ -2639,12 +2697,15 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i1")).toHaveLength(1));
 
 			// Seed a real run so the capability binding is resolved and persisted,
-			// then read the real binding id from its terminal receipt.
+			// then read the real binding id from its accepted RunRecord.
 			lineHandler(JSON.stringify({ id: "r0", type: "run.start", message: "Seed" }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "r0")).toHaveLength(1));
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
-			const sourceBindingId = (terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string })
-				.capabilityBindingId;
+			const sourceRunId = (responsesFor(rpcIo.outputLines, "r0")[0].data as { runId: string }).runId;
+			const sourceBindingId = transportRunRecord(
+				runtimeHost.session.sessionManager,
+				sourceRunId,
+			)?.capabilityBindingId as string | undefined;
 			expect(sourceBindingId).toBeTruthy();
 
 			const sessionFile = runtimeHost.session.sessionFile;
@@ -2654,7 +2715,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			// (its capability.binding ledger entry exists from the seed run's accept)
 			// but the run never reached a terminal receipt.
 			const interruptedRunId = "interrupted-with-binding";
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+			runtimeHost.session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
 				record: {
@@ -2717,10 +2778,10 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(sessionFile).toBeTruthy();
 
 			// a legacy run carrying no capabilityBindingId anywhere (pre-capability
-			// ledger); valid RunRecord / RunReceipt shapes only
+			// ledger); the canonical receipt remains the minimal Foundation projection
 			const legacyRunId = "legacy-no-binding";
 			const sessionId = runtimeHost.session.sessionId;
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+			runtimeHost.session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
 				record: {
@@ -2731,23 +2792,13 @@ describe("RPC Automation Host run lifecycle", () => {
 					model: { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" },
 				},
 			});
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+			runtimeHost.session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "started",
 				runId: legacyRunId,
 				startedAt: "2026-08-11T00:00:00.000Z",
 			});
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
-				schemaVersion: 1,
-				kind: "terminal",
-				endedAt: "2026-08-11T00:00:01.000Z",
-				receipt: {
-					runId: legacyRunId,
-					sessionId,
-					status: "completed",
-					usage: { input: 0, output: 0, total: 0 },
-				},
-			});
+			await writeCanonicalRunResult(runtimeHost.session.sessionManager, legacyRunId, { outcome: "completed" });
 
 			// previousBindingId is undefined, so no drift guard runs and the resume
 			// succeeds without requiring any binding in the ledger.
@@ -2798,9 +2849,11 @@ describe("RPC Automation Host run lifecycle", () => {
 				runId = (res[0].data as { runId: string }).runId;
 			});
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
-			// the frozen (real) binding is recorded on the source run's receipt
-			const sourceBindingId = (terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string })
-				.capabilityBindingId;
+			// the frozen (real) binding is recorded on the source RunRecord
+			const sourceBindingId = transportRunRecord(
+				runtimeHost.session.sessionManager,
+				runId!,
+			)?.capabilityBindingId as string | undefined;
 			expect(sourceBindingId).toBeTruthy();
 			expect(sourceBindingId).toBe(runtimeHost.session.getCapabilityBindingId());
 
@@ -2860,9 +2913,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				runId = (res[0].data as { runId: string }).runId;
 			});
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
-			expect(
-				(terminalEvents(currentLines())[0].receipt as { capabilityBindingId?: string }).capabilityBindingId,
-			).toBe(BINDING.id);
+			expect(transportRunRecord(runtimeHost.session.sessionManager, runId!)?.capabilityBindingId).toBe(BINDING.id);
 
 			const sessionFile = runtimeHost.session.sessionFile;
 			expect(sessionFile).toBeTruthy();
@@ -2885,8 +2936,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
-			).toHaveLength(3); // accepted + started + terminal of the first run only
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
+			).toHaveLength(2); // accepted + started transport facts of the first run only
 		} finally {
 			await cleanup();
 		}
@@ -2952,8 +3003,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
-			).toHaveLength(3); // accepted + started + terminal of the first run only
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
+			).toHaveLength(2); // accepted + started transport facts of the first run only
 		} finally {
 			await cleanup();
 		}
@@ -3019,8 +3070,8 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			const sessionFile = runtimeHost.session.sessionFile;
 			expect(sessionFile).toBeTruthy();
-			// a source run whose receipt demands a binding that was never recorded
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
+			// a source RunRecord demands a binding that was never recorded
+			runtimeHost.session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
 				record: {
@@ -3029,20 +3080,10 @@ describe("RPC Automation Host run lifecycle", () => {
 					attempt: 1,
 					status: "accepted",
 					model: { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" },
-				},
-			});
-			runtimeHost.session.sessionManager.appendCustomEntry("automation.run", {
-				schemaVersion: 1,
-				kind: "terminal",
-				endedAt: "2026-08-11T00:00:00.000Z",
-				receipt: {
-					runId: "ghost-cap",
-					sessionId: runtimeHost.session.sessionId,
-					status: "completed",
-					usage: { input: 0, output: 0, total: 0 },
 					capabilityBindingId: "binding:ghost:nope",
 				},
 			});
+			await writeCanonicalRunResult(runtimeHost.session.sessionManager, "ghost-cap", { outcome: "completed" });
 
 			lineHandler(
 				JSON.stringify({
@@ -3094,10 +3135,12 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
 			const terminal = terminalEvents(currentLines())[0];
 			expect(terminal.type).toBe("run.completed");
-			// the terminal receipt records the materialized strict binding
-			expect((terminal.receipt as { capabilityBindingId?: string }).capabilityBindingId).toBe(
+			// binding provenance belongs to the accepted RunRecord, not the receipt
+			const strictRunId = (responsesFor(rpcIo.outputLines, "u1")[0].data as { runId: string }).runId;
+			expect(transportRunRecord(runtimeHost.session.sessionManager, strictRunId)?.capabilityBindingId).toBe(
 				runtimeHost.session.getActiveCapabilityBinding()?.id,
 			);
+			expect("capabilityBindingId" in (terminal.receipt as Record<string, unknown>)).toBe(false);
 		} finally {
 			await cleanup();
 		}
@@ -3129,7 +3172,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(0);
 
 			// the failed preflight reserved nothing, so a valid run starts immediately
@@ -3189,7 +3232,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("redacts a model-error terminal on the wire and in the ledger", async () => {
+	it("redacts a model-error terminal on the wire and never persists a transport terminal", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
 			withAuth: true,
 			responseDelayMs: 0,
@@ -3213,23 +3256,17 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(wireMessage).toBe("Run failed.");
 			expect(JSON.stringify(terminal)).not.toMatch(/secret|abc123/);
 
-			// the persisted terminal ledger entry also contains only fixed safe text
+			// The Automation transport ledger contains only accepted and started facts.
 			const ledger = runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run");
-			const terminalEntry = ledger.find(
-				(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
-					entry.type === "custom" &&
-					entry.customType === "automation.run" &&
-					(entry.data as { kind?: string }).kind === "terminal",
-			);
-			const persistedError = (terminalEntry?.data as { receipt?: { terminalError?: { message: string } } }).receipt
-				?.terminalError;
-			expect(persistedError?.message).toBeDefined();
-			expect(persistedError?.message).toBe("Run failed.");
-			expect(persistedError?.message).not.toContain("secret");
-			expect(persistedError?.message).not.toContain("abc123");
-			expect(JSON.stringify(terminalEntry?.data)).not.toMatch(/secret|abc123/);
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE);
+			expect(ledger).toHaveLength(2);
+			expect(
+				ledger.some(
+					(entry) => entry.type === "custom" && (entry.data as { kind?: string }).kind === "terminal",
+				),
+			).toBe(false);
+			expect(JSON.stringify(runtimeHost.session.sessionManager.getEntries())).not.toMatch(/secret|abc123/);
 		} finally {
 			await cleanup();
 		}

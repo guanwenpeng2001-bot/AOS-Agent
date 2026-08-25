@@ -52,6 +52,7 @@ import {
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import type { SchedulerClaimV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 
 const NOW = "2026-08-22T10:00:00.000Z";
@@ -828,7 +829,7 @@ describe("scheduler dispatch controller", () => {
 			expect(outcome.ok).toBe(true);
 			if (outcome.ok) expect(outcome.value.receipt.status).toBe("cancelled");
 			expect(provider.cancelCount).toBe(1);
-			run.settle({ outcome: "completed" });
+			await observeCanonicalTerminal(runSession, run, { outcome: "cancelled" });
 			expect(coordinator.getRun(run.runId)?.record.status).toBe("cancelled");
 		} finally {
 			controller.dispose();
@@ -868,7 +869,10 @@ describe("scheduler dispatch controller", () => {
 			expect(outcome.ok).toBe(true);
 			if (outcome.ok) expect(outcome.value.receipt.status).toBe("cancelled");
 			expect(provider.cancelCount).toBe(1);
-			run.settle({ outcome: "completed" });
+			await observeCanonicalTerminal(runSession, run, {
+				outcome: "failed",
+				terminalErrorCode: "run_deadline_exceeded",
+			});
 			expect(coordinator.getRun(run.runId)?.record).toMatchObject({
 				status: "failed",
 				terminalError: { code: "run_deadline_exceeded" },
@@ -906,7 +910,7 @@ describe("scheduler dispatch controller", () => {
 				binding: harness.binding,
 			});
 			await provider.started;
-			run.settle({ outcome: "completed" });
+			await observeCanonicalTerminal(runSession, run, { outcome: "completed" });
 			const outcome = await pending;
 			expect(outcome.ok).toBe(true);
 			if (outcome.ok) expect(outcome.value.receipt.status).toBe("cancelled");
@@ -915,15 +919,11 @@ describe("scheduler dispatch controller", () => {
 				record: { status: "completed" },
 				receipt: { status: "completed" },
 			});
-			const terminalFacts = runSession.getEntries().filter((entry) =>
-				entry.type === "custom" &&
-				entry.customType === "automation.run" &&
-				typeof entry.data === "object" &&
-				entry.data !== null &&
-				!Array.isArray(entry.data) &&
-				(entry.data as Record<string, unknown>).kind === "terminal",
-			);
-			expect(terminalFacts).toHaveLength(1);
+			expect(
+				runSession
+					.getEntries()
+					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+			).toHaveLength(0);
 		} finally {
 			controller.dispose();
 		}

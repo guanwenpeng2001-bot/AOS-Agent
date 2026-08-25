@@ -45,6 +45,7 @@ import {
 } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import {
 	type TaskGraphGateLookup,
 	type TaskGraphNodeView,
@@ -378,7 +379,7 @@ interface FanInHarness {
 		graph: TaskGraphRecord,
 		node: TaskGraphNodeView,
 	): ResultValue<SchedulerHostRunAssociationV1, FoundationError>;
-	settleRun(runId: string, succeeded: boolean): ResultValue<void, FoundationError>;
+	settleRun(runId: string, succeeded: boolean): Promise<ResultValue<void, FoundationError>>;
 }
 
 async function createHarness(
@@ -470,10 +471,10 @@ async function createHarness(
 			}
 			return Result.ok({ runId, task: currentTask, binding: currentBinding });
 		},
-		settleRun(runId, succeeded) {
+		async settleRun(runId, succeeded) {
 			const run = runs.get(runId);
 			if (run === undefined) return Result.err(new FoundationError("scheduler_not_found", "Run was not reserved"));
-			run.settle({ outcome: succeeded ? "completed" : "failed" });
+			await observeCanonicalTerminal(runSession, run, { outcome: succeeded ? "completed" : "failed" });
 			return Result.ok(undefined);
 		},
 	};

@@ -19,6 +19,7 @@ import {
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/task-graph.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
 	clampThinkingLevel: (level: unknown) => level,
@@ -129,16 +130,17 @@ async function expectFoundationCode(action: () => Promise<unknown>, code: string
 	throw new Error(`Expected FoundationError ${code}`);
 }
 
-function settleGraphNode(
+async function settleGraphNode(
 	graph: TaskGraphStore,
 	runs: RunLifecycleCoordinator,
+	manager: SessionManager,
 	input: {
 		readonly taskId: string;
 		readonly nodeId: string;
 		readonly runId: string;
 		readonly terminal: "failed" | "cancelled";
 	},
-): void {
+): Promise<void> {
 	const run = runs.reserve().accept({
 		runId: input.runId,
 		attempt: 1,
@@ -153,7 +155,7 @@ function settleGraphNode(
 	});
 	run.start();
 	if (input.terminal === "cancelled") run.requestCancel();
-	run.settle({ outcome: "failed" });
+	await observeCanonicalTerminal(manager, run, { outcome: input.terminal });
 	graph.settle({
 		taskId: input.taskId,
 		graphRevision: 1,
@@ -429,7 +431,7 @@ describe("cross-Session task submit and wait", () => {
 		expect(replay.reused).toBe(true);
 		expect(fixture.sourceGraph.get("task-failed", 1)).toBeUndefined();
 		expect(fixture.targetGraph.get("task-failed", 1)?.nodes[0]?.status).toBe("pending");
-		settleGraphNode(fixture.targetGraph, fixture.targetRuns, {
+		await settleGraphNode(fixture.targetGraph, fixture.targetRuns, fixture.targetManager, {
 			taskId: "task-failed",
 			nodeId: "work",
 			runId: "run-failed",
@@ -444,7 +446,7 @@ describe("cross-Session task submit and wait", () => {
 		).toMatchObject({ status: "failed", targetSessionId: "session-target" });
 
 		await submit("task-cancelled", "cancelled");
-		settleGraphNode(fixture.targetGraph, fixture.targetRuns, {
+		await settleGraphNode(fixture.targetGraph, fixture.targetRuns, fixture.targetManager, {
 			taskId: "task-cancelled",
 			nodeId: "work",
 			runId: "run-cancelled",

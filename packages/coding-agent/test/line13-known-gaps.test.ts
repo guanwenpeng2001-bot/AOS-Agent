@@ -335,6 +335,8 @@ test("loads the completed portion of the actual final manifest", () => {
 	expect(new Set(LINE13_FINAL_RESOLVED_CASES)).toEqual(new Set(completedShardResolvedCases));
 	expect(LINE13_FINAL_KNOWN_GAP_CASES).toEqual(manifest.cases);
 	expect(LINE13_FINAL_RESOLVED_CASES).toEqual(transition.resolvedCases);
+	expect(LINE13_FINAL_KNOWN_GAP_CASES.some((definition) => definition.entry.ac === "AC-01")).toBe(false);
+	expect(LINE13_FINAL_RESOLVED_CASES.map((definition) => definition.ac)).toContain("AC-01");
 	expect(manifest.entries.map((entry) => entry.ac)).toEqual(
 		LINE13_FINAL_KNOWN_GAP_CASES.map((knownGapCaseDefinition) => knownGapCaseDefinition.entry.ac),
 	);

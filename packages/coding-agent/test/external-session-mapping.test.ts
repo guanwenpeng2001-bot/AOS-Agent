@@ -9,10 +9,10 @@ import {
 import {
 	RUN_LEDGER_CUSTOM_TYPE,
 	createRunLifecycleCoordinator,
-	serializePublicRunReceipt,
 	serializePublicRunRecord,
 } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const NOW = "2026-08-13T00:00:00.000Z";
 const MODEL = { provider: "test", id: "model", thinkingLevel: "low" as const };
@@ -182,7 +182,7 @@ describe("external session mapping", () => {
 		expect(inner.getEntries()).toHaveLength(0);
 	});
 
-	it("persists the mapping after accepting a Run and recovers the safe ref after restart", () => {
+	it("persists the mapping after accepting a Run while keeping it out of the canonical receipt", async () => {
 		const session = makeSession();
 		const coordinator = createRunLifecycleCoordinator(session, { now: () => NOW });
 		const reservation = coordinator.reserve();
@@ -197,24 +197,23 @@ describe("external session mapping", () => {
 			},
 		});
 		const started = run.start();
-		const terminal = run.settle({ outcome: "completed" });
+		const { event: terminal } = await observeCanonicalTerminal(session, run, { outcome: "completed" });
 
 		expect(started[0]).toMatchObject({ type: "run.started", runId: "aos-run" });
-		expect(terminal).toMatchObject({ type: "run.completed", receipt: { external: run.record.external } });
-		expect(session.getEntries().map((entry) => entry.type === "custom" ? entry.customType : entry.type)).toEqual([
+		expect(terminal).toMatchObject({ type: "run.completed", receipt: { runId: "aos-run" } });
+		expect(session.getEntries().map((entry) => entry.type === "custom" ? entry.customType : entry.type).slice(0, 3)).toEqual([
 			RUN_LEDGER_CUSTOM_TYPE,
 			EXTERNAL_MAPPING_CUSTOM_TYPE,
-			RUN_LEDGER_CUSTOM_TYPE,
 			RUN_LEDGER_CUSTOM_TYPE,
 		]);
 		expect(serializePublicRunRecord(run.record).external).toEqual(run.record.external);
 		if (terminal === undefined || !("receipt" in terminal)) throw new Error("expected terminal receipt");
-		expect(serializePublicRunReceipt(terminal.receipt).external).toEqual(run.record.external);
+		expect("external" in terminal.receipt).toBe(false);
 
 		const restarted = createRunLifecycleCoordinator(session, { now: () => NOW });
 		const recovered = restarted.getRun("aos-run");
 		expect(recovered?.record.external).toEqual(run.record.external);
-		expect(recovered?.receipt?.external).toEqual(run.record.external);
+		expect("external" in recovered!.receipt!).toBe(false);
 	});
 
 	it("fails mapping persistence without acknowledging an accepted Run", () => {
