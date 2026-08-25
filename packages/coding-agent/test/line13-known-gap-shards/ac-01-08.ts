@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	InMemorySessionStorage,
 	Session,
@@ -38,7 +40,11 @@ import {
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
-import { createRunLifecycleCoordinator } from "../../src/core/run-lifecycle.ts";
+import {
+	createRunLifecycleCoordinator,
+	type RunHandle,
+	type RunResult,
+} from "../../src/core/run-lifecycle.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { SessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -286,15 +292,60 @@ async function waitForRpcTerminal(records: readonly RpcHostOutputRecord[], runId
 	throw new Error("Line 13 RPC fixture did not reach a terminal event");
 }
 
-type CreatedAgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+interface ProductCompositionEvidence {
+	readonly sdk: boolean;
+	readonly services: boolean;
+	readonly main: boolean;
+	readonly tui: boolean;
+	readonly print: boolean;
+	readonly rpc: boolean;
+}
 
-interface ServicesCompositionFixture {
-	readonly session: CreatedAgentSession;
+interface ProductCompositionFixture {
+	readonly evidence: ProductCompositionEvidence;
 	readonly registry: ExternalAgentAdapterRegistry;
 	readonly cleanup: () => Promise<void>;
 }
 
-async function createServicesCompositionFixture(): Promise<ServicesCompositionFixture> {
+async function runMainProductEntrypoint(cwd: string): Promise<void> {
+	const cliPath = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
+	const tsxCliPath = fileURLToPath(new URL("../../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
+	const tsconfigPath = fileURLToPath(new URL("../../../../tsconfig.json", import.meta.url));
+	await new Promise<void>((resolve, reject) => {
+		execFile(
+			process.execPath,
+			[
+				tsxCliPath,
+				"--tsconfig",
+				tsconfigPath,
+				cliPath,
+				"--offline",
+				"--help",
+				"--no-extensions",
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+			],
+			{
+				cwd,
+				env: {
+					...process.env,
+					AOS_AGENT_DIR: cwd,
+					AOS_AGENT_OFFLINE: "1",
+					AOS_AGENT_SKIP_VERSION_CHECK: "1",
+				},
+				timeout: 30_000,
+			},
+			(error) => {
+				if (error === null) resolve();
+				else reject(error);
+			},
+		);
+	});
+}
+
+async function createProductCompositionFixture(): Promise<ProductCompositionFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-services-"));
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
@@ -316,23 +367,99 @@ async function createServicesCompositionFixture(): Promise<ServicesCompositionFi
 			noContextFiles: true,
 		},
 	};
-	const services = await createAgentSessionServices(servicesOptions);
+	const services = await codingAgentEntry.createAgentSessionServices(servicesOptions);
+	const sdk = await codingAgentEntry.createAgentSession({
+		cwd,
+		agentDir: cwd,
+		modelRuntime: services.modelRuntime,
+		modelBroker: services.modelBroker,
+		modelBrokerConfigRevision: services.modelBrokerConfigRevision,
+		settingsManager: services.settingsManager,
+		resourceLoader: services.resourceLoader,
+		capabilityRegistry: services.capabilityRegistry,
+		sessionManager: SessionManager.inMemory(cwd, { id: "line13-sdk-surface" }),
+		externalAgentRegistry: registry,
+		noTools: "all",
+	});
 	const sessionOptions: Parameters<typeof createAgentSessionFromServices>[0] & {
 		readonly externalAgentRegistry: ExternalAgentAdapterRegistry;
 	} = {
 		services,
-		sessionManager: SessionManager.inMemory(cwd),
+		sessionManager: SessionManager.inMemory(cwd, { id: "line13-services-surface" }),
 		externalAgentRegistry: registry,
 		noTools: "all",
 	};
-	const created = await createAgentSessionFromServices(sessionOptions);
+	const servicesCreated = await codingAgentEntry.createAgentSessionFromServices(sessionOptions);
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
+		const runtimeSessionOptions: Parameters<typeof codingAgentEntry.createAgentSessionFromServices>[0] & {
+			readonly externalAgentRegistry: ExternalAgentAdapterRegistry;
+		} = {
+			services,
+			sessionManager: runtimeOptions.sessionManager,
+			sessionStartEvent: runtimeOptions.sessionStartEvent,
+			externalAgentRegistry: registry,
+			noTools: "all",
+		};
+		const created = await codingAgentEntry.createAgentSessionFromServices(runtimeSessionOptions);
+		return { ...created, services, diagnostics: services.diagnostics };
+	};
+	const createSurfaceRuntime = (id: string) =>
+		codingAgentEntry.createAgentSessionRuntime(createRuntime, {
+			cwd,
+			agentDir: cwd,
+			sessionManager: SessionManager.inMemory(cwd, { id }),
+		});
+
+	const mainRuntime = await createSurfaceRuntime("line13-main-surface");
+	await runMainProductEntrypoint(cwd);
+	const interactiveMode = new codingAgentEntry.InteractiveMode(mainRuntime, { tuiMode: "regular" });
+	const mainHasRegistry =
+		typeof codingAgentEntry.main === "function" && mainRuntime.session.getExternalAgentRegistry() === registry;
+	const tuiHasRegistry = mainRuntime.session.getExternalAgentRegistry() === registry;
+	interactiveMode.stop("transcript");
+
+	const rpcRuntime = await createSurfaceRuntime("line13-rpc-surface");
+	const rpcController = codingAgentEntry.createRpcHostController(rpcRuntime);
+	await rpcController.start();
+	const rpcInitialize = (await rpcController.dispatch({
+		id: "ac04-rpc-initialize",
+		type: "initialize",
+		protocolVersion: 1,
+	})) as unknown as {
+		readonly success?: boolean;
+		readonly data?: {
+			readonly externalAgentAdapters?: ReadonlyArray<{ readonly adapterId?: string }>;
+		};
+	};
+
+	const printRuntime = await createSurfaceRuntime("line13-print-surface");
+	const printHasRegistry = printRuntime.session.getExternalAgentRegistry() === registry;
+	const printExitCode = await codingAgentEntry.runPrintMode(printRuntime, { mode: "text" });
 	return {
-		session: created.session,
+		evidence: {
+			sdk: sdk.session.getExternalAgentRegistry() === registry,
+			services: servicesCreated.session.getExternalAgentRegistry() === registry,
+			main: mainHasRegistry,
+			tui: tuiHasRegistry,
+			print: printHasRegistry && printExitCode === 0,
+			rpc:
+				rpcInitialize.success === true &&
+				(rpcInitialize.data?.externalAgentAdapters?.some(
+					(descriptor) => descriptor.adapterId === "line13-connector",
+				) ?? false),
+		},
 		registry,
 		cleanup: async () => {
-			await created.session.dispose();
-			await created.session.waitForDispose();
-			rmSync(cwd, { recursive: true, force: true });
+			try {
+				await rpcController.shutdown();
+				await mainRuntime.dispose();
+				await servicesCreated.session.dispose();
+				await servicesCreated.session.waitForDispose();
+				await sdk.session.dispose();
+				await sdk.session.waitForDispose();
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
 		},
 	};
 }
@@ -539,27 +666,48 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 						const data = entry.data;
 						return typeof data === "object" && data !== null && "kind" in data && data.kind === "terminal";
 					});
-					const duplicate = competingTerminals[0];
-					if (duplicate?.type === "custom") {
-						fixture.sessionManager.appendCustomEntry("automation.run", duplicate.data);
-					}
 					const replayed = createRunLifecycleCoordinator(fixture.sessionManager);
+					const recoveredRun = replayed.getRun(runId);
+					assert.notEqual(recoveredRun, undefined, "AC-01 Run lifecycle recovery must reconstruct the terminal Run");
+					if (recoveredRun === undefined) return;
+					const terminalAuthority = replayed as unknown as {
+						replayedHandle(result: RunResult): RunHandle;
+					};
+					const duplicateTerminal = terminalAuthority.replayedHandle(recoveredRun).settle({ outcome: "failed" });
+					const canonicalReceiptsAfterDuplicate = await durableSession.findFoundationRecords({
+						kind: "fact",
+						objectType: "run_receipt",
+						includePruned: true,
+						order: "oldestFirst",
+					});
 					const duplicateRejected =
-						duplicate === undefined || replayed.diagnostics().some((diagnostic) => diagnostic.kind === "duplicate-terminal");
+						duplicateTerminal === undefined &&
+						replayed.diagnostics().some((diagnostic) => diagnostic.kind === "duplicate-terminal");
+					const rpcTerminalCount = fixture.records.filter((record) => {
+						const view = record as unknown as { readonly type?: string; readonly runId?: string };
+						return (
+							view.runId === runId &&
+							(view.type === "run.completed" || view.type === "run.failed" || view.type === "run.cancelled")
+						);
+					}).length;
 
 					assert.deepStrictEqual(
 						{
-							canonicalReceiptCount: canonicalReceipts.length,
+							canonicalReceiptCountBeforeDuplicate: canonicalReceipts.length,
+							canonicalReceiptCountAfterDuplicate: canonicalReceiptsAfterDuplicate.length,
 							competingTerminalCount: competingTerminals.length,
 							rpcStatus: rpcRecovered.data?.receipt?.status ?? rpcRecovered.data?.status,
-							replayStatus: replayed.getRun(runId)?.receipt?.status,
+							replayStatus: recoveredRun.receipt?.status,
+							rpcTerminalCount,
 							duplicateRejected,
 						},
 						{
-							canonicalReceiptCount: 1,
+							canonicalReceiptCountBeforeDuplicate: 1,
+							canonicalReceiptCountAfterDuplicate: 1,
 							competingTerminalCount: 0,
 							rpcStatus: "completed",
 							replayStatus: "completed",
+							rpcTerminalCount: 1,
 							duplicateRejected: true,
 						},
 						"canonical RunReceipt must be the sole RPC terminal authority after recovery",
@@ -671,21 +819,21 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				mode: "fails",
 				expectedFailure: {
 					reason: "product-composition.external-connector",
-					fingerprint: "sha256:08644ba1ef39cb0366704e2b0347eaa1243df1ca2d8bf1fd265d7be512e03348",
+					fingerprint: "sha256:56d62102a7e9f856703685ace1b21fb867b290044f27abac526cdc72743e6eb6",
 				},
 			},
 			scenario: {
-				fixture: createServicesCompositionFixture,
+				fixture: createProductCompositionFixture,
 				setup: (fixture) => {
 					if (fixture.registry.list().length !== 1) {
 						throw new Error("AC-04 product composition fixture did not retain its registry descriptor");
 					}
 				},
 				assertion: (fixture) => {
-					assert.strictEqual(
-						fixture.session.getExternalAgentRegistry(),
-						fixture.registry,
-						"services composition must carry the trusted External Connector registry into product sessions",
+					assert.deepStrictEqual(
+						fixture.evidence,
+						{ sdk: true, services: true, main: true, tui: true, print: true, rpc: true },
+						"public product construction must carry one trusted External Connector through SDK, services, main, TUI, print, and RPC",
 					);
 				},
 				cleanup: (fixture) => fixture.cleanup(),
