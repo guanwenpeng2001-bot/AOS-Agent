@@ -316,94 +316,307 @@ function collectBindingIdentifiers(name, identifiers) {
 	}
 }
 
-function sourceFileBindings(sourceFile) {
-	const bindings = [];
-	for (const statement of sourceFile.statements) {
-		if (
-			ts.isImportDeclaration(statement) &&
-			statement.importClause?.namedBindings !== undefined &&
-			ts.isNamedImports(statement.importClause.namedBindings)
-		) {
-			for (const specifier of statement.importClause.namedBindings.elements) {
-				const symbol = checker.getSymbolAtLocation(specifier.name);
-				if (symbol !== undefined) bindings.push({ kind: "import", name: specifier.name.text, node: specifier, symbol });
-			}
-			continue;
-		}
-		if (ts.isVariableStatement(statement)) {
-			for (const declaration of statement.declarationList.declarations) {
-				const identifiers = [];
-				collectBindingIdentifiers(declaration.name, identifiers);
-				for (const identifier of identifiers) {
-					const symbol = checker.getSymbolAtLocation(identifier);
-					if (symbol !== undefined) bindings.push({ kind: "local", name: identifier.text, node: identifier, symbol });
-				}
-			}
-			continue;
-		}
-		if (
-			(ts.isFunctionDeclaration(statement) ||
-				ts.isClassDeclaration(statement) ||
-				ts.isInterfaceDeclaration(statement) ||
-				ts.isTypeAliasDeclaration(statement) ||
-				ts.isEnumDeclaration(statement) ||
-				ts.isModuleDeclaration(statement)) &&
-			statement.name !== undefined &&
-			ts.isIdentifier(statement.name)
-		) {
-			const symbol = checker.getSymbolAtLocation(statement.name);
-			if (symbol !== undefined) bindings.push({ kind: "local", name: statement.name.text, node: statement.name, symbol });
+const valueMeaning = 1;
+const typeMeaning = 2;
+const namespaceMeaning = 4;
+const initialSymbolTargets = new Map(symbolTargets);
+
+function symbolMeaning(symbol) {
+	const resolved = resolveTypescriptAlias(symbol);
+	let meaning = 0;
+	if ((resolved.flags & ts.SymbolFlags.Value) !== 0) meaning |= valueMeaning;
+	if ((resolved.flags & ts.SymbolFlags.Type) !== 0) meaning |= typeMeaning;
+	if ((resolved.flags & ts.SymbolFlags.Namespace) !== 0) meaning |= namespaceMeaning;
+	return meaning === 0 ? valueMeaning | typeMeaning | namespaceMeaning : meaning;
+}
+
+function functionScope(node) {
+	for (let current = node.parent; current !== undefined; current = current.parent) {
+		if (ts.isFunctionLike(current) || ts.isSourceFile(current) || ts.isModuleBlock(current) || ts.isClassStaticBlockDeclaration(current)) return current;
+	}
+	return node.getSourceFile();
+}
+
+function declarationScope(node) {
+	for (let current = node.parent; current !== undefined; current = current.parent) {
+		if (ts.isSourceFile(current) || ts.isModuleBlock(current) || ts.isCaseBlock(current) || ts.isClassStaticBlockDeclaration(current)) return current;
+		if (ts.isBlock(current)) {
+			if (ts.isFunctionLike(current.parent) && current.parent.body === current) return current.parent;
+			if (ts.isCatchClause(current.parent) && current.parent.block === current) return current.parent;
+			return current;
 		}
 	}
+	return node.getSourceFile();
+}
+
+function variableScope(declaration) {
+	if (!ts.isVariableDeclarationList(declaration.parent)) return ts.isCatchClause(declaration.parent) ? declaration.parent : declarationScope(declaration);
+	if ((declaration.parent.flags & ts.NodeFlags.BlockScoped) === 0) return functionScope(declaration);
+	const owner = declaration.parent.parent;
+	if (ts.isForStatement(owner) || ts.isForInStatement(owner) || ts.isForOfStatement(owner)) return owner;
+	return declarationScope(declaration);
+}
+
+function bindingMeaning(declaration, symbol, typeOnly = false) {
+	if (ts.isImportClause(declaration) || ts.isImportSpecifier(declaration) || ts.isNamespaceImport(declaration)) {
+		return valueMeaning | typeMeaning | namespaceMeaning;
+	}
+	if (typeOnly) return symbolMeaning(symbol) & (typeMeaning | namespaceMeaning);
+	if (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration) || ts.isTypeParameterDeclaration(declaration)) return typeMeaning;
+	if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration) || ts.isEnumDeclaration(declaration)) return valueMeaning | typeMeaning;
+	if (ts.isModuleDeclaration(declaration)) return valueMeaning | namespaceMeaning;
+	return valueMeaning;
+}
+
+function sourceFileBindings(sourceFile) {
+	const bindings = [];
+	function addIdentifiers(name, declaration, scope, kind, typeOnly = false) {
+		const identifiers = [];
+		collectBindingIdentifiers(name, identifiers);
+		for (const identifier of identifiers) {
+			const symbol = checker.getSymbolAtLocation(identifier);
+			if (symbol === undefined) continue;
+			bindings.push({
+				declaration: ts.isBindingElement(identifier.parent) ? identifier.parent : declaration,
+				kind,
+				meaning: bindingMeaning(declaration, symbol, typeOnly),
+				name: identifier.text,
+				node: identifier,
+				scope,
+				scopeDepth: (() => {
+					let depth = 0;
+					for (let current = scope; current.parent !== undefined; current = current.parent) depth += 1;
+					return depth;
+				})(),
+				symbol,
+			});
+		}
+	}
+	function visit(node) {
+		if (ts.isImportDeclaration(node) && node.importClause !== undefined) {
+			const { importClause } = node;
+			if (importClause.name !== undefined) addIdentifiers(importClause.name, importClause, sourceFile, "import", importClause.isTypeOnly);
+			if (importClause.namedBindings !== undefined && ts.isNamespaceImport(importClause.namedBindings)) {
+				addIdentifiers(importClause.namedBindings.name, importClause.namedBindings, sourceFile, "import", importClause.isTypeOnly);
+			} else if (importClause.namedBindings !== undefined) {
+				for (const specifier of importClause.namedBindings.elements) {
+					addIdentifiers(specifier.name, specifier, sourceFile, "import", importClause.isTypeOnly || specifier.isTypeOnly);
+				}
+			}
+		} else if (ts.isParameter(node)) {
+			addIdentifiers(node.name, node, node.parent, "parameter");
+		} else if (ts.isVariableDeclaration(node)) {
+			addIdentifiers(node.name, node, variableScope(node), ts.isCatchClause(node.parent) ? "catch" : "local");
+		} else if (ts.isTypeParameterDeclaration(node)) {
+			addIdentifiers(node.name, node, node.parent, "type-parameter");
+		} else if (
+			(ts.isFunctionDeclaration(node) ||
+				ts.isClassDeclaration(node) ||
+				ts.isInterfaceDeclaration(node) ||
+				ts.isTypeAliasDeclaration(node) ||
+				ts.isEnumDeclaration(node) ||
+				ts.isModuleDeclaration(node)) &&
+			node.name !== undefined &&
+			ts.isIdentifier(node.name)
+		) {
+			addIdentifiers(node.name, node, declarationScope(node), "local");
+		} else if ((ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name !== undefined) {
+			addIdentifiers(node.name, node, node, "local");
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(sourceFile);
 	return bindings;
 }
 
-function importedLocalTarget(binding) {
-	if (binding.kind !== "import") return undefined;
-	if (binding.node.propertyName !== undefined) return symbolTargets.get(binding.symbol);
-	return mappedIdentifier(binding.node.name);
+function initialBindingTarget(binding) {
+	const directTarget = initialSymbolTargets.get(binding.symbol);
+	if (directTarget !== undefined) return directTarget;
+	if ((binding.symbol.flags & ts.SymbolFlags.Alias) === 0 || !renameTexts.has(binding.name)) return undefined;
+	return initialSymbolTargets.get(resolveTypescriptAlias(binding.symbol));
 }
 
 function postRenameBindingName(binding) {
 	if (removableAliases.has(binding.symbol)) return undefined;
-	if (binding.kind === "import") return importedLocalTarget(binding) ?? binding.name;
-	return symbolTargets.get(binding.symbol) ?? binding.name;
+	return symbolTargets.get(binding.symbol) ?? initialBindingTarget(binding) ?? binding.name;
 }
 
+function scopeContains(scope, node) {
+	for (let current = node; current !== undefined; current = current.parent) {
+		if (current === scope) return true;
+	}
+	return false;
+}
+
+function identifierIsPreservedName(node) {
+	const { parent } = node;
+	if ((ts.isLabeledStatement(parent) || ts.isBreakOrContinueStatement(parent)) && parent.label === node) return true;
+	if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
+	return (
+		(ts.isPropertyAssignment(parent) ||
+			ts.isPropertyDeclaration(parent) ||
+			ts.isPropertySignature(parent) ||
+			ts.isMethodDeclaration(parent) ||
+			ts.isMethodSignature(parent) ||
+			ts.isGetAccessorDeclaration(parent) ||
+			ts.isSetAccessorDeclaration(parent) ||
+			ts.isEnumMember(parent) ||
+			ts.isJsxAttribute(parent)) &&
+		parent.name === node
+	);
+}
+
+function identifierIsLexicalReference(node, bindingNodes) {
+	if (bindingNodes.has(node) || identifierIsPreservedName(node)) return false;
+	const { parent } = node;
+	if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent)) return false;
+	if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+	if (ts.isQualifiedName(parent) && parent.right === node) return false;
+	return true;
+}
+
+function referenceMeaning(node) {
+	for (let current = node; current.parent !== undefined; current = current.parent) {
+		if (ts.isTypeQueryNode(current.parent)) return valueMeaning;
+		if (!ts.isQualifiedName(current.parent)) break;
+	}
+	return ts.isPartOfTypeNode(node) ? typeMeaning | namespaceMeaning : valueMeaning | namespaceMeaning;
+}
+
+function declarationIsExported(declaration) {
+	let owner = declaration;
+	while (ts.isBindingElement(owner) || ts.isObjectBindingPattern(owner) || ts.isArrayBindingPattern(owner)) owner = owner.parent;
+	if (ts.canHaveModifiers(owner) && ts.getModifiers(owner)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true) return true;
+	if (ts.isVariableDeclaration(owner) && ts.isVariableDeclarationList(owner.parent) && ts.isVariableStatement(owner.parent.parent)) {
+		return ts.getModifiers(owner.parent.parent)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+	}
+	return false;
+}
+
+function symbolCanBeRenamed(symbol, analysis) {
+	const records = analysis.bindingsBySymbol.get(symbol);
+	if (records === undefined || records.length === 0 || removableAliases.has(symbol) || analysis.exportedLocalSymbols.has(symbol)) return false;
+	return (symbol.declarations ?? []).every(
+		(declaration) => declaration.getSourceFile() === analysis.sourceFile && !declarationIsExported(declaration) && records.some((record) => record.declaration === declaration),
+	);
+}
+
+function addConflict(message) {
+	if (!conflicts.includes(message)) conflicts.push(message);
+}
+
+const sourceAnalyses = [];
 for (const sourceFile of program.getSourceFiles()) {
 	if (sourceFile.isDeclarationFile) continue;
 	const relativeSourceFile = relative(workspaceRoot, resolve(sourceFile.fileName));
 	if (relativeSourceFile.startsWith(`..${sep}`) || relativeSourceFile === "..") continue;
 	const bindings = sourceFileBindings(sourceFile);
-	const usedNames = new Set(bindings.map((binding) => postRenameBindingName(binding)).filter((name) => name !== undefined));
-	for (const imported of bindings.filter((binding) => binding.kind === "import")) {
-		const target = importedLocalTarget(imported);
-		if (target === undefined || target === imported.name) continue;
-		for (const local of bindings.filter((binding) => binding.kind === "local" && binding.symbol !== imported.symbol)) {
-			if (postRenameBindingName(local) !== target) continue;
-			let suffix = 1;
-			let replacement = `${target}Local`;
-			while (usedNames.has(replacement)) {
-				suffix += 1;
-				replacement = `${target}Local${suffix}`;
-			}
-			assignTarget(local.symbol, replacement, `${workspacePath(sourceFile.fileName)}:${target} import/local collision`);
-			usedNames.add(replacement);
+	const bindingNodes = new Set(bindings.map((binding) => binding.node));
+	const bindingsBySymbol = new Map();
+	for (const binding of bindings) {
+		const records = bindingsBySymbol.get(binding.symbol) ?? [];
+		records.push(binding);
+		bindingsBySymbol.set(binding.symbol, records);
+	}
+	const exportedLocalSymbols = new Set();
+	for (const statement of sourceFile.statements) {
+		if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier !== undefined || statement.exportClause === undefined || !ts.isNamedExports(statement.exportClause)) continue;
+		for (const specifier of statement.exportClause.elements) {
+			const symbol = checker.getExportSpecifierLocalTargetSymbol(specifier);
+			if (symbol !== undefined) exportedLocalSymbols.add(symbol);
 		}
 	}
-	const bindingsByTarget = new Map();
-	for (const binding of bindings) {
-		const target = postRenameBindingName(binding);
-		if (target === undefined) continue;
-		const symbols = bindingsByTarget.get(target) ?? new Set();
-		symbols.add(binding.symbol);
-		bindingsByTarget.set(target, symbols);
+	const references = [];
+	const identifierNames = new Set();
+	function visitReference(node) {
+		if (ts.isIdentifier(node)) {
+			identifierNames.add(node.text);
+			if (identifierIsLexicalReference(node, bindingNodes)) {
+				const symbol = checker.getSymbolAtLocation(node);
+				const target =
+					symbol === undefined
+						? undefined
+						: initialSymbolTargets.get(symbol) ??
+							((symbol.flags & ts.SymbolFlags.Alias) !== 0 && renameTexts.has(node.text)
+								? initialSymbolTargets.get(resolveTypescriptAlias(symbol))
+								: undefined);
+				if (symbol !== undefined && target !== undefined && target !== node.text) references.push({ meaning: referenceMeaning(node), node, symbol, target });
+			}
+		}
+		ts.forEachChild(node, visitReference);
 	}
-	for (const [target, symbols] of bindingsByTarget) {
-		if (symbols.size < 2) continue;
-		const canonicalSymbols = new Set([...symbols].map((symbol) => resolveTypescriptAlias(symbol)));
-		if (canonicalSymbols.size < 2) continue;
-		conflicts.push(`${workspacePath(sourceFile.fileName)}: post-rename binding collision for ${target}`);
+	visitReference(sourceFile);
+	sourceAnalyses.push({ bindings, bindingsBySymbol, exportedLocalSymbols, identifierNames, references, sourceFile });
+}
+
+sourceAnalyses.sort((left, right) => workspacePath(left.sourceFile.fileName).localeCompare(workspacePath(right.sourceFile.fileName)));
+for (const analysis of sourceAnalyses) {
+	const usedNames = new Set([
+		...analysis.identifierNames,
+		...analysis.bindings.map((binding) => postRenameBindingName(binding)).filter((name) => name !== undefined),
+	]);
+	function renameConflict(symbol, target, reason) {
+		if (!symbolCanBeRenamed(symbol, analysis)) {
+			addConflict(`${reason}: ${symbol.name} is not a safe local binding`);
+			return false;
+		}
+		let suffix = 1;
+		let replacement = `${target}Local`;
+		while (usedNames.has(replacement)) {
+			suffix += 1;
+			replacement = `${target}Local${suffix}`;
+		}
+		assignTarget(symbol, replacement, reason);
+		usedNames.add(replacement);
+		return true;
+	}
+
+	let changed = true;
+	while (changed) {
+		changed = false;
+		const activeBindings = analysis.bindings.filter((binding) => postRenameBindingName(binding) !== undefined);
+		for (let leftIndex = 0; leftIndex < activeBindings.length; leftIndex += 1) {
+			const left = activeBindings[leftIndex];
+			const target = postRenameBindingName(left);
+			if (target === undefined) continue;
+			for (let rightIndex = leftIndex + 1; rightIndex < activeBindings.length; rightIndex += 1) {
+				const right = activeBindings[rightIndex];
+				if (left.symbol === right.symbol || left.scope !== right.scope || postRenameBindingName(right) !== target || (left.meaning & right.meaning) === 0) continue;
+				if (resolveTypescriptAlias(left.symbol) === resolveTypescriptAlias(right.symbol)) continue;
+				const leftMapped = initialBindingTarget(left) === target;
+				const rightMapped = initialBindingTarget(right) === target;
+				const reason = `${workspacePath(analysis.sourceFile.fileName)}:${target} post-rename binding collision`;
+				if (leftMapped !== rightMapped) {
+					if (renameConflict(leftMapped ? right.symbol : left.symbol, target, reason)) changed = true;
+					break;
+				}
+				addConflict(`${reason}: ${left.symbol.name} conflicts with ${right.symbol.name}`);
+			}
+			if (changed) break;
+		}
+		if (changed) continue;
+
+		for (const reference of analysis.references) {
+			const candidates = analysis.bindings
+				.filter(
+					(binding) =>
+						postRenameBindingName(binding) === reference.target &&
+						(binding.meaning & reference.meaning) !== 0 &&
+						scopeContains(binding.scope, reference.node),
+				)
+				.sort((left, right) => right.scopeDepth - left.scopeDepth || left.node.getStart(analysis.sourceFile) - right.node.getStart(analysis.sourceFile));
+			const winner = candidates[0];
+			if (winner === undefined || winner.symbol === reference.symbol || resolveTypescriptAlias(winner.symbol) === resolveTypescriptAlias(reference.symbol)) continue;
+			const reason = `${workspacePath(analysis.sourceFile.fileName)}:${reference.target} lexical capture at ${analysis.sourceFile.getLineAndCharacterOfPosition(reference.node.getStart(analysis.sourceFile)).line + 1}`;
+			if (initialBindingTarget(winner) === reference.target) {
+				addConflict(`${reason}: mapped ${winner.symbol.name} conflicts with ${reference.symbol.name}`);
+				continue;
+			}
+			if (renameConflict(winner.symbol, reference.target, reason)) {
+				changed = true;
+				break;
+			}
+		}
 	}
 }
 
@@ -445,12 +658,20 @@ function addEdit(fileName, edit) {
 
 function editSpecifier(sourceFile, node) {
 	const imported = node.propertyName ?? node.name;
-	const importedTarget = mappedIdentifier(imported);
-	const localTarget = renameTexts.has(node.name.text) ? mappedIdentifier(node.name) : undefined;
+	const importedTarget = reviewedMapping.has(imported.text) ? mappedIdentifier(imported) : undefined;
+	const localTarget = mappedIdentifier(node.name);
 	if (importedTarget === undefined && localTarget === undefined) return;
 	const nextImported = importedTarget ?? imported.text;
 	const nextLocal = localTarget ?? node.name.text;
-	if (node.propertyName !== undefined && nextImported === nextLocal) {
+	if (ts.isImportSpecifier(node) && node.propertyName === undefined && importedTarget === undefined && localTarget !== undefined) {
+		addEdit(sourceFile.fileName, {
+			start: node.getStart(sourceFile),
+			end: node.end,
+			text: `${node.isTypeOnly ? "type " : ""}${imported.text} as ${localTarget}`,
+		});
+		return;
+	}
+	if (node.propertyName !== undefined && importedTarget !== undefined && nextImported === nextLocal) {
 		addEdit(sourceFile.fileName, {
 			start: node.getStart(sourceFile),
 			end: node.end,
@@ -478,9 +699,17 @@ for (const sourceFile of program.getSourceFiles()) {
 			}
 		}
 		if (ts.isIdentifier(node)) {
+			if (identifierIsPreservedName(node)) return;
 			const target = mappedIdentifier(node);
 			if (target !== undefined && target !== node.text) {
 				if (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node) {
+					addEdit(sourceFile.fileName, { start: node.getStart(sourceFile), end: node.end, text: `${node.text}: ${target}` });
+				} else if (
+					ts.isBindingElement(node.parent) &&
+					node.parent.name === node &&
+					node.parent.propertyName === undefined &&
+					ts.isObjectBindingPattern(node.parent.parent)
+				) {
 					addEdit(sourceFile.fileName, { start: node.getStart(sourceFile), end: node.end, text: `${node.text}: ${target}` });
 				} else {
 					addEdit(sourceFile.fileName, { start: node.getStart(sourceFile), end: node.end, text: target });

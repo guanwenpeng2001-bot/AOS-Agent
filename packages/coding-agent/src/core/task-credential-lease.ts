@@ -1,9 +1,9 @@
 /**
- * Task Credential / Lease v1 core (PR contract).
+ * Task Credential / Lease core (PR contract).
  *
  * Provider-neutral pure types, constants, input validation, scope
  * normalization, digest, bounded TTL, and the legal grant status machine for
- * the Task Credential / Lease v1 contract. This module never talks to a
+ * the Task Credential / Lease contract. This module never talks to a
  * Session, RPC, provider, or wall clock: every state-machine entry point
  * takes an explicit deterministic clock value (`nowMs`, epoch milliseconds)
  * and converts it to canonical UTC ISO timestamps for the public records.

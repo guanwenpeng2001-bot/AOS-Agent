@@ -1,7 +1,7 @@
 /**
- * AOS Agent Foundation v1 capability manifest.
+ * AOS Agent Foundation capability manifest.
  *
- * This module is the machine-checkable ledger for the Foundation v1 one-shot seal
+ * This module is the machine-checkable ledger for the Foundation one-shot seal
  * (rows 01-10 and 10A of the architecture atlas). It contains:
  *
  * - `FOUNDATION_V1_CAPABILITY_CLOSURES`: exactly 79 closure entries with ids
@@ -31,7 +31,7 @@
  * `regression_locked` if regression locking applies, otherwise `implemented`.
  */
 
-/** Status of a Foundation v1 capability closure. See module doc for the selection rule. */
+/** Status of a Foundation capability closure. See module doc for the selection rule. */
 export type FoundationCapabilityClosureStatus = "implemented" | "regression_locked" | "contract_sealed";
 
 /** Later consumer line that may only implement the provider/consumer side of a frozen contract. */
@@ -50,7 +50,7 @@ export type FoundationHighLevelRow = "01" | "02" | "03" | "04" | "05" | "06" | "
 export type FoundationImplementationStage = "T1" | "T2" | "T3" | "T4" | "T5" | "T6" | "T7" | "T8" | "T9" | "T10" | "T11" | "T12";
 
 /**
- * Closure entry for one Foundation v1 capability. The front layer of the capability
+ * Closure entry for one Foundation capability. The front layer of the capability
  * is closed by this seal; when {@link laterConsumer} is present, only the listed
  * later side stays future-only.
  */
@@ -78,7 +78,7 @@ export interface FoundationCapabilityClosure {
 }
 
 /**
- * Future owner entry for a capability that is NOT closed by Foundation v1.
+ * Future owner entry for a capability that is not closed by Foundation.
  * Records the later owner line and the explicit Foundation upstream contracts it
  * consumes, proving the id is covered by a later line instead of dropped.
  */

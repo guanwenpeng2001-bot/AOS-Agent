@@ -125,7 +125,7 @@ export {
 	type TaskLeaseReference,
 	type TaskLeaseVerificationResult,
 } from "./remote-operation.ts";
-// Task Credential / Lease v1 core contract (safe public records only; no
+// Task Credential / Lease core contract (safe public records only; no
 // material-bearing types or handles are exported).
 export {
 	TASK_CREDENTIAL_ACTION,

@@ -128,7 +128,7 @@ export const POLICY_OPERATION_CATEGORIES = POLICY_RESOURCE_CATEGORIES;
 export const POLICY_RESOURCES = POLICY_RESOURCE_CATEGORIES;
 
 /**
- * The Task Credential / Lease v1 operations governed as independent policy
+ * The Task Credential / Lease operations governed as independent policy
  * resources. Each operation is authorized separately so a profile can allow
  * issuance while denying delivery, renewal, or revoke paths.
  */
@@ -2071,7 +2071,7 @@ export function resolveExecutionPolicy(input: ResolveExecutionPolicyInput): Poli
 export const resolvePolicy = resolveExecutionPolicy;
 
 /**
- * Task Credential / Lease v1 preflight (T3).
+ * Task Credential / Lease preflight (T3).
  *
  * Read-only preflight for one `credential.task.issue` / `renew` / `project` /
  * `revoke` operation. It accepts already-resolved facts only (the frozen

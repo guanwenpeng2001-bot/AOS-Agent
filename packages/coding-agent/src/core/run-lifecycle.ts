@@ -1,5 +1,5 @@
 /**
- * Automation Host v1 run lifecycle: per-session run reservation, the frozen
+ * Automation Host run lifecycle: per-session run reservation, the frozen
  * accepted/running/completed/failed/cancelled state machine, sequenced stream
  * events, final-text capture, usage deltas, terminal receipts, and a ledger
  * folded from the SessionManager's `automation.run` custom entries.
@@ -661,7 +661,7 @@ export type AutomationErrorCode =
 	| "task_gate_not_pending"
 	| "task_gate_stage_revision_mismatch"
 	| "task_gate_persistence_failed"
-	// Task Graph v1 control-plane errors. Keep in sync with
+	// Task Graph control-plane errors. Keep in sync with
 	// TASK_GRAPH_ERROR_CODES in core/task-graph.ts.
 	| "task_graph_invalid"
 	| "task_graph_dependency_cycle"
@@ -675,7 +675,7 @@ export type AutomationErrorCode =
 	| "task_graph_run_not_terminal"
 	| "task_graph_run_state_mismatch"
 	| "task_graph_persistence_failed"
-	// Task Credential v1 control-plane errors. Keep in sync with
+	// Task Credential control-plane errors. Keep in sync with
 	// TASK_CREDENTIAL_ERROR_CODES in core/task-credential-lease.ts.
 	| "task_credential_invalid"
 	| "task_credential_binding_invalid"

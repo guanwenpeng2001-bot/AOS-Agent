@@ -1,4 +1,4 @@
-/** Local-only Plugin v1 manifest, staging, activation, and rollback lifecycle. */
+/** Local-only Plugin manifest, staging, activation, and rollback lifecycle. */
 import { Type, type TSchema } from "typebox";
 import { ExtensionContractSchema, validateExtensionContract, type ExtensionContract, type LspExtensionContract, type MonitorExtensionContract } from "./foundation/profile.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
@@ -320,7 +320,7 @@ interface PluginRegistryDiskPointerV1 {
 const PLUGIN_REGISTRY_POINTER_FILE = "activation-pointer.json";
 const PLUGIN_REGISTRY_SNAPSHOT_DIRECTORY = "snapshots";
 
-/** Atomic local-file capabilities required by the durable Plugin v1 registry. */
+/** Atomic local-file capabilities required by the durable Plugin registry. */
 export interface LocalPluginRegistryFileSystem extends Pick<FileSystem, "joinPath" | "readTextFile" | "renameFile" | "createDir" | "remove" | "exists"> {
 	createExclusive(path: string, content: string): Promise<ResultValue<void, FileError>>;
 	syncFile(path: string): Promise<ResultValue<void, FileError>>;
@@ -493,7 +493,7 @@ function unwrapPluginFileResult<T>(result: ResultValue<T, FileError>): T {
 }
 
 /**
- * Durable local Plugin v1 storage. Every mutation publishes an immutable
+ * Durable local Plugin storage. Every mutation publishes an immutable
  * snapshot, then atomically replaces the activation pointer as its commit.
  * A crash can leave an unreferenced snapshot, but never a partial active view.
  */
@@ -687,7 +687,7 @@ export function pluginContentsDigest(contents: PluginPackageContents): Fingerpri
 	return fingerprintFoundationValue(contents);
 }
 
-/** Construct a complete Plugin v1 contract with deterministic digest metadata. */
+/** Construct a complete Plugin contract with deterministic digest metadata. */
 export function createPluginContract(input: CreatePluginContractInput): PluginContract {
 	return {
 		schemaVersion: FOUNDATION_SCHEMA_VERSION,
@@ -806,7 +806,7 @@ export function validateLocalPluginPackage(pkg: LocalPluginPackage, parentMcpSel
 	return Result.ok(undefined);
 }
 
-/** Local Plugin v1 registry. No marketplace, hosted install, or implicit network behavior is exposed. */
+/** Local Plugin registry. No marketplace, hosted install, or implicit network behavior is exposed. */
 export class LocalPluginRegistry {
 	readonly #active = new Map<string, { package: LocalPluginPackage; record: PluginActivationRecord; scope: EffectScope }>();
 	readonly #previous = new Map<string, { package: LocalPluginPackage; record: PluginActivationRecord }>();

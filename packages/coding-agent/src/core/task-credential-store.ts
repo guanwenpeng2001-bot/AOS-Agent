@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease v1 store (T2).
+ * Task Credential / Lease store (T2).
  *
  * Session-scoped store for task credential grants and leases. The store
  * strictly reuses the Session custom-entry single-writer shape

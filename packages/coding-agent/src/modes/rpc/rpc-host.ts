@@ -798,7 +798,7 @@ export class RpcHostController {
 		let unsubscribe: (() => void) | undefined;
 		let unsubscribeBackpressure: (() => void) | undefined;
 
-		// Automation Host v1 state
+		// Automation Host state
 		let hostInitialized = false;
 		let coordinator: RunLifecycleCoordinator | undefined;
 		let taskGateStore: TaskGateStore | undefined;
@@ -1129,7 +1129,7 @@ export class RpcHostController {
 		let shuttingDown = false;
 
 		// ---------------------------------------------------------------------
-		// Automation Host v1 helpers
+		// Automation Host helpers
 		// ---------------------------------------------------------------------
 
 		/** Legacy commands that mutate session/model/run state; rejected once the host is initialized. */
@@ -2527,7 +2527,7 @@ export class RpcHostController {
 					),
 				);
 			}
-			// The v1 adapter contract has start() only; there is no same-ref resume
+			// The adapter contract has start() only; there is no same-ref resume
 			// API, so an external run.resume can never be honored. Reject it instead
 			// of silently starting a fresh execution with a new operation id.
 			if (commandType === "run.resume" && externalAgent !== undefined) {
@@ -3299,7 +3299,7 @@ export class RpcHostController {
 					if (!verifyExternalAgentPreparedBinding(prepared, prepareRequest, probe.snapshot)) {
 						throw new ExternalAgentError("external_agent_binding_unsupported");
 					}
-					// v1 has no independent tool-call/Policy/cancel/result gateway
+					// The adapter has no independent tool-call/Policy/cancel/result gateway
 					// contract and the selection carries no explicit gateway opt-in:
 					// a target self-reporting toolGateway=true must never expand the
 					// AOS boundary or claim AOS tools, so a gateway-mode prepared
@@ -5323,7 +5323,7 @@ export class RpcHostController {
 									),
 								);
 							}
-							// The v1 adapter contract has start() only; there is no same-ref
+							// The adapter contract has start() only; there is no same-ref
 							// resume API, so an external run.resume can never be honored.
 							// Reject it instead of silently starting a fresh execution.
 							if (command.externalAgent !== undefined) {
@@ -5502,7 +5502,7 @@ export class RpcHostController {
 								);
 							}
 							// Resume execution-kind consistency: an external source run can only
-							// be resumed through an External Agent Adapter, which v1 cannot
+							// be resumed through an External Agent Adapter, which cannot
 							// honor; rejecting here avoids silently resuming a different
 							// execution kind locally.
 							const sourceIsExternal =

@@ -76,7 +76,7 @@ export {
 	type TaskCredentialSignalOutcome,
 	type TaskCredentialWorkerDetachInput,
 } from "./core/task-credential-service.ts";
-// Task Credential / Lease v1 public contract (safe records only; the
+// Task Credential / Lease public contract (safe records only; the
 // material-bearing test provider, target projection request, and provider
 // handles stay module-private and are never exported).
 export {
