@@ -49,13 +49,15 @@ function attemptReceipt(
 	sessionId: string,
 	status: AttemptReceipt["status"],
 	sideEffectState: AttemptReceipt["sideEffectState"] = "none",
+	identitySuffix = "",
 ): AttemptReceipt {
-	const taskId = `task-${sessionId}`;
-	const attemptReceiptId = `attempt-receipt-${sessionId}`;
-	const dispatchId = `dispatch-${sessionId}`;
-	const attemptId = `attempt-${sessionId}`;
-	const bindingId = `binding-${sessionId}`;
-	const bindingEpochId = `binding-epoch-${sessionId}`;
+	const identity = `${sessionId}${identitySuffix}`;
+	const taskId = `task-${identity}`;
+	const attemptReceiptId = `attempt-receipt-${identity}`;
+	const dispatchId = `dispatch-${identity}`;
+	const attemptId = `attempt-${identity}`;
+	const bindingId = `binding-${identity}`;
+	const bindingEpochId = `binding-epoch-${identity}`;
 	return {
 		schemaVersion: 1,
 		attemptReceiptId,
@@ -94,17 +96,38 @@ async function seedTaskAndAttemptReceipt(
 	return { task: taskValue, attemptReceipt: receipt };
 }
 
+async function seedAdditionalAttemptReceipt(session: Session, receipt: AttemptReceipt): Promise<void> {
+	const correlation = receipt.provenance.correlation;
+	if (correlation === undefined) throw new Error("AttemptReceipt fixture requires durable correlation");
+	const ledger = new SessionLedger(session, { ownerId: `seed-${receipt.attemptReceiptId}` });
+	await ledger.appendFact("attempt_receipt", receipt.attemptReceiptId, receipt, {
+		clientRequestId: `seed:attempt-receipt:${receipt.attemptReceiptId}`,
+		expectedRevision: 0,
+		correlation: {
+			taskId: receipt.taskId,
+			dispatchId: receipt.dispatchId,
+			attemptId: receipt.attemptId,
+			attemptReceiptId: receipt.attemptReceiptId,
+			bindingId: receipt.bindingId,
+			bindingEpochId: receipt.bindingEpochIds[0],
+		},
+	});
+	await ledger.release();
+}
+
 async function settleTask(
 	settlement: LayeredResultSettlement,
 	sessionId: string,
 	taskValue: TaskEnvelope,
 	receipt: AttemptReceipt,
+	provenanceReceipts: readonly AttemptReceipt[] = [],
 ): Promise<TaskResult> {
 	const taskResultId = `task-result-${sessionId}`;
 	const settled = await settlement.settle({
 		taskResultId,
 		task: taskValue,
 		sourceAttemptReceiptIds: [receipt.attemptReceiptId],
+		...(provenanceReceipts.length === 0 ? {} : { provenanceAttemptReceiptIds: provenanceReceipts.map((candidate) => candidate.attemptReceiptId) }),
 		summary: "canonical task result",
 		artifacts: [],
 		tests: [],
@@ -181,6 +204,35 @@ describe("T2 Foundation Run terminal authority", () => {
 		await settlement.release();
 	});
 
+	it("keeps a completed child receipt as provenance without changing the cancelled parent outcome", async () => {
+		const sessionId = "t2-child-provenance-cancelled";
+		const session = new Session(new InMemorySessionStorage({ id: sessionId, createdAt: 1 }));
+		const fixture = await seedTaskAndAttemptReceipt(session, sessionId, "cancelled");
+		const childReceipt = attemptReceipt(sessionId, "succeeded", "none", "-child");
+		await seedAdditionalAttemptReceipt(session, childReceipt);
+		const settlement = new LayeredResultSettlement(session, { ownerId: `settlement-${sessionId}` });
+		const taskResult = await settleTask(settlement, sessionId, fixture.task, fixture.attemptReceipt, [childReceipt]);
+		const attemptReceiptIds = [fixture.attemptReceipt.attemptReceiptId, childReceipt.attemptReceiptId];
+		expect(taskResult).toMatchObject({ status: "cancelled", sourceAttemptReceiptIds: attemptReceiptIds });
+		const input = {
+			runReceiptId: `run-receipt-${sessionId}`,
+			runId: `run-${sessionId}`,
+			terminalStatus: "cancelled" as const,
+			authority: createHostTerminalGateAuthority("host-t2"),
+			attemptReceiptIds,
+			taskResultId: taskResult.taskResultId,
+			usage: runUsage,
+			terminalErrorCode: "user_aborted",
+			completedAt: now,
+		};
+		const first = await settlement.finalize(input);
+		const replay = await settlement.finalize(input);
+		expect(first).toMatchObject({ ok: true, value: { terminalStatus: "cancelled", attemptReceiptIds } });
+		expect(replay).toEqual(first);
+		expect(await session.findFoundationRecords({ kind: "fact", objectType: "run_receipt", order: "oldestFirst" })).toHaveLength(1);
+		await settlement.release();
+	});
+
 	it("rejects out-of-order and conflicting terminals without consuming the canonical identity", async () => {
 		const sessionId = "t2-terminal-order";
 		const session = new Session(new InMemorySessionStorage({ id: sessionId, createdAt: 1 }));
@@ -208,9 +260,11 @@ describe("T2 Foundation Run terminal authority", () => {
 		const repo = new JsonlSessionRepo({ fs: new NodeExecutionEnv({ cwd: root }), sessionsRoot: root });
 		const session = await repo.create({ id: sessionId, cwd: root });
 		const fixture = await seedTaskAndAttemptReceipt(session, sessionId, "succeeded");
+		const childReceipt = attemptReceipt(sessionId, "succeeded", "none", "-child");
+		await seedAdditionalAttemptReceipt(session, childReceipt);
 		const firstSettlement = new LayeredResultSettlement(session, { ownerId: `settlement-${sessionId}-first` });
-		const taskResult = await settleTask(firstSettlement, sessionId, fixture.task, fixture.attemptReceipt);
-		const input = { runReceiptId: `run-receipt-${sessionId}`, runId: `run-${sessionId}`, terminalStatus: "completed" as const, authority: createHostTerminalGateAuthority("host-t2"), attemptReceiptIds: [fixture.attemptReceipt.attemptReceiptId], taskResultId: taskResult.taskResultId, usage: runUsage };
+		const taskResult = await settleTask(firstSettlement, sessionId, fixture.task, fixture.attemptReceipt, [childReceipt]);
+		const input = { runReceiptId: `run-receipt-${sessionId}`, runId: `run-${sessionId}`, terminalStatus: "completed" as const, authority: createHostTerminalGateAuthority("host-t2"), attemptReceiptIds: [fixture.attemptReceipt.attemptReceiptId, childReceipt.attemptReceiptId], taskResultId: taskResult.taskResultId, usage: runUsage };
 		const first = await firstSettlement.finalize(input);
 		if (!first.ok) throw first.error;
 		const firstEvent = await firstSettlement.getRunReceiptWrittenEvent(input.runId);
@@ -221,7 +275,7 @@ describe("T2 Foundation Run terminal authority", () => {
 		expect(replayed).toEqual(first);
 		expect(replayed).toMatchObject({ ok: true, value: { completedAt: first.value.completedAt } });
 		expect(await restartedSettlement.getRunReceiptWrittenEvent(input.runId)).toEqual(firstEvent);
-		expect(await restartedSettlement.lookupCanonicalRun(input.runId)).toMatchObject({ ok: true, value: { runReceipt: first.value, taskResult, attemptReceipts: [fixture.attemptReceipt], writtenEvent: firstEvent } });
+		expect(await restartedSettlement.lookupCanonicalRun(input.runId)).toMatchObject({ ok: true, value: { runReceipt: first.value, taskResult, attemptReceipts: [fixture.attemptReceipt, childReceipt], writtenEvent: firstEvent } });
 		expect(await reopened.findFoundationRecords({ kind: "fact", objectType: "run_receipt", order: "oldestFirst" })).toHaveLength(1);
 		await restartedSettlement.release();
 	});

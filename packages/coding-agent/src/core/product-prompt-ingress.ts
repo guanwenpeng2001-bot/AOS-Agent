@@ -48,6 +48,22 @@ export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
 const PRODUCT_PROMPT_INGRESS_OBJECT_TYPE = "coding_agent.product_prompt_ingress";
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
 
+type ProductPromptAbortKind = "cancelled" | "deadline";
+
+interface ProductPromptAbortContext {
+	readonly signal?: AbortSignal;
+	readonly deadlineAt?: number;
+}
+
+function isDeadlineAbortReason(value: unknown): boolean {
+	if (value === null || typeof value !== "object") return false;
+	const reason = value as { readonly code?: unknown; readonly name?: unknown };
+	return reason.code === "deadline_exceeded" ||
+		reason.name === "TimeoutError" ||
+		reason.name === "AgentDeadlineExceeded" ||
+		reason.name === "HarnessDeadlineExceeded";
+}
+
 interface WorkerToolExecutionFactV1 {
 	readonly schemaVersion: 1;
 	readonly type: typeof WORKER_TOOL_EXECUTION_OBJECT_TYPE;
@@ -248,9 +264,28 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 	readonly providerId = BUILTIN_CODING_AGENT_PROVIDER_ID;
 	readonly providerClass = "agent" as const;
 	private readonly session: Session;
+	private readonly abortContexts = new Map<string, ProductPromptAbortContext>();
 
 	constructor(session: Session) {
 		this.session = session;
+	}
+
+	bindAbortContext(runId: string, signal: AbortSignal | undefined, deadlineMs: number | undefined): void {
+		this.abortContexts.set(runId, {
+			...(signal === undefined ? {} : { signal }),
+			...(deadlineMs === undefined ? {} : { deadlineAt: Date.now() + deadlineMs }),
+		});
+	}
+
+	clearAbortContext(runId: string): void {
+		this.abortContexts.delete(runId);
+	}
+
+	private abortKind(runId: string): ProductPromptAbortKind {
+		const context = this.abortContexts.get(runId);
+		if (context?.signal?.aborted === true && isDeadlineAbortReason(context.signal.reason)) return "deadline";
+		if (context?.deadlineAt !== undefined && Date.now() >= context.deadlineAt) return "deadline";
+		return "cancelled";
 	}
 
 	private async workerReceiptRefs(
@@ -418,6 +453,8 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			? latestModelFact.payload
 			: undefined;
 		const modelSucceeded = allModelIntentsSettled && latestModelPayload?.status === "succeeded" && latestModelPayload.sideEffectState === "none";
+		const promptAbort = assistant.stopReason === "aborted" ? this.abortKind(correlation.runId) : undefined;
+		const modelCancellationSettled = promptAbort !== undefined;
 
 		const toolStarts = records.filter((record) => record.type === "tool_started");
 		const toolReceiptRecords = await this.session.findFoundationRecords({
@@ -438,11 +475,11 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		});
 		const artifacts = toolReceipts.flatMap((receipt) => receipt.artifacts ?? []);
 		const uniqueArtifacts = [...new Map(artifacts.map((artifact) => [artifact.artifactId, artifact])).values()];
-		const sideEffectUnknown = !modelSucceeded || !toolsSucceeded || toolReceiptRecords.length !== toolReceipts.length;
-		const status = assistant.stopReason === "aborted"
-			? "cancelled" as const
-			: assistant.stopReason === "error" || !modelSucceeded || !toolsSucceeded
-				? "failed" as const
+		const sideEffectUnknown = !modelSucceeded && !modelCancellationSettled || !toolsSucceeded || toolReceiptRecords.length !== toolReceipts.length;
+		const status = sideEffectUnknown || promptAbort === "deadline" || assistant.stopReason === "error"
+			? "failed" as const
+			: promptAbort === "cancelled"
+				? "cancelled" as const
 				: "succeeded" as const;
 		const attemptReceiptId = `attempt_receipt_${correlation.runId}`;
 		const producedAt = new Date(assistant.timestamp).toISOString();
@@ -463,9 +500,9 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			artifacts: uniqueArtifacts,
 			...(status === "succeeded" ? {} : {
 				error: {
-					code: sideEffectUnknown ? "side_effect_unknown" : assistant.stopReason === "aborted" ? "user_aborted" : "agent_run_failed",
-					message: assistant.errorMessage ?? (sideEffectUnknown ? "Durable model or tool execution could not prove a terminal success" : "Agent run failed"),
-					category: sideEffectUnknown ? "side_effect_unknown" : "unknown",
+					code: sideEffectUnknown ? "side_effect_unknown" : promptAbort === "deadline" ? "run_deadline_exceeded" : promptAbort === "cancelled" ? "user_aborted" : "agent_run_failed",
+					message: assistant.errorMessage ?? (sideEffectUnknown ? "Durable model or tool execution could not prove a terminal success" : promptAbort === "deadline" ? "Run deadline was exceeded" : promptAbort === "cancelled" ? "Agent run was cancelled" : "Agent run failed"),
+					category: sideEffectUnknown ? "side_effect_unknown" : promptAbort === "deadline" ? "deadline" : promptAbort === "cancelled" ? "cancelled" : "unknown",
 					retryable: false,
 				},
 			}),
@@ -596,37 +633,42 @@ export class ProductPromptIngressV1 {
 			ownerId: `product-prompt:${metadata.id}`,
 			...(subagentRoles === undefined ? {} : { subagentRoles }),
 		});
-		return adapter.execute({
-			prompt: input.prompt,
-			...(input.images === undefined ? {} : { images: input.images }),
-			...(input.continuation === true ? { continuation: true } : {}),
-			runId,
-			task: {
-				taskId,
-				goalId: goal.goalId,
-				kind: "task",
-				title: "Coding-agent prompt",
-				description: "One product prompt executed by the built-in coding-agent role",
-				workspace: this.options.cwd,
-				capabilityRefs: [],
-				inputs: [],
-				expectedOutputs: [],
-				budget: {},
-				acceptanceCriteria: [],
-			},
-			roleRevision: role,
-			modelProfile: profile,
-			identity: {
-				bindingId: `binding_coding_agent_${token}`,
-				dispatchId: `dispatch_coding_agent_${token}`,
-				attemptId: `attempt_coding_agent_${token}`,
-				bindingEpochId: `binding_epoch_coding_agent_${token}`,
-				agentInstanceId: `agent_instance_coding_agent_${token}`,
-			},
-			settlement: { artifacts: [], tests: [], evidence: [] },
-			...(input.signal === undefined ? {} : { signal: input.signal }),
-			...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
-			now: () => ingress.submittedAt,
-		});
+		this.provider.bindAbortContext(runId, input.signal, input.deadlineMs);
+		try {
+			return await adapter.execute({
+				prompt: input.prompt,
+				...(input.images === undefined ? {} : { images: input.images }),
+				...(input.continuation === true ? { continuation: true } : {}),
+				runId,
+				task: {
+					taskId,
+					goalId: goal.goalId,
+					kind: "task",
+					title: "Coding-agent prompt",
+					description: "One product prompt executed by the built-in coding-agent role",
+					workspace: this.options.cwd,
+					capabilityRefs: [],
+					inputs: [],
+					expectedOutputs: [],
+					budget: {},
+					acceptanceCriteria: [],
+				},
+				roleRevision: role,
+				modelProfile: profile,
+				identity: {
+					bindingId: `binding_coding_agent_${token}`,
+					dispatchId: `dispatch_coding_agent_${token}`,
+					attemptId: `attempt_coding_agent_${token}`,
+					bindingEpochId: `binding_epoch_coding_agent_${token}`,
+					agentInstanceId: `agent_instance_coding_agent_${token}`,
+				},
+				settlement: { artifacts: [], tests: [], evidence: [] },
+				...(input.signal === undefined ? {} : { signal: input.signal }),
+				...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
+				now: () => ingress.submittedAt,
+			});
+		} finally {
+			this.provider.clearAbortContext(runId);
+		}
 	}
 }
