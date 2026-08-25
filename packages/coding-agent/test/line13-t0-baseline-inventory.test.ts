@@ -141,6 +141,21 @@ describe("Line 13 T0 baseline and inventories", () => {
 		}
 		const acOwners = [...new Set(inventory.flatMap((entry) => entry.acceptanceCriterionOwner.match(/AC-\d{2}/gu) ?? []))].sort();
 		expect(acOwners).toEqual(Array.from({ length: 24 }, (_, index) => `AC-${String(index + 1).padStart(2, "0")}`));
+		const oldAuthorities = inventory.filter(
+			(entry) => !["baseline", "dependency", "public_export"].includes(entry.category),
+		);
+		const assignmentsByAuthority = new Map<string, typeof oldAuthorities>();
+		for (const entry of oldAuthorities) {
+			const marker = /; exact marker (.*); source sha256 [0-9a-f]{64}$/u.exec(entry.evidence)?.[1];
+			expect(marker, entry.id).toBeDefined();
+			const authorityKey = `${entry.category}:${entry.currentCodeLocation}:${marker}`;
+			const matchingAuthority = assignmentsByAuthority.get(authorityKey) ?? [];
+			assignmentsByAuthority.set(authorityKey, [...matchingAuthority, entry]);
+		}
+		expect(assignmentsByAuthority.size).toBe(oldAuthorities.length);
+		for (const [authorityId, matchingAuthority] of assignmentsByAuthority) {
+			expect(matchingAuthority, authorityId).toHaveLength(1);
+		}
 		expect([...counts.keys()].filter((category) => category !== "baseline").sort()).toEqual([
 			"binding_consumer",
 			"dependency",

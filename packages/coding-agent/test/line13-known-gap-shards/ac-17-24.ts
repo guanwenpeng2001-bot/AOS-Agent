@@ -458,8 +458,8 @@ const ac21 = defineLine13KnownGapCase({
 			const invalidGateway = createFoundationToolGatewayV1({ gatewayId: "invalid-catalog", providers: [invalidProvider] });
 			try {
 				await invalidGateway.capabilities();
-			} catch {
-				fixture.catalogUnavailable = true;
+			} catch (error) {
+				fixture.catalogUnavailable = error instanceof FoundationError && error.code === "invalid_identifier";
 			}
 			await invalidGateway.dispose();
 

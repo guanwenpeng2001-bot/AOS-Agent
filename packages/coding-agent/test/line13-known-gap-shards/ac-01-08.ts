@@ -818,36 +818,58 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				mode: "fails",
 				expectedFailure: {
 					reason: "external-connector.input-shape",
-					fingerprint: "sha256:158f25327acb3bbdef1c76a2a70548a54233f68d41b2de3fa83fb6ac313e74e5",
+					fingerprint: "sha256:94a80aadcb7efd92e9fc9eb6c1da93d060398c19a2a782987a2b98dced112ddc",
 				},
 			},
 			scenario: {
-				fixture: () => ({
-					message: "Preserve every safe input reference",
-					images: [{ id: "image-line13", mimeType: "image/png", sizeBytes: 2048 }],
-					files: [
-						{
-							id: "file-line13",
-							name: "evidence.txt",
-							mimeType: "text/plain",
-							sizeBytes: 512,
-						},
-					],
+				fixture: async () => ({
+					product: await createRpcProductFixture({ withModel: true }),
+					expectedInput: {
+						message: "Preserve every safe input reference",
+						images: [{ id: "image-line13", mimeType: "image/png", sizeBytes: 1 }],
+						files: [
+							{
+								id: "file-line13",
+								name: "evidence.txt",
+								mimeType: "text/plain",
+								sizeBytes: 512,
+							},
+						],
+					},
 				}),
-				setup: () => {
-					const imageOnly = serializeExternalAgentInput({
-						message: "Preserve the supported reference",
-						images: [{ id: "image-line13", mimeType: "image/png", sizeBytes: 2048 }],
-					});
-					if (imageOnly === undefined) throw new Error("AC-05 supported image fixture did not serialize");
-				},
-				assertion: (input) => {
+				setup: ({ product }) => initializeRpc(product),
+				assertion: async ({ product, expectedInput }) => {
+					const started = automationResponseView(
+						await product.controller.dispatch({
+							id: "ac05-start",
+							type: "run.start",
+							message: expectedInput.message,
+							images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+							externalAgent: { adapterId: "line13-connector", targetId: "target-1" },
+						}),
+					);
+					const forwarded = product.adapter.trace.inputs[0]?.images;
+					const rejectedBeforeAcceptance = started.success === false && product.adapter.trace.startCalls === 0;
+					const forwardedAsSafeReference =
+						started.success === true &&
+						product.adapter.trace.startCalls === 1 &&
+						forwarded?.length === 1 &&
+						typeof forwarded[0]?.id === "string" &&
+						forwarded[0].id.length > 0 &&
+						forwarded[0].mimeType === "image/png" &&
+						forwarded[0].sizeBytes === 1;
+					assert.equal(
+						rejectedBeforeAcceptance || forwardedAsSafeReference,
+						true,
+						"external RPC input must reject image bytes before acceptance or forward only an exact safe reference",
+					);
 					assert.deepStrictEqual(
-						serializeExternalAgentInput(input),
-						input,
+						serializeExternalAgentInput(expectedInput),
+						expectedInput,
 						"external input serialization must preserve text, image, and file reference shapes",
 					);
 				},
+				cleanup: ({ product }) => product.cleanup(),
 			},
 		}),
 		defineLine13KnownGapCase({
