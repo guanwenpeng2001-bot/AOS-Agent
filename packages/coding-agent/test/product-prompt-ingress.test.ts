@@ -302,10 +302,13 @@ describe("ProductPromptIngressV1", () => {
 			const runReceipts = facts.filter((record) => record.objectType === "run_receipt");
 			expect(runReceipts).toHaveLength(1);
 			expect(runReceipts.some((record) => (record.payload as { runReceiptId?: string }).runReceiptId?.startsWith("run_receipt_child_") === true)).toBe(false);
+			const expectedAttemptReceiptIds = [execution.attemptReceipt.attemptReceiptId, childAttemptReceipt.objectId];
+			expect(execution.taskResult.sourceAttemptReceiptIds).toEqual(expectedAttemptReceiptIds);
+			expect(execution.runReceipt.attemptReceiptIds).toEqual(expectedAttemptReceiptIds);
 			expect(runReceipts[0]).toMatchObject({
 				lane: "main",
 				payload: {
-					attemptReceiptIds: [execution.attemptReceipt.attemptReceiptId, childAttemptReceipt.objectId],
+					attemptReceiptIds: expectedAttemptReceiptIds,
 				},
 			});
 			const nextTurn = await composition.consumeParentNextTurnForRun(runId);

@@ -55,7 +55,9 @@ async function createFixture(mode: "pending" | "error") {
 	const started = new Promise<void>((resolve) => {
 		markStarted = resolve;
 	});
+	let streamCalls = 0;
 	const streamFunction: StreamFn = () => {
+		streamCalls += 1;
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			markStarted();
@@ -69,18 +71,23 @@ async function createFixture(mode: "pending" | "error") {
 		});
 		return stream;
 	};
-	const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
-	const ingress = new ProductPromptIngressV1({
-		session,
-		harness: created.harness,
-		models,
-		cwd: "C:/workspace",
-		currentModel: () => MODEL,
-		currentThinkingLevel: () => "off",
-		dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
-		now: () => NOW,
-	});
-	return { session, harness: created.harness, ingress, started };
+	const createRuntime = async () => {
+		const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
+		return {
+			harness: created.harness,
+			ingress: new ProductPromptIngressV1({
+				session,
+				harness: created.harness,
+				models,
+				cwd: "C:/workspace",
+				currentModel: () => MODEL,
+				currentThinkingLevel: () => "off",
+				dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+				now: () => NOW,
+			}),
+		};
+	};
+	return { session, ...await createRuntime(), started, streamCalls: () => streamCalls, restart: createRuntime };
 }
 
 async function expectOneCanonicalTerminal(session: Session, runId: string) {
@@ -106,6 +113,36 @@ async function expectOneCanonicalTerminal(session: Session, runId: string) {
 }
 
 describe("T2 canonical abort settlement", () => {
+	it("projects the missing parent receipt without repeating provider work and recovers it after restart", async () => {
+		const fixture = await createFixture("pending");
+		const runId = "t2-parent-receipt-recovery";
+		let activeHarness = fixture.harness;
+		let activeHarnessOpen = true;
+		try {
+			const pending = fixture.ingress.execute({ prompt: "complete once", surface: "rpc", runId });
+			await fixture.started;
+			expect(await fixture.session.findFoundationRecords({ kind: "fact", objectType: "attempt_receipt", order: "oldestFirst" })).toHaveLength(0);
+			const execution = await pending;
+			expect(fixture.streamCalls()).toBe(1);
+			expect(execution.attemptReceipt).toMatchObject({ status: "succeeded", sideEffectState: "none" });
+			expect(await fixture.session.findFoundationRecords({ kind: "fact", objectType: "attempt_receipt", order: "oldestFirst" })).toHaveLength(1);
+			expect(await fixture.session.findFoundationRecords({ kind: "fact", objectType: "task_result", order: "oldestFirst" })).toHaveLength(1);
+			expect(await fixture.session.findFoundationRecords({ kind: "fact", objectType: "run_receipt", order: "oldestFirst" })).toHaveLength(1);
+
+			await activeHarness.close();
+			activeHarnessOpen = false;
+			const restarted = await fixture.restart();
+			activeHarness = restarted.harness;
+			activeHarnessOpen = true;
+			const replay = await restarted.ingress.execute({ prompt: "complete once", surface: "rpc", runId });
+			expect(replay).toEqual(execution);
+			expect(fixture.streamCalls()).toBe(1);
+			expect((await expectOneCanonicalTerminal(fixture.session, runId))?.runReceipt).toEqual(execution.runReceipt);
+		} finally {
+			if (activeHarnessOpen) await activeHarness.close();
+		}
+	});
+
 	it("settles active cancellation once and replays the same canonical receipt", async () => {
 		const fixture = await createFixture("pending");
 		const runId = "t2-active-cancel";
@@ -121,6 +158,7 @@ describe("T2 canonical abort settlement", () => {
 
 			const replay = await fixture.ingress.execute({ prompt: "cancel this run", surface: "rpc", runId });
 			expect(replay.runReceipt).toEqual(execution.runReceipt);
+			expect(fixture.streamCalls()).toBe(1);
 			expect((await expectOneCanonicalTerminal(fixture.session, runId))?.runReceipt).toEqual(execution.runReceipt);
 		} finally {
 			await fixture.harness.close();
@@ -149,6 +187,7 @@ describe("T2 canonical abort settlement", () => {
 			});
 			const replay = await fixture.ingress.execute({ prompt: "deadline this run", surface: "rpc", runId });
 			expect(replay.runReceipt).toEqual(execution.runReceipt);
+			expect(fixture.streamCalls()).toBe(1);
 			expect((await expectOneCanonicalTerminal(fixture.session, runId))?.runReceipt).toEqual(execution.runReceipt);
 		} finally {
 			await fixture.harness.close();
@@ -170,6 +209,9 @@ describe("T2 canonical abort settlement", () => {
 				terminalErrorCode: "side_effect_unknown",
 				terminalError: { code: "side_effect_unknown", category: "side_effect_unknown", retryable: false },
 			});
+			const replay = await fixture.ingress.execute({ prompt: "uncertain provider run", surface: "rpc", runId });
+			expect(replay).toEqual(execution);
+			expect(fixture.streamCalls()).toBe(1);
 			expect((await expectOneCanonicalTerminal(fixture.session, runId))?.runReceipt).toEqual(execution.runReceipt);
 		} finally {
 			await fixture.harness.close();

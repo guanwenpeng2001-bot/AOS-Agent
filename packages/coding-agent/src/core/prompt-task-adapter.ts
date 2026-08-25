@@ -514,6 +514,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			if (options.runtimeHarness !== undefined) {
 				await created.harness.activateFoundationExecution(foundationExecution, options.provider);
 			}
+			let childAttemptReceiptIds: readonly string[] = [];
 			let parentCorrelationForSettlement: ExecutionCorrelation | undefined;
 			if (childExecutionConfigured && options.subagentRoles !== undefined) {
 				if (input.runId === undefined) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Selected Child Agent execution requires a stable runId");
@@ -591,6 +592,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					) {
 						throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Selected Child Agent did not return unique durable AttemptReceipt ids");
 					}
+					childAttemptReceiptIds = [...spawned.value.attemptReceiptIds];
 				} finally {
 					await settlement.release();
 				}
@@ -650,6 +652,10 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					if (attemptRecord?.kind === "fact") {
 						attemptReceipt = attemptRecord.payload as unknown as AttemptReceipt;
 					} else {
+						// AgentHarness already performed and durably recorded the model/tool work. This
+						// fallback only asks the coding-agent provider to project those records into
+						// the missing parent AttemptReceipt; it never prompts the Harness or provider
+						// model again. executeDispatch also replays a receipt that became durable first.
 						const executed = await settlement.executeDispatch({
 							provider: options.provider,
 							dispatch,
@@ -661,11 +667,16 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						if (!executed.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Provider consumer rejected the Prompt Task AttemptReceipt", undefined, executed.error);
 						attemptReceipt = executed.value.receipt;
 					}
+					const sourceAttemptReceiptIds = [attemptReceipt.attemptReceiptId, ...childAttemptReceiptIds];
+					if (new Set(sourceAttemptReceiptIds).size !== sourceAttemptReceiptIds.length) {
+						throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent and accepted Child AttemptReceipt ids must be unique");
+					}
 					const taskResultId = `task_result_${run.value.runId}`;
 					const settled = await settlement.settle({
 						taskResultId,
 						task: persistedTask.value,
 						sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
+						...(childAttemptReceiptIds.length === 0 ? {} : { provenanceAttemptReceiptIds: childAttemptReceiptIds }),
 						summary: input.settlement.summary ?? (run.value.kind === "completed" ? "Agent run completed" : "Agent run did not complete successfully"),
 						artifacts: input.settlement.artifacts,
 						...(input.settlement.diff === undefined ? {} : { diff: input.settlement.diff }),
@@ -693,7 +704,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						runId: run.value.runId,
 						terminalStatus,
 						authority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
-						attemptReceiptIds: [attemptReceipt.attemptReceiptId],
+						attemptReceiptIds: sourceAttemptReceiptIds,
 						taskResultId: taskResult.taskResultId,
 						usage,
 						completedAt: timestamp,

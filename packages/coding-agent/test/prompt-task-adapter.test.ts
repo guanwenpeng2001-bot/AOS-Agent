@@ -6,6 +6,7 @@ import {
 	InMemoryRoleRegistry,
 	Result,
 	Session,
+	SessionLedger,
 	type AgentBinding,
 	type AgentInstance,
 	type AttemptReceipt,
@@ -285,11 +286,68 @@ describe("Foundation Prompt Task adapter", () => {
 		["unknown side effect", "side_effect_unknown", "side_effect_unknown", "side_effect_unknown"],
 	] as const)("preserves the durable AttemptReceipt category for a child-composed %s", async (_name, code, category, sideEffectState) => {
 		const calls: PromptTaskDependencyName[] = [];
-		const session = new Session(new InMemorySessionStorage({ id: `session-child-${category}`, createdAt: 1 }));
+		const sessionId = `session-child-${category}`;
+		const session = new Session(new InMemorySessionStorage({ id: sessionId, createdAt: 1 }));
 		const provider = new PromptTaskProvider();
 		provider.receiptError = { code, message: `${category} failure`, category, retryable: category === "transient" };
 		provider.sideEffectState = sideEffectState;
 		const runtime = createModelsWithResponse();
+		const childAttemptReceiptId = `child-receipt-${category}`;
+		const childTaskId = `child-task-${category}`;
+		const childDispatchId = `child-dispatch-${category}`;
+		const childAttemptId = `child-attempt-${category}`;
+		const childBindingId = `child-binding-${category}`;
+		const childBindingEpochId = `child-binding-epoch-${category}`;
+		const childAgentInstanceId = `child-agent-${category}`;
+		const childProviderId = `child-provider-${category}`;
+		const childLaneId = `child-lane-${category}`;
+		const childReceipt: AttemptReceipt = {
+			schemaVersion: 1,
+			attemptReceiptId: childAttemptReceiptId,
+			taskId: childTaskId,
+			dispatchId: childDispatchId,
+			attemptId: childAttemptId,
+			providerId: childProviderId,
+			agentInstanceId: childAgentInstanceId,
+			bindingId: childBindingId,
+			bindingEpochIds: [childBindingEpochId],
+			status: "succeeded",
+			workerReceiptRefs: [],
+			artifacts: [],
+			provenance: {
+				producerKind: "agent_executor",
+				providerId: childProviderId,
+				producedAt: NOW,
+				correlation: {
+					sessionId,
+					laneId: childLaneId,
+					taskId: childTaskId,
+					dispatchId: childDispatchId,
+					attemptId: childAttemptId,
+					bindingId: childBindingId,
+					bindingEpochId: childBindingEpochId,
+					agentInstanceId: childAgentInstanceId,
+					attemptReceiptId: childAttemptReceiptId,
+					revision: 0,
+				},
+			},
+			sideEffectState: "none",
+		};
+		const childLedger = new SessionLedger(session, { ownerId: `seed-${childAttemptReceiptId}`, laneId: childLaneId });
+		await childLedger.appendFact("attempt_receipt", childAttemptReceiptId, childReceipt, {
+			clientRequestId: `seed:${childAttemptReceiptId}`,
+			expectedRevision: 0,
+			correlation: {
+				taskId: childTaskId,
+				dispatchId: childDispatchId,
+				attemptId: childAttemptId,
+				bindingId: childBindingId,
+				bindingEpochId: childBindingEpochId,
+				agentInstanceId: childAgentInstanceId,
+				attemptReceiptId: childAttemptReceiptId,
+			},
+		});
+		await childLedger.release();
 		const adapter = createPromptTaskAdapter({
 			dependencies: dependencies(calls),
 			provider,
@@ -298,7 +356,7 @@ describe("Foundation Prompt Task adapter", () => {
 				scope: "project",
 				parentLaneId: "main",
 				spawn: async () => Result.err(new FoundationError("subagent_lost", "spawn is not used by fixed composition")),
-				compose: async () => Result.ok({ attemptReceiptIds: [`child-receipt-${category}`] }),
+				compose: async () => Result.ok({ attemptReceiptIds: [childAttemptReceiptId] }),
 			},
 			harness: {
 				session,
@@ -312,9 +370,11 @@ describe("Foundation Prompt Task adapter", () => {
 		});
 		const execution = await adapter.execute({ ...promptInput(), runId: `run-child-${category}` });
 		expect(execution.attemptReceipt.error).toEqual(provider.receiptError);
+		expect(execution.taskResult.sourceAttemptReceiptIds).toEqual([execution.attemptReceipt.attemptReceiptId, childAttemptReceiptId]);
 		expect(execution.taskResult.status).toBe("failed");
 		expect(execution.runReceipt).toMatchObject({
 			terminalStatus: "failed",
+			attemptReceiptIds: [execution.attemptReceipt.attemptReceiptId, childAttemptReceiptId],
 			terminalErrorCode: code,
 			terminalError: { code, category },
 		});
