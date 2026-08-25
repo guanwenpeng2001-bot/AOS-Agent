@@ -776,7 +776,8 @@ describe("T4 public AgentHarness tool consumer", () => {
 			if (current.usage) expect(toolReceipt).toMatchObject({ usage: { tokens: 5, costUsd: 0.3, toolCalls: 1 } });
 			expect(attemptReceipt).toMatchObject({ status: current.expectedStatus, sideEffectState: expectedSideEffectState });
 			expect(taskResult).toMatchObject({ status: current.expectedStatus });
-			expect(runReceipt).toMatchObject({ terminalStatus: current.expectedRunStatus });
+			const expectedUsage = current.usage ? { inputTokens: 4, outputTokens: 5, totalTokens: 9 } : current.sideEffectState === "none" ? { inputTokens: 2, outputTokens: 2, totalTokens: 4 } : { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+			expect(runReceipt).toMatchObject({ terminalStatus: current.expectedRunStatus, usage: expectedUsage });
 			if (current.throws) {
 				const error = (toolReceipt as { error?: { code?: string; category?: string; retryable?: boolean } }).error;
 				expect(error?.code).toBe("tool_execution_failed");

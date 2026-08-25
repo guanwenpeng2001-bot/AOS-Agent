@@ -126,6 +126,7 @@ import { FOUNDATION_LEDGER_ERROR_CODES } from "../../src/harness/session/durable
 
 const correlation = createExecutionCorrelation("session-1", "main", { revision: 1 });
 const artifact = { schemaVersion: 1 as const, artifactId: "artifact-1", mediaType: "text/plain", digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+const noRunUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as const;
 const task: TaskEnvelope = {
 	schemaVersion: 1,
 	taskId: "task-1",
@@ -471,7 +472,7 @@ describe("task, binding, provider, and result invariants", () => {
 		expect(validateAttemptReceipt(receipt(), { agentProvider: true })).toMatchObject({ ok: true });
 		const result = settleTaskResult({ task, taskResultId: "task-result-1", receipts: [receipt()], summary: "done", artifacts: [artifact], tests: [{ name: "contract", required: true, status: "passed", evidenceRefs: [artifact] }], evidence: [{ schemaVersion: 1, factId: "fact-1", criterionId: "criterion-1", outcome: "satisfied", evidenceRefs: [artifact], recordedAt: "2026-01-01T00:00:00.000Z" }], producer: { producerKind: "host", providerId: "host", producedAt: "2026-01-01T00:00:00.000Z", correlation: { sessionId: "session-1", laneId: "main", taskId: "task-1", taskResultId: "task-result-1", revision: 1 } } });
 		expect(result).toMatchObject({ ok: true, value: { taskResultId: "task-result-1" } });
-		if (result.ok) expect(finalizeRunReceipt({ runReceiptId: "run-1", runId: "run-1", terminalStatus: "completed", authority: createHostTerminalGateAuthority("host"), taskResult: result.value, attemptReceiptIds: [receipt().attemptReceiptId] })).toMatchObject({ ok: true, value: { taskResultId: "task-result-1" } });
+		if (result.ok) expect(finalizeRunReceipt({ runReceiptId: "run-1", runId: "run-1", terminalStatus: "completed", authority: createHostTerminalGateAuthority("host"), taskResult: result.value, attemptReceiptIds: [receipt().attemptReceiptId], usage: noRunUsage })).toMatchObject({ ok: true, value: { taskResultId: "task-result-1", usage: noRunUsage } });
 	});
 
 	it("requires a Host terminal gate and all succeeded TaskResult evidence layers", () => {
@@ -496,7 +497,7 @@ describe("task, binding, provider, and result invariants", () => {
 		expect(settleTaskResult({ ...validInput, validation: { schemaValid: false, artifactDigestsValid: true, acceptanceVerified: true, requiredEvidencePresent: true } }).ok).toBe(false);
 		const settled = settleTaskResult(validInput);
 		expect(settled.ok).toBe(true);
-		const baseFinalization = { runReceiptId: "run-strict", runId: "run-strict", terminalStatus: "completed" as const, attemptReceiptIds: [receipt().attemptReceiptId] };
+		const baseFinalization = { runReceiptId: "run-strict", runId: "run-strict", terminalStatus: "completed" as const, attemptReceiptIds: [receipt().attemptReceiptId], usage: noRunUsage };
 		// @ts-expect-error The terminal gate is a required Host-only authority.
 		const missingAuthority = finalizeRunReceipt({ ...baseFinalization, taskResult: settled.ok ? settled.value : undefined });
 		expect(missingAuthority).toMatchObject({ ok: false, error: { code: "run_terminal_authority_required" } });

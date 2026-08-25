@@ -36,6 +36,7 @@
 - Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
 - AgentHarness compatibility retry and external-message state now reflects active retry attempts and pending writes instead of fixed false values.
 - Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResult.toolReceiptRef`, closing two sealed-contract omissions without a schema redesign.
+- Made the Foundation Host terminal gate the replay-stable `RunReceipt` authority, with canonical status/error/usage, fail-closed conflicts, deterministic result lookup, and one `run_receipt.written` projection per durable receipt.
 
 ## [0.84.3] - 2026-08-10
 

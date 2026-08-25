@@ -17,12 +17,14 @@ export interface ValidationResult { name: string; required: boolean; status: "pa
 export interface ResultValidation { schemaValid: boolean; artifactDigestsValid: boolean; acceptanceVerified: boolean; requiredEvidencePresent: boolean; notes?: readonly string[]; }
 export interface TaskResult { schemaVersion: 1; taskResultId: string; taskId: string; sourceAttemptReceiptIds: readonly string[]; status: ResultStatus; summary: string; artifacts: readonly ArtifactRef[]; diff?: ArtifactRef; tests: readonly ValidationResult[]; evidence: readonly AcceptanceFact[]; error?: PublicExecutionError; provenance: ResultProvenance; validation: ResultValidation; }
 export type RunTerminalStatus = "completed" | "failed" | "cancelled";
-export interface RunReceipt { schemaVersion: 1; runReceiptId: string; runId: string; terminalStatus: RunTerminalStatus; taskResultId?: string; attemptReceiptIds: readonly string[]; terminalErrorCode?: string; completedAt: string; }
+/** Cumulative token usage owned by the canonical RunReceipt. */
+export interface RunReceiptUsage { inputTokens: number; outputTokens: number; totalTokens: number; }
+export interface RunReceipt { schemaVersion: 1; runReceiptId: string; runId: string; terminalStatus: RunTerminalStatus; taskResultId?: string; attemptReceiptIds: readonly string[]; usage: RunReceiptUsage; terminalErrorCode?: string; terminalError?: PublicExecutionError; completedAt: string; }
 export interface HostTerminalGateAuthority { schemaVersion: 1; type: "host_terminal_gate"; authorityId: string; revision: number; fingerprint: Fingerprint; }
 
 const provenanceSchema = Type.Object({ producerKind: Type.Union([Type.Literal("operation_worker"), Type.Literal("scheduler"), Type.Literal("agent_executor"), Type.Literal("external_connector"), Type.Literal("host")]), providerId: Type.String({ minLength: 1 }), producedAt: Type.String({ minLength: 1 }), lineage: Type.Optional(LineageSchema), correlation: Type.Optional(ExecutionCorrelationSchema) }, { additionalProperties: false });
 const artifactSchema = ArtifactRefSchema;
-const publicErrorSchema = Type.Object({ code: Type.String({ minLength: 1 }), message: Type.String({ minLength: 1 }), category: Type.Optional(Type.String()), retryable: Type.Boolean() }, { additionalProperties: false });
+const publicErrorSchema = Type.Object({ code: Type.String({ minLength: 1 }), message: Type.String({ minLength: 1 }), category: Type.Optional(Type.Union([Type.Literal("permission"), Type.Literal("parameter"), Type.Literal("transient"), Type.Literal("deadline"), Type.Literal("cancelled"), Type.Literal("side_effect_unknown"), Type.Literal("unknown")])), retryable: Type.Boolean() }, { additionalProperties: false });
 export const PublicExecutionErrorSchema = publicErrorSchema;
 export const AttemptReceiptSchema = Type.Object({ schemaVersion: Type.Literal(1), attemptReceiptId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), dispatchId: Type.String({ minLength: 1 }), attemptId: Type.String({ minLength: 1 }), providerId: Type.String({ minLength: 1 }), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), bindingId: Type.String({ minLength: 1 }), bindingEpochIds: Type.Array(Type.String({ minLength: 1 })), status: Type.Union([Type.Literal("succeeded"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("suspended")]), workerReceiptRefs: Type.Array(WorkerReceiptRefSchema), artifacts: Type.Array(artifactSchema), error: Type.Optional(publicErrorSchema), provenance: provenanceSchema, sideEffectState: SideEffectStateSchema }, { additionalProperties: false });
 export const WorkerReceiptSchema = Type.Object({ schemaVersion: Type.Literal(1), workerReceiptId: Type.String({ minLength: 1 }), sandboxProviderId: Type.String({ minLength: 1 }), operationId: Type.String({ minLength: 1 }), taskId: Type.Optional(Type.String({ minLength: 1 })), dispatchId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), status: Type.Union([Type.Literal("succeeded"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("suspended")]), sideEffectState: SideEffectStateSchema, artifacts: Type.Optional(Type.Array(artifactSchema)), error: Type.Optional(publicErrorSchema), provenance: provenanceSchema, startedAt: Type.String({ minLength: 1 }), completedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
@@ -120,13 +122,21 @@ export function validateHostTerminalGateAuthority(value: unknown): ResultValue<H
 }
 export function serializeHostTerminalGateAuthority(value: HostTerminalGateAuthority): string { return serializeExactShape(HostTerminalGateAuthoritySchema, value, "host_terminal_gate_authority"); }
 export function parseHostTerminalGateAuthority(text: string): ResultValue<HostTerminalGateAuthority, FoundationError> { return parseExactShape(HostTerminalGateAuthoritySchema, text, "host_terminal_gate_authority"); }
-export interface FinalizeRunReceiptInput { runReceiptId: string; runId: string; terminalStatus: RunTerminalStatus; authority: HostTerminalGateAuthority; taskResult?: TaskResult; attemptReceiptIds: readonly string[]; terminalErrorCode?: string; completedAt?: string; }
+export interface FinalizeRunReceiptInput { runReceiptId: string; runId: string; terminalStatus: RunTerminalStatus; authority: HostTerminalGateAuthority; taskResult?: TaskResult; attemptReceiptIds: readonly string[]; usage: RunReceiptUsage; terminalErrorCode?: string; terminalError?: PublicExecutionError; completedAt?: string; }
 export function finalizeRunReceipt(input: FinalizeRunReceiptInput): ResultValue<RunReceipt, FoundationError> {
 	if (input.runReceiptId.length === 0 || input.runId.length === 0) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run receipt finalization requires stable run and receipt ids", { details: { runId: input.runId } }));
 	if (input.authority === undefined) return Result.err(new FoundationError("run_terminal_authority_required", "Run receipt finalization requires an explicit Host terminal-gate authority", { details: { runId: input.runId } }));
 	const authority = validateHostTerminalGateAuthority(input.authority);
 	if (!authority.ok) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run receipt finalization requires a valid Host terminal-gate authority", { details: { runId: input.runId } }));
 	if (input.terminalStatus === "completed" && input.taskResult === undefined) return Result.err(new FoundationError("task_result_terminal_requires_task_result", "A completed run requires a TaskResult", { details: { runId: input.runId } }));
+	if (input.terminalStatus === "completed" && (input.terminalErrorCode !== undefined || input.terminalError !== undefined)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A completed run cannot carry a terminal error", { details: { runId: input.runId } }));
+	if (input.terminalStatus !== "completed" && input.terminalError === undefined) return Result.err(new FoundationError("run_terminal_authority_invalid", "A non-completed run requires canonical terminal error detail", { details: { runId: input.runId } }));
+	if (input.terminalError !== undefined) {
+		const terminalError = validatePublicExecutionError(input.terminalError);
+		if (!terminalError.ok || input.terminalErrorCode !== undefined && input.terminalErrorCode !== terminalError.value.code) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run terminal error code and detail must agree", { details: { runId: input.runId } }));
+	}
+	const checkedUsage = validateRunReceiptUsage(input.usage);
+	if (!checkedUsage.ok) return checkedUsage;
 	if (input.taskResult !== undefined) {
 		const taskResult = validateTaskResult(input.taskResult);
 		if (!taskResult.ok || taskResult.value.provenance.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Run terminal gate requires an exact host TaskResult", { details: { runId: input.runId } }));
@@ -135,13 +145,21 @@ export function finalizeRunReceipt(input: FinalizeRunReceiptInput): ResultValue<
 	if (input.attemptReceiptIds.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Run receipt requires source AttemptReceipt ids", { details: { runId: input.runId } }));
 	if (input.attemptReceiptIds.some((id) => id.length === 0) || new Set(input.attemptReceiptIds).size !== input.attemptReceiptIds.length) return Result.err(new FoundationError("task_result_validation_failed", "Run receipt source AttemptReceipt ids must be unique and non-empty", { details: { runId: input.runId } }));
 	if (input.taskResult?.sourceAttemptReceiptIds.some((id) => !input.attemptReceiptIds.includes(id))) return Result.err(new FoundationError("task_result_validation_failed", "Run receipt sources must include every TaskResult source receipt", { details: { runId: input.runId } }));
-	return Result.ok({ schemaVersion: 1, runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, attemptReceiptIds: [...input.attemptReceiptIds], ...(input.taskResult === undefined ? {} : { taskResultId: input.taskResult.taskResultId }), ...(input.terminalErrorCode === undefined ? {} : { terminalErrorCode: input.terminalErrorCode }), completedAt: input.completedAt ?? new Date().toISOString() });
+	return Result.ok({ schemaVersion: 1, runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, attemptReceiptIds: [...input.attemptReceiptIds], ...(input.taskResult === undefined ? {} : { taskResultId: input.taskResult.taskResultId }), usage: checkedUsage.value, ...(input.terminalErrorCode === undefined ? {} : { terminalErrorCode: input.terminalErrorCode }), ...(input.terminalError === undefined ? {} : { terminalError: input.terminalError }), completedAt: input.completedAt ?? new Date().toISOString() });
 }
 
 const validationSchema = Type.Object({ name: Type.String({ minLength: 1 }), required: Type.Boolean(), status: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped"), Type.Literal("pending")]), summary: Type.Optional(Type.String()), evidenceRefs: Type.Optional(Type.Array(ArtifactRefSchema)) }, { additionalProperties: false });
 const acceptanceFactSchema = Type.Object({ schemaVersion: Type.Literal(1), factId: Type.String({ minLength: 1 }), criterionId: Type.String({ minLength: 1 }), outcome: Type.Union([Type.Literal("satisfied"), Type.Literal("unsatisfied"), Type.Literal("pending")]), evidenceRefs: Type.Optional(Type.Array(artifactSchema)), recordedAt: Type.String({ minLength: 1 }), recordedBy: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const TaskResultSchema = Type.Object({ schemaVersion: Type.Literal(1), taskResultId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), sourceAttemptReceiptIds: Type.Array(Type.String({ minLength: 1 })), status: Type.Union([Type.Literal("succeeded"), Type.Literal("failed"), Type.Literal("cancelled"), Type.Literal("suspended")]), summary: Type.String(), artifacts: Type.Array(ArtifactRefSchema), diff: Type.Optional(ArtifactRefSchema), tests: Type.Array(validationSchema), evidence: Type.Array(acceptanceFactSchema), error: Type.Optional(publicErrorSchema), provenance: provenanceSchema, validation: Type.Object({ schemaValid: Type.Boolean(), artifactDigestsValid: Type.Boolean(), acceptanceVerified: Type.Boolean(), requiredEvidencePresent: Type.Boolean(), notes: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }) }, { additionalProperties: false });
-export const RunReceiptSchema = Type.Object({ schemaVersion: Type.Literal(1), runReceiptId: Type.String({ minLength: 1 }), runId: Type.String({ minLength: 1 }), terminalStatus: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled")]), taskResultId: Type.Optional(Type.String({ minLength: 1 })), attemptReceiptIds: Type.Array(Type.String({ minLength: 1 })), terminalErrorCode: Type.Optional(Type.String({ minLength: 1 })), completedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+export const RunReceiptUsageSchema = Type.Object({ inputTokens: Type.Integer({ minimum: 0 }), outputTokens: Type.Integer({ minimum: 0 }), totalTokens: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
+export const RunReceiptSchema = Type.Object({ schemaVersion: Type.Literal(1), runReceiptId: Type.String({ minLength: 1 }), runId: Type.String({ minLength: 1 }), terminalStatus: Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("cancelled")]), taskResultId: Type.Optional(Type.String({ minLength: 1 })), attemptReceiptIds: Type.Array(Type.String({ minLength: 1 })), usage: RunReceiptUsageSchema, terminalErrorCode: Type.Optional(Type.String({ minLength: 1 })), terminalError: Type.Optional(publicErrorSchema), completedAt: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+export function validateRunReceiptUsage(value: unknown): ResultValue<RunReceiptUsage, FoundationError> {
+	const checked = validateExactShape<RunReceiptUsage>(RunReceiptUsageSchema, value, "run_receipt_usage");
+	if (!checked.ok) return checked;
+	return Number.isSafeInteger(checked.value.inputTokens) && Number.isSafeInteger(checked.value.outputTokens) && Number.isSafeInteger(checked.value.totalTokens) && Number.isSafeInteger(checked.value.inputTokens + checked.value.outputTokens) && checked.value.totalTokens >= checked.value.inputTokens + checked.value.outputTokens
+		? checked
+		: Result.err(new FoundationError("run_terminal_authority_invalid", "RunReceipt usage must contain safe cumulative token totals and totalTokens must include inputTokens and outputTokens"));
+}
 export function validatePublicExecutionError(value: unknown): ResultValue<PublicExecutionError, FoundationError> { return validateExactShape<PublicExecutionError>(PublicExecutionErrorSchema, value, "public_execution_error"); }
 export function serializePublicExecutionError(value: PublicExecutionError): string { return serializeExactShape(PublicExecutionErrorSchema, value, "public_execution_error"); }
 export function parsePublicExecutionError(text: string): ResultValue<PublicExecutionError, FoundationError> { return parseExactShape(PublicExecutionErrorSchema, text, "public_execution_error"); }
@@ -158,6 +176,24 @@ export function validateTaskResult(value: unknown): ResultValue<TaskResult, Foun
 }
 export function serializeTaskResult(value: TaskResult): string { return serializeExactShape(TaskResultSchema, value, "task_result"); }
 export function parseTaskResult(text: string): ResultValue<TaskResult, FoundationError> { return parseExactShape(TaskResultSchema, text, "task_result"); }
-export function validateRunReceipt(value: unknown): ResultValue<RunReceipt, FoundationError> { return validateExactShape<RunReceipt>(RunReceiptSchema, value, "run_receipt"); }
-export function serializeRunReceipt(value: RunReceipt): string { return serializeExactShape(RunReceiptSchema, value, "run_receipt"); }
-export function parseRunReceipt(text: string): ResultValue<RunReceipt, FoundationError> { return parseExactShape(RunReceiptSchema, text, "run_receipt"); }
+export function validateRunReceipt(value: unknown): ResultValue<RunReceipt, FoundationError> {
+	const checked = validateExactShape<RunReceipt>(RunReceiptSchema, value, "run_receipt");
+	if (!checked.ok) return checked;
+	const usage = validateRunReceiptUsage(checked.value.usage);
+	if (!usage.ok) return usage;
+	if (checked.value.attemptReceiptIds.length === 0 || new Set(checked.value.attemptReceiptIds).size !== checked.value.attemptReceiptIds.length) return Result.err(new FoundationError("run_terminal_authority_invalid", "RunReceipt must reference unique source AttemptReceipts", { details: { runId: checked.value.runId } }));
+	if (checked.value.terminalStatus === "completed" && checked.value.taskResultId === undefined) return Result.err(new FoundationError("task_result_terminal_requires_task_result", "A completed RunReceipt requires a TaskResult", { details: { runId: checked.value.runId } }));
+	if (checked.value.terminalStatus === "completed" && (checked.value.terminalErrorCode !== undefined || checked.value.terminalError !== undefined)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A completed RunReceipt cannot carry a terminal error", { details: { runId: checked.value.runId } }));
+	if (checked.value.terminalStatus !== "completed" && checked.value.terminalError === undefined) return Result.err(new FoundationError("run_terminal_authority_invalid", "A non-completed RunReceipt requires canonical terminal error detail", { details: { runId: checked.value.runId } }));
+	if (checked.value.terminalError !== undefined && checked.value.terminalErrorCode !== undefined && checked.value.terminalError.code !== checked.value.terminalErrorCode) return Result.err(new FoundationError("run_terminal_authority_invalid", "RunReceipt terminal error code and detail disagree", { details: { runId: checked.value.runId } }));
+	return checked;
+}
+export function serializeRunReceipt(value: RunReceipt): string {
+	const checked = validateRunReceipt(value);
+	if (!checked.ok) throw checked.error;
+	return serializeExactShape(RunReceiptSchema, checked.value, "run_receipt");
+}
+export function parseRunReceipt(text: string): ResultValue<RunReceipt, FoundationError> {
+	const parsed = parseExactShape<RunReceipt>(RunReceiptSchema, text, "run_receipt");
+	return parsed.ok ? validateRunReceipt(parsed.value) : parsed;
+}

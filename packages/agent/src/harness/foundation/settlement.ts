@@ -1,7 +1,7 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
-import { FoundationError, toFoundationError, type FoundationErrorCode } from "./errors.ts";
+import { FoundationError, toFoundationError, type FoundationErrorCode, type PublicExecutionError } from "./errors.ts";
 import { canonicalFoundationJson, extendFoundationLineage, fingerprintFoundationValue, type ExecutionCorrelation, type FoundationLineage } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { executeDispatch, executeOperation, executeAgentSpawnV1, startDispatchAttempt, switchAgentMode, type DispatchAttemptStartResult, type DispatchExecutionInput, type DispatchExecutionResult, type OperationExecutionInput, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInput } from "./execution.ts";
@@ -13,10 +13,12 @@ import {
 	validateAttemptReceipt,
 	validateWorkerReceipt,
 	validateRunReceipt,
+	validateTaskResult,
 	type AttemptReceipt,
 	type FinalizeRunReceiptInput,
 	type HostTerminalGateAuthority,
 	type RunReceipt,
+	type RunReceiptUsage,
 	type SettleTaskResultInput,
 	type TaskResult,
 	type WorkerReceipt,
@@ -28,13 +30,29 @@ import { validateSecretFreeModelProfile } from "./model-profile.ts";
 import { validateAttempt, validateDispatch, validateSpawnAgentIntent, validateTaskEnvelope, type Attempt, type Dispatch, type SpawnAgentIntent, type TaskEnvelope } from "./task.ts";
 import { validateLineage } from "./schema.ts";
 import { SessionLedger } from "./session-ledger.ts";
-import type { FoundationJsonValue } from "./event-catalog.ts";
-import type { FoundationIntentRecord } from "../session/durable/types.ts";
+import { createDurableEvent, type DurableEventEnvelope, type EventCorrelationRef, type FoundationJsonValue, type RunReceiptEventPayload } from "./event-catalog.ts";
+import type { FoundationFactRecord, FoundationIntentRecord } from "../session/durable/types.ts";
 import type { SessionLedgerWriter } from "../session/t5.ts";
 
 export interface FoundationTaskPersistenceOptions {
 	readonly ownerId?: string;
 	readonly writer?: SessionLedgerWriter;
+}
+
+export type RunReceiptWrittenEvent = DurableEventEnvelope<"run_receipt.written", RunReceiptEventPayload>;
+
+/** One canonical, replay-safe result projection rooted in the Host RunReceipt fact. */
+export interface CanonicalRunResult {
+	readonly schemaVersion: 1;
+	readonly runReceipt: RunReceipt;
+	readonly taskResult?: TaskResult;
+	readonly attemptReceipts: readonly AttemptReceipt[];
+	readonly writtenEvent: RunReceiptWrittenEvent;
+}
+
+interface DurableRunReceipt {
+	readonly record: FoundationFactRecord;
+	readonly receipt: RunReceipt;
 }
 
 /**
@@ -100,7 +118,9 @@ export interface LayeredRunFinalizationInput {
 	readonly authority: HostTerminalGateAuthority;
 	readonly attemptReceiptIds: readonly string[];
 	readonly taskResultId?: string;
+	readonly usage: RunReceiptUsage;
 	readonly terminalErrorCode?: string;
+	readonly terminalError?: PublicExecutionError;
 	readonly completedAt?: string;
 }
 
@@ -714,52 +734,125 @@ export class LayeredResultSettlement {
 	private async finalizeInternal(input: LayeredRunFinalizationInput): Promise<ResultValue<RunReceipt, FoundationError>> {
 		try {
 			let sourceTaskId: string | undefined;
+			const sourceAttempts: AttemptReceipt[] = [];
 			for (const id of input.attemptReceiptIds) {
 				const stored = await this.ledger.get("attempt_receipt", id);
 				if (stored === undefined || stored.kind !== "fact") return Result.err(new FoundationError("task_result_no_source_receipts", "Run finalization references an AttemptReceipt not accepted by a provider consumer", { details: { runId: input.runId, attemptReceiptId: id } }));
 				const checkedAttempt = validateAttemptReceipt(stored.payload);
 				if (!checkedAttempt.ok) return Result.err(checkedAttempt.error);
+				if (checkedAttempt.value.attemptReceiptId !== id) return Result.err(new FoundationError("invalid_correlation", "Run finalization source identity does not match its durable key", { details: { runId: input.runId, attemptReceiptId: id } }));
+				if (sourceTaskId !== undefined && sourceTaskId !== checkedAttempt.value.taskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization sources must belong to one Task", { details: { runId: input.runId, attemptReceiptId: id } }));
 				sourceTaskId ??= checkedAttempt.value.taskId;
+				sourceAttempts.push(checkedAttempt.value);
 			}
 			const taskResultRecord = input.taskResultId === undefined ? undefined : await this.ledger.get("task_result", input.taskResultId);
 			if (input.taskResultId !== undefined && (taskResultRecord === undefined || taskResultRecord.kind !== "fact")) return Result.err(new FoundationError("task_result_terminal_requires_task_result", "Run finalization references a TaskResult that has not crossed the Host settlement gate", { details: { runId: input.runId, taskResultId: input.taskResultId } }));
-			const taskResult = taskResultRecord?.kind === "fact" ? taskResultRecord.payload as unknown as TaskResult : undefined;
-			const finalized = finalizeRunReceipt({ runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, authority: input.authority, attemptReceiptIds: input.attemptReceiptIds, ...(taskResult === undefined ? {} : { taskResult }), ...(input.terminalErrorCode === undefined ? {} : { terminalErrorCode: input.terminalErrorCode }), ...(input.completedAt === undefined ? {} : { completedAt: input.completedAt }) });
+			let taskResult: TaskResult | undefined;
+			if (taskResultRecord?.kind === "fact") {
+				const checkedTaskResult = validateTaskResult(taskResultRecord.payload);
+				if (!checkedTaskResult.ok) return checkedTaskResult;
+				if (checkedTaskResult.value.taskResultId !== input.taskResultId || sourceTaskId !== undefined && checkedTaskResult.value.taskId !== sourceTaskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization TaskResult does not match its durable key or source Task", { details: { runId: input.runId, taskResultId: checkedTaskResult.value.taskResultId } }));
+				taskResult = checkedTaskResult.value;
+			}
+			const unresolvedSideEffect = sourceAttempts.find((receipt) => receipt.sideEffectState !== "none");
+			if (unresolvedSideEffect !== undefined && input.terminalStatus !== "failed") return Result.err(new FoundationError("side_effect_unknown", "A Run with unresolved side effects must fail closed", { details: { runId: input.runId, attemptReceiptId: unresolvedSideEffect.attemptReceiptId, sideEffectState: unresolvedSideEffect.sideEffectState } }));
+			if (input.terminalStatus === "completed" && (input.terminalErrorCode !== undefined || input.terminalError !== undefined)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A completed run cannot carry a terminal error", { details: { runId: input.runId } }));
+			const existingByRun = await this.findRunTerminalRecord(input.runId);
+			const existingByReceipt = await this.findRunReceiptRecordById(input.runReceiptId);
+			const existingReceipt = existingByRun?.receipt ?? existingByReceipt?.receipt;
+			const sourceError = taskResult?.error ?? sourceAttempts.find((receipt) => receipt.error !== undefined)?.error;
+			if (input.terminalStatus !== "completed" && unresolvedSideEffect === undefined && input.terminalErrorCode === undefined && input.terminalError === undefined && existingReceipt?.terminalError === undefined && sourceError === undefined) return Result.err(new FoundationError("run_terminal_authority_invalid", "A non-completed run requires canonical terminal error detail", { details: { runId: input.runId } }));
+			const terminalErrorCode = input.terminalStatus === "completed"
+				? undefined
+				: unresolvedSideEffect === undefined
+					? input.terminalErrorCode ?? input.terminalError?.code ?? existingReceipt?.terminalErrorCode ?? existingReceipt?.terminalError?.code ?? sourceError?.code ?? (input.terminalStatus === "cancelled" ? "run_cancelled" : "agent_run_failed")
+					: "side_effect_unknown";
+			const terminalError: PublicExecutionError | undefined = input.terminalStatus === "completed"
+				? undefined
+				: unresolvedSideEffect !== undefined
+					? { code: "side_effect_unknown", message: "Run failed because an attempt has unresolved side effects", category: "side_effect_unknown", retryable: false }
+					: input.terminalError
+						?? (existingReceipt?.terminalError?.code === terminalErrorCode ? existingReceipt?.terminalError : undefined)
+						?? (sourceError?.code === terminalErrorCode ? sourceError : undefined)
+						?? { code: terminalErrorCode as string, message: input.terminalStatus === "cancelled" ? "Run was cancelled" : "Run failed", category: input.terminalStatus === "cancelled" ? "cancelled" : "unknown", retryable: false };
+			const replayTimestamp = existingByRun?.receipt.completedAt ?? existingByReceipt?.receipt.completedAt;
+			const completedAt = input.completedAt ?? replayTimestamp;
+			const finalized = finalizeRunReceipt({ runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, authority: input.authority, attemptReceiptIds: input.attemptReceiptIds, ...(taskResult === undefined ? {} : { taskResult }), usage: input.usage, ...(terminalErrorCode === undefined ? {} : { terminalErrorCode }), ...(terminalError === undefined ? {} : { terminalError }), ...(completedAt === undefined ? {} : { completedAt }) });
 			if (!finalized.ok) return finalized;
 			const checked = validateRunReceipt(finalized.value);
 			if (!checked.ok) return checked;
-			const existingByRun = await this.findRunTerminal(input.runId);
-			const existingByReceipt = await this.findRunReceiptById(input.runReceiptId);
-			if (existingByRun !== undefined && canonicalFoundationJson(existingByRun) !== canonicalFoundationJson(checked.value)) return Result.err(new FoundationError("run_terminal_authority_invalid", "Conflicting terminal replay for a runId is rejected", { details: { runId: input.runId } }));
-			if (existingByReceipt !== undefined && canonicalFoundationJson(existingByReceipt) !== canonicalFoundationJson(checked.value)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A runReceiptId is already bound to a different terminal run identity", { details: { runReceiptId: input.runReceiptId } }));
-			if (existingByRun !== undefined) return Result.ok(cloneDeepFrozen(existingByRun));
-			if (existingByReceipt !== undefined) return Result.ok(cloneDeepFrozen(existingByReceipt));
-			const stored = await this.persistFact("run_receipt", checked.value.runId, checked.value, { taskId: taskResult?.taskId ?? sourceTaskId, runId: checked.value.runId, runReceiptId: checked.value.runReceiptId, taskResultId: checked.value.taskResultId, attemptId: checked.value.attemptReceiptIds[0] }, { immutable: true });
+			if (existingByRun !== undefined && canonicalFoundationJson(existingByRun.receipt) !== canonicalFoundationJson(checked.value)) return Result.err(new FoundationError("run_terminal_authority_invalid", "Conflicting terminal replay for a runId is rejected", { details: { runId: input.runId } }));
+			if (existingByReceipt !== undefined && canonicalFoundationJson(existingByReceipt.receipt) !== canonicalFoundationJson(checked.value)) return Result.err(new FoundationError("run_terminal_authority_invalid", "A runReceiptId is already bound to a different terminal run identity", { details: { runReceiptId: input.runReceiptId } }));
+			if (existingByRun !== undefined) return Result.ok(cloneDeepFrozen(existingByRun.receipt));
+			if (existingByReceipt !== undefined) return Result.ok(cloneDeepFrozen(existingByReceipt.receipt));
+			const firstAttempt = sourceAttempts[0];
+			const stored = await this.persistFact("run_receipt", checked.value.runId, checked.value, { taskId: taskResult?.taskId ?? sourceTaskId, runId: checked.value.runId, runReceiptId: checked.value.runReceiptId, taskResultId: checked.value.taskResultId, attemptId: firstAttempt?.attemptId, attemptReceiptId: firstAttempt?.attemptReceiptId }, { immutable: true });
 			return Result.ok(cloneDeepFrozen(stored.payload));
 		} catch (error) {
 			return this.persistenceError(error, "run_terminal_authority_invalid");
 		}
 	}
 
-	async getAttemptReceipt(attemptReceiptId: string): Promise<AttemptReceipt | undefined> { return this.getEntity<AttemptReceipt>("attempt_receipt", attemptReceiptId); }
-	async getTaskResult(taskResultId: string): Promise<TaskResult | undefined> { return this.getEntity<TaskResult>("task_result", taskResultId); }
-	async getRunReceipt(runReceiptId: string): Promise<RunReceipt | undefined> { return this.getEntity<RunReceipt>("run_receipt", runReceiptId); }
+	async getAttemptReceipt(attemptReceiptId: string): Promise<AttemptReceipt | undefined> {
+		const stored = await this.ledger.get("attempt_receipt", attemptReceiptId);
+		if (stored === undefined) return undefined;
+		if (stored.kind !== "fact") throw new FoundationError("session_ledger_tombstoned", "AttemptReceipt lookup found a terminal non-fact", { details: { attemptReceiptId } });
+		const checked = validateAttemptReceipt(stored.payload);
+		if (!checked.ok) throw checked.error;
+		if (checked.value.attemptReceiptId !== attemptReceiptId) throw new FoundationError("invalid_correlation", "AttemptReceipt lookup found a mismatched durable identity", { details: { attemptReceiptId } });
+		return cloneDeepFrozen(checked.value);
+	}
+
+	async getTaskResult(taskResultId: string): Promise<TaskResult | undefined> {
+		const stored = await this.ledger.get("task_result", taskResultId);
+		if (stored === undefined) return undefined;
+		if (stored.kind !== "fact") throw new FoundationError("session_ledger_tombstoned", "TaskResult lookup found a terminal non-fact", { details: { taskResultId } });
+		const checked = validateTaskResult(stored.payload);
+		if (!checked.ok) throw checked.error;
+		if (checked.value.taskResultId !== taskResultId) throw new FoundationError("invalid_correlation", "TaskResult lookup found a mismatched durable identity", { details: { taskResultId } });
+		return cloneDeepFrozen(checked.value);
+	}
+
+	async getRunReceipt(runReceiptId: string): Promise<RunReceipt | undefined> { return cloneDeepFrozen((await this.findRunReceiptRecordById(runReceiptId))?.receipt); }
+
+	async getRunReceiptByRunId(runId: string): Promise<RunReceipt | undefined> { return cloneDeepFrozen((await this.findRunTerminalRecord(runId))?.receipt); }
+
+	/**
+	 * Project the canonical receipt fact as the terminal durable event. The
+	 * event reuses the fact id, sequence, timestamp, and correlation, so replay
+	 * and restart cannot create a second terminal event or a post-receipt gap.
+	 */
+	async getRunReceiptWrittenEvent(runId: string): Promise<RunReceiptWrittenEvent | undefined> {
+		const durable = await this.findRunTerminalRecord(runId);
+		if (durable === undefined) return undefined;
+		const firstAttemptReceiptId = durable.receipt.attemptReceiptIds[0];
+		const firstAttemptReceipt = firstAttemptReceiptId === undefined ? undefined : await this.getAttemptReceipt(firstAttemptReceiptId);
+		if (firstAttemptReceipt === undefined) throw new FoundationError("invalid_correlation", "Canonical RunReceipt event references a missing AttemptReceipt", { details: { runId, attemptReceiptId: firstAttemptReceiptId ?? "missing" } });
+		return this.projectRunReceiptWritten(durable, firstAttemptReceipt);
+	}
+
+	/** Resolve every canonical result layer from the single Host terminal fact. */
+	async lookupCanonicalRun(runId: string): Promise<ResultValue<CanonicalRunResult | undefined, FoundationError>> {
+		try {
+			const durable = await this.findRunTerminalRecord(runId);
+			if (durable === undefined) return Result.ok(undefined);
+			const attemptReceipts: AttemptReceipt[] = [];
+			for (const attemptReceiptId of durable.receipt.attemptReceiptIds) {
+				const attemptReceipt = await this.getAttemptReceipt(attemptReceiptId);
+				if (attemptReceipt === undefined) return Result.err(new FoundationError("invalid_correlation", "Canonical RunReceipt references a missing AttemptReceipt", { details: { runId, attemptReceiptId } }));
+				attemptReceipts.push(attemptReceipt);
+			}
+			const taskResult = durable.receipt.taskResultId === undefined ? undefined : await this.getTaskResult(durable.receipt.taskResultId);
+			if (durable.receipt.taskResultId !== undefined && taskResult === undefined) return Result.err(new FoundationError("invalid_correlation", "Canonical RunReceipt references a missing TaskResult", { details: { runId, taskResultId: durable.receipt.taskResultId } }));
+			const firstAttemptReceipt = attemptReceipts[0];
+			if (firstAttemptReceipt === undefined) return Result.err(new FoundationError("invalid_correlation", "Canonical RunReceipt has no source AttemptReceipt", { details: { runId } }));
+			return Result.ok(cloneDeepFrozen({ schemaVersion: 1, runReceipt: durable.receipt, ...(taskResult === undefined ? {} : { taskResult }), attemptReceipts, writtenEvent: this.projectRunReceiptWritten(durable, firstAttemptReceipt) }));
+		} catch (error) {
+			return this.persistenceError(error, "run_terminal_authority_invalid");
+		}
+	}
 
 	async release(): Promise<void> { await this.ledger.release(); }
-
-	private async getEntity<T>(objectType: string, objectId: string): Promise<T | undefined> {
-		if (objectType === "run_receipt") {
-			const records = await this.ledger.find({ kind: "fact", objectType, order: "oldestFirst" });
-			for (const record of records) {
-				if (record.kind !== "fact") continue;
-				const checked = validateRunReceipt(record.payload);
-				if (checked.ok && checked.value.runReceiptId === objectId) return cloneDeepFrozen(checked.value as T);
-			}
-			return undefined;
-		}
-		const stored = await this.ledger.get(objectType, objectId);
-		return stored?.kind === "fact" ? cloneDeepFrozen(stored.payload as T) : undefined;
-	}
 
 	private async persistFact<T>(objectType: string, objectId: string, payload: T, correlation: Record<string, string | undefined>, options: { readonly immutable?: boolean; readonly expectedRevision?: number } = {}): Promise<{ readonly payload: T }> {
 		if (options.immutable === true) {
@@ -873,29 +966,57 @@ export class LayeredResultSettlement {
 		}
 	}
 
-	private async findRunTerminal(runId: string): Promise<RunReceipt | undefined> {
-		const stored = await this.ledger.get("run_receipt", runId);
-		if (stored?.kind === "fact") {
-			const checked = validateRunReceipt(stored.payload);
-			if (checked.ok) return checked.value;
-		}
+	private async findRunTerminalRecord(runId: string): Promise<DurableRunReceipt | undefined> {
 		const records = await this.ledger.find({ kind: "fact", objectType: "run_receipt", order: "oldestFirst" });
+		let found: DurableRunReceipt | undefined;
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
 			const checked = validateRunReceipt(record.payload);
-			if (checked.ok && checked.value.runId === runId) return checked.value;
+			if (!checked.ok) throw checked.error;
+			if (checked.value.runId !== record.objectId) throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt durable key does not match its payload", { details: { runId: checked.value.runId, objectId: record.objectId } });
+			if (checked.value.runId !== runId) continue;
+			if (found !== undefined) throw new FoundationError("run_terminal_authority_invalid", "A runId has more than one durable terminal fact", { details: { runId } });
+			found = { record, receipt: checked.value };
 		}
-		return undefined;
+		return found;
 	}
 
-	private async findRunReceiptById(runReceiptId: string): Promise<RunReceipt | undefined> {
+	private async findRunReceiptRecordById(runReceiptId: string): Promise<DurableRunReceipt | undefined> {
 		const records = await this.ledger.find({ kind: "fact", objectType: "run_receipt", order: "oldestFirst" });
+		let found: DurableRunReceipt | undefined;
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
 			const checked = validateRunReceipt(record.payload);
-			if (checked.ok && checked.value.runReceiptId === runReceiptId) return checked.value;
+			if (!checked.ok) throw checked.error;
+			if (checked.value.runId !== record.objectId) throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt durable key does not match its payload", { details: { runReceiptId: checked.value.runReceiptId, objectId: record.objectId } });
+			if (checked.value.runReceiptId !== runReceiptId) continue;
+			if (found !== undefined) throw new FoundationError("run_terminal_authority_invalid", "A runReceiptId has more than one durable terminal fact", { details: { runReceiptId } });
+			found = { record, receipt: checked.value };
 		}
-		return undefined;
+		return found;
+	}
+
+	private projectRunReceiptWritten(durable: DurableRunReceipt, firstAttemptReceipt: AttemptReceipt): RunReceiptWrittenEvent {
+		const source = durable.record.correlation;
+		const correlation: EventCorrelationRef = {
+			sessionId: source.sessionId,
+			laneId: source.laneId,
+			taskId: firstAttemptReceipt.taskId,
+			runId: durable.receipt.runId,
+			runReceiptId: durable.receipt.runReceiptId,
+			...(durable.receipt.taskResultId === undefined ? {} : { taskResultId: durable.receipt.taskResultId }),
+			attemptId: firstAttemptReceipt.attemptId,
+			attemptReceiptId: firstAttemptReceipt.attemptReceiptId,
+		};
+		return createDurableEvent({
+			category: "run_receipt.written",
+			eventId: durable.record.id,
+			streamId: source.sessionId,
+			sequence: durable.record.seq,
+			timestamp: new Date(durable.record.timestamp).toISOString(),
+			correlation,
+			payload: { schemaVersion: 1, runReceiptId: durable.receipt.runReceiptId, runId: durable.receipt.runId },
+		});
 	}
 
 	private persistenceError<T>(error: unknown, fallback: FoundationErrorCode): ResultValue<T, FoundationError> {
