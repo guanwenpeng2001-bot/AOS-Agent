@@ -1,11 +1,19 @@
 import { expect, test } from "vitest";
 import {
-	createLine13KnownGapRegistrar,
-	createLine13KnownGapRegistry,
+	LINE13_FINAL_KNOWN_GAP_CASES,
+	loadLine13FinalKnownGapManifest,
+} from "./support/line13-final-known-gap-manifest.ts";
+import {
+	defineLine13KnownGapCase,
+	defineLine13KnownGapCaseShard,
 	fingerprintLine13Failure,
 	LINE13_AC_IDS,
+	LINE13_KNOWN_GAP_SHARD_IDS,
 	LINE13_OWNER_STAGES,
 	LINE13_T0_BASE_SHA,
+	loadLine13KnownGapManifest,
+	registerLine13KnownGapCase,
+	registerLine13KnownGapCaseWith,
 	type Line13ExpectedFailureTestApi,
 	type Line13KnownGapScenario,
 } from "./support/line13-known-gaps.ts";
@@ -13,6 +21,12 @@ import {
 interface CapturedTest {
 	name: string;
 	body: () => void | Promise<void>;
+}
+
+interface CapturedTests {
+	api: Line13ExpectedFailureTestApi;
+	normal: CapturedTest[];
+	fails: CapturedTest[];
 }
 
 function assertionFailure(message: string): Error & Record<string, unknown> {
@@ -29,10 +43,10 @@ const EXPECTED_REASON = "connector.lifecycle";
 const EXPECTED_ASSERTION = assertionFailure("expected connector lifecycle to be persisted");
 const EXPECTED_FINGERPRINT = fingerprintLine13Failure(EXPECTED_REASON, EXPECTED_ASSERTION);
 
-function knownGapEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function knownGapEntry(ac: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		ac: "AC-01",
-		fullTestName: "Line 13 connector lifecycle persists before dispatch",
+		ac,
+		fullTestName: `Line 13 expected failure for ${ac}`,
 		baseSha: LINE13_T0_BASE_SHA,
 		ownerStage: "T3a",
 		mode: "fails",
@@ -44,11 +58,27 @@ function knownGapEntry(overrides: Record<string, unknown> = {}): Record<string, 
 	};
 }
 
-function fakeTestApi(): {
-	api: Line13ExpectedFailureTestApi;
-	normal: CapturedTest[];
-	fails: CapturedTest[];
-} {
+function knownGapCase(ac: string, entryOverrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		entry: knownGapEntry(ac, entryOverrides),
+		scenario: {
+			fixture: () => "ready",
+			assertion: () => {
+				throw EXPECTED_ASSERTION;
+			},
+		},
+	};
+}
+
+function completeFixtureShards(): Record<string, unknown>[] {
+	return LINE13_KNOWN_GAP_SHARD_IDS.map((shardId, shardIndex) => ({
+		schemaVersion: 1,
+		shardId,
+		cases: LINE13_AC_IDS.slice(shardIndex * 8, shardIndex * 8 + 8).map((ac) => knownGapCase(ac)),
+	})).reverse();
+}
+
+function fakeTestApi(): CapturedTests {
 	const normal: CapturedTest[] = [];
 	const fails: CapturedTest[] = [];
 	return {
@@ -63,14 +93,23 @@ function fakeTestApi(): {
 
 function registerScenario<TFixture>(
 	scenario: Line13KnownGapScenario<TFixture>,
-	entry: Record<string, unknown> = knownGapEntry(),
-): ReturnType<typeof fakeTestApi> {
+	entryOverrides: Record<string, unknown> = {},
+): CapturedTests {
+	const knownGap = defineLine13KnownGapCase({
+		entry: knownGapEntry("AC-01", entryOverrides),
+		scenario,
+	});
+	const shard = defineLine13KnownGapCaseShard({ schemaVersion: 1, shardId: "ac-01-08", cases: [knownGap] });
 	const captured = fakeTestApi();
-	createLine13KnownGapRegistrar(createLine13KnownGapRegistry(), captured.api)(entry, scenario);
+	registerLine13KnownGapCaseWith(shard.cases[0]!, captured.api);
 	return captured;
 }
 
-test("defines every Line 13 acceptance criterion and repair stage", () => {
+for (const knownGapCaseDefinition of LINE13_FINAL_KNOWN_GAP_CASES) {
+	registerLine13KnownGapCase(knownGapCaseDefinition);
+}
+
+test("defines every Line 13 acceptance criterion, owner stage, and exclusive shard", () => {
 	expect(LINE13_AC_IDS).toEqual(Array.from({ length: 24 }, (_, index) => `AC-${String(index + 1).padStart(2, "0")}`));
 	expect(LINE13_OWNER_STAGES).toEqual([
 		"T1a",
@@ -88,26 +127,50 @@ test("defines every Line 13 acceptance criterion and repair stage", () => {
 		"T9c",
 		"T10",
 	]);
+	expect(LINE13_KNOWN_GAP_SHARD_IDS).toEqual(["ac-01-08", "ac-09-16", "ac-17-24"]);
 });
 
-test("registers immutable entries in acceptance-criterion order", () => {
-	const registry = createLine13KnownGapRegistry([
-		knownGapEntry({ ac: "AC-02", fullTestName: "Line 13 second gap" }),
-		knownGapEntry(),
-	]);
-	const manifest = registry.snapshot();
-	expect(manifest.map((entry) => entry.ac)).toEqual(["AC-01", "AC-02"]);
+test("loads a complete explicit cross-file fixture manifest deterministically", () => {
+	const manifest = loadLine13KnownGapManifest(completeFixtureShards());
+	expect(manifest.entries.map((entry) => entry.ac)).toEqual(LINE13_AC_IDS);
+	expect(manifest.baseSha).toBe(LINE13_T0_BASE_SHA);
 	expect(Object.isFrozen(manifest)).toBe(true);
-	expect(Object.isFrozen(manifest[0])).toBe(true);
-	expect(Object.isFrozen(manifest[0]?.expectedFailure)).toBe(true);
+	expect(Object.isFrozen(manifest.cases)).toBe(true);
+	expect(Object.isFrozen(manifest.entries)).toBe(true);
+	expect(Object.isFrozen(manifest.entries[0])).toBe(true);
+	expect(Object.isFrozen(manifest.entries[0]?.expectedFailure)).toBe(true);
+});
+
+test("loads the actual final manifest as soon as shard population begins", () => {
+	if (LINE13_FINAL_KNOWN_GAP_CASES.length === 0) {
+		expect(loadLine13FinalKnownGapManifest).toThrow("missing AC-01");
+		return;
+	}
+	const manifest = loadLine13FinalKnownGapManifest();
+	expect(manifest.entries.map((entry) => entry.ac)).toEqual(LINE13_AC_IDS);
+});
+
+test("rejects missing shards and acceptance criteria", () => {
+	const missingShard = completeFixtureShards().slice(1);
+	expect(() => loadLine13KnownGapManifest(missingShard)).toThrow("missing shards");
+
+	const incomplete = completeFixtureShards();
+	const firstShard = incomplete.find((shard) => shard.shardId === "ac-01-08");
+	if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+	firstShard.cases = firstShard.cases.slice(1);
+	expect(() => loadLine13KnownGapManifest(incomplete)).toThrow("missing AC-01");
 });
 
 test.each(["ac", "fullTestName", "baseSha", "ownerStage", "mode", "expectedFailure"])(
 	"rejects a manifest entry missing %s",
 	(key) => {
-		const entry = knownGapEntry();
+		const shards = completeFixtureShards();
+		const firstShard = shards.find((shard) => shard.shardId === "ac-01-08");
+		if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+		const firstCase = firstShard.cases[0] as Record<string, unknown>;
+		const entry = firstCase.entry as Record<string, unknown>;
 		delete entry[key];
-		expect(() => createLine13KnownGapRegistry([entry])).toThrow(`${key} is required`);
+		expect(() => loadLine13KnownGapManifest(shards)).toThrow(`${key} is required`);
 	},
 );
 
@@ -121,13 +184,29 @@ test.each([
 	["skip mode", { mode: "skip" }, "skip and todo are forbidden"],
 	["todo mode", { mode: "todo" }, "skip and todo are forbidden"],
 ] as const)("rejects %s", (_label, override, expectedMessage) => {
-	expect(() => createLine13KnownGapRegistry([knownGapEntry(override)])).toThrow(expectedMessage);
+	const shards = completeFixtureShards();
+	const firstShard = shards.find((shard) => shard.shardId === "ac-01-08");
+	if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+	const firstCase = firstShard.cases[0] as Record<string, unknown>;
+	firstCase.entry = { ...(firstCase.entry as Record<string, unknown>), ...override };
+	expect(() => loadLine13KnownGapManifest(shards)).toThrow(expectedMessage);
 });
 
-test("rejects explicit skip or todo flags and unexpected manifest fields", () => {
-	expect(() => createLine13KnownGapRegistry([knownGapEntry({ skip: true })])).toThrow("skip and todo are forbidden");
-	expect(() => createLine13KnownGapRegistry([knownGapEntry({ todo: true })])).toThrow("skip and todo are forbidden");
-	expect(() => createLine13KnownGapRegistry([knownGapEntry({ retries: 3 })])).toThrow("retries is not allowed");
+test("rejects explicit skip or todo flags at the entry and case boundaries", () => {
+	for (const extra of [{ skip: true }, { todo: true }]) {
+		const shards = completeFixtureShards();
+		const firstShard = shards.find((shard) => shard.shardId === "ac-01-08");
+		if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+		const firstCase = firstShard.cases[0] as Record<string, unknown>;
+		firstCase.entry = { ...(firstCase.entry as Record<string, unknown>), ...extra };
+		expect(() => loadLine13KnownGapManifest(shards)).toThrow("skip and todo are forbidden");
+
+		const caseShards = completeFixtureShards();
+		const caseShard = caseShards.find((shard) => shard.shardId === "ac-01-08");
+		if (caseShard === undefined || !Array.isArray(caseShard.cases)) throw new Error("fixture shard is malformed");
+		caseShard.cases[0] = { ...(caseShard.cases[0] as Record<string, unknown>), ...extra };
+		expect(() => loadLine13KnownGapManifest(caseShards)).toThrow(`${Object.keys(extra)[0]} is not allowed`);
+	}
 });
 
 test.each([
@@ -146,33 +225,56 @@ test.each([
 		"stack is not allowed",
 	],
 ] as const)("rejects an expected failure with %s", (_label, expectedFailure, expectedMessage) => {
-	expect(() => createLine13KnownGapRegistry([knownGapEntry({ expectedFailure })])).toThrow(expectedMessage);
+	const shards = completeFixtureShards();
+	const firstShard = shards.find((shard) => shard.shardId === "ac-01-08");
+	if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+	const firstCase = firstShard.cases[0] as Record<string, unknown>;
+	firstCase.entry = { ...(firstCase.entry as Record<string, unknown>), expectedFailure };
+	expect(() => loadLine13KnownGapManifest(shards)).toThrow(expectedMessage);
 });
 
-test("rejects duplicate acceptance criteria and complete test names", () => {
-	const duplicateAcceptanceCriterion = createLine13KnownGapRegistry();
-	duplicateAcceptanceCriterion.register(knownGapEntry());
-	expect(() =>
-		duplicateAcceptanceCriterion.register(knownGapEntry({ fullTestName: "Line 13 connector lifecycle duplicate" })),
-	).toThrow("Duplicate Line 13 known-gap acceptance criterion: AC-01");
+test("rejects duplicate shard ids, acceptance criteria, and full test names", () => {
+	const duplicateShard = completeFixtureShards();
+	duplicateShard.push(duplicateShard[0]!);
+	expect(() => loadLine13KnownGapManifest(duplicateShard)).toThrow("Duplicate Line 13 known-gap shard");
 
-	const duplicateFullTestName = createLine13KnownGapRegistry();
-	duplicateFullTestName.register(knownGapEntry());
-	expect(() => duplicateFullTestName.register(knownGapEntry({ ac: "AC-02" }))).toThrow(
+	const duplicateAcceptanceCriterion = completeFixtureShards();
+	const firstShard = duplicateAcceptanceCriterion.find((shard) => shard.shardId === "ac-01-08");
+	if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+	firstShard.cases[1] = knownGapCase("AC-01", { fullTestName: "Line 13 duplicate AC" });
+	expect(() => loadLine13KnownGapManifest(duplicateAcceptanceCriterion)).toThrow("duplicate acceptance criterion AC-01");
+
+	const duplicateFullTestName = completeFixtureShards();
+	const secondShard = duplicateFullTestName.find((shard) => shard.shardId === "ac-09-16");
+	if (secondShard === undefined || !Array.isArray(secondShard.cases)) throw new Error("fixture shard is malformed");
+	secondShard.cases[0] = knownGapCase("AC-09", { fullTestName: "Line 13 expected failure for AC-01" });
+	expect(() => loadLine13KnownGapManifest(duplicateFullTestName)).toThrow(
 		"Duplicate Line 13 known-gap full test name",
 	);
 });
 
-test("accepts independently registered AC-01 through AC-24 and detects incomplete manifests", () => {
-	const registry = createLine13KnownGapRegistry();
-	expect(() => registry.assertComplete()).toThrow("missing AC-01");
-	for (const ac of LINE13_AC_IDS) {
-		registry.register(knownGapEntry({ ac, fullTestName: `Line 13 expected failure for ${ac}` }));
-	}
-	expect(registry.assertComplete().map((entry) => entry.ac)).toEqual(LINE13_AC_IDS);
+test("rejects entries routed through another worker's shard", () => {
+	const shards = completeFixtureShards();
+	const firstShard = shards.find((shard) => shard.shardId === "ac-01-08");
+	if (firstShard === undefined || !Array.isArray(firstShard.cases)) throw new Error("fixture shard is malformed");
+	firstShard.cases[0] = knownGapCase("AC-09");
+	expect(() => loadLine13KnownGapManifest(shards)).toThrow("AC-09 does not belong to ac-01-08");
 });
 
-test("fingerprints only assertion failures without exposing the assertion text", () => {
+test("requires expected-failure registrations to use a case exported through a shard", () => {
+	const knownGap = defineLine13KnownGapCase({
+		entry: knownGapEntry("AC-01"),
+		scenario: {
+			fixture: () => "ready",
+			assertion: () => {
+				throw EXPECTED_ASSERTION;
+			},
+		},
+	});
+	expect(() => registerLine13KnownGapCaseWith(knownGap, fakeTestApi().api)).toThrow("exported through a manifest shard");
+});
+
+test("fingerprints only assertion failures without exposing assertion text", () => {
 	const secretMessage = "expected secret-token-123 to be redacted";
 	const fingerprint = fingerprintLine13Failure(EXPECTED_REASON, assertionFailure(secretMessage));
 	expect(fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -191,17 +293,36 @@ test("normalizes terminal formatting and workspace paths before fingerprinting",
 	);
 });
 
-test("changes the fingerprint when the assertion reason or message drifts", () => {
-	expect(fingerprintLine13Failure("connector.dispatch", EXPECTED_ASSERTION)).not.toBe(EXPECTED_FINGERPRINT);
-	expect(fingerprintLine13Failure(EXPECTED_REASON, assertionFailure("expected a different lifecycle state"))).not.toBe(
-		EXPECTED_FINGERPRINT,
+test("rejects reason or assertion drift from the manifest fingerprint", async () => {
+	const reasonDrift = registerScenario(
+		{
+			fixture: () => "ready",
+			assertion: () => {
+				throw EXPECTED_ASSERTION;
+			},
+		},
+		{ expectedFailure: { reason: "connector.dispatch", fingerprint: EXPECTED_FINGERPRINT } },
 	);
+	await expect(reasonDrift.normal[1]?.body()).rejects.toThrow("fingerprint drift");
+
+	const assertionDrift = registerScenario({
+		fixture: () => "ready",
+		assertion: () => {
+			throw assertionFailure("the implementation now fails for another reason");
+		},
+	});
+	await expect(assertionDrift.normal[1]?.body()).rejects.toThrow("fingerprint drift");
 });
 
-test("registers fixture health and fingerprint checks as normal tests and the gap with Vitest fails semantics", async () => {
+test("registers fixture health and fingerprint guards plus the tied fails marker", async () => {
+	let setupCount = 0;
 	let cleanupCount = 0;
 	const captured = registerScenario({
 		fixture: () => ({ ready: true }),
+		setup: (fixture) => {
+			expect(fixture.ready).toBe(true);
+			setupCount += 1;
+		},
 		assertion: () => {
 			throw EXPECTED_ASSERTION;
 		},
@@ -211,72 +332,76 @@ test("registers fixture health and fingerprint checks as normal tests and the ga
 	});
 
 	expect(captured.normal.map((entry) => entry.name)).toEqual([
-		"[fixture health] AC-01 Line 13 connector lifecycle persists before dispatch",
-		"[known-gap fingerprint] AC-01 Line 13 connector lifecycle persists before dispatch",
+		"[fixture health] AC-01 Line 13 expected failure for AC-01",
+		"[known-gap fingerprint] AC-01 Line 13 expected failure for AC-01",
 	]);
-	expect(captured.fails.map((entry) => entry.name)).toEqual(["Line 13 connector lifecycle persists before dispatch"]);
+	expect(captured.fails.map((entry) => entry.name)).toEqual(["Line 13 expected failure for AC-01"]);
 	await expect(captured.normal[0]?.body()).resolves.toBeUndefined();
 	await expect(captured.normal[1]?.body()).resolves.toBeUndefined();
 	await expect(captured.fails[0]?.body()).rejects.toBe(EXPECTED_ASSERTION);
+	expect(setupCount).toBe(3);
 	expect(cleanupCount).toBe(3);
 });
 
-test("rejects arbitrary errors even though the fails-marked test also rejects", async () => {
-	const captured = registerScenario({
-		fixture: () => "ready",
-		assertion: () => {
-			throw new Error("sensitive transport failure");
+test("rejects arbitrary fixture, setup, assertion, and cleanup errors", async () => {
+	const failures = [
+		{
+			label: "fixture-error",
+			scenario: {
+				fixture: () => {
+					throw new Error("fixture unavailable");
+				},
+				assertion: () => {
+					throw EXPECTED_ASSERTION;
+				},
+			},
 		},
-	});
-	await expect(captured.normal[0]?.body()).resolves.toBeUndefined();
-	await expect(captured.normal[1]?.body()).rejects.toThrow("rejected arbitrary-error");
-	await expect(captured.normal[1]?.body()).rejects.not.toThrow("sensitive transport failure");
-	await expect(captured.fails[0]?.body()).rejects.toThrow("sensitive transport failure");
+		{
+			label: "setup-error",
+			scenario: {
+				fixture: () => "ready",
+				setup: () => {
+					throw new Error("setup unavailable");
+				},
+				assertion: () => {
+					throw EXPECTED_ASSERTION;
+				},
+			},
+		},
+		{
+			label: "arbitrary-error",
+			scenario: {
+				fixture: () => "ready",
+				assertion: () => {
+					throw new Error("sensitive transport failure");
+				},
+			},
+		},
+		{
+			label: "cleanup-error",
+			scenario: {
+				fixture: () => "ready",
+				assertion: () => {
+					throw EXPECTED_ASSERTION;
+				},
+				cleanup: () => {
+					throw new Error("cleanup failed");
+				},
+			},
+		},
+	] as const;
+
+	for (const { label, scenario } of failures) {
+		const captured = registerScenario(scenario);
+		await expect(captured.normal[1]?.body()).rejects.toThrow(`rejected ${label}`);
+	}
 });
 
-test("rejects assertion fingerprint drift", async () => {
-	const captured = registerScenario({
-		fixture: () => "ready",
-		assertion: () => {
-			throw assertionFailure("the implementation now fails for another reason");
-		},
-	});
-	await expect(captured.normal[1]?.body()).rejects.toThrow("fingerprint drift");
-});
-
-test("rejects an unexpected pass instead of allowing the known gap to linger", async () => {
+test("rejects an unexpected pass and exposes it to Vitest fails semantics", async () => {
 	const captured = registerScenario({
 		fixture: () => "ready",
 		assertion: () => undefined,
 	});
 	await expect(captured.normal[1]?.body()).rejects.toThrow("rejected unexpected-pass");
 	await expect(captured.fails[0]?.body()).resolves.toBeUndefined();
-});
-
-test("keeps fixture and cleanup health on the normal-test path", async () => {
-	const fixtureFailure = registerScenario({
-		fixture: () => {
-			throw new Error("fixture unavailable");
-		},
-		assertion: () => {
-			throw EXPECTED_ASSERTION;
-		},
-	});
-	await expect(fixtureFailure.normal[0]?.body()).rejects.toThrow("fixture unavailable");
-	await expect(fixtureFailure.normal[1]?.body()).rejects.toThrow("rejected fixture-error");
-
-	const cleanupFailure = registerScenario(
-		{
-			fixture: () => "ready",
-			assertion: () => {
-				throw EXPECTED_ASSERTION;
-			},
-			cleanup: () => {
-				throw new Error("cleanup failed");
-			},
-		},
-		knownGapEntry({ ac: "AC-02", fullTestName: "Line 13 cleanup remains healthy" }),
-	);
-	await expect(cleanupFailure.normal[0]?.body()).rejects.toThrow("cleanup failed");
-	await expect(cleanupFailure.normal[1]?.body()).rejects.toThrow("rejected cleanup-error");
 });
