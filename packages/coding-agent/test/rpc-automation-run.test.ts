@@ -1839,12 +1839,16 @@ describe("RPC Automation Host run lifecycle", () => {
 						runId: acceptedData!.runId,
 						summary: expect.objectContaining({
 							status: "failed",
-							deadlineAt,
-							terminalError: { code: "run_deadline_exceeded", retryable: false },
+							terminalError: expect.objectContaining({
+								code: "run_deadline_exceeded",
+								retryable: false,
+							}),
 						}),
 					}),
 				]),
 			);
+			const auditFailure = (auditQuery.data as { events: Array<{ summary: Record<string, unknown> }> }).events[0];
+			expect("deadlineAt" in auditFailure.summary).toBe(false);
 
 			lineHandler(
 				JSON.stringify({
@@ -1862,11 +1866,14 @@ describe("RPC Automation Host run lifecycle", () => {
 					status: "incomplete",
 					run: {
 						status: "failed",
-						deadlineAt,
 						terminalError: { code: "run_deadline_exceeded", retryable: false },
 					},
 				},
 			});
+			const auditReplay = responsesFor(rpcIo.outputLines, "deadline-audit-replay")[0].data as {
+				run: Record<string, unknown>;
+			};
+			expect("deadlineAt" in auditReplay.run).toBe(false);
 			expect(terminalEvents(currentLines())).toHaveLength(1);
 		} finally {
 			await cleanup();
@@ -1918,8 +1925,21 @@ describe("RPC Automation Host run lifecycle", () => {
 				runId: runId!,
 				receipt: {
 					status: "failed",
-					deadlineAt,
 					terminalError: { code: "run_deadline_exceeded", retryable: false },
+				},
+			});
+			const terminalReceipt = terminalEvents(currentLines())[0].receipt as Record<string, unknown>;
+			expect("deadlineAt" in terminalReceipt).toBe(false);
+			lineHandler(JSON.stringify({ id: "deadline-race-get", type: "run.get", runId: runId! }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "deadline-race-get")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "deadline-race-get")[0]).toMatchObject({
+				success: true,
+				data: {
+					run: { id: runId!, status: "failed", deadlineAt },
+					receipt: {
+						status: "failed",
+						terminalError: { code: "run_deadline_exceeded", retryable: false },
+					},
 				},
 			});
 			expect(runEventsOfType(currentLines(), "run.cancelled")).toHaveLength(0);
