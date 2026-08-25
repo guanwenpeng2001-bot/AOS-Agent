@@ -93,6 +93,7 @@ export interface Line13KnownGapCase {
 export interface Line13KnownGapCaseShard {
 	readonly schemaVersion: 1;
 	readonly shardId: Line13KnownGapShardId;
+	readonly complete: boolean;
 	readonly cases: readonly Line13KnownGapCase[];
 }
 
@@ -315,17 +316,22 @@ function assertCaseBelongsToShard(knownGapCase: Line13KnownGapCase, shardId: Lin
 export function defineLine13KnownGapCaseShard(value: {
 	readonly schemaVersion: 1;
 	readonly shardId: Line13KnownGapShardId;
+	readonly complete: boolean;
 	readonly cases: readonly Line13KnownGapCase[];
 }): Line13KnownGapCaseShard {
 	const shard = asRecord(value, "shard", invalidShard);
-	assertExactKeys(shard, ["schemaVersion", "shardId", "cases"], "shard", invalidShard);
+	assertExactKeys(shard, ["schemaVersion", "shardId", "complete", "cases"], "shard", invalidShard);
 	if (shard.schemaVersion !== 1) return invalidShard("shard.schemaVersion must be 1");
 	if (typeof shard.shardId !== "string" || !SHARD_ID_SET.has(shard.shardId)) {
 		return invalidShard("shard.shardId must name a Line 13 AC range");
 	}
+	if (typeof shard.complete !== "boolean") return invalidShard("shard.complete must be a boolean");
 	if (!Array.isArray(shard.cases)) return invalidShard("shard.cases must be an array");
 
 	const shardId = shard.shardId as Line13KnownGapShardId;
+	if (!shard.complete && shard.cases.length > 0) {
+		return invalidShard(`incomplete shard ${shardId} must be empty`);
+	}
 	const acceptanceCriteria = new Set<Line13AcceptanceCriterion>();
 	const fullTestNames = new Set<string>();
 	const cases = shard.cases.map((item) => {
@@ -341,7 +347,15 @@ export function defineLine13KnownGapCaseShard(value: {
 		fullTestNames.add(knownGapCase.entry.fullTestName);
 		return Object.freeze({ ...knownGapCase, [MANIFEST_CASE_MARKER]: true }) as Line13KnownGapCase;
 	});
-	return Object.freeze({ schemaVersion: 1, shardId, cases: Object.freeze(cases) });
+	if (shard.complete) {
+		const missingAcceptanceCriteria = LINE13_SHARD_AC_IDS[shardId].filter((ac) => !acceptanceCriteria.has(ac));
+		if (missingAcceptanceCriteria.length > 0) {
+			return invalidShard(
+				`completed shard ${shardId} is missing ${missingAcceptanceCriteria.join(", ")}`,
+			);
+		}
+	}
+	return Object.freeze({ schemaVersion: 1, shardId, complete: shard.complete, cases: Object.freeze(cases) });
 }
 
 export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13KnownGapManifest {
@@ -350,6 +364,7 @@ export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13Kn
 	const acceptanceCriteria = new Set<Line13AcceptanceCriterion>();
 	const fullTestNames = new Set<string>();
 	const cases: Line13KnownGapCase[] = [];
+	let completedShardCount = 0;
 
 	for (const value of shards) {
 		const shard = defineLine13KnownGapCaseShard(value as Line13KnownGapCaseShard);
@@ -357,6 +372,7 @@ export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13Kn
 			throw new Error(`Duplicate Line 13 known-gap shard: ${shard.shardId}`);
 		}
 		shardIds.add(shard.shardId);
+		if (shard.complete) completedShardCount += 1;
 		for (const knownGapCase of shard.cases) {
 			const { entry } = knownGapCase;
 			if (acceptanceCriteria.has(entry.ac)) {
@@ -375,9 +391,11 @@ export function loadLine13KnownGapManifest(shards: readonly unknown[]): Line13Kn
 	if (missingShards.length > 0) {
 		throw new Error(`Incomplete Line 13 known-gap manifest; missing shards ${missingShards.join(", ")}`);
 	}
-	const missingAcceptanceCriteria = LINE13_AC_IDS.filter((ac) => !acceptanceCriteria.has(ac));
-	if (missingAcceptanceCriteria.length > 0) {
-		throw new Error(`Incomplete Line 13 known-gap manifest; missing ${missingAcceptanceCriteria.join(", ")}`);
+	if (completedShardCount === LINE13_KNOWN_GAP_SHARD_IDS.length) {
+		const missingAcceptanceCriteria = LINE13_AC_IDS.filter((ac) => !acceptanceCriteria.has(ac));
+		if (cases.length !== LINE13_AC_IDS.length || missingAcceptanceCriteria.length > 0) {
+			throw new Error(`Incomplete Line 13 known-gap manifest; missing ${missingAcceptanceCriteria.join(", ")}`);
+		}
 	}
 
 	cases.sort((left, right) => left.entry.ac.localeCompare(right.entry.ac));

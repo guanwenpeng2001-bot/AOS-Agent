@@ -14,7 +14,9 @@ export const LINE13_FINAL_KNOWN_GAP_CASE_SHARDS = Object.freeze([
 ]);
 
 export const LINE13_FINAL_KNOWN_GAP_CASES: readonly Line13KnownGapCase[] = Object.freeze(
-	LINE13_FINAL_KNOWN_GAP_CASE_SHARDS.flatMap((shard) => shard.cases).sort((left, right) => left.entry.ac.localeCompare(right.entry.ac)),
+	LINE13_FINAL_KNOWN_GAP_CASE_SHARDS.filter((shard) => shard.complete)
+		.flatMap((shard) => shard.cases)
+		.sort((left, right) => left.entry.ac.localeCompare(right.entry.ac)),
 );
 
 export function loadLine13FinalKnownGapManifest(): Line13KnownGapManifest {
