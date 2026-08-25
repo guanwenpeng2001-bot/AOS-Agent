@@ -1,58 +1,57 @@
 /**
- * Automation Host run lifecycle: per-session run reservation, the frozen
- * accepted/running/completed/failed/cancelled state machine, sequenced stream
- * events, final-text capture, usage deltas, terminal receipts, and a ledger
- * folded from the SessionManager's `automation.run` custom entries.
+ * Automation Host transport lifecycle.
  *
- * The coordinator owns a {@link RunLedgerSession} binding (a structural subset
- * of `SessionManager`) and persists only schemaVersion 1 facts via
- * `appendCustomEntry("automation.run", entry)`. Recovery replays custom entries
- * in order; an accepted/running run with no terminal fact is returned with the
- * read-only `recovery: "interrupted"` flag and is never given a fabricated
- * terminal. Diagnostics go to stderr.
+ * Automation persists only non-terminal reservation facts. Terminal status,
+ * receipt data, sequence, timestamp, and correlation are read-only projections
+ * of the canonical Foundation RunReceipt chain. Historical `automation.run`
+ * entries remain a private read-only compatibility input; this module never
+ * appends them.
  *
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { FoundationError, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
+import {
+	type AgentMessage,
+	type AttemptReceipt,
+	type RunReceipt as CanonicalRunReceipt,
+	type CanonicalRunResult,
+	canonicalFoundationJson,
+	createDurableEvent,
+	type DurableEventEnvelope,
+	FoundationError,
+	type FoundationFactRecord,
+	FoundationLedgerState,
+	type FoundationRecord,
+	invalidDurableRecord,
+	parseFoundationMutation,
+	type SideEffectState,
+	type TaskResult,
+	type ThinkingLevel,
+	validateAttemptReceipt,
+	validateRunReceipt as validateCanonicalRunReceipt,
+	validateTaskResult,
+} from "@aos-agent/agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import {
+	type AutomationRunProjection,
+	type CanonicalAutomationRunProjection,
+	projectAutomationRuns,
+} from "./automation-run-projection.ts";
+import {
+	type BindingHandle,
 	createRunBindingAssociation,
 	parseRunBindingAssociation,
-	serializePublicRunBindingAssociation,
-	type BindingHandle,
 	type RunBindingAssociation,
+	serializePublicRunBindingAssociation,
 } from "./binding-handles.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
-import type { McpAttachment } from "./mcp-attachment.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
-import {
-	MODEL_ATTEMPT_CUSTOM_TYPE,
-	MODEL_BINDING_CUSTOM_TYPE,
-	serializePublicModelBrokerLedgerEntry,
-	type PublicModelAttemptLedgerRecord,
-	type PublicModelBindingLedgerRecord,
-} from "./model-broker-ledger.ts";
-import {
-	createExecutionPolicyLedger,
-	POLICY_APPROVAL_CUSTOM_TYPE,
-	POLICY_DECISION_CUSTOM_TYPE,
-	POLICY_VIOLATION_CUSTOM_TYPE,
-	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
-	type PolicyApprovalLedgerRecord,
-	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
-	type PolicyDecisionLedgerRecord,
-	type PolicyLedgerRecord,
-	type PolicyViolationLedgerRecord,
-	type SandboxLifecycleLedgerRecord,
-} from "./execution-policy-ledger.ts";
 import {
 	POLICY_BINDING_CUSTOM_TYPE,
-	toPublicPolicySummary,
-	type PolicyApprovalRequest,
+	type PolicyAction,
 	type PolicyApprovalOutcome,
+	type PolicyApprovalRequest,
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
@@ -60,27 +59,50 @@ import {
 	type PolicyEnforcement,
 	type PolicyErrorCode,
 	type PolicyResource,
-	type PolicyAction,
 	type PolicyTrust,
 	type PublicPolicySummary,
 	type SandboxCapabilities,
 	type SandboxStatus,
+	toPublicPolicySummary,
 } from "./execution-policy.ts";
 import {
-	ExternalMappingError,
-	ExternalSessionMappingStore,
-	isExternalExecutionRef,
-	serializeExternalExecutionRef,
+	createExecutionPolicyLedger,
+	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
+	POLICY_APPROVAL_CUSTOM_TYPE,
+	POLICY_DECISION_CUSTOM_TYPE,
+	POLICY_VIOLATION_CUSTOM_TYPE,
+	type PolicyApprovalLedgerRecord,
+	type PolicyDecisionLedgerRecord,
+	type PolicyLedgerRecord,
+	type PolicyViolationLedgerRecord,
+	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+	type SandboxLifecycleLedgerRecord,
+} from "./execution-policy-ledger.ts";
+import { type ExternalAgentSelection, serializeExternalAgentSelection } from "./external-agent-adapter.ts";
+import {
 	type ExternalExecutionMapping,
 	type ExternalExecutionRef,
+	ExternalMappingError,
 	type ExternalMappingPersistenceResult,
 	type ExternalMappingRequest,
 	type ExternalMappingWarning,
+	ExternalSessionMappingStore,
+	isExternalExecutionRef,
+	serializeExternalExecutionRef,
 } from "./external-session-mapping.ts";
+import type { McpAttachment } from "./mcp-attachment.ts";
 import {
-	serializeExternalAgentSelection,
-	type ExternalAgentSelection,
-} from "./external-agent-adapter.ts";
+	type LegacyAutomationRunLedgerSourceEntryV1,
+	reconcileLegacyAutomationRunLedgerV1,
+} from "./migrations/automation-run-ledger.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
+import {
+	MODEL_ATTEMPT_CUSTOM_TYPE,
+	MODEL_BINDING_CUSTOM_TYPE,
+	type PublicModelAttemptLedgerRecord,
+	type PublicModelBindingLedgerRecord,
+	serializePublicModelBrokerLedgerEntry,
+} from "./model-broker-ledger.ts";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
@@ -193,6 +215,17 @@ export function createRunRequestKey(identity: RunRequestIdentity): string {
 	return `${identity.scope}\u0000${identity.clientRequestId}`;
 }
 
+function transportRunEventId(
+	sessionId: SessionId,
+	runId: RunId,
+	type: "run.started" | "run.event",
+	sequence: number,
+): string {
+	return `automation-transport:${createHash("sha256")
+		.update(`${sessionId}\u0000${runId}\u0000${type}\u0000${sequence}`, "utf8")
+		.digest("hex")}`;
+}
+
 function digestRequestValue(value: unknown): string {
 	return createHash("sha256").update(stableRequestSerialization(value), "utf8").digest("hex");
 }
@@ -280,7 +313,12 @@ export function isTerminalStatus(status: RunStatus): status is RunTerminalStatus
 // ---- Ledger -----------------------------------------------------------------
 
 export const RUN_LEDGER_SCHEMA_VERSION = 1;
-export const RUN_LEDGER_CUSTOM_TYPE = "automation.run";
+/** Private read-only compatibility input. Never append this custom type. */
+const LEGACY_RUN_LEDGER_CUSTOM_TYPE = "automation.run";
+/** Current non-terminal transport reservation ledger. */
+export const RUN_LEDGER_CUSTOM_TYPE = "automation.run.transport";
+
+const FOUNDATION_DURABLE_CUSTOM_TYPE = "__aos.foundation.durable.v1";
 
 /**
  * Session custom entry type for the frozen capability binding of a run. Written
@@ -435,9 +473,7 @@ export function runAttachmentSummaryFromMcpAttachment(attachment: McpAttachment)
 		kind: attachment.kind,
 		...(attachment.descriptorId === undefined ? {} : { descriptorId: attachment.descriptorId }),
 		...(attachment.descriptorRevision === undefined ? {} : { revision: attachment.descriptorRevision }),
-		...(attachment.capabilityBindingId === undefined
-			? {}
-			: { capabilityBindingId: attachment.capabilityBindingId }),
+		...(attachment.capabilityBindingId === undefined ? {} : { capabilityBindingId: attachment.capabilityBindingId }),
 		...(attachment.policyBindingId === undefined ? {} : { policyBindingId: attachment.policyBindingId }),
 		contentDigest: attachment.contentDigest,
 		byteCount: attachment.byteCount,
@@ -464,7 +500,8 @@ export function createRunUsage(): RunUsage {
 	return { input: 0, output: 0, total: 0 };
 }
 
-export interface RunReceipt {
+/** Historical Automation terminal payload accepted only by the private legacy decoder. */
+interface LegacyRunReceipt {
 	runId: RunId;
 	sessionId: SessionId;
 	/** Safe external execution reference persisted separately in external.mapping. */
@@ -510,14 +547,39 @@ export interface RunReceipt {
 	bindingAssociation?: RunBindingAssociation;
 }
 
+/** Canonical public receipt view projected only from a Foundation RunReceipt chain. */
+export interface PublicRunReceipt {
+	runId: RunId;
+	sessionId: SessionId;
+	runReceiptId: string;
+	taskResultId?: string;
+	attemptReceiptIds: ReadonlyArray<string>;
+	sideEffectState: SideEffectState;
+	status: RunTerminalStatus;
+	usage: RunUsage;
+	terminalError?: AutomationError;
+}
+
 export type RunStreamEvent =
-	| { type: "run.started"; runId: RunId; sessionId: SessionId; sequence: number; timestamp: string }
+	| {
+			type: "run.started";
+			runId: RunId;
+			sessionId: SessionId;
+			sequence: number;
+			timestamp: string;
+			eventId: string;
+			streamId: string;
+			correlation: DurableEventEnvelope["correlation"];
+	  }
 	| {
 			type: "run.event";
 			runId: RunId;
 			sessionId: SessionId;
 			sequence: number;
 			timestamp: string;
+			eventId: string;
+			streamId: string;
+			correlation: DurableEventEnvelope["correlation"];
 			event: AgentSessionEvent;
 	  }
 	| {
@@ -526,7 +588,10 @@ export type RunStreamEvent =
 			sessionId: SessionId;
 			sequence: number;
 			timestamp: string;
-			receipt: RunReceipt;
+			eventId: string;
+			streamId: string;
+			correlation: DurableEventEnvelope["correlation"];
+			receipt: PublicRunReceipt;
 	  }
 	| {
 			type: "run.failed";
@@ -534,7 +599,10 @@ export type RunStreamEvent =
 			sessionId: SessionId;
 			sequence: number;
 			timestamp: string;
-			receipt: RunReceipt;
+			eventId: string;
+			streamId: string;
+			correlation: DurableEventEnvelope["correlation"];
+			receipt: PublicRunReceipt;
 	  }
 	| {
 			type: "run.cancelled";
@@ -542,13 +610,20 @@ export type RunStreamEvent =
 			sessionId: SessionId;
 			sequence: number;
 			timestamp: string;
-			receipt: RunReceipt;
+			eventId: string;
+			streamId: string;
+			correlation: DurableEventEnvelope["correlation"];
+			receipt: PublicRunReceipt;
 	  };
 
-export type PersistedRunLedgerEntry =
+/** Historical entry shape accepted only from the read-only legacy decoder. */
+type LegacyRunLedgerEntry =
 	| { schemaVersion: 1; kind: "accepted"; record: RunRecord }
 	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
-	| { schemaVersion: 1; kind: "terminal"; receipt: RunReceipt; endedAt: string };
+	| { schemaVersion: 1; kind: "terminal"; receipt: LegacyRunReceipt; endedAt: string };
+
+/** Current transport facts. Terminal state is never valid in this ledger. */
+export type PersistedRunTransportEntry = Exclude<LegacyRunLedgerEntry, { kind: "terminal" }>;
 
 /**
  * Metadata-only capability binding snapshot persisted as a Session custom entry.
@@ -633,8 +708,12 @@ export type AutomationErrorCode =
 	| "sandbox_start_failed"
 	| "sandbox_capability_insufficient"
 	| "policy_ledger_persistence_failed"
-	// Terminal run.failed receipt code; not a command-level error.
+	// Canonical Foundation terminal receipt codes; not command-level errors.
+	| "agent_run_failed"
 	| "model_error"
+	| "run_cancelled"
+	| "side_effect_unknown"
+	| "user_aborted"
 	// External Agent Adapter preflight, start, cancel, receipt, and terminal
 	// outcome codes. Keep in sync with EXTERNAL_AGENT_ERROR_CODES in
 	// core/external-agent-adapter.ts.
@@ -764,7 +843,11 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "sandbox_start_failed" ||
 		value === "sandbox_capability_insufficient" ||
 		value === "policy_ledger_persistence_failed" ||
+		value === "agent_run_failed" ||
 		value === "model_error" ||
+		value === "run_cancelled" ||
+		value === "side_effect_unknown" ||
+		value === "user_aborted" ||
 		value === "external_agent_adapter_invalid" ||
 		value === "external_agent_target_not_found" ||
 		value === "external_agent_probe_failed" ||
@@ -825,7 +908,8 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 /** Scheme with optional URL userinfo (user:pass@) — group 1 is kept, group 2 is the host/path. */
 const URL_USERINFO_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*)/gi;
 /** Well-known secret assignments such as `token=...` / `authorization: Bearer <jwt>` / `api_key=...`. */
-const SECRET_ASSIGNMENT_PATTERN = /\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi;
+const SECRET_ASSIGNMENT_PATTERN =
+	/\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi;
 /** A bare `Bearer <token>` not preceded by a secret key assignment. */
 const BEARER_TOKEN_PATTERN = /\bbearer\s+[^\s"'`,;]+/gi;
 
@@ -859,6 +943,7 @@ export type LedgerDiagnostic =
 	| { kind: "unknown-ledger-kind"; entryId: string; ledgerKind: string }
 	| { kind: "orphan-fact"; entryId: string; runId: RunId; fact: "started" | "terminal" }
 	| { kind: "duplicate-terminal"; runId: RunId }
+	| { kind: "canonical-terminal-invalid"; runId?: RunId }
 	| { kind: "malformed-binding"; entryId: string; detail: string }
 	| { kind: "mapping-conflict"; entryId: string }
 	| { kind: "malformed-mapping"; entryId: string };
@@ -875,6 +960,8 @@ export function formatDiagnostic(diag: LedgerDiagnostic): string {
 			return `automation.run ledger: ${diag.fact} fact for unknown run ${diag.runId} (entry ${diag.entryId}); skipped`;
 		case "duplicate-terminal":
 			return `automation.run: run ${diag.runId} is already terminal; second terminal ignored`;
+		case "canonical-terminal-invalid":
+			return `automation transport: canonical terminal${diag.runId === undefined ? "" : ` for run ${diag.runId}`} is invalid; run remains non-terminal`;
 		case "malformed-binding":
 			return `capability.binding ledger: custom entry ${diag.entryId} is malformed (${diag.detail}); skipped`;
 		case "mapping-conflict":
@@ -892,11 +979,13 @@ export interface RunLedgerSession {
 	getSessionFile(): string | undefined;
 	appendCustomEntry(customType: string, data?: unknown): string;
 	getEntries(): SessionEntry[];
+	/** Physical entries expose reserved Foundation facts hidden from legacy projections. */
+	getPhysicalEntries?(): SessionEntry[];
 }
 
 export interface RunResult {
 	record: RunRecord;
-	receipt?: RunReceipt;
+	receipt?: PublicRunReceipt;
 	recovery?: RunRecoveryState;
 	policySummary?: PublicPolicySummary;
 }
@@ -964,28 +1053,6 @@ export interface RunReservation {
 	release(): void;
 }
 
-export interface SettleInput {
-	outcome: "completed" | "failed";
-	terminalError?: AutomationError;
-	finalText?: string;
-	currentUsage?: RunUsageSnapshot;
-	/** Snapshot id explicitly bound to this run's model call(s). */
-	contextSnapshotId?: string;
-	/** Public-safe attachment summaries of the MCP content this run used. */
-	attachments?: ReadonlyArray<RunAttachmentSummary>;
-	/** Additive ModelBroker receipt metadata. */
-	modelBindingId?: string;
-	previousModelBindingId?: string;
-	policyDecision?: PolicyDecision;
-	policyApproval?: PolicyApprovalRequest;
-	sandboxLifecycle?: SandboxLifecycleLedgerRecord;
-	policyViolation?: PolicyViolationLedgerRecord;
-	policySummary?: PublicPolicySummary;
-	finalModel?: RunFinalModelReference;
-	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
-	modelBudget?: RunModelBudgetSummary;
-}
-
 export interface RunHandle {
 	readonly runId: RunId;
 	readonly sessionId: SessionId;
@@ -1002,16 +1069,15 @@ export interface RunHandle {
 	 * Returns the emitted event when running; undefined when buffered or terminal.
 	 */
 	captureSessionEvent(event: AgentSessionEvent): RunStreamEvent | undefined;
-	/** Record the first cancellation intent only; the terminal event is produced by settle(). */
+	/** Record the first cancellation intent only; canonical Foundation settlement decides the outcome. */
 	requestCancel(): void;
-	/** Record the first deadline intent only; settle() produces the failed terminal event. */
+	/** Record the first deadline intent only; canonical Foundation settlement decides the outcome. */
 	requestDeadlineExceeded(): void;
 	setUsageBaseline(baseline: RunUsageSnapshot): void;
 	computeUsageDelta(current: RunUsageSnapshot): RunUsage;
-	finalText(): string;
-	/** Persist the unique terminal fact and emit the unique terminal event. */
-	settle(input: SettleInput): RunStreamEvent | undefined;
-	receipt(): RunReceipt | undefined;
+	/** Project one validated canonical Foundation result into this live transport. */
+	observeCanonicalResult(result: CanonicalRunResult): RunStreamEvent | undefined;
+	receipt(): PublicRunReceipt | undefined;
 	result(): RunResult;
 }
 
@@ -1024,8 +1090,8 @@ export interface RunLifecycleCoordinatorOptions {
 	diagnostics?: (message: string) => void;
 	/**
 	 * Read-only Task Credential lifecycle observers. The hooks are side
-	 * channels of the Run ledger: they never rewrite RunStatus / RunReceipt
-	 * facts and never participate in the ledger fold.
+	 * channels of the transport ledger: they never rewrite canonical terminal
+	 * state and never participate in the ledger fold.
 	 */
 	credentialHooks?: RunCredentialLifecycleHooks;
 	/** Operation Worker observers; they cannot write or replace Run terminal facts. */
@@ -1037,29 +1103,32 @@ export interface RunLifecycleCoordinatorOptions {
 export interface RunWorkerLifecycleHooks {
 	onRunCancelRequested?: (runId: RunId) => void;
 	onRunDeadlineExceeded?: (runId: RunId) => void;
-	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+	onRunTerminal?: (runId: RunId, receipt: PublicRunReceipt) => void;
 	onRunInterrupted?: (runId: RunId) => void;
 }
 
 export interface RunSubagentLifecycleHooks extends RunWorkerLifecycleHooks {}
 
-const registeredRunWorkerHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunWorkerLifecycleHooks;
-}>();
+const registeredRunWorkerHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunWorkerLifecycleHooks;
+	}
+>();
 
-const registeredRunSubagentHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunSubagentLifecycleHooks;
-}>();
+const registeredRunSubagentHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunSubagentLifecycleHooks;
+	}
+>();
 
 /** Bind one session's production coordinator construction path to its Worker owner. */
-export function registerRunWorkerLifecycleHooks(
-	session: RunLedgerSession,
-	hooks: RunWorkerLifecycleHooks,
-): () => void {
+export function registerRunWorkerLifecycleHooks(session: RunLedgerSession, hooks: RunWorkerLifecycleHooks): () => void {
 	const sessionId = session.getSessionId();
 	if (registeredRunWorkerHooks.has(sessionId)) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks already have an owner");
@@ -1089,22 +1158,25 @@ export function registerRunSubagentLifecycleHooks(
 /**
  * Read-only Run lifecycle observers used by the Scheduler. These observe only
  * cancellation intent and persisted terminal facts; they never participate in
- * the Run ledger fold or receive authority to write RunStatus / RunReceipt.
+ * the transport fold or receive authority to write canonical terminal state.
  */
 export interface RunSchedulerLifecycleHooks {
 	/** The first cancel request for a live Run was recorded. */
 	onRunCancelRequested?: (runId: RunId) => void;
 	/** The first deadline-exceeded request for a live Run was recorded. */
 	onRunDeadlineExceeded?: (runId: RunId) => void;
-	/** A Run reached a terminal status through settle() (status is final). */
-	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+	/** A canonical Foundation result was projected as terminal (status is final). */
+	onRunTerminal?: (runId: RunId, receipt: PublicRunReceipt) => void;
 }
 
-const registeredRunSchedulerHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunSchedulerLifecycleHooks;
-}>();
+const registeredRunSchedulerHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunSchedulerLifecycleHooks;
+	}
+>();
 
 /** Bind one Session's production coordinator construction path to its Scheduler owner. */
 export function registerRunSchedulerLifecycleHooks(
@@ -1126,19 +1198,18 @@ export function registerRunSchedulerLifecycleHooks(
  * Read-only Run lifecycle observers used by the Task Credential service.
  * Each hook fires exactly once per Run per coordinator instance, only after
  * the Run fact it observes has been persisted (or, for the cancel intent,
- * on the first request only), and never rewrites RunStatus / RunReceipt
- * facts.
+ * on the first request only), and never rewrites canonical terminal state.
  */
 export interface RunCredentialLifecycleHooks {
-	/** A Run reached a terminal status through settle() (status is final). */
-	onRunTerminal?: (runId: RunId, receipt: RunReceipt) => void;
+	/** A canonical Foundation result was projected as terminal (status is final). */
+	onRunTerminal?: (runId: RunId, receipt: PublicRunReceipt) => void;
 	/** Recovery folded an accepted/running Run with no terminal receipt (interrupted). */
 	onRunInterrupted?: (runId: RunId) => void;
 	/**
 	 * The first cancel request for a Run was recorded. The hook observes the
-	 * request intent only: no Run fact is written, and a later settle() still
-	 * produces the unique terminal event. Never fires for a replayed Run or
-	 * for a Run that settles without an explicit cancel request.
+	 * request intent only: no terminal fact is written; a later canonical
+	 * Foundation result produces the unique terminal event. Never fires for a
+	 * replayed Run or for a terminal Run without an explicit cancel request.
 	 */
 	onRunCancelRequested?: (runId: RunId) => void;
 }
@@ -1153,6 +1224,8 @@ export interface RunLifecycleCoordinator {
 	/** Return the original Run for a matching retry key, or throw on conflict. */
 	getRunForRequest(request: RunRequestIdentity): RunResult | undefined;
 	getRun(runId: RunId): RunResult | undefined;
+	/** Emit the canonical terminal event for a live run, at most once. */
+	observeCanonicalRun(result: CanonicalRunResult): RunStreamEvent | undefined;
 	/** Find the durable request relation without creating another Run. */
 	getRunByClientRequestId(clientRequestId: string, scope?: RunRequestScope): RunRequestLookup | undefined;
 	getActiveRun(): RunResult | undefined;
@@ -1174,7 +1247,7 @@ export interface RunLifecycleCoordinator {
 // ---- Ledger parsing ----------------------------------------------------------
 
 type ParsedLedgerEntry =
-	| { ok: true; entry: PersistedRunLedgerEntry }
+	| { ok: true; entry: LegacyRunLedgerEntry }
 	| { ok: false; reason: "malformed"; detail: string }
 	| { ok: false; reason: "unknown-schema-version"; version: number }
 	| { ok: false; reason: "unknown-ledger-kind"; kind: string };
@@ -1340,7 +1413,9 @@ function isRunRequestRelation(value: unknown): value is RunRequestRelation {
 
 function requestRelationFromRecord(record: RunRecord): RunRequestRelation | undefined {
 	const hasRelation =
-		record.requestScope !== undefined || record.clientRequestId !== undefined || record.requestFingerprint !== undefined;
+		record.requestScope !== undefined ||
+		record.clientRequestId !== undefined ||
+		record.requestFingerprint !== undefined;
 	if (!hasRelation) return undefined;
 	const relation = {
 		scope: record.requestScope,
@@ -1356,7 +1431,9 @@ function validateRequestRelationOptions(options: {
 	requestFingerprint?: string;
 }): void {
 	const hasRelation =
-		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+		options.requestScope !== undefined ||
+		options.clientRequestId !== undefined ||
+		options.requestFingerprint !== undefined;
 	if (!hasRelation) return;
 	if (
 		!isRunRequestScope(options.requestScope) ||
@@ -1373,7 +1450,9 @@ function requestIdentityFromOptions(options: {
 	requestFingerprint?: unknown;
 }): RunRequestIdentity | undefined {
 	const hasIdentity =
-		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+		options.requestScope !== undefined ||
+		options.clientRequestId !== undefined ||
+		options.requestFingerprint !== undefined;
 	if (!hasIdentity) return undefined;
 	const identity = {
 		scope: options.requestScope,
@@ -1399,7 +1478,11 @@ function runRequestConflictError(): AutomationError {
 }
 
 function requestIdentityFromRecord(record: RunRecord): RunRequestIdentity | undefined {
-	if (record.requestScope === undefined && record.clientRequestId === undefined && record.requestFingerprint === undefined) {
+	if (
+		record.requestScope === undefined &&
+		record.clientRequestId === undefined &&
+		record.requestFingerprint === undefined
+	) {
 		return undefined;
 	}
 	const identity = {
@@ -1591,7 +1674,9 @@ function cloneRunModelAttempt(value: RunModelAttemptSummary): RunModelAttemptSum
 }
 
 function cloneRunModelAttempts(value: ReadonlyArray<RunModelAttemptSummary>): RunModelAttemptSummary[] {
-	return value.map((attempt) => cloneRunModelAttempt(attempt)).filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
+	return value
+		.map((attempt) => cloneRunModelAttempt(attempt))
+		.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
 }
 
 function cloneRunModelBudget(value: RunModelBudgetSummary): RunModelBudgetSummary | undefined {
@@ -1645,7 +1730,10 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
 	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
-	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+	if (
+		obj.modelAttempts !== undefined &&
+		(!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
@@ -1656,7 +1744,7 @@ function isRunRecord(value: unknown): value is RunRecord {
 	return true;
 }
 
-function isRunReceipt(value: unknown): value is RunReceipt {
+function isLegacyRunReceipt(value: unknown): value is LegacyRunReceipt {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
 	if (typeof obj.runId !== "string" || typeof obj.sessionId !== "string") return false;
@@ -1680,12 +1768,18 @@ function isRunReceipt(value: unknown): value is RunReceipt {
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
 	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
-	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+	if (
+		obj.modelAttempts !== undefined &&
+		(!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
 	if (obj.policySummary !== undefined && !isPublicPolicySummary(obj.policySummary)) return false;
-	if (obj.attachments !== undefined && (!Array.isArray(obj.attachments) || obj.attachments.some((attachment) => !isRunAttachmentSummary(attachment)))) {
+	if (
+		obj.attachments !== undefined &&
+		(!Array.isArray(obj.attachments) || obj.attachments.some((attachment) => !isRunAttachmentSummary(attachment)))
+	) {
 		return false;
 	}
 	return true;
@@ -1707,7 +1801,8 @@ function isRunAttachmentSummary(value: unknown): value is RunAttachmentSummary {
 	if (obj.revision !== undefined && !isOpaqueCapabilityRevision(obj.revision)) return false;
 	if (obj.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(obj.capabilityBindingId)) return false;
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
-	if (typeof obj.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(obj.contentDigest)) return false;
+	if (typeof obj.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(obj.contentDigest))
+		return false;
 	if (typeof obj.byteCount !== "number" || !Number.isInteger(obj.byteCount) || obj.byteCount < 0) return false;
 	if (typeof obj.blockCount !== "number" || !Number.isInteger(obj.blockCount) || obj.blockCount < 0) return false;
 	if (obj.mimeTypes !== undefined) {
@@ -1715,29 +1810,6 @@ function isRunAttachmentSummary(value: unknown): value is RunAttachmentSummary {
 		if (obj.mimeTypes.some((mimeType) => !isRunMetadataText(mimeType))) return false;
 	}
 	return true;
-}
-
-/** Fresh copy of one validated run attachment summary; undefined when invalid. */
-function cloneRunAttachmentSummary(value: RunAttachmentSummary): RunAttachmentSummary | undefined {
-	if (!isRunAttachmentSummary(value)) return undefined;
-	const copy: RunAttachmentSummary = {
-		sourceId: value.sourceId,
-		kind: value.kind,
-		contentDigest: value.contentDigest,
-		byteCount: value.byteCount,
-		blockCount: value.blockCount,
-	};
-	if (value.descriptorId !== undefined) copy.descriptorId = value.descriptorId;
-	if (value.revision !== undefined) copy.revision = value.revision;
-	if (value.capabilityBindingId !== undefined) copy.capabilityBindingId = value.capabilityBindingId;
-	if (value.policyBindingId !== undefined) copy.policyBindingId = value.policyBindingId;
-	if (value.mimeTypes !== undefined) copy.mimeTypes = [...value.mimeTypes];
-	return copy;
-}
-
-function cloneRunAttachmentSummaries(value: ReadonlyArray<RunAttachmentSummary>): RunAttachmentSummary[] | undefined {
-	const cloned = value.map(cloneRunAttachmentSummary);
-	return cloned.some((summary) => summary === undefined) ? undefined : (cloned as RunAttachmentSummary[]);
 }
 
 function parseLedgerEntry(value: unknown): ParsedLedgerEntry {
@@ -1757,7 +1829,7 @@ function parseLedgerEntry(value: unknown): ParsedLedgerEntry {
 		return { ok: false, reason: "malformed", detail: "kind is missing" };
 	}
 	if (kind === "accepted") {
-		if (!isRunRecord(obj.record)) {
+		if (!isRunRecord(obj.record) || obj.record.status !== "accepted") {
 			return { ok: false, reason: "malformed", detail: "accepted entry has an invalid record" };
 		}
 		return { ok: true, entry: { schemaVersion: 1, kind: "accepted", record: obj.record } };
@@ -1769,7 +1841,7 @@ function parseLedgerEntry(value: unknown): ParsedLedgerEntry {
 		return { ok: true, entry: { schemaVersion: 1, kind: "started", runId: obj.runId, startedAt: obj.startedAt } };
 	}
 	if (kind === "terminal") {
-		if (typeof obj.endedAt !== "string" || !isRunReceipt(obj.receipt)) {
+		if (typeof obj.endedAt !== "string" || !isLegacyRunReceipt(obj.receipt)) {
 			return { ok: false, reason: "malformed", detail: "terminal entry has an invalid receipt/endedAt" };
 		}
 		return { ok: true, entry: { schemaVersion: 1, kind: "terminal", receipt: obj.receipt, endedAt: obj.endedAt } };
@@ -1952,31 +2024,6 @@ export interface PublicRunRecord {
 	terminalError?: AutomationError;
 }
 
-export interface PublicRunReceipt {
-	runId: RunId;
-	sessionId: SessionId;
-	external?: ExternalExecutionRef;
-	deadlineAt?: string;
-	status: RunTerminalStatus;
-	finalText?: string;
-	usage: RunUsage;
-	terminalError?: AutomationError;
-	contextSnapshotId?: string;
-	/** Only present when the binding id is a current-format opaque value. */
-	capabilityBindingId?: string;
-	modelBindingId?: string;
-	previousModelBindingId?: string;
-	policyBindingId?: string;
-	previousPolicyBindingId?: string;
-	finalModel?: RunFinalModelReference;
-	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
-	modelBudget?: RunModelBudgetSummary;
-	policySummary?: PublicPolicySummary;
-	bindingAssociation?: RunBindingAssociation;
-	/** Public-safe attachment summaries; only digest/opaque metadata. */
-	attachments?: ReadonlyArray<RunAttachmentSummary>;
-}
-
 /**
  * Public Context receipt. Source ids, paths, labels and reference ids stay
  * internal because each can contain an extension or configured-package source
@@ -2009,8 +2056,7 @@ export type PublicSessionCustomData =
 	| { schemaVersion: 1; sequence: number; sandboxLifecycle: SandboxLifecycleLedgerRecord }
 	| { schemaVersion: 1; sequence: number; violation: PolicyViolationLedgerRecord }
 	| { schemaVersion: 1; kind: "accepted"; record: PublicRunRecord }
-	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string }
-	| { schemaVersion: 1; kind: "terminal"; receipt: PublicRunReceipt; endedAt: string };
+	| { schemaVersion: 1; kind: "started"; runId: RunId; startedAt: string };
 
 /** Public custom entry. Arbitrary extension metadata is deliberately absent. */
 export type PublicSessionCustomEntry = Omit<Extract<SessionEntry, { type: "custom" }>, "data"> & {
@@ -2041,7 +2087,7 @@ export interface PublicSessionTreeNode {
 	labelTimestamp?: string;
 }
 
-type RunTerminalStreamEvent = Extract<RunStreamEvent, { receipt: RunReceipt }>;
+type RunTerminalStreamEvent = Extract<RunStreamEvent, { receipt: PublicRunReceipt }>;
 type RunEventStreamEvent = Extract<RunStreamEvent, { type: "run.event" }>;
 
 /** Public Session event with Session entries passed through the shared serializer. */
@@ -2221,63 +2267,19 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 	return copy;
 }
 
-/**
- * Public-safe view of a run receipt. The capability binding id is only emitted
- * when it is a current-format opaque value; legacy/malformed ids are omitted and
- * the terminal error message is always redacted.
- */
-export function serializePublicRunReceipt(receipt: RunReceipt): PublicRunReceipt {
+/** Canonical public receipt view. Unsupported legacy transport metadata is omitted. */
+export function serializePublicRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
 	const copy: PublicRunReceipt = {
 		runId: receipt.runId,
 		sessionId: receipt.sessionId,
+		runReceiptId: receipt.runReceiptId,
+		attemptReceiptIds: [...receipt.attemptReceiptIds],
+		sideEffectState: receipt.sideEffectState,
 		status: receipt.status,
 		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
 	};
-	if (receipt.external !== undefined) {
-		const external = serializeExternalExecutionRef(receipt.external);
-		if (external !== undefined) copy.external = external;
-	}
-	if (receipt.deadlineAt !== undefined && isRunTimestamp(receipt.deadlineAt)) copy.deadlineAt = receipt.deadlineAt;
-	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
+	if (receipt.taskResultId !== undefined) copy.taskResultId = receipt.taskResultId;
 	if (receipt.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(receipt.terminalError);
-	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
-	if (receipt.capabilityBindingId !== undefined && isOpaqueCapabilityBindingId(receipt.capabilityBindingId)) {
-		copy.capabilityBindingId = receipt.capabilityBindingId;
-	}
-	if (receipt.modelBindingId !== undefined && isRunMetadataId(receipt.modelBindingId)) {
-		copy.modelBindingId = receipt.modelBindingId;
-	}
-	if (receipt.previousModelBindingId !== undefined && isRunMetadataId(receipt.previousModelBindingId)) {
-		copy.previousModelBindingId = receipt.previousModelBindingId;
-	}
-	if (receipt.policyBindingId !== undefined && isRunMetadataId(receipt.policyBindingId)) {
-		copy.policyBindingId = receipt.policyBindingId;
-	}
-	if (receipt.previousPolicyBindingId !== undefined && isRunMetadataId(receipt.previousPolicyBindingId)) {
-		copy.previousPolicyBindingId = receipt.previousPolicyBindingId;
-	}
-	if (receipt.finalModel !== undefined) {
-		const finalModel = serializePublicRunFinalModel(receipt.finalModel);
-		if (finalModel !== undefined) copy.finalModel = finalModel;
-	}
-	if (receipt.modelAttempts !== undefined) {
-		copy.modelAttempts = receipt.modelAttempts
-			.map((attempt) => serializePublicRunModelAttempt(attempt))
-			.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
-	}
-	if (receipt.modelBudget !== undefined) copy.modelBudget = serializePublicRunModelBudget(receipt.modelBudget);
-	if (receipt.policySummary !== undefined) {
-		const policySummary = clonePublicPolicySummary(receipt.policySummary);
-		if (policySummary !== undefined) copy.policySummary = policySummary;
-	}
-	if (receipt.bindingAssociation !== undefined) {
-		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
-		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
-	}
-	if (receipt.attachments !== undefined) {
-		const attachments = cloneRunAttachmentSummaries(receipt.attachments);
-		if (attachments !== undefined) copy.attachments = attachments;
-	}
 	return copy;
 }
 
@@ -2574,7 +2576,8 @@ function publicPolicySummaryFromDecisionRecord(record: PolicyDecisionLedgerRecor
 }
 
 function clonePublicPolicyApproval(record: PolicyApprovalLedgerRecord): PolicyApprovalLedgerRecord | undefined {
-	if (!isRunMetadataId(record.id) || !isRunMetadataId(record.bindingId) || !isPolicyResource(record.resource)) return undefined;
+	if (!isRunMetadataId(record.id) || !isRunMetadataId(record.bindingId) || !isPolicyResource(record.resource))
+		return undefined;
 	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
 	if (record.outcome !== undefined && !isPolicyApprovalOutcome(record.outcome)) return undefined;
 	if (record.source !== undefined && !isPolicyApprovalSource(record.source)) return undefined;
@@ -2602,7 +2605,8 @@ function clonePublicPolicyApproval(record: PolicyApprovalLedgerRecord): PolicyAp
 }
 
 function clonePublicSandboxLifecycle(record: SandboxLifecycleLedgerRecord): SandboxLifecycleLedgerRecord | undefined {
-	if (!isRunMetadataId(record.bindingId) || !isSandboxStatus(record.status) || !isRunMetadataText(record.timestamp)) return undefined;
+	if (!isRunMetadataId(record.bindingId) || !isSandboxStatus(record.status) || !isRunMetadataText(record.timestamp))
+		return undefined;
 	if (record.providerId !== undefined && !isRunMetadataId(record.providerId)) return undefined;
 	if (record.capabilities !== undefined && !isSandboxCapabilities(record.capabilities)) return undefined;
 	if (record.reasonCode !== undefined && !isPolicyErrorCode(record.reasonCode)) return undefined;
@@ -2617,7 +2621,12 @@ function clonePublicSandboxLifecycle(record: SandboxLifecycleLedgerRecord): Sand
 }
 
 function clonePublicPolicyViolation(record: PolicyViolationLedgerRecord): PolicyViolationLedgerRecord | undefined {
-	if (!isRunMetadataId(record.bindingId) || !isRunMetadataText(record.timestamp) || !isPolicyErrorCode(record.reasonCode)) return undefined;
+	if (
+		!isRunMetadataId(record.bindingId) ||
+		!isRunMetadataText(record.timestamp) ||
+		!isPolicyErrorCode(record.reasonCode)
+	)
+		return undefined;
 	if (record.resource !== undefined && !isPolicyResource(record.resource)) return undefined;
 	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
 	return {
@@ -2683,7 +2692,9 @@ function serializePublicCustomEntry(entry: Extract<SessionEntry, { type: "custom
 			? publicEntry
 			: { ...publicEntry, data: { schemaVersion: CAPABILITY_BINDING_SCHEMA_VERSION, binding } };
 	}
-	if (entry.customType !== RUN_LEDGER_CUSTOM_TYPE) return publicEntry;
+	const legacyRunEntry = entry.customType === LEGACY_RUN_LEDGER_CUSTOM_TYPE;
+	if (!legacyRunEntry && entry.customType !== RUN_LEDGER_CUSTOM_TYPE) return publicEntry;
+	if (legacyRunEntry) return publicEntry;
 
 	const parsed = parseLedgerEntry(entry.data);
 	if (!parsed.ok) return publicEntry;
@@ -2696,36 +2707,11 @@ function serializePublicCustomEntry(entry: Extract<SessionEntry, { type: "custom
 		case "started":
 			return { ...publicEntry, data: { ...parsed.entry } };
 		case "terminal":
-			return {
-				...publicEntry,
-				data: {
-					schemaVersion: 1,
-					kind: "terminal",
-					receipt: serializePublicRunReceipt(parsed.entry.receipt),
-					endedAt: parsed.entry.endedAt,
-				},
-			};
+			return publicEntry;
 	}
 }
 
-// ---- Text and usage helpers --------------------------------------------------
-
-function extractTextContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	let text = "";
-	for (const block of content) {
-		if (typeof block !== "object" || block === null) continue;
-		const candidate = block as { type?: unknown; text?: unknown };
-		if (candidate.type === "text" && typeof candidate.text === "string") text += candidate.text;
-	}
-	return text;
-}
-
-function extractAssistantText(message: AgentMessage): string {
-	if (message.role !== "assistant") return "";
-	return extractTextContent(message.content);
-}
+// ---- Usage helpers -----------------------------------------------------------
 
 function nonNegative(value: number): number {
 	return value > 0 ? value : 0;
@@ -2786,49 +2772,301 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 	return copy;
 }
 
-function cloneRunReceipt(receipt: RunReceipt): RunReceipt {
-	const copy: RunReceipt = {
+function cloneRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
+	const copy: PublicRunReceipt = {
 		runId: receipt.runId,
 		sessionId: receipt.sessionId,
+		runReceiptId: receipt.runReceiptId,
+		attemptReceiptIds: [...receipt.attemptReceiptIds],
+		sideEffectState: receipt.sideEffectState,
 		status: receipt.status,
 		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
 	};
-	if (receipt.external !== undefined) {
-		const external = serializeExternalExecutionRef(receipt.external);
-		if (external !== undefined) copy.external = external;
-	}
-	if (receipt.deadlineAt !== undefined && isRunTimestamp(receipt.deadlineAt)) copy.deadlineAt = receipt.deadlineAt;
-	if (receipt.finalText !== undefined) copy.finalText = receipt.finalText;
-	if (receipt.sessionFile !== undefined) copy.sessionFile = receipt.sessionFile;
+	if (receipt.taskResultId !== undefined) copy.taskResultId = receipt.taskResultId;
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
-	if (receipt.contextSnapshotId !== undefined) copy.contextSnapshotId = receipt.contextSnapshotId;
-	if (receipt.capabilityBindingId !== undefined) copy.capabilityBindingId = receipt.capabilityBindingId;
-	if (receipt.modelBindingId !== undefined) copy.modelBindingId = receipt.modelBindingId;
-	if (receipt.previousModelBindingId !== undefined) copy.previousModelBindingId = receipt.previousModelBindingId;
-	if (receipt.policyBindingId !== undefined) copy.policyBindingId = receipt.policyBindingId;
-	if (receipt.previousPolicyBindingId !== undefined) copy.previousPolicyBindingId = receipt.previousPolicyBindingId;
-	if (receipt.finalModel !== undefined) copy.finalModel = { ...receipt.finalModel };
-	if (receipt.modelAttempts !== undefined) {
-		copy.modelAttempts = receipt.modelAttempts.map((attempt) => ({
-			...attempt,
-			candidate: { ...attempt.candidate },
-			...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
-		}));
-	}
-	if (receipt.modelBudget !== undefined) copy.modelBudget = { ...receipt.modelBudget };
-	if (receipt.policySummary !== undefined) {
-		const policySummary = clonePublicPolicySummary(receipt.policySummary);
-		if (policySummary !== undefined) copy.policySummary = policySummary;
-	}
-	if (receipt.bindingAssociation !== undefined) {
-		const bindingAssociation = serializePublicRunBindingAssociation(receipt.bindingAssociation);
-		if (bindingAssociation !== undefined) copy.bindingAssociation = bindingAssociation;
-	}
-	if (receipt.attachments !== undefined) {
-		const attachments = cloneRunAttachmentSummaries(receipt.attachments);
-		if (attachments !== undefined) copy.attachments = attachments;
-	}
 	return copy;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseFoundationDurableEnvelope(value: unknown): FoundationRecord {
+	if (!isObjectRecord(value)) throw invalidDurableRecord("Foundation durable envelope must be an object");
+	const keys = Object.keys(value);
+	if (
+		keys.length !== 3 ||
+		!keys.includes("schemaVersion") ||
+		!keys.includes("kind") ||
+		!keys.includes("record") ||
+		value.schemaVersion !== 1 ||
+		value.kind !== "durable"
+	) {
+		throw invalidDurableRecord("Foundation durable envelope has an invalid shape");
+	}
+	let mutation: string;
+	try {
+		canonicalFoundationJson(value);
+		mutation = canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: value.record });
+	} catch (error) {
+		throw invalidDurableRecord(
+			`Foundation durable record is not canonical JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const parsed = parseFoundationMutation(mutation);
+	if (!parsed.ok) throw invalidDurableRecord(`Foundation durable record ${parsed.error.message}`);
+	return parsed.value;
+}
+
+/** Exact-fold canonical facts directly from the physical Session log without writing or taking a lease. */
+function foundationFactSnapshots(session: RunLedgerSession): FoundationFactRecord[] {
+	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
+	const state = new FoundationLedgerState({ sessionId: session.getSessionId() });
+	for (const [index, entry] of entries.entries()) {
+		if (entry.type === "custom" && entry.customType === FOUNDATION_DURABLE_CUSTOM_TYPE) {
+			state.applyPersistedRecord(parseFoundationDurableEnvelope(entry.data));
+		} else {
+			state.observeExternalSequence(index + 1);
+		}
+	}
+	return state
+		.findFoundationRecords({ kind: "fact", order: "oldestFirst" })
+		.filter((record): record is FoundationFactRecord => record.kind === "fact");
+}
+
+function requireFactCorrelation(fact: FoundationFactRecord, expected: object): void {
+	const allowed = new Set(["sessionId", "laneId", "revision", "fencingToken"]);
+	const actual = new Map(Object.entries(fact.correlation).map(([key, value]) => [key, value as unknown] as const));
+	for (const [key, value] of Object.entries(expected)) {
+		if (typeof value !== "string") continue;
+		allowed.add(key);
+		if (actual.get(key) !== value) {
+			throw new FoundationError("invalid_correlation", `Canonical ${fact.objectType} fact correlation is invalid`);
+		}
+	}
+	for (const key of Object.keys(fact.correlation)) {
+		if (!allowed.has(key)) {
+			throw new FoundationError(
+				"invalid_correlation",
+				`Canonical ${fact.objectType} fact correlation has an unexpected field`,
+			);
+		}
+	}
+}
+
+/** Reconstruct the exact canonical Run result chain used by automation-run-projection. */
+function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRunResult[] {
+	const facts = foundationFactSnapshots(session);
+	const attempts = new Map<string, AttemptReceipt>();
+	const taskResults = new Map<string, TaskResult>();
+	for (const fact of facts) {
+		if (fact.objectType === "attempt_receipt") {
+			const checked = validateAttemptReceipt(fact.payload);
+			if (!checked.ok) throw checked.error;
+			if (checked.value.attemptReceiptId !== fact.objectId) {
+				throw new FoundationError("invalid_correlation", "Canonical AttemptReceipt durable key is invalid");
+			}
+			if (attempts.has(fact.objectId)) {
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"Canonical AttemptReceipt has more than one durable fact",
+				);
+			}
+			requireFactCorrelation(fact, checked.value.provenance.correlation ?? {});
+			attempts.set(fact.objectId, checked.value);
+		} else if (fact.objectType === "task_result") {
+			const checked = validateTaskResult(fact.payload);
+			if (!checked.ok) throw checked.error;
+			if (checked.value.taskResultId !== fact.objectId) {
+				throw new FoundationError("invalid_correlation", "Canonical TaskResult durable key is invalid");
+			}
+			if (taskResults.has(fact.objectId)) {
+				throw new FoundationError("session_ledger_conflict", "Canonical TaskResult has more than one durable fact");
+			}
+			requireFactCorrelation(fact, checked.value.provenance.correlation ?? {});
+			taskResults.set(fact.objectId, checked.value);
+		}
+	}
+
+	const results: CanonicalRunResult[] = [];
+	const runIds = new Set<string>();
+	const runReceiptIds = new Set<string>();
+	for (const fact of facts) {
+		if (fact.objectType !== "run_receipt") continue;
+		const checkedReceipt = validateCanonicalRunReceipt(fact.payload);
+		if (!checkedReceipt.ok) throw checkedReceipt.error;
+		const receipt: CanonicalRunReceipt = checkedReceipt.value;
+		if (receipt.runId !== fact.objectId) {
+			throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt durable key is invalid");
+		}
+		if (runIds.has(receipt.runId) || runReceiptIds.has(receipt.runReceiptId)) {
+			throw new FoundationError(
+				"run_terminal_authority_invalid",
+				"Canonical RunReceipt has more than one durable terminal fact",
+			);
+		}
+		const sourceAttempts = receipt.attemptReceiptIds.map((attemptReceiptId) => {
+			const attempt = attempts.get(attemptReceiptId);
+			if (attempt === undefined) {
+				throw new FoundationError(
+					"invalid_correlation",
+					"Canonical RunReceipt references a missing AttemptReceipt",
+				);
+			}
+			return attempt;
+		});
+		const firstAttempt = sourceAttempts[0];
+		if (firstAttempt === undefined) {
+			throw new FoundationError("invalid_correlation", "Canonical RunReceipt has no source AttemptReceipt");
+		}
+		const taskResult = receipt.taskResultId === undefined ? undefined : taskResults.get(receipt.taskResultId);
+		if (receipt.taskResultId !== undefined && taskResult === undefined) {
+			throw new FoundationError("invalid_correlation", "Canonical RunReceipt references a missing TaskResult");
+		}
+		requireFactCorrelation(fact, {
+			taskId: taskResult?.taskId ?? firstAttempt.taskId,
+			runId: receipt.runId,
+			runReceiptId: receipt.runReceiptId,
+			taskResultId: receipt.taskResultId,
+			attemptId: firstAttempt.attemptId,
+			attemptReceiptId: firstAttempt.attemptReceiptId,
+		});
+		runIds.add(receipt.runId);
+		runReceiptIds.add(receipt.runReceiptId);
+		const writtenEvent = createDurableEvent({
+			category: "run_receipt.written",
+			eventId: fact.id,
+			streamId: fact.correlation.sessionId,
+			sequence: fact.seq,
+			timestamp: new Date(fact.timestamp).toISOString(),
+			correlation: {
+				sessionId: fact.correlation.sessionId,
+				laneId: fact.correlation.laneId,
+				taskId: firstAttempt.taskId,
+				runId: receipt.runId,
+				runReceiptId: receipt.runReceiptId,
+				...(receipt.taskResultId === undefined ? {} : { taskResultId: receipt.taskResultId }),
+				attemptId: firstAttempt.attemptId,
+				attemptReceiptId: firstAttempt.attemptReceiptId,
+			},
+			payload: { schemaVersion: 1, runReceiptId: receipt.runReceiptId, runId: receipt.runId },
+		});
+		results.push({
+			schemaVersion: 1,
+			runReceipt: receipt,
+			...(taskResult === undefined ? {} : { taskResult }),
+			attemptReceipts: sourceAttempts,
+			writtenEvent,
+		});
+	}
+	return results;
+}
+
+interface ReconciledSessionRunState {
+	readonly canonicalResults: readonly CanonicalRunResult[];
+	readonly canonicalProjections: readonly CanonicalAutomationRunProjection[];
+	readonly projections: readonly AutomationRunProjection[];
+}
+
+function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLedgerSourceEntryV1[] {
+	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
+	const source: LegacyAutomationRunLedgerSourceEntryV1[] = [];
+	for (const [sequence, entry] of entries.entries()) {
+		if (entry.type !== "custom" || entry.customType !== LEGACY_RUN_LEDGER_CUSTOM_TYPE) continue;
+		source.push({ sequence, entryId: entry.id, data: entry.data });
+	}
+	return source;
+}
+
+/** Reconcile canonical terminal truth with private legacy migration input. */
+function reconciledSessionRunState(session: RunLedgerSession): ReconciledSessionRunState {
+	const canonicalResults = canonicalRunResultsFromSession(session);
+	const canonicalProjections = projectAutomationRuns({ canonicalRuns: canonicalResults });
+	const reconciliation = reconcileLegacyAutomationRunLedgerV1(
+		session.getSessionId(),
+		legacyRunLedgerSource(session),
+		canonicalProjections,
+	);
+	return { canonicalResults, canonicalProjections, projections: reconciliation.runs };
+}
+
+function projectCanonicalRun(result: CanonicalRunResult): CanonicalAutomationRunProjection {
+	const projection = projectAutomationRuns({ canonicalRuns: [result] })[0];
+	if (projection === undefined) {
+		throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt projection is missing");
+	}
+	return projection;
+}
+
+function canonicalTerminalError(projection: CanonicalAutomationRunProjection): AutomationError | undefined {
+	const terminalError = projection.terminalError;
+	if (terminalError === undefined) return undefined;
+	const code = isAutomationErrorCode(terminalError.code) ? terminalError.code : "agent_run_failed";
+	return redactAutomationError({
+		code,
+		message: terminalError.message ?? "Run failed.",
+		retryable: terminalError.retryable ?? false,
+	});
+}
+
+/** Overlay only canonical terminal fields on the accepted transport metadata. */
+function receiptFromCanonicalProjection(projection: CanonicalAutomationRunProjection): PublicRunReceipt {
+	const receipt: PublicRunReceipt = {
+		runId: projection.id,
+		sessionId: projection.sessionId,
+		runReceiptId: projection.canonicalResult.runReceiptId,
+		...(projection.canonicalResult.taskResultId === undefined
+			? {}
+			: { taskResultId: projection.canonicalResult.taskResultId }),
+		attemptReceiptIds: [...projection.canonicalResult.attemptReceiptIds],
+		sideEffectState: projection.canonicalResult.sideEffectState,
+		status: projection.status,
+		usage: { ...projection.terminal.usage },
+	};
+	const terminalError = canonicalTerminalError(projection);
+	if (terminalError !== undefined) receipt.terminalError = terminalError;
+	return receipt;
+}
+
+function applyCanonicalProjectionToResult(result: RunResult, projection: CanonicalAutomationRunProjection): void {
+	if (result.record.id !== projection.id || result.record.sessionId !== projection.sessionId) {
+		throw new FoundationError("invalid_correlation", "Canonical Run projection does not match the transport Run");
+	}
+	const terminalError = canonicalTerminalError(projection);
+	result.record.status = projection.status;
+	result.record.endedAt = projection.endedAt;
+	if (projection.startedAt !== undefined && result.record.startedAt === undefined) {
+		result.record.startedAt = projection.startedAt;
+	}
+	if (terminalError !== undefined) result.record.terminalError = terminalError;
+	result.receipt = receiptFromCanonicalProjection(projection);
+	delete result.recovery;
+}
+
+function applyLegacyMigrationProjectionToResult(result: RunResult, projection: AutomationRunProjection): void {
+	if (
+		projection.migration?.disposition !== "legacy_migrated" ||
+		projection.canonicalResult !== undefined ||
+		result.record.id !== projection.id ||
+		result.record.sessionId !== projection.sessionId
+	) {
+		throw new FoundationError("run_terminal_authority_invalid", "Legacy Run migration projection is invalid");
+	}
+	result.record.status = projection.status;
+	result.record.endedAt = projection.endedAt;
+	if (projection.startedAt !== undefined) result.record.startedAt = projection.startedAt;
+	if (projection.terminalError !== undefined) {
+		const code = isAutomationErrorCode(projection.terminalError.code)
+			? projection.terminalError.code
+			: "agent_run_failed";
+		result.record.terminalError = redactAutomationError({
+			code,
+			message: projection.terminalError.message ?? "Run failed.",
+			retryable: projection.terminalError.retryable ?? false,
+		});
+	}
+	delete result.receipt;
+	delete result.recovery;
 }
 
 function externalRefFromMapping(mapping: ExternalExecutionMapping): ExternalExecutionRef | undefined {
@@ -2848,18 +3086,16 @@ class RunHandleImpl implements RunHandle {
 
 	private readonly coordinator: RunLifecycleCoordinatorImpl;
 	private readonly _record: RunRecord;
-	private readonly _capabilityBindingId: string | undefined;
 	private readonly _policyBindingId: string | undefined;
 	private readonly _previousPolicyBindingId: string | undefined;
 	private readonly _bindingAssociation: RunBindingAssociation | undefined;
 	private _policySummary: PublicPolicySummary | undefined;
 	private _sequence = 0;
 	private _terminationIntent: RunTerminationIntent | undefined;
-	private _finalText = "";
 	private _usageBaseline: RunUsageSnapshot | undefined;
 	private readonly _buffered: AgentSessionEvent[] = [];
 	private readonly _emitted: RunStreamEvent[] = [];
-	private _receipt: RunReceipt | undefined;
+	private _receipt: PublicRunReceipt | undefined;
 
 	constructor(
 		coordinator: RunLifecycleCoordinatorImpl,
@@ -2874,7 +3110,6 @@ class RunHandleImpl implements RunHandle {
 		if (options.deadlineAt !== undefined && !isRunTimestamp(options.deadlineAt)) {
 			throw createAutomationError("run_deadline_invalid", "Run deadline must be a canonical UTC timestamp.", false);
 		}
-		this._capabilityBindingId = options.capabilityBinding?.id;
 		this._policyBindingId = options.policyBinding?.id;
 		this._previousPolicyBindingId = options.policyBinding?.previousPolicyBindingId ?? options.previousPolicyBindingId;
 		this._bindingAssociation =
@@ -2958,11 +3193,7 @@ class RunHandleImpl implements RunHandle {
 	get terminal(): RunStreamEvent | undefined {
 		for (let i = this._emitted.length - 1; i >= 0; i -= 1) {
 			const event = this._emitted[i];
-			if (
-				event.type === "run.completed" ||
-				event.type === "run.failed" ||
-				event.type === "run.cancelled"
-			) {
+			if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled") {
 				return event;
 			}
 		}
@@ -2974,10 +3205,10 @@ class RunHandleImpl implements RunHandle {
 		const startedAt = this.coordinator.now();
 		// The append is the state transition boundary: in-memory status remains
 		// accepted until the durable started fact succeeds.
-		this.coordinator.persist({ schemaVersion: 1, kind: "started", runId: this.runId, startedAt });
+		this.coordinator.persistTransport({ schemaVersion: 1, kind: "started", runId: this.runId, startedAt });
 		this._record.status = "running";
 		this._record.startedAt = startedAt;
-		const events: RunStreamEvent[] = [this.emitStream("run.started")];
+		const events: RunStreamEvent[] = [this.emitStream("run.started", startedAt)];
 		for (const event of this._buffered.splice(0)) {
 			events.push(this.emitRunEvent(event));
 		}
@@ -2985,7 +3216,6 @@ class RunHandleImpl implements RunHandle {
 	}
 
 	captureSessionEvent(event: AgentSessionEvent): RunStreamEvent | undefined {
-		this.captureFinalText(event);
 		if (isTerminalStatus(this._record.status)) return undefined;
 		if (this._record.status === "running") {
 			return this.emitRunEvent(event);
@@ -3015,126 +3245,39 @@ class RunHandleImpl implements RunHandle {
 		};
 	}
 
-	finalText(): string {
-		return this._finalText;
-	}
-
-	settle(input: SettleInput): RunStreamEvent | undefined {
+	observeCanonicalResult(result: CanonicalRunResult): RunStreamEvent | undefined {
 		if (this._receipt !== undefined) {
 			this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
 			return undefined;
 		}
 		if (this._record.status !== "running") {
-			throw createAutomationError("start_rejected", "Run must be started before terminal persistence.", false);
+			throw createAutomationError("start_rejected", "Run must be started before canonical settlement.", false);
 		}
-		// Store only a fixed public-safe terminal error. Run ledgers can be read
-		// after process restart, so retaining free text here could preserve local
-		// paths or source identities even when every live RPC serializer is safe.
-		const status: RunTerminalStatus =
-			this._terminationIntent === "deadline"
-				? "failed"
-				: this._terminationIntent === "cancel"
-					? "cancelled"
-					: input.outcome;
-		const terminalError =
-			this._terminationIntent === "deadline"
-				? serializePublicAutomationError(createAutomationError("run_deadline_exceeded", "Run failed.", false))
-				: this._terminationIntent === "cancel" && input.terminalError?.code === "run_deadline_exceeded"
-					? undefined
-					: input.terminalError !== undefined
-						? serializePublicAutomationError(input.terminalError)
-						: undefined;
-		const endedAt = this.coordinator.now();
-		const receipt: RunReceipt = {
-			runId: this.runId,
-			sessionId: this.sessionId,
-			status,
-			usage: this.computeUsageDelta(input.currentUsage ?? { input: 0, output: 0, total: 0 }),
-		};
-		if (this._record.external !== undefined) {
-			const external = serializeExternalExecutionRef(this._record.external);
-			if (external !== undefined) receipt.external = external;
+		const projection = projectCanonicalRun(result);
+		if (projection.id !== this.runId || projection.sessionId !== this.sessionId) {
+			throw new FoundationError("invalid_correlation", "Canonical RunReceipt belongs to another transport Run");
 		}
-		if (this._record.deadlineAt !== undefined) receipt.deadlineAt = this._record.deadlineAt;
-		if (this._bindingAssociation !== undefined) receipt.bindingAssociation = this._bindingAssociation;
-		const finalText = input.finalText ?? this._finalText;
-		if (finalText !== "") receipt.finalText = finalText;
-		const sessionFile = this.coordinator.session.getSessionFile();
-		if (sessionFile !== undefined) receipt.sessionFile = sessionFile;
-		if (terminalError !== undefined) receipt.terminalError = terminalError;
-		const contextSnapshotId = input.contextSnapshotId;
-		if (contextSnapshotId !== undefined) receipt.contextSnapshotId = contextSnapshotId;
-		if (input.attachments !== undefined) {
-			const attachments = cloneRunAttachmentSummaries(input.attachments);
-			if (attachments !== undefined) receipt.attachments = attachments;
+		if (result.writtenEvent.sequence <= this._sequence) {
+			throw new FoundationError(
+				"invalid_correlation",
+				"Canonical RunReceipt sequence does not follow the transport event chain",
+			);
 		}
-		const capabilityBindingId = this._capabilityBindingId;
-		if (capabilityBindingId !== undefined) receipt.capabilityBindingId = capabilityBindingId;
-		const requestedModelBindingId = input.modelBindingId ?? this._record.modelBindingId;
-		const modelBindingId = requestedModelBindingId !== undefined && isRunMetadataId(requestedModelBindingId)
-			? requestedModelBindingId
-			: undefined;
-		const requestedPreviousModelBindingId = input.previousModelBindingId ?? this._record.previousModelBindingId;
-		const previousModelBindingId =
-			requestedPreviousModelBindingId !== undefined && isRunMetadataId(requestedPreviousModelBindingId)
-				? requestedPreviousModelBindingId
-				: undefined;
-		const finalModel = input.finalModel === undefined ? this._record.finalModel : cloneRunFinalModel(input.finalModel);
-		const modelAttempts = input.modelAttempts === undefined ? this._record.modelAttempts : cloneRunModelAttempts(input.modelAttempts);
-		const modelBudget = input.modelBudget === undefined ? this._record.modelBudget : cloneRunModelBudget(input.modelBudget);
-		if (modelBindingId !== undefined) receipt.modelBindingId = modelBindingId;
-		if (previousModelBindingId !== undefined) receipt.previousModelBindingId = previousModelBindingId;
-		if (this._policyBindingId !== undefined) receipt.policyBindingId = this._policyBindingId;
-		if (this._previousPolicyBindingId !== undefined) receipt.previousPolicyBindingId = this._previousPolicyBindingId;
-		if (input.policySummary !== undefined) {
-			const policySummary = clonePublicPolicySummary(input.policySummary);
-			if (policySummary !== undefined) this._policySummary = policySummary;
+		const projected: RunResult = { record: cloneRunRecord(this._record) };
+		applyCanonicalProjectionToResult(projected, projection);
+		if (projected.receipt === undefined) {
+			throw new FoundationError("run_terminal_authority_invalid", "Canonical Run projection omitted its receipt");
 		}
-		this.coordinator.persistPolicyFacts({
-			policyBindingId: this._policyBindingId,
-			policyDecision: input.policyDecision,
-			policyApproval: input.policyApproval,
-			sandboxLifecycle: input.sandboxLifecycle,
-			policyViolation: input.policyViolation,
-		});
-		if (this._policySummary !== undefined) receipt.policySummary = this._policySummary;
-		if (finalModel !== undefined) receipt.finalModel = { ...finalModel };
-		if (modelAttempts !== undefined) {
-			receipt.modelAttempts = modelAttempts.map((attempt) => ({
-				...attempt,
-				candidate: { ...attempt.candidate },
-				...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
-			}));
-		}
-		if (modelBudget !== undefined) receipt.modelBudget = { ...modelBudget };
-		// Persist terminal before publishing the receipt/event or mutating the
-		// in-memory status. A failed append therefore remains visibly running and
-		// can be recovered as interrupted after restart.
-		this.coordinator.persist({ schemaVersion: 1, kind: "terminal", receipt, endedAt });
-		this._receipt = receipt;
-		this._record.status = status;
-		this._record.endedAt = endedAt;
-		if (terminalError !== undefined) this._record.terminalError = terminalError;
-		if (modelBindingId !== undefined) this._record.modelBindingId = modelBindingId;
-		if (previousModelBindingId !== undefined) this._record.previousModelBindingId = previousModelBindingId;
-		if (this._policyBindingId !== undefined) this._record.policyBindingId = this._policyBindingId;
-		if (this._previousPolicyBindingId !== undefined) this._record.previousPolicyBindingId = this._previousPolicyBindingId;
-		if (this._policySummary !== undefined) this._record.policySummary = this._policySummary;
-		if (finalModel !== undefined) this._record.finalModel = { ...finalModel };
-		if (modelAttempts !== undefined) {
-			this._record.modelAttempts = modelAttempts.map((attempt) => ({
-				...attempt,
-				candidate: { ...attempt.candidate },
-				...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
-			}));
-		}
-		if (modelBudget !== undefined) this._record.modelBudget = { ...modelBudget };
-		const event = this.emitTerminal(status, receipt);
+		this._receipt = projected.receipt;
+		this._record.status = projected.record.status;
+		this._record.endedAt = projected.record.endedAt;
+		this._record.terminalError = projected.record.terminalError;
+		const event = this.emitCanonicalTerminal(result.writtenEvent, this._receipt);
 		this.coordinator.onTerminal(this);
 		return event;
 	}
 
-	receipt(): RunReceipt | undefined {
+	receipt(): PublicRunReceipt | undefined {
 		return this._receipt === undefined ? undefined : cloneRunReceipt(this._receipt);
 	}
 
@@ -3154,17 +3297,24 @@ class RunHandleImpl implements RunHandle {
 		const safe = serializeExternalExecutionRef(external);
 		if (safe === undefined) return;
 		this._record.external = safe;
-		if (this._receipt !== undefined) this._receipt.external = safe;
 	}
 
-	private emitStream(type: "run.started"): RunStreamEvent {
+	private emitStream(type: "run.started", timestamp: string): RunStreamEvent {
 		this._sequence += 1;
+		const correlation: DurableEventEnvelope["correlation"] = {
+			sessionId: this.sessionId,
+			laneId: "main",
+			runId: this.runId,
+		};
 		const event: RunStreamEvent = {
 			type,
 			runId: this.runId,
 			sessionId: this.sessionId,
 			sequence: this._sequence,
-			timestamp: this.coordinator.now(),
+			timestamp,
+			eventId: transportRunEventId(this.sessionId, this.runId, type, this._sequence),
+			streamId: this.sessionId,
+			correlation,
 		};
 		this._emitted.push(event);
 		return event;
@@ -3172,45 +3322,46 @@ class RunHandleImpl implements RunHandle {
 
 	private emitRunEvent(event: AgentSessionEvent): RunStreamEvent {
 		this._sequence += 1;
+		const correlation: DurableEventEnvelope["correlation"] = {
+			sessionId: this.sessionId,
+			laneId: "main",
+			runId: this.runId,
+		};
 		const wrapped: RunStreamEvent = {
 			type: "run.event",
 			runId: this.runId,
 			sessionId: this.sessionId,
 			sequence: this._sequence,
 			timestamp: this.coordinator.now(),
+			eventId: transportRunEventId(this.sessionId, this.runId, "run.event", this._sequence),
+			streamId: this.sessionId,
+			correlation,
 			event,
 		};
 		this._emitted.push(wrapped);
 		return wrapped;
 	}
 
-	private emitTerminal(status: RunTerminalStatus, receipt: RunReceipt): RunStreamEvent {
-		this._sequence += 1;
+	private emitCanonicalTerminal(writtenEvent: DurableEventEnvelope, receipt: PublicRunReceipt): RunStreamEvent {
+		this._sequence = writtenEvent.sequence;
 		const event: RunStreamEvent = {
-			type: status === "completed" ? "run.completed" : status === "failed" ? "run.failed" : "run.cancelled",
+			type:
+				receipt.status === "completed"
+					? "run.completed"
+					: receipt.status === "failed"
+						? "run.failed"
+						: "run.cancelled",
 			runId: this.runId,
 			sessionId: this.sessionId,
-			sequence: this._sequence,
-			timestamp: this.coordinator.now(),
+			sequence: writtenEvent.sequence,
+			timestamp: writtenEvent.timestamp,
+			eventId: writtenEvent.eventId,
+			streamId: writtenEvent.streamId,
+			correlation: writtenEvent.correlation,
 			receipt,
 		};
 		this._emitted.push(event);
 		return event;
-	}
-
-	private captureFinalText(event: AgentSessionEvent): void {
-		if (event.type === "message_end") {
-			const text = extractAssistantText(event.message);
-			if (text !== "") this._finalText = text;
-		} else if (event.type === "agent_end") {
-			for (let i = event.messages.length - 1; i >= 0; i -= 1) {
-				const text = extractAssistantText(event.messages[i]);
-				if (text !== "") {
-					this._finalText = text;
-					break;
-				}
-			}
-		}
 	}
 
 	private recordTerminationIntent(intent: RunTerminationIntent): void {
@@ -3239,7 +3390,7 @@ class ReplayedRunHandleImpl implements RunHandle {
 	readonly sessionId: SessionId;
 	private readonly coordinator: RunLifecycleCoordinatorImpl;
 	private readonly _record: RunRecord;
-	private readonly _receipt: RunReceipt | undefined;
+	private readonly _receipt: PublicRunReceipt | undefined;
 	private readonly _recovery: RunRecoveryState | undefined;
 	private readonly _policySummary: PublicPolicySummary | undefined;
 	private _usageBaseline: RunUsageSnapshot | undefined;
@@ -3249,7 +3400,8 @@ class ReplayedRunHandleImpl implements RunHandle {
 		this._record = cloneRunRecord(result.record);
 		this._receipt = result.receipt === undefined ? undefined : cloneRunReceipt(result.receipt);
 		this._recovery = result.recovery;
-		this._policySummary = result.policySummary === undefined ? undefined : clonePublicPolicySummary(result.policySummary);
+		this._policySummary =
+			result.policySummary === undefined ? undefined : clonePublicPolicySummary(result.policySummary);
 		this.runId = this._record.id;
 		this.sessionId = this._record.sessionId;
 	}
@@ -3303,16 +3455,12 @@ class ReplayedRunHandleImpl implements RunHandle {
 		};
 	}
 
-	finalText(): string {
-		return this._receipt?.finalText ?? "";
-	}
-
-	settle(_input: SettleInput): RunStreamEvent | undefined {
+	observeCanonicalResult(_result: CanonicalRunResult): RunStreamEvent | undefined {
 		this.coordinator.recordDiagnostic({ kind: "duplicate-terminal", runId: this.runId });
 		return undefined;
 	}
 
-	receipt(): RunReceipt | undefined {
+	receipt(): PublicRunReceipt | undefined {
 		return this._receipt === undefined ? undefined : cloneRunReceipt(this._receipt);
 	}
 
@@ -3388,7 +3536,7 @@ class RunReservationImpl implements RunReservation {
 					aosRunId: run.runId,
 				});
 			}
-			this.coordinator.persist({ schemaVersion: 1, kind: "accepted", record: run.record });
+			this.coordinator.persistTransport({ schemaVersion: 1, kind: "accepted", record: run.record });
 			this.coordinator.indexAcceptedRun(run.record);
 			if (acceptedOptions.external !== undefined) {
 				this.coordinator.persistExternalMapping({
@@ -3444,6 +3592,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
 	private readonly diagnosedEntries = new Set<string>();
+	private readonly canonicalDiagnostics = new Set<RunId | "*">();
 	private readonly _diagnostics: LedgerDiagnostic[] = [];
 	private _capabilityBindings = new Map<string, CapabilityBindingLedgerRecord>();
 	private readonly _requestIndex = new Map<string, { runId: RunId; requestFingerprint: string }>();
@@ -3502,8 +3651,25 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	getRun(runId: RunId): RunResult | undefined {
 		const live = this.runs.get(runId);
-		if (live !== undefined) return live.result();
+		if (live !== undefined) {
+			const result = live.result();
+			const canonical = this.canonicalResultForRun(runId);
+			if (canonical !== undefined) applyCanonicalProjectionToResult(result, projectCanonicalRun(canonical));
+			return result;
+		}
 		return this.rebuildIndex().get(runId);
+	}
+
+	observeCanonicalRun(result: CanonicalRunResult): RunStreamEvent | undefined {
+		const live = this.runs.get(result.runReceipt.runId);
+		if (live === undefined) {
+			const recovered = this.rebuildIndex().get(result.runReceipt.runId);
+			if (recovered?.receipt !== undefined) {
+				this.recordDiagnostic({ kind: "duplicate-terminal", runId: result.runReceipt.runId });
+			}
+			return undefined;
+		}
+		return live.observeCanonicalResult(result);
 	}
 
 	reserveForRequest(request: RunRequestIdentity): RunRequestReservation {
@@ -3596,13 +3762,24 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				bindings.set(parsed.entry.binding.id, parsed.entry.binding);
 				continue;
 			}
-			if (entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
+			const legacyRunEntry = entry.customType === LEGACY_RUN_LEDGER_CUSTOM_TYPE;
+			if (!legacyRunEntry && entry.customType !== RUN_LEDGER_CUSTOM_TYPE) continue;
 			const parsed = parseLedgerEntry(entry.data);
 			if (!parsed.ok) {
 				this.emitIfNew(entry.id, toDiagnostic(parsed, entry.id));
 				continue;
 			}
 			const fact = parsed.entry;
+			if (!legacyRunEntry && fact.kind === "terminal") {
+				this.emitIfNew(entry.id, {
+					kind: "malformed",
+					entryId: entry.id,
+					detail: "transport ledgers cannot contain terminal facts",
+				});
+				continue;
+			}
+			// Historical terminal payloads are decoded only to keep the legacy
+			// format private and inspectable. They never author current Run state.
 			if (fact.kind === "accepted") {
 				const existing = results.get(fact.record.id);
 				// Clone before applying later facts so the persisted entry.data is never mutated.
@@ -3621,57 +3798,28 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				}
 				result.record.startedAt = fact.startedAt;
 				result.record.status = "running";
-			} else {
-				const result = results.get(fact.receipt.runId);
-				if (result === undefined) {
-					this.emitIfNew(entry.id, {
-						kind: "orphan-fact",
-						entryId: entry.id,
-						runId: fact.receipt.runId,
-						fact: "terminal",
-					});
-					continue;
-				}
-				if (result.receipt !== undefined) {
-					// Already terminal; first receipt wins and the duplicate is a diagnostic.
-					this.emitIfNew(entry.id, { kind: "duplicate-terminal", runId: fact.receipt.runId });
-					continue;
-				}
-				result.receipt = cloneRunReceipt(fact.receipt);
-				result.record.status = fact.receipt.status;
-				result.record.endedAt = fact.endedAt;
-				if (fact.receipt.terminalError !== undefined) {
-					result.record.terminalError = cloneAutomationError(fact.receipt.terminalError);
-				}
-				if (fact.receipt.deadlineAt !== undefined) result.record.deadlineAt = fact.receipt.deadlineAt;
-				if (fact.receipt.bindingAssociation !== undefined) {
-					const bindingAssociation = serializePublicRunBindingAssociation(fact.receipt.bindingAssociation);
-					if (bindingAssociation !== undefined) result.record.bindingAssociation = bindingAssociation;
-				}
-				if (fact.receipt.modelBindingId !== undefined) result.record.modelBindingId = fact.receipt.modelBindingId;
-				if (fact.receipt.previousModelBindingId !== undefined) {
-					result.record.previousModelBindingId = fact.receipt.previousModelBindingId;
-				}
-				if (fact.receipt.policyBindingId !== undefined)
-					result.record.policyBindingId = fact.receipt.policyBindingId;
-				if (fact.receipt.previousPolicyBindingId !== undefined) {
-					result.record.previousPolicyBindingId = fact.receipt.previousPolicyBindingId;
-				}
-				if (fact.receipt.policySummary !== undefined) {
-					const policySummary = clonePublicPolicySummary(fact.receipt.policySummary);
-					if (policySummary !== undefined) result.record.policySummary = policySummary;
-				}
-				if (fact.receipt.finalModel !== undefined) result.record.finalModel = { ...fact.receipt.finalModel };
-				if (fact.receipt.modelAttempts !== undefined) {
-					result.record.modelAttempts = fact.receipt.modelAttempts.map((attempt) => ({
-						...attempt,
-						candidate: { ...attempt.candidate },
-						...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
-					}));
-				}
-				if (fact.receipt.modelBudget !== undefined) result.record.modelBudget = { ...fact.receipt.modelBudget };
 			}
 		}
+		try {
+			const reconciled = reconciledSessionRunState(this.session);
+			const canonicalByRunId = new Map(
+				reconciled.canonicalProjections.map((projection) => [projection.id, projection]),
+			);
+			for (const projection of reconciled.projections) {
+				const result = results.get(projection.id);
+				if (result === undefined) continue;
+				const canonical = canonicalByRunId.get(projection.id);
+				if (canonical === undefined) applyLegacyMigrationProjectionToResult(result, projection);
+				else applyCanonicalProjectionToResult(result, canonical);
+			}
+		} catch (error) {
+			if (!this.canonicalDiagnostics.has("*")) {
+				this.canonicalDiagnostics.add("*");
+				this.recordDiagnostic({ kind: "canonical-terminal-invalid" });
+			}
+			throw error;
+		}
+
 		for (const result of results.values()) {
 			for (const mapping of this.externalMappings.getMappings()) {
 				if (mapping.aosSessionId !== this.sessionId || mapping.aosRunId !== result.record.id) continue;
@@ -3682,14 +3830,17 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				const external = externalRefFromMapping(usable);
 				if (external === undefined) continue;
 				if (result.record.external === undefined) result.record.external = external;
-				if (result.receipt !== undefined && result.receipt.external === undefined) result.receipt.external = external;
 			}
-			if (result.receipt === undefined) result.recovery = "interrupted";
+			if (result.receipt === undefined && !isTerminalStatus(result.record.status)) result.recovery = "interrupted";
 			// Interrupted is a recovered-run fact: a Run that is live in this
 			// coordinator (accepted/running handle) is never reported interrupted,
 			// even though its persisted entries lack a terminal fact. The hook
 			// fires at most once per Run per coordinator instance.
-			if (result.receipt === undefined && !this.runs.has(result.record.id)) {
+			if (
+				result.receipt === undefined &&
+				!isTerminalStatus(result.record.status) &&
+				!this.runs.has(result.record.id)
+			) {
 				if (!this.interruptedSignaled.has(result.record.id)) {
 					this.interruptedSignaled.add(result.record.id);
 					this.credentialHooks?.onRunInterrupted?.(result.record.id);
@@ -3697,7 +3848,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 					this.subagentHooks?.onRunInterrupted?.(result.record.id);
 				}
 			}
-			const policySummary = result.receipt?.policySummary ?? result.record.policySummary;
+			const policySummary = result.record.policySummary;
 			if (policySummary !== undefined) {
 				const cloned = clonePublicPolicySummary(policySummary);
 				if (cloned !== undefined) result.policySummary = cloned;
@@ -3711,9 +3862,9 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		return this._diagnostics;
 	}
 
-	persist(entry: PersistedRunLedgerEntry): void {
+	persistTransport(entry: PersistedRunTransportEntry): void {
 		try {
-			this.session.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, entry);
+			this.session.appendCustomEntry("automation.run.transport", entry);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			throw createAutomationError(
@@ -3898,12 +4049,15 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			}
 		} catch (error) {
 			if (isAutomationError(error)) throw error;
-			const code = typeof error === "object" && error !== null && isPolicyErrorCode((error as { code?: unknown }).code)
-				? (error as { code: PolicyErrorCode }).code
-				: "policy_ledger_persistence_failed";
+			const code =
+				typeof error === "object" && error !== null && isPolicyErrorCode((error as { code?: unknown }).code)
+					? (error as { code: PolicyErrorCode }).code
+					: "policy_ledger_persistence_failed";
 			throw createAutomationError(
 				code === "policy_binding_failed" ? "policy_binding_failed" : "policy_ledger_persistence_failed",
-				code === "policy_binding_failed" ? "Execution Policy binding could not be created." : "Execution Policy facts could not be recorded safely.",
+				code === "policy_binding_failed"
+					? "Execution Policy binding could not be created."
+					: "Execution Policy facts could not be recorded safely.",
 				false,
 			);
 		}
@@ -3966,7 +4120,10 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		if (identity === undefined) return;
 		const key = createRunRequestKey(identity);
 		const existing = this._requestIndex.get(key);
-		if (existing !== undefined && (existing.runId !== record.id || existing.requestFingerprint !== identity.requestFingerprint)) {
+		if (
+			existing !== undefined &&
+			(existing.runId !== record.id || existing.requestFingerprint !== identity.requestFingerprint)
+		) {
 			this._requestConflicts.add(key);
 			return;
 		}
@@ -3975,8 +4132,8 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	onTerminal(run: RunHandleImpl): void {
 		if (this._active === run) this._active = undefined;
-		// Side-channel observer: the Run ledger is already terminal at this
-		// point, so the hook can never rewrite RunStatus / RunReceipt facts.
+		// Side-channel observer: Foundation terminal projection is complete at
+		// this point, so the hook can never rewrite canonical terminal state.
 		const receipt = run.receipt();
 		if (receipt !== undefined) {
 			this.credentialHooks?.onRunTerminal?.(run.runId, receipt);
@@ -3990,6 +4147,20 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		if (this.diagnosedEntries.has(entryId)) return;
 		this.diagnosedEntries.add(entryId);
 		this.recordDiagnostic(diag);
+	}
+
+	private canonicalResultForRun(runId: RunId): CanonicalRunResult | undefined {
+		try {
+			return reconciledSessionRunState(this.session).canonicalResults.find(
+				(result) => result.runReceipt.runId === runId,
+			);
+		} catch (error) {
+			if (!this.canonicalDiagnostics.has(runId)) {
+				this.canonicalDiagnostics.add(runId);
+				this.recordDiagnostic({ kind: "canonical-terminal-invalid", runId });
+			}
+			throw error;
+		}
 	}
 
 	private assertPolicyFactBinding(policyBindingId: string, factBindingId: string): void {
@@ -4009,15 +4180,27 @@ export function createRunLifecycleCoordinator(
 	const registeredOwner = registeredRunWorkerHooks.get(session.getSessionId());
 	const registeredWorkerHooks = registeredOwner?.session === session ? registeredOwner.hooks : undefined;
 	const registeredSubagentOwner = registeredRunSubagentHooks.get(session.getSessionId());
-	const registeredSubagentHooks = registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
+	const registeredSubagentHooks =
+		registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
 	const registeredSchedulerOwner = registeredRunSchedulerHooks.get(session.getSessionId());
 	const registeredSchedulerHooks =
 		registeredSchedulerOwner?.session === session ? registeredSchedulerOwner.hooks : undefined;
-	if (registeredOwner !== undefined && options?.workerHooks !== undefined && options.workerHooks !== registeredOwner.hooks) {
+	if (
+		registeredOwner !== undefined &&
+		options?.workerHooks !== undefined &&
+		options.workerHooks !== registeredOwner.hooks
+	) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks cannot override the registered owner");
 	}
-	if (registeredSubagentOwner !== undefined && options?.subagentHooks !== undefined && options.subagentHooks !== registeredSubagentOwner.hooks) {
-		throw new FoundationError("service_conflict", "Run Subagent lifecycle hooks cannot override the registered owner");
+	if (
+		registeredSubagentOwner !== undefined &&
+		options?.subagentHooks !== undefined &&
+		options.subagentHooks !== registeredSubagentOwner.hooks
+	) {
+		throw new FoundationError(
+			"service_conflict",
+			"Run Subagent lifecycle hooks cannot override the registered owner",
+		);
 	}
 	return new RunLifecycleCoordinatorImpl(session, {
 		...options,
