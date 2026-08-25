@@ -51,8 +51,10 @@ import {
 	type FoundationJsonValue,
 	type FoundationHostModelCallAdapter,
 	type HostTerminalGateAuthority,
+	type PublicExecutionError,
 	type TaskExecutorProvider,
 	type RunReceipt,
+	type RunReceiptUsage,
 	type SideEffectState,
 	type TaskEnvelope,
 	type TaskResult,
@@ -1833,6 +1835,16 @@ export class AgentHarness implements AgentLane {
 		return usage;
 	}
 
+	private async foundationRunUsage(lane: string, runId: string): Promise<RunReceiptUsage> {
+		const usage: RunReceiptUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+		for (const record of await this.durableSession.findRecords({ lane, runId, type: "usage", order: "oldestFirst" })) {
+			usage.inputTokens += record.usage.input;
+			usage.outputTokens += record.usage.output;
+			usage.totalTokens += record.usage.totalTokens;
+		}
+		return usage;
+	}
+
 	private foundationModelBudget(usage: FoundationModelUsageSummaryV1): { readonly remainingOutputTokens?: number } {
 		const budget = this.foundationExecution?.binding.budget ?? {};
 		const exhausted = budget.modelCalls !== undefined && usage.modelCalls >= budget.modelCalls
@@ -2312,7 +2324,15 @@ export class AgentHarness implements AgentLane {
 		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: settlementInput.summary ?? (outcome === "completed" ? "Agent run completed" : "Agent run did not complete successfully"), artifacts: settlementInput.artifacts, diff: settlementInput.diff, tests: settlementInput.tests ?? [], evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
 		if (!settled.ok) throw new HarnessFault("Host settlement rejected provider TaskResult", settled.error);
 		const finalStatus = outcome === "completed" && settled.value.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
-		const finalized = await settlement.finalize({ runReceiptId: `run_receipt_${runId}`, runId, terminalStatus: finalStatus, authority, attemptReceiptIds: [attemptReceipt.attemptReceiptId], taskResultId: settled.value.taskResultId, ...(finalStatus === "completed" ? {} : { terminalErrorCode: error?.code ?? "agent_run_failed" }), completedAt: producedAt });
+		const usage = await this.foundationRunUsage(lane, runId);
+		const terminalErrorCode = finalStatus === "completed" ? undefined : error?.code ?? (finalStatus === "cancelled" ? "user_aborted" : "agent_run_failed");
+		const terminalError: PublicExecutionError | undefined = terminalErrorCode === undefined ? undefined : {
+			code: terminalErrorCode,
+			message: error?.message ?? (finalStatus === "cancelled" ? "Agent run was cancelled" : "Agent run failed"),
+			category: terminalErrorCode === "side_effect_unknown" ? "side_effect_unknown" : finalStatus === "cancelled" ? "cancelled" : terminalErrorCode.includes("deadline") ? "deadline" : "unknown",
+			retryable: false,
+		};
+		const finalized = await settlement.finalize({ runReceiptId: `run_receipt_${runId}`, runId, terminalStatus: finalStatus, authority, attemptReceiptIds: [attemptReceipt.attemptReceiptId], taskResultId: settled.value.taskResultId, usage, ...(terminalErrorCode === undefined || terminalError === undefined ? {} : { terminalErrorCode, terminalError }), completedAt: producedAt });
 		if (!finalized.ok) throw new HarnessFault("Host terminal gate rejected provider RunReceipt", finalized.error);
 		return { attemptId: executed.value.attempt.attemptId, attemptReceipt, taskResult: settled.value, runReceipt: finalized.value, correlation };
 	}

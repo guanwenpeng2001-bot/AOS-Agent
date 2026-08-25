@@ -284,11 +284,11 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const settled = await restarted.settle({ taskResultId: "task-result-t6", task: task(), sourceAttemptReceiptIds: [executed.value.receipt.attemptReceiptId], summary: "provider completed", artifacts: [artifact], tests: [{ name: "provider", required: true, status: "passed", evidenceRefs: [artifact] }], evidence: [{ schemaVersion: 1, factId: "fact-t6", criterionId: "criterion-t6", outcome: "satisfied", evidenceRefs: [artifact], recordedAt: now }], producer: { producerKind: "host", providerId: "host-t6", producedAt: now, correlation: { ...correlation, taskResultId: "task-result-t6", attemptReceiptId: executed.value.receipt.attemptReceiptId } } });
 		expect(settled.ok).toBe(true);
 		if (!settled.ok) return;
-		const run = await restarted.finalize({ runReceiptId: "run-receipt-t6", runId: "run-t6", terminalStatus: "completed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], taskResultId: settled.value.taskResultId, completedAt: now });
+		const run = await restarted.finalize({ runReceiptId: "run-receipt-t6", runId: "run-t6", terminalStatus: "completed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], taskResultId: settled.value.taskResultId, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, completedAt: now });
 		expect(run).toMatchObject({ ok: true, value: { taskResultId: "task-result-t6", terminalStatus: "completed" } });
-		const conflicting = await restarted.finalize({ runReceiptId: "run-receipt-conflict", runId: "run-t6", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], terminalErrorCode: "replay-conflict", completedAt: now });
+		const conflicting = await restarted.finalize({ runReceiptId: "run-receipt-conflict", runId: "run-t6", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, terminalErrorCode: "replay-conflict", completedAt: now });
 		expect(conflicting).toMatchObject({ ok: false, error: { code: "run_terminal_authority_invalid" } });
-		const reusedReceiptId = await restarted.finalize({ runReceiptId: "run-receipt-t6", runId: "run-other", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], terminalErrorCode: "receipt-id-reuse", completedAt: now });
+		const reusedReceiptId = await restarted.finalize({ runReceiptId: "run-receipt-t6", runId: "run-other", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host-t6"), attemptReceiptIds: [executed.value.receipt.attemptReceiptId], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, terminalErrorCode: "receipt-id-reuse", completedAt: now });
 		expect(reusedReceiptId).toMatchObject({ ok: false, error: { code: "run_terminal_authority_invalid" } });
 	});
 
@@ -296,7 +296,7 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-forgery", createdAt: 1 }));
 		const ledger = new LayeredResultSettlement(session, { ownerId: "settlement-forgery" });
 		expect((ledger as unknown as { acceptExecution?: unknown }).acceptExecution).toBeUndefined();
-		const missing = await ledger.finalize({ runReceiptId: "run-1", runId: "same-run", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host"), attemptReceiptIds: ["missing"] });
+		const missing = await ledger.finalize({ runReceiptId: "run-1", runId: "same-run", terminalStatus: "failed", authority: createHostTerminalGateAuthority("host"), attemptReceiptIds: ["missing"], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } });
 		expect(missing).toMatchObject({ ok: false, error: { code: "task_result_no_source_receipts" } });
 	});
 
