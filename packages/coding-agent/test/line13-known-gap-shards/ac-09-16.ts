@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	InMemorySessionStorage,
+	FoundationError,
 	Result,
 	Session,
 	SessionLedgerV1,
@@ -24,22 +25,37 @@ import {
 	fingerprintFoundationValue,
 	resolveAgentBinding,
 	type AgentBindingV1,
+	type AttemptReceiptV1,
 	type AttemptV1,
 	type BudgetUsageV1,
+	type DispatchV1,
 	type FoundationProviderCapabilityV1,
+	type FoundationProviderExecutionOptionsV1,
 	type ModelProfileV1,
 	type QuotaAttributionV1,
 	type QuotaProvider,
 	type QuotaReservationV1,
 	type RevisionReferenceV1,
 	type TaskEnvelopeV1,
+	type TaskExecutorAttemptContextV1,
+	type TaskExecutorProvider,
+	validateAttemptReceiptForProviderV1,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import ts from "typescript";
 import {
 	createAgentSession,
 	createExternalAgentAdapterRegistry,
+	DefaultResourceLoader,
 	externalAgentCapabilityError,
+	ModelRuntime,
+	ProjectTrustStore,
+	SchedulerDispatchController,
+	SchedulerExecutorRegistry,
+	SchedulerInProcessTaskExecutorProvider,
+	SchedulerQueueStore,
+	SessionManager,
+	SettingsManager,
 	type CreateAgentSessionResult,
 	type ExternalAgentAdapter,
 	type ExternalAgentCapabilitySnapshot,
@@ -49,27 +65,12 @@ import {
 	CapabilityPublicIdentity,
 	getCapabilityPublicIdentityPath,
 } from "../../src/core/capability-public-identity.ts";
-import { ModelRuntime } from "../../src/core/model-runtime.ts";
-import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
-import {
-	SchedulerDispatchController,
-	assembleSchedulerDispatchV1,
-} from "../../src/core/scheduler-dispatch.ts";
-import {
-	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
-	SchedulerExecutorRegistry,
-	SchedulerInProcessTaskExecutorProvider,
-} from "../../src/core/scheduler-executors.ts";
-import { SchedulerQueueStore } from "../../src/core/scheduler-queue.ts";
+import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "../../src/core/scheduler-executors.ts";
 import type {
-	SchedulerClaimV1,
 	SchedulerExecutorEntryV1,
 	SchedulerQueueEntryV1,
 } from "../../src/core/scheduler.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
 import { SessionManagerStorage } from "../../src/core/session-manager-storage.ts";
-import { SettingsManager } from "../../src/core/settings-manager.ts";
-import { ProjectTrustStore } from "../../src/core/trust-manager.ts";
 import { defineLine13KnownGapCase, defineLine13KnownGapCaseShard } from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
 
@@ -319,6 +320,154 @@ async function prepareSelectionReplayFixture(fixture: SelectionReplayFixture): P
 		now: () => LATER,
 	});
 	fixture.request = request;
+}
+
+class Line13AgentTaskExecutor implements TaskExecutorProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId = "line13.native-agent";
+	readonly providerClass = "agent" as const;
+
+	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		return [];
+	}
+
+	async createAttempt(
+		dispatch: DispatchV1,
+		_binding: AgentBindingV1,
+		context?: TaskExecutorAttemptContextV1,
+	) {
+		if (context?.agentInstance === undefined) {
+			return Result.err(
+				new FoundationError(
+					"agent_instance_required_for_agent_provider",
+					"Line 13 agent executor requires the Scheduler-owned AgentInstance",
+				),
+			);
+		}
+		return createAttempt({
+			attemptId: context.initialBindingEpoch.attemptId,
+			dispatch,
+			providerId: this.providerId,
+			initialBindingEpoch: context.initialBindingEpoch,
+			providerClass: this.providerClass,
+			agentInstanceId: context.agentInstance.agentInstanceId,
+			now: () => NOW,
+		});
+	}
+
+	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+		const correlation = options?.correlation;
+		if (
+			attempt.agentInstanceId === undefined ||
+			correlation === undefined ||
+			correlation.agentInstanceId !== attempt.agentInstanceId
+		) {
+			return Result.err(
+				new FoundationError("invalid_correlation", "Line 13 agent executor requires AgentInstance correlation"),
+			);
+		}
+		const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
+		const receipt: AttemptReceiptV1 = {
+			schemaVersion: 1,
+			attemptReceiptId,
+			taskId: attempt.taskId,
+			dispatchId: attempt.dispatchId,
+			attemptId: attempt.attemptId,
+			providerId: attempt.providerId,
+			agentInstanceId: attempt.agentInstanceId,
+			bindingId: attempt.bindingId,
+			bindingEpochIds: [...attempt.bindingEpochIds],
+			status: "succeeded",
+			workerReceiptRefs: [],
+			artifacts: [],
+			provenance: {
+				producerKind: "agent_executor",
+				providerId: attempt.providerId,
+				producedAt: NOW,
+				correlation: { ...correlation, attemptReceiptId },
+			},
+			sideEffectState: "none",
+		};
+		return validateAttemptReceiptForProviderV1(receipt, {
+			providerId: this.providerId,
+			providerClass: this.providerClass,
+		});
+	}
+
+	async cancelAttempt(_attemptId: string) {
+		return Result.ok(undefined);
+	}
+
+	async dispose(): Promise<void> {}
+}
+
+interface AgentDispatchFixture {
+	readonly session: Session;
+	readonly queue: SchedulerQueueStore;
+	readonly registry: SchedulerExecutorRegistry;
+	readonly controller: SchedulerDispatchController;
+	readonly provider: Line13AgentTaskExecutor;
+	readonly currentBinding: AgentBindingV1;
+	fencingToken?: string;
+}
+
+function agentDispatchFixture(): AgentDispatchFixture {
+	const session = new Session(new InMemorySessionStorage({ id: SESSION_ID, createdAt: 1 }));
+	const queue = new SchedulerQueueStore({
+		ledger: session,
+		sessionId: SESSION_ID,
+		ownerId: OWNER_ID,
+		now: () => NOW,
+	});
+	const registry = new SchedulerExecutorRegistry();
+	return {
+		session,
+		queue,
+		registry,
+		controller: new SchedulerDispatchController({
+			session,
+			queue,
+			registry,
+			sessionId: SESSION_ID,
+			ownerId: OWNER_ID,
+			requiredCapabilities: [],
+			now: () => NOW,
+		}),
+		provider: new Line13AgentTaskExecutor(),
+		currentBinding: binding(),
+	};
+}
+
+async function prepareAgentDispatchFixture(fixture: AgentDispatchFixture): Promise<void> {
+	await seedBindingFacts(fixture.session, fixture.currentBinding);
+	const enqueued = await fixture.queue.enqueue(queueEntry("line13-ac10-queue"));
+	if (!enqueued.ok) throw enqueued.error;
+	const claimed = await fixture.queue.claim({
+		queueEntryId: "line13-ac10-queue",
+		ownerId: OWNER_ID,
+		claimId: "line13-ac10-claim",
+		fencingToken: "line13-ac10-fence",
+	});
+	if (!claimed.ok) throw claimed.error;
+	fixture.fencingToken = claimed.value.claim.fencingToken;
+	const registered = await fixture.registry.register({
+		entry: {
+			schemaVersion: 1,
+			descriptor: {
+				schemaVersion: 1,
+				providerId: fixture.provider.providerId,
+				providerClass: fixture.provider.providerClass,
+			},
+			capabilities: [],
+			costClass: "local",
+			registeredAt: NOW,
+		},
+		provider: fixture.provider,
+		trusted: true,
+		latencyMs: 0,
+		maxConcurrency: 1,
+	});
+	if (!registered.ok) throw registered.error;
 }
 
 interface CapacityFixture {
@@ -746,53 +895,39 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				mode: "fails",
 				expectedFailure: {
 					reason: "scheduler.agent_instance_not_assembled",
-					fingerprint: "sha256:d0eb2f9655cfd4f4339c712e4a1f1e134712d0aae08b269b33a39416cb4a08b6",
+					fingerprint: "sha256:c921f9a15d36a70eeb216a99d362e49551e6935a2430dd51d13f5888de6446d5",
 				},
 			},
 			scenario: {
-				fixture: () => {
-					const currentBinding = binding();
-					const entry = {
-						...queueEntry("line13-ac10-queue"),
-						state: "claimed" as const,
-						claimId: "line13-ac10-claim",
-						revision: 1,
-					};
-					const claim: SchedulerClaimV1 = {
-						schemaVersion: 1,
-						claimId: "line13-ac10-claim",
-						queueEntryId: entry.queueEntryId,
-						taskId: entry.taskId,
-						ownerId: OWNER_ID,
-						fencingToken: "line13-ac10-fence",
-						acquiredAt: NOW,
-						expiresAt: LATER,
-						revision: 0,
-					};
-					return { currentBinding, entry, claim };
-				},
-				assertion: ({ currentBinding, entry, claim }) => {
-					const assembled = assembleSchedulerDispatchV1({
-						entry,
-						claim,
+				fixture: agentDispatchFixture,
+				setup: prepareAgentDispatchFixture,
+				assertion: async ({ controller, currentBinding, fencingToken }) => {
+					if (fencingToken === undefined) throw new Error("AC-10 package-root Scheduler fixture is incomplete");
+					const dispatched = await controller.dispatchClaimed({
+						queueEntryId: "line13-ac10-queue",
+						fencingToken,
 						binding: currentBinding,
-						providerId: "line13.native-agent",
-						providerClass: "agent",
-						sessionId: SESSION_ID,
-						laneId: "main",
-						now: NOW,
+						requiredCapabilities: [],
 					});
-					assert.equal(assembled.ok, true, "expected Scheduler agent dispatch to assemble an AgentInstance");
-					if (!assembled.ok) return;
 					assert.equal(
-						assembled.value.initialBindingEpoch.agentInstanceId,
-						assembled.value.correlation.agentInstanceId,
-						"expected AgentInstance identity to bind the epoch and execution correlation",
+						dispatched.ok,
+						true,
+						"expected package-root Scheduler agent dispatch to assemble and execute one AgentInstance",
+					);
+					if (!dispatched.ok) return;
+					assert.equal(
+						dispatched.value.attempt.agentInstanceId,
+						dispatched.value.receipt.provenance.correlation?.agentInstanceId,
+						"expected one AgentInstance identity across the Attempt and execution correlation",
 					);
 					assert.ok(
-						assembled.value.initialBindingEpoch.agentInstanceId,
+						dispatched.value.attempt.agentInstanceId,
 						"expected Scheduler agent dispatch to retain a non-empty AgentInstance identity",
 					);
+				},
+				cleanup: async ({ controller, provider }) => {
+					controller.dispose();
+					await provider.dispose();
 				},
 			},
 		}),
@@ -848,8 +983,8 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 					let runnerThrew = false;
 					try {
 						await provider.runAttempt(attempt, { correlation });
-					} catch {
-						runnerThrew = true;
+					} catch (error) {
+						runnerThrew = error instanceof Error && error.message === "planned runner crash";
 					}
 					assert.equal(runnerThrew, true, "expected the planned Scheduler runner crash");
 					assert.equal(settled.count, 1, "expected Scheduler quota reservation release after runner throw");
