@@ -95,6 +95,20 @@ function writerProducedDurableRecord() {
 	}).record;
 }
 
+function writerProducedRetentionRecord(reason?: string) {
+	const state = new FoundationLedgerState({ sessionId: "session-3", clock: () => 1 });
+	state.acquireWriterLease({ ownerId: "session-migration-fixture" });
+	const record = state.setRetentionPolicy(
+		reason === undefined ? { schemaVersion: 1, cutSequence: 0 } : { schemaVersion: 1, cutSequence: 0, reason },
+		{
+			clientRequestId: "retention-create",
+			correlation: { sessionId: "session-3", laneId: "main", revision: 0 },
+		},
+	).record;
+	if (record.kind !== "retention") throw new Error("Expected the retention producer to return a retention record");
+	return record;
+}
+
 class InterleavedConflictLedger extends SessionLedger {
 	private injected = false;
 
@@ -354,6 +368,49 @@ describe("private historical Session entry migration", () => {
 				},
 			]),
 		).toThrow(PrivateMigrationError);
+	});
+
+	it("accepts producer-shaped retention records and exact-validates durable wrapper policies", () => {
+		const header = { type: "session", version: 3, id: "session-3", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" };
+		const records = [writerProducedRetentionRecord(), writerProducedRetentionRecord("archive")];
+		for (const record of records) {
+			const entry = {
+				type: "custom",
+				id: `retention-wrapper-${record.policy.reason ?? "none"}`,
+				parentId: null,
+				timestamp: "2026-01-01T00:00:01.000Z",
+				customType: "__aos.foundation.durable.v1",
+				data: { schemaVersion: 1, kind: "durable", record },
+			};
+			expect(migrateLegacySessionEntriesV1([header, entry]).compatibilityViews).toEqual([
+				{ entryId: entry.id, kind: "durable", value: entry.data },
+			]);
+		}
+
+		const record = records[1]!;
+		for (const policy of [
+			{ ...record.policy, authority: "forged" },
+			{ ...record.policy, schemaVersion: 2 },
+			{ ...record.policy, cutSequence: -1 },
+			{ ...record.policy, cutSequence: 1.5 },
+			{ ...record.policy, reason: "" },
+			{ ...record.policy, reason: 1 },
+			{ schemaVersion: 1 },
+		]) {
+			expect(() =>
+				migrateLegacySessionEntriesV1([
+					header,
+					{
+						type: "custom",
+						id: "invalid-retention-wrapper",
+						parentId: null,
+						timestamp: "2026-01-01T00:00:01.000Z",
+						customType: "__aos.foundation.durable.v1",
+						data: { schemaVersion: 1, kind: "durable", record: { ...record, policy } },
+					},
+				]),
+			).toThrow(PrivateMigrationError);
+		}
 	});
 
 	it("rejects invalid v1, v2, and v3 entry contracts after conversion", () => {

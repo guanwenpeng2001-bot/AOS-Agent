@@ -33,10 +33,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-	const actual = Object.keys(value).sort();
-	const expected = [...keys].sort();
-	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+function hasExactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
+	const allowed = new Set([...required, ...optional]);
+	return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.has(key));
 }
 
 function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
@@ -51,6 +50,12 @@ function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
 
 const PRIVATE_CORRELATION_FIELDS = ["operationId", "providerId", "toolCallId"] as const;
 
+function validateLegacyRetentionPolicyShapeV1(value: unknown): void {
+	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "cutSequence"], ["reason"])) {
+		throw new LegacyFoundationSchemaMigrationError("Historical Foundation retention policy has an invalid exact shape");
+	}
+}
+
 /**
  * Decode a writer-produced record while keeping current durable decoding
  * authoritative for every field it already owns. These three correlation
@@ -63,6 +68,7 @@ export function decodeLegacyFoundationRecordV1(value: unknown): FoundationRecord
 	} catch {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation record is not canonical JSON");
 	}
+	if (isRecord(value) && value.kind === "retention") validateLegacyRetentionPolicyShapeV1(value.policy);
 	const extensions: Partial<Record<(typeof PRIVATE_CORRELATION_FIELDS)[number], string>> = {};
 	let candidate = value;
 	if (isRecord(value) && isRecord(value.correlation)) {

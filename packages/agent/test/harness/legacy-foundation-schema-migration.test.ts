@@ -55,6 +55,20 @@ function writerProducedRecord() {
 	}).record;
 }
 
+function writerProducedRetentionRecord(reason?: string) {
+	const state = new FoundationLedgerState({ sessionId: "session-1", clock: () => 100 });
+	state.acquireWriterLease({ ownerId: "migration-fixture" });
+	const record = state.setRetentionPolicy(
+		reason === undefined ? { schemaVersion: 1, cutSequence: 0 } : { schemaVersion: 1, cutSequence: 0, reason },
+		{
+			clientRequestId: "retention-create",
+			correlation: { sessionId: "session-1", laneId: "main", revision: 0 },
+		},
+	).record;
+	if (record.kind !== "retention") throw new Error("Expected the retention producer to return a retention record");
+	return record;
+}
+
 describe("private legacy Foundation schema migration", () => {
 	it("decodes only schemaVersion 1 Foundation JSONL through the current decoder", () => {
 		const record = historicalRecord();
@@ -129,6 +143,33 @@ describe("private legacy Foundation schema migration", () => {
 				record: { ...record, correlation: { ...record.correlation, authority: "forged" } },
 			}),
 		).toThrow(LegacyFoundationSchemaMigrationError);
+	});
+
+	it("accepts producer-shaped retention records and exact-validates nested policies", () => {
+		const records = [writerProducedRetentionRecord(), writerProducedRetentionRecord("archive")];
+		for (const record of records) {
+			const wrapper = JSON.parse(encodeFoundationMutation(record)) as unknown;
+			expect(decodeLegacyFoundationSchemaWrapperV1(wrapper)).toEqual(record);
+		}
+
+		const record = records[1]!;
+		for (const policy of [
+			{ ...record.policy, authority: "forged" },
+			{ ...record.policy, schemaVersion: 2 },
+			{ ...record.policy, cutSequence: -1 },
+			{ ...record.policy, cutSequence: 1.5 },
+			{ ...record.policy, reason: "" },
+			{ ...record.policy, reason: 1 },
+			{ schemaVersion: 1 },
+		]) {
+			expect(() =>
+				decodeLegacyFoundationSchemaWrapperV1({
+					kind: "foundation",
+					schemaVersion: 1,
+					record: { ...record, policy },
+				}),
+			).toThrow(LegacyFoundationSchemaMigrationError);
+		}
 	});
 
 	it("builds clock-free stable plans while detecting changed source content", () => {
