@@ -53,8 +53,8 @@ function decodeCorrelation(value: unknown): FoundationRecord["correlation"] {
 	const allowed = new Set([
 		"sessionId", "laneId", "roleId", "roleRevisionId", "modelProfileId", "modelProfileRevisionId", "bindingId",
 		"bindingEpochId", "agentInstanceId", "goalId", "planId", "stageId", "taskId", "dispatchId", "attemptId",
-		"attemptReceiptId", "taskResultId", "runReceiptId", "runId", "turnId", "stepId", "parentId", "ancestorIds",
-		"revision", "fencingToken",
+		"operationId", "attemptReceiptId", "taskResultId", "runReceiptId", "runId", "providerId", "toolCallId", "turnId",
+		"stepId", "parentId", "ancestorIds", "revision", "fencingToken",
 	]);
 	for (const key of Object.keys(value)) if (!allowed.has(key)) throw new JsonlDecodeError("schema", `has unknown correlation field ${key}`);
 	const sessionId = requireString(value.sessionId, "correlation.sessionId");
