@@ -970,14 +970,21 @@ function legacyErrorEqualsProjection(
 	if (legacy === undefined || canonical === undefined) return legacy === undefined && canonical === undefined;
 	return (
 		legacy.code === canonical.code &&
-		(canonical.message === undefined || legacy.message === canonical.message) &&
-		(canonical.retryable === undefined || legacy.retryable === canonical.retryable)
+		legacy.message === canonical.message &&
+		legacy.retryable === canonical.retryable
 	);
+}
+
+function legacyUsageEqualsProjection(
+	legacy: LegacyAutomationRunReceiptV1["usage"],
+	canonical: CanonicalAutomationRunProjection["terminal"]["usage"],
+): boolean {
+	return legacy.input === canonical.input && legacy.output === canonical.output && legacy.total === canonical.total;
 }
 
 function assertEquivalentCanonicalRun(
 	legacy: HistoricalAutomationRunProjectionV1,
-	canonical: AutomationRunProjection,
+	canonical: CanonicalAutomationRunProjection,
 ): void {
 	const terminal = legacy.terminal;
 	if (terminal === undefined) return;
@@ -989,8 +996,10 @@ function assertEquivalentCanonicalRun(
 		canonical.status !== terminal.status ||
 		canonical.terminal.status !== terminal.status ||
 		canonical.endedAt !== legacy.endedAt ||
-		(canonical.startedAt !== undefined && canonical.startedAt !== legacy.startedAt) ||
-		!legacyErrorEqualsProjection(terminal.terminalError, canonical.terminalError)
+		(legacy.startedAt !== undefined && canonical.startedAt !== undefined && canonical.startedAt !== legacy.startedAt) ||
+		!legacyUsageEqualsProjection(terminal.usage, canonical.terminal.usage) ||
+		!legacyErrorEqualsProjection(terminal.terminalError, canonical.terminalError) ||
+		!legacyErrorEqualsProjection(terminal.terminalError, canonical.terminal.terminalError)
 	) {
 		throw new PrivateMigrationError(`Historical automation.run conflicts with canonical Run ${legacy.runId}`);
 	}
@@ -1001,16 +1010,35 @@ function projectionFromCompleteLegacy(legacy: HistoricalAutomationRunProjectionV
 	if (terminal === undefined || legacy.endedAt === undefined) {
 		throw new PrivateMigrationError(`Historical automation.run is incomplete for run ${legacy.runId}`);
 	}
+	const terminalError = terminal.terminalError === undefined
+		? undefined
+		: {
+				code: terminal.terminalError.code,
+				message: terminal.terminalError.message,
+				retryable: terminal.terminalError.retryable,
+			};
 	return {
 		id: legacy.runId,
 		sessionId: legacy.sessionId,
 		status: terminal.status,
 		...(legacy.startedAt === undefined ? {} : { startedAt: legacy.startedAt }),
 		endedAt: legacy.endedAt,
+		...(terminalError === undefined ? {} : { terminalError }),
 		terminal: {
 			runId: legacy.runId,
 			sessionId: legacy.sessionId,
 			status: terminal.status,
+			...(terminalError === undefined ? {} : { terminalError }),
+			usage: {
+				input: terminal.usage.input,
+				output: terminal.usage.output,
+				total: terminal.usage.total,
+			},
+		},
+		migration: {
+			sourceKind: "automation.run",
+			sourceSchemaVersion: 1,
+			disposition: "legacy_migrated",
 		},
 	};
 }
@@ -1034,7 +1062,10 @@ export function reconcileLegacyAutomationRunLedgerV1(
 			canonical.sessionId !== sessionId ||
 			canonical.terminal.runId !== canonical.id ||
 			canonical.terminal.sessionId !== canonical.sessionId ||
-			canonical.terminal.status !== canonical.status
+			canonical.terminal.status !== canonical.status ||
+			canonical.migration !== undefined ||
+			(canonical.terminalError === undefined) !== (canonical.terminal.terminalError === undefined) ||
+			(canonical.terminalError !== undefined && !canonicalEqual(canonical.terminalError, canonical.terminal.terminalError))
 		) {
 			throw new PrivateMigrationError("Canonical Automation Run projection is invalid for legacy reconciliation");
 		}

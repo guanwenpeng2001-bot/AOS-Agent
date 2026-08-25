@@ -410,9 +410,15 @@ describe("ProductPromptIngress trusted Child Agent composition", () => {
 			expect(runReceipts[0]?.lane).toBe("main");
 			const runAttemptReceiptIds = (runReceipts[0]?.payload as { attemptReceiptIds: string[] }).attemptReceiptIds;
 			expect(new Set(runAttemptReceiptIds).size).toBe(runAttemptReceiptIds.length);
-			expect(runAttemptReceiptIds).toEqual([execution.attemptReceipt.attemptReceiptId, ...acceptedChildIds]);
+			expect(runAttemptReceiptIds).toEqual([execution.attemptReceipt.attemptReceiptId]);
+			for (const acceptedChildId of acceptedChildIds) expect(runAttemptReceiptIds).not.toContain(acceptedChildId);
 			const rejectedChildIds = childReceipts.map((record) => record.objectId).filter((id) => !acceptedChildIds.includes(id));
 			for (const rejectedChildId of rejectedChildIds) expect(runAttemptReceiptIds).not.toContain(rejectedChildId);
+			expect((runReceipts[0]?.payload as { usage: unknown }).usage).toEqual({
+				inputTokens: 1,
+				outputTokens: 1,
+				totalTokens: 2,
+			});
 			const taskResults = facts.filter((record) => record.objectType === "task_result");
 			expect(taskResults).toHaveLength(2);
 			expect(taskResults.every((record) => record.lane === "main")).toBe(true);

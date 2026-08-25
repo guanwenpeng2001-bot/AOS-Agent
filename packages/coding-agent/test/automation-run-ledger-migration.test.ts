@@ -222,10 +222,18 @@ function source(sequence: number, entryId: string, data: unknown): LegacyAutomat
 	return { sequence, entryId, data };
 }
 
-function canonicalProjection(status: "completed" | "failed" | "cancelled" = "completed"): CanonicalAutomationRunProjection {
-	const terminalError = status === "completed"
+interface CanonicalProjectionOptions {
+	readonly usage?: { readonly input: number; readonly output: number; readonly total: number };
+	readonly terminalError?: { readonly code: string; readonly message: string; readonly retryable: boolean };
+}
+
+function canonicalProjection(
+	status: "completed" | "failed" | "cancelled" = "completed",
+	options: CanonicalProjectionOptions = {},
+): CanonicalAutomationRunProjection {
+	const terminalError = options.terminalError ?? (status === "completed"
 		? undefined
-		: { code: `canonical_${status}`, message: status, retryable: false };
+		: { code: `canonical_${status}`, message: status, retryable: false });
 	return {
 		id: RUN_ID,
 		sessionId: SESSION_ID,
@@ -237,7 +245,7 @@ function canonicalProjection(status: "completed" | "failed" | "cancelled" = "com
 			runId: RUN_ID,
 			sessionId: SESSION_ID,
 			status,
-			usage: { input: 1, output: 2, total: 3 },
+			usage: options.usage ?? { input: 1, output: 2, total: 3 },
 			...(terminalError === undefined ? {} : { terminalError }),
 		},
 		canonicalResult: {
@@ -440,6 +448,37 @@ describe("private automation.run ledger migration", () => {
 		expect(result.evidence).toEqual([{ runId: RUN_ID, disposition: "canonical_equal" }]);
 	});
 
+	it("accepts equal legacy usage and terminal error", () => {
+		const canonical = canonicalProjection("failed", {
+			terminalError: { code: "model_error", message: "failed", retryable: false },
+		});
+		const result = reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
+			[canonical],
+		);
+		expect(result.runs).toEqual([canonical]);
+		expect(result.evidence).toEqual([{ runId: RUN_ID, disposition: "canonical_equal" }]);
+	});
+
+	it("fails closed when legacy usage conflicts with canonical usage", () => {
+		expect(() => reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
+			[canonicalProjection("completed", { usage: { input: 1, output: 2, total: 4 } })],
+		)).toThrow(/conflicts with canonical Run/u);
+	});
+
+	it("fails closed when legacy terminal error conflicts with the canonical error", () => {
+		expect(() => reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
+			[canonicalProjection("failed", {
+				terminalError: { code: "different_error", message: "failed", retryable: false },
+			})],
+		)).toThrow(/conflicts with canonical Run/u);
+	});
+
 	it("migrates complete legacy evidence only when the canonical receipt is missing", () => {
 		const result = reconcileLegacyAutomationRunLedgerV1(
 			SESSION_ID,
@@ -454,24 +493,39 @@ describe("private automation.run ledger migration", () => {
 				status: "completed",
 				startedAt: "2026-01-01T00:00:01.000Z",
 				endedAt: "2026-01-01T00:00:02.000Z",
-				terminal: { runId: RUN_ID, sessionId: SESSION_ID, status: "completed" },
+				terminal: {
+					runId: RUN_ID,
+					sessionId: SESSION_ID,
+					status: "completed",
+					usage: { input: 1, output: 2, total: 3 },
+				},
+				migration: {
+					sourceKind: "automation.run",
+					sourceSchemaVersion: 1,
+					disposition: "legacy_migrated",
+				},
 			},
 		]);
-		expect(result.runs[0]?.terminal).not.toHaveProperty("usage");
 		expect(result.runs[0]?.terminal).not.toHaveProperty("finalText");
 		expect(result.runs[0]).not.toHaveProperty("canonicalResult");
 	});
 
-	it("does not promote legacy usage or error into canonical projection fields", () => {
+	it("preserves legacy usage and error in the complete migrated current record", () => {
 		const result = reconcileLegacyAutomationRunLedgerV1(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
 			[],
 		);
-		expect(result.runs[0]).toMatchObject({ status: "failed", terminal: { status: "failed" } });
-		expect(result.runs[0]).not.toHaveProperty("terminalError");
-		expect(result.runs[0]?.terminal).not.toHaveProperty("terminalError");
-		expect(result.runs[0]?.terminal).not.toHaveProperty("usage");
+		expect(result.runs[0]).toMatchObject({
+			status: "failed",
+			terminalError: { code: "model_error", message: "failed", retryable: false },
+			terminal: {
+				status: "failed",
+				terminalError: { code: "model_error", message: "failed", retryable: false },
+				usage: { input: 1, output: 2, total: 3 },
+			},
+			migration: { sourceKind: "automation.run", sourceSchemaVersion: 1, disposition: "legacy_migrated" },
+		});
 	});
 
 	it("does not invent a terminal Run from incomplete legacy evidence", () => {

@@ -298,6 +298,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			authority: createHostTerminalGateAuthority("host-terminal"),
 			taskResult: taskResult.value,
 			attemptReceiptIds: [attempt.value.attemptReceiptId],
+			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
 			completedAt: "2026-08-21T00:00:06.000Z",
 		});
 		expect(terminal).toMatchObject({
@@ -332,6 +333,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			authority: createHostTerminalGateAuthority("host-terminal"),
 			taskResult: worker as unknown as TaskResult,
 			attemptReceiptIds: [attempt.value.attemptReceiptId],
+			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
 		})).toMatchObject({ ok: false });
 		expect(validateRunReceipt(worker as unknown as RunReceipt)).toMatchObject({ ok: false });
 		await gateway.dispose();
