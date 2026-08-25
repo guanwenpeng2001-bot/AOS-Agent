@@ -60,6 +60,8 @@ export class DeterministicClock implements RuntimeClock {
 		this.timers.delete(id);
 	}
 
+	unrefTimeout(_handle: RuntimeTimerHandle): void {}
+
 	queueMicrotask(callback: () => void): void {
 		this.microtasks.push(callback);
 	}

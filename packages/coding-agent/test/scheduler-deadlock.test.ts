@@ -10,11 +10,13 @@ import {
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
 import { SchedulerMessageOrchestratorV1 } from "../src/core/scheduler-messages.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
+import { withRuntimeClock } from "../src/core/runtime-clock.ts";
 import type { SchedulerOwnershipTransferV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { TaskGateStore } from "../src/core/task-gate.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/task-graph.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
 	clampThinkingLevel: (level: unknown) => level,
@@ -1004,6 +1006,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 
 	it("bounds scans so a tick cannot hang past its timeout", async () => {
 		const frozen = clock(T0);
+		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(T0) });
 		const manager = SessionManager.inMemory("/workspace/deadlock-timeout", { id: "session_a" });
 		const graph = graphStore(manager, undefined, frozen.now);
 		for (let index = 0; index < 8; index += 1) {
@@ -1025,25 +1028,26 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			ownerId: OWNER_ID,
 			now: frozen.now,
 		});
-		let tickCalls = 0;
-		const controller = new SchedulerDeadlockController({
-			enabled: true,
-			sessionId: "session_a",
-			ownerId: OWNER_ID,
-			ledger: session,
-			graph,
-			queue,
-			now: () => {
-				tickCalls += 1;
-				return tickCalls === 1 ? T0 : "2099-01-01T00:00:00.000Z";
-			},
-			maxGraphsPerTick: 50,
-			maxNodesPerTick: 64,
-			tickTimeoutMs: 1,
-		});
-		const started = Date.now();
-		const result = await controller.tick();
-		expect(Date.now() - started).toBeLessThan(2_000);
+		const controller = new SchedulerDeadlockController(
+			withRuntimeClock(
+				{
+					enabled: true,
+					sessionId: "session_a",
+					ownerId: OWNER_ID,
+					ledger: session,
+					graph,
+					queue,
+					now: frozen.now,
+					maxGraphsPerTick: 50,
+					maxNodesPerTick: 64,
+					tickTimeoutMs: 1,
+				},
+				runtimeClock,
+			),
+		);
+		const pending = controller.tick();
+		runtimeClock.advanceBy(1);
+		const result = await pending;
 		expect(result.timedOut).toBe(true);
 		expect(result.scannedNodes).toBeLessThan(24);
 		const bounded = new SchedulerDeadlockController({
@@ -1064,6 +1068,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 
 	it("returns timedOut when an awaited queue read never resolves and does not start a second tick", async () => {
 		const frozen = clock(T0);
+		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(T0) });
 		const manager = SessionManager.inMemory("/workspace/deadlock-hang", { id: "session_a" });
 		const graph = graphStore(manager, undefined, frozen.now);
 		graph.create({
@@ -1084,25 +1089,29 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			snapshotCalls += 1;
 			return new Promise(() => {});
 		});
-		const controller = new SchedulerDeadlockController({
-			enabled: true,
-			sessionId: "session_a",
-			ownerId: OWNER_ID,
-			ledger: session,
-			graph,
-			queue: hanging,
-			now: frozen.now,
-			tickTimeoutMs: 50,
-		});
-		const started = Date.now();
-		const first = await controller.tick();
-		expect(Date.now() - started).toBeLessThan(1_000);
-		expect(first.timedOut).toBe(true);
-		const secondStarted = Date.now();
-		const second = await controller.tick();
-		expect(Date.now() - secondStarted).toBeLessThan(200);
-		expect(second.timedOut).toBe(true);
+		const controller = new SchedulerDeadlockController(
+			withRuntimeClock(
+				{
+					enabled: true,
+					sessionId: "session_a",
+					ownerId: OWNER_ID,
+					ledger: session,
+					graph,
+					queue: hanging,
+					now: frozen.now,
+					tickTimeoutMs: 50,
+				},
+				runtimeClock,
+			),
+		);
+		const pending = controller.tick();
+		for (let turn = 0; turn < 10 && snapshotCalls === 0; turn += 1) await Promise.resolve();
 		expect(snapshotCalls).toBe(1);
+		runtimeClock.advanceBy(50);
+		const first = await pending;
+		expect(first.timedOut).toBe(true);
+		const second = await controller.tick();
+		expect(second.timedOut).toBe(true);
 	});
 
 	it("does not persist or fail a victim when sacrificial revision evidence cannot be read", async () => {

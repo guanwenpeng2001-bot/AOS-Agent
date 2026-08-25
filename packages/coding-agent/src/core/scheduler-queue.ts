@@ -21,6 +21,7 @@ import {
 	Result,
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
+import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import {
 	applySchedulerClaimAcquire,
 	applySchedulerClaimRenew,
@@ -530,6 +531,7 @@ export class SchedulerQueueStore {
 	private readonly sessionId: string;
 	private readonly ownerId: string;
 	private readonly lane: string;
+	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly writerLeaseTtlMs: number;
 	private readonly cancelAttempt: SchedulerCancelAttemptV1 | undefined;
@@ -545,11 +547,12 @@ export class SchedulerQueueStore {
 	private mutationTail: Promise<void> = Promise.resolve();
 
 	constructor(options: SchedulerQueueStoreOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.ledger = options.ledger;
 		this.sessionId = options.sessionId;
 		this.ownerId = options.ownerId;
 		this.lane = options.lane ?? "main";
-		this.nowFn = options.now ?? (() => new Date().toISOString());
+		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.writerLeaseTtlMs = options.writerLeaseTtlMs ?? 15 * 60 * 1000;
 		this.cancelAttempt = options.cancelAttempt;
 		this.defaultMaxAttempts = options.maxAttempts ?? SCHEDULER_DEFAULT_MAX_ATTEMPTS;
@@ -1711,7 +1714,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
-		const nowMs = Date.now();
+		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (
 			this.writerLease !== undefined &&
