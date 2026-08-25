@@ -26,6 +26,7 @@ describe("current public naming", () => {
 		});
 		const checker = program.getTypeChecker();
 		const versionedExports: string[] = [];
+		const migrationExports: string[] = [];
 		const exportsBySpecifier = new Map<string, ReadonlySet<string>>();
 		for (const publicRoot of LINE13_T0_PUBLIC_ROOTS) {
 			const sourceFile = program.getSourceFile(resolve(root, publicRoot.source));
@@ -45,9 +46,17 @@ describe("current public naming", () => {
 				const resolved = (symbol.flags & ts.SymbolFlags.Alias) === 0 ? symbol : checker.getAliasedSymbol(symbol);
 				if (businessVersionPattern.test(resolved.name))
 					versionedExports.push(`${publicRoot.specifier}:${symbol.name}->${resolved.name}`);
+				if (
+					resolved
+						.getDeclarations()
+						?.some((declaration) => declaration.getSourceFile().fileName.replaceAll("\\", "/").includes("/migrations/"))
+				) {
+					migrationExports.push(`${publicRoot.specifier}:${symbol.name}`);
+				}
 			}
 		}
 		expect(versionedExports).toEqual([]);
+		expect(migrationExports).toEqual([]);
 		expect(AgentPublic.TaskEnvelopeSchema).toBeDefined();
 		expect("TaskEnvelopeV1Schema" in AgentPublic).toBe(false);
 		expect(CodingAgentPublic.SchedulerHost).toBeDefined();
