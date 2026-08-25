@@ -674,28 +674,6 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 								: "failed";
 						const attemptReceiptIds = [attemptReceipt.attemptReceiptId];
 						const usage = await findRunReceiptUsage(options.harness.session, run.value.runId);
-						const terminalError = terminalStatus === "completed"
-							? undefined
-							: run.value.kind === "failed"
-								? {
-										code: run.value.error.code,
-										message: run.value.error.message,
-										category: "unknown" as const,
-										retryable: false,
-									}
-								: run.value.kind === "aborted"
-									? {
-											code: "user_aborted",
-											message: "Run was cancelled",
-											category: "cancelled" as const,
-											retryable: false,
-										}
-									: {
-											code: "agent_run_failed",
-											message: "Agent run did not complete successfully",
-											category: "unknown" as const,
-											retryable: false,
-										};
 						const finalized = await settlement.finalize({
 							runReceiptId: `run_receipt_${run.value.runId}`,
 							runId: run.value.runId,
@@ -704,9 +682,6 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 							attemptReceiptIds,
 							taskResultId: taskResult.taskResultId,
 							usage,
-							...(terminalError === undefined
-								? {}
-								: { terminalErrorCode: terminalError.code, terminalError }),
 							completedAt: timestamp,
 						});
 						if (!finalized.ok) throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent Host terminal gate rejected the Prompt Task RunReceipt", undefined, finalized.error);

@@ -339,16 +339,17 @@ function validateOutcome(
 	}
 }
 
-function verifyWrittenEvents(receipt: RunReceipt, events: readonly DurableEventEnvelope[]): void {
+function verifyWrittenEvents(
+	receipt: RunReceipt,
+	writtenEvent: DurableEventEnvelope,
+	events: readonly DurableEventEnvelope[],
+): void {
 	for (const event of events) {
 		if (event.category !== "run_receipt.written" || !isRecord(event.payload)) continue;
-		if (event.payload.runId !== receipt.runId && event.correlation.runId !== receipt.runId) continue;
-		if (
-			event.payload.runId !== receipt.runId ||
-			event.payload.runReceiptId !== receipt.runReceiptId ||
-			event.correlation.runId !== receipt.runId ||
-			(event.correlation.runReceiptId !== undefined && event.correlation.runReceiptId !== receipt.runReceiptId)
-		) {
+		const refersToRun = event.payload.runId === receipt.runId || event.correlation.runId === receipt.runId;
+		const refersToReceipt = event.payload.runReceiptId === receipt.runReceiptId ||
+			event.correlation.runReceiptId === receipt.runReceiptId;
+		if ((refersToRun || refersToReceipt) && !canonicalEqual(event, writtenEvent)) {
 			fail(`Canonical run_receipt.written event conflicts for Run ${receipt.runId}`);
 		}
 	}
@@ -364,7 +365,7 @@ function projectRun(
 	for (const attempt of attempts) sideEffectState = mergeSideEffectState(sideEffectState, attempt.sideEffectState);
 	const terminalError = receipt.terminalError === undefined ? undefined : errorProjection(receipt.terminalError);
 	validateOutcome(receipt, taskResult, sideEffectState, terminalError);
-	verifyWrittenEvents(receipt, events);
+	verifyWrittenEvents(receipt, result.writtenEvent, events);
 	const startedAt = startedAtForRun(receipt.runId, sessionId, attempts, events);
 	const usage: AutomationRunUsageProjection = {
 		input: receipt.usage.inputTokens,

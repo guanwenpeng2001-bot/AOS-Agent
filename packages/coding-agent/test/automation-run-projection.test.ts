@@ -276,6 +276,77 @@ describe("canonical Automation Run projection", () => {
 		expect(first).toEqual(restarted);
 	});
 
+	it("deduplicates an exact replay of the canonical terminal event", () => {
+		const fixture = chain();
+		const replayed = projectAutomationRuns({
+			canonicalRuns: [fixture.canonicalRun],
+			events: [...fixture.events, structuredClone(fixture.canonicalRun.writtenEvent)],
+		});
+		expect(replayed).toEqual(project(fixture));
+	});
+
+	it("fails closed on a cross-Session terminal event for the canonical Run", () => {
+		const fixture = chain();
+		const authority = fixture.canonicalRun.writtenEvent;
+		const conflicting = createDurableEvent({
+			category: "run_receipt.written",
+			eventId: `${authority.eventId}-other-session`,
+			streamId: `${authority.streamId}-other-session`,
+			sequence: authority.sequence,
+			timestamp: authority.timestamp,
+			correlation: { ...authority.correlation, sessionId: "session-other" },
+			payload: authority.payload,
+		});
+		expect(() => projectAutomationRuns({
+			canonicalRuns: [fixture.canonicalRun],
+			events: [...fixture.events, conflicting],
+		})).toThrow(/run_receipt\.written event conflicts/u);
+	});
+
+	it("fails closed when terminal evidence uses a different sequence", () => {
+		const fixture = chain();
+		const authority = fixture.canonicalRun.writtenEvent;
+		const conflicting = createDurableEvent({
+			category: "run_receipt.written",
+			eventId: `${authority.eventId}-later-sequence`,
+			streamId: authority.streamId,
+			sequence: authority.sequence + 1,
+			timestamp: authority.timestamp,
+			correlation: authority.correlation,
+			payload: authority.payload,
+		});
+		expect(() => projectAutomationRuns({
+			canonicalRuns: [fixture.canonicalRun],
+			events: [...fixture.events, conflicting],
+		})).toThrow(/run_receipt\.written event conflicts/u);
+	});
+
+	it("fails closed when a terminal event cross-correlates one Run with another receipt", () => {
+		const first = chain({ suffix: "cross-first" });
+		const second = chain({ suffix: "cross-second" });
+		const conflicting = createDurableEvent({
+			category: "run_receipt.written",
+			eventId: "event-run-receipt-cross-correlation",
+			streamId: "stream-cross-correlation",
+			sequence: 1,
+			timestamp: "2026-08-25T10:00:05.000Z",
+			correlation: {
+				sessionId: SESSION_ID,
+				runId: second.runId,
+				runReceiptId: first.runReceipt.runReceiptId,
+			},
+			payload: {
+				schemaVersion: 1,
+				runId: second.runId,
+				runReceiptId: first.runReceipt.runReceiptId,
+			},
+		});
+		expect(() => projectAutomationRuns({
+			canonicalRuns: [first.canonicalRun, second.canonicalRun],
+			events: [...first.events, ...second.events, conflicting],
+		})).toThrow(/run_receipt\.written event conflicts/u);
+	});
+
 	it("fails closed on conflicting duplicate canonical results", () => {
 		const fixture = chain();
 		const conflicting: CanonicalRunResult = {
