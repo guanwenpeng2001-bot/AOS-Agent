@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed current public business models, schemas, providers, events, classes, and functions to their unversioned names and removed the transitional version-suffixed and alias exports. Use `scripts/migrate-versioned-names.mjs` to migrate source references.
+
 ### Added
 
 - Remote-ready Agent Loop hardening: bounded convergence, stable error classification, safe retry gating, and cancellation/deadline propagation.
@@ -15,6 +19,10 @@
 - T12 Foundation seal: local Workflow evaluation datasets and strict versioned quality, cost, and recovery regression snapshots, with all 79 Foundation closure capabilities backed by implementation evidence.
 - Line 11 Sandbox Operation Worker capability ledger: closes capabilities 74–87, 135, and 136, consumes sealed Foundation capabilities 6, 32, 47, 52, and 61, and preserves explicit later ownership for 88, 89, 132, and 137 without closing capability 140.
 
+### Changed
+
+- Renamed the machine-readable Foundation capability manifest to `foundation-capabilities.ts`; serialized `schemaVersion` fields and protocol revision values remain unchanged.
+
 ### Fixed
 
 - Made local plugin activation truly durable across process restarts, including recovery cleanup and rollback-point preservation after cleanup failure.
@@ -27,7 +35,7 @@
 - Foundation model calls now durably record route-bound intent/fact pairs and fail closed on unsupported service tiers or pending/unknown restart state without replaying provider side effects.
 - Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
 - AgentHarness compatibility retry and external-message state now reflects active retry attempts and pending writes instead of fixed false values.
-- Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResultV1.toolReceiptRef`, closing two sealed-contract omissions without a schema redesign.
+- Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResult.toolReceiptRef`, closing two sealed-contract omissions without a schema redesign.
 
 ## [0.84.3] - 2026-08-10
 

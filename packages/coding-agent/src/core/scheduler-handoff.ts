@@ -9,18 +9,18 @@
  */
 import { randomUUID } from "node:crypto";
 import {
-	createDurableEventV1,
+	createDurableEvent,
 	type DurableLedgerApi,
 	DurableLedgerError,
-	type EventCorrelationRefV1,
+	type EventCorrelationRef,
 	FoundationError,
-	type FoundationFactRecordV1,
+	type FoundationFactRecord,
 	type FoundationJsonValue,
-	type FoundationRecordV1,
-	type LedgerWriterLeaseV1,
+	type FoundationRecord,
+	type LedgerWriterLease,
 	Result,
 	type Result as ResultValue,
-	type SchedulerHandoffEventPayloadV1,
+	type SchedulerHandoffEventPayload,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import {
@@ -176,7 +176,7 @@ function isCanonicalTimestamp(value: unknown): value is string {
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function asFact(record: FoundationRecordV1): FoundationFactRecordV1 | undefined {
+function asFact(record: FoundationRecord): FoundationFactRecord | undefined {
 	return record.kind === "fact" ? record : undefined;
 }
 
@@ -295,7 +295,7 @@ function acceptanceMatchesRequest(
 	);
 }
 
-function handoffEventPayload(transfer: SchedulerOwnershipTransferV1): SchedulerHandoffEventPayloadV1 {
+function handoffEventPayload(transfer: SchedulerOwnershipTransferV1): SchedulerHandoffEventPayload {
 	const payload: {
 		schemaVersion: 1;
 		transferId: string;
@@ -329,7 +329,7 @@ export class SchedulerHandoffController {
 	private readonly writerLeaseTtlMs: number;
 	private readonly cancelSourceDispatch: SchedulerCancelSourceDispatchV1 | undefined;
 	private readonly targetAvailable: SchedulerHandoffTargetAvailableV1 | undefined;
-	private writerLease: LedgerWriterLeaseV1 | undefined;
+	private writerLease: LedgerWriterLease | undefined;
 	private transfers = new Map<string, SchedulerHandoffRecordV1>();
 	private acceptances = new Map<string, SchedulerHandoffAcceptanceV1>();
 	private objectRevisions = new Map<string, number>();
@@ -654,7 +654,7 @@ export class SchedulerHandoffController {
 		return Result.ok({ transfer: applied.value });
 	}
 
-	private replay(records: readonly FoundationRecordV1[]): ResultValue<SchedulerHandoffSnapshotV1, FoundationError> {
+	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerHandoffSnapshotV1, FoundationError> {
 		this.transfers = new Map();
 		this.acceptances = new Map();
 		this.objectRevisions = new Map();
@@ -785,7 +785,7 @@ export class SchedulerHandoffController {
 		let sequence = 1;
 		try {
 			sequence = (await this.ledger.getLedgerRevision()) + 1;
-			createDurableEventV1({
+			createDurableEvent({
 				category: "scheduler.handoff_transitioned",
 				eventId: `evt_handoff_${transfer.transferId}_${transfer.revision}`,
 				streamId: this.sessionId,
@@ -821,7 +821,7 @@ export class SchedulerHandoffController {
 		payload: FoundationJsonValue | object,
 		clientRequestId: string,
 		expectedRevision: number,
-		correlation: EventCorrelationRefV1,
+		correlation: EventCorrelationRef,
 	): Promise<ResultValue<{ replayed: boolean }, FoundationError>> {
 		try {
 			const lease = await this.ensureWriterLease();
@@ -851,7 +851,7 @@ export class SchedulerHandoffController {
 		}
 	}
 
-	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
+	private async ensureWriterLease(): Promise<LedgerWriterLease> {
 		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (

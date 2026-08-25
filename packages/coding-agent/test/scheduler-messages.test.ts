@@ -1,10 +1,10 @@
 import {
 	FoundationError,
 	fingerprintFoundationValue,
-	type RunReceiptV1,
+	type RunReceipt,
 	Session,
-	SessionLedgerV1,
-	type TaskResultV1,
+	SessionLedger,
+	type TaskResult,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
@@ -12,7 +12,7 @@ import type { SchedulerMessageV1 } from "../src/core/scheduler.ts";
 import {
 	SCHEDULER_MESSAGE_OBJECT_TYPES_V1,
 	type SchedulerMessageMaterialV1,
-	SchedulerMessageOrchestratorV1,
+	SchedulerMessageOrchestrator,
 	type SchedulerMessageSessionEndpointV1,
 	type SchedulerResultReferenceV1,
 } from "../src/core/scheduler-messages.ts";
@@ -51,7 +51,7 @@ interface PairFixture {
 	readonly sourceGraph: TaskGraphStore;
 	readonly targetGraph: TaskGraphStore;
 	readonly endpoints: readonly [SchedulerMessageSessionEndpointV1, SchedulerMessageSessionEndpointV1];
-	readonly messages: SchedulerMessageOrchestratorV1;
+	readonly messages: SchedulerMessageOrchestrator;
 }
 
 function graphStore(manager: SessionManager, runs: RunLifecycleCoordinator): TaskGraphStore {
@@ -97,7 +97,7 @@ function pair(): PairFixture {
 		sourceGraph,
 		targetGraph,
 		endpoints,
-		messages: new SchedulerMessageOrchestratorV1(endpoints),
+		messages: new SchedulerMessageOrchestrator(endpoints),
 	};
 }
 
@@ -164,9 +164,9 @@ function settleGraphNode(
 
 async function seedTaskResult(
 	session: Session,
-	input: { readonly taskResultId: string; readonly taskId: string; readonly status: TaskResultV1["status"] },
+	input: { readonly taskResultId: string; readonly taskId: string; readonly status: TaskResult["status"] },
 ): Promise<SchedulerResultReferenceV1> {
-	const result: TaskResultV1 = {
+	const result: TaskResult = {
 		schemaVersion: 1,
 		taskResultId: input.taskResultId,
 		taskId: input.taskId,
@@ -195,7 +195,7 @@ async function seedTaskResult(
 			requiredEvidencePresent: input.status !== "succeeded",
 		},
 	};
-	const ledger = new SessionLedgerV1(session, { ownerId: "foundation-t7" });
+	const ledger = new SessionLedger(session, { ownerId: "foundation-t7" });
 	const stored = await ledger.appendFact("task_result", input.taskResultId, result, {
 		clientRequestId: `seed-task-result-${input.taskResultId}`,
 		expectedRevision: 0,
@@ -216,10 +216,10 @@ async function seedRunReceipt(
 		readonly runReceiptId: string;
 		readonly runId: string;
 		readonly taskId: string;
-		readonly status: RunReceiptV1["terminalStatus"];
+		readonly status: RunReceipt["terminalStatus"];
 	},
 ): Promise<SchedulerResultReferenceV1> {
-	const receipt: RunReceiptV1 = {
+	const receipt: RunReceipt = {
 		schemaVersion: 1,
 		runReceiptId: input.runReceiptId,
 		runId: input.runId,
@@ -227,7 +227,7 @@ async function seedRunReceipt(
 		attemptReceiptIds: ["attempt-receipt-1"],
 		completedAt: T0,
 	};
-	const ledger = new SessionLedgerV1(session, { ownerId: "foundation-t7" });
+	const ledger = new SessionLedger(session, { ownerId: "foundation-t7" });
 	const stored = await ledger.appendFact("run_receipt", input.runId, receipt, {
 		clientRequestId: `seed-run-receipt-${input.runReceiptId}`,
 		expectedRevision: 0,
@@ -328,7 +328,7 @@ describe("durable scheduler message lifecycle", () => {
 		};
 		expect(await fixture.messages.rebuildThread("thread-1")).toEqual(expected);
 
-		const reloaded = new SchedulerMessageOrchestratorV1(fixture.endpoints);
+		const reloaded = new SchedulerMessageOrchestrator(fixture.endpoints);
 		expect(await reloaded.rebuildThread("thread-1")).toEqual(expected);
 	});
 
@@ -377,7 +377,7 @@ describe("durable scheduler message lifecycle", () => {
 	it("rejects durable revision gaps instead of guessing a missing transmission", async () => {
 		const fixture = pair();
 		await fixture.messages.post({ message: requiredMessage() });
-		const ledger = new SessionLedgerV1(fixture.sourceSession, { ownerId: "foundation-t7" });
+		const ledger = new SessionLedger(fixture.sourceSession, { ownerId: "foundation-t7" });
 		await ledger.appendFact(
 			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
 			"message-1",
@@ -761,7 +761,7 @@ describe("cross-Session Ask orchestration", () => {
 			replyId: "reply-reload",
 			clientRequestId: "reply-request-reload",
 		});
-		const reloaded = new SchedulerMessageOrchestratorV1(fixture.endpoints);
+		const reloaded = new SchedulerMessageOrchestrator(fixture.endpoints);
 		expect(
 			await reloaded.resolveCrossSessionAsk({
 				sourceSessionId: "session-source",

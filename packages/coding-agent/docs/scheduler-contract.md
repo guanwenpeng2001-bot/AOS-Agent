@@ -4,7 +4,7 @@ The Line 12B Scheduler is a trusted Host composition over the existing Foundatio
 
 ## Composition and authority
 
-`TrustedSchedulerCompositionV1` registers Run lifecycle observers, creates the Run lifecycle coordinator, and then creates the source Task Graph in that order. It then wires the durable queue and executor dispatch to fan-in settlement, cross-Session messages, fenced handoff, Workflow progression, deadlock/backpressure control, and the Scheduler Host.
+`TrustedSchedulerComposition` registers Run lifecycle observers, creates the Run lifecycle coordinator, and then creates the source Task Graph in that order. It then wires the durable queue and executor dispatch to fan-in settlement, cross-Session messages, fenced handoff, Workflow progression, deadlock/backpressure control, and the Scheduler Host.
 
 The composition owns the Session's single Scheduler lifecycle hook and forwards cancellation, deadline, and terminal observations to executor dispatch. Dispatch uses that same Run ledger for claim validation and never registers a competing hook owner.
 

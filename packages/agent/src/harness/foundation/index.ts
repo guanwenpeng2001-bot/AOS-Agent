@@ -4,17 +4,17 @@ export * from "./contracts.ts";
 export * from "./errors.ts";
 export * from "./event-catalog.ts";
 export {
-	executeDispatchV1,
-	executeOperationV1,
-	startDispatchAttemptV1,
-	switchAgentModeV1,
+	executeDispatch,
+	executeOperation,
+	startDispatchAttempt,
+	switchAgentMode,
 } from "./execution.ts";
 export type {
-	DispatchAttemptStartResultV1,
-	DispatchExecutionInputV1,
-	DispatchExecutionResultV1,
-	ModeSwitchExecutionInputV1,
-	OperationExecutionInputV1,
+	DispatchAttemptStartResult,
+	DispatchExecutionInput,
+	DispatchExecutionResult,
+	ModeSwitchExecutionInput,
+	OperationExecutionInput,
 } from "./execution.ts";
 export * from "./goal.ts";
 export * from "./goal-store.ts";

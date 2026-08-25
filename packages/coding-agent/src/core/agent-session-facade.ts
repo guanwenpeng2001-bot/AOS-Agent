@@ -137,8 +137,8 @@ import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
-	type SchedulerSafeStatusV1,
-	type TrustedSchedulerCompositionOptionsV1,
+	type SchedulerSafeStatus,
+	type TrustedSchedulerCompositionOptions,
 } from "./foundation-control-plane.ts";
 import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
@@ -149,8 +149,8 @@ import {
 	ProductPromptIngressV1,
 	type ProductPromptDependencySnapshotContextV1,
 } from "./product-prompt-ingress.ts";
-import type { PromptTaskDependencyNameV1 } from "./prompt-task-adapter.ts";
-import type { RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
+import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
+import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
 
 /**
@@ -193,7 +193,7 @@ export interface CanonicalAgentSessionOptions {
 	/** Explicit trusted Host-only opt-in; omission preserves the original runtime path. */
 	subagents?: TrustedSubagentCompositionOptionsV1;
 	/** Explicit trusted Host-only opt-in; omission keeps scheduling disabled. */
-	scheduler?: TrustedSchedulerCompositionOptionsV1;
+	scheduler?: TrustedSchedulerCompositionOptions;
 }
 
 const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
@@ -587,7 +587,7 @@ export class CanonicalAgentSessionServices {
 	private _systemPrompt: string;
 	private compatibilityMessagesProjection: AgentMessage[] = [];
 	private _sessionStartEvent: SessionStartEvent | undefined;
-	private promptSurface: RuntimeSessionSurfaceV1 = "sdk";
+	private promptSurface: RuntimeSessionSurface = "sdk";
 	private compatibilityFacade: AgentSession | undefined;
 	private extensionToolsReady: Promise<void> = Promise.resolve();
 	private pendingActiveToolNames: string[] | undefined;
@@ -2109,7 +2109,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	private productPromptDependencySnapshot(
-		name: PromptTaskDependencyNameV1,
+		name: PromptTaskDependencyName,
 		context: ProductPromptDependencySnapshotContextV1,
 	): FoundationJsonValue {
 		const capability = this.controlPlane.getCapabilityContextMetadata();
@@ -3129,7 +3129,7 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getTaskCredentialService();
 	}
 
-	getSchedulerStatus(): SchedulerSafeStatusV1 | undefined {
+	getSchedulerStatus(): SchedulerSafeStatus | undefined {
 		return this.controlPlane.getSchedulerStatus();
 	}
 
@@ -3817,7 +3817,7 @@ export function createAgentSessionWithTrustedScheduler(
 		session: Session,
 		sessionId: string,
 		runLifecycleSession: SessionManager,
-	) => TrustedSchedulerCompositionOptionsV1,
+	) => TrustedSchedulerCompositionOptions,
 ): AgentSession {
 	const canonical = createCanonicalOptionsFromLegacy(options);
 	const scheduler = createScheduler(

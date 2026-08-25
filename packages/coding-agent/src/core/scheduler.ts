@@ -17,20 +17,20 @@
  * `queue.enqueued` / `queue.cancelled` are not reused.
  */
 import {
-	type AgentBindingV1,
-	type ExecutionProviderDescriptorV1,
-	type FingerprintV1,
+	type AgentBinding,
+	type ExecutionProviderDescriptor,
+	type Fingerprint,
 	FoundationError,
 	type FoundationErrorCode,
-	type FoundationProviderCapabilityV1,
+	type FoundationProviderCapability,
 	fingerprintFoundationValue,
-	type IdempotencyV1,
+	type Idempotency,
 	isSideEffectRetryable,
 	Result,
 	type Result as ResultValue,
-	type SideEffectStateV1,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
+	type SideEffectState,
+	type TaskEnvelope,
+	type TaskResult,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import type { SchedulerDispatchOutcomeV1, SchedulerRunDispatchRequestV1 } from "./scheduler-dispatch.ts";
@@ -279,13 +279,13 @@ export interface SchedulerDispatchRecordV1 {
 
 export interface SchedulerExecutorAffinityV1 {
 	readonly sessionId?: string;
-	readonly workspaceDigest?: FingerprintV1;
+	readonly workspaceDigest?: Fingerprint;
 }
 
 export interface SchedulerExecutorEntryV1 {
 	readonly schemaVersion: 1;
-	readonly descriptor: ExecutionProviderDescriptorV1;
-	readonly capabilities: readonly FoundationProviderCapabilityV1[];
+	readonly descriptor: ExecutionProviderDescriptor;
+	readonly capabilities: readonly FoundationProviderCapability[];
 	readonly costClass: SchedulerExecutorCostClassV1;
 	readonly affinity?: SchedulerExecutorAffinityV1;
 	readonly registeredAt: string;
@@ -302,7 +302,7 @@ export interface SchedulerSelectionFactV1 {
 	readonly taskId: string;
 	readonly chosenProviderId: string;
 	readonly scores: readonly SchedulerSelectionScoreV1[];
-	readonly inputsDigest: FingerprintV1;
+	readonly inputsDigest: Fingerprint;
 	readonly decidedAt: string;
 }
 
@@ -346,7 +346,7 @@ export interface SchedulerMessageV1 {
 	readonly ack: SchedulerMessageAckV1;
 	readonly ackedAt?: string;
 	readonly expiresAt?: string;
-	readonly payloadDigest?: FingerprintV1;
+	readonly payloadDigest?: Fingerprint;
 	readonly createdAt: string;
 	readonly revision: number;
 }
@@ -590,7 +590,7 @@ function isMember<T extends string>(value: unknown, allowed: readonly T[]): valu
 	return typeof value === "string" && (allowed as readonly string[]).includes(value);
 }
 
-function isFingerprint(value: unknown): value is FingerprintV1 {
+function isFingerprint(value: unknown): value is Fingerprint {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, FINGERPRINT_KEYS) &&
@@ -600,7 +600,7 @@ function isFingerprint(value: unknown): value is FingerprintV1 {
 	);
 }
 
-function copyFingerprint(value: FingerprintV1): FingerprintV1 {
+function copyFingerprint(value: Fingerprint): Fingerprint {
 	return { algorithm: "sha256", value: value.value };
 }
 
@@ -669,8 +669,8 @@ export function isSchedulerHandoffTerminal(state: SchedulerHandoffStateV1): bool
 
 /** C061 mapping: `side_effect_unknown` is never auto-retried. */
 export function isSchedulerSideEffectRetryable(
-	state: SideEffectStateV1,
-	idempotency: IdempotencyV1 = "non_idempotent",
+	state: SideEffectState,
+	idempotency: Idempotency = "non_idempotent",
 ): boolean {
 	return isSideEffectRetryable(state, idempotency);
 }
@@ -847,7 +847,7 @@ export function parseSchedulerDispatchRecord(value: unknown): ResultValue<Schedu
 	return Result.ok(serializeSchedulerDispatchRecord(value));
 }
 
-function isCapability(value: unknown): value is FoundationProviderCapabilityV1 {
+function isCapability(value: unknown): value is FoundationProviderCapability {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, CAPABILITY_KEYS) &&
@@ -859,7 +859,7 @@ function isCapability(value: unknown): value is FoundationProviderCapabilityV1 {
 	);
 }
 
-function isDescriptor(value: unknown): value is ExecutionProviderDescriptorV1 {
+function isDescriptor(value: unknown): value is ExecutionProviderDescriptor {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, DESCRIPTOR_KEYS) &&
@@ -910,7 +910,7 @@ export function serializeSchedulerExecutorEntry(value: SchedulerExecutorEntryV1)
 		if (value.affinity.sessionId !== undefined)
 			(affinity as { sessionId?: string }).sessionId = value.affinity.sessionId;
 		if (value.affinity.workspaceDigest !== undefined) {
-			(affinity as { workspaceDigest?: FingerprintV1 }).workspaceDigest = copyFingerprint(
+			(affinity as { workspaceDigest?: Fingerprint }).workspaceDigest = copyFingerprint(
 				value.affinity.workspaceDigest,
 			);
 		}
@@ -1102,7 +1102,7 @@ export function serializeSchedulerMessage(value: SchedulerMessageV1): SchedulerM
 	if (value.ackedAt !== undefined) (message as { ackedAt?: string }).ackedAt = value.ackedAt;
 	if (value.expiresAt !== undefined) (message as { expiresAt?: string }).expiresAt = value.expiresAt;
 	if (value.payloadDigest !== undefined) {
-		(message as { payloadDigest?: FingerprintV1 }).payloadDigest = copyFingerprint(value.payloadDigest);
+		(message as { payloadDigest?: Fingerprint }).payloadDigest = copyFingerprint(value.payloadDigest);
 	}
 	return message;
 }
@@ -1575,8 +1575,8 @@ export interface SchedulerHostFanInV1 {
 
 export interface SchedulerHostRunAssociationV1 {
 	readonly runId: string;
-	readonly task: TaskEnvelopeV1;
-	readonly binding: AgentBindingV1;
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
 	readonly joinPolicy?: SchedulerJoinPolicyV1;
 }
 
@@ -1593,7 +1593,7 @@ export interface SchedulerHostRunTerminalInputV1 {
 	readonly runId: string;
 	readonly taskId: string;
 	readonly nodeId: string;
-	readonly taskResult?: TaskResultV1;
+	readonly taskResult?: TaskResult;
 	readonly rejectionCode?: string;
 }
 
@@ -1601,7 +1601,7 @@ export interface SchedulerHostEventSourceV1 {
 	subscribe(wake: () => void): () => void;
 }
 
-export interface SchedulerHostOptionsV1 {
+export interface SchedulerHostOptions {
 	/** The production control plane is inert unless explicitly enabled. */
 	readonly enabled?: boolean;
 	readonly sessionId: string;
@@ -1637,7 +1637,7 @@ export interface SchedulerHostTickErrorV1 {
 	readonly code: string;
 }
 
-export interface SchedulerHostTickResultV1 {
+export interface SchedulerHostTickResult {
 	readonly enabled: boolean;
 	readonly scannedGraphs: number;
 	readonly scannedNodes: number;
@@ -1686,7 +1686,7 @@ function schedulerHostErrorCode(error: unknown): string {
 	return "scheduler_persistence_failed";
 }
 
-function emptySchedulerHostTick(enabled: boolean): SchedulerHostTickResultV1 {
+function emptySchedulerHostTick(enabled: boolean): SchedulerHostTickResult {
 	return {
 		enabled,
 		scannedGraphs: 0,
@@ -1704,7 +1704,7 @@ function emptySchedulerHostTick(enabled: boolean): SchedulerHostTickResultV1 {
  * Single-Host Scheduler loop. Event wakes coalesce into one bounded tick;
  * the timer is only a bounded recovery poll and is never a busy loop.
  */
-export class SchedulerHostV1 {
+export class SchedulerHost {
 	private readonly enabled: boolean;
 	private readonly sessionId: string;
 	private readonly ownerId: string;
@@ -1712,9 +1712,9 @@ export class SchedulerHostV1 {
 	private readonly queue: SchedulerHostQueueV1;
 	private readonly dispatch: SchedulerHostDispatchV1;
 	private readonly fanIn: SchedulerHostFanInV1;
-	private readonly resolveRunAssociation: SchedulerHostOptionsV1["resolveRunAssociation"];
-	private readonly settlementEvidence: SchedulerHostOptionsV1["settlementEvidence"];
-	private readonly settleRunAtHost: SchedulerHostOptionsV1["settleRunAtHost"];
+	private readonly resolveRunAssociation: SchedulerHostOptions["resolveRunAssociation"];
+	private readonly settlementEvidence: SchedulerHostOptions["settlementEvidence"];
+	private readonly settleRunAtHost: SchedulerHostOptions["settleRunAtHost"];
 	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
 	private readonly pollIntervalMs: number;
 	private readonly maxGraphsPerTick: number;
@@ -1725,11 +1725,11 @@ export class SchedulerHostV1 {
 	private readonly active = new Set<Promise<SchedulerHostWorkOutcomeV1>>();
 	private unsubscribe: (() => void) | undefined;
 	private pollTimer: RuntimeTimerHandle | undefined;
-	private currentTick: Promise<SchedulerHostTickResultV1> | undefined;
+	private currentTick: Promise<SchedulerHostTickResult> | undefined;
 	private started = false;
 	private wakeQueued = false;
 
-	constructor(options: SchedulerHostOptionsV1) {
+	constructor(options: SchedulerHostOptions) {
 		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sessionId = options.sessionId;
@@ -1792,7 +1792,7 @@ export class SchedulerHostV1 {
 		});
 	}
 
-	tick(): Promise<SchedulerHostTickResultV1> {
+	tick(): Promise<SchedulerHostTickResult> {
 		if (!this.enabled) return Promise.resolve(emptySchedulerHostTick(false));
 		if (this.currentTick !== undefined) return this.currentTick;
 		this.currentTick = this.tickOnce().finally(() => {
@@ -1815,7 +1815,7 @@ export class SchedulerHostV1 {
 		this.clock.unrefTimeout(this.pollTimer);
 	}
 
-	private async tickOnce(): Promise<SchedulerHostTickResultV1> {
+	private async tickOnce(): Promise<SchedulerHostTickResult> {
 		const errors: SchedulerHostTickErrorV1[] = [];
 		const recovered = await this.queue.recoverExpired();
 		if (!recovered.ok) {

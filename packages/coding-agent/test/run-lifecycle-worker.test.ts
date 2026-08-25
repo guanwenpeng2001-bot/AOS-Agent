@@ -1,19 +1,19 @@
 import { fileURLToPath } from "node:url";
 import {
-	createFoundationToolGatewayV1,
-	createHostTerminalGateAuthorityV1,
-	createSandboxOperationToolGatewayProviderV1,
+	createFoundationToolGateway,
+	createHostTerminalGateAuthority,
+	createSandboxOperationToolGatewayProvider,
 	finalizeRunReceipt,
 	settleTaskResult,
-	validateAttemptReceiptForProviderV1,
-	validateRunReceiptV1,
-	validateTaskResultV1,
-	type AttemptReceiptV1,
-	type RunReceiptV1,
-	type SandboxOperationRequestV1,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
-	type WorkerReceiptV1,
+	validateAttemptReceiptForProvider,
+	validateRunReceipt,
+	validateTaskResult,
+	type AttemptReceipt,
+	type RunReceipt,
+	type SandboxOperationRequest,
+	type TaskEnvelope,
+	type TaskResult,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -36,7 +36,7 @@ const ARTIFACT = {
 	mediaType: "text/plain",
 	digest: `sha256:${"a".repeat(64)}`,
 };
-const TASK: TaskEnvelopeV1 = {
+const TASK: TaskEnvelope = {
 	schemaVersion: 1,
 	taskId: "task-1",
 	goalId: "goal-1",
@@ -80,7 +80,7 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 			},
 		},
 		requireRegisteredPayload: true,
-		resolvePreflight: (request: SandboxOperationRequestV1) => ({
+		resolvePreflight: (request: SandboxOperationRequest) => ({
 			binding: {
 				schemaVersion: 1,
 				workerId: `worker-${request.operationId}`,
@@ -110,7 +110,7 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 	});
 }
 
-function attemptReceipt(worker: WorkerReceiptV1): AttemptReceiptV1 {
+function attemptReceipt(worker: WorkerReceipt): AttemptReceipt {
 	return {
 		schemaVersion: 1,
 		attemptReceiptId: "attempt-receipt-1",
@@ -226,9 +226,9 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		acceptedRun.start();
 		const workerProvider = operationWorker("run-success", () => coordinator.getRun("run-success")?.record.status === "running");
 		workerProvider.bindDurableFactSink("session-1", () => undefined);
-		const gateway = createFoundationToolGatewayV1({
+		const gateway = createFoundationToolGateway({
 			gatewayId: "worker-run-gateway",
-			providers: [createSandboxOperationToolGatewayProviderV1({
+			providers: [createSandboxOperationToolGatewayProvider({
 				providerId: workerProvider.providerId,
 				routes: [{ kind: "sandbox", toolName: "read", providerId: workerProvider.providerId, revision: 1 }],
 				sandbox: workerProvider,
@@ -257,12 +257,12 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		const worker = workerProvider.getWorkerReceipt(execution.value.toolReceiptRef);
 		if (worker === undefined) throw new Error("Expected referenced WorkerReceipt");
 		expect(execution.value.toolReceiptRef).toBe(worker.workerReceiptId);
-		const attempt = validateAttemptReceiptForProviderV1(attemptReceipt(worker), {
+		const attempt = validateAttemptReceiptForProvider(attemptReceipt(worker), {
 			providerId: "task-executor-1",
 			providerClass: "task_executor",
 		});
 		expect(attempt).toMatchObject({ ok: true, value: { workerReceiptRefs: [{ id: worker.workerReceiptId }] } });
-		expect(validateAttemptReceiptForProviderV1(attemptReceipt(worker), {
+		expect(validateAttemptReceiptForProvider(attemptReceipt(worker), {
 			providerId: "sandbox-worker",
 			providerClass: "operation_worker",
 		})).toMatchObject({ ok: false, error: { code: "task_executor_invalid_provider_class" } });
@@ -295,7 +295,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			runReceiptId: "run-receipt-1",
 			runId: "run-success",
 			terminalStatus: "completed",
-			authority: createHostTerminalGateAuthorityV1("host-terminal"),
+			authority: createHostTerminalGateAuthority("host-terminal"),
 			taskResult: taskResult.value,
 			attemptReceiptIds: [attempt.value.attemptReceiptId],
 			completedAt: "2026-08-21T00:00:06.000Z",
@@ -309,8 +309,8 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			},
 		});
 
-		const forgedAttempt = worker as unknown as AttemptReceiptV1;
-		expect(validateAttemptReceiptForProviderV1(forgedAttempt, {
+		const forgedAttempt = worker as unknown as AttemptReceipt;
+		expect(validateAttemptReceiptForProvider(forgedAttempt, {
 			providerId: worker.sandboxProviderId,
 			providerClass: "operation_worker",
 		})).toMatchObject({ ok: false });
@@ -324,16 +324,16 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			evidence: [{ schemaVersion: 1, factId: "fact-forged", criterionId: "criterion-1", outcome: "satisfied", evidenceRefs: [ARTIFACT], recordedAt: "2026-08-21T00:00:04.000Z" }],
 			producer: { producerKind: "host", providerId: "host-terminal", producedAt: "2026-08-21T00:00:05.000Z", correlation: { sessionId: "session-1", laneId: "main", taskId: "task-1", taskResultId: "task-result-forged", revision: 1 } },
 		})).toMatchObject({ ok: false });
-		expect(validateTaskResultV1(worker as unknown as TaskResultV1)).toMatchObject({ ok: false });
+		expect(validateTaskResult(worker as unknown as TaskResult)).toMatchObject({ ok: false });
 		expect(finalizeRunReceipt({
 			runReceiptId: "run-receipt-forged",
 			runId: "run-success",
 			terminalStatus: "completed",
-			authority: createHostTerminalGateAuthorityV1("host-terminal"),
-			taskResult: worker as unknown as TaskResultV1,
+			authority: createHostTerminalGateAuthority("host-terminal"),
+			taskResult: worker as unknown as TaskResult,
 			attemptReceiptIds: [attempt.value.attemptReceiptId],
 		})).toMatchObject({ ok: false });
-		expect(validateRunReceiptV1(worker as unknown as RunReceiptV1)).toMatchObject({ ok: false });
+		expect(validateRunReceipt(worker as unknown as RunReceipt)).toMatchObject({ ok: false });
 		await gateway.dispose();
 	});
 

@@ -16,31 +16,31 @@ import {
 	createAttempt,
 	createBindingEpoch,
 	FoundationError,
-	FoundationObserverV1,
+	FoundationObserver,
 	Result,
-	validateAgentInstanceV1,
+	validateAgentInstance,
 	validateAttempt,
-	validateAttemptReceiptForProviderV1,
-	validateChildSpawnRequestV1,
-	validateImmutableAgentBindingV1,
-	validateQuotaReservationV1,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
+	validateAttemptReceiptForProvider,
+	validateChildSpawnRequest,
+	validateImmutableAgentBinding,
+	validateQuotaReservation,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
 	type ChildAgentProvider,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
-	type DispatchV1,
-	type ExecutionCorrelationV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type ObserverCursorV1,
-	type BudgetUsageV1,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
+	type Dispatch,
+	type ExecutionCorrelation,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type ObserverCursor,
+	type BudgetUsage,
 	type QuotaProvider,
-	type QuotaReservationV1,
+	type QuotaReservation,
 	type Result as ResultValue,
-	type SessionLedgerV1,
-	type TaskExecutorAttemptContextV1,
+	type SessionLedger,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { attachJsonlLineReader } from "../modes/rpc/jsonl.ts";
@@ -110,7 +110,7 @@ export interface ForkChildAgentProviderOptionsV1 {
 	readonly providerId: string;
 	readonly supervisor: SubagentSupervisorV1;
 	readonly quota: QuotaProvider;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly executable: string;
 	readonly entrypoint: string;
 	readonly workingDirectory?: string;
@@ -129,7 +129,7 @@ export interface ForkChildAgentProviderOptionsV1 {
 	readonly turnTimeoutMs?: number;
 	readonly cancelTimeoutMs?: number;
 	readonly closeTimeoutMs?: number;
-	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly capabilities?: readonly FoundationProviderCapability[];
 }
 
 interface Deferred<T> {
@@ -140,40 +140,40 @@ interface Deferred<T> {
 
 interface ForkChildHandleV1 {
 	readonly spawnId: string;
-	spawn: ChildSpawnResultV1;
-	readonly request: ChildSpawnRequestV1;
-	readonly correlation: ExecutionCorrelationV1;
-	readonly binding: AgentBindingV1;
+	spawn: ChildSpawnResult;
+	readonly request: ChildSpawnRequest;
+	readonly correlation: ExecutionCorrelation;
+	readonly binding: AgentBinding;
 	readonly bindingProjection: ChildBindingProjectionV1;
 	readonly contextFork: ChildContextForkResultV1;
 	readonly childLaneId: string;
 	generation: number;
 	child?: ChildAgentProcessV1;
 	protocol: ChildAgentProtocolSessionV1;
-	quotaReservation?: QuotaReservationV1;
-	turnUsage?: BudgetUsageV1;
+	quotaReservation?: QuotaReservation;
+	turnUsage?: BudgetUsage;
 	detachStdout?: () => void;
 	detachStderr?: () => void;
 	exitListener?: (code: number | null, signal: NodeJS.Signals | null) => void;
 	errorListener?: (error: Error) => void;
 	readyWaiter?: Deferred<ResultValue<void, FoundationError>>;
-	receiptWaiter?: Deferred<ResultValue<AttemptReceiptV1, FoundationError>>;
+	receiptWaiter?: Deferred<ResultValue<AttemptReceipt, FoundationError>>;
 	closeWaiter?: Deferred<ResultValue<void, FoundationError>>;
 	closeRequestId?: string;
 	closeAcked: boolean;
 	exited: boolean;
 	timers: Set<ReturnType<typeof setTimeout>>;
-	observer?: FoundationObserverV1;
+	observer?: FoundationObserver;
 	background: boolean;
 	closed: boolean;
 	lost: boolean;
-	receipt?: AttemptReceiptV1;
+	receipt?: AttemptReceipt;
 	transcriptRef?: ChildAgentTranscriptRefV1;
 	spawnCount: number;
 	turnCount: number;
 }
 
-const DEFAULT_CAPABILITIES: readonly FoundationProviderCapabilityV1[] = Object.freeze([
+const DEFAULT_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.fork", version: 1 }),
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.resume", version: 1 }),
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.background", version: 1 }),
@@ -245,7 +245,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	readonly providerId: string;
 	private readonly supervisor: SubagentSupervisorV1;
 	private readonly quota: QuotaProvider;
-	private readonly ledger: SessionLedgerV1;
+	private readonly ledger: SessionLedger;
 	private readonly executable: string;
 	private readonly entrypoint: string;
 	private readonly workingDirectory: string;
@@ -259,7 +259,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	private readonly turnTimeoutMs: number;
 	private readonly cancelTimeoutMs: number;
 	private readonly closeTimeoutMs: number;
-	private readonly declaredCapabilities: readonly FoundationProviderCapabilityV1[];
+	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
 	private readonly bySpawnId = new Map<string, ForkChildHandleV1>();
 	private readonly byAttemptId = new Map<string, ForkChildHandleV1>();
 	private disposed = false;
@@ -304,16 +304,16 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		this.declaredCapabilities = options.capabilities ?? DEFAULT_CAPABILITIES;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return this.declaredCapabilities;
 	}
 
 	async spawn(
-		requestValue: ChildSpawnRequestV1,
-		options: FoundationProviderExecutionOptionsV1,
-	): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+		requestValue: ChildSpawnRequest,
+		options: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (this.disposed) return Result.err(fail("subagent_provider_unavailable", "Fork Child Agent provider is disposed"));
-		const checkedRequest = validateChildSpawnRequestV1(requestValue);
+		const checkedRequest = validateChildSpawnRequest(requestValue);
 		if (!checkedRequest.ok) return checkedRequest;
 		const request = checkedRequest.value;
 		const existing = this.bySpawnId.get(request.spawnId);
@@ -345,7 +345,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		if (bindingFact?.kind !== "fact") {
 			return Result.err(fail("subagent_spawn_invalid", "Child AgentBinding must be durable before spawn"));
 		}
-		const checkedBinding = validateImmutableAgentBindingV1(bindingFact.payload);
+		const checkedBinding = validateImmutableAgentBinding(bindingFact.payload);
 		if (!checkedBinding.ok) return checkedBinding;
 		const projectionFact = await this.ledger.getFact<ChildBindingProjectionV1>(
 			CHILD_BINDING_PROJECTION_OBJECT_TYPE,
@@ -408,7 +408,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	async lookupSpawn(
 		spawnId: string,
 		_options?: { signal?: AbortSignal },
-	): Promise<ResultValue<ChildSpawnResultV1 | undefined, FoundationError>> {
+	): Promise<ResultValue<ChildSpawnResult | undefined, FoundationError>> {
 		if (typeof spawnId !== "string" || spawnId.length === 0) {
 			return Result.err(fail("subagent_spawn_invalid", "Child Agent spawnId is invalid"));
 		}
@@ -419,10 +419,10 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	}
 
 	async createAttempt(
-		dispatch: DispatchV1,
-		binding: AgentBindingV1,
-		context?: TaskExecutorAttemptContextV1,
-	): Promise<ResultValue<AttemptV1, FoundationError>> {
+		dispatch: Dispatch,
+		binding: AgentBinding,
+		context?: TaskExecutorAttemptContext,
+	): Promise<ResultValue<Attempt, FoundationError>> {
 		if (context === undefined || context.agentInstance === undefined) {
 			return Result.err(fail("agent_instance_required_for_agent_provider", "Agent-class createAttempt requires an AgentInstance"));
 		}
@@ -449,9 +449,9 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	}
 
 	async runAttempt(
-		attempt: AttemptV1,
-		options?: FoundationProviderExecutionOptionsV1,
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+		attempt: Attempt,
+		options?: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		const checkedAttempt = validateAttempt(attempt);
 		if (!checkedAttempt.ok) return checkedAttempt;
 		const handle = this.byAttemptId.get(checkedAttempt.value.attemptId);
@@ -482,7 +482,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		if (handle.lost || handle.child === undefined) {
 			return Result.err(fail("subagent_cancel_failed", "Child Agent cancellation was not confirmed"));
 		}
-		const waiter = handle.receiptWaiter ?? deferred<ResultValue<AttemptReceiptV1, FoundationError>>();
+		const waiter = handle.receiptWaiter ?? deferred<ResultValue<AttemptReceipt, FoundationError>>();
 		handle.receiptWaiter = waiter;
 		const cancelFrame = {
 			type: "cancel" as const,
@@ -518,7 +518,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	async resume(
 		attemptId: string,
 		options?: { signal?: AbortSignal },
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		if (handle.closed) return Result.err(fail("subagent_resume_failed", "Child Agent handle is closed"));
@@ -549,7 +549,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		const background = await this.supervisor.markBackground(handle.spawn.agentInstance.agentInstanceId);
 		if (!background.ok) return background;
 		handle.background = true;
-		const observer = handle.observer ?? new FoundationObserverV1();
+		const observer = handle.observer ?? new FoundationObserver();
 		handle.observer = observer;
 		const attached = observer.attach(handle.correlation.sessionId);
 		if (!attached.ok) return Result.err(fail("subagent_conflict", attached.error.message));
@@ -558,11 +558,11 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 
 	attachObserver(
 		attemptId: string,
-		cursor?: ObserverCursorV1,
+		cursor?: ObserverCursor,
 	): ResultValue<ChildAgentBackgroundAttachV1, FoundationError> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
-		const observer = handle.observer ?? new FoundationObserverV1();
+		const observer = handle.observer ?? new FoundationObserver();
 		handle.observer = observer;
 		const attached = observer.attach(handle.correlation.sessionId, cursor);
 		if (!attached.ok) return Result.err(fail("subagent_conflict", attached.error.message));
@@ -586,10 +586,10 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	}
 
 	private async createSpawnResult(
-		request: ChildSpawnRequestV1,
+		request: ChildSpawnRequest,
 		plan: SubagentProviderSpawnPlanV1,
-		correlation: ExecutionCorrelationV1,
-	): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+		correlation: ExecutionCorrelation,
+	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (request.parentAgentInstanceId === undefined) {
 			return Result.err(fail("subagent_spawn_invalid", "Child Agent spawn requires a parent AgentInstance"));
 		}
@@ -597,7 +597,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		if (parentFact?.kind !== "fact") {
 			return Result.err(fail("subagent_spawn_invalid", "Child Agent parent AgentInstance must be durable"));
 		}
-		const parent = validateAgentInstanceV1(parentFact.payload);
+		const parent = validateAgentInstance(parentFact.payload);
 		if (!parent.ok) return parent;
 		const createdAgent = createAgentInstance({
 			agentInstanceId: plan.childAgentInstanceId,
@@ -620,7 +620,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			now: this.now,
 		});
 		if (!createdEpoch.ok) return createdEpoch;
-		const dispatch: DispatchV1 = {
+		const dispatch: Dispatch = {
 			schemaVersion: 1,
 			dispatchId: plan.dispatchId,
 			taskId: request.taskEnvelope.taskId,
@@ -846,7 +846,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			return;
 		}
 		if (event.type === "receipt") {
-			const checked = validateAttemptReceiptForProviderV1(event.receipt, {
+			const checked = validateAttemptReceiptForProvider(event.receipt, {
 				providerId: this.providerId,
 				providerClass: "agent",
 			});
@@ -883,13 +883,13 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 
 	private async sendTurn(
 		handle: ForkChildHandleV1,
-		attempt: AttemptV1,
+		attempt: Attempt,
 		signal?: AbortSignal,
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		if (handle.lost || handle.child === undefined) {
 			return Result.err(fail("subagent_lost", "Child Agent process is not live"));
 		}
-		const waiter = handle.receiptWaiter ?? deferred<ResultValue<AttemptReceiptV1, FoundationError>>();
+		const waiter = handle.receiptWaiter ?? deferred<ResultValue<AttemptReceipt, FoundationError>>();
 		handle.receiptWaiter = waiter;
 		handle.turnUsage = undefined;
 		const onAbort = (): void => {
@@ -967,7 +967,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		}
 	}
 
-	private async reserveQuota(handle: ForkChildHandleV1): Promise<ResultValue<QuotaReservationV1, FoundationError>> {
+	private async reserveQuota(handle: ForkChildHandleV1): Promise<ResultValue<QuotaReservation, FoundationError>> {
 		const attribution = childAgentQuotaAttributionV1({
 			taskId: handle.spawn.attempt.taskId,
 			attemptId: handle.spawn.attempt.attemptId,
@@ -979,7 +979,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		try {
 			const reserved = await this.quota.reserve(attribution.value, handle.request.taskEnvelope.budget);
 			if (!reserved.ok) return reserved;
-			const checked = validateQuotaReservationV1(reserved.value);
+			const checked = validateQuotaReservation(reserved.value);
 			if (!checked.ok) return Result.err(fail("quota_attribution_error", "Child Agent quota reservation is not exact"));
 			if (
 				checked.value.attribution.ownerKind !== "agent_executor" ||
@@ -1001,8 +1001,8 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 
 	private async settleQuota(
 		handle: ForkChildHandleV1,
-		usage: BudgetUsageV1,
-	): Promise<ResultValue<BudgetUsageV1, FoundationError>> {
+		usage: BudgetUsage,
+	): Promise<ResultValue<BudgetUsage, FoundationError>> {
 		if (handle.quotaReservation === undefined) {
 			return Result.err(fail("quota_attribution_error", "Child Agent quota was not reserved"));
 		}

@@ -4,9 +4,8 @@ import type { Session } from "../session/session.ts";
 import { SessionLedgerBindingError, type SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
 
 export const MEMORY_SCHEMA_VERSION = 1 as const;
-export type MemoryScopeKindV1 = "session" | "project" | "goal" | "child";
-export type MemoryScope = MemoryScopeKindV1;
-export const MEMORY_SCOPES: readonly MemoryScope[] = ["session", "project", "goal", "child"];
+export type MemoryScopeKind = "session" | "project" | "goal" | "child";
+export const MEMORY_SCOPES: readonly MemoryScopeKind[] = ["session", "project", "goal", "child"];
 export type MemoryKind = "fact" | "note" | "decision" | "requirement" | "error";
 export const MEMORY_KINDS: readonly MemoryKind[] = ["fact", "note", "decision", "requirement", "error"];
 export type MemoryTrust = "builtin" | "user_owned" | "trusted_project" | "untrusted_project" | "user" | "tool" | "model" | "external" | "untrusted";
@@ -33,15 +32,15 @@ export interface MemoryProvenance {
 
 /** Identity boundary for one independent memory scope. */
 export interface MemoryScopeDescriptor {
-	readonly kind: MemoryScope;
+	readonly kind: MemoryScopeKind;
 	readonly scopeId: string;
 	readonly ownerId: string;
 	readonly parentId?: string;
 }
 
 /** Stable public scope identity used by the memory contract. */
-export interface MemoryScopeV1 {
-	readonly kind: MemoryScopeKindV1;
+export interface MemoryScope {
+	readonly kind: MemoryScopeKind;
 	readonly ownerId: string;
 	readonly parentScopeId?: string;
 	readonly scopeId: string;
@@ -51,7 +50,7 @@ export type MemoryProvenanceBoundary = Partial<Pick<MemoryProvenance, "sourceDig
 
 export interface MemoryPolicy {
 	readonly allowedTrust?: readonly MemoryTrust[];
-	readonly allowedScopes?: readonly MemoryScope[];
+	readonly allowedScopes?: readonly MemoryScopeKind[];
 	readonly kinds?: readonly MemoryKind[];
 	readonly maxEntries?: number;
 	readonly maxTokens?: number;
@@ -59,13 +58,13 @@ export interface MemoryPolicy {
 }
 
 /** Durable memory record. Content is only an artifact reference. */
-export interface MemoryRecordV1 {
+export interface MemoryRecord {
 	readonly schemaVersion: 1;
 	readonly id: string;
 	readonly kind: MemoryKind;
 	readonly trust: MemoryTrust;
 	readonly source: string;
-	readonly scope: MemoryScope;
+	readonly scope: MemoryScopeKind;
 	readonly scopeId: string;
 	readonly ownerId: string;
 	readonly parentId?: string;
@@ -79,7 +78,7 @@ export interface MemoryRecordV1 {
 }
 
 /** Hydrated projection; this body is never included in the ledger fact. */
-export interface MemoryEntry extends MemoryRecordV1 {
+export interface MemoryEntry extends MemoryRecord {
 	readonly content: string;
 }
 
@@ -89,7 +88,7 @@ export type NewMemoryEntry = {
 	readonly trust: MemoryTrust;
 	readonly content: string;
 	readonly source: string;
-	readonly scope?: MemoryScope;
+	readonly scope?: MemoryScopeKind;
 	readonly scopeId?: string;
 	readonly ownerId?: string;
 	readonly parentId?: string;
@@ -102,7 +101,7 @@ export type NewMemoryEntry = {
 export interface MemoryQuery {
 	readonly kind?: MemoryKind;
 	readonly trust?: MemoryTrust;
-	readonly scope?: MemoryScope;
+	readonly scope?: MemoryScopeKind;
 	readonly scopeId?: string;
 	readonly ownerId?: string;
 	readonly parentId?: string;
@@ -117,7 +116,7 @@ export interface MemoryReference {
 	readonly type: "memory";
 	readonly id: string;
 	readonly digest: string;
-	readonly scope: MemoryScope;
+	readonly scope: MemoryScopeKind;
 	readonly scopeId: string;
 	readonly ownerId: string;
 	readonly parentId?: string;
@@ -136,7 +135,7 @@ export interface MemoryStore {
 }
 
 export interface MemoryStoreScopeOptions {
-	readonly scope?: MemoryScope;
+	readonly scope?: MemoryScopeKind;
 	readonly scopeId?: string;
 	readonly ownerId?: string;
 	readonly parentId?: string;
@@ -168,7 +167,7 @@ function redact(text: string): { text: string; changed: boolean } {
 
 const MEMORY_RETENTION_POLICIES: readonly MemoryRetentionPolicy["policy"][] = ["session", "goal", "project", "indefinite"];
 
-export function defaultMemoryRetention(scope: MemoryScope): MemoryRetentionPolicy {
+export function defaultMemoryRetention(scope: MemoryScopeKind): MemoryRetentionPolicy {
 	if (scope === "session" || scope === "child") return { policy: "session", purgeOnScopeClose: true };
 	if (scope === "goal") return { policy: "goal", purgeOnScopeClose: true };
 	return { policy: "project", purgeOnScopeClose: false };
@@ -184,7 +183,7 @@ function retentionExpired(retention: Pick<MemoryRetentionPolicy, "expiresAt">, a
 	return expiry !== undefined && Number.isFinite(expiry) && expiry <= at;
 }
 
-function normalizeRetention(value: NewMemoryEntry["retention"], fallback: MemoryRetentionInput, scope: MemoryScope): MemoryRetentionPolicy {
+function normalizeRetention(value: NewMemoryEntry["retention"], fallback: MemoryRetentionInput, scope: MemoryScopeKind): MemoryRetentionPolicy {
 	const retention = typeof value === "string" ? { policy: value } : value ?? fallback;
 	if (!MEMORY_RETENTION_POLICIES.includes(retention.policy)) throw new MemoryError("invalid_entry", "Invalid memory retention policy");
 	if (retention.expiresAt !== undefined) {
@@ -210,7 +209,7 @@ function hasValidRetention(retention: unknown): retention is MemoryRetentionPoli
 	return expiry !== undefined && Number.isFinite(expiry) && expiry >= 0 && (typeof value.expiresAt !== "string" || value.expiresAt.trim().length > 0);
 }
 
-function allowed(policy: MemoryPolicy | undefined, value: Pick<MemoryRecordV1, "kind" | "trust" | "scope">): boolean {
+function allowed(policy: MemoryPolicy | undefined, value: Pick<MemoryRecord, "kind" | "trust" | "scope">): boolean {
 	if (policy?.allowedTrust !== undefined && !policy.allowedTrust.includes(value.trust)) return false;
 	if (policy?.allowedScopes !== undefined && !policy.allowedScopes.includes(value.scope)) return false;
 	if (policy?.kinds !== undefined && !policy.kinds.includes(value.kind)) return false;
@@ -245,7 +244,7 @@ function provenanceMatchesQuery(provenance: MemoryProvenance, query: MemoryProve
 	return true;
 }
 
-function scopeMatchesQuery(record: Pick<MemoryRecordV1, "scope" | "scopeId" | "ownerId" | "parentId">, query: MemoryQuery): boolean {
+function scopeMatchesQuery(record: Pick<MemoryRecord, "scope" | "scopeId" | "ownerId" | "parentId">, query: MemoryQuery): boolean {
 	return (
 		(query.scope === undefined || record.scope === query.scope) &&
 		(query.scopeId === undefined || record.scopeId === query.scopeId) &&
@@ -254,11 +253,11 @@ function scopeMatchesQuery(record: Pick<MemoryRecordV1, "scope" | "scopeId" | "o
 	);
 }
 
-function scopeMatchesBoundary(record: Pick<MemoryRecordV1, "scopeId" | "ownerId" | "parentId">, boundary: MemoryScopeDescriptor): boolean {
+function scopeMatchesBoundary(record: Pick<MemoryRecord, "scopeId" | "ownerId" | "parentId">, boundary: MemoryScopeDescriptor): boolean {
 	return record.scopeId === boundary.scopeId && record.ownerId === boundary.ownerId && record.parentId === boundary.parentId;
 }
 
-function hasValidRecordProvenance(record: MemoryRecordV1): boolean {
+function hasValidRecordProvenance(record: MemoryRecord): boolean {
 	return (
 		record.provenance.source === record.source &&
 		record.provenance.sourceDigest === `sha256:${sha256HexValue(new TextEncoder().encode(record.source))}` &&
@@ -268,7 +267,7 @@ function hasValidRecordProvenance(record: MemoryRecordV1): boolean {
 	);
 }
 
-function hasValidRecordSchema(record: MemoryRecordV1): boolean {
+function hasValidRecordSchema(record: MemoryRecord): boolean {
 	return record.schemaVersion === MEMORY_SCHEMA_VERSION && MEMORY_SCOPES.includes(record.scope) && hasValidRetention(record.retention);
 }
 
@@ -281,7 +280,7 @@ export class SessionMemoryStore implements MemoryStore {
 	private readonly now: () => number;
 	readonly scope: MemoryScopeDescriptor;
 	private readonly provenanceBoundary: MemoryProvenanceBoundary;
-	private readonly enforcedScope?: MemoryScope;
+	private readonly enforcedScope?: MemoryScopeKind;
 
 	constructor(
 		session: Session,
@@ -294,7 +293,7 @@ export class SessionMemoryStore implements MemoryStore {
 			readonly memoryOwnerId?: string;
 			readonly memoryParentId?: string;
 			readonly memoryProvenance?: MemoryProvenanceBoundary;
-			readonly memoryScope?: MemoryScope;
+			readonly memoryScope?: MemoryScopeKind;
 			readonly enforceMemoryScope?: boolean;
 			readonly scopeId?: string;
 			readonly parentId?: string;
@@ -392,7 +391,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const id = entry.id ?? newFoundationId("memory");
 		const existingFact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
 		if (existingFact !== undefined) {
-			const existing = existingFact.payload as unknown as MemoryRecordV1;
+			const existing = existingFact.payload as unknown as MemoryRecord;
 			const contentDigest = `sha256:${sha256HexValue(new TextEncoder().encode(redacted.text))}`;
 			if (
 				existing.contentDigest !== contentDigest ||
@@ -428,7 +427,7 @@ export class SessionMemoryStore implements MemoryStore {
 			consumerId: id,
 			...(retentionExpiry(retention) === undefined ? {} : { expiresAt: retentionExpiry(retention) }),
 		});
-		const record: MemoryRecordV1 = {
+		const record: MemoryRecord = {
 			schemaVersion: 1,
 			id,
 			kind: entry.kind,
@@ -463,14 +462,14 @@ export class SessionMemoryStore implements MemoryStore {
 			clientRequestId: entry.clientRequestId ?? `memory:${id}`,
 			payload: record as unknown as FoundationJsonValue,
 		});
-		const stored = accepted.payload as unknown as MemoryRecordV1;
+		const stored = accepted.payload as unknown as MemoryRecord;
 		return { ...stored, content: redacted.text };
 	}
 
 	async get(id: string, principal = "system"): Promise<MemoryEntry | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
 		if (fact === undefined) return undefined;
-		const record = fact.payload as unknown as MemoryRecordV1;
+		const record = fact.payload as unknown as MemoryRecord;
 		const contentRef = record?.contentRef;
 		if (
 			record === null ||
@@ -509,7 +508,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const records = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.memory });
 		const result: MemoryEntry[] = [];
 		for (const fact of records) {
-			const record = fact.payload as unknown as MemoryRecordV1;
+			const record = fact.payload as unknown as MemoryRecord;
 			if (!hasValidRecordSchema(record)) throw new MemoryError("storage", `Memory ${record.id} has an invalid scope or retention policy`);
 			if (query.kind !== undefined && record.kind !== query.kind) continue;
 			if (query.trust !== undefined && record.trust !== query.trust) continue;
@@ -543,7 +542,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const records = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.memory });
 		let removed = 0;
 		for (const fact of records) {
-			const record = fact.payload as unknown as MemoryRecordV1;
+			const record = fact.payload as unknown as MemoryRecord;
 			if (!hasValidRecordSchema(record)) throw new MemoryError("storage", `Memory ${record.id} has an invalid scope or retention policy`);
 			if (
 				scopeMatchesBoundary(record, this.scope) &&
@@ -561,13 +560,13 @@ export class SessionMemoryStore implements MemoryStore {
 
 export class ScopedMemoryStore implements MemoryStore {
 	private readonly delegate: MemoryStore;
-	private readonly scope: MemoryScope;
+	private readonly scope: MemoryScopeKind;
 	readonly scopeId: string;
 	readonly ownerId: string;
 	readonly parentId?: string;
 	private readonly provenance: MemoryProvenanceBoundary;
 
-	constructor(delegate: MemoryStore, scope: MemoryScope, provenance: MemoryProvenanceBoundary = {}, boundary: MemoryStoreScopeOptions = {}) {
+	constructor(delegate: MemoryStore, scope: MemoryScopeKind, provenance: MemoryProvenanceBoundary = {}, boundary: MemoryStoreScopeOptions = {}) {
 		this.scope = scope;
 		const sessionDelegate = delegate instanceof SessionMemoryStore ? delegate : undefined;
 		this.scopeId = boundary.scopeId ?? provenance.scopeId ?? `${scope}:${boundary.ownerId ?? provenance.ownerId ?? "default"}`;
@@ -657,7 +656,7 @@ export class ScopedMemoryStore implements MemoryStore {
 
 export function createScopedMemoryStore(
 	store: MemoryStore,
-	scope: MemoryScope,
+	scope: MemoryScopeKind,
 	provenance: MemoryProvenanceBoundary = {},
 	boundary: MemoryStoreScopeOptions = {},
 ): ScopedMemoryStore {
@@ -666,7 +665,7 @@ export function createScopedMemoryStore(
 
 export interface WorkingMemoryOptions {
 	readonly maxTokens: number;
-	readonly scope?: MemoryScope;
+	readonly scope?: MemoryScopeKind;
 	readonly trust?: readonly MemoryTrust[];
 }
 export interface WorkingMemory {

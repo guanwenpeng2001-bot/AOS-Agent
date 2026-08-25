@@ -1,22 +1,22 @@
 import { Type } from "typebox";
 import { Result, type Result as ResultValue } from "../result.ts";
 import {
-	type BudgetUsageV1,
-	BudgetUsageV1Schema,
-	type BudgetV1,
-	BudgetV1Schema,
-	validateBudgetUsageV1,
-	validateBudgetV1,
+	type BudgetUsage,
+	BudgetUsageSchema,
+	type Budget,
+	BudgetSchema,
+	validateBudgetUsage,
+	validateBudget,
 } from "./budget.ts";
 import { FoundationError } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
-import { type RevisionReferenceV1, RevisionReferenceV1Schema } from "./reference.ts";
+import { type RevisionReference, RevisionReferenceSchema } from "./reference.ts";
 import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 export const FOUNDATION_WORKFLOW_DSL_VERSION = 1 as const;
-export type WorkflowDslVersionV1 = typeof FOUNDATION_WORKFLOW_DSL_VERSION;
-export type WorkflowStatusV1 = "draft" | "active" | "paused" | "stopped" | "completed";
-export const WORKFLOW_STEP_STATUSES_V1 = Object.freeze([
+export type WorkflowDslVersion = typeof FOUNDATION_WORKFLOW_DSL_VERSION;
+export type WorkflowStatus = "draft" | "active" | "paused" | "stopped" | "completed";
+export const WORKFLOW_STEP_STATUSES = Object.freeze([
 	"pending",
 	"ready",
 	"running",
@@ -28,8 +28,8 @@ export const WORKFLOW_STEP_STATUSES_V1 = Object.freeze([
 	"cancelled",
 	"skipped",
 ] as const);
-export type WorkflowStepStatusV1 = (typeof WORKFLOW_STEP_STATUSES_V1)[number];
-export const WORKFLOW_STEP_TYPES_V1 = Object.freeze([
+export type WorkflowStepStatus = (typeof WORKFLOW_STEP_STATUSES)[number];
+export const WORKFLOW_STEP_TYPES = Object.freeze([
 	"agent",
 	"tool",
 	"parallel",
@@ -38,124 +38,124 @@ export const WORKFLOW_STEP_TYPES_V1 = Object.freeze([
 	"barrier",
 	"acceptance",
 ] as const);
-export type WorkflowContractKindV1 = "json" | "artifact_ref" | "task_result_ref" | "none";
+export type WorkflowContractKind = "json" | "artifact_ref" | "task_result_ref" | "none";
 
-export interface WorkflowValueContractV1 {
+export interface WorkflowValueContract {
 	readonly schemaVersion: 1;
 	readonly contractId: string;
-	readonly kind: WorkflowContractKindV1;
+	readonly kind: WorkflowContractKind;
 	readonly required: boolean;
-	readonly schemaRef?: RevisionReferenceV1;
+	readonly schemaRef?: RevisionReference;
 }
 
-export interface WorkflowStepBaseV1 {
+export interface WorkflowStepBase {
 	readonly schemaVersion: 1;
 	readonly stepId: string;
 	readonly ordinal: number;
 	readonly revision: number;
-	readonly status: WorkflowStepStatusV1;
-	readonly input: readonly WorkflowValueContractV1[];
-	readonly output: readonly WorkflowValueContractV1[];
+	readonly status: WorkflowStepStatus;
+	readonly input: readonly WorkflowValueContract[];
+	readonly output: readonly WorkflowValueContract[];
 	readonly label?: string;
 	readonly dependsOn?: readonly string[];
 }
 
-export interface AgentStepV1 extends WorkflowStepBaseV1 {
+export interface AgentStep extends WorkflowStepBase {
 	readonly type: "agent";
 	readonly taskId: string;
-	readonly roleRevision: RevisionReferenceV1 & { readonly type: "role_revision" };
+	readonly roleRevision: RevisionReference & { readonly type: "role_revision" };
 	readonly executor: "local" | "external";
 }
 
-export interface ToolStepV1 extends WorkflowStepBaseV1 {
+export interface ToolStep extends WorkflowStepBase {
 	readonly type: "tool";
 	readonly toolName: string;
 }
 
-export interface ParallelIntentV1 {
+export interface ParallelIntent {
 	readonly schemaVersion: 1;
 	readonly intentId: string;
 	readonly stepId: string;
 	readonly executor: "local" | "external";
 }
 
-export interface ParallelStepV1 extends WorkflowStepBaseV1 {
+export interface ParallelStep extends WorkflowStepBase {
 	readonly type: "parallel";
-	readonly intents: readonly ParallelIntentV1[];
+	readonly intents: readonly ParallelIntent[];
 }
 
-export interface GateStepV1 extends WorkflowStepBaseV1 {
+export interface GateStep extends WorkflowStepBase {
 	readonly type: "gate";
 	readonly gateId: string;
 }
-export interface AwaitUserStepV1 extends WorkflowStepBaseV1 {
+export interface AwaitUserStep extends WorkflowStepBase {
 	readonly type: "await_user";
 	readonly askId: string;
 }
-export interface BarrierStepV1 extends WorkflowStepBaseV1 {
+export interface BarrierStep extends WorkflowStepBase {
 	readonly type: "barrier";
 	readonly barrierId: string;
 }
-export interface AcceptanceStepV1 extends WorkflowStepBaseV1 {
+export interface AcceptanceStep extends WorkflowStepBase {
 	readonly type: "acceptance";
 	readonly criterionIds: readonly string[];
 }
-export type WorkflowStepV1 =
-	| AgentStepV1
-	| ToolStepV1
-	| ParallelStepV1
-	| GateStepV1
-	| AwaitUserStepV1
-	| BarrierStepV1
-	| AcceptanceStepV1;
+export type WorkflowStep =
+	| AgentStep
+	| ToolStep
+	| ParallelStep
+	| GateStep
+	| AwaitUserStep
+	| BarrierStep
+	| AcceptanceStep;
 
-export interface WorkflowV1 {
+export interface Workflow {
 	readonly schemaVersion: 1;
-	readonly dslVersion: WorkflowDslVersionV1;
+	readonly dslVersion: WorkflowDslVersion;
 	readonly sessionId: string;
 	readonly workflowId: string;
 	readonly revision: number;
-	readonly status: WorkflowStatusV1;
+	readonly status: WorkflowStatus;
 	readonly goalId?: string;
 	readonly planId?: string;
-	readonly budget?: BudgetV1;
-	readonly budgetUsage?: BudgetUsageV1;
-	readonly steps: readonly WorkflowStepV1[];
+	readonly budget?: Budget;
+	readonly budgetUsage?: BudgetUsage;
+	readonly steps: readonly WorkflowStep[];
 	readonly createdAt: string;
 	readonly updatedAt: string;
 	readonly stoppedAt?: string;
 }
 
-export interface WorkflowEvaluationExpectedStepV1 {
+export interface WorkflowEvaluationExpectedStep {
 	readonly stepId: string;
-	readonly status: WorkflowStepStatusV1;
+	readonly status: WorkflowStepStatus;
 }
 
-export interface WorkflowEvaluationCaseV1 {
+export interface WorkflowEvaluationCase {
 	readonly schemaVersion: 1;
 	readonly caseId: string;
-	readonly workflow: WorkflowV1;
-	readonly expectedStatus: WorkflowStatusV1;
-	readonly expectedSteps: readonly WorkflowEvaluationExpectedStepV1[];
+	readonly workflow: Workflow;
+	readonly expectedStatus: WorkflowStatus;
+	readonly expectedSteps: readonly WorkflowEvaluationExpectedStep[];
 	readonly maxCost: number;
 	readonly requireRecovery: boolean;
 }
 
-export interface WorkflowEvaluationDatasetV1 {
+export interface WorkflowEvaluationDataset {
 	readonly schemaVersion: 1;
 	readonly datasetId: string;
 	readonly revision: number;
-	readonly cases: readonly WorkflowEvaluationCaseV1[];
+	readonly cases: readonly WorkflowEvaluationCase[];
 }
 
-export interface WorkflowEvaluationObservationV1 {
+export interface WorkflowEvaluationObservation {
 	readonly caseId: string;
-	readonly workflow: WorkflowV1;
+	readonly workflow: Workflow;
 	readonly cost: number;
 	readonly recovered: boolean;
 }
 
-export interface WorkflowEvaluationCaseResultV1 {
+export interface WorkflowEvaluationCaseResult {
 	readonly schemaVersion: 1;
 	readonly caseId: string;
 	readonly workflowId: string;
@@ -170,13 +170,13 @@ export interface WorkflowEvaluationCaseResultV1 {
 	readonly passed: boolean;
 }
 
-export interface WorkflowEvaluationSnapshotV1 {
+export interface WorkflowEvaluationSnapshot {
 	readonly schemaVersion: 1;
 	readonly datasetId: string;
 	readonly datasetRevision: number;
 	readonly runId: string;
 	readonly createdAt: string;
-	readonly cases: readonly WorkflowEvaluationCaseResultV1[];
+	readonly cases: readonly WorkflowEvaluationCaseResult[];
 	readonly summary: {
 		readonly total: number;
 		readonly passed: number;
@@ -192,13 +192,13 @@ const workflowContractKindSchema = Type.Union([
 	Type.Literal("task_result_ref"),
 	Type.Literal("none"),
 ]);
-export const WorkflowValueContractV1Schema = Type.Object(
+export const WorkflowValueContractSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		contractId: Type.String({ minLength: 1 }),
 		kind: workflowContractKindSchema,
 		required: Type.Boolean(),
-		schemaRef: Type.Optional(RevisionReferenceV1Schema),
+		schemaRef: Type.Optional(RevisionReferenceSchema),
 	},
 	{ additionalProperties: false },
 );
@@ -220,8 +220,8 @@ const workflowStepProperties = {
 	ordinal: Type.Integer({ minimum: 0 }),
 	revision: Type.Integer({ minimum: 0 }),
 	status: workflowStepStatusSchema,
-	input: Type.Array(WorkflowValueContractV1Schema, { minItems: 1 }),
-	output: Type.Array(WorkflowValueContractV1Schema, { minItems: 1 }),
+	input: Type.Array(WorkflowValueContractSchema, { minItems: 1 }),
+	output: Type.Array(WorkflowValueContractSchema, { minItems: 1 }),
 	label: Type.Optional(Type.String()),
 	dependsOn: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 } as const;
@@ -241,7 +241,7 @@ const roleRevisionReferenceSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const ParallelIntentV1Schema = Type.Object(
+export const ParallelIntentSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		intentId: Type.String({ minLength: 1 }),
@@ -250,7 +250,7 @@ export const ParallelIntentV1Schema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const WorkflowStepV1Schema = Type.Union([
+export const WorkflowStepSchema = Type.Union([
 	Type.Object(
 		{
 			...workflowStepProperties,
@@ -266,7 +266,7 @@ export const WorkflowStepV1Schema = Type.Union([
 		{ additionalProperties: false },
 	),
 	Type.Object(
-		{ ...workflowStepProperties, type: Type.Literal("parallel"), intents: Type.Array(ParallelIntentV1Schema) },
+		{ ...workflowStepProperties, type: Type.Literal("parallel"), intents: Type.Array(ParallelIntentSchema) },
 		{ additionalProperties: false },
 	),
 	Type.Object(
@@ -290,7 +290,7 @@ export const WorkflowStepV1Schema = Type.Union([
 		{ additionalProperties: false },
 	),
 ]);
-export const WorkflowV1Schema = Type.Object(
+export const WorkflowSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		dslVersion: Type.Literal(FOUNDATION_WORKFLOW_DSL_VERSION),
@@ -306,9 +306,9 @@ export const WorkflowV1Schema = Type.Object(
 		]),
 		goalId: Type.Optional(Type.String({ minLength: 1 })),
 		planId: Type.Optional(Type.String({ minLength: 1 })),
-		budget: Type.Optional(BudgetV1Schema),
-		budgetUsage: Type.Optional(BudgetUsageV1Schema),
-		steps: Type.Array(WorkflowStepV1Schema),
+		budget: Type.Optional(BudgetSchema),
+		budgetUsage: Type.Optional(BudgetUsageSchema),
+		steps: Type.Array(WorkflowStepSchema),
 		createdAt: Type.String({ minLength: 1 }),
 		updatedAt: Type.String({ minLength: 1 }),
 		stoppedAt: Type.Optional(Type.String({ minLength: 1 })),
@@ -332,7 +332,7 @@ const WorkflowEvaluationCaseResultV1Schema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const WorkflowEvaluationSnapshotV1Schema = Type.Object(
+export const WorkflowEvaluationSnapshotSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		datasetId: Type.String({ minLength: 1 }),
@@ -354,16 +354,16 @@ export const WorkflowEvaluationSnapshotV1Schema = Type.Object(
 	{ additionalProperties: false },
 );
 
-function checkedWorkflow(value: unknown): ResultValue<WorkflowV1, FoundationError> {
-	const checked = validateExactShape<WorkflowV1>(WorkflowV1Schema, value, "workflow");
+function checkedWorkflow(value: unknown): ResultValue<Workflow, FoundationError> {
+	const checked = validateExactShape<Workflow>(WorkflowSchema, value, "workflow");
 	if (!checked.ok) return checked;
 	const workflow = checked.value;
 	if (workflow.budget !== undefined) {
-		const budget = validateBudgetV1(workflow.budget);
+		const budget = validateBudget(workflow.budget);
 		if (!budget.ok) return Result.err(budget.error);
 	}
 	if (workflow.budgetUsage !== undefined) {
-		const usage = validateBudgetUsageV1(workflow.budgetUsage);
+		const usage = validateBudgetUsage(workflow.budgetUsage);
 		if (!usage.ok) return Result.err(usage.error);
 	}
 	const stepIds = workflow.steps.map((step) => step.stepId);
@@ -408,20 +408,17 @@ function checkedWorkflow(value: unknown): ResultValue<WorkflowV1, FoundationErro
 	return Result.ok(workflow);
 }
 
-export function validateWorkflowV1(value: unknown): ResultValue<WorkflowV1, FoundationError> {
+export function validateWorkflow(value: unknown): ResultValue<Workflow, FoundationError> {
 	return checkedWorkflow(value);
 }
-export function serializeWorkflowV1(value: WorkflowV1): string {
-	return serializeExactShape(WorkflowV1Schema, value, "workflow");
+export function serializeWorkflow(value: Workflow): string {
+	return serializeExactShape(WorkflowSchema, value, "workflow");
 }
-export function parseWorkflowV1(text: string): ResultValue<WorkflowV1, FoundationError> {
-	const parsed = parseExactShape<WorkflowV1>(WorkflowV1Schema, text, "workflow");
+export function parseWorkflow(text: string): ResultValue<Workflow, FoundationError> {
+	const parsed = parseExactShape<Workflow>(WorkflowSchema, text, "workflow");
 	return parsed.ok ? checkedWorkflow(parsed.value) : parsed;
 }
-export const validateWorkflow = validateWorkflowV1;
-export const serializeWorkflow = serializeWorkflowV1;
-export const parseWorkflow = parseWorkflowV1;
-export function workflowAwaitingExternalExecutor(workflow: WorkflowV1): boolean {
+export function workflowAwaitingExternalExecutor(workflow: Workflow): boolean {
 	return workflow.steps.some(
 		(step) => step.type === "agent" && step.executor === "external" && step.status === "awaiting_dispatch",
 	);
@@ -431,12 +428,12 @@ function workflowEvaluationError(message: string): ResultValue<never, Foundation
 	return Result.err(new FoundationError("structure_schema_invalid", message));
 }
 
-export function runWorkflowEvaluationV1(input: {
-	readonly dataset: WorkflowEvaluationDatasetV1;
-	readonly observations: readonly WorkflowEvaluationObservationV1[];
+export function runWorkflowEvaluation(input: {
+	readonly dataset: WorkflowEvaluationDataset;
+	readonly observations: readonly WorkflowEvaluationObservation[];
 	readonly runId: string;
 	readonly createdAt: string;
-}): ResultValue<WorkflowEvaluationSnapshotV1, FoundationError> {
+}): ResultValue<WorkflowEvaluationSnapshot, FoundationError> {
 	if (
 		input.dataset.schemaVersion !== 1 ||
 		input.dataset.datasetId.length === 0 ||
@@ -451,7 +448,7 @@ export function runWorkflowEvaluationV1(input: {
 	if (caseIds.some((caseId) => caseId.length === 0) || new Set(caseIds).size !== caseIds.length) {
 		return workflowEvaluationError("Workflow evaluation case ids must be nonempty and unique");
 	}
-	const observations = new Map<string, WorkflowEvaluationObservationV1>();
+	const observations = new Map<string, WorkflowEvaluationObservation>();
 	for (const observation of input.observations) {
 		if (observations.has(observation.caseId)) {
 			return workflowEvaluationError("Workflow evaluation observations must be unique per case");
@@ -462,7 +459,7 @@ export function runWorkflowEvaluationV1(input: {
 		return workflowEvaluationError("Workflow evaluation observations must exactly cover the dataset");
 	}
 
-	const results: WorkflowEvaluationCaseResultV1[] = [];
+	const results: WorkflowEvaluationCaseResult[] = [];
 	for (const testCase of input.dataset.cases) {
 		if (testCase.schemaVersion !== 1 || !Number.isFinite(testCase.maxCost) || testCase.maxCost < 0) {
 			return workflowEvaluationError(`Workflow evaluation case ${testCase.caseId} is invalid`);
@@ -531,29 +528,29 @@ export function runWorkflowEvaluationV1(input: {
 	});
 }
 
-export function serializeWorkflowEvaluationSnapshotV1(value: WorkflowEvaluationSnapshotV1): string {
-	return serializeExactShape(WorkflowEvaluationSnapshotV1Schema, value, "workflow evaluation snapshot");
+export function serializeWorkflowEvaluationSnapshot(value: WorkflowEvaluationSnapshot): string {
+	return serializeExactShape(WorkflowEvaluationSnapshotSchema, value, "workflow evaluation snapshot");
 }
 
-export function parseWorkflowEvaluationSnapshotV1(
+export function parseWorkflowEvaluationSnapshot(
 	text: string,
-): ResultValue<WorkflowEvaluationSnapshotV1, FoundationError> {
-	return parseExactShape<WorkflowEvaluationSnapshotV1>(
-		WorkflowEvaluationSnapshotV1Schema,
+): ResultValue<WorkflowEvaluationSnapshot, FoundationError> {
+	return parseExactShape<WorkflowEvaluationSnapshot>(
+		WorkflowEvaluationSnapshotSchema,
 		text,
 		"workflow evaluation snapshot",
 	);
 }
 
-export type WorkflowMigrationV1 = (value: FoundationJsonValue) => FoundationJsonValue;
+export type WorkflowMigration = (value: FoundationJsonValue) => FoundationJsonValue;
 
-export class WorkflowMigrationRegistryV1 {
+export class WorkflowMigrationRegistry {
 	private readonly migrations = new Map<
 		number,
-		{ readonly toVersion: number; readonly migrate: WorkflowMigrationV1 }
+		{ readonly toVersion: number; readonly migrate: WorkflowMigration }
 	>();
 
-	register(fromVersion: number, toVersion: number, migrate: WorkflowMigrationV1): void {
+	register(fromVersion: number, toVersion: number, migrate: WorkflowMigration): void {
 		if (!Number.isSafeInteger(fromVersion) || !Number.isSafeInteger(toVersion) || fromVersion < 0 || toVersion !== fromVersion + 1)
 			throw new FoundationError(
 				"foundation_schema_unsupported_version",
@@ -567,7 +564,7 @@ export class WorkflowMigrationRegistryV1 {
 	migrate(
 		value: FoundationJsonValue,
 		targetVersion: number = FOUNDATION_WORKFLOW_DSL_VERSION,
-	): ResultValue<WorkflowV1, FoundationError> {
+	): ResultValue<Workflow, FoundationError> {
 		if (targetVersion !== FOUNDATION_WORKFLOW_DSL_VERSION)
 			return Result.err(
 				new FoundationError("foundation_schema_unsupported_version", "Workflow migration target is unsupported"),
@@ -622,7 +619,7 @@ export class WorkflowMigrationRegistryV1 {
 	}
 }
 
-export const foundationWorkflowMigrationRegistryV1 = new WorkflowMigrationRegistryV1();
-export function migrateWorkflowV1(value: FoundationJsonValue): ResultValue<WorkflowV1, FoundationError> {
-	return foundationWorkflowMigrationRegistryV1.migrate(value);
+export const foundationWorkflowMigrationRegistry = new WorkflowMigrationRegistry();
+export function migrateWorkflow(value: FoundationJsonValue): ResultValue<Workflow, FoundationError> {
+	return foundationWorkflowMigrationRegistry.migrate(value);
 }

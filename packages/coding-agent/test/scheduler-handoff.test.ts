@@ -1,17 +1,17 @@
 import {
-	type AppendFoundationRecordResultV1,
+	type AppendFoundationRecordResult,
 	type DurableLedgerApi,
 	DurableLedgerError,
-	type FoundationObjectResultV1,
-	type FoundationRecordQueryV1,
-	type FoundationRecordV1,
-	type FoundationRetentionPolicyV1,
+	type FoundationObjectResult,
+	type FoundationRecordQuery,
+	type FoundationRecord,
+	type FoundationRetentionPolicy,
 	InMemorySessionStorage,
-	type LedgerWriterLeaseV1,
-	type ProvisionedFoundationRecordV1,
+	type LedgerWriterLease,
+	type ProvisionedFoundationRecord,
 	Result,
 	Session,
-	type SetRetentionPolicyOptionsV1,
+	type SetRetentionPolicyOptions,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -68,7 +68,7 @@ function expectCode(result: { ok: false; error: { code: string } } | { ok: true 
 
 class HandoffLedger implements DurableLedgerApi {
 	readonly inner: DurableLedgerApi;
-	readonly appends: ProvisionedFoundationRecordV1[] = [];
+	readonly appends: ProvisionedFoundationRecord[] = [];
 	readonly operations: string[] = [];
 	failOnceOnObjectType: string | undefined;
 
@@ -76,22 +76,22 @@ class HandoffLedger implements DurableLedgerApi {
 		this.inner = inner;
 	}
 
-	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.acquireWriterLease(options);
 	}
-	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.renewWriterLease(options);
 	}
 	releaseWriterLease(options: { fencingToken: string }): Promise<void> {
 		return this.inner.releaseWriterLease(options);
 	}
-	getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.inner.getWriterLease();
 	}
 	getLedgerRevision(): Promise<number> {
 		return this.inner.getLedgerRevision();
 	}
-	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	async appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		this.appends.push(record);
 		if (record.kind === "fact" && record.objectType === "scheduler.claim_released") {
 			this.operations.push("source_release");
@@ -106,15 +106,15 @@ class HandoffLedger implements DurableLedgerApi {
 		return this.inner.appendFoundationRecord(record);
 	}
 	setRetentionPolicy(
-		policy: FoundationRetentionPolicyV1,
-		options: SetRetentionPolicyOptionsV1,
-	): Promise<AppendFoundationRecordResultV1> {
+		policy: FoundationRetentionPolicy,
+		options: SetRetentionPolicyOptions,
+	): Promise<AppendFoundationRecordResult> {
 		return this.inner.setRetentionPolicy(policy, options);
 	}
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.inner.findFoundationRecords(query);
 	}
-	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.inner.getFoundationObject(objectType, objectId);
 	}
 	getFoundationRevision(objectType: string, objectId: string): Promise<number> {
@@ -123,10 +123,10 @@ class HandoffLedger implements DurableLedgerApi {
 	isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
 		return this.inner.isObjectTombstoned(objectType, objectId);
 	}
-	getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.inner.getRetentionPolicy();
 	}
-	prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.inner.prunableFoundationRecords();
 	}
 }

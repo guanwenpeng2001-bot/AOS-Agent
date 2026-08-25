@@ -11,16 +11,16 @@ import {
 	FoundationError,
 	Result,
 	validateAttemptReceipt,
-	validateBudgetUsageV1,
-	validateExecutionCorrelationV1,
-	type AttemptReceiptV1,
+	validateBudgetUsage,
+	validateExecutionCorrelation,
+	type AttemptReceipt,
 	type AgentMessage,
-	type BudgetUsageV1,
-	type ExecutionCorrelationV1,
-	type FingerprintV1,
+	type BudgetUsage,
+	type ExecutionCorrelation,
+	type Fingerprint,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
-	type TaskArtifactProjectionV1,
+	type RevisionReference,
+	type TaskArtifactProjection,
 } from "@aos-agent/agent-core";
 import {
 	validateChildContextForkPlanV1,
@@ -64,7 +64,7 @@ export interface ChildAgentProjectionRefV1 {
 	readonly spawnId: string;
 	readonly parentBindingId: string;
 	readonly childBindingId: string;
-	readonly digest: FingerprintV1;
+	readonly digest: Fingerprint;
 }
 
 export interface ChildAgentTranscriptRefV1 {
@@ -90,10 +90,10 @@ export interface ChildAgentInitializeRequestV1 {
 	readonly protocolVersion: 1;
 	readonly features: readonly ChildAgentProtocolFeatureV1[];
 	readonly projection: ChildAgentProjectionRefV1;
-	readonly forkSnapshotRef: RevisionReferenceV1;
+	readonly forkSnapshotRef: RevisionReference;
 	readonly contextProjection: ChildAgentContextProjectionV1;
 	readonly model: { readonly provider: string; readonly model: string };
-	readonly correlation: ExecutionCorrelationV1;
+	readonly correlation: ExecutionCorrelation;
 	readonly providerId: string;
 	readonly taskId: string;
 	readonly dispatchId: string;
@@ -157,7 +157,7 @@ export interface ChildAgentTurnCompletedEventV1 {
 	readonly spawnId: string;
 	readonly attemptId: string;
 	readonly stopReason: "stop" | "length" | "tool_use" | "error" | "aborted";
-	readonly usage: BudgetUsageV1;
+	readonly usage: BudgetUsage;
 	readonly at: string;
 	readonly output?: string;
 }
@@ -165,7 +165,7 @@ export interface ChildAgentTurnCompletedEventV1 {
 export interface ChildAgentReceiptEventV1 {
 	readonly type: "receipt";
 	readonly requestId: string;
-	readonly receipt: AttemptReceiptV1;
+	readonly receipt: AttemptReceipt;
 }
 
 export interface ChildAgentErrorEventV1 {
@@ -332,7 +332,7 @@ export function childAgentProtocolFeaturesMatchV1(value: unknown): value is read
 	return CHILD_AGENT_PROTOCOL_FEATURES.every((feature, index) => value[index] === feature);
 }
 
-function validateFingerprint(value: unknown): value is FingerprintV1 {
+function validateFingerprint(value: unknown): value is Fingerprint {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["algorithm", "value"]) &&
@@ -354,7 +354,7 @@ function validateProjectionRef(value: unknown): value is ChildAgentProjectionRef
 	);
 }
 
-function validateForkSnapshotRef(value: unknown): value is RevisionReferenceV1 {
+function validateForkSnapshotRef(value: unknown): value is RevisionReference {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["schemaVersion", "type", "id", "revision"], ["fingerprint", "providerId"]) &&
@@ -380,7 +380,7 @@ function validateRuntimeCriterion(value: unknown): value is ChildRuntimeCriterio
 	);
 }
 
-function validateArtifactProjectionArray(value: unknown): value is readonly TaskArtifactProjectionV1[] {
+function validateArtifactProjectionArray(value: unknown): value is readonly TaskArtifactProjection[] {
 	if (!Array.isArray(value)) return false;
 	try {
 		canonicalFoundationJson(value);
@@ -498,7 +498,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 			!validateModelSelection(value.model) ||
 			value.contextProjection.plan.spawnId !== value.spawnId ||
 			canonicalFoundationJson(value.contextProjection.plan.childSnapshotRef) !== canonicalFoundationJson(value.forkSnapshotRef) ||
-			!validateExecutionCorrelationV1(value.correlation).ok ||
+			!validateExecutionCorrelation(value.correlation).ok ||
 			!isSafeIdentifier(value.providerId) ||
 			!isSafeIdentifier(value.taskId) ||
 			!isSafeIdentifier(value.dispatchId) ||
@@ -510,7 +510,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 		) {
 			return Result.err(lost("Child Agent initialize frame is invalid"));
 		}
-		const correlation = value.correlation as ExecutionCorrelationV1;
+		const correlation = value.correlation as ExecutionCorrelation;
 		if (
 			correlation.taskId !== value.taskId ||
 			correlation.dispatchId !== value.dispatchId ||
@@ -600,7 +600,7 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 		return Result.ok(value as unknown as ChildAgentTurnStartedEventV1);
 	}
 	if (value.type === "turn.completed") {
-		const usage = validateBudgetUsageV1(value.usage);
+		const usage = validateBudgetUsage(value.usage);
 		if (
 			!hasExactKeys(value, ["type", "requestId", "spawnId", "attemptId", "stopReason", "usage", "at"], ["output"]) ||
 			!isSafeIdentifier(value.requestId) ||
@@ -890,7 +890,7 @@ export class ChildAgentProtocolSessionV1 {
 	}
 }
 
-export function childAgentUsageIsPresentV1(usage: BudgetUsageV1): boolean {
+export function childAgentUsageIsPresentV1(usage: BudgetUsage): boolean {
 	return (usage.tokens ?? 0) > 0 || (usage.modelCalls ?? 0) > 0 || (usage.toolCalls ?? 0) > 0;
 }
 

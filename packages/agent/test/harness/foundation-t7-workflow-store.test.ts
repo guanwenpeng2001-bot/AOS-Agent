@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import type { FoundationJsonValue } from "../../src/harness/foundation/event-catalog.ts";
 import {
-	validateWorkflowV1,
-	WORKFLOW_STEP_STATUSES_V1,
-	WORKFLOW_STEP_TYPES_V1,
-	WorkflowMigrationRegistryV1,
-	type WorkflowStepV1,
+	validateWorkflow,
+	WORKFLOW_STEP_STATUSES,
+	WORKFLOW_STEP_TYPES,
+	WorkflowMigrationRegistry,
+	type WorkflowStep,
 } from "../../src/harness/foundation/workflow.ts";
 import { WorkflowStore } from "../../src/harness/foundation/workflow-store.ts";
-import type { ProvisionedFoundationRecordV1 } from "../../src/harness/session/durable/types.ts";
+import type { ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
 function createStore(id: string): { readonly session: Session; readonly store: WorkflowStore } {
@@ -40,7 +40,7 @@ function baseStep(stepId: string, ordinal: number) {
 	};
 }
 
-function allSteps(): WorkflowStepV1[] {
+function allSteps(): WorkflowStep[] {
 	return [
 		{
 			...baseStep("local-agent", 0),
@@ -84,7 +84,7 @@ async function createWorkflow(
 
 function injectAppendFault(
 	session: Session,
-	predicate: (record: ProvisionedFoundationRecordV1) => boolean,
+	predicate: (record: ProvisionedFoundationRecord) => boolean,
 	phase: "before" | "after",
 ): () => void {
 	const original = session.appendFoundationRecord.bind(session);
@@ -108,7 +108,7 @@ function injectAppendFault(
 
 describe("Workflow V1 DSL and durable store", () => {
 	it("freezes the exact statuses, unified step kinds, contracts, and migration path", async () => {
-		expect(WORKFLOW_STEP_STATUSES_V1).toEqual([
+		expect(WORKFLOW_STEP_STATUSES).toEqual([
 			"pending",
 			"ready",
 			"running",
@@ -120,7 +120,7 @@ describe("Workflow V1 DSL and durable store", () => {
 			"cancelled",
 			"skipped",
 		]);
-		expect(WORKFLOW_STEP_TYPES_V1).toEqual([
+		expect(WORKFLOW_STEP_TYPES).toEqual([
 			"agent",
 			"tool",
 			"parallel",
@@ -131,14 +131,14 @@ describe("Workflow V1 DSL and durable store", () => {
 		]);
 		const { store } = createStore("workflow-shape");
 		const workflow = await createWorkflow(store, "create");
-		expect(new Set(workflow.steps.map((step) => step.type))).toEqual(new Set(WORKFLOW_STEP_TYPES_V1));
+		expect(new Set(workflow.steps.map((step) => step.type))).toEqual(new Set(WORKFLOW_STEP_TYPES));
 		expect(workflow.steps.every((step) => step.input.length === 1 && step.output.length === 1)).toBe(true);
-		expect(validateWorkflowV1(workflow).ok).toBe(true);
-		expect(validateWorkflowV1({ ...workflow, dslVersion: 2 }).ok).toBe(false);
-		expect(validateWorkflowV1({ ...workflow, steps: [{ ...workflow.steps[0]!, input: [] }] }).ok).toBe(false);
-		expect(validateWorkflowV1({ ...workflow, steps: [{ ...workflow.steps[2]!, status: "awaiting_dispatch" }] }).ok).toBe(false);
+		expect(validateWorkflow(workflow).ok).toBe(true);
+		expect(validateWorkflow({ ...workflow, dslVersion: 2 }).ok).toBe(false);
+		expect(validateWorkflow({ ...workflow, steps: [{ ...workflow.steps[0]!, input: [] }] }).ok).toBe(false);
+		expect(validateWorkflow({ ...workflow, steps: [{ ...workflow.steps[2]!, status: "awaiting_dispatch" }] }).ok).toBe(false);
 
-		const registry = new WorkflowMigrationRegistryV1();
+		const registry = new WorkflowMigrationRegistry();
 		registry.register(0, 1, (value) =>
 			value !== null && typeof value === "object" && !Array.isArray(value) ? { ...value, dslVersion: 1 } : value,
 		);

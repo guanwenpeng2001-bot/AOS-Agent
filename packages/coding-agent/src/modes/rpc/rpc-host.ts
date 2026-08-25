@@ -158,7 +158,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import {
 	WORKER_LIFECYCLE_STATUSES,
 	validateWorkerRecordV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "../../core/worker.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
@@ -418,7 +418,7 @@ function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
 const RPC_WORKER_DEFAULT_LIMIT = 50;
 const RPC_WORKER_MAX_LIMIT = 100;
 const RPC_WORKER_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
-const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatus> = new Set([
 	"completed",
 	"failed",
 	"cancelled",
@@ -427,7 +427,7 @@ const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = ne
 	"reclaimed",
 	"reclaim_unknown",
 ]);
-const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatus> = new Set([
 	"reclaimed",
 	"reclaim_unknown",
 ]);
@@ -501,7 +501,7 @@ function isRpcWorkerCommandShapeValid(command: RpcCommand): boolean {
 	);
 }
 
-function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatusV1 {
+function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatus {
 	return typeof value === "string" && (WORKER_LIFECYCLE_STATUSES as readonly string[]).includes(value);
 }
 

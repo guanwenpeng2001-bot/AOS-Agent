@@ -12,8 +12,8 @@ import {
 } from "../../src/harness/agent-harness.ts";
 import { InMemoryArtifactBlobStore } from "../../src/harness/artifacts.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
-import { createAttempt, createHostTerminalGateAuthorityV1, fingerprintFoundationValue, FoundationError, SessionLedgerV1, type AgentBindingV1, type AgentInstanceV1, type AttemptReceiptV1, type AttemptV1, type BudgetV1, type DispatchV1, type ExecutionCorrelationV1, type FoundationJsonValue, type FoundationProviderCapabilityV1, type FoundationProviderExecutionOptionsV1, type ModelProfileV1, type ModelRouteV1, type RoleRevisionV1, type SideEffectStateV1, type TaskExecutorAttemptContextV1, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
-import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecordV1, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
+import { createAttempt, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type AgentInstance, type AttemptReceipt, type Attempt, type Budget, type Dispatch, type ExecutionCorrelation, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type ModelRoute, type RoleRevision, type SideEffectState, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
+import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecord, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
 function createSession(id = "session"): Session {
@@ -63,14 +63,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	return { promise: new Promise<T>((next) => { resolve = next; }), resolve };
 }
 
-async function facts(session: Session): Promise<Extract<FoundationRecordV1, { kind: "fact" }>[]> {
+async function facts(session: Session): Promise<Extract<FoundationRecord, { kind: "fact" }>[]> {
 	const records = await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" });
-	return records.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact");
+	return records.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact");
 }
 
 const RESULT_FACT_TYPES = new Set(["attempt_receipt", "task_result", "run_receipt"]);
 
-async function resultFacts(session: Session): Promise<Extract<FoundationRecordV1, { kind: "fact" }>[]> {
+async function resultFacts(session: Session): Promise<Extract<FoundationRecord, { kind: "fact" }>[]> {
 	return (await facts(session)).filter((record) => RESULT_FACT_TYPES.has(record.objectType));
 }
 
@@ -94,12 +94,12 @@ function foundationRoleRevision() {
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function foundationModelProfile(route: Partial<Pick<ModelRouteV1, "effort" | "serviceTier" | "fallback">> = {}, budget: BudgetV1 = {}) {
+function foundationModelProfile(route: Partial<Pick<ModelRoute, "effort" | "serviceTier" | "fallback">> = {}, budget: Budget = {}) {
 	const base = { schemaVersion: 1 as const, modelProfileId: "model-profile", provider: "google", model: "gemini-2.5-flash", budget, revision: 1, createdAt: "2026-01-01T00:00:00.000Z", ...route };
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function createFoundationExecution(route: Partial<Pick<ModelRouteV1, "effort" | "serviceTier" | "fallback">> = {}, budget: BudgetV1 = {}): AgentHarnessFoundationExecution {
+function createFoundationExecution(route: Partial<Pick<ModelRoute, "effort" | "serviceTier" | "fallback">> = {}, budget: Budget = {}): AgentHarnessFoundationExecution {
 	const taskId = "task-harness-runtime";
 	const bindingId = "binding-harness-runtime";
 	const immutableRef = (type: string, id: string) => {
@@ -161,11 +161,11 @@ function createFoundationExecution(route: Partial<Pick<ModelRouteV1, "effort" | 
 			tests: [{ name: "harness runtime", required: true, status: "passed" }],
 			evidence: [],
 		},
-		hostAuthority: createHostTerminalGateAuthorityV1("host-harness-runtime"),
+		hostAuthority: createHostTerminalGateAuthority("host-harness-runtime"),
 	};
 }
 
-const harnessProviderCapability: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.harness", version: 1 };
+const harnessProviderCapability: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.harness", version: 1 };
 
 class HarnessFoundationProvider implements TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
@@ -177,21 +177,21 @@ class HarnessFoundationProvider implements TaskExecutorProvider {
 	cancelCount = 0;
 	resumeCount = 0;
 	failCreate = false;
-	receivedAgentInstance: AgentInstanceV1 | undefined;
-	receivedRoleRevision: RoleRevisionV1 | undefined;
-	receivedModelProfile: ModelProfileV1 | undefined;
-	receivedModelRoute: ModelRouteV1 | undefined;
-	receivedBinding: AgentBindingV1 | undefined;
-	private lastAttempt: AttemptV1 | undefined;
+	receivedAgentInstance: AgentInstance | undefined;
+	receivedRoleRevision: RoleRevision | undefined;
+	receivedModelProfile: ModelProfile | undefined;
+	receivedModelRoute: ModelRoute | undefined;
+	receivedBinding: AgentBinding | undefined;
+	private lastAttempt: Attempt | undefined;
 
 	constructor(providerId = "agent-harness-provider", session?: Session) {
 		this.providerId = providerId;
 		this.session = session;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [harnessProviderCapability]; }
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [harnessProviderCapability]; }
 
-	async createAttempt(dispatch: DispatchV1, binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		this.createCount += 1;
 		if (this.failCreate) return Result.err(new FoundationError("task_executor_invalid_provider_class", "Harness provider create failed"));
 		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider requires provider attempt context"));
@@ -205,17 +205,17 @@ class HarnessFoundationProvider implements TaskExecutorProvider {
 		return created;
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.runCount += 1;
 		if (options === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider requires provider execution correlation"));
 		if (options.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider requires provider execution correlation"));
 		const correlation = { ...options.correlation, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: `attempt_receipt_${attempt.attemptId}` };
 		const sideEffectState = await this.sideEffectState(correlation);
-		const receipt: AttemptReceiptV1 = { schemaVersion: 1, attemptReceiptId: `attempt_receipt_${attempt.attemptId}`, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: sideEffectState === "none" ? "succeeded" : "failed", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: "2026-01-01T00:00:00.000Z", correlation }, sideEffectState, ...(sideEffectState === "none" ? {} : { error: { code: "side_effect_unknown", message: "Provider side effect did not converge", retryable: false } }) };
+		const receipt: AttemptReceipt = { schemaVersion: 1, attemptReceiptId: `attempt_receipt_${attempt.attemptId}`, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: sideEffectState === "none" ? "succeeded" : "failed", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: "2026-01-01T00:00:00.000Z", correlation }, sideEffectState, ...(sideEffectState === "none" ? {} : { error: { code: "side_effect_unknown", message: "Provider side effect did not converge", retryable: false } }) };
 		return Result.ok(receipt);
 	}
 
-	private async sideEffectState(correlation: ExecutionCorrelationV1): Promise<SideEffectStateV1> {
+	private async sideEffectState(correlation: ExecutionCorrelation): Promise<SideEffectState> {
 		if (this.session === undefined || correlation.runId === undefined) return "none";
 		const starts = await this.session.findRecords({ lane: correlation.laneId, runId: correlation.runId, type: "tool_started", order: "oldestFirst" });
 		if (starts.length === 0) return "none";
@@ -232,7 +232,7 @@ class HarnessFoundationProvider implements TaskExecutorProvider {
 		let attempt = this.lastAttempt;
 		if ((attempt === undefined || attempt.attemptId !== attemptId) && this.session !== undefined) {
 			const stored = await this.session.getFoundationObject("attempt", attemptId);
-			if (stored?.kind === "fact") attempt = stored.payload as unknown as AttemptV1;
+			if (stored?.kind === "fact") attempt = stored.payload as unknown as Attempt;
 		}
 		if (attempt === undefined) return Result.err(new FoundationError("invalid_correlation", "Harness provider cannot resume an unknown Attempt"));
 		const metadata = this.session === undefined ? { id: "session-harness" } : await this.session.getMetadata();
@@ -242,7 +242,7 @@ class HarnessFoundationProvider implements TaskExecutorProvider {
 }
 
 async function seedFoundationBindingFacts(session: Session, execution: AgentHarnessFoundationExecution): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: `harness-seed:${execution.binding.bindingId}` });
+	const ledger = new SessionLedger(session, { ownerId: `harness-seed:${execution.binding.bindingId}` });
 	await ledger.appendFact("role_revision", execution.binding.roleRevision.id, foundationRoleRevision(), { clientRequestId: `harness-seed:role:${execution.binding.roleRevision.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
 	await ledger.appendFact("model_profile_revision", execution.binding.modelProfileRevision.id, foundationModelProfile(execution.binding.modelRoute, execution.binding.budget), { clientRequestId: `harness-seed:model:${execution.binding.modelProfileRevision.id}`, correlation: { taskId: execution.task.taskId, bindingId: execution.binding.bindingId } });
 	for (const [objectType, reference] of [["external_agent_binding", execution.binding.contextRevision], ["capability_binding", execution.binding.capabilityRevision], ["model_broker_binding", execution.binding.modelBrokerBindingRevision], ["policy_binding", execution.binding.policyRevision]] as const) {

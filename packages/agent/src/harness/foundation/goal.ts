@@ -2,11 +2,11 @@ import { Type } from "typebox";
 import type { Result as ResultValue } from "../result.ts";
 import type { FoundationError } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
-import { type ArtifactRefV1, ArtifactRefV1Schema } from "./reference.ts";
+import { type ArtifactRef, ArtifactRefSchema } from "./reference.ts";
 import { FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
-export type GoalStatusV1 = "active" | "paused" | "completed" | "cleared";
-export interface AcceptanceCriterionV1 {
+export type GoalStatus = "active" | "paused" | "completed" | "cleared";
+export interface AcceptanceCriterion {
 	schemaVersion: 1;
 	criterionId: string;
 	description: string;
@@ -17,19 +17,19 @@ export interface AcceptanceCriterionV1 {
 	/** Acceptance fact ids folded into this criterion. */
 	factIds?: readonly string[];
 }
-export interface TaskResultRefV1 {
+export interface TaskResultRef {
 	schemaVersion: 1;
 	type: "task_result";
 	id: string;
 	revision: number;
 }
-export interface AcceptanceFactV1 {
+export interface AcceptanceFact {
 	schemaVersion: 1;
 	factId: string;
 	criterionId?: string;
 	outcome: "satisfied" | "unsatisfied" | "pending";
-	evidenceRefs?: readonly ArtifactRefV1[] /** Reference-only acceptance evidence. */;
-	taskResultRefs?: readonly TaskResultRefV1[] /** Legacy statement/source fields are retained as opaque audit text. */;
+	evidenceRefs?: readonly ArtifactRef[] /** Reference-only acceptance evidence. */;
+	taskResultRefs?: readonly TaskResultRef[] /** Legacy statement/source fields are retained as opaque audit text. */;
 	statement?: string;
 	verified?: boolean;
 	source?: { kind: string; ref: string };
@@ -37,61 +37,61 @@ export interface AcceptanceFactV1 {
 	observedAt?: string;
 	recordedBy?: string;
 }
-export interface GoalTombstoneV1 {
+export interface GoalTombstone {
 	schemaVersion: 1;
 	clearedAt: string;
 	reason?: string;
 }
-export interface GoalV1 {
+export interface Goal {
 	schemaVersion: 1;
 	sessionId: string;
 	goalId: string;
 	title: string;
-	status: GoalStatusV1;
+	status: GoalStatus;
 	revision: number;
-	acceptanceCriteria: readonly AcceptanceCriterionV1[];
-	acceptanceFacts?: readonly AcceptanceFactV1[];
+	acceptanceCriteria: readonly AcceptanceCriterion[];
+	acceptanceFacts?: readonly AcceptanceFact[];
 	description?: string;
 	planIds?: readonly string[];
-	plans?: readonly PlanV1[];
+	plans?: readonly Plan[];
 	artifactIds?: readonly string[];
 	createdAt: string;
 	updatedAt: string;
-	tombstone?: GoalTombstoneV1;
+	tombstone?: GoalTombstone;
 }
-export type PlanStatusV1 = "draft" | "active" | "paused" | "completed" | "stopped";
-export type StageStatusV1 = "pending" | "ready" | "active" | "completed" | "stopped";
-export type TodoStatusV1 = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
-export interface PlanV1 {
+export type PlanStatus = "draft" | "active" | "paused" | "completed" | "stopped";
+export type StageStatus = "pending" | "ready" | "active" | "completed" | "stopped";
+export type TodoStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+export interface Plan {
 	schemaVersion: 1;
 	planId: string;
 	goalId: string;
-	status: PlanStatusV1;
+	status: PlanStatus;
 	revision: number;
 	stageIds: readonly string[];
 	title?: string;
 	description?: string;
-	stages?: readonly StageV1[];
+	stages?: readonly Stage[];
 	createdAt: string;
 	updatedAt: string;
 }
-export interface StageV1 {
+export interface Stage {
 	schemaVersion: 1;
 	stageId: string;
 	planId: string;
-	status: StageStatusV1;
+	status: StageStatus;
 	ordinal: number;
 	todoIds: readonly string[];
 	revision?: number;
 	title?: string;
 	order?: number;
-	todos?: readonly TodoV1[];
+	todos?: readonly Todo[];
 }
-export interface TodoV1 {
+export interface Todo {
 	schemaVersion: 1;
 	todoId: string;
 	stageId: string;
-	status: TodoStatusV1;
+	status: TodoStatus;
 	title: string;
 	ordinal: number;
 	revision?: number;
@@ -99,8 +99,8 @@ export interface TodoV1 {
 	dependsOn?: readonly string[];
 	taskId?: string;
 }
-export type AskStatusV1 = "pending" | "answered" | "expired" | "escalated" | "cancelled";
-export interface AskReplyV1 {
+export type AskStatus = "pending" | "answered" | "expired" | "escalated" | "cancelled";
+export interface AskReply {
 	schemaVersion: 1;
 	replyId: string;
 	askId: string;
@@ -109,12 +109,11 @@ export interface AskReplyV1 {
 	createdAt: string;
 	clientRequestId: string;
 }
-export type ReplyV1 = AskReplyV1;
-export interface AskV1 {
+export interface Ask {
 	schemaVersion: 1;
 	sessionId: string;
 	askId: string;
-	status: AskStatusV1;
+	status: AskStatus;
 	question: string;
 	goalId?: string;
 	taskId?: string;
@@ -123,7 +122,7 @@ export interface AskV1 {
 	dueAt?: string;
 	escalationAt?: string;
 	escalationTarget?: string;
-	reply?: AskReplyV1;
+	reply?: AskReply;
 	settledAt?: string;
 	tombstone?: { schemaVersion: 1; cancelledAt: string; reason?: string };
 	createdAt: string;
@@ -144,7 +143,7 @@ const criterionSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const TaskResultRefV1Schema = Type.Object(
+export const TaskResultRefSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		type: Type.Literal("task_result"),
@@ -159,8 +158,8 @@ const acceptanceFactSchema = Type.Object(
 		factId: Type.String({ minLength: 1 }),
 		criterionId: Type.Optional(Type.String({ minLength: 1 })),
 		outcome: Type.Union([Type.Literal("satisfied"), Type.Literal("unsatisfied"), Type.Literal("pending")]),
-		evidenceRefs: Type.Optional(Type.Array(ArtifactRefV1Schema)),
-		taskResultRefs: Type.Optional(Type.Array(TaskResultRefV1Schema)),
+		evidenceRefs: Type.Optional(Type.Array(ArtifactRefSchema)),
+		taskResultRefs: Type.Optional(Type.Array(TaskResultRefSchema)),
 		statement: Type.Optional(Type.String()),
 		verified: Type.Optional(Type.Boolean()),
 		source: Type.Optional(
@@ -175,9 +174,9 @@ const acceptanceFactSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const AcceptanceCriterionV1Schema = criterionSchema;
-export const AcceptanceFactV1Schema = acceptanceFactSchema;
-export const GoalTombstoneV1Schema = Type.Object(
+export const AcceptanceCriterionSchema = criterionSchema;
+export const AcceptanceFactSchema = acceptanceFactSchema;
+export const GoalTombstoneSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), clearedAt: Type.String({ minLength: 1 }), reason: Type.Optional(Type.String()) },
 	{ additionalProperties: false },
 );
@@ -245,7 +244,7 @@ const planProjectionSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const GoalV1Schema = Type.Object(
+export const GoalSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		sessionId: Type.String({ minLength: 1 }),
@@ -266,14 +265,14 @@ export const GoalV1Schema = Type.Object(
 		artifactIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 		createdAt: Type.String({ minLength: 1 }),
 		updatedAt: Type.String({ minLength: 1 }),
-		tombstone: Type.Optional(GoalTombstoneV1Schema),
+		tombstone: Type.Optional(GoalTombstoneSchema),
 	},
 	{ additionalProperties: false },
 );
-export const PlanV1Schema = planProjectionSchema;
-export const StageV1Schema = stageProjectionSchema;
-export const TodoV1Schema = todoProjectionSchema;
-export const AskReplyV1Schema = Type.Object(
+export const PlanSchema = planProjectionSchema;
+export const StageSchema = stageProjectionSchema;
+export const TodoSchema = todoProjectionSchema;
+export const AskReplySchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		replyId: Type.String({ minLength: 1 }),
@@ -285,7 +284,7 @@ export const AskReplyV1Schema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export const AskV1Schema = Type.Object(
+export const AskSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		sessionId: Type.String({ minLength: 1 }),
@@ -305,7 +304,7 @@ export const AskV1Schema = Type.Object(
 		dueAt: Type.Optional(Type.String({ minLength: 1 })),
 		escalationAt: Type.Optional(Type.String({ minLength: 1 })),
 		escalationTarget: Type.Optional(Type.String({ minLength: 1 })),
-		reply: Type.Optional(AskReplyV1Schema),
+		reply: Type.Optional(AskReplySchema),
 		settledAt: Type.Optional(Type.String({ minLength: 1 })),
 		tombstone: Type.Optional(
 			Type.Object(
@@ -322,51 +321,51 @@ export const AskV1Schema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export function validateTaskResultRefV1(value: unknown): ResultValue<TaskResultRefV1, FoundationError> {
-	return validateExactShape<TaskResultRefV1>(TaskResultRefV1Schema, value, "task_result_ref");
+export function validateTaskResultRef(value: unknown): ResultValue<TaskResultRef, FoundationError> {
+	return validateExactShape<TaskResultRef>(TaskResultRefSchema, value, "task_result_ref");
 }
-export function validateGoalV1(value: unknown): ResultValue<GoalV1, FoundationError> {
-	return validateExactShape<GoalV1>(GoalV1Schema, value, "goal");
+export function validateGoal(value: unknown): ResultValue<Goal, FoundationError> {
+	return validateExactShape<Goal>(GoalSchema, value, "goal");
 }
-export function serializeGoalV1(value: GoalV1): string {
-	return serializeExactShape(GoalV1Schema, value, "goal");
+export function serializeGoal(value: Goal): string {
+	return serializeExactShape(GoalSchema, value, "goal");
 }
-export function parseGoalV1(text: string): ResultValue<GoalV1, FoundationError> {
-	return parseExactShape(GoalV1Schema, text, "goal");
+export function parseGoal(text: string): ResultValue<Goal, FoundationError> {
+	return parseExactShape(GoalSchema, text, "goal");
 }
-export function validatePlanV1(value: unknown): ResultValue<PlanV1, FoundationError> {
-	return validateExactShape<PlanV1>(PlanV1Schema, value, "plan");
+export function validatePlan(value: unknown): ResultValue<Plan, FoundationError> {
+	return validateExactShape<Plan>(PlanSchema, value, "plan");
 }
-export function serializePlanV1(value: PlanV1): string {
-	return serializeExactShape(PlanV1Schema, value, "plan");
+export function serializePlan(value: Plan): string {
+	return serializeExactShape(PlanSchema, value, "plan");
 }
-export function parsePlanV1(text: string): ResultValue<PlanV1, FoundationError> {
-	return parseExactShape(PlanV1Schema, text, "plan");
+export function parsePlan(text: string): ResultValue<Plan, FoundationError> {
+	return parseExactShape(PlanSchema, text, "plan");
 }
-export function validateStageV1(value: unknown): ResultValue<StageV1, FoundationError> {
-	return validateExactShape<StageV1>(StageV1Schema, value, "stage");
+export function validateStage(value: unknown): ResultValue<Stage, FoundationError> {
+	return validateExactShape<Stage>(StageSchema, value, "stage");
 }
-export function serializeStageV1(value: StageV1): string {
-	return serializeExactShape(StageV1Schema, value, "stage");
+export function serializeStage(value: Stage): string {
+	return serializeExactShape(StageSchema, value, "stage");
 }
-export function parseStageV1(text: string): ResultValue<StageV1, FoundationError> {
-	return parseExactShape(StageV1Schema, text, "stage");
+export function parseStage(text: string): ResultValue<Stage, FoundationError> {
+	return parseExactShape(StageSchema, text, "stage");
 }
-export function validateTodoV1(value: unknown): ResultValue<TodoV1, FoundationError> {
-	return validateExactShape<TodoV1>(TodoV1Schema, value, "todo");
+export function validateTodo(value: unknown): ResultValue<Todo, FoundationError> {
+	return validateExactShape<Todo>(TodoSchema, value, "todo");
 }
-export function serializeTodoV1(value: TodoV1): string {
-	return serializeExactShape(TodoV1Schema, value, "todo");
+export function serializeTodo(value: Todo): string {
+	return serializeExactShape(TodoSchema, value, "todo");
 }
-export function parseTodoV1(text: string): ResultValue<TodoV1, FoundationError> {
-	return parseExactShape(TodoV1Schema, text, "todo");
+export function parseTodo(text: string): ResultValue<Todo, FoundationError> {
+	return parseExactShape(TodoSchema, text, "todo");
 }
-export function validateAskV1(value: unknown): ResultValue<AskV1, FoundationError> {
-	return validateExactShape<AskV1>(AskV1Schema, value, "ask");
+export function validateAsk(value: unknown): ResultValue<Ask, FoundationError> {
+	return validateExactShape<Ask>(AskSchema, value, "ask");
 }
-export function serializeAskV1(value: AskV1): string {
-	return serializeExactShape(AskV1Schema, value, "ask");
+export function serializeAsk(value: Ask): string {
+	return serializeExactShape(AskSchema, value, "ask");
 }
-export function parseAskV1(text: string): ResultValue<AskV1, FoundationError> {
-	return parseExactShape(AskV1Schema, text, "ask");
+export function parseAsk(text: string): ResultValue<Ask, FoundationError> {
+	return parseExactShape(AskSchema, text, "ask");
 }

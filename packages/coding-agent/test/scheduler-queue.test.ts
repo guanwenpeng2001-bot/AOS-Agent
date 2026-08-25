@@ -1,23 +1,23 @@
 import {
-	type AppendFoundationRecordResultV1,
-	createDurableEventV1,
+	type AppendFoundationRecordResult,
+	createDurableEvent,
 	type DurableLedgerApi,
 	DurableLedgerError,
 	EVENT_CATALOG,
-	type EventProducerV1,
+	type EventProducer,
 	FOUNDATION_ERROR_CODES,
 	FoundationError,
-	type FoundationObjectResultV1,
-	type FoundationRecordQueryV1,
-	type FoundationRecordV1,
-	type FoundationRetentionPolicyV1,
+	type FoundationObjectResult,
+	type FoundationRecordQuery,
+	type FoundationRecord,
+	type FoundationRetentionPolicy,
 	InMemorySessionStorage,
-	type LedgerWriterLeaseV1,
-	type ProvisionedFoundationRecordV1,
+	type LedgerWriterLease,
+	type ProvisionedFoundationRecord,
 	Result,
 	Session,
-	type SetRetentionPolicyOptionsV1,
-	validateDurableEventV1,
+	type SetRetentionPolicyOptions,
+	validateDurableEvent,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -196,7 +196,7 @@ describe("scheduler T1 type freeze", () => {
 	});
 
 	it("maps scheduler.* durable events to existing harness producer and does not reuse Inbox queue categories", () => {
-		const producers: readonly EventProducerV1[] = [
+		const producers: readonly EventProducer[] = [
 			"harness",
 			"reducer",
 			"model",
@@ -235,7 +235,7 @@ describe("scheduler T1 type freeze", () => {
 	});
 
 	it("accepts scheduler durable envelopes with catalog payload rules and rejects extra fields", () => {
-		const event = createDurableEventV1({
+		const event = createDurableEvent({
 			category: "scheduler.queue_transitioned",
 			eventId: "event_1",
 			streamId: "session_a",
@@ -253,7 +253,7 @@ describe("scheduler T1 type freeze", () => {
 		});
 		expect(event.payload).toMatchObject({ queueEntryId: "queue_1", state: "queued" });
 		expect(
-			validateDurableEventV1({
+			validateDurableEvent({
 				...event,
 				payload: { ...event.payload, prompt: "hidden" },
 			}).ok,
@@ -675,7 +675,7 @@ describe("scheduler safe serializers", () => {
 
 class FakeLedger implements DurableLedgerApi {
 	readonly inner: DurableLedgerApi;
-	readonly appends: ProvisionedFoundationRecordV1[] = [];
+	readonly appends: ProvisionedFoundationRecord[] = [];
 	staleNextAppend = false;
 	staleFencingToken: string | undefined;
 	failOnObjectType: string | undefined;
@@ -684,22 +684,22 @@ class FakeLedger implements DurableLedgerApi {
 		this.inner = inner;
 	}
 
-	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.acquireWriterLease(options);
 	}
-	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.renewWriterLease(options);
 	}
 	releaseWriterLease(options: { fencingToken: string }): Promise<void> {
 		return this.inner.releaseWriterLease(options);
 	}
-	getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.inner.getWriterLease();
 	}
 	getLedgerRevision(): Promise<number> {
 		return this.inner.getLedgerRevision();
 	}
-	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	async appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		this.appends.push(record);
 		if (this.staleNextAppend) {
 			this.staleNextAppend = false;
@@ -718,15 +718,15 @@ class FakeLedger implements DurableLedgerApi {
 		return this.inner.appendFoundationRecord(record);
 	}
 	setRetentionPolicy(
-		policy: FoundationRetentionPolicyV1,
-		options: SetRetentionPolicyOptionsV1,
-	): Promise<AppendFoundationRecordResultV1> {
+		policy: FoundationRetentionPolicy,
+		options: SetRetentionPolicyOptions,
+	): Promise<AppendFoundationRecordResult> {
 		return this.inner.setRetentionPolicy(policy, options);
 	}
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.inner.findFoundationRecords(query);
 	}
-	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.inner.getFoundationObject(objectType, objectId);
 	}
 	getFoundationRevision(objectType: string, objectId: string): Promise<number> {
@@ -735,10 +735,10 @@ class FakeLedger implements DurableLedgerApi {
 	isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
 		return this.inner.isObjectTombstoned(objectType, objectId);
 	}
-	getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.inner.getRetentionPolicy();
 	}
-	prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.inner.prunableFoundationRecords();
 	}
 }

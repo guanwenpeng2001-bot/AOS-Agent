@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	foundationClosureById,
-	FOUNDATION_V1_CAPABILITY_CLOSURES,
-} from "../../src/harness/foundation-v1-capabilities.ts";
+	FOUNDATION_CAPABILITY_CLOSURES,
+} from "../../src/harness/foundation-capabilities.ts";
 import {
 	LINE12B_SCHEDULER_CAPABILITY_CLOSURES,
 	LINE12B_SCHEDULER_DEFERRED_CAPABILITIES,
@@ -48,7 +48,7 @@ describe("Line 12B Scheduler capability manifest", () => {
 	});
 
 	it("references every consumed capability from the sealed Foundation 79-item set", () => {
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES).toHaveLength(79);
+		expect(FOUNDATION_CAPABILITY_CLOSURES).toHaveLength(79);
 		for (const entry of LINE12B_SCHEDULER_CAPABILITY_CLOSURES.filter((candidate) => candidate.closure === "consumed_foundation")) {
 			expect(entry.foundationClosure).toBe(foundationClosureById(entry.id));
 		}
@@ -60,7 +60,7 @@ describe("Line 12B Scheduler capability manifest", () => {
 	});
 
 	it("keeps implemented, consumed, and deferred pairwise disjoint and does not reopen Foundation or 12A", () => {
-		const foundation = new Set(FOUNDATION_V1_CAPABILITY_CLOSURES.map((entry) => entry.id));
+		const foundation = new Set(FOUNDATION_CAPABILITY_CLOSURES.map((entry) => entry.id));
 		const implemented = new Set(IMPLEMENTED);
 		const consumed = new Set(CONSUMED);
 		const deferred = new Set(DEFERRED.map((entry) => entry.id));

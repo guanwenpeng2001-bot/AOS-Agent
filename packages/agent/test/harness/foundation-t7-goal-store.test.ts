@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
-import { type TaskResultRefV1, validateGoalV1 } from "../../src/harness/foundation/goal.ts";
+import { type TaskResultRef, validateGoal } from "../../src/harness/foundation/goal.ts";
 import { GoalStore } from "../../src/harness/foundation/goal-store.ts";
-import type { FoundationRecordV1, ProvisionedFoundationRecordV1 } from "../../src/harness/session/durable/types.ts";
+import type { FoundationRecord, ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
 function createStore(id: string): { readonly session: Session; readonly store: GoalStore } {
@@ -37,7 +37,7 @@ async function createGoal(store: GoalStore, requestId: string, withCriterion = f
 
 function injectAppendFault(
 	session: Session,
-	predicate: (record: ProvisionedFoundationRecordV1) => boolean,
+	predicate: (record: ProvisionedFoundationRecord) => boolean,
 	phase: "before" | "after",
 ): () => void {
 	const original = session.appendFoundationRecord.bind(session);
@@ -105,7 +105,7 @@ describe("GoalStore durability", () => {
 				includePruned: true,
 			})
 		).filter(
-			(record): record is Extract<FoundationRecordV1, { kind: "intent" | "fact" }> =>
+			(record): record is Extract<FoundationRecord, { kind: "intent" | "fact" }> =>
 				record.kind === "intent" || record.kind === "fact",
 		);
 		expect(commandRecords).toHaveLength(2);
@@ -264,7 +264,7 @@ describe("GoalStore durability", () => {
 			mediaType: "text/plain",
 			digest: `sha256:${"a".repeat(64)}`,
 		};
-		const taskResult: TaskResultRefV1 = { schemaVersion: 1, type: "task_result", id: "task-result-1", revision: 2 };
+		const taskResult: TaskResultRef = { schemaVersion: 1, type: "task_result", id: "task-result-1", revision: 2 };
 		const fact = await store.recordAcceptanceFact(
 			goal.goalId,
 			{
@@ -282,7 +282,7 @@ describe("GoalStore durability", () => {
 		expect(fact.taskResultRefs).toEqual([taskResult]);
 		const valid = await store.get(goal.goalId);
 		expect(valid.acceptanceCriteria[0]?.satisfiedBy).toBe("evidence");
-		expect(validateGoalV1(valid).ok).toBe(true);
+		expect(validateGoal(valid).ok).toBe(true);
 
 		const firstPlan = valid.plans?.[0];
 		const firstStage = firstPlan?.stages?.[0];
@@ -308,7 +308,7 @@ describe("GoalStore durability", () => {
 					: candidatePlan,
 			),
 		};
-		expect(validateGoalV1(malformed).ok).toBe(false);
+		expect(validateGoal(malformed).ok).toBe(false);
 		await expect(
 			store.recordAcceptanceFact(
 				goal.goalId,
@@ -366,7 +366,7 @@ describe("GoalStore durability", () => {
 			mediaType: "text/plain",
 			digest: `sha256:${"b".repeat(64)}`,
 		};
-		const taskResult: TaskResultRefV1 = { schemaVersion: 1, type: "task_result", id: "task-result-1", revision: 7 };
+		const taskResult: TaskResultRef = { schemaVersion: 1, type: "task_result", id: "task-result-1", revision: 7 };
 		const input = {
 			criterionId: "criterion-1",
 			statement: "Recovered evidence",

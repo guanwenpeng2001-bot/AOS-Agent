@@ -1,25 +1,25 @@
 import {
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
-	type ModelProfileV1,
+	type ModelProfile,
 	resolveAgentBinding,
 	Result,
-	type RevisionReferenceV1,
+	type RevisionReference,
 	Session,
-	SessionLedgerV1,
-	type TaskEnvelopeV1,
-	type FoundationProviderExecutionOptionsV1,
+	SessionLedger,
+	type TaskEnvelope,
+	type FoundationProviderExecutionOptions,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
-	TrustedSchedulerCompositionV1,
-	type TrustedSchedulerCompositionOptionsV1,
+	TrustedSchedulerComposition,
+	type TrustedSchedulerCompositionOptions,
 } from "../src/core/foundation-control-plane.ts";
 import { SchedulerDeadlockController } from "../src/core/scheduler-deadlock.ts";
 import {
@@ -29,17 +29,17 @@ import {
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
-import { SchedulerMessageOrchestratorV1 } from "../src/core/scheduler-messages.ts";
+import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
 import { SchedulerWorkflowController } from "../src/core/scheduler-workflow.ts";
 import type { RunHandle } from "../src/core/run-lifecycle.ts";
-import { SchedulerHostV1 } from "../src/core/scheduler.ts";
+import { SchedulerHost } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 
 const NOW = "2026-08-22T00:00:00.000Z";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
 
-function task(): TaskEnvelopeV1 {
+function task(): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: "task-composition",
@@ -77,7 +77,7 @@ function roleRevision() {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-composition",
@@ -89,12 +89,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function bindingFor(currentTask: TaskEnvelopeV1): AgentBindingV1 {
+function bindingFor(currentTask: TaskEnvelope): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: currentTask,
 		roleRevision: roleRevision(),
@@ -110,8 +110,8 @@ function bindingFor(currentTask: TaskEnvelopeV1): AgentBindingV1 {
 	return resolved.value;
 }
 
-async function seedBindingFacts(session: Session, currentTask: TaskEnvelopeV1, binding: AgentBindingV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: "scheduler-composition-seed" });
+async function seedBindingFacts(session: Session, currentTask: TaskEnvelope, binding: AgentBinding): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: "scheduler-composition-seed" });
 	await ledger.appendFact("task", currentTask.taskId, currentTask, {
 		clientRequestId: "scheduler-composition-seed:task",
 		expectedRevision: 0,
@@ -147,7 +147,7 @@ async function seedBindingFacts(session: Session, currentTask: TaskEnvelopeV1, b
 	await ledger.release();
 }
 
-function hostReceipt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1): AttemptReceiptV1 {
+function hostReceipt(attempt: Attempt, options?: FoundationProviderExecutionOptions): AttemptReceipt {
 	const correlation = options?.correlation;
 	if (correlation === undefined) throw new Error("Expected Scheduler Host correlation");
 	const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
@@ -204,8 +204,8 @@ function compositionFixture(input: {
 
 function compositionOptions(
 	fixture: CompositionFixture,
-	eventSource?: TrustedSchedulerCompositionOptionsV1["eventSource"],
-): TrustedSchedulerCompositionOptionsV1 {
+	eventSource?: TrustedSchedulerCompositionOptions["eventSource"],
+): TrustedSchedulerCompositionOptions {
 	return {
 		schemaVersion: 1,
 		enabled: true,
@@ -217,7 +217,7 @@ function compositionOptions(
 		ownerId: "scheduler-composition-owner",
 		registry: new SchedulerExecutorRegistry(),
 		task: task(),
-		binding: { schemaVersion: 1 } as unknown as AgentBindingV1,
+		binding: { schemaVersion: 1 } as unknown as AgentBinding,
 		gateLookup: { getByBusinessKey: () => undefined },
 		resolveRunAssociation: async () => {
 			throw new Error("No graph work is present");
@@ -244,20 +244,20 @@ async function expectNoDurableWrites(fixture: CompositionFixture): Promise<void>
 describe("trusted Scheduler production composition", () => {
 	it("releases construction resources when event subscription throws and permits same-Session retry", async () => {
 		const fixture = compositionFixture();
-		expect(() => new TrustedSchedulerCompositionV1(compositionOptions(fixture, {
+		expect(() => new TrustedSchedulerComposition(compositionOptions(fixture, {
 			subscribe() {
 				throw new Error("event subscription failed");
 			},
 		}))).toThrow("event subscription failed");
 		await expectNoDurableWrites(fixture);
 
-		const retry = new TrustedSchedulerCompositionV1(compositionOptions(fixture));
+		const retry = new TrustedSchedulerComposition(compositionOptions(fixture));
 		await retry.dispose();
 	});
 
 	it("rejects a mismatched source Session identity before any durable write", async () => {
 		const fixture = compositionFixture({ sourceSessionId: "wrong-source-session" });
-		const composition = new TrustedSchedulerCompositionV1(compositionOptions(fixture));
+		const composition = new TrustedSchedulerComposition(compositionOptions(fixture));
 		try {
 			await expect(composition.tick()).rejects.toMatchObject({ code: "scheduler_queue_invalid" });
 			await expectNoDurableWrites(fixture);
@@ -268,7 +268,7 @@ describe("trusted Scheduler production composition", () => {
 
 	it("rejects a mismatched target Session identity before any durable write", async () => {
 		const fixture = compositionFixture({ targetSessionId: "wrong-target-session" });
-		const composition = new TrustedSchedulerCompositionV1(compositionOptions(fixture));
+		const composition = new TrustedSchedulerComposition(compositionOptions(fixture));
 		try {
 			await expect(composition.tick()).rejects.toMatchObject({ code: "scheduler_queue_invalid" });
 			await expectNoDurableWrites(fixture);
@@ -309,8 +309,8 @@ describe("trusted Scheduler production composition", () => {
 		});
 		if (!registered.ok) throw registered.error;
 		const runs = new Map<string, RunHandle>();
-		let composition: TrustedSchedulerCompositionV1 | undefined;
-		composition = new TrustedSchedulerCompositionV1({
+		let composition: TrustedSchedulerComposition | undefined;
+		composition = new TrustedSchedulerComposition({
 			schemaVersion: 1,
 			enabled: true,
 			sourceSession: fixture.sourceSession,
@@ -386,7 +386,7 @@ describe("trusted Scheduler production composition", () => {
 		const targetGraph = new TaskGraphStore(targetManager, emptyRunLookup, emptyGateLookup, { now: () => NOW });
 		let subscriptions = 0;
 		let wake: (() => void) | undefined;
-		const composition = new TrustedSchedulerCompositionV1({
+		const composition = new TrustedSchedulerComposition({
 			schemaVersion: 1,
 			enabled: true,
 			sourceSession,
@@ -397,7 +397,7 @@ describe("trusted Scheduler production composition", () => {
 			ownerId: "scheduler-composition-owner",
 			registry: new SchedulerExecutorRegistry(),
 			task: task(),
-			binding: { schemaVersion: 1 } as unknown as AgentBindingV1,
+			binding: { schemaVersion: 1 } as unknown as AgentBinding,
 			gateLookup: emptyGateLookup,
 			resolveRunAssociation: async () => {
 				throw new Error("No graph work is present");
@@ -417,14 +417,14 @@ describe("trusted Scheduler production composition", () => {
 		try {
 			const host = (composition as unknown as { readonly host: unknown }).host;
 			expect(composition.workflow).toBeInstanceOf(SchedulerWorkflowController);
-			expect(composition.messages).toBeInstanceOf(SchedulerMessageOrchestratorV1);
+			expect(composition.messages).toBeInstanceOf(SchedulerMessageOrchestrator);
 			expect(composition.messages).toBe(composition.workflow.messages);
 			expect(composition.handoff).toBeInstanceOf(SchedulerHandoffController);
 			expect(composition.handoff).toBe(composition.workflow.handoff);
 			expect(composition.fanIn).toBeInstanceOf(SchedulerFanInController);
 			expect(composition.fanIn).toBe(composition.workflow.fanIn);
 			expect(composition.deadlock).toBeInstanceOf(SchedulerDeadlockController);
-			expect(host).toBeInstanceOf(SchedulerHostV1);
+			expect(host).toBeInstanceOf(SchedulerHost);
 			expect(composition.workflow.host.start()).toBe(false);
 			expect(subscriptions).toBe(1);
 			await composition.tick();

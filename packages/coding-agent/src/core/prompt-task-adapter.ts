@@ -3,42 +3,42 @@ import {
 	type AgentHarness,
 	type AgentHarnessFoundationExecution,
 	createAgentInstance,
-	createHostTerminalGateAuthorityV1,
-	LayeredResultSettlementV1,
-	createOrderedBindingEpochV1,
-	createTaskEnvelopeV1,
+	createHostTerminalGateAuthority,
+	LayeredResultSettlement,
+	createOrderedBindingEpoch,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	type FoundationError,
-	persistTaskEnvelopeBeforeResolverV1,
+	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
-	SessionLedgerV1,
-	validateDispatchV1,
-	validateAgentInstanceV1,
-	validateProviderJsonV1,
-	validateRoleRevisionV1,
-	validateSecretFreeModelProfileV1,
-	validateVersionedReferenceV1,
-	type AcceptanceFactV1,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type ArtifactRefV1,
-	type AttemptReceiptV1,
-	type BindingEpochV1,
-	type DispatchV1,
-	type ExecutionCorrelationV1,
+	SessionLedger,
+	validateDispatch,
+	validateAgentInstance,
+	validateProviderJson,
+	validateRoleRevision,
+	validateSecretFreeModelProfile,
+	validateVersionedReference,
+	type AcceptanceFact,
+	type AgentBinding,
+	type AgentInstance,
+	type ArtifactRef,
+	type AttemptReceipt,
+	type BindingEpoch,
+	type Dispatch,
+	type ExecutionCorrelation,
 	type FoundationJsonValue,
-	type ModelProfileV1,
-	type RevisionReferenceV1,
+	type ModelProfile,
+	type RevisionReference,
 	type Result as ResultValue,
-	type RoleRevisionV1,
-	type RoleRegistryV1,
+	type RoleRevision,
+	type RoleRegistry,
 	type RunOutcome,
-	type RunReceiptV1,
+	type RunReceipt,
 	type SessionLedgerWriter,
-	type TaskEnvelopeV1,
+	type TaskEnvelope,
 	type TaskExecutorProvider,
-	type TaskResultV1,
-	type ValidationResultV1,
+	type TaskResult,
+	type ValidationResult,
 } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import { createCodingAgentHarness, type CreateCodingAgentHarnessOptions } from "../server/create-harness.ts";
@@ -58,7 +58,7 @@ export const PROMPT_TASK_DEPENDENCY_NAMES = [
 	"adapter",
 ] as const;
 
-export type PromptTaskDependencyNameV1 = (typeof PROMPT_TASK_DEPENDENCY_NAMES)[number];
+export type PromptTaskDependencyName = (typeof PROMPT_TASK_DEPENDENCY_NAMES)[number];
 
 const PROMPT_TASK_DEPENDENCY_FACT_TYPES = {
 	context: "context_snapshot",
@@ -73,9 +73,9 @@ const PROMPT_TASK_DEPENDENCY_FACT_TYPES = {
 	graph: "task_graph_binding",
 	credential: "credential_lease_binding",
 	adapter: "external_agent_binding",
-} as const satisfies Record<PromptTaskDependencyNameV1, string>;
+} as const satisfies Record<PromptTaskDependencyName, string>;
 
-export type PromptTaskCompositionErrorCodeV1 =
+export type PromptTaskCompositionErrorCode =
 	| "prompt_task_dependency_missing"
 	| "prompt_task_dependency_invalid"
 	| "prompt_task_input_invalid"
@@ -83,10 +83,10 @@ export type PromptTaskCompositionErrorCodeV1 =
 	| "prompt_task_receipt_missing";
 
 export class PromptTaskCompositionError extends Error {
-	readonly code: PromptTaskCompositionErrorCodeV1;
-	readonly dependency?: PromptTaskDependencyNameV1;
+	readonly code: PromptTaskCompositionErrorCode;
+	readonly dependency?: PromptTaskDependencyName;
 
-	constructor(code: PromptTaskCompositionErrorCodeV1, message: string, dependency?: PromptTaskDependencyNameV1, cause?: unknown) {
+	constructor(code: PromptTaskCompositionErrorCode, message: string, dependency?: PromptTaskDependencyName, cause?: unknown) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = "PromptTaskCompositionError";
 		this.code = code;
@@ -94,34 +94,34 @@ export class PromptTaskCompositionError extends Error {
 	}
 }
 
-export interface PromptTaskDependencyResolutionV1 {
-	readonly reference: RevisionReferenceV1;
+export interface PromptTaskDependencyResolution {
+	readonly reference: RevisionReference;
 	readonly payload: FoundationJsonValue;
 }
 
-export interface PromptTaskDependencyContextV1 {
+export interface PromptTaskDependencyContext {
 	readonly prompt: string;
-	readonly task: TaskEnvelopeV1;
-	readonly roleRevision: RoleRevisionV1;
-	readonly modelProfile: ModelProfileV1;
+	readonly task: TaskEnvelope;
+	readonly roleRevision: RoleRevision;
+	readonly modelProfile: ModelProfile;
 }
 
-export interface PromptTaskDependencyV1<TName extends PromptTaskDependencyNameV1 = PromptTaskDependencyNameV1> {
+export interface PromptTaskDependency<TName extends PromptTaskDependencyName = PromptTaskDependencyName> {
 	readonly name: TName;
 	readonly revision: number;
-	resolve(context: PromptTaskDependencyContextV1): PromptTaskDependencyResolutionV1 | Promise<PromptTaskDependencyResolutionV1>;
+	resolve(context: PromptTaskDependencyContext): PromptTaskDependencyResolution | Promise<PromptTaskDependencyResolution>;
 }
 
-export type PromptTaskCompositionDependenciesV1 = {
-	readonly [TName in PromptTaskDependencyNameV1]: PromptTaskDependencyV1<TName>;
+export type PromptTaskCompositionDependencies = {
+	readonly [TName in PromptTaskDependencyName]: PromptTaskDependency<TName>;
 };
 
-export type PromptTaskEnvelopeInputV1 = Omit<
-	TaskEnvelopeV1,
+export type PromptTaskEnvelopeInput = Omit<
+	TaskEnvelope,
 	"schemaVersion" | "goal" | "fingerprint" | "status" | "createdAt" | "updatedAt"
 >;
 
-export interface PromptTaskIdentityV1 {
+export interface PromptTaskIdentity {
 	readonly bindingId: string;
 	readonly dispatchId: string;
 	readonly attemptId: string;
@@ -129,43 +129,43 @@ export interface PromptTaskIdentityV1 {
 	readonly agentInstanceId?: string;
 }
 
-export interface PromptTaskSettlementV1 {
+export interface PromptTaskSettlement {
 	readonly summary?: string;
-	readonly artifacts: readonly ArtifactRefV1[];
-	readonly diff?: ArtifactRefV1;
-	readonly tests: readonly ValidationResultV1[];
-	readonly evidence: readonly AcceptanceFactV1[];
+	readonly artifacts: readonly ArtifactRef[];
+	readonly diff?: ArtifactRef;
+	readonly tests: readonly ValidationResult[];
+	readonly evidence: readonly AcceptanceFact[];
 }
 
-export interface PromptTaskInputV1 {
+export interface PromptTaskInput {
 	readonly prompt: string;
 	readonly images?: readonly ImageContent[];
 	readonly continuation?: boolean;
 	readonly runId?: string;
-	readonly task: PromptTaskEnvelopeInputV1;
-	readonly roleRevision: RoleRevisionV1;
-	readonly modelProfile: ModelProfileV1;
-	readonly identity: PromptTaskIdentityV1;
-	readonly settlement: PromptTaskSettlementV1;
+	readonly task: PromptTaskEnvelopeInput;
+	readonly roleRevision: RoleRevision;
+	readonly modelProfile: ModelProfile;
+	readonly identity: PromptTaskIdentity;
+	readonly settlement: PromptTaskSettlement;
 	readonly signal?: AbortSignal;
 	readonly deadlineMs?: number;
 	readonly now?: () => string;
 }
 
-export interface PromptTaskExecutionV1 {
-	readonly task: TaskEnvelopeV1;
-	readonly binding: AgentBindingV1;
-	readonly dispatch: DispatchV1;
-	readonly initialBindingEpoch: BindingEpochV1;
-	readonly agentInstance?: AgentInstanceV1;
+export interface PromptTaskExecution {
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
+	readonly dispatch: Dispatch;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly agentInstance?: AgentInstance;
 	readonly run: { readonly runId: string } & RunOutcome;
-	readonly attemptReceipt: AttemptReceiptV1;
-	readonly taskResult: TaskResultV1;
-	readonly runReceipt: RunReceiptV1;
+	readonly attemptReceipt: AttemptReceipt;
+	readonly taskResult: TaskResult;
+	readonly runReceipt: RunReceipt;
 }
 
-export interface PromptTaskCompositionRootOptionsV1 {
-	readonly dependencies: PromptTaskCompositionDependenciesV1;
+export interface PromptTaskCompositionRootOptions {
+	readonly dependencies: PromptTaskCompositionDependencies;
 	readonly provider: TaskExecutorProvider;
 	readonly harness: Omit<CreateCodingAgentHarnessOptions, "env" | "foundationExecution" | "foundationProvider"> & {
 		readonly env?: CreateCodingAgentHarnessOptions["env"];
@@ -177,7 +177,7 @@ export interface PromptTaskCompositionRootOptionsV1 {
 	readonly writer?: SessionLedgerWriter;
 	/** Explicit product ingress for @agent and description selection. Omission preserves the existing path. */
 	readonly subagentRoles?: {
-		readonly registry: Pick<RoleRegistryV1, "get" | "search" | "resolve">;
+		readonly registry: Pick<RoleRegistry, "get" | "search" | "resolve">;
 		readonly scope: "global" | "project";
 		readonly parentLaneId: string;
 		spawn(input: PromptTaskSubagentSpawnInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
@@ -194,36 +194,36 @@ export interface PromptTaskSubagentCompositionInputV1 {
 	readonly schemaVersion: 1;
 	readonly runId: string;
 	readonly prompt: string;
-	readonly parentTask: TaskEnvelopeV1;
-	readonly parentBinding: AgentBindingV1;
-	readonly parentRoleRevision: RoleRevisionV1;
-	readonly parentModelProfile: ModelProfileV1;
-	readonly parentDispatch: DispatchV1;
-	readonly parentBindingEpoch: BindingEpochV1;
-	readonly parentAgentInstance: AgentInstanceV1;
-	readonly parentCorrelation: ExecutionCorrelationV1;
+	readonly parentTask: TaskEnvelope;
+	readonly parentBinding: AgentBinding;
+	readonly parentRoleRevision: RoleRevision;
+	readonly parentModelProfile: ModelProfile;
+	readonly parentDispatch: Dispatch;
+	readonly parentBindingEpoch: BindingEpoch;
+	readonly parentAgentInstance: AgentInstance;
+	readonly parentCorrelation: ExecutionCorrelation;
 	readonly signal?: AbortSignal;
 	readonly deadlineMs?: number;
 	readonly timestamp: string;
 }
 
 export interface PromptTaskSubagentSpawnInputV1 extends PromptTaskSubagentCompositionInputV1 {
-	readonly selectedRoleRevision: RoleRevisionV1;
+	readonly selectedRoleRevision: RoleRevision;
 }
 
-export interface PromptTaskAdapterV1 {
-	execute(input: PromptTaskInputV1): Promise<PromptTaskExecutionV1>;
+export interface PromptTaskAdapter {
+	execute(input: PromptTaskInput): Promise<PromptTaskExecution>;
 }
 
-type ResolvedPromptTaskDependencies = Record<PromptTaskDependencyNameV1, PromptTaskDependencyResolutionV1>;
+type ResolvedPromptTaskDependencies = Record<PromptTaskDependencyName, PromptTaskDependencyResolution>;
 const SECRET_BEARING_DEPENDENCY_FIELDS = new Set(["token", "accesstoken", "refreshtoken", "password", "secret", "authorization", "apikey", "headers", "environment", "env", "material"]);
 
 function requireNonempty(value: unknown, field: string): asserts value is string {
 	if (typeof value !== "string" || value.trim().length === 0) throw new PromptTaskCompositionError("prompt_task_input_invalid", `${field} must be a non-empty string`);
 }
 
-function validateSettlementPrerequisites(input: PromptTaskInputV1): void {
-	const settlement = input.settlement as PromptTaskSettlementV1 | undefined;
+function validateSettlementPrerequisites(input: PromptTaskInput): void {
+	const settlement = input.settlement as PromptTaskSettlement | undefined;
 	if (settlement === undefined || !Array.isArray(settlement.artifacts) || !Array.isArray(settlement.tests) || !Array.isArray(settlement.evidence)) {
 		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement artifacts, tests, and evidence are required before provider execution");
 	}
@@ -255,28 +255,28 @@ function containsSecretBearingField(value: FoundationJsonValue): boolean {
 	return Object.entries(value).some(([key, child]) => SECRET_BEARING_DEPENDENCY_FIELDS.has(key.replaceAll(/[_-]/g, "").toLowerCase()) || containsSecretBearingField(child));
 }
 
-function validateCompositionRootDependencies(dependencies: PromptTaskCompositionDependenciesV1): void {
+function validateCompositionRootDependencies(dependencies: PromptTaskCompositionDependencies): void {
 	const record = dependencies as unknown as Record<string, unknown>;
 	for (const name of PROMPT_TASK_DEPENDENCY_NAMES) {
 		const candidate = record[name];
 		if (candidate === undefined) throw new PromptTaskCompositionError("prompt_task_dependency_missing", `Prompt Task composition requires the ${name} dependency`, name);
 		if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency is invalid`, name);
-		const dependency = candidate as Partial<PromptTaskDependencyV1>;
+		const dependency = candidate as Partial<PromptTaskDependency>;
 		if (dependency.name !== name || !Number.isInteger(dependency.revision) || (dependency.revision ?? 0) < 1 || typeof dependency.resolve !== "function") {
 			throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency must expose its exact name, revision, and resolver`, name);
 		}
 	}
 }
 
-function validateDependencyResolution(name: PromptTaskDependencyNameV1, declaredRevision: number, value: PromptTaskDependencyResolutionV1): PromptTaskDependencyResolutionV1 {
+function validateDependencyResolution(name: PromptTaskDependencyName, declaredRevision: number, value: PromptTaskDependencyResolution): PromptTaskDependencyResolution {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned no immutable binding fact`, name);
-	const checkedReference = validateVersionedReferenceV1(value.reference);
+	const checkedReference = validateVersionedReference(value.reference);
 	if (!checkedReference.ok) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned an invalid revision reference`, name, checkedReference.error);
 	const reference = checkedReference.value;
 	if (reference.revision === undefined || reference.revision !== declaredRevision || reference.revision < 1 || reference.fingerprint === undefined || reference.type !== PROMPT_TASK_DEPENDENCY_FACT_TYPES[name]) {
 		throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned the wrong immutable fact type or revision`, name);
 	}
-	if (!validateProviderJsonV1(value.payload)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned a non-JSON binding fact`, name);
+	if (!validateProviderJson(value.payload)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned a non-JSON binding fact`, name);
 	const payload = value.payload;
 	if (containsSecretBearingField(payload)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned secret-bearing material instead of an immutable reference`, name);
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned a non-object binding fact`, name);
@@ -290,8 +290,8 @@ function validateDependencyResolution(name: PromptTaskDependencyNameV1, declared
 }
 
 async function resolveDependencies(
-	dependencies: PromptTaskCompositionDependenciesV1,
-	context: PromptTaskDependencyContextV1,
+	dependencies: PromptTaskCompositionDependencies,
+	context: PromptTaskDependencyContext,
 ): Promise<ResolvedPromptTaskDependencies> {
 	const resolved = {} as ResolvedPromptTaskDependencies;
 	for (const name of PROMPT_TASK_DEPENDENCY_NAMES) {
@@ -306,7 +306,7 @@ async function resolveDependencies(
 }
 
 async function persistImmutableFact(
-	ledger: SessionLedgerV1,
+	ledger: SessionLedger,
 	objectType: string,
 	objectId: string,
 	payload: FoundationJsonValue,
@@ -327,11 +327,11 @@ async function persistImmutableFact(
 }
 
 async function persistBindingSources(
-	options: PromptTaskCompositionRootOptionsV1,
-	input: PromptTaskInputV1,
+	options: PromptTaskCompositionRootOptions,
+	input: PromptTaskInput,
 	resolved: ResolvedPromptTaskDependencies,
 ): Promise<void> {
-	const ledger = new SessionLedgerV1(options.harness.session, { ownerId: options.ownerId ?? `prompt-task:${input.identity.bindingId}`, writer: options.writer });
+	const ledger = new SessionLedger(options.harness.session, { ownerId: options.ownerId ?? `prompt-task:${input.identity.bindingId}`, writer: options.writer });
 	try {
 		await persistImmutableFact(ledger, "role_revision", input.roleRevision.roleRevisionId, input.roleRevision as unknown as FoundationJsonValue, input.task.taskId, input.identity.bindingId, `prompt-task:role:${input.roleRevision.roleRevisionId}`);
 		await persistImmutableFact(ledger, "model_profile_revision", input.modelProfile.modelProfileId, input.modelProfile as unknown as FoundationJsonValue, input.task.taskId, input.identity.bindingId, `prompt-task:model-profile:${input.modelProfile.modelProfileId}`);
@@ -344,8 +344,8 @@ async function persistBindingSources(
 	}
 }
 
-function createTask(input: PromptTaskInputV1, timestamp: string): TaskEnvelopeV1 {
-	const created = createTaskEnvelopeV1({
+function createTask(input: PromptTaskInput, timestamp: string): TaskEnvelope {
+	const created = createTaskEnvelope({
 		...input.task,
 		schemaVersion: 1,
 		goal: input.prompt,
@@ -358,11 +358,11 @@ function createTask(input: PromptTaskInputV1, timestamp: string): TaskEnvelopeV1
 }
 
 function createBinding(
-	input: PromptTaskInputV1,
-	task: TaskEnvelopeV1,
+	input: PromptTaskInput,
+	task: TaskEnvelope,
 	resolved: ResolvedPromptTaskDependencies,
 	timestamp: string,
-): AgentBindingV1 {
+): AgentBinding {
 	const binding = resolveAgentBinding({
 		task,
 		roleRevision: input.roleRevision,
@@ -385,9 +385,9 @@ function explicitAgentQuery(prompt: string): string | undefined {
 }
 
 function selectSubagentRole(
-	options: NonNullable<PromptTaskCompositionRootOptionsV1["subagentRoles"]>,
+	options: NonNullable<PromptTaskCompositionRootOptions["subagentRoles"]>,
 	prompt: string,
-): RoleRevisionV1 | undefined {
+): RoleRevision | undefined {
 	const explicit = explicitAgentQuery(prompt);
 	if (explicit !== undefined) {
 		const byId = options.registry.get({ roleId: explicit, scope: options.scope });
@@ -407,21 +407,21 @@ function selectSubagentRole(
 	return undefined;
 }
 
-function createDispatch(input: PromptTaskInputV1, task: TaskEnvelopeV1, provider: TaskExecutorProvider, timestamp: string): DispatchV1 {
-	const dispatch = validateDispatchV1({ schemaVersion: 1, dispatchId: input.identity.dispatchId, taskId: task.taskId, bindingId: input.identity.bindingId, taskExecutorProviderId: provider.providerId, status: "pending", createdAt: timestamp });
+function createDispatch(input: PromptTaskInput, task: TaskEnvelope, provider: TaskExecutorProvider, timestamp: string): Dispatch {
+	const dispatch = validateDispatch({ schemaVersion: 1, dispatchId: input.identity.dispatchId, taskId: task.taskId, bindingId: input.identity.bindingId, taskExecutorProviderId: provider.providerId, status: "pending", createdAt: timestamp });
 	if (!dispatch.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Prompt Task input could not create a Dispatch", undefined, dispatch.error);
 	return dispatch.value;
 }
 
 function createExecutionIdentity(
-	input: PromptTaskInputV1,
-	task: TaskEnvelopeV1,
+	input: PromptTaskInput,
+	task: TaskEnvelope,
 	provider: TaskExecutorProvider,
 	timestamp: string,
-): { readonly epoch: BindingEpochV1; readonly agentInstance?: AgentInstanceV1 } {
+): { readonly epoch: BindingEpoch; readonly agentInstance?: AgentInstance } {
 	const isAgent = provider.providerClass === "agent";
 	if (isAgent !== (input.identity.agentInstanceId !== undefined)) throw new PromptTaskCompositionError("prompt_task_input_invalid", isAgent ? "Agent provider requires agentInstanceId" : "Non-agent provider forbids agentInstanceId");
-	const epoch = createOrderedBindingEpochV1({ bindingEpochId: input.identity.bindingEpochId, taskId: task.taskId, attemptId: input.identity.attemptId, bindingId: input.identity.bindingId, activationReason: "attempt_started", activatedByCommandId: input.identity.dispatchId, ...(input.identity.agentInstanceId === undefined ? {} : { agentInstanceId: input.identity.agentInstanceId }), now: () => timestamp });
+	const epoch = createOrderedBindingEpoch({ bindingEpochId: input.identity.bindingEpochId, taskId: task.taskId, attemptId: input.identity.attemptId, bindingId: input.identity.bindingId, activationReason: "attempt_started", activatedByCommandId: input.identity.dispatchId, ...(input.identity.agentInstanceId === undefined ? {} : { agentInstanceId: input.identity.agentInstanceId }), now: () => timestamp });
 	if (!epoch.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Prompt Task input could not create the initial BindingEpoch", undefined, epoch.error);
 	if (!isAgent || input.identity.agentInstanceId === undefined) return { epoch: epoch.value };
 	const created = createAgentInstance({ agentInstanceId: input.identity.agentInstanceId, providerId: provider.providerId, providerDeclaredAgent: true, roleRevision: input.roleRevision, taskId: task.taskId, now: () => timestamp });
@@ -435,14 +435,14 @@ async function requireReceipt<T>(session: CreateCodingAgentHarnessOptions["sessi
 	return record.payload as unknown as T;
 }
 
-async function findAttemptReceipt(session: CreateCodingAgentHarnessOptions["session"], attemptId: string): Promise<AttemptReceiptV1> {
+async function findAttemptReceipt(session: CreateCodingAgentHarnessOptions["session"], attemptId: string): Promise<AttemptReceipt> {
 	const records = await session.findFoundationRecords({ kind: "fact", objectType: "attempt_receipt", order: "oldestFirst" });
 	const record = records.find((candidate) => candidate.kind === "fact" && (candidate.payload as { attemptId?: unknown }).attemptId === attemptId);
 	if (record?.kind !== "fact") throw new PromptTaskCompositionError("prompt_task_receipt_missing", `Prompt Task execution did not persist an AttemptReceipt for ${attemptId}`);
-	return record.payload as unknown as AttemptReceiptV1;
+	return record.payload as unknown as AttemptReceipt;
 }
 
-export function createPromptTaskAdapter(options: PromptTaskCompositionRootOptionsV1): PromptTaskAdapterV1 {
+export function createPromptTaskAdapter(options: PromptTaskCompositionRootOptions): PromptTaskAdapter {
 	validateCompositionRootDependencies(options.dependencies);
 	requireNonempty(options.provider.providerId, "provider.providerId");
 	if (options.harness.drive === "manual") throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task composition requires automatic Harness drive to produce terminal receipts");
@@ -471,15 +471,15 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				? undefined
 				: selectSubagentRole(options.subagentRoles, input.prompt);
 			const childExecutionConfigured = selectedRole !== undefined || options.subagentRoles?.compose !== undefined;
-			const checkedRole = validateRoleRevisionV1(input.roleRevision);
+			const checkedRole = validateRoleRevision(input.roleRevision);
 			if (!checkedRole.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision is invalid", undefined, checkedRole.error);
 			const { fingerprint: _roleFingerprint, ...roleBase } = checkedRole.value;
 			if (fingerprintFoundationValue(roleBase).value !== checkedRole.value.fingerprint.value) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision fingerprint is invalid");
-			const checkedProfile = validateSecretFreeModelProfileV1(input.modelProfile);
+			const checkedProfile = validateSecretFreeModelProfile(input.modelProfile);
 			if (!checkedProfile.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task ModelProfile is invalid", undefined, checkedProfile.error);
 			const normalizedInput = { ...input, roleRevision: checkedRole.value, modelProfile: checkedProfile.value };
 			const task = createTask(normalizedInput, timestamp);
-			const persistedTask = await persistTaskEnvelopeBeforeResolverV1(options.harness.session, task, { ownerId: options.ownerId, writer: options.writer });
+			const persistedTask = await persistTaskEnvelopeBeforeResolver(options.harness.session, task, { ownerId: options.ownerId, writer: options.writer });
 			if (!persistedTask.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task TaskEnvelope could not be persisted before resolution", undefined, persistedTask.error);
 			const resolved = await resolveDependencies(options.dependencies, { prompt: input.prompt, task: persistedTask.value, roleRevision: checkedRole.value, modelProfile: checkedProfile.value });
 			if (resolved.adapter.reference.providerId !== options.provider.providerId) {
@@ -499,7 +499,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				...(identity.agentInstance === undefined ? {} : { agentInstanceId: identity.agentInstance.agentInstanceId, agentInstance: identity.agentInstance }),
 				...(childExecutionConfigured ? {} : {
 					settlement: input.settlement,
-					hostAuthority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+					hostAuthority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
 				}),
 			};
 			let created: { harness: AgentHarness };
@@ -519,14 +519,14 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				await created.harness.activateFoundationExecution(foundationExecution, options.provider);
 			}
 			let childAttemptReceiptIds: readonly string[] = [];
-			let parentCorrelationForSettlement: ExecutionCorrelationV1 | undefined;
+			let parentCorrelationForSettlement: ExecutionCorrelation | undefined;
 			if (childExecutionConfigured && options.subagentRoles !== undefined) {
 				if (input.runId === undefined) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Selected Child Agent execution requires a stable runId");
 				if (identity.agentInstance === undefined) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent execution requires a parent AgentInstance");
-				const checkedSelectedRole = selectedRole === undefined ? undefined : validateRoleRevisionV1(selectedRole);
+				const checkedSelectedRole = selectedRole === undefined ? undefined : validateRoleRevision(selectedRole);
 				if (checkedSelectedRole !== undefined && !checkedSelectedRole.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is invalid", undefined, checkedSelectedRole.error);
 				const metadata = await options.harness.session.getMetadata();
-				const parentCorrelation: ExecutionCorrelationV1 = {
+				const parentCorrelation: ExecutionCorrelation = {
 					sessionId: metadata.id,
 					laneId: options.subagentRoles.parentLaneId,
 					runId: input.runId,
@@ -541,7 +541,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					revision: 0,
 				};
 				parentCorrelationForSettlement = parentCorrelation;
-				const settlement = new LayeredResultSettlementV1(options.harness.session, {
+				const settlement = new LayeredResultSettlement(options.harness.session, {
 					ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
 					writer: options.writer ?? created.harness.t5.writer,
 				});
@@ -558,7 +558,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					if (!started.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent Attempt could not be persisted before Child Agent spawn", undefined, started.error);
 					const durableParent = await options.harness.session.getFoundationObject("agent_instance", identity.agentInstance.agentInstanceId);
 					const checkedDurableParent = durableParent?.kind === "fact"
-						? validateAgentInstanceV1(durableParent.payload)
+						? validateAgentInstance(durableParent.payload)
 						: undefined;
 					if (checkedDurableParent === undefined || !checkedDurableParent.ok) {
 						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent AgentInstance proof is not durable before Child Agent spawn");
@@ -602,7 +602,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				}
 			}
 			if (input.signal?.aborted) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task was aborted before provider execution");
-			let execution: PromptTaskExecutionV1 | undefined;
+			let execution: PromptTaskExecution | undefined;
 			let executionError: unknown;
 			try {
 				const preflight = (signal: AbortSignal): void => {
@@ -621,16 +621,16 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					});
 				if (!run.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task Harness rejected the prompt: ${run.error.message}`, undefined, run.error);
 				const attemptReceipt = await findAttemptReceipt(options.harness.session, input.identity.attemptId);
-				let taskResult: TaskResultV1;
-				let runReceipt: RunReceiptV1;
+				let taskResult: TaskResult;
+				let runReceipt: RunReceipt;
 				if (childAttemptReceiptIds.length === 0) {
-					taskResult = await requireReceipt<TaskResultV1>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
-					runReceipt = await requireReceipt<RunReceiptV1>(options.harness.session, "run_receipt", run.value.runId);
+					taskResult = await requireReceipt<TaskResult>(options.harness.session, "task_result", `task_result_${run.value.runId}`);
+					runReceipt = await requireReceipt<RunReceipt>(options.harness.session, "run_receipt", run.value.runId);
 				} else {
 					if (parentCorrelationForSettlement === undefined) {
 						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent parent settlement correlation is missing");
 					}
-					const settlement = new LayeredResultSettlementV1(options.harness.session, {
+					const settlement = new LayeredResultSettlement(options.harness.session, {
 						ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
 						writer: options.writer ?? created.harness.t5.writer,
 					});
@@ -667,7 +667,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 							runReceiptId: `run_receipt_${run.value.runId}`,
 							runId: run.value.runId,
 							terminalStatus,
-							authority: createHostTerminalGateAuthorityV1(resolved.gate.reference.id, resolved.gate.reference.revision),
+							authority: createHostTerminalGateAuthority(resolved.gate.reference.id, resolved.gate.reference.revision),
 							attemptReceiptIds,
 							taskResultId: taskResult.taskResultId,
 							...(terminalStatus === "completed" ? {} : {

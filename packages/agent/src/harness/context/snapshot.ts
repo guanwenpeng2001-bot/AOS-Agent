@@ -91,7 +91,7 @@ export interface ContextInheritanceOptions {
 }
 
 /** Metadata-only build fact; the actual context is reconstructed from Session entries. */
-export interface ContextBuildFactV1 {
+export interface ContextBuildFact {
 	readonly schemaVersion: 1;
 	readonly buildId: string;
 	readonly bindingEpochId: string;
@@ -104,7 +104,7 @@ export interface ContextBuildFactV1 {
 }
 
 /** Persistable task package metadata. Package bodies remain Session/artifact refs. */
-export interface TaskContextPackageV1 {
+export interface TaskContextPackage {
 	readonly schemaVersion: 1;
 	readonly packageId?: string;
 	readonly taskId: string;
@@ -120,8 +120,7 @@ export interface TaskContextPackageV1 {
 	readonly createdAt?: number;
 	readonly goalDigest?: string;
 }
-export type TaskContextPackage = TaskContextPackageV1;
-export type PersistedTaskContextPackageV1 = Omit<TaskContextPackageV1, "entries" | "goal"> & { readonly goalDigest?: string };
+export type PersistedTaskContextPackage = Omit<TaskContextPackage, "entries" | "goal"> & { readonly goalDigest?: string };
 
 export interface ContextSnapshotState {
 	readonly thinkingLevel: string;
@@ -137,7 +136,7 @@ export interface ContextRecoveryBoundary {
 }
 
 /** Metadata-only durable representation. It intentionally has no message body. */
-export interface ContextSnapshotV1 {
+export interface ContextSnapshotRecord {
 	readonly schemaVersion: 1;
 	readonly id: string;
 	readonly snapshotId: string;
@@ -147,8 +146,8 @@ export interface ContextSnapshotV1 {
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
 	readonly bindingEpochId: string;
-	readonly buildFact?: ContextBuildFactV1;
-	readonly taskPackage?: PersistedTaskContextPackageV1;
+	readonly buildFact?: ContextBuildFact;
+	readonly taskPackage?: PersistedTaskContextPackage;
 	readonly source: ContextSnapshotSource;
 	readonly sources: readonly ContextSnapshotSource[];
 	readonly trust: ContextTrust;
@@ -163,7 +162,6 @@ export interface ContextSnapshotV1 {
 	readonly headEntryId: string | null;
 	readonly entryIds: readonly string[];
 }
-export type ContextSnapshotRecordV1 = ContextSnapshotV1;
 
 export interface ContextSnapshotForkOptions {
 	readonly id?: string;
@@ -172,13 +170,13 @@ export interface ContextSnapshotForkOptions {
 	readonly createdAt?: number;
 	readonly mode?: ContextForkMode;
 	readonly recentN?: number;
-	readonly taskPackage?: TaskContextPackageV1;
+	readonly taskPackage?: TaskContextPackage;
 	readonly inheritance?: ContextInheritanceOptions;
 	readonly summary?: string;
 	readonly summaryRef?: ArtifactReference;
 	readonly summaryDigest?: string;
 	readonly bindingEpochId?: string;
-	readonly buildFact?: ContextBuildFactV1;
+	readonly buildFact?: ContextBuildFact;
 	readonly source?: Partial<ContextSnapshotSource> | string;
 	readonly budget?: Partial<ContextSnapshotBudget> | number;
 }
@@ -193,8 +191,8 @@ export interface ContextSnapshotOptions {
 	readonly createdAt?: number;
 	readonly revision?: number;
 	readonly bindingEpochId?: string;
-	readonly buildFact?: ContextBuildFactV1;
-	readonly taskPackage?: TaskContextPackageV1;
+	readonly buildFact?: ContextBuildFact;
+	readonly taskPackage?: TaskContextPackage;
 	readonly source?: Partial<ContextSnapshotSource> | string;
 	readonly sources?: readonly ContextSnapshotSource[];
 	readonly trust?: ContextTrust;
@@ -217,8 +215,8 @@ export interface ContextSnapshot {
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
 	readonly bindingEpochId: string;
-	readonly buildFact?: ContextBuildFactV1;
-	readonly taskPackage?: PersistedTaskContextPackageV1;
+	readonly buildFact?: ContextBuildFact;
+	readonly taskPackage?: PersistedTaskContextPackage;
 	readonly source: ContextSnapshotSource;
 	readonly headEntryId: string | null;
 	sources(): readonly ContextSnapshotSource[];
@@ -234,7 +232,7 @@ export interface ContextSnapshot {
 	state(): ContextSnapshotState;
 	/** Returns the transient summary body; it is never emitted by toJSON(). */
 	summary(): string | undefined;
-	toJSON(): ContextSnapshotV1;
+	toJSON(): ContextSnapshotRecord;
 	fork(options?: ContextSnapshotForkOptions): ContextSnapshot;
 	rewindTo(entryId: string): ContextSnapshot | undefined;
 }
@@ -262,8 +260,8 @@ function normalizeDigest(value: string): string {
 	return /^sha256:[0-9a-f]{64}$/.test(value) ? value : digest(value);
 }
 
-function persistedTaskPackage(value: TaskContextPackageV1 | PersistedTaskContextPackageV1): PersistedTaskContextPackageV1 {
-	const runtime = value as TaskContextPackageV1;
+function persistedTaskPackage(value: TaskContextPackage | PersistedTaskContextPackage): PersistedTaskContextPackage {
+	const runtime = value as TaskContextPackage;
 	const { goal: _goal, entries: _entries, ...metadata } = runtime;
 	return {
 		...metadata,
@@ -367,7 +365,7 @@ function budgetValue(value: ContextSnapshotOptions["budget"], usedTokens: number
 	return { maxTokens, usedTokens: budget?.usedTokens ?? usedTokens, reservedTokens };
 }
 
-function forkEntries(entries: readonly Entry[], mode: ContextForkMode, recentN: number | undefined, taskPackage: TaskContextPackageV1 | undefined): Entry[] {
+function forkEntries(entries: readonly Entry[], mode: ContextForkMode, recentN: number | undefined, taskPackage: TaskContextPackage | undefined): Entry[] {
 	if (mode === "none") return [];
 	if (mode === "all") return entries.map(clone);
 	if (mode === "recent-N") {
@@ -386,8 +384,8 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 	readonly checkpointId: string | null;
 	readonly createdAt: number;
 	readonly bindingEpochId: string;
-	readonly buildFact?: ContextBuildFactV1;
-	readonly taskPackage?: PersistedTaskContextPackageV1;
+	readonly buildFact?: ContextBuildFact;
+	readonly taskPackage?: PersistedTaskContextPackage;
 	readonly source: ContextSnapshotSource;
 	readonly trust: ContextTrust;
 	readonly budget: ContextSnapshotBudget;
@@ -479,7 +477,7 @@ export class ImmutableContextSnapshot implements ContextSnapshot {
 	summary(): string | undefined {
 		return this.summaryTextValue;
 	}
-	toJSON(): ContextSnapshotV1 {
+	toJSON(): ContextSnapshotRecord {
 		return deepFreeze({
 			schemaVersion: CONTEXT_SNAPSHOT_SCHEMA_VERSION,
 			id: this.id,
@@ -557,7 +555,7 @@ export function createContextSnapshot(entries: readonly Entry[], options: Contex
 	return new ImmutableContextSnapshot(entries, options);
 }
 
-export function contextSnapshotFromJSON(record: ContextSnapshotV1, entries: readonly Entry[]): ContextSnapshot {
+export function contextSnapshotFromJSON(record: ContextSnapshotRecord, entries: readonly Entry[]): ContextSnapshot {
 	if (record.bindingEpochId.length === 0) throw new Error(`Context snapshot ${record.snapshotId} has no BindingEpoch`);
 	if (record.buildFact !== undefined && record.buildFact.bindingEpochId !== record.bindingEpochId) throw new Error(`Context snapshot ${record.snapshotId} has a mismatched build BindingEpoch`);
 	if (record.taskPackage?.bindingEpochId !== undefined && record.taskPackage.bindingEpochId !== record.bindingEpochId) throw new Error(`Context snapshot ${record.snapshotId} has a mismatched task package BindingEpoch`);

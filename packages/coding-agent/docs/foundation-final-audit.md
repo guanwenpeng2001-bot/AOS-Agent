@@ -1,6 +1,6 @@
-# Foundation v1 Final Audit
+# Foundation Final Audit
 
-Audit verdict: the Foundation v1 integration candidate satisfies the local
+Audit verdict: the Foundation integration candidate satisfies the local
 seal and repository-wide validation gates. The user authorized PR, CI, and
 `main` integration; external final review and protected-branch CI remain the
 promotion gates.

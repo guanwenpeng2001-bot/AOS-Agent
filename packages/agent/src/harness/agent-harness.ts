@@ -24,39 +24,39 @@ import {
 	redactText,
 	sha256HexValue,
 	validateArtifactRef,
-	validateArtifactDescriptorV1,
-	validateArtifactPutResultV1,
-	validateArtifactVerifyResultV1,
-	validateDispatchV1,
-	validateHostTerminalGateAuthorityV1,
-	validateImmutableAgentBindingV1,
-	validateTaskEnvelopeV1,
-	LayeredResultSettlementV1,
-	persistTaskEnvelopeBeforeResolverV1,
-	validateDurableBindingSourcesV1,
-	validateAgentInstanceV1,
-	validateBindingEpochV1,
+	validateArtifactDescriptor,
+	validateArtifactPutResult,
+	validateArtifactVerifyResult,
+	validateDispatch,
+	validateHostTerminalGateAuthority,
+	validateImmutableAgentBinding,
+	validateTaskEnvelope,
+	LayeredResultSettlement,
+	persistTaskEnvelopeBeforeResolver,
+	validateDurableBindingSources,
+	validateAgentInstance,
+	validateBindingEpoch,
 	createFoundationHostModelCallAdapter,
 	foundationModelCallErrorStream,
-	type AcceptanceFactV1,
-	type AgentInstanceV1,
-	type AgentBindingV1,
-	type BindingEpochV1,
-	type ArtifactRefV1,
-	type ArtifactDescriptorV1,
+	type AcceptanceFact,
+	type AgentInstance,
+	type AgentBinding,
+	type BindingEpoch,
+	type ArtifactRef,
+	type ArtifactDescriptor,
 	type ArtifactStoreProvider,
-	type AttemptReceiptV1,
-	type DispatchV1,
-	type ExecutionCorrelationV1,
+	type AttemptReceipt,
+	type Dispatch,
+	type ExecutionCorrelation,
 	type FoundationJsonValue,
-	type FoundationHostModelCallAdapterV1,
-	type HostTerminalGateAuthorityV1,
+	type FoundationHostModelCallAdapter,
+	type HostTerminalGateAuthority,
 	type TaskExecutorProvider,
-	type RunReceiptV1,
-	type SideEffectStateV1,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
-	type ValidationResultV1,
+	type RunReceipt,
+	type SideEffectState,
+	type TaskEnvelope,
+	type TaskResult,
+	type ValidationResult,
 } from "./foundation/index.ts";
 import { calculateContextTokens, compact as generateCompaction, estimateContextTokens, prepareCompaction, shouldCompact, type CompactionPreparation, type CompactionSettings } from "./compaction/compaction.ts";
 import { generateBranchSummary } from "./compaction/branch-summarization.ts";
@@ -74,33 +74,33 @@ import {
 import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import {
-	FoundationToolPipelineV1,
-	FoundationToolGuardV1,
-	FoundationToolQuotaAccountV1,
+	FoundationToolPipeline,
+	FoundationToolGuard,
+	FoundationToolQuotaAccount,
 	FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
-	SessionToolPipelineStorageV1,
-	projectToolReceiptExecutionSemanticsV1,
-	validateAndVerifyToolReceiptV1,
-	validateFoundationToolResultEntryV1,
-	validateToolIntentV1,
-	validateToolReceiptV1,
-	validateToolResultPayloadV1,
-	digestToolArgumentsV1,
-	type ToolDefinitionRegistryV1,
-	type ToolDefinitionV1,
-	type ToolBindingRefV1,
-	type ToolExecutionV1,
-	type ToolIntentV1,
-	type ToolPipelineContextV1,
-	type ToolPipelineOptionsV1,
-	type ToolGateScopeV1,
-	type ToolReceiptV1,
-	type ToolReceiptOutcomeV1,
-	type FoundationToolResultEntryV1,
-	type ToolResultPayloadV1,
-	type ToolResultContentV1,
-	type ToolResultUsageV1,
-	type ToolRevisionV1,
+	SessionToolPipelineStorage,
+	projectToolReceiptExecutionSemantics,
+	validateAndVerifyToolReceipt,
+	validateFoundationToolResultEntry,
+	validateToolIntent,
+	validateToolReceipt,
+	validateToolResultPayload,
+	fingerprintToolArguments,
+	type ToolDefinitionRegistry,
+	type ToolDefinition,
+	type ToolBindingRef,
+	type ToolExecution,
+	type ToolIntent,
+	type ToolPipelineContext,
+	type ToolPipelineOptions,
+	type ToolGateScope,
+	type ToolReceipt,
+	type ToolReceiptOutcome,
+	type FoundationToolResultEntry,
+	type ToolResultPayload,
+	type ToolResultContent,
+	type ToolResultUsage,
+	type ToolRevision,
 } from "./tool-pipeline.ts";
 import {
 	assertJsonSerializable,
@@ -122,8 +122,8 @@ import {
 	type WriteDeferredRecord,
 	SessionError,
 	DurableLedgerError,
-	type FoundationRecordV1,
-	type ProvisionedFoundationRecordV1,
+	type FoundationRecord,
+	type ProvisionedFoundationRecord,
 } from "./session/index.ts";
 import type { TelemetryContext } from "./telemetry.ts";
 import { type AgentHarnessResources, type PromptTemplate, type Skill, toError } from "./types.ts";
@@ -388,7 +388,7 @@ class EventsFacade implements Events {
 	}
 }
 
-export type HarnessTool = AgentTool & { replay?: "never" | "safe"; sideEffectState?: SideEffectStateV1 };
+export type HarnessTool = AgentTool & { replay?: "never" | "safe"; sideEffectState?: SideEffectState };
 export type Resources = AgentHarnessResources<Skill, PromptTemplate>;
 export type StreamOptions = SimpleStreamOptions;
 export type StreamOptionsPatch = Partial<SimpleStreamOptions>;
@@ -477,22 +477,22 @@ export interface HarnessNavigationHookResult {
  * a Task, Binding, Dispatch, or AgentInstance on behalf of a prompt.
  */
 export interface AgentHarnessFoundationExecution {
-	task: TaskEnvelopeV1;
-	dispatch: DispatchV1;
-	binding: AgentBindingV1;
+	task: TaskEnvelope;
+	dispatch: Dispatch;
+	binding: AgentBinding;
 	providerId: string;
-	initialBindingEpoch: BindingEpochV1;
+	initialBindingEpoch: BindingEpoch;
 	agentInstanceId?: string;
-	agentInstance?: AgentInstanceV1;
+	agentInstance?: AgentInstance;
 	bindingEpochIds: readonly string[];
 	settlement?: {
 		summary?: string;
-		artifacts?: readonly ArtifactRefV1[];
-		diff?: ArtifactRefV1;
-		tests?: readonly ValidationResultV1[];
-		evidence?: readonly AcceptanceFactV1[];
+		artifacts?: readonly ArtifactRef[];
+		diff?: ArtifactRef;
+		tests?: readonly ValidationResult[];
+		evidence?: readonly AcceptanceFact[];
 	};
-	hostAuthority?: HostTerminalGateAuthorityV1;
+	hostAuthority?: HostTerminalGateAuthority;
 }
 
 export interface AgentHarnessOptions {
@@ -535,12 +535,12 @@ export interface AgentHarnessOptions {
 	/** Trusted provider consumer. Receipts may only be obtained by consuming this provider. */
 	foundationProvider?: TaskExecutorProvider;
 	/** T6 host model-call boundary; defaults to the draft adapter over Models. */
-	foundationModelCallAdapter?: FoundationHostModelCallAdapterV1;
+	foundationModelCallAdapter?: FoundationHostModelCallAdapter;
 	/** Host-owned artifact provider; method-bearing providers never enter durable execution state. */
 	artifactStore?: ArtifactStoreProvider;
 	/** Optional pipeline override; when Foundation execution is configured, storage defaults to the Session ledger. */
-	toolPipeline?: FoundationToolPipelineV1;
-	toolPipelineOptions?: Omit<ToolPipelineOptionsV1, "registry" | "storage">;
+	toolPipeline?: FoundationToolPipeline;
+	toolPipelineOptions?: Omit<ToolPipelineOptions, "registry" | "storage">;
 }
 
 export interface WatchHandle<TSnapshot> {
@@ -559,10 +559,10 @@ interface ActiveOperation {
 
 interface FoundationReceiptBundle {
 	attemptId: string;
-	attemptReceipt: AttemptReceiptV1;
-	taskResult?: TaskResultV1;
-	runReceipt?: RunReceiptV1;
-	correlation: ExecutionCorrelationV1;
+	attemptReceipt: AttemptReceipt;
+	taskResult?: TaskResult;
+	runReceipt?: RunReceipt;
+	correlation: ExecutionCorrelation;
 }
 
 type FoundationModelInvocationStatusV1 = "pending" | "succeeded" | "failed" | "unknown";
@@ -576,7 +576,7 @@ interface FoundationModelInvocationV1 {
 	readonly routeDigest: string;
 	readonly selectedTarget: FoundationJsonValue;
 	readonly contextSnapshotId?: string;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly correlation: ExecutionCorrelation;
 }
 
 interface FoundationModelUsageSummaryV1 {
@@ -598,7 +598,7 @@ function emptyModelUsage(): Usage {
 
 interface FoundationToolOutcome {
 	failed: boolean;
-	sideEffectState: SideEffectStateV1;
+	sideEffectState: SideEffectState;
 	error?: OperationError;
 }
 
@@ -731,11 +731,11 @@ function operationError(error: unknown): OperationError {
 	};
 }
 
-function foundationToolUsage(usage: Usage): NonNullable<ToolExecutionV1["usage"]> {
+function foundationToolUsage(usage: Usage): NonNullable<ToolExecution["usage"]> {
 	return { tokens: usage.totalTokens, costUsd: usage.cost.total, toolCalls: 1 };
 }
 
-function agentUsageFromToolResultUsage(usage: ToolResultUsageV1): Usage {
+function agentUsageFromToolResultUsage(usage: ToolResultUsage): Usage {
 	return {
 		input: usage.input,
 		output: usage.output,
@@ -789,7 +789,7 @@ function toolStartedExecutionSemantics(start: ToolStartedRecord): string {
 	}
 }
 
-function foundationBindingCorrelationMismatch(binding: ToolBindingRefV1, correlation: ExecutionCorrelationV1): string | undefined {
+function foundationBindingCorrelationMismatch(binding: ToolBindingRef, correlation: ExecutionCorrelation): string | undefined {
 	for (const [field, expected] of [
 		["sessionId", correlation.sessionId],
 		["laneId", correlation.laneId],
@@ -808,7 +808,7 @@ function foundationBindingCorrelationMismatch(binding: ToolBindingRefV1, correla
 	return undefined;
 }
 
-function receiptMatchesIntentCanonical(receipt: ToolReceiptV1, intent: ToolIntentV1): boolean {
+function receiptMatchesIntentCanonical(receipt: ToolReceipt, intent: ToolIntent): boolean {
 	return canonicalFoundationJson({
 		toolCallId: receipt.toolCallId,
 		toolName: receipt.toolName,
@@ -890,8 +890,8 @@ async function foundationToolResultPayload(
 	artifactStore: ArtifactStoreProvider | undefined,
 	producerId: string | undefined,
 	toolCallId: string,
-): Promise<ResultValue<{ result: ToolResultPayloadV1; artifacts: readonly ArtifactRefV1[] }, FoundationError>> {
-	const content: ToolResultContentV1[] = [];
+): Promise<ResultValue<{ result: ToolResultPayload; artifacts: readonly ArtifactRef[] }, FoundationError>> {
+	const content: ToolResultContent[] = [];
 	for (const item of result.content) {
 		if (item.type === "text") {
 			const safeText = redactText(item.text);
@@ -909,7 +909,7 @@ async function foundationToolResultPayload(
 			return Result.err(new FoundationError("side_effect_unknown", "image tool result is not valid base64"));
 		}
 		const digest = rawSha256(bytes);
-		const descriptor: ArtifactDescriptorV1 = {
+		const descriptor: ArtifactDescriptor = {
 			schemaVersion: 1,
 			artifactId: digest,
 			name: `tool-result-image:${toolCallId}`,
@@ -921,7 +921,7 @@ async function foundationToolResultPayload(
 			validationState: "pending",
 			sizeBytes: bytes.byteLength,
 		};
-		const checkedDescriptor = validateArtifactDescriptorV1(descriptor);
+		const checkedDescriptor = validateArtifactDescriptor(descriptor);
 		if (!checkedDescriptor.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore descriptor is invalid"));
 		let stored: Awaited<ReturnType<ArtifactStoreProvider["put"]>>;
 		try {
@@ -930,7 +930,7 @@ async function foundationToolResultPayload(
 			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
 		}
 		if (!stored.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
-		const checkedPut = validateArtifactPutResultV1(stored.value);
+		const checkedPut = validateArtifactPutResult(stored.value);
 		if (!checkedPut.ok || checkedPut.value.ref !== checkedDescriptor.value.artifactId || checkedPut.value.sizeBytes !== bytes.byteLength) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put returned an unverifiable reference"));
 		const checkedArtifact = validateArtifactRef({ schemaVersion: 1, artifactId: checkedPut.value.ref, mediaType: item.mimeType, digest: checkedDescriptor.value.digest, producer: producerId, sizeBytes: bytes.byteLength });
 		if (!checkedArtifact.ok) {
@@ -940,7 +940,7 @@ async function foundationToolResultPayload(
 		if (!integrity.ok) return integrity;
 		content.push({ type: "image", artifact: checkedArtifact.value });
 	}
-	const payload: ToolResultPayloadV1 = {
+	const payload: ToolResultPayload = {
 		schemaVersion: 1,
 		content,
 		...(result.details === undefined ? {} : { details: foundationJsonValue(redactProjection(result.details)) }),
@@ -960,19 +960,19 @@ async function foundationToolResultPayload(
 					cacheWrite: result.usage.cost.cacheWrite,
 					total: result.usage.cost.total,
 				},
-			} satisfies ToolResultUsageV1,
+			} satisfies ToolResultUsage,
 		}),
 		...(result.addedToolNames === undefined ? {} : { addedToolNames: [...result.addedToolNames] }),
 		...(result.terminate === undefined ? {} : { terminate: result.terminate }),
 	};
-	const checkedPayload = validateToolResultPayloadV1(payload);
+	const checkedPayload = validateToolResultPayload(payload);
 	if (!checkedPayload.ok) return checkedPayload;
 	return Result.ok({ result: checkedPayload.value, artifacts: foundationToolResultArtifacts(checkedPayload.value) });
 }
 
-async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefined, artifactStore: ArtifactStoreProvider | undefined): Promise<ResultValue<AgentToolResult<unknown>, FoundationError>> {
+async function restoreFoundationToolResult(payload: ToolResultPayload | undefined, artifactStore: ArtifactStoreProvider | undefined): Promise<ResultValue<AgentToolResult<unknown>, FoundationError>> {
 	if (payload === undefined) return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload is missing or unrecoverable"));
-	const checked = validateToolResultPayloadV1(payload);
+	const checked = validateToolResultPayload(payload);
 	if (!checked.ok) return checked;
 	const content: AgentToolResult<unknown>["content"] = [];
 	for (const item of checked.value.content) {
@@ -983,7 +983,7 @@ async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefi
 		if (artifactStore === undefined) return Result.err(new FoundationError("side_effect_unknown", "durable image artifact cannot be recovered by this consumer"));
 		const integrity = await verifyArtifactStoreRef(artifactStore, item.artifact);
 		if (!integrity.ok) return integrity;
-		const restoredImage: ImageContent & { artifact: ArtifactRefV1 } = {
+		const restoredImage: ImageContent & { artifact: ArtifactRef } = {
 			type: "image",
 			data: encodeBase64(integrity.value),
 			mimeType: item.artifact.mediaType,
@@ -1019,7 +1019,7 @@ async function restoreFoundationToolResult(payload: ToolResultPayloadV1 | undefi
 
 async function verifyArtifactStoreRef(
 	artifactStore: ArtifactStoreProvider,
-	artifact: ArtifactRefV1,
+	artifact: ArtifactRef,
 ): Promise<ResultValue<Uint8Array, FoundationError>> {
 	const checkedArtifact = validateArtifactRef(artifact);
 	if (!checkedArtifact.ok || checkedArtifact.value.sizeBytes === undefined) {
@@ -1047,25 +1047,25 @@ async function verifyArtifactStoreRef(
 	if (verified === null || typeof verified !== "object" || !("ok" in verified) || verified.ok !== true || !("value" in verified)) {
 		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
 	}
-	const checkedVerify = validateArtifactVerifyResultV1(verified.value);
+	const checkedVerify = validateArtifactVerifyResult(verified.value);
 	if (!checkedVerify.ok || !checkedVerify.value.digestValid) {
 		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
 	}
 	return Result.ok(bytes);
 }
 
-function foundationToolResultArtifacts(payload: ToolResultPayloadV1): readonly ArtifactRefV1[] {
+function foundationToolResultArtifacts(payload: ToolResultPayload): readonly ArtifactRef[] {
 	return payload.content.flatMap((item) => item.type === "image" ? [item.artifact] : []);
 }
 
 interface FoundationReceiptFoldV1 {
-	representative: ToolReceiptV1;
-	outcome: ToolReceiptOutcomeV1;
-	sideEffectState: SideEffectStateV1;
-	result?: ToolResultPayloadV1;
+	representative: ToolReceipt;
+	outcome: ToolReceiptOutcome;
+	sideEffectState: SideEffectState;
+	result?: ToolResultPayload;
 }
 
-function toolReceiptSeverity(receipt: ToolReceiptV1): 1 | 2 | 3 {
+function toolReceiptSeverity(receipt: ToolReceipt): 1 | 2 | 3 {
 	if (receipt.outcome === "side_effect_unknown" || receipt.sideEffectState === "side_effect_unknown") return 3;
 	if (receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") return 2;
 	return 1;
@@ -1090,9 +1090,9 @@ function rawSha256(value: Uint8Array): string {
 }
 
 class HarnessToolPipelineError extends Error {
-	readonly sideEffectState: SideEffectStateV1;
+	readonly sideEffectState: SideEffectState;
 
-	constructor(message: string, sideEffectState: SideEffectStateV1) {
+	constructor(message: string, sideEffectState: SideEffectState) {
 		super(message);
 		this.name = "HarnessToolPipelineError";
 		this.sideEffectState = sideEffectState;
@@ -1157,10 +1157,10 @@ export class AgentHarness implements AgentLane {
 	private foundationExecution?: AgentHarnessFoundationExecution;
 	private readonly artifactStore?: ArtifactStoreProvider;
 	private foundationSessionId?: string;
-	private toolPipeline?: FoundationToolPipelineV1;
+	private toolPipeline?: FoundationToolPipeline;
 	private readonly toolPipelineOptions?: AgentHarnessOptions["toolPipelineOptions"];
 	private foundationProvider?: TaskExecutorProvider;
-	private readonly foundationModelCallAdapter: FoundationHostModelCallAdapterV1;
+	private readonly foundationModelCallAdapter: FoundationHostModelCallAdapter;
 	private readonly foundationOwnerId?: string;
 	private readonly terminalToolFailureOperations = new Set<string>();
 	private readonly eventBus = new HarnessEventBus();
@@ -1591,19 +1591,19 @@ export class AgentHarness implements AgentLane {
 	private async initializeFoundationExecution(): Promise<void> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) return;
-		const checkedTask = validateTaskEnvelopeV1(execution.task);
+		const checkedTask = validateTaskEnvelope(execution.task);
 		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
-		const persistedTask = await persistTaskEnvelopeBeforeResolverV1(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const persistedTask = await persistTaskEnvelopeBeforeResolver(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		if (!persistedTask.ok) throw new HarnessFault("Foundation execution TaskEnvelope could not be durably established before binding resolution", persistedTask.error);
-		const checkedDispatch = validateDispatchV1(execution.dispatch);
+		const checkedDispatch = validateDispatch(execution.dispatch);
 		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
-		const checkedBinding = validateImmutableAgentBindingV1(execution.binding);
+		const checkedBinding = validateImmutableAgentBinding(execution.binding);
 		if (!checkedBinding.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", checkedBinding.error);
-		const durableBinding = await validateDurableBindingSourcesV1(this.durableSession, checkedBinding.value, persistedTask.value);
+		const durableBinding = await validateDurableBindingSources(this.durableSession, checkedBinding.value, persistedTask.value);
 		if (!durableBinding.ok) throw new HarnessFault("Foundation execution binding does not resolve from durable registry and source facts", durableBinding.error);
-		const checkedEpoch = validateBindingEpochV1(execution.initialBindingEpoch);
+		const checkedEpoch = validateBindingEpoch(execution.initialBindingEpoch);
 		if (!checkedEpoch.ok) throw new HarnessFault("Foundation execution epoch is not an established BindingEpoch", checkedEpoch.error);
-		const checkedAgent = execution.agentInstance === undefined ? undefined : validateAgentInstanceV1(execution.agentInstance);
+		const checkedAgent = execution.agentInstance === undefined ? undefined : validateAgentInstance(execution.agentInstance);
 		if (checkedAgent !== undefined && !checkedAgent.ok) throw new HarnessFault("Foundation execution AgentInstance is not established", checkedAgent.error);
 		const provider = this.foundationProvider;
 		if (provider === undefined) throw new HarnessFault("Foundation execution requires a trusted provider consumer", undefined);
@@ -1611,7 +1611,7 @@ export class AgentHarness implements AgentLane {
 		if ((execution.hostAuthority === undefined) !== (execution.settlement === undefined)) {
 			throw new HarnessFault("Foundation hostAuthority and settlement must be supplied together", undefined);
 		}
-		const checkedAuthority = execution.hostAuthority === undefined ? undefined : validateHostTerminalGateAuthorityV1(execution.hostAuthority);
+		const checkedAuthority = execution.hostAuthority === undefined ? undefined : validateHostTerminalGateAuthority(execution.hostAuthority);
 		if (checkedAuthority !== undefined && !checkedAuthority.ok) throw new HarnessFault("Foundation host authority is not an established terminal gate", checkedAuthority.error);
 		if (execution.providerId !== checkedDispatch.value.taskExecutorProviderId) {
 			throw new HarnessFault("Foundation execution provider does not match the Dispatch executor", undefined);
@@ -1661,20 +1661,20 @@ export class AgentHarness implements AgentLane {
 		}
 		if (this.toolPipeline === undefined) {
 			const registry = this.createToolRegistry();
-			const storage = new SessionToolPipelineStorageV1({
+			const storage = new SessionToolPipelineStorage({
 				ledger: this.durableSession,
 				laneId: "main",
 				correlationFor: (_kind, value) => this.toolCorrelation(value),
 				fencingToken: async () => (await this.t5.writer.ensureLease()).fencingToken,
 			});
 			const pipelineOptions = this.toolPipelineOptions ?? {};
-			const quotaAccount = pipelineOptions.quotaAccount ?? new FoundationToolQuotaAccountV1({
+			const quotaAccount = pipelineOptions.quotaAccount ?? new FoundationToolQuotaAccount({
 				budget: normalizedExecution.binding.budget,
 				maxToolCalls: pipelineOptions.maxToolCalls,
 				idGenerator: pipelineOptions.idGenerator,
 				now: pipelineOptions.now,
 			});
-			const durableAuthority = (field: string, objectType: string) => async (scope: ToolGateScopeV1) => {
+			const durableAuthority = (field: string, objectType: string) => async (scope: ToolGateScope) => {
 				const source = scope.context.binding.sourceTrace.find((candidate) => candidate.field === field);
 				const reference = {
 					schemaVersion: 1 as const,
@@ -1689,13 +1689,13 @@ export class AgentHarness implements AgentLane {
 					...(fact?.kind === "fact" && fact.revision === source?.revision ? {} : { reason: `${field} guard authority is not durably bound` }),
 				});
 			};
-			const guard = pipelineOptions.guard ?? new FoundationToolGuardV1({
+			const guard = pipelineOptions.guard ?? new FoundationToolGuard({
 				policy: { check: durableAuthority("policy", "policy_binding") },
 				approval: { check: durableAuthority("gate", "task_gate_binding") },
 				sandbox: { check: durableAuthority("sandbox", "sandbox_binding") },
 				quota: { account: quotaAccount },
 			});
-			this.toolPipeline = new FoundationToolPipelineV1({
+			this.toolPipeline = new FoundationToolPipeline({
 				...pipelineOptions,
 				registry,
 				storage,
@@ -1741,7 +1741,7 @@ export class AgentHarness implements AgentLane {
 		if (this.ownsT5) await this.t5.writer.releaseLease();
 	}
 
-	private foundationCorrelation(lane: string, runId: string, fields: Partial<ExecutionCorrelationV1> = {}): ExecutionCorrelationV1 | undefined {
+	private foundationCorrelation(lane: string, runId: string, fields: Partial<ExecutionCorrelation> = {}): ExecutionCorrelation | undefined {
 		const execution = this.foundationExecution;
 		if (execution === undefined || this.foundationSessionId === undefined) return undefined;
 		return createExecutionCorrelation(this.foundationSessionId, lane, {
@@ -1759,7 +1759,7 @@ export class AgentHarness implements AgentLane {
 		});
 	}
 
-	private toolCorrelation(value: ToolIntentV1 | ToolReceiptV1): ExecutionCorrelationV1 {
+	private toolCorrelation(value: ToolIntent | ToolReceipt): ExecutionCorrelation {
 		const binding = value.binding;
 		if (binding.sessionId === undefined || binding.laneId === undefined || binding.runId === undefined || binding.operationId === undefined || binding.attemptId === undefined || binding.providerId === undefined) {
 			throw new HarnessFault("Tool pipeline correlation is missing a complete execution identity", undefined);
@@ -1807,17 +1807,17 @@ export class AgentHarness implements AgentLane {
 		}, "model invocation route");
 	}
 
-	private async foundationModelInvocationRecords(runId: string): Promise<Exclude<FoundationRecordV1, { readonly kind: "retention" }>[]> {
-		return (await this.durableSession.findFoundationRecords({ objectType: "model_invocation", includePruned: true, order: "oldestFirst" })).filter((record): record is Exclude<FoundationRecordV1, { readonly kind: "retention" }> => record.kind !== "retention" && record.correlation.runId === runId);
+	private async foundationModelInvocationRecords(runId: string): Promise<Exclude<FoundationRecord, { readonly kind: "retention" }>[]> {
+		return (await this.durableSession.findFoundationRecords({ objectType: "model_invocation", includePruned: true, order: "oldestFirst" })).filter((record): record is Exclude<FoundationRecord, { readonly kind: "retention" }> => record.kind !== "retention" && record.correlation.runId === runId);
 	}
 
-	private async foundationModelBindingInvocationRecords(): Promise<Exclude<FoundationRecordV1, { readonly kind: "retention" }>[]> {
+	private async foundationModelBindingInvocationRecords(): Promise<Exclude<FoundationRecord, { readonly kind: "retention" }>[]> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) return [];
-		return (await this.durableSession.findFoundationRecords({ objectType: "model_invocation", includePruned: true, order: "oldestFirst" })).filter((record): record is Exclude<FoundationRecordV1, { readonly kind: "retention" }> => record.kind !== "retention" && record.correlation.taskId === execution.task.taskId && record.correlation.bindingId === execution.binding.bindingId);
+		return (await this.durableSession.findFoundationRecords({ objectType: "model_invocation", includePruned: true, order: "oldestFirst" })).filter((record): record is Exclude<FoundationRecord, { readonly kind: "retention" }> => record.kind !== "retention" && record.correlation.taskId === execution.task.taskId && record.correlation.bindingId === execution.binding.bindingId);
 	}
 
-	private foundationModelUsage(records: readonly Exclude<FoundationRecordV1, { readonly kind: "retention" }>[]): FoundationModelUsageSummaryV1 {
+	private foundationModelUsage(records: readonly Exclude<FoundationRecord, { readonly kind: "retention" }>[]): FoundationModelUsageSummaryV1 {
 		const usage: FoundationModelUsageSummaryV1 = { modelCalls: 0, input: 0, output: 0, totalTokens: 0, costUsd: 0 };
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
@@ -1852,7 +1852,7 @@ export class AgentHarness implements AgentLane {
 		return { ...(options ?? {}), maxTokens };
 	}
 
-	private async recoverOrphanedModelInvocation(intent: Exclude<FoundationRecordV1, { readonly kind: "retention" }> & { readonly kind: "intent" }): Promise<void> {
+	private async recoverOrphanedModelInvocation(intent: Exclude<FoundationRecord, { readonly kind: "retention" }> & { readonly kind: "intent" }): Promise<void> {
 		const payload = asRecord(intent.payload);
 		const route = payload?.route;
 		const invocationId = typeof payload?.invocationId === "string" ? payload.invocationId : intent.objectId;
@@ -1862,7 +1862,7 @@ export class AgentHarness implements AgentLane {
 		const routeValue = this.foundationJson(route ?? {}, "orphaned model invocation route");
 		const routeRecord = asRecord(routeValue);
 		const selectedTarget = this.foundationJson({ provider: typeof routeRecord?.provider === "string" ? routeRecord.provider : "unknown", model: typeof routeRecord?.model === "string" ? routeRecord.model : "unknown" }, "orphaned model invocation target");
-		const correlation: ExecutionCorrelationV1 = {
+		const correlation: ExecutionCorrelation = {
 			...intent.correlation,
 			...(intent.correlation.roleRevisionId === undefined && execution === undefined ? {} : { roleRevisionId: intent.correlation.roleRevisionId ?? execution?.binding.roleRevision.id }),
 			...(intent.correlation.modelProfileId === undefined && execution === undefined ? {} : { modelProfileId: intent.correlation.modelProfileId ?? execution?.binding.modelProfileRevision.id }),
@@ -1881,7 +1881,7 @@ export class AgentHarness implements AgentLane {
 			routeDigest: sha256HexValue(canonicalFoundationJson(routeValue)),
 			selectedTarget,
 			...(typeof payload?.contextSnapshotId === "string" ? { contextSnapshotId: payload.contextSnapshotId } : {}),
-			correlation: correlation as unknown as ExecutionCorrelationV1,
+			correlation: correlation as unknown as ExecutionCorrelation,
 		};
 		await this.persistFoundationModelInvocationFact(invocation, "unknown", emptyModelUsage(), "recovery_required", "unknown", "model_invocation_recovery_required", "A model invocation intent had no terminal fact during recovery");
 	}
@@ -1972,7 +1972,7 @@ export class AgentHarness implements AgentLane {
 		status: FoundationModelInvocationStatusV1,
 		usage: Usage,
 		stopReason?: string,
-		sideEffectState: SideEffectStateV1 = status === "succeeded" ? "none" : "unknown",
+		sideEffectState: SideEffectState = status === "succeeded" ? "none" : "unknown",
 		errorCode?: string,
 		errorMessage?: string,
 	): Promise<void> {
@@ -2189,7 +2189,7 @@ export class AgentHarness implements AgentLane {
 		};
 	}
 
-	private async appendFoundation(record: ProvisionedFoundationRecordV1): Promise<FoundationRecordV1> {
+	private async appendFoundation(record: ProvisionedFoundationRecord): Promise<FoundationRecord> {
 		if (this.foundationExecution === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
 		const result = await this.t5.writer.appendFoundationRecord(record);
 		return result.record;
@@ -2259,7 +2259,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while starting Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const started = await settlement.startDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!started.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt start: ${started.error.message}`, started.error);
 	}
@@ -2271,7 +2271,7 @@ export class AgentHarness implements AgentLane {
 		if (await this.foundationModelInvocationBlocksSettlement(lane, runId)) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while resuming Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const resumed = await settlement.resumeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!resumed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt resume: ${resumed.error.message}`, resumed.error);
 	}
@@ -2282,7 +2282,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while cancelling Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const cancelled = await settlement.cancelAttempt({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!cancelled.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt cancellation: ${cancelled.error.message}`, cancelled.error);
 	}
@@ -2300,7 +2300,7 @@ export class AgentHarness implements AgentLane {
 		if (this.compatibilityWriter === undefined && await this.foundationModelInvocationBlocksSettlement(lane, runId)) return undefined;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for provider consumption", undefined);
-		const settlement = new LayeredResultSettlementV1(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
 		const executed = await settlement.executeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!executed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Dispatch: ${executed.error.message}`, executed.error);
 		const attemptReceipt = executed.value.receipt;
@@ -2330,7 +2330,7 @@ export class AgentHarness implements AgentLane {
 			}
 			if (toolStartedExecutionSemantics(existing) !== toolStartedExecutionSemantics(start)) ledgerConflict = true;
 		}
-		const receipts = new Map<string, ToolReceiptV1>();
+		const receipts = new Map<string, ToolReceipt>();
 		const correlation = this.foundationCorrelation(lane, runId);
 		if (correlation !== undefined) {
 			const startedToolCallIds = new Set(startsByToolCallId.keys());
@@ -2338,7 +2338,7 @@ export class AgentHarness implements AgentLane {
 			const records = await this.durableSession.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", correlation: queryCorrelation });
 			for (const record of records) {
 				if (record.kind !== "fact") continue;
-				const checked = validateAndVerifyToolReceiptV1(record.payload);
+				const checked = validateAndVerifyToolReceipt(record.payload);
 				if (!checked.ok) throw new HarnessFault("Persisted tool receipt failed validation", checked.error);
 				if (!startedToolCallIds.has(checked.value.toolCallId)) throw new HarnessFault(`Persisted tool receipt ${checked.value.toolCallId} is not part of operation ${runId}`, undefined);
 				const existing = receipts.get(checked.value.toolCallId);
@@ -2346,13 +2346,13 @@ export class AgentHarness implements AgentLane {
 					receipts.set(checked.value.toolCallId, checked.value);
 					continue;
 				}
-				if (projectToolReceiptExecutionSemanticsV1(existing) !== projectToolReceiptExecutionSemanticsV1(checked.value)) ledgerConflict = true;
+				if (projectToolReceiptExecutionSemantics(existing) !== projectToolReceiptExecutionSemantics(checked.value)) ledgerConflict = true;
 			}
 		}
 		let failed = false;
-		let sideEffectState: SideEffectStateV1 = "none";
+		let sideEffectState: SideEffectState = "none";
 		let firstError: OperationError | undefined;
-		const mergeSideEffectState = (state: SideEffectStateV1): void => {
+		const mergeSideEffectState = (state: SideEffectState): void => {
 			if (state === "side_effect_unknown") sideEffectState = state;
 			else if (state === "unknown" && sideEffectState === "none") sideEffectState = state;
 		};
@@ -2395,14 +2395,14 @@ export class AgentHarness implements AgentLane {
 					markLedgerConflict();
 					continue;
 				}
-				const checkedEntry = validateFoundationToolResultEntryV1(result.data);
+				const checkedEntry = validateFoundationToolResultEntry(result.data);
 				if (!checkedEntry.ok || checkedEntry.value.runId !== runId || checkedEntry.value.operationId !== runId || checkedEntry.value.toolCallId !== start.toolCallId || checkedEntry.value.toolName !== start.toolName || canonicalFoundationJson(checkedEntry.value.result) !== canonicalFoundationJson(durableResult)) {
 					markLedgerConflict();
 				}
 				continue;
 			}
 			if (result?.type === "custom" && result.customType === FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) {
-				const checkedEntry = validateFoundationToolResultEntryV1(result.data);
+				const checkedEntry = validateFoundationToolResultEntry(result.data);
 				if (!checkedEntry.ok || receipt?.outcome !== "succeeded" || receipt.result === undefined) markLedgerConflict();
 				continue;
 			}
@@ -2581,7 +2581,7 @@ export class AgentHarness implements AgentLane {
 				? entry.message.content.filter((content) => content.type === "toolCall").map((content) => content.id)
 				: [],
 		))];
-		const findToolRecords = async (kind: "intent" | "fact", objectType: "tool_intent" | "tool_receipt"): Promise<FoundationRecordV1[]> => {
+		const findToolRecords = async (kind: "intent" | "fact", objectType: "tool_intent" | "tool_receipt"): Promise<FoundationRecord[]> => {
 			if (toolCorrelation === undefined) return [];
 			const batches = await Promise.all(toolCallIds.map((toolCallId) => this.durableSession.findFoundationRecords({ kind, objectType, includePruned: true, order: "oldestFirst", correlation: { ...toolCorrelation, toolCallId } })));
 			return batches.flat();
@@ -2592,7 +2592,7 @@ export class AgentHarness implements AgentLane {
 			? []
 			: toolIntentRecords.flatMap((record) => {
 				if (record.kind !== "intent" || record.payload === undefined) return [];
-				const checked = validateToolIntentV1(record.payload);
+				const checked = validateToolIntent(record.payload);
 				if (!checked.ok) throw new HarnessFault("Persisted tool intent failed validation", checked.error);
 				return [checked.value];
 			});
@@ -2600,7 +2600,7 @@ export class AgentHarness implements AgentLane {
 			? []
 			: toolReceiptRecords.flatMap((record) => {
 				if (record.kind !== "fact") return [];
-				const checked = validateToolReceiptV1(record.payload);
+				const checked = validateToolReceipt(record.payload);
 				if (!checked.ok) throw new HarnessFault("Persisted tool receipt failed validation", checked.error);
 				return [checked.value];
 			});
@@ -2737,7 +2737,7 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async projectFoundationToolResultEntry(lane: string, entry: CustomEntry): Promise<readonly AgentMessage[]> {
-		const checked = validateFoundationToolResultEntryV1(entry.data);
+		const checked = validateFoundationToolResultEntry(entry.data);
 		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
 		if (this.foundationExecution === undefined) throw new HarnessToolPipelineError("Foundation tool result has no execution authority", "side_effect_unknown");
 		const starts = await this.durableSession.findRecords({ lane, runId: checked.value.runId, type: "tool_started", order: "oldestFirst" });
@@ -2758,9 +2758,9 @@ export class AgentHarness implements AgentLane {
 			intent.value.attempt !== stepAttempt.attempt ||
 			intent.value.binding.attemptId !== stepAttempt.id
 		) throw new HarnessToolPipelineError("Durable tool intent is not bound to its assistant step attempt", "side_effect_unknown");
-		let acceptedDigest: ReturnType<typeof digestToolArgumentsV1>;
+		let acceptedDigest: ReturnType<typeof fingerprintToolArguments>;
 		try {
-			acceptedDigest = digestToolArgumentsV1(start.effectiveArgs);
+			acceptedDigest = fingerprintToolArguments(start.effectiveArgs);
 		} catch (_error) {
 			throw new HarnessToolPipelineError("Durable tool start has an invalid accepted argument projection", "side_effect_unknown");
 		}
@@ -2842,7 +2842,7 @@ export class AgentHarness implements AgentLane {
 		return materialized === undefined ? undefined : [materialized];
 	}
 
-	private createToolRegistry(): ToolDefinitionRegistryV1 {
+	private createToolRegistry(): ToolDefinitionRegistry {
 		return {
 			resolve: (toolName, namespace) => {
 				const tool = this.tools.find((candidate) => candidate.name === toolName && (namespace === undefined || namespace === (candidate as unknown as { namespace?: string }).namespace));
@@ -2883,11 +2883,11 @@ export class AgentHarness implements AgentLane {
 		};
 	}
 
-	private toolDefinition(tool: HarnessTool): ToolDefinitionV1 {
+	private toolDefinition(tool: HarnessTool): ToolDefinition {
 		const metadata = tool as unknown as {
 			capabilities?: readonly string[];
 			namespace?: string;
-			toolRevision?: ToolRevisionV1;
+			toolRevision?: ToolRevision;
 			idempotency?: "idempotent" | "non_idempotent";
 			conflictKeys?: (args: Record<string, unknown>) => readonly string[];
 		};
@@ -3019,7 +3019,7 @@ export class AgentHarness implements AgentLane {
 		} as HarnessTool;
 	}
 
-	private pipelineResultKey(context: ToolPipelineContextV1, toolCallId: string): string {
+	private pipelineResultKey(context: ToolPipelineContext, toolCallId: string): string {
 		return canonicalFoundationJson({
 			sessionId: context.sessionId,
 			laneId: context.laneId,
@@ -3035,11 +3035,11 @@ export class AgentHarness implements AgentLane {
 		});
 	}
 
-	private defaultToolIdempotencyKey(context: ToolPipelineContextV1, toolCallId: string): string {
+	private defaultToolIdempotencyKey(context: ToolPipelineContext, toolCallId: string): string {
 		return `agent-harness:${this.pipelineResultKey(context, toolCallId)}`;
 	}
 
-	private async pipelineContext(lane: string, operationId: string): Promise<ToolPipelineContextV1> {
+	private async pipelineContext(lane: string, operationId: string): Promise<ToolPipelineContext> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) throw new HarnessFault("Tool pipeline requires Foundation execution", undefined);
 		const attempts = await this.durableSession.findRecords({ lane, runId: operationId, type: "step_attempt", order: "oldestFirst" });
@@ -3302,7 +3302,7 @@ export class AgentHarness implements AgentLane {
 
 	private async ensureToolResultUsageRecord(lane: string, runId: string, target: ProvisionedEntry): Promise<void> {
 		if (target.type !== "custom" || target.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return;
-		const checked = validateFoundationToolResultEntryV1(target.data);
+		const checked = validateFoundationToolResultEntry(target.data);
 		if (!checked.ok) throw new HarnessToolPipelineError(checked.error.message, "side_effect_unknown");
 		const usage = checked.value.result.usage;
 		const records = await this.durableSession.findRecords({ lane, type: "usage", order: "oldestFirst" });
@@ -3486,7 +3486,7 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	private async foundationIntentForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<ToolIntentV1, FoundationError>> {
+	private async foundationIntentForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<ToolIntent, FoundationError>> {
 		const metadata = await this.durableSession.getMetadata();
 		const records = await this.durableSession.findFoundationRecords({
 			kind: "intent",
@@ -3495,10 +3495,10 @@ export class AgentHarness implements AgentLane {
 			order: "oldestFirst",
 			correlation: { sessionId: metadata.id, laneId: lane, runId, operationId: runId, toolCallId },
 		});
-		const intents: ToolIntentV1[] = [];
+		const intents: ToolIntent[] = [];
 		for (const record of records) {
 			if (record.kind !== "intent" || record.payload === undefined) continue;
-			const checked = validateToolIntentV1(record.payload);
+			const checked = validateToolIntent(record.payload);
 			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool intent failed validation"));
 			if (checked.value.toolCallId !== toolCallId) continue;
 			const mismatch = foundationBindingCorrelationMismatch(checked.value.binding, record.correlation);
@@ -3523,10 +3523,10 @@ export class AgentHarness implements AgentLane {
 			order: "oldestFirst",
 			correlation: { sessionId: metadata.id, laneId: lane, runId, operationId: runId, toolCallId },
 		});
-		const receipts: ToolReceiptV1[] = [];
+		const receipts: ToolReceipt[] = [];
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
-			const checked = validateAndVerifyToolReceiptV1(record.payload);
+			const checked = validateAndVerifyToolReceipt(record.payload);
 			if (!checked.ok) return Result.err(new FoundationError("side_effect_unknown", "Persisted tool receipt failed validation"));
 			if (checked.value.toolCallId !== toolCallId) continue;
 			const mismatch = foundationBindingCorrelationMismatch(checked.value.binding, record.correlation);
@@ -3534,8 +3534,8 @@ export class AgentHarness implements AgentLane {
 			receipts.push(checked.value);
 		}
 		if (receipts.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool receipt is missing"));
-		const semantic = projectToolReceiptExecutionSemanticsV1(receipts[0]!);
-		if (receipts.some((receipt) => projectToolReceiptExecutionSemanticsV1(receipt) !== semantic)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipts conflict for one execution identity"));
+		const semantic = projectToolReceiptExecutionSemantics(receipts[0]!);
+		if (receipts.some((receipt) => projectToolReceiptExecutionSemantics(receipt) !== semantic)) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool receipts conflict for one execution identity"));
 		const ordered = [...receipts].sort((left, right) => canonicalFoundationJson(left).localeCompare(canonicalFoundationJson(right)));
 		const representative = ordered[0]!;
 		const worstSeverity = receipts.reduce<1 | 2 | 3>((worst, receipt) => Math.max(worst, toolReceiptSeverity(receipt)) as 1 | 2 | 3, 1);
@@ -3582,7 +3582,7 @@ export class AgentHarness implements AgentLane {
 		}
 		let target: ProvisionedEntry;
 		if (useCanonicalReceipt) {
-			const resultEntry: FoundationToolResultEntryV1 = {
+			const resultEntry: FoundationToolResultEntry = {
 				schemaVersion: 1,
 				runId,
 				operationId: runId,

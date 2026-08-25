@@ -18,27 +18,27 @@
  */
 import {
 	FoundationError,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	Result,
 	createBindingEpoch,
 	createExecutionCorrelation,
 	fingerprintFoundationValue,
 	validateAttempt,
-	validateBindingEpochV1,
+	validateBindingEpoch,
 	validateDispatch,
 	validateImmutableAgentBinding,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type BindingEpochV1,
-	type BudgetV1,
-	type DispatchExecutionResultV1,
-	type DispatchStartResultV1,
-	type DispatchV1,
-	type ExecutionCorrelationV1,
-	type FingerprintV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
+	type BindingEpoch,
+	type Budget,
+	type DispatchExecutionResult,
+	type DispatchStartResult,
+	type Dispatch,
+	type ExecutionCorrelation,
+	type Fingerprint,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	type QuotaProvider,
 	type Result as ResultValue,
 	type Session,
@@ -120,16 +120,16 @@ export interface SchedulerDispatchControllerOptionsV1 {
 	readonly runLifecycleHookOwnership?: "dispatch" | "host";
 	readonly laneId?: string;
 	readonly now?: () => string;
-	readonly requiredCapabilities?: readonly FoundationProviderCapabilityV1[];
-	readonly workspaceDigest?: FingerprintV1;
+	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
+	readonly workspaceDigest?: Fingerprint;
 }
 
 export interface SchedulerDispatchRequestV1 {
 	readonly queueEntryId: string;
 	readonly fencingToken: string;
-	readonly binding: AgentBindingV1;
-	readonly requiredCapabilities?: readonly FoundationProviderCapabilityV1[];
-	readonly workspaceDigest?: FingerprintV1;
+	readonly binding: AgentBinding;
+	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
+	readonly workspaceDigest?: Fingerprint;
 	readonly signal?: AbortSignal;
 }
 
@@ -144,7 +144,7 @@ export interface SchedulerRunDispatchRequestV1 extends SchedulerDispatchRequestV
 export interface SchedulerDispatchAssemblyInputV1 {
 	readonly entry: SchedulerQueueEntryV1;
 	readonly claim: SchedulerClaimV1;
-	readonly binding: AgentBindingV1;
+	readonly binding: AgentBinding;
 	readonly providerId: string;
 	readonly providerClass: SchedulerProviderClassV1;
 	readonly sessionId: string;
@@ -153,9 +153,9 @@ export interface SchedulerDispatchAssemblyInputV1 {
 }
 
 export interface SchedulerDispatchAssemblyV1 {
-	readonly dispatch: DispatchV1;
-	readonly initialBindingEpoch: BindingEpochV1;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly dispatch: Dispatch;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
@@ -165,9 +165,9 @@ export interface SchedulerDispatchOutcomeV1 {
 	readonly entry: SchedulerQueueEntryV1;
 	readonly claim: SchedulerClaimV1;
 	readonly dispatchRecord: SchedulerDispatchRecordV1;
-	readonly dispatch: DispatchV1;
-	readonly attempt: AttemptV1;
-	readonly receipt: AttemptReceiptV1;
+	readonly dispatch: Dispatch;
+	readonly attempt: Attempt;
+	readonly receipt: AttemptReceipt;
 	readonly selection: SchedulerSelectionFactV1;
 	readonly providerId: string;
 	readonly providerClass: SchedulerProviderClassV1;
@@ -177,9 +177,9 @@ export interface SchedulerInProcessHostBindingOptionsV1 {
 	readonly hostAttemptRunner: SchedulerHostAttemptRunnerV1;
 	readonly quota?: QuotaProvider;
 	readonly now?: () => string;
-	readonly budget?: BudgetV1;
+	readonly budget?: Budget;
 	readonly sessionId?: string;
-	readonly workspaceDigest?: FingerprintV1;
+	readonly workspaceDigest?: Fingerprint;
 	readonly latencyMs?: number;
 	readonly trusted?: boolean;
 }
@@ -187,12 +187,12 @@ export interface SchedulerInProcessHostBindingOptionsV1 {
 interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
 	readonly resumeAttempt?: (
 		attemptId: string,
-		options: FoundationProviderExecutionOptionsV1,
-	) => Promise<ResultValue<AttemptReceiptV1, FoundationError>>;
+		options: FoundationProviderExecutionOptions,
+	) => Promise<ResultValue<AttemptReceipt, FoundationError>>;
 	readonly resume?: (
 		attemptId: string,
 		options?: { readonly signal?: AbortSignal },
-	) => Promise<ResultValue<AttemptReceiptV1, FoundationError>>;
+	) => Promise<ResultValue<AttemptReceipt, FoundationError>>;
 }
 
 interface SchedulerPreparedDispatchV1 {
@@ -210,10 +210,10 @@ interface SchedulerPreparedDispatchV1 {
 
 interface SchedulerDurableAttemptV1 {
 	readonly provider: TaskExecutorProvider;
-	readonly dispatch: DispatchV1;
-	readonly binding: AgentBindingV1;
-	readonly initialBindingEpoch: BindingEpochV1;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly dispatch: Dispatch;
+	readonly binding: AgentBinding;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
 }
 
 interface SchedulerExecutionSignalV1 {
@@ -245,7 +245,7 @@ function isSchedulerErrorCode(value: string): value is SchedulerErrorCodeV1 {
 	return (SCHEDULER_ERROR_CODES as readonly string[]).includes(value);
 }
 
-function inProcessCapability(): FoundationProviderCapabilityV1 {
+function inProcessCapability(): FoundationProviderCapability {
 	return { schemaVersion: 1, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 };
 }
 
@@ -304,7 +304,7 @@ export function assembleSchedulerDispatchV1(
 	if (entry.state !== "claimed" && entry.state !== "dispatched") return fail("scheduler_queue_invalid");
 	if (entry.claimId !== claim.claimId) return fail("scheduler_claim_conflict");
 	const ids = schedulerDispatchIdentityV1(entry.queueEntryId, claim.claimId);
-	const dispatchCandidate: DispatchV1 = {
+	const dispatchCandidate: Dispatch = {
 		schemaVersion: 1,
 		dispatchId: ids.dispatchId,
 		taskId: entry.taskId,
@@ -490,7 +490,7 @@ export class SchedulerDispatchController {
 	private readonly session: Session;
 	private readonly queue: SchedulerQueueStore;
 	private readonly registry: SchedulerExecutorRegistry;
-	private readonly settlement: LayeredResultSettlementV1;
+	private readonly settlement: LayeredResultSettlement;
 	private readonly sessionId: string;
 	private readonly runLifecycleSession: RunLedgerSession | undefined;
 	private readonly schedulerLifecycleHooks: RunSchedulerLifecycleHooks;
@@ -498,8 +498,8 @@ export class SchedulerDispatchController {
 	private readonly laneId: string;
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
-	private readonly requiredCapabilities: readonly FoundationProviderCapabilityV1[];
-	private readonly workspaceDigest: FingerprintV1 | undefined;
+	private readonly requiredCapabilities: readonly FoundationProviderCapability[];
+	private readonly workspaceDigest: Fingerprint | undefined;
 	private readonly runsRequiringCancellation = new Set<RunId>();
 	private readonly runDispatches = new Map<RunId, Set<SchedulerRunDispatchCancellationV1>>();
 	private readonly queueRunDispatches = new Map<string, Set<SchedulerRunDispatchCancellationV1>>();
@@ -511,7 +511,7 @@ export class SchedulerDispatchController {
 		this.session = options.session;
 		this.queue = options.queue;
 		this.registry = options.registry;
-		this.settlement = new LayeredResultSettlementV1(options.session, { ownerId: options.ownerId });
+		this.settlement = new LayeredResultSettlement(options.session, { ownerId: options.ownerId });
 		this.sessionId = options.sessionId;
 		if (
 			options.runLifecycleSession !== undefined &&
@@ -706,7 +706,7 @@ export class SchedulerDispatchController {
 	private activateRunDispatchAssociation(
 		association: SchedulerRunDispatchCancellationV1,
 		prepared: SchedulerPreparedDispatchV1,
-		binding: AgentBindingV1,
+		binding: AgentBinding,
 	): ResultValue<void, FoundationError> {
 		if (association.durable) {
 			return association.attemptId === prepared.assembly.attemptId
@@ -874,7 +874,7 @@ export class SchedulerDispatchController {
 		};
 		scheduled.signal?.addEventListener("abort", requestCancellation, { once: true });
 		if (scheduled.signal?.aborted === true) requestCancellation();
-		let executed: ResultValue<DispatchExecutionResultV1, FoundationError>;
+		let executed: ResultValue<DispatchExecutionResult, FoundationError>;
 		try {
 			executed = await this.settlement.executeDispatch({
 				provider: prepared.selection.provider,
@@ -950,7 +950,7 @@ export class SchedulerDispatchController {
 		};
 		scheduled.signal?.addEventListener("abort", requestCancellation, { once: true });
 		if (scheduled.signal?.aborted === true) requestCancellation();
-		let resumed: ResultValue<DispatchStartResultV1, FoundationError>;
+		let resumed: ResultValue<DispatchStartResult, FoundationError>;
 		try {
 			resumed = await this.settlement.resumeDispatch({
 				provider: prepared.selection.provider,
@@ -988,7 +988,7 @@ export class SchedulerDispatchController {
 
 	private async cancelPrepared(
 		prepared: SchedulerPreparedDispatchV1,
-		binding: AgentBindingV1,
+		binding: AgentBinding,
 	): Promise<ResultValue<void, FoundationError>> {
 		return this.settlement.cancelAttempt({
 			provider: prepared.selection.provider,
@@ -1001,7 +1001,7 @@ export class SchedulerDispatchController {
 
 	private async persistInFlight(
 		prepared: SchedulerPreparedDispatchV1,
-		attempt: AttemptV1,
+		attempt: Attempt,
 	): Promise<ResultValue<void, FoundationError>> {
 		const checked = validateAttempt(attempt);
 		if (!checked.ok) return checked;
@@ -1041,8 +1041,8 @@ export class SchedulerDispatchController {
 
 	private async completeOutcome(
 		prepared: SchedulerPreparedDispatchV1,
-		attempt: AttemptV1,
-		receipt: AttemptReceiptV1,
+		attempt: Attempt,
+		receipt: AttemptReceipt,
 	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
 		const snapshot = await this.queue.snapshot();
 		if (!snapshot.ok) return snapshot;
@@ -1168,7 +1168,7 @@ export class SchedulerDispatchController {
 		if (epochId === undefined) return fail("scheduler_dispatch_invalid");
 		const epochRecord = await this.session.getFoundationObject("binding_epoch", epochId);
 		if (epochRecord === undefined || epochRecord.kind !== "fact") return fail("scheduler_not_found");
-		const stored = validateBindingEpochV1(epochRecord.payload);
+		const stored = validateBindingEpoch(epochRecord.payload);
 		if (!stored.ok) return stored;
 		if (
 			stored.value.bindingEpochId !== epochId ||

@@ -1,27 +1,27 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
-	FoundationToolGuardV1,
-	FoundationToolQuotaAccountV1,
-	FoundationToolPipelineV1,
-	InMemoryToolPipelineStorageV1,
-	SessionToolPipelineStorageV1,
-	finalizeToolReceiptV1,
-	validateToolResultPayloadV1,
-	validateToolReceiptV1,
-	validateAndVerifyToolReceiptV1,
-	type ToolDefinitionRegistryV1,
-	type ToolDefinitionV1,
-	type ToolGateCheckV1,
-	type ToolPipelineContextV1,
-	type ToolPipelineStorageV1,
+	FoundationToolGuard,
+	FoundationToolQuotaAccount,
+	FoundationToolPipeline,
+	InMemoryToolPipelineStorage,
+	SessionToolPipelineStorage,
+	finalizeToolReceipt,
+	validateToolResultPayload,
+	validateToolReceipt,
+	validateAndVerifyToolReceipt,
+	type ToolDefinitionRegistry,
+	type ToolDefinition,
+	type ToolGateCheck,
+	type ToolPipelineContext,
+	type ToolPipelineStorage,
 } from "../../src/harness/tool-pipeline.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
-function context(): ToolPipelineContextV1 {
+function context(): ToolPipelineContext {
 	return {
 		sessionId: "session-1",
 		laneId: "main",
@@ -59,7 +59,7 @@ function context(): ToolPipelineContextV1 {
 	};
 }
 
-function operationContext(operationId: string, runId = operationId): ToolPipelineContextV1 {
+function operationContext(operationId: string, runId = operationId): ToolPipelineContext {
 	const attemptId = `attempt-${operationId}`;
 	return {
 		...context(),
@@ -78,7 +78,7 @@ function reference(type: string) {
 	return { schemaVersion: 1 as const, type, id: `${type}-1`, revision: 1 };
 }
 
-function tool(name: string, execute: ToolDefinitionV1["execute"], options: Partial<Pick<ToolDefinitionV1, "capabilities" | "conflictKeys" | "idempotency">> = {}): ToolDefinitionV1 {
+function tool(name: string, execute: ToolDefinition["execute"], options: Partial<Pick<ToolDefinition, "capabilities" | "conflictKeys" | "idempotency">> = {}): ToolDefinition {
 	return {
 		name,
 		toolRevision: { schemaVersion: 1, type: "tool_revision", id: `${name}-revision`, revision: 1 },
@@ -90,7 +90,7 @@ function tool(name: string, execute: ToolDefinitionV1["execute"], options: Parti
 	};
 }
 
-function registry(tools: readonly ToolDefinitionV1[]): ToolDefinitionRegistryV1 {
+function registry(tools: readonly ToolDefinition[]): ToolDefinitionRegistry {
 	return {
 		resolve(name: string) {
 			const found = tools.find((candidate) => candidate.name === name);
@@ -99,15 +99,15 @@ function registry(tools: readonly ToolDefinitionV1[]): ToolDefinitionRegistryV1 
 	};
 }
 
-function allowCheck(order: string[], name: string): ToolGateCheckV1 {
+function allowCheck(order: string[], name: string): ToolGateCheck {
 	return () => {
 		order.push(name);
 		return Result.ok({ allowed: true, reference: reference(name) });
 	};
 }
 
-function allowNonQuotaGuards(): FoundationToolGuardV1 {
-	return new FoundationToolGuardV1({
+function allowNonQuotaGuards(): FoundationToolGuard {
+	return new FoundationToolGuard({
 		capability: { check: () => Result.ok({ allowed: true, reference: reference("capability") }) },
 		policy: { check: () => Result.ok({ allowed: true, reference: reference("policy") }) },
 		approval: { check: () => Result.ok({ allowed: true, reference: reference("approval") }) },
@@ -115,8 +115,8 @@ function allowNonQuotaGuards(): FoundationToolGuardV1 {
 	});
 }
 
-function allowAllGuards(): FoundationToolGuardV1 {
-	return new FoundationToolGuardV1({
+function allowAllGuards(): FoundationToolGuard {
+	return new FoundationToolGuard({
 		capability: { check: () => Result.ok({ allowed: true, reference: reference("capability") }) },
 		policy: { check: () => Result.ok({ allowed: true, reference: reference("policy") }) },
 		approval: { check: () => Result.ok({ allowed: true, reference: reference("approval") }) },
@@ -129,7 +129,7 @@ function allowAllGuards(): FoundationToolGuardV1 {
 describe("T4 fixed tool runtime", () => {
 	it("arms a durable intent fence before executing and records the result fact after execution", async () => {
 		const events: string[] = [];
-		const storage = new InMemoryToolPipelineStorageV1();
+		const storage = new InMemoryToolPipelineStorage();
 		const originalWrite = storage.writeIntent.bind(storage);
 		storage.writeIntent = async (intent) => {
 			events.push("intent");
@@ -141,7 +141,7 @@ describe("T4 fixed tool runtime", () => {
 			return originalFinalize(receipt);
 		};
 		const order: string[] = [];
-		const guard = new FoundationToolGuardV1({
+		const guard = new FoundationToolGuard({
 			capability: { check: allowCheck(order, "capability") },
 			policy: { check: allowCheck(order, "policy") },
 			approval: { check: allowCheck(order, "approval") },
@@ -149,7 +149,7 @@ describe("T4 fixed tool runtime", () => {
 			quota: { check: allowCheck(order, "quota") },
 			conflictLock: { check: allowCheck(order, "conflict_lock") },
 		});
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("write", async () => { events.push("execute"); return { ok: true, sideEffectState: "none" }; })]),
 			storage,
 			guard,
@@ -168,12 +168,12 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("records original and accepted argument digests with transform provenance", async () => {
-		const storage = new InMemoryToolPipelineStorageV1();
+		const storage = new InMemoryToolPipelineStorage();
 		const transform = {
 			...tool("transform", async () => ({ ok: true, sideEffectState: "none" as const })),
 			prepareArguments: () => ({ value: "accepted" }),
 		};
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([transform]),
 			storage,
 			guard: allowAllGuards(),
@@ -188,29 +188,29 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("records stable transformer identity and rejects exact provenance or receipt tampering", async () => {
-		const storage = new InMemoryToolPipelineStorageV1();
+		const storage = new InMemoryToolPipelineStorage();
 		const transformed = {
 			...tool("transform-stable", async () => ({ ok: true, sideEffectState: "none" as const })),
 			argumentTransformer: { transformerId: "transformer:stable", transformerRevision: 7, transform: () => ({ value: "accepted" }) },
 		};
 		const options = { registry: registry([transformed]), storage, guard: allowAllGuards(), idGenerator: (prefix: string) => `${prefix}-stable` };
-		const first = await new FoundationToolPipelineV1(options).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
+		const first = await new FoundationToolPipeline(options).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
 		if (!first.ok) throw first.error;
 		const provenance = first.value.transformProvenance[0]!;
 		expect(provenance).toMatchObject({ transformerId: "transformer:stable", transformerRevision: 7, beforeDigest: { algorithm: "sha256" }, afterDigest: { algorithm: "sha256" } });
 		const tamperedIntent = { ...storage.intents[0]!, transformProvenance: storage.intents[0]!.transformProvenance.map((entry) => ({ ...entry, beforeDigest: { algorithm: "sha256" as const, value: "0".repeat(64) } })) };
 		const tamperedStorage = {
 			writeIntent: async () => Result.ok(tamperedIntent),
-			finalizeReceipt: async (receipt: Parameters<InMemoryToolPipelineStorageV1["finalizeReceipt"]>[0]) => Result.ok({ toolReceiptRef: receipt.toolReceiptId }),
+			finalizeReceipt: async (receipt: Parameters<InMemoryToolPipelineStorage["finalizeReceipt"]>[0]) => Result.ok({ toolReceiptRef: receipt.toolReceiptId }),
 			listIntents: async () => [tamperedIntent],
 			listReceipts: async () => [],
 		};
-		const replay = await new FoundationToolPipelineV1({ ...options, storage: tamperedStorage }).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
+		const replay = await new FoundationToolPipeline({ ...options, storage: tamperedStorage }).execute({ toolCallId: "call-stable", toolName: "transform-stable", idempotencyKey: "stable-key", args: { value: "original" } }, context());
 		expect(replay).toMatchObject({ ok: false, error: { code: "tool_guard_denied" } });
 		const forgedDigest = { ...first.value, digest: { algorithm: "sha256" as const, value: "0".repeat(64) } };
-		expect(validateAndVerifyToolReceiptV1(forgedDigest)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(validateAndVerifyToolReceipt(forgedDigest)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 
-		const ambiguous = await new FoundationToolPipelineV1({
+		const ambiguous = await new FoundationToolPipeline({
 			registry: registry([{ ...transformed, prepareArguments: () => ({ value: "ambiguous" }) }]),
 			guard: allowAllGuards(),
 		}).execute({ toolCallId: "call-ambiguous-transform", toolName: "transform-stable", args: { value: "x" } }, context());
@@ -222,21 +222,21 @@ describe("T4 fixed tool runtime", () => {
 		let executions = 0;
 		const hooked = {
 			...tool("hooked", async () => { executions += 1; return { ok: true, sideEffectState: "none" as const }; }),
-			preHook: (scope: Parameters<NonNullable<ToolDefinitionV1["preHook"]>>[0]) => {
+			preHook: (scope: Parameters<NonNullable<ToolDefinition["preHook"]>>[0]) => {
 				expect(Object.isFrozen(scope)).toBe(true);
 				expect(Object.isFrozen(scope.args)).toBe(true);
 				expect(Object.isFrozen(scope.intent)).toBe(true);
 			},
 			postProcessor: () => ({ result: { schemaVersion: 1 as const, content: [{ type: "text" as const, text: "normalized" }] }, usage: { tokens: 1, costUsd: 0.25, toolCalls: 1 } }),
 		};
-		const pipeline = new FoundationToolPipelineV1({ registry: registry([hooked]), guard: allowAllGuards(), onStage: (event) => { stages.push(event.stage); } });
+		const pipeline = new FoundationToolPipeline({ registry: registry([hooked]), guard: allowAllGuards(), onStage: (event) => { stages.push(event.stage); } });
 		const result = await pipeline.execute({ toolCallId: "call-hooked", toolName: "hooked", args: { value: "x" } }, context());
 		expect(result).toMatchObject({ ok: true, value: { outcome: "succeeded", result: { content: [{ text: "normalized" }] }, usage: { costUsd: 0.25 } } });
 		expect(stages).toEqual(["prepare", "pre", "guard", "execute", "post", "finalize"]);
 		expect(executions).toBe(1);
 
 		let mutatedExecutions = 0;
-		const mutation = await new FoundationToolPipelineV1({
+		const mutation = await new FoundationToolPipeline({
 			registry: registry([{ ...tool("mutation", async () => { mutatedExecutions += 1; return { ok: true, sideEffectState: "none" as const }; }), preHook: (scope) => {
 				(scope.args as Record<string, unknown>).value = "tampered";
 			} }]),
@@ -245,13 +245,13 @@ describe("T4 fixed tool runtime", () => {
 		expect(mutation).toMatchObject({ ok: true, value: { outcome: "blocked", sideEffectState: "none", error: { code: "tool_pre_hook_denied" } } });
 		expect(mutatedExecutions).toBe(0);
 
-		const invalidPost = await new FoundationToolPipelineV1({
+		const invalidPost = await new FoundationToolPipeline({
 			registry: registry([{ ...tool("invalid-post", async () => ({ ok: true, sideEffectState: "none" as const })), postProcessor: () => ({ outcome: "succeeded" } as never) }]),
 			guard: allowAllGuards(),
 		}).execute({ toolCallId: "call-invalid-post", toolName: "invalid-post", args: { value: "x" } }, context());
 		expect(invalidPost).toMatchObject({ ok: true, value: { outcome: "failed", sideEffectState: "none", error: { code: "tool_post_validation_failed" } } });
 
-		const providerPostError = await new FoundationToolPipelineV1({
+		const providerPostError = await new FoundationToolPipeline({
 			registry: registry([{ ...tool("provider-post-error", async () => ({ ok: true, sideEffectState: "none" as const })), postProcessor: () => Result.err(new FoundationError("tool_execution_failed", "provider error must not escape post validation")) }]),
 			guard: allowAllGuards(),
 		}).execute({ toolCallId: "call-provider-post-error", toolName: "provider-post-error", args: { value: "x" } }, context());
@@ -264,8 +264,8 @@ describe("T4 fixed tool runtime", () => {
 			content: [{ type: "text" as const, text: "ok" }],
 			usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } },
 		};
-		expect(validateToolResultPayloadV1(payload)).toMatchObject({ ok: true });
-		expect(validateToolResultPayloadV1({ ...payload, usage: { ...payload.usage, input: 1.5 } })).toMatchObject({ ok: false });
+		expect(validateToolResultPayload(payload)).toMatchObject({ ok: true });
+		expect(validateToolResultPayload({ ...payload, usage: { ...payload.usage, input: 1.5 } })).toMatchObject({ ok: false });
 	});
 
 	it("stops the guard chain at the first denial and never executes", async () => {
@@ -275,14 +275,14 @@ describe("T4 fixed tool runtime", () => {
 			order.push("approval");
 			return Result.ok({ allowed: false, reference: reference("approval"), reason: "human approval required" });
 		};
-		const guard = new FoundationToolGuardV1({
+		const guard = new FoundationToolGuard({
 			capability: { check: allowCheck(order, "capability") },
 			policy: { check: allowCheck(order, "policy") },
 			approval: { check: denied },
 			sandbox: { check: allowCheck(order, "sandbox") },
 			quota: { check: allowCheck(order, "quota") },
 		});
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("blocked", async () => { executed = true; return { ok: true, sideEffectState: "none" }; })]),
 			guard,
 			now: () => "now",
@@ -298,7 +298,7 @@ describe("T4 fixed tool runtime", () => {
 
 	it("fails closed when a custom guard attempts to reorder the fixed sequence", async () => {
 		let executed = false;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("reordered", async () => { executed = true; return { ok: true, sideEffectState: "none" }; })]),
 			guard: {
 				guard: async () => Result.ok([{ kind: "policy", verdict: "allowed", reference: reference("policy") }]),
@@ -315,7 +315,7 @@ describe("T4 fixed tool runtime", () => {
 
 	it("records a quota denial at the quota gate without reaching the provider", async () => {
 		let executed = false;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("over-limit", async () => { executed = true; return { ok: true, sideEffectState: "none" }; })]),
 			budget: { toolCalls: 0 },
 			guard: allowNonQuotaGuards(),
@@ -338,7 +338,7 @@ describe("T4 fixed tool runtime", () => {
 	it("does not retry side-effect-unknown and joins conflicting calls in source order", async () => {
 		let attempts = 0;
 		const executionOrder: string[] = [];
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([
 				tool("unknown", async () => { attempts += 1; return { ok: false, sideEffectState: "side_effect_unknown", error: { code: "lost", message: "outcome unknown", retryable: true } }; }),
 				tool("slow", async () => { await new Promise((resolve) => setTimeout(resolve, 5)); executionOrder.push("slow"); return { ok: true, sideEffectState: "none" }; }, { conflictKeys: () => ["shared"] }),
@@ -363,10 +363,10 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("does not call a later conflicting gateway provider after an unknown receipt", async () => {
-		const storage = new InMemoryToolPipelineStorageV1();
+		const storage = new InMemoryToolPipelineStorage();
 		let firstGatewayCalls = 0;
 		let secondGatewayCalls = 0;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([
 				tool("gateway-first", async () => {
 					firstGatewayCalls += 1;
@@ -398,8 +398,8 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("blocks a later conflicting provider when the prior receipt cannot be finalized", async () => {
-		const durable = new InMemoryToolPipelineStorageV1();
-		const storage: ToolPipelineStorageV1 = {
+		const durable = new InMemoryToolPipelineStorage();
+		const storage: ToolPipelineStorage = {
 			writeIntent: (intent) => durable.writeIntent(intent),
 			finalizeReceipt: async (receipt) => receipt.toolCallId === "finalize-first-call"
 				? Result.err(new FoundationError("serialization_failed", "durable receipt unavailable"))
@@ -408,7 +408,7 @@ describe("T4 fixed tool runtime", () => {
 			listReceipts: () => durable.listReceipts(),
 		};
 		let secondProviderCalls = 0;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([
 				tool("finalize-first", async () => ({ ok: true, sideEffectState: "none" }), { conflictKeys: () => ["finalize:shared"] }),
 				tool("finalize-second", async () => {
@@ -433,9 +433,9 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("fails closed when durable fact finalization fails, then recovers the unsettled intent", async () => {
-		const durable = new InMemoryToolPipelineStorageV1();
+		const durable = new InMemoryToolPipelineStorage();
 		let failFinalize = true;
-		const storage: ToolPipelineStorageV1 = {
+		const storage: ToolPipelineStorage = {
 			writeIntent: (intent) => durable.writeIntent(intent),
 			finalizeReceipt: async (receipt) => failFinalize
 				? Result.err(new FoundationError("serialization_failed", "durable fact unavailable"))
@@ -451,7 +451,7 @@ describe("T4 fixed tool runtime", () => {
 			now: () => "now",
 			idGenerator: (prefix: string) => `${prefix}-1`,
 		};
-		const first = await new FoundationToolPipelineV1(options).execute({ toolCallId: "call-recovery", toolName: "uncertain", args: { value: "x" } }, context());
+		const first = await new FoundationToolPipeline(options).execute({ toolCallId: "call-recovery", toolName: "uncertain", args: { value: "x" } }, context());
 
 		expect(first.ok).toBe(false);
 		expect(sideEffects).toBe(1);
@@ -459,16 +459,16 @@ describe("T4 fixed tool runtime", () => {
 		expect(durable.receipts).toHaveLength(0);
 
 		failFinalize = false;
-		const recovery = await new FoundationToolPipelineV1(options).recoverUnsettled();
+		const recovery = await new FoundationToolPipeline(options).recoverUnsettled();
 		expect(recovery).toMatchObject({ ok: true, value: [{ outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", retried: 0 }] });
 		expect(durable.receipts).toHaveLength(1);
-		expect(await new FoundationToolPipelineV1(options).recoverUnsettled()).toMatchObject({ ok: true, value: [] });
+		expect(await new FoundationToolPipeline(options).recoverUnsettled()).toMatchObject({ ok: true, value: [] });
 		expect(sideEffects).toBe(1);
 	});
 
 	it("fails closed when policy, approval, or sandbox authority is absent", async () => {
 		let executed = false;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("guarded", async () => { executed = true; return { ok: true, sideEffectState: "none" }; })]),
 			now: () => "now",
 			idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })(),
@@ -479,8 +479,8 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("scopes concurrency reservations to binding and epoch across overlapping batches", async () => {
-		const quota = new FoundationToolQuotaAccountV1({ budget: { concurrency: 1 } });
-		const guard = new FoundationToolGuardV1({
+		const quota = new FoundationToolQuotaAccount({ budget: { concurrency: 1 } });
+		const guard = new FoundationToolGuard({
 			capability: { check: () => Result.ok({ allowed: true, reference: reference("capability") }) },
 			policy: { check: () => Result.ok({ allowed: true, reference: reference("policy") }) },
 			approval: { check: () => Result.ok({ allowed: true, reference: reference("approval") }) },
@@ -492,7 +492,7 @@ describe("T4 fixed tool runtime", () => {
 			releaseFirst = resolve;
 		});
 		let firstStarted = false;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("scoped", async (_args, options) => {
 				if (options.toolCallId === "same-first") {
 					firstStarted = true;
@@ -522,7 +522,7 @@ describe("T4 fixed tool runtime", () => {
 		const preProvider = new AbortController();
 		preProvider.abort();
 		let executions = 0;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("ambiguous", async (_args, options) => {
 				executions += 1;
 				await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
@@ -543,8 +543,8 @@ describe("T4 fixed tool runtime", () => {
 		expect(deadline).toMatchObject({ ok: true, value: { outcome: "failed", sideEffectState: "none", error: { code: "deadline_exceeded" } } });
 		expect(executions).toBe(1);
 
-		const durable = new InMemoryToolPipelineStorageV1();
-		const transport = new FoundationToolPipelineV1({
+		const durable = new InMemoryToolPipelineStorage();
+		const transport = new FoundationToolPipeline({
 			registry: registry([tool("transport", async () => ({ ok: true, sideEffectState: "none" }))]),
 			storage: {
 				writeIntent: (intent) => durable.writeIntent(intent),
@@ -559,18 +559,18 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("reuses durable idempotency across a pipeline restart and runs unrelated calls in parallel", async () => {
-		const durable = new InMemoryToolPipelineStorageV1();
+		const durable = new InMemoryToolPipelineStorage();
 		let failFinalize = true;
 		let sideEffects = 0;
 		let active = 0;
 		let peak = 0;
-		const storage: ToolPipelineStorageV1 = {
+		const storage: ToolPipelineStorage = {
 			writeIntent: (intent) => durable.writeIntent(intent),
 			finalizeReceipt: async (receipt) => failFinalize ? Result.err(new FoundationError("serialization_failed", "simulated crash")) : durable.finalizeReceipt(receipt),
 			listIntents: () => durable.listIntents(),
 			listReceipts: () => durable.listReceipts(),
 		};
-		const make = () => new FoundationToolPipelineV1({
+		const make = () => new FoundationToolPipeline({
 			registry: registry([tool("once", async () => { sideEffects += 1; return { ok: true, sideEffectState: "none" }; }), tool("parallel-a", async () => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 5)); active -= 1; return { ok: true, sideEffectState: "none" }; }), tool("parallel-b", async () => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 5)); active -= 1; return { ok: true, sideEffectState: "none" }; })]),
 			storage,
 			guard: allowAllGuards(),
@@ -596,56 +596,56 @@ describe("T4 fixed tool runtime", () => {
 	});
 
 	it("folds identical durable receipt replays and rejects an unknown state hidden by a later success", async () => {
-		const durable = new InMemoryToolPipelineStorageV1();
+		const durable = new InMemoryToolPipelineStorage();
 		let executions = 0;
 		const registryWithResult = registry([tool("durable", async () => {
 			executions += 1;
 			return { ok: true, sideEffectState: "none" as const, result: { schemaVersion: 1 as const, content: [{ type: "text" as const, text: "durable result" }] } };
 		})]);
-		const firstPipeline = new FoundationToolPipelineV1({ registry: registryWithResult, storage: durable, guard: allowAllGuards(), idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })() });
+		const firstPipeline = new FoundationToolPipeline({ registry: registryWithResult, storage: durable, guard: allowAllGuards(), idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })() });
 		const first = await firstPipeline.execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
 		if (!first.ok) throw first.error;
 		const { digest: _digest, ...withoutDigest } = first.value;
-		const envelopeReplay = finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: "envelope-replay", completedAt: "later" });
-		const replayStorage: ToolPipelineStorageV1 = {
+		const envelopeReplay = finalizeToolReceipt({ ...withoutDigest, toolReceiptId: "envelope-replay", completedAt: "later" });
+		const replayStorage: ToolPipelineStorage = {
 			writeIntent: (intent) => durable.writeIntent(intent),
 			finalizeReceipt: (receipt) => durable.finalizeReceipt(receipt),
 			listIntents: () => durable.listIntents(),
 			listReceipts: async () => [first.value, envelopeReplay],
 		};
-		const replay = await new FoundationToolPipelineV1({ registry: registryWithResult, storage: replayStorage, guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-replay` }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
+		const replay = await new FoundationToolPipeline({ registry: registryWithResult, storage: replayStorage, guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-replay` }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
 		expect(replay).toMatchObject({ ok: true, value: { outcome: "succeeded", deduplicatedFrom: expect.any(String), result: { content: [{ type: "text", text: "durable result" }] } } });
 		expect(executions).toBe(1);
 
 		const { result: _unknownResult, artifacts: _unknownArtifacts, ...withoutResult } = withoutDigest;
-		const unknownReplay = finalizeToolReceiptV1({ ...withoutResult, toolReceiptId: "unknown-replay", outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: { code: "side_effect_unknown", message: "outcome unknown", retryable: false } });
-		const successAfterUnknown = finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: "success-after-unknown", completedAt: "latest" });
-		const conflictStorage: ToolPipelineStorageV1 = {
+		const unknownReplay = finalizeToolReceipt({ ...withoutResult, toolReceiptId: "unknown-replay", outcome: "side_effect_unknown", sideEffectState: "side_effect_unknown", error: { code: "side_effect_unknown", message: "outcome unknown", retryable: false } });
+		const successAfterUnknown = finalizeToolReceipt({ ...withoutDigest, toolReceiptId: "success-after-unknown", completedAt: "latest" });
+		const conflictStorage: ToolPipelineStorage = {
 			writeIntent: (intent) => durable.writeIntent(intent),
 			finalizeReceipt: (receipt) => durable.finalizeReceipt(receipt),
 			listIntents: () => durable.listIntents(),
 			listReceipts: async () => [first.value, unknownReplay, successAfterUnknown],
 		};
-		const conflict = await new FoundationToolPipelineV1({ registry: registryWithResult, storage: conflictStorage, guard: allowAllGuards() }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
+		const conflict = await new FoundationToolPipeline({ registry: registryWithResult, storage: conflictStorage, guard: allowAllGuards() }).execute({ toolCallId: "durable-call", toolName: "durable", idempotencyKey: "durable-key", args: { value: "x" } }, context());
 		expect(conflict).toMatchObject({ ok: false, error: { code: "session_ledger_conflict" } });
 	});
 
 	it("rejects duplicate receipts whose error or gate semantics differ in either order", async () => {
-		const firstPipeline = new FoundationToolPipelineV1({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-first` });
+		const firstPipeline = new FoundationToolPipeline({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), guard: allowAllGuards(), idGenerator: (prefix) => `${prefix}-first` });
 		const first = await firstPipeline.execute({ toolCallId: "semantic-call", toolName: "semantic", idempotencyKey: "semantic-key", args: { value: "x" } }, context());
 		if (!first.ok) throw first.error;
 		const { digest: _digest, result: _result, artifacts: _artifacts, ...withoutSuccess } = first.value;
-		const failedOne = finalizeToolReceiptV1({ ...withoutSuccess, toolReceiptId: "semantic-failed-one", outcome: "failed", sideEffectState: "none", error: { code: "failed-one", message: "first failure", retryable: false } });
+		const failedOne = finalizeToolReceipt({ ...withoutSuccess, toolReceiptId: "semantic-failed-one", outcome: "failed", sideEffectState: "none", error: { code: "failed-one", message: "first failure", retryable: false } });
 		const changedGates = failedOne.gates.map((gate, index) => index === 0 ? { ...gate, reason: "different gate reason" } : gate);
-		const failedTwo = finalizeToolReceiptV1({ ...withoutSuccess, toolReceiptId: "semantic-failed-two", outcome: "failed", sideEffectState: "none", gates: changedGates, error: { code: "failed-two", message: "second failure", retryable: false } });
+		const failedTwo = finalizeToolReceipt({ ...withoutSuccess, toolReceiptId: "semantic-failed-two", outcome: "failed", sideEffectState: "none", gates: changedGates, error: { code: "failed-two", message: "second failure", retryable: false } });
 		for (const receipts of [[failedOne, failedTwo], [failedTwo, failedOne]]) {
-			const storage: ToolPipelineStorageV1 = {
+			const storage: ToolPipelineStorage = {
 				writeIntent: async (intent) => Result.ok(intent),
 				finalizeReceipt: async (receipt) => Result.ok({ toolReceiptRef: receipt.toolReceiptId }),
 				listIntents: async () => [],
 				listReceipts: async () => receipts,
 			};
-			const replay = await new FoundationToolPipelineV1({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), storage, guard: allowAllGuards() }).execute({ toolCallId: "semantic-call", toolName: "semantic", idempotencyKey: "semantic-key", args: { value: "x" } }, context());
+			const replay = await new FoundationToolPipeline({ registry: registry([tool("semantic", async () => ({ ok: true, sideEffectState: "none" as const }))]), storage, guard: allowAllGuards() }).execute({ toolCallId: "semantic-call", toolName: "semantic", idempotencyKey: "semantic-key", args: { value: "x" } }, context());
 			expect(replay).toMatchObject({ ok: false, error: { code: "session_ledger_conflict" } });
 		}
 	});
@@ -655,8 +655,8 @@ describe("T4 fixed tool runtime", () => {
 		const firstArtifact = artifact("artifact-one");
 		const secondArtifact = artifact("artifact-two");
 		const extraArtifact = artifact("artifact-extra");
-		const durable = new InMemoryToolPipelineStorageV1();
-		const pipeline = new FoundationToolPipelineV1({
+		const durable = new InMemoryToolPipelineStorage();
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("image", async () => ({ ok: true, sideEffectState: "none" as const, artifacts: [firstArtifact, secondArtifact], result: { schemaVersion: 1 as const, content: [{ type: "image" as const, artifact: firstArtifact }, { type: "image" as const, artifact: secondArtifact }] } }))]),
 			storage: durable,
 			guard: allowAllGuards(),
@@ -664,10 +664,10 @@ describe("T4 fixed tool runtime", () => {
 		});
 		const first = await pipeline.execute({ toolCallId: "image-call", toolName: "image", args: { value: "x" } }, context());
 		if (!first.ok) throw first.error;
-		expect(validateToolReceiptV1(first.value).ok).toBe(true);
+		expect(validateToolReceipt(first.value).ok).toBe(true);
 		const { digest: _digest, ...withoutDigest } = first.value;
 		for (const artifacts of [[firstArtifact, secondArtifact, extraArtifact], [firstArtifact, firstArtifact], [firstArtifact]]) {
-			const invalid = validateToolReceiptV1(finalizeToolReceiptV1({ ...withoutDigest, toolReceiptId: `invalid-${artifacts.length}`, artifacts }));
+			const invalid = validateToolReceipt(finalizeToolReceipt({ ...withoutDigest, toolReceiptId: `invalid-${artifacts.length}`, artifacts }));
 			expect(invalid).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 		}
 	});
@@ -675,11 +675,11 @@ describe("T4 fixed tool runtime", () => {
 	it("rejects forged text/plain image ArtifactRefs before any provider execution", async () => {
 		const artifact = { schemaVersion: 1 as const, artifactId: "forged-image", mediaType: "text/plain", digest: `sha256:${"a".repeat(64)}`, producer: "provider-1", sizeBytes: 3 };
 		const payload = { schemaVersion: 1 as const, content: [{ type: "image" as const, artifact }] };
-		expect(validateToolResultPayloadV1(payload)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(validateToolResultPayload(payload)).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 	});
 
 	it("keeps the same toolCallId separate across operations and fails closed on key conflicts", async () => {
-		const storage = new InMemoryToolPipelineStorageV1();
+		const storage = new InMemoryToolPipelineStorage();
 		let sideEffects = 0;
 		const options = {
 			registry: registry([tool("identity", async () => { sideEffects += 1; return { ok: true, sideEffectState: "none" }; })]),
@@ -687,7 +687,7 @@ describe("T4 fixed tool runtime", () => {
 			guard: allowAllGuards(),
 			idGenerator: (() => { let id = 0; return (prefix: string) => `${prefix}-${++id}`; })(),
 		};
-		const pipeline = new FoundationToolPipelineV1(options);
+		const pipeline = new FoundationToolPipeline(options);
 		const first = await pipeline.execute({ toolCallId: "shared-call", toolName: "identity", idempotencyKey: "operation-a-key", args: { value: "a" } }, operationContext("operation-a"));
 		const second = await pipeline.execute({ toolCallId: "shared-call", toolName: "identity", idempotencyKey: "operation-b-key", args: { value: "b" } }, operationContext("operation-b"));
 		expect(first.ok).toBe(true);
@@ -695,7 +695,7 @@ describe("T4 fixed tool runtime", () => {
 		expect(sideEffects).toBe(2);
 		expect(storage.receipts.map((receipt) => receipt.binding.operationId)).toEqual(["operation-a", "operation-b"]);
 
-		const replay = await new FoundationToolPipelineV1(options).execute({ toolCallId: "shared-call", toolName: "identity", idempotencyKey: "operation-a-key", args: { value: "a" } }, operationContext("operation-a"));
+		const replay = await new FoundationToolPipeline(options).execute({ toolCallId: "shared-call", toolName: "identity", idempotencyKey: "operation-a-key", args: { value: "a" } }, operationContext("operation-a"));
 		expect(replay).toMatchObject({ ok: true, value: { deduplicatedFrom: expect.any(String) } });
 		expect(sideEffects).toBe(2);
 
@@ -710,7 +710,7 @@ describe("T4 fixed tool runtime", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-1", createdAt: 1 }));
 		const lease = await session.acquireWriterLease({ ownerId: "correlation-owner" });
 		const executionContext = operationContext("operation-correlation");
-		const storage = new SessionToolPipelineStorageV1({
+		const storage = new SessionToolPipelineStorage({
 			ledger: session,
 			laneId: executionContext.laneId,
 			correlationFor: (_kind, value) => createExecutionCorrelation(executionContext.sessionId, executionContext.laneId, {
@@ -728,7 +728,7 @@ describe("T4 fixed tool runtime", () => {
 			fencingToken: () => lease.fencingToken,
 		});
 		let sideEffects = 0;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("correlation", async () => { sideEffects += 1; return { ok: true, sideEffectState: "none" }; })]),
 			storage,
 			guard: allowAllGuards(),
@@ -747,7 +747,7 @@ describe("T4 fixed tool runtime", () => {
 		await session.releaseWriterLease({ fencingToken: staleLease.fencingToken });
 		await session.acquireWriterLease({ ownerId: "current-owner" });
 		const executionContext = operationContext("operation-fencing");
-		const storage = new SessionToolPipelineStorageV1({
+		const storage = new SessionToolPipelineStorage({
 			ledger: session,
 			laneId: executionContext.laneId,
 			correlationFor: (_kind, value) => createExecutionCorrelation(executionContext.sessionId, executionContext.laneId, {
@@ -765,7 +765,7 @@ describe("T4 fixed tool runtime", () => {
 			fencingToken: () => staleLease.fencingToken,
 		});
 		let sideEffects = 0;
-		const pipeline = new FoundationToolPipelineV1({
+		const pipeline = new FoundationToolPipeline({
 			registry: registry([tool("fenced", async () => { sideEffects += 1; return { ok: true, sideEffectState: "none" }; })]),
 			storage,
 			guard: allowAllGuards(),

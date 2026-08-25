@@ -10,7 +10,7 @@ import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
 import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SchedulerSafeStatusV1 } from "../../core/foundation-control-plane.ts";
+import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -66,7 +66,7 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { WorkerLifecycleStatusV1 } from "../../core/worker.ts";
+import type { WorkerLifecycleStatus } from "../../core/worker.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -373,7 +373,7 @@ export type RpcCommand =
 			id?: string;
 			type: "worker.list";
 			runId?: string;
-			status?: WorkerLifecycleStatusV1;
+			status?: WorkerLifecycleStatus;
 			limit?: number;
 			cursor?: string;
 	  }
@@ -1162,7 +1162,7 @@ export interface RpcWorkerRecord {
 	bindingEpochId?: string;
 	attemptId?: string;
 	profileId: string;
-	status: WorkerLifecycleStatusV1;
+	status: WorkerLifecycleStatus;
 	revision: number;
 	createdAt: string;
 	readyAt?: string;
@@ -1245,7 +1245,7 @@ export type RpcSubagentResponse =
 	| { id?: string; type: "response"; command: RpcSubagentCommandType; success: false; error: RpcSubagentError };
 
 export interface SchedulerStatusData {
-	readonly scheduler: SchedulerSafeStatusV1;
+	readonly scheduler: SchedulerSafeStatus;
 }
 
 export type RpcSchedulerResponse =

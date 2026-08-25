@@ -19,37 +19,37 @@ import {
 import type { Session } from "../session/session.ts";
 import type { FileSystem } from "../types.ts";
 import { SessionLedgerBindingError, SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
-import type { FoundationCorrelationInputV1 } from "../session/durable/types.ts";
+import type { FoundationCorrelationInput } from "../session/durable/types.ts";
 import {
 	contextSnapshotFromJSON,
 	createContextSnapshot,
-	type ContextBuildFactV1,
+	type ContextBuildFact,
 	type ContextSnapshot,
 	type ContextSnapshotOptions,
-	type ContextSnapshotV1,
-	type PersistedTaskContextPackageV1,
-	type TaskContextPackageV1,
+	type ContextSnapshotRecord,
+	type PersistedTaskContextPackage,
+	type TaskContextPackage,
 } from "./snapshot.ts";
 import {
 	createCheckpoint,
 	digestCheckpointTranscript,
 	planCheckpointRewind,
 	validateCheckpointImpactPlan,
-	type CheckpointImpactPlanV1,
+	type CheckpointImpactPlan,
 	type CheckpointPlanOptions,
 	type CheckpointRewindAuthority,
-	type CheckpointV1,
+	type Checkpoint,
 	type WorkspaceCheckpointState,
 } from "./checkpoint.ts";
 import {
 	resolveInstructionSources,
-	type InstructionLockV1,
+	type InstructionLock,
 	type InstructionResolution,
-	type InstructionResolutionRecordV1,
+	type InstructionResolutionRecord,
 	type InstructionSourceInput,
-	type InstructionSourceV1,
+	type InstructionSource,
 } from "./instruction.ts";
-import { compactContext, type CompactionRecordV1, type CompactionRetentionV1, type CompactionResumeBoundaryV1, type T5CompactionReason } from "./compaction.ts";
+import { compactContext, type CompactionRecord, type CompactionRetention, type CompactionResumeBoundary, type T5CompactionReason } from "./compaction.ts";
 
 export interface SessionT5LedgerOptions extends SessionLedgerWriterOptions {
 	readonly artifacts?: SessionArtifactStore;
@@ -67,18 +67,18 @@ export interface SessionT5LedgerOptions extends SessionLedgerWriterOptions {
 	readonly memoryProvenance?: MemoryProvenanceBoundary;
 }
 
-export interface ToolResultArtifactContentV1 {
+export interface ToolResultArtifactContent {
 	readonly index: number;
 	readonly kind: "text" | "image";
 	readonly reference: ArtifactReference;
 }
 
-export interface ToolResultFactV1 {
+export interface ToolResultFact {
 	readonly schemaVersion: 1;
 	readonly resultEntryId: string;
 	readonly toolCallId: string;
 	readonly toolName: string;
-	readonly content: readonly ToolResultArtifactContentV1[];
+	readonly content: readonly ToolResultArtifactContent[];
 	readonly detailsRef?: ArtifactReference;
 	readonly usage?: Usage;
 	readonly addedToolNames?: readonly string[];
@@ -105,15 +105,15 @@ export interface ToolResultPersistenceOptions {
 	readonly lane: string;
 	readonly runId: string;
 	readonly resultEntryId: string;
-	readonly correlation?: Partial<FoundationCorrelationInputV1>;
+	readonly correlation?: Partial<FoundationCorrelationInput>;
 }
 
-export interface PersistedToolResultV1 {
-	readonly fact: ToolResultFactV1;
+export interface PersistedToolResult {
+	readonly fact: ToolResultFact;
 	readonly message: ToolResultMessage<ArtifactReference>;
 }
 
-export interface PromptCacheRecordV1 {
+export interface PromptCacheRecord {
 	readonly schemaVersion: 1;
 	readonly cacheEntryId: string;
 	readonly cacheKey: string;
@@ -162,16 +162,16 @@ export interface PromptCacheInvalidationOptions {
 }
 
 export interface PromptCacheLookup {
-	readonly record: PromptCacheRecordV1;
+	readonly record: PromptCacheRecord;
 	readonly value?: Uint8Array;
 }
 
-export interface SessionRewindPlanV1 extends CheckpointImpactPlanV1 {
+export interface SessionRewindPlan extends CheckpointImpactPlan {
 	readonly planId: string;
 	readonly lane: string;
 }
 
-export interface RewindExecutionV1 {
+export interface RewindExecution {
 	readonly schemaVersion: 1;
 	readonly planId: string;
 	readonly lane: string;
@@ -196,8 +196,8 @@ export interface CompactionWriteOptions {
 	readonly reason?: T5CompactionReason;
 	readonly summary?: string;
 	readonly artifact?: ArtifactPutOptions;
-	readonly retention?: CompactionRetentionV1;
-	readonly resumeBoundary?: Partial<CompactionResumeBoundaryV1>;
+	readonly retention?: CompactionRetention;
+	readonly resumeBoundary?: Partial<CompactionResumeBoundary>;
 	readonly clientRequestId?: string;
 }
 
@@ -251,7 +251,7 @@ function toolResultBytes(block: ToolResultMessage["content"][number]): Uint8Arra
 	return block.type === "image" ? decodeImageData(block.data) : new TextEncoder().encode(block.text);
 }
 
-function assertToolResultReplay(fact: ToolResultFactV1, message: ToolResultMessage, options: ToolResultPersistenceOptions, sessionId: string): void {
+function assertToolResultReplay(fact: ToolResultFact, message: ToolResultMessage, options: ToolResultPersistenceOptions, sessionId: string): void {
 	const immutableIdentityMatches =
 		fact.schemaVersion === 1 &&
 		fact.resultEntryId === options.resultEntryId &&
@@ -310,7 +310,7 @@ function encodeToolResultImage(value: Uint8Array): string {
 	return btoa(binary);
 }
 
-function projectToolResult(fact: ToolResultFactV1): ToolResultMessage<ArtifactReference> {
+function projectToolResult(fact: ToolResultFact): ToolResultMessage<ArtifactReference> {
 	return {
 		role: "toolResult",
 		toolCallId: fact.toolCallId,
@@ -363,16 +363,16 @@ export class SessionT5Ledger {
 	 * Session transcript receives only a redacted projection, so image bytes,
 	 * attachments, and structured details never become JSONL payloads.
 	 */
-	async persistToolResult(message: ToolResultMessage, options: ToolResultPersistenceOptions): Promise<PersistedToolResultV1> {
+	async persistToolResult(message: ToolResultMessage, options: ToolResultPersistenceOptions): Promise<PersistedToolResult> {
 		const metadata = await this.session.getMetadata();
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.toolResult, options.resultEntryId);
 		if (existing !== undefined) {
-			const fact = existing.payload as unknown as ToolResultFactV1;
+			const fact = existing.payload as unknown as ToolResultFact;
 			assertToolResultReplay(fact, message, options, metadata.id);
 			return { fact: structuredClone(fact), message: projectToolResult(fact) };
 		}
 
-		const content: ToolResultArtifactContentV1[] = [];
+		const content: ToolResultArtifactContent[] = [];
 		const artifactIds: string[] = [];
 		for (const [index, block] of message.content.entries()) {
 			const isImage = block.type === "image";
@@ -419,7 +419,7 @@ export class SessionT5Ledger {
 			});
 		}
 
-		const fact: ToolResultFactV1 = {
+		const fact: ToolResultFact = {
 			schemaVersion: 1,
 			resultEntryId: options.resultEntryId,
 			toolCallId: message.toolCallId,
@@ -452,7 +452,7 @@ export class SessionT5Ledger {
 				runId: options.runId,
 			},
 		});
-		const stored = accepted.payload as unknown as ToolResultFactV1;
+		const stored = accepted.payload as unknown as ToolResultFact;
 		return { fact: structuredClone(stored), message: projectToolResult(stored) };
 	}
 
@@ -464,7 +464,7 @@ export class SessionT5Ledger {
 	async materializeToolResult(resultEntryId: string): Promise<ToolResultMessage<unknown> | undefined> {
 		const stored = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.toolResult, resultEntryId);
 		if (stored === undefined) return undefined;
-		const fact = stored.payload as unknown as ToolResultFactV1;
+		const fact = stored.payload as unknown as ToolResultFact;
 		if (
 			fact.schemaVersion !== 1 ||
 			fact.resultEntryId !== resultEntryId ||
@@ -587,10 +587,10 @@ export class SessionT5Ledger {
 		return contextSnapshotFromJSON(record, snapshot.entries());
 	}
 
-	async saveContextBuildFact(fact: ContextBuildFactV1): Promise<ContextBuildFactV1> {
+	async saveContextBuildFact(fact: ContextBuildFact): Promise<ContextBuildFact> {
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.contextBuild, fact.buildId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as ContextBuildFactV1;
+			const stored = existing.payload as unknown as ContextBuildFact;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, fact as unknown as Record<string, unknown>)) throw new Error(`Context build fact ${fact.buildId} is immutable`);
 			return stored;
 		}
@@ -600,18 +600,18 @@ export class SessionT5Ledger {
 			clientRequestId: `context-build:${fact.buildId}`,
 			payload: asFoundationJson(fact),
 		});
-		return accepted.payload as unknown as ContextBuildFactV1;
+		return accepted.payload as unknown as ContextBuildFact;
 	}
 
-	async getContextBuildFact(buildId: string): Promise<ContextBuildFactV1 | undefined> {
+	async getContextBuildFact(buildId: string): Promise<ContextBuildFact | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.contextBuild, buildId);
-		return fact === undefined ? undefined : (fact.payload as unknown as ContextBuildFactV1);
+		return fact === undefined ? undefined : (fact.payload as unknown as ContextBuildFact);
 	}
 
-	async saveTaskContextPackage(taskPackage: TaskContextPackageV1): Promise<PersistedTaskContextPackageV1> {
+	async saveTaskContextPackage(taskPackage: TaskContextPackage): Promise<PersistedTaskContextPackage> {
 		const { entries: _entries, goal: _goal, ...metadata } = taskPackage;
 		const packageId = taskPackage.packageId ?? `task-package:${taskPackage.taskId}`;
-		const value: PersistedTaskContextPackageV1 = {
+		const value: PersistedTaskContextPackage = {
 			...metadata,
 			packageId,
 			schemaVersion: 1,
@@ -620,7 +620,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.taskContextPackage, packageId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as PersistedTaskContextPackageV1;
+			const stored = existing.payload as unknown as PersistedTaskContextPackage;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, value as unknown as Record<string, unknown>)) throw new Error(`Task context package ${packageId} is immutable`);
 			return stored;
 		}
@@ -630,12 +630,12 @@ export class SessionT5Ledger {
 			clientRequestId: `task-package:${packageId}`,
 			payload: asFoundationJson(value),
 		});
-		return accepted.payload as unknown as PersistedTaskContextPackageV1;
+		return accepted.payload as unknown as PersistedTaskContextPackage;
 	}
 
-	async getTaskContextPackage(packageId: string): Promise<PersistedTaskContextPackageV1 | undefined> {
+	async getTaskContextPackage(packageId: string): Promise<PersistedTaskContextPackage | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.taskContextPackage, packageId);
-		return fact === undefined ? undefined : (fact.payload as unknown as PersistedTaskContextPackageV1);
+		return fact === undefined ? undefined : (fact.payload as unknown as PersistedTaskContextPackage);
 	}
 
 	async captureContextSnapshot(lane = "main", options: ContextSnapshotOptions = {}): Promise<ContextSnapshot> {
@@ -645,9 +645,9 @@ export class SessionT5Ledger {
 		return this.saveContextSnapshot(createContextSnapshot(entries, { ...options, bindingEpochId: options.bindingEpochId ?? this.defaultBindingEpochId }));
 	}
 
-	async getContextSnapshot(snapshotId: string): Promise<ContextSnapshotV1 | undefined> {
+	async getContextSnapshot(snapshotId: string): Promise<ContextSnapshotRecord | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.contextSnapshot, snapshotId);
-		return fact === undefined ? undefined : (fact.payload as unknown as ContextSnapshotV1);
+		return fact === undefined ? undefined : (fact.payload as unknown as ContextSnapshotRecord);
 	}
 
 	async loadContextSnapshot(snapshotId: string): Promise<ContextSnapshot> {
@@ -669,7 +669,7 @@ export class SessionT5Ledger {
 		return this.saveContextSnapshot(child);
 	}
 
-	async putInstructionSource(input: InstructionSourceInput): Promise<InstructionSourceV1> {
+	async putInstructionSource(input: InstructionSourceInput): Promise<InstructionSource> {
 		const sourceId = input.sourceId ?? newFoundationId("instruction");
 		let contentRef = input.contentRef === undefined ? undefined : redactArtifactReference(input.contentRef);
 		let contentDigest = input.contentDigest;
@@ -679,7 +679,7 @@ export class SessionT5Ledger {
 		}
 		if (contentDigest === undefined) throw new Error(`Instruction source ${sourceId} requires contentDigest or contentRef`);
 		if (!/^sha256:[0-9a-f]{64}$/.test(contentDigest)) throw new Error(`Instruction source ${sourceId} requires a SHA-256 content digest`);
-		const source: InstructionSourceV1 = {
+		const source: InstructionSource = {
 			schemaVersion: 1,
 			sourceId,
 			scope: input.scope,
@@ -695,7 +695,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.instructionSource, sourceId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as InstructionSourceV1;
+			const stored = existing.payload as unknown as InstructionSource;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, source as unknown as Record<string, unknown>)) throw new Error(`Instruction source ${sourceId} is immutable`);
 			return stored;
 		}
@@ -706,10 +706,10 @@ export class SessionT5Ledger {
 		return source;
 	}
 
-	async lockInstruction(sourceId: string, options: InstructionLockOptions): Promise<InstructionLockV1> {
+	async lockInstruction(sourceId: string, options: InstructionLockOptions): Promise<InstructionLock> {
 		const source = requireRecord(await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.instructionSource, sourceId), `Instruction source not found: ${sourceId}`);
-		const sourceRecord = source.payload as unknown as InstructionSourceV1;
-		const lock: InstructionLockV1 = {
+		const sourceRecord = source.payload as unknown as InstructionSource;
+		const lock: InstructionLock = {
 			schemaVersion: 1,
 			sourceId,
 			locked: options.locked ?? true,
@@ -722,7 +722,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.instructionLock, sourceId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as InstructionLockV1;
+			const stored = existing.payload as unknown as InstructionLock;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, lock as unknown as Record<string, unknown>)) throw new Error(`Instruction lock ${sourceId} is immutable`);
 			return stored;
 		}
@@ -734,12 +734,12 @@ export class SessionT5Ledger {
 		const sourceFacts = latestFacts(await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.instructionSource }));
 		const lockFacts = latestFacts(await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.instructionLock }));
 		const resolution = resolveInstructionSources(
-			sourceFacts.map((fact) => fact.payload as unknown as InstructionSourceV1),
-			lockFacts.map((fact) => fact.payload as unknown as InstructionLockV1),
+			sourceFacts.map((fact) => fact.payload as unknown as InstructionSource),
+			lockFacts.map((fact) => fact.payload as unknown as InstructionLock),
 			options,
 		);
 		const resolutionId = `instruction-resolution:${resolution.digest.replace(/[^a-zA-Z0-9:_-]/g, "_")}`;
-		const record: InstructionResolutionRecordV1 = {
+		const record: InstructionResolutionRecord = {
 			schemaVersion: 1,
 			resolutionId,
 			...(resolution.path === undefined ? {} : { path: resolution.path }),
@@ -752,7 +752,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.instructionResolution, resolutionId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as InstructionResolutionRecordV1;
+			const stored = existing.payload as unknown as InstructionResolutionRecord;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, record as unknown as Record<string, unknown>)) {
 				throw new Error(`Instruction resolution ${resolutionId} is immutable`);
 			}
@@ -780,13 +780,13 @@ export class SessionT5Ledger {
 		return this.memory.delete(id, principal);
 	}
 
-	async recordCompaction(options: CompactionWriteOptions): Promise<CompactionRecordV1> {
+	async recordCompaction(options: CompactionWriteOptions): Promise<CompactionRecord> {
 		const snapshot = await this.loadContextSnapshot(options.snapshotId);
 		if (options.retention?.expiresAt !== undefined && (!Number.isFinite(options.retention.expiresAt) || options.retention.expiresAt < 0)) throw new RangeError("Compaction retention expiry must be finite and non-negative");
 		const proposal = compactContext(snapshot.entries(), { retainEntries: options.retainEntries, retention: options.retention });
 		const summary = options.summary ?? proposal.summary;
 		const summaryRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(summary), { ...options.artifact, mediaType: options.artifact?.mediaType ?? "text/plain", producer: options.artifact?.producer ?? "t5-compaction" });
-		const record: CompactionRecordV1 = {
+		const record: CompactionRecord = {
 			schemaVersion: 1,
 			compactionId: options.compactionId ?? newFoundationId("compaction"),
 			snapshotId: snapshot.snapshotId,
@@ -809,7 +809,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.compaction, record.compactionId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as CompactionRecordV1;
+			const stored = existing.payload as unknown as CompactionRecord;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, record as unknown as Record<string, unknown>)) throw new Error(`Compaction ${record.compactionId} is immutable`);
 			return stored;
 		}
@@ -818,16 +818,16 @@ export class SessionT5Ledger {
 		return record;
 	}
 
-	async getCompaction(compactionId: string): Promise<CompactionRecordV1 | undefined> {
+	async getCompaction(compactionId: string): Promise<CompactionRecord | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.compaction, compactionId);
-		return fact === undefined ? undefined : fact.payload as unknown as CompactionRecordV1;
+		return fact === undefined ? undefined : fact.payload as unknown as CompactionRecord;
 	}
 
-	async recordPromptCache(options: PromptCacheWriteOptions): Promise<PromptCacheRecordV1> {
+	async recordPromptCache(options: PromptCacheWriteOptions): Promise<PromptCacheRecord> {
 		if (!Number.isInteger(options.cacheEpoch) || options.cacheEpoch < 0) throw new RangeError("cacheEpoch must be a non-negative integer");
 		let valueRef = options.valueRef === undefined ? undefined : redactArtifactReference(options.valueRef);
 		if (options.value !== undefined) valueRef = await this.artifacts.putStructuredResult(options.value, { mediaType: "application/octet-stream", producer: "t5-prompt-cache" });
-		const record: PromptCacheRecordV1 = {
+		const record: PromptCacheRecord = {
 			schemaVersion: 1,
 			cacheEntryId: options.cacheEntryId ?? newFoundationId("prompt-cache"),
 			cacheKey: options.cacheKey,
@@ -847,7 +847,7 @@ export class SessionT5Ledger {
 		};
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.promptCache, record.cacheEntryId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as PromptCacheRecordV1;
+			const stored = existing.payload as unknown as PromptCacheRecord;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, record as unknown as Record<string, unknown>)) throw new Error(`Prompt cache entry ${record.cacheEntryId} is immutable`);
 			return stored;
 		}
@@ -861,7 +861,7 @@ export class SessionT5Ledger {
 	async lookupPromptCache(cacheKey: string): Promise<PromptCacheLookup | undefined> {
 		const facts = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.promptCache });
 		const candidates = latestFacts(facts)
-			.map((fact) => fact.payload as unknown as PromptCacheRecordV1)
+			.map((fact) => fact.payload as unknown as PromptCacheRecord)
 			.filter((record) => record.cacheKey === cacheKey && record.status === "valid" && (record.expiresAt === undefined || record.expiresAt > this.now()))
 			.sort((left, right) => right.createdAt - left.createdAt);
 		const record = candidates[0];
@@ -874,7 +874,7 @@ export class SessionT5Ledger {
 		const facts = latestFacts(await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.promptCache }));
 		let count = 0;
 		for (const fact of facts) {
-			const record = fact.payload as unknown as PromptCacheRecordV1;
+			const record = fact.payload as unknown as PromptCacheRecord;
 			if (record.cacheKey !== cacheKey || record.status !== "valid") continue;
 			const reason = options.reason ?? "explicit";
 			if (options.cost !== undefined && (!Number.isFinite(options.cost) || options.cost < 0)) throw new RangeError("cache invalidation cost must be finite and non-negative");
@@ -889,12 +889,12 @@ export class SessionT5Ledger {
 		return count;
 	}
 
-	async createCheckpoint(snapshotId: string, lane: string, checkpointId = newFoundationId("checkpoint"), workspace?: WorkspaceCheckpointState): Promise<CheckpointV1> {
+	async createCheckpoint(snapshotId: string, lane: string, checkpointId = newFoundationId("checkpoint"), workspace?: WorkspaceCheckpointState): Promise<Checkpoint> {
 		const snapshot = await this.loadContextSnapshot(snapshotId);
 		const checkpoint = createCheckpoint(snapshot, lane, checkpointId, workspace, this.now);
 		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.checkpoint, checkpointId);
 		if (existing !== undefined) {
-			const stored = existing.payload as unknown as CheckpointV1;
+			const stored = existing.payload as unknown as Checkpoint;
 			if (!sameImmutableRecord(stored as unknown as Record<string, unknown>, checkpoint as unknown as Record<string, unknown>)) throw new Error(`Checkpoint ${checkpointId} is immutable`);
 			return stored;
 		}
@@ -902,12 +902,12 @@ export class SessionT5Ledger {
 		return checkpoint;
 	}
 
-	async getCheckpoint(checkpointId: string): Promise<CheckpointV1 | undefined> {
+	async getCheckpoint(checkpointId: string): Promise<Checkpoint | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.checkpoint, checkpointId);
-		return fact === undefined ? undefined : (fact.payload as unknown as CheckpointV1);
+		return fact === undefined ? undefined : (fact.payload as unknown as Checkpoint);
 	}
 
-	async planRewind(options: RewindPlanOptions): Promise<SessionRewindPlanV1> {
+	async planRewind(options: RewindPlanOptions): Promise<SessionRewindPlan> {
 		const snapshot = await this.loadContextSnapshot(options.snapshotId);
 		const checkpoint = requireRecord(await this.getCheckpoint(options.checkpointId), `Checkpoint not found: ${options.checkpointId}`);
 		if (checkpoint.snapshotId !== options.snapshotId || checkpoint.lane !== options.lane) {
@@ -923,18 +923,18 @@ export class SessionT5Ledger {
 			currentLaneLeafId,
 			expectedLaneLeafId: snapshot.headEntryId,
 		});
-		const record: SessionRewindPlanV1 = { ...plan, planId: options.planId ?? newFoundationId("rewind-plan"), lane: options.lane };
+		const record: SessionRewindPlan = { ...plan, planId: options.planId ?? newFoundationId("rewind-plan"), lane: options.lane };
 		await this.writer.writeFact({ objectType: T5_LEDGER_OBJECT_TYPES.rewindPlan, objectId: record.planId, clientRequestId: `rewind-plan:${record.planId}`, payload: asFoundationJson(record) });
 		return record;
 	}
 
-	async getRewindPlan(planId: string): Promise<SessionRewindPlanV1 | undefined> {
+	async getRewindPlan(planId: string): Promise<SessionRewindPlan | undefined> {
 		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.rewindPlan, planId);
-		return fact === undefined ? undefined : fact.payload as unknown as SessionRewindPlanV1;
+		return fact === undefined ? undefined : fact.payload as unknown as SessionRewindPlan;
 	}
 
 	/** Apply only a previously persisted approved plan; the plan fact is always first. */
-	async applyRewind(planId: string, workspace: WorkspaceCheckpointState): Promise<RewindExecutionV1> {
+	async applyRewind(planId: string, workspace: WorkspaceCheckpointState): Promise<RewindExecution> {
 		const plan = requireRecord(await this.getRewindPlan(planId), `Rewind plan not found: ${planId}`);
 		const snapshot = await this.loadContextSnapshot(plan.sourceSnapshotId);
 		const checkpoint = requireRecord(await this.getCheckpoint(plan.checkpointId), `Checkpoint not found: ${plan.checkpointId}`);
@@ -946,14 +946,14 @@ export class SessionT5Ledger {
 			throw new Error(`Rewind plan ${planId} lane changed before execution`);
 		}
 		const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.rewindExecution, planId);
-		const currentExecution = current?.payload as unknown as RewindExecutionV1 | undefined;
+		const currentExecution = current?.payload as unknown as RewindExecution | undefined;
 		if (currentExecution?.status === "applied") return currentExecution;
 		if ((currentExecution?.status === "applying" || currentExecution?.status === "failed") && currentLaneLeafId === plan.targetEntryId) {
-			const recovered: RewindExecutionV1 = { schemaVersion: 1, planId, lane: plan.lane, targetEntryId: plan.targetEntryId, status: "applied", startedAt: currentExecution.startedAt, appliedAt: this.now() };
+			const recovered: RewindExecution = { schemaVersion: 1, planId, lane: plan.lane, targetEntryId: plan.targetEntryId, status: "applied", startedAt: currentExecution.startedAt, appliedAt: this.now() };
 			await this.writer.writeFact({ objectType: T5_LEDGER_OBJECT_TYPES.rewindExecution, objectId: planId, clientRequestId: `rewind-execution:${planId}:applied`, payload: asFoundationJson(recovered) });
 			return recovered;
 		}
-		const applying: RewindExecutionV1 =
+		const applying: RewindExecution =
 			currentExecution?.status === "applying" || currentExecution?.status === "failed"
 				? { schemaVersion: 1, planId, lane: plan.lane, targetEntryId: plan.targetEntryId, status: "applying", startedAt: currentExecution.startedAt }
 				: { schemaVersion: 1, planId, lane: plan.lane, targetEntryId: plan.targetEntryId, status: "applying", startedAt: this.now() };
@@ -961,16 +961,16 @@ export class SessionT5Ledger {
 		try {
 			await this.session.moveLane(plan.lane, plan.targetEntryId);
 		} catch (error) {
-			const failed: RewindExecutionV1 = { ...applying, status: "failed", error: error instanceof Error ? error.message : String(error) };
+			const failed: RewindExecution = { ...applying, status: "failed", error: error instanceof Error ? error.message : String(error) };
 			await this.writer.writeFact({ objectType: T5_LEDGER_OBJECT_TYPES.rewindExecution, objectId: planId, clientRequestId: `rewind-execution:${planId}:failed`, payload: asFoundationJson(failed) });
 			throw error;
 		}
-		const applied: RewindExecutionV1 = { ...applying, status: "applied", appliedAt: this.now() };
+		const applied: RewindExecution = { ...applying, status: "applied", appliedAt: this.now() };
 		await this.writer.writeFact({ objectType: T5_LEDGER_OBJECT_TYPES.rewindExecution, objectId: planId, clientRequestId: `rewind-execution:${planId}:applied`, payload: asFoundationJson(applied) });
 		return applied;
 	}
 
-	async recoverRewind(planId: string, workspace: WorkspaceCheckpointState): Promise<RewindExecutionV1> {
+	async recoverRewind(planId: string, workspace: WorkspaceCheckpointState): Promise<RewindExecution> {
 		return this.applyRewind(planId, workspace);
 	}
 

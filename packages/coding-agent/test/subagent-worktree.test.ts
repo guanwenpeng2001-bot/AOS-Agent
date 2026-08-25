@@ -5,7 +5,7 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
 import {
@@ -101,7 +101,7 @@ class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
 function fixture(id: string, adapter = new FauxOwnedWorktreeAdapter(), now: () => number = () => 1_767_225_600_000) {
 	const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
 	const laneId = "child-worktree-lane";
-	const ledger = new SessionLedgerV1(session, { ownerId: `${id}-writer`, laneId });
+	const ledger = new SessionLedger(session, { ownerId: `${id}-writer`, laneId });
 	const host: ChildWorktreeHostV1 = { adapter, ledger, sessionId: id, laneId, now };
 	return { session, ledger, adapter, host };
 }
@@ -168,7 +168,7 @@ describe("Subagent owned worktree lifecycle", () => {
 		const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
 		const identity = { schemaVersion: 1 as const, childAgentInstanceId: "child-agent", attemptId: "attempt-1" };
 		const objectId = fingerprintFoundationValue(identity).value;
-		const wrongLane = new SessionLedgerV1(session, { ownerId: "wrong-lane-writer", laneId: "wrong-lane" });
+		const wrongLane = new SessionLedger(session, { ownerId: "wrong-lane-writer", laneId: "wrong-lane" });
 		await wrongLane.appendFact("subagent.worktree_recorded", objectId, {
 			schemaVersion: 1,
 			childAgentInstanceId: identity.childAgentInstanceId,
@@ -178,7 +178,7 @@ describe("Subagent owned worktree lifecycle", () => {
 		}, { clientRequestId: "corrupt-metadata", expectedRevision: 0, correlation: { attemptId: identity.attemptId, agentInstanceId: identity.childAgentInstanceId } });
 		await wrongLane.release();
 		const adapter = new FauxOwnedWorktreeAdapter();
-		const host: ChildWorktreeHostV1 = { adapter, ledger: new SessionLedgerV1(session, { ownerId: "expected-lane-writer", laneId: "expected-lane" }), sessionId: id, laneId: "expected-lane" };
+		const host: ChildWorktreeHostV1 = { adapter, ledger: new SessionLedger(session, { ownerId: "expected-lane-writer", laneId: "expected-lane" }), sessionId: id, laneId: "expected-lane" };
 		expect(await createChildWorktreeV1(host, identity.childAgentInstanceId, identity.attemptId, "main")).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.createCount).toBe(0);
 	});
@@ -231,12 +231,12 @@ describe("Subagent owned worktree lifecycle", () => {
 	it("quarantines when durable persistence fails after create", async () => {
 		const id = "worktree-persistence-after-create";
 		const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
-		const blocker = new SessionLedgerV1(session, { ownerId: "blocking-writer", laneId: "child-worktree-lane" });
+		const blocker = new SessionLedger(session, { ownerId: "blocking-writer", laneId: "child-worktree-lane" });
 		await blocker.appendFact("blocker", "lease", { schemaVersion: 1 }, { clientRequestId: "hold-lease", expectedRevision: 0, correlation: {} });
 		const adapter = new FauxOwnedWorktreeAdapter();
 		const host: ChildWorktreeHostV1 = {
 			adapter,
-			ledger: new SessionLedgerV1(session, { ownerId: "worktree-writer", laneId: "child-worktree-lane" }),
+			ledger: new SessionLedger(session, { ownerId: "worktree-writer", laneId: "child-worktree-lane" }),
 			sessionId: id,
 			laneId: "child-worktree-lane",
 		};

@@ -8,7 +8,7 @@ import {
 	createAgentSession,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-	createTrustedWorkerSandboxCompositionV1,
+	createTrustedWorkerSandboxComposition,
 	type CreateAgentSessionOptions,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -85,8 +85,8 @@ function createRpcController(session: Awaited<ReturnType<typeof createAgentSessi
 	});
 }
 
-function createTrustedWorkerSandboxComposition() {
-	return createTrustedWorkerSandboxCompositionV1({
+function createTestWorkerSandboxComposition() {
+	return createTrustedWorkerSandboxComposition({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "sdk-production-worker",
@@ -144,13 +144,13 @@ describe("SDK Worker composition", () => {
 	});
 
 	it("rejects an unbranded Worker composition before session setup", async () => {
-		const trusted = createTrustedWorkerSandboxComposition();
+		const trusted = createTestWorkerSandboxComposition();
 		const unbranded = { provider: trusted.provider } as unknown as CreateAgentSessionOptions["trustedWorkerSandbox"];
 		await expect(createAgentSession({ trustedWorkerSandbox: unbranded })).rejects.toThrow("Trusted Worker composition is invalid");
 	});
 
 	it("injects the factory provider into the real SDK session and exposes it through RPC", async () => {
-		const trusted = createTrustedWorkerSandboxComposition();
+		const trusted = createTestWorkerSandboxComposition();
 		const created = await createSdkSession(trusted);
 		cleanups.push(created.cleanup);
 		const registry = created.session.getWorkerRegistry();
@@ -191,7 +191,7 @@ describe("SDK Worker composition", () => {
 				models: [model],
 			});
 			const settingsManager = SettingsManager.inMemory();
-			const compositions: Array<ReturnType<typeof createTrustedWorkerSandboxComposition>> = [];
+			const compositions: Array<ReturnType<typeof createTestWorkerSandboxComposition>> = [];
 			let factoryCalls = 0;
 			const services = await createAgentSessionServices({
 				cwd,
@@ -207,7 +207,7 @@ describe("SDK Worker composition", () => {
 				},
 				trustedWorkerSandboxFactory: () => {
 					factoryCalls += 1;
-					const composition = createTrustedWorkerSandboxComposition();
+					const composition = createTestWorkerSandboxComposition();
 					compositions.push(composition);
 					return composition;
 				},

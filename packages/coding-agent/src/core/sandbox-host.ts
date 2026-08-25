@@ -3,16 +3,16 @@ import {
 	canonicalFoundationJson,
 	FoundationError,
 	Result,
-	validateFoundationProviderCapabilityV1,
-	validateSandboxOperationRequestV1,
-	validateWorkerReceiptForProviderV1,
-	type ArtifactRefV1,
-	type ExecutionCorrelationV1,
+	validateFoundationProviderCapability,
+	validateSandboxOperationRequest,
+	validateWorkerReceiptForProvider,
+	type ArtifactRef,
+	type ExecutionCorrelation,
 	type FoundationError as FoundationErrorValue,
 	type FoundationJsonValue,
-	type FoundationProviderCapabilityV1,
+	type FoundationProviderCapability,
 	type Result as ResultValue,
-	type WorkerReceiptV1,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
 	PolicyError,
@@ -47,13 +47,13 @@ export interface SandboxHandleOperationProviderOptionsV1 {
 	readonly providerId: string;
 	/** Trusted child-side Policy Binding and its already-prepared sandbox handle. */
 	readonly policy: BuiltinToolPolicy;
-	readonly correlation: Pick<ExecutionCorrelationV1, "sessionId" | "laneId">;
-	readonly capabilities: readonly FoundationProviderCapabilityV1[];
+	readonly correlation: Pick<ExecutionCorrelation, "sessionId" | "laneId">;
+	readonly capabilities: readonly FoundationProviderCapability[];
 	/** Bounded trusted mapping; raw handle output never enters the Worker receipt. */
 	readonly mapResult: (
 		result: SandboxOperationResult,
 		operation: SandboxOperationRequest,
-	) => readonly ArtifactRefV1[] | Promise<readonly ArtifactRefV1[]>;
+	) => readonly ArtifactRef[] | Promise<readonly ArtifactRef[]>;
 	readonly credentialTarget?: {
 		readonly project?: (lease: SafeLeaseProjectionV1) => Promise<ResultValue<void, FoundationErrorValue>>;
 		readonly renew?: (lease: SafeLeaseProjectionV1) => Promise<ResultValue<void, FoundationErrorValue>>;
@@ -118,7 +118,7 @@ export function createSandboxHandleOperationProviderV1(
 	const handle = policy.sandbox;
 	const capabilities = Object.freeze(options.capabilities.map((capability) => Object.freeze({ ...capability })));
 	const capabilityIds = new Set(capabilities.map((capability) => capability.id));
-	const capabilityConfigurationValid = capabilities.every((capability) => validateFoundationProviderCapabilityV1(capability).ok) &&
+	const capabilityConfigurationValid = capabilities.every((capability) => validateFoundationProviderCapability(capability).ok) &&
 		capabilityIds.size === capabilities.length;
 	const projectCredential = options.credentialTarget?.project;
 	const renewCredential = options.credentialTarget?.renew;
@@ -146,7 +146,7 @@ export function createSandboxHandleOperationProviderV1(
 		},
 		async start(requestValue, executionOptions = {}) {
 			if (disposed) return Result.err(new FoundationError("worker_unavailable", "Operation Worker provider is disposed"));
-			const validatedRequest = validateSandboxOperationRequestV1(requestValue);
+			const validatedRequest = validateSandboxOperationRequest(requestValue);
 			if (!validatedRequest.ok) return validatedRequest;
 			let request: typeof validatedRequest;
 			try {
@@ -158,7 +158,7 @@ export function createSandboxHandleOperationProviderV1(
 				return Result.err(new FoundationError("worker_operation_invalid", "Operation Worker request is not canonical"));
 			}
 			const signal = executionOptions.signal;
-			let suppliedCorrelation: ExecutionCorrelationV1 | undefined;
+			let suppliedCorrelation: ExecutionCorrelation | undefined;
 			try {
 				suppliedCorrelation = executionOptions.correlation === undefined
 					? undefined
@@ -216,7 +216,7 @@ export function createSandboxHandleOperationProviderV1(
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Operation Worker correlation is incomplete"));
 			}
-			const correlation: ExecutionCorrelationV1 = {
+			const correlation: ExecutionCorrelation = {
 				sessionId: correlationIdentity.sessionId,
 				laneId: correlationIdentity.laneId,
 				...(policyIdentity.bindingRunId === undefined ? {} : { runId: policyIdentity.bindingRunId }),
@@ -310,7 +310,7 @@ export function createSandboxHandleOperationProviderV1(
 				} catch {
 					return Result.err(new FoundationError("worker_operation_invalid", "Operation Worker clock callback failed"));
 				}
-				let receipt: WorkerReceiptV1;
+				let receipt: WorkerReceipt;
 				try {
 					if (disposed || controller.signal.aborted) {
 						return Result.err(new FoundationError("worker_cancel_failed", "Operation Worker operation was cancelled before execution"));
@@ -379,7 +379,7 @@ export function createSandboxHandleOperationProviderV1(
 					completedAt,
 					};
 				}
-				return validateWorkerReceiptForProviderV1(receipt, {
+				return validateWorkerReceiptForProvider(receipt, {
 					providerId,
 					providerClass: "operation_worker",
 				});

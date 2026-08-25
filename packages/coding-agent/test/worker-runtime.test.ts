@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { validateWorkerReceiptForProviderV1 } from "@aos-agent/agent-core";
+import { validateWorkerReceiptForProvider } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
@@ -224,7 +224,7 @@ describe("trusted Operation Worker runtime", () => {
 		await state.runtime.waitForIdle();
 
 		const receipt = state.provider.receipts[0]!;
-		expect(validateWorkerReceiptForProviderV1(receipt, { providerId: binding.providerId, providerClass: "operation_worker" }).ok).toBe(true);
+		expect(validateWorkerReceiptForProvider(receipt, { providerId: binding.providerId, providerClass: "operation_worker" }).ok).toBe(true);
 		const completed: WorkerEventFrameV1 = {
 			type: "operation.completed",
 			requestId: execute.requestId,

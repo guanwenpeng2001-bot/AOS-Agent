@@ -1,39 +1,39 @@
 import { createAssistantMessageEventStream, type Api, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions } from "@aos-agent/ai";
 import type { StreamFn } from "../../types.ts";
 import { FoundationError } from "./errors.ts";
-import type { BudgetV1 } from "./budget.ts";
-import type { FoundationProviderCapabilityV1 } from "./providers.ts";
-import type { ModelRouteV1 } from "./role.ts";
+import type { Budget } from "./budget.ts";
+import type { FoundationProviderCapability } from "./providers.ts";
+import type { ModelRoute } from "./role.ts";
 
 /** T6's draft host adapter is deliberately smaller than the future model gateway. */
-export const FOUNDATION_HOST_MODEL_CALL_CAPABILITY_V1: FoundationProviderCapabilityV1 = Object.freeze({
+export const FOUNDATION_HOST_MODEL_CALL_CAPABILITY: FoundationProviderCapability = Object.freeze({
 	schemaVersion: 1,
 	id: "foundation.host.model_call",
 	version: 1,
 });
 
-export interface FoundationHostModelCallRequestV1 {
-	readonly route: ModelRouteV1;
+export interface FoundationHostModelCallRequest {
+	readonly route: ModelRoute;
 	readonly model: Model<Api>;
 	readonly context: Context;
 	readonly options?: SimpleStreamOptions;
-	readonly budget?: BudgetV1;
+	readonly budget?: Budget;
 }
 
-export interface FoundationHostModelCallAdapterV1 {
-	capabilities(): readonly FoundationProviderCapabilityV1[];
-	validate(request: FoundationHostModelCallRequestV1): FoundationError | undefined;
-	stream(request: FoundationHostModelCallRequestV1): AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
+export interface FoundationHostModelCallAdapter {
+	capabilities(): readonly FoundationProviderCapability[];
+	validate(request: FoundationHostModelCallRequest): FoundationError | undefined;
+	stream(request: FoundationHostModelCallRequest): AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 }
 
-export interface FoundationHostModelCallAdapterOptionsV1 {
+export interface FoundationHostModelCallAdapterOptions {
 	/** T6 does not infer service-tier support from provider names. */
 	readonly supportedServiceTiers?: readonly string[];
 }
 
 const FOUNDATION_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
 
-function validateHostModelCallRequest(request: FoundationHostModelCallRequestV1, supportedServiceTiers: ReadonlySet<string>): FoundationError | undefined {
+function validateHostModelCallRequest(request: FoundationHostModelCallRequest, supportedServiceTiers: ReadonlySet<string>): FoundationError | undefined {
 	if (request.model.provider !== request.route.provider || request.model.id !== request.route.model) {
 		return new FoundationError("binding_task_before_binding", "Host model call does not use the immutable Binding route", { details: { provider: request.route.provider, model: request.route.model } });
 	}
@@ -52,11 +52,11 @@ function validateHostModelCallRequest(request: FoundationHostModelCallRequestV1,
  */
 export function createFoundationHostModelCallAdapter(
 	models: { readonly streamSimple: StreamFn },
-	options: FoundationHostModelCallAdapterOptionsV1 = {},
-): FoundationHostModelCallAdapterV1 {
+	options: FoundationHostModelCallAdapterOptions = {},
+): FoundationHostModelCallAdapter {
 	const supportedServiceTiers = new Set(options.supportedServiceTiers ?? []);
 	return {
-		capabilities: () => [FOUNDATION_HOST_MODEL_CALL_CAPABILITY_V1],
+		capabilities: () => [FOUNDATION_HOST_MODEL_CALL_CAPABILITY],
 		validate: (request) => validateHostModelCallRequest(request, supportedServiceTiers),
 		stream: (request) => {
 			const validationError = validateHostModelCallRequest(request, supportedServiceTiers);

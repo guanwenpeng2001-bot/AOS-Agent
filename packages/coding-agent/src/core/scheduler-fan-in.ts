@@ -8,25 +8,25 @@
  * RunReceipt or a Host/Graph terminal fact.
  */
 import {
-	type AcceptanceFactV1,
-	type ArtifactRefV1,
+	type AcceptanceFact,
+	type ArtifactRef,
 	canonicalFoundationJson,
-	type FingerprintV1,
+	type Fingerprint,
 	FoundationError,
 	fingerprintFoundationValue,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	Result,
-	type ResultProvenanceV1,
-	type ResultValidationV1,
+	type ResultProvenance,
+	type ResultValidation,
 	type Result as ResultValue,
 	type Session,
-	SessionLedgerV1,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
-	type ValidationResultV1,
+	SessionLedger,
+	type TaskEnvelope,
+	type TaskResult,
+	type ValidationResult,
 	validateAttemptReceipt,
 	validateTaskEnvelope,
-	validateTaskResultV1,
+	validateTaskResult,
 } from "@aos-agent/agent-core";
 import {
 	parseSchedulerJoinPlan,
@@ -43,7 +43,7 @@ export interface SchedulerFanInSnapshotV1 {
 	readonly joinId: string;
 	readonly taskId: string;
 	readonly taskResultId: string;
-	readonly taskFingerprint: FingerprintV1;
+	readonly taskFingerprint: Fingerprint;
 	readonly policy: SchedulerJoinPolicyV1;
 	readonly predecessorNodeIds: readonly string[];
 	readonly predecessorTaskResultIds: readonly string[];
@@ -51,32 +51,32 @@ export interface SchedulerFanInSnapshotV1 {
 	readonly degradedPredecessorNodeIds: readonly string[];
 	readonly sourceAttemptReceiptIds: readonly string[];
 	readonly summary: string;
-	readonly artifacts: readonly ArtifactRefV1[];
-	readonly diff?: ArtifactRefV1;
-	readonly tests: readonly ValidationResultV1[];
-	readonly evidence: readonly AcceptanceFactV1[];
-	readonly validation?: ResultValidationV1;
-	readonly producer: ResultProvenanceV1;
-	readonly inputDigest: FingerprintV1;
+	readonly artifacts: readonly ArtifactRef[];
+	readonly diff?: ArtifactRef;
+	readonly tests: readonly ValidationResult[];
+	readonly evidence: readonly AcceptanceFact[];
+	readonly validation?: ResultValidation;
+	readonly producer: ResultProvenance;
+	readonly inputDigest: Fingerprint;
 	readonly createdAt: string;
 }
 
 export interface SchedulerFanInSettleRequestV1 {
-	readonly task: TaskEnvelopeV1;
+	readonly task: TaskEnvelope;
 	readonly nodeRef: SchedulerNodeRefV1;
 	readonly currentAttemptReceiptIds: readonly string[];
 	readonly plan?: SchedulerJoinPlanV1;
 	readonly summary: string;
-	readonly artifacts?: readonly ArtifactRefV1[];
-	readonly diff?: ArtifactRefV1;
-	readonly tests: readonly ValidationResultV1[];
-	readonly evidence: readonly AcceptanceFactV1[];
-	readonly validation?: ResultValidationV1;
+	readonly artifacts?: readonly ArtifactRef[];
+	readonly diff?: ArtifactRef;
+	readonly tests: readonly ValidationResult[];
+	readonly evidence: readonly AcceptanceFact[];
+	readonly validation?: ResultValidation;
 }
 
 export interface SchedulerFanInSettlementV1 {
 	readonly snapshot: SchedulerFanInSnapshotV1;
-	readonly taskResult: TaskResultV1;
+	readonly taskResult: TaskResult;
 	readonly snapshotReplayed: boolean;
 }
 
@@ -95,7 +95,7 @@ interface CollectedFanInV1 {
 	readonly missingPredecessorNodeIds: readonly string[];
 	readonly degradedPredecessorNodeIds: readonly string[];
 	readonly sourceAttemptReceiptIds: readonly string[];
-	readonly artifacts: readonly ArtifactRefV1[];
+	readonly artifacts: readonly ArtifactRef[];
 }
 
 function fail<T>(code: "scheduler_fanin_invalid" | "scheduler_settlement_rejected"): ResultValue<T, FoundationError> {
@@ -113,11 +113,11 @@ function uniqueNonEmpty(values: readonly string[]): boolean {
 	return values.every((value) => value.length > 0) && new Set(values).size === values.length;
 }
 
-function artifactKey(artifact: ArtifactRefV1): string {
+function artifactKey(artifact: ArtifactRef): string {
 	return `${artifact.artifactId}\0${artifact.digest}`;
 }
 
-function copyArtifact(artifact: ArtifactRefV1): ArtifactRefV1 {
+function copyArtifact(artifact: ArtifactRef): ArtifactRef {
 	return {
 		schemaVersion: 1,
 		artifactId: artifact.artifactId,
@@ -128,7 +128,7 @@ function copyArtifact(artifact: ArtifactRefV1): ArtifactRefV1 {
 	};
 }
 
-function copyValidation(test: ValidationResultV1): ValidationResultV1 {
+function copyValidation(test: ValidationResult): ValidationResult {
 	return {
 		name: test.name,
 		required: test.required,
@@ -138,7 +138,7 @@ function copyValidation(test: ValidationResultV1): ValidationResultV1 {
 	};
 }
 
-function copyEvidence(fact: AcceptanceFactV1): AcceptanceFactV1 {
+function copyEvidence(fact: AcceptanceFact): AcceptanceFact {
 	return {
 		schemaVersion: 1,
 		factId: fact.factId,
@@ -150,7 +150,7 @@ function copyEvidence(fact: AcceptanceFactV1): AcceptanceFactV1 {
 	};
 }
 
-function copyResultValidation(value: ResultValidationV1): ResultValidationV1 {
+function copyResultValidation(value: ResultValidation): ResultValidation {
 	return {
 		schemaValid: value.schemaValid,
 		artifactDigestsValid: value.artifactDigestsValid,
@@ -160,7 +160,7 @@ function copyResultValidation(value: ResultValidationV1): ResultValidationV1 {
 	};
 }
 
-function copyProducer(value: ResultProvenanceV1): ResultProvenanceV1 {
+function copyProducer(value: ResultProvenance): ResultProvenance {
 	return {
 		producerKind: value.producerKind,
 		providerId: value.providerId,
@@ -212,15 +212,15 @@ function stableInput(snapshot: Omit<SchedulerFanInSnapshotV1, "inputDigest" | "c
 }
 
 export class SchedulerFanInController {
-	private readonly settlement: LayeredResultSettlementV1;
-	private readonly ledger: SessionLedgerV1;
+	private readonly settlement: LayeredResultSettlement;
+	private readonly ledger: SessionLedger;
 	private readonly sessionId: string;
 	private readonly laneId: string;
 	private readonly nowFn: () => string;
 
 	constructor(options: SchedulerFanInOptionsV1) {
-		this.settlement = new LayeredResultSettlementV1(options.session, { ownerId: options.ownerId });
-		this.ledger = new SessionLedgerV1(options.session, {
+		this.settlement = new LayeredResultSettlement(options.session, { ownerId: options.ownerId });
+		this.ledger = new SessionLedger(options.session, {
 			ownerId: options.ownerId,
 			laneId: options.laneId,
 		});
@@ -294,7 +294,7 @@ export class SchedulerFanInController {
 			snapshot = copySnapshot(stored);
 			snapshotReplayed = true;
 		} else {
-			const producer: ResultProvenanceV1 = {
+			const producer: ResultProvenance = {
 				producerKind: "host",
 				providerId: SCHEDULER_FAN_IN_HOST_PROVIDER_ID,
 				producedAt: createdAt,
@@ -360,7 +360,7 @@ export class SchedulerFanInController {
 		const missingPredecessorNodeIds: string[] = [];
 		const degradedPredecessorNodeIds: string[] = [];
 		const selectedReceiptIds = [...request.currentAttemptReceiptIds];
-		const artifacts = new Map<string, ArtifactRefV1>();
+		const artifacts = new Map<string, ArtifactRef>();
 		for (const predecessorNodeId of predecessorNodeIds) {
 			const predecessorRef: SchedulerNodeRefV1 = {
 				taskId: request.nodeRef.taskId,
@@ -374,7 +374,7 @@ export class SchedulerFanInController {
 				degradedPredecessorNodeIds.push(predecessorNodeId);
 				continue;
 			}
-			const checked = validateTaskResultV1(result);
+			const checked = validateTaskResult(result);
 			if (!checked.ok || checked.value.taskId !== request.task.taskId) {
 				return fail("scheduler_fanin_invalid");
 			}

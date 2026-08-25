@@ -1,4 +1,4 @@
-import type { WorkerReceiptV1 } from "@aos-agent/agent-core";
+import type { WorkerReceipt } from "@aos-agent/agent-core";
 import type {
 	WorkerEventFrameV1,
 	WorkerRequestFrameV1,
@@ -47,7 +47,7 @@ function receipt(
 	frame: Extract<WorkerRequestFrameV1, { type: "execute" }>,
 	status: "succeeded" | "failed" | "cancelled",
 	overrides: { readonly taskId?: string } = {},
-): WorkerReceiptV1 {
+): WorkerReceipt {
 	const currentBinding = binding!;
 	const taskId = overrides.taskId ?? frame.request.taskId;
 	const sideEffectState = "none" as const;

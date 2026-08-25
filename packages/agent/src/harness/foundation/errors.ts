@@ -242,14 +242,14 @@ export function redactProjection(value: unknown): unknown {
 	return value;
 }
 
-export interface FoundationPublicErrorV1 {
+export interface FoundationPublicError {
 	code: FoundationErrorCode | string;
 	category: FoundationErrorCategory;
 	message: string;
 }
 
 export type PublicExecutionErrorCategory = "permission" | "parameter" | "transient" | "deadline" | "cancelled" | "side_effect_unknown" | "unknown";
-export interface PublicExecutionErrorV1 {
+export interface PublicExecutionError {
 	code: string;
 	message: string;
 	category?: PublicExecutionErrorCategory;
@@ -277,15 +277,15 @@ export class FoundationError extends Error {
 		return value instanceof FoundationError || (typeof value === "object" && value !== null && (value as { _tag?: unknown })._tag === "FoundationError");
 	}
 
-	redact(): FoundationPublicErrorV1 {
+	redact(): FoundationPublicError {
 		return { code: this.code, category: this.category, message: this.message };
 	}
 
-	toPublicExecutionError(): PublicExecutionErrorV1 {
+	toPublicExecutionError(): PublicExecutionError {
 		return { code: this.code, message: this.message, retryable: this.retryable };
 	}
 
-	toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationError" } {
+	toJSON(): FoundationPublicError & { _tag: "FoundationError" } {
 		return { _tag: "FoundationError", ...this.redact() };
 	}
 }
@@ -295,10 +295,10 @@ export function toFoundationError(error: unknown, fallbackCode: FoundationErrorC
 	return new FoundationError(fallbackCode, error instanceof Error ? error.message : String(error), { cause: error });
 }
 
-export function publicExecutionError(code: FoundationErrorCode | string, message: string, options: { retryable?: boolean; category?: PublicExecutionErrorCategory } = {}): PublicExecutionErrorV1 {
+export function publicExecutionError(code: FoundationErrorCode | string, message: string, options: { retryable?: boolean; category?: PublicExecutionErrorCategory } = {}): PublicExecutionError {
 	return { code, message: redactText(message), ...(options.category === undefined ? {} : { category: options.category }), retryable: options.retryable ?? false };
 }
 
-export function redactFoundationError(error: FoundationError): FoundationPublicErrorV1 {
+export function redactFoundationError(error: FoundationError): FoundationPublicError {
 	return error.redact();
 }

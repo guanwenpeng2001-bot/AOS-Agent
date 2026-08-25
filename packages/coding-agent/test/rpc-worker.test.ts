@@ -15,10 +15,10 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { WorkerLifecycleStatusV1, WorkerRecordV1 } from "../src/core/worker.ts";
+import type { WorkerLifecycleStatus, WorkerRecordV1 } from "../src/core/worker.ts";
 import {
 	createAgentSession,
-	createTrustedWorkerSandboxCompositionV1,
+	createTrustedWorkerSandboxComposition,
 } from "../src/index.ts";
 import type { WorkerSandboxProviderV1 } from "../src/core/worker-sandbox-provider.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
@@ -197,7 +197,7 @@ async function createHarness(
 function workerRecord(input: {
 	workerId: string;
 	sessionId: string;
-	status?: WorkerLifecycleStatusV1;
+	status?: WorkerLifecycleStatus;
 	runId?: string;
 	createdAt?: string;
 }): WorkerRecordV1 {
@@ -267,7 +267,7 @@ async function createCanonicalWorkerSession(
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
 	}) as unknown as ModelRuntime;
-	const composition = createTrustedWorkerSandboxCompositionV1({
+	const composition = createTrustedWorkerSandboxComposition({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "local-worker",

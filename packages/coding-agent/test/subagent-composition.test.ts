@@ -3,7 +3,7 @@ import {
 	createAgentInstance,
 	createModelProfileRevision,
 	createRoleRevision,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemoryArtifactBlobStore,
@@ -11,20 +11,20 @@ import {
 	resolveAgentBinding,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
 	SessionT5Ledger,
 	createScopedMemoryStore,
-	type AgentBindingV1,
-	type AgentInstanceV1,
+	type AgentBinding,
+	type AgentInstance,
 	type ArtifactStoreProvider,
-	type ChildSpawnRequestV1,
-	type ModelProfileV1,
+	type ChildSpawnRequest,
+	type ModelProfile,
 	type QuotaProvider,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
+	type RevisionReference,
+	type RoleRevision,
 	type ScopedModelGateway,
-	type TaskEnvelopeV1,
+	type TaskEnvelope,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
@@ -68,8 +68,8 @@ function compositionAuthorities(session: Session) {
 	};
 }
 
-function task(taskId: string): TaskEnvelopeV1 {
-	const created = createTaskEnvelopeV1({
+function task(taskId: string): TaskEnvelope {
+	const created = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-1",
@@ -88,7 +88,7 @@ function task(taskId: string): TaskEnvelopeV1 {
 	return created.value;
 }
 
-function role(): RoleRevisionV1 {
+function role(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -108,7 +108,7 @@ function role(): RoleRevisionV1 {
 	});
 }
 
-function profile(): ModelProfileV1 {
+function profile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-child",
@@ -120,12 +120,12 @@ function profile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): AgentBindingV1 {
+function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelProfile: ModelProfile): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: taskEnvelope,
 		roleRevision,
@@ -141,7 +141,7 @@ function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, mod
 	return resolved.value;
 }
 
-function rootAgent(roleRevision: RoleRevisionV1): AgentInstanceV1 {
+function rootAgent(roleRevision: RoleRevision): AgentInstance {
 	const created = createAgentInstance({
 		agentInstanceId: "parent-agent",
 		providerId: "parent-provider",
@@ -169,7 +169,7 @@ const descriptor: SubagentProviderDescriptorV1 = {
 	implementedInThisLine: true,
 };
 
-class ReceiptHidingLedger extends SessionLedgerV1 {
+class ReceiptHidingLedger extends SessionLedger {
 	override async get(objectType: string, objectId: string) {
 		if (objectType === "attempt_receipt") return undefined;
 		return super.get(objectType, objectId);
@@ -250,9 +250,9 @@ class FakeHostWorktreeAdapter implements WorktreeAdapter {
 }
 
 async function planInput(
-	ledger: SessionLedgerV1,
-	roleRevision: RoleRevisionV1,
-	modelProfile: ModelProfileV1,
+	ledger: SessionLedger,
+	roleRevision: RoleRevision,
+	modelProfile: ModelProfile,
 	suffix = "",
 	providerDescriptor: SubagentProviderDescriptorV1 = descriptor,
 	forkScope: "none" | "task_package" = "none",
@@ -303,7 +303,7 @@ async function planInput(
 		bindingEpochId: "epoch-parent-attempt",
 		agentInstanceId: parent.agentInstanceId,
 	});
-	const request: ChildSpawnRequestV1 = {
+	const request: ChildSpawnRequest = {
 		schemaVersion: 1,
 		spawnId: id("spawn-child"),
 		parentSpawn: {
@@ -361,13 +361,13 @@ async function correctionHarness(options: {
 	readonly planMaxTurns?: number;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		let ledger = ledgers.get(laneId);
 		if (ledger === undefined) {
 			ledger = laneId === "parent-lane" && options.hideAttemptReceipt === true
 				? new ReceiptHidingLedger(session, { ownerId: "composition-correction-writer", laneId })
-				: new SessionLedgerV1(session, { ownerId: "composition-correction-writer", laneId });
+				: new SessionLedger(session, { ownerId: "composition-correction-writer", laneId });
 			ledgers.set(laneId, ledger);
 		}
 		return ledger;
@@ -763,11 +763,11 @@ describe("trusted Subagent product composition", () => {
 	it("is default-off and constructs only the fixed in-process/fork registry after explicit Host opt-in", async () => {
 		expect(createTrustedSubagentCompositionV1(undefined)).toBeUndefined();
 		const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
-		const ledgers = new Map<string, SessionLedgerV1>();
-		const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+		const ledgers = new Map<string, SessionLedger>();
+		const ledgerForLane = (laneId: string): SessionLedger => {
 			let ledger = ledgers.get(laneId);
 			if (ledger === undefined) {
-				ledger = new SessionLedgerV1(session, { ownerId: "composition-writer", laneId });
+				ledger = new SessionLedger(session, { ownerId: "composition-writer", laneId });
 				ledgers.set(laneId, ledger);
 			}
 			return ledger;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkerReceiptV1 } from "@aos-agent/agent-core";
+import type { WorkerReceipt } from "@aos-agent/agent-core";
 import {
 	WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES,
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
@@ -256,16 +256,16 @@ describe("private Operation Worker protocol", () => {
 		let state = runningState();
 		state = applyEvent(state, { type: "operation.completed", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, result: completedResult });
 		const correlation = receipt.provenance.correlation!;
-		const receiptFrame = (value: WorkerReceiptV1): WorkerEventFrameV1 => ({ type: "receipt", requestId: "execute-1", receipt: value });
+		const receiptFrame = (value: WorkerReceipt): WorkerEventFrameV1 => ({ type: "receipt", requestId: "execute-1", receipt: value });
 		const receiptWithoutField = (field: "taskId" | "dispatchId" | "attemptId"): WorkerEventFrameV1 => {
 			const value: Record<string, unknown> = { ...receipt };
 			Reflect.deleteProperty(value, field);
-			return receiptFrame(value as unknown as WorkerReceiptV1);
+			return receiptFrame(value as unknown as WorkerReceipt);
 		};
 		const receiptWithoutCorrelationField = (field: "taskId" | "dispatchId" | "attemptId"): WorkerEventFrameV1 => {
 			const nextCorrelation: Record<string, unknown> = { ...correlation };
 			Reflect.deleteProperty(nextCorrelation, field);
-			return receiptFrame({ ...receipt, provenance: { ...receipt.provenance, correlation: nextCorrelation } } as unknown as WorkerReceiptV1);
+			return receiptFrame({ ...receipt, provenance: { ...receipt.provenance, correlation: nextCorrelation } } as unknown as WorkerReceipt);
 		};
 		for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
 			expect(applyWorkerEventFrameV1(state, receiptWithoutField(field))).toMatchObject({ ok: false, error: { code: "worker_binding_invalid" } });

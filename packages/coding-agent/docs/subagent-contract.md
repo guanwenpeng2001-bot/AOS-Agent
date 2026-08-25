@@ -14,16 +14,16 @@ parent Attempt
   -> persist child TaskEnvelope
   -> prove child Binding is no broader than the parent Binding
   -> create child Context snapshot
-  -> executeAgentSpawnV1 -> ChildAgentProvider
-  -> child AgentHarness -> AttemptReceiptV1
-  -> SafeChildResultProjectionV1 -> parent Context
+  -> provider spawn entry -> ChildAgentProvider
+  -> child AgentHarness -> AttemptReceipt
+  -> safe child result projection -> parent Context
   -> Host settleTaskResult -> Host finalizeRunReceipt
 ```
 
 Spawn creates a new `AgentInstance`; mode switch only creates a new Binding
 epoch for the same Attempt and identity. A child can produce an
-`AttemptReceiptV1` with `producerKind: "agent_executor"`, but it cannot settle
-a `TaskResultV1` or write a `RunReceiptV1`. The Host terminal gate remains the
+`AttemptReceipt` with `producerKind: "agent_executor"`, but it cannot settle
+a `TaskResult` or write a `RunReceipt`. The Host terminal gate remains the
 only Run terminal writer.
 
 ## Providers and registration
@@ -115,11 +115,11 @@ worktree or quarantines it when cleanup cannot be proven.
 Trusted composition runs real child plans in `parallel` or `chain` mode inside
 one Host and Session. Parallel joins use explicit `all_succeed`, `quorum`, or
 `partial` policy. A chain starts from a root plan; every later step accepts
-only the prior `SafeChildResultProjectionV1` or a plan whose Context scope is
+only the prior safe child result projection or a plan whose Context scope is
 `task_package`. A failed child stops the chain before the next plan is created.
 
 Each child AttemptReceipt stays in its child lane. The Host parent-lane
-`LayeredResultSettlementV1` writes the joined TaskResult once from unique
+`LayeredResultSettlement` writes the joined TaskResult once from unique
 accepted receipts. Per-child `result_ref` messages are consumed at the next
 parent turn through the safe result projection boundary. Composition closes
 every provider handle, mailbox endpoint, and configured worktree after the

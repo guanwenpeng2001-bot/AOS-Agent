@@ -1,25 +1,25 @@
 import { uuidv7 } from "@aos-agent/ai";
-import { canonicalFoundationJson, type ExecutionCorrelationV1, type FoundationJsonValue } from "../../foundation/index.ts";
+import { canonicalFoundationJson, type ExecutionCorrelation, type FoundationJsonValue } from "../../foundation/index.ts";
 import {
 	DEFAULT_LEDGER_LANE,
 	DEFAULT_WRITER_LEASE_TTL_MS,
 	foundationIdempotencyKey,
 	foundationObjectKey,
-	type AcquireWriterLeaseOptionsV1,
-	type AppendFoundationRecordResultV1,
-	type FoundationFactRecordV1,
-	type FoundationIntentRecordV1,
-	type FoundationObjectResultV1,
-	type FoundationRecordV1,
-	type FoundationRecordQueryV1,
-	type FoundationRetentionPolicyV1,
-	type FoundationRetentionRecordV1,
-	type FoundationTombstoneRecordV1,
-	type LedgerWriterLeaseV1,
-	type ProvisionedFoundationRecordV1,
-	type RenewWriterLeaseOptionsV1,
-	type ReleaseWriterLeaseOptionsV1,
-	type SetRetentionPolicyOptionsV1,
+	type AcquireWriterLeaseOptions,
+	type AppendFoundationRecordResult,
+	type FoundationFactRecord,
+	type FoundationIntentRecord,
+	type FoundationObjectResult,
+	type FoundationRecord,
+	type FoundationRecordQuery,
+	type FoundationRetentionPolicy,
+	type FoundationRetentionRecord,
+	type FoundationTombstoneRecord,
+	type LedgerWriterLease,
+	type ProvisionedFoundationRecord,
+	type RenewWriterLeaseOptions,
+	type ReleaseWriterLeaseOptions,
+	type SetRetentionPolicyOptions,
 } from "./types.ts";
 import { DurableLedgerError, invalidDurableRecord } from "./errors.ts";
 
@@ -38,11 +38,11 @@ export interface FoundationForkRecordOptions {
 
 interface IdempotencyRecord {
 	fingerprint: string;
-	record: FoundationRecordV1;
+	record: FoundationRecord;
 }
 
 interface PreparedAppend {
-	record: FoundationRecordV1;
+	record: FoundationRecord;
 	fingerprint: string;
 	key: string;
 }
@@ -60,13 +60,13 @@ function clone<T>(value: T): T {
  * retention policy are destination-local and are deliberately not inherited.
  */
 export function prepareForkFoundationRecords(
-	records: readonly FoundationRecordV1[],
+	records: readonly FoundationRecord[],
 	options: FoundationForkRecordOptions,
-): FoundationRecordV1[] {
+): FoundationRecord[] {
 	const targetSessionId = requireNonEmptyString(options.targetSessionId, "targetSessionId");
 	const firstSequence = requireNonNegativeInteger(options.firstSequence, "firstSequence");
 	let sequence = firstSequence;
-	const copied: FoundationRecordV1[] = [];
+	const copied: FoundationRecord[] = [];
 	for (const source of records) {
 		if (source.kind === "retention" || !options.laneIds.has(source.lane)) continue;
 		sequence += 1;
@@ -78,7 +78,7 @@ export function prepareForkFoundationRecords(
 				sessionId: targetSessionId,
 				fencingToken: source.fencingToken,
 			},
-		} as FoundationRecordV1);
+		} as FoundationRecord);
 	}
 	return copied;
 }
@@ -113,7 +113,7 @@ function foundationJson(value: unknown, field: string): FoundationJsonValue {
 	}
 }
 
-function normalizeCorrelation(correlation: Omit<ExecutionCorrelationV1, "revision"> & { revision?: number }, sessionId: string, laneId: string, revision: number, fencingToken: string): ExecutionCorrelationV1 & { fencingToken: string } {
+function normalizeCorrelation(correlation: Omit<ExecutionCorrelation, "revision"> & { revision?: number }, sessionId: string, laneId: string, revision: number, fencingToken: string): ExecutionCorrelation & { fencingToken: string } {
 	if (!correlation || typeof correlation !== "object") throw invalidDurableRecord("correlation must be an object");
 	if (correlation.sessionId !== sessionId) throw invalidDurableRecord("correlation.sessionId does not match the session");
 	if (correlation.laneId !== laneId) throw invalidDurableRecord("correlation.laneId does not match the record lane");
@@ -127,10 +127,10 @@ function normalizeCorrelation(correlation: Omit<ExecutionCorrelationV1, "revisio
 }
 
 function matchesCorrelation(
-	correlation: ExecutionCorrelationV1 & { fencingToken: string },
-	query: Partial<ExecutionCorrelationV1>,
+	correlation: ExecutionCorrelation & { fencingToken: string },
+	query: Partial<ExecutionCorrelation>,
 ): boolean {
-	for (const [key, expected] of Object.entries(query) as [keyof ExecutionCorrelationV1, ExecutionCorrelationV1[keyof ExecutionCorrelationV1]][]) {
+	for (const [key, expected] of Object.entries(query) as [keyof ExecutionCorrelation, ExecutionCorrelation[keyof ExecutionCorrelation]][]) {
 		if (expected === undefined) continue;
 		const actual = correlation[key];
 		if (actual === undefined) return false;
@@ -139,7 +139,7 @@ function matchesCorrelation(
 	return true;
 }
 
-function inputFingerprint(input: ProvisionedFoundationRecordV1, _fencingToken: string): string {
+function inputFingerprint(input: ProvisionedFoundationRecord, _fencingToken: string): string {
 	const value = { ...input } as Record<string, unknown>;
 	// expectedRevision is an optimistic-concurrency guard, not part of the
 	// caller's idempotency identity. A retry of one immutable command can see a
@@ -173,14 +173,14 @@ export class FoundationLedgerState {
 	private readonly clock: () => number;
 	private sequence = 0;
 	private retentionRevision = 0;
-	private retentionPolicy: FoundationRetentionPolicyV1 | undefined;
+	private retentionPolicy: FoundationRetentionPolicy | undefined;
 	private leaseRevision = 0;
-	private lease: LedgerWriterLeaseV1 | null = null;
-	private readonly records: FoundationRecordV1[] = [];
+	private lease: LedgerWriterLease | null = null;
+	private readonly records: FoundationRecord[] = [];
 	private readonly recordIds = new Set<string>();
 	private readonly revisions = new Map<string, number>();
-	private readonly objects = new Map<string, FoundationObjectResultV1>();
-	private readonly intents = new Map<string, FoundationIntentRecordV1>();
+	private readonly objects = new Map<string, FoundationObjectResult>();
+	private readonly intents = new Map<string, FoundationIntentRecord>();
 	private readonly tombstoneIntentIds = new Set<string>();
 	private readonly idempotency = new Map<string, IdempotencyRecord>();
 
@@ -212,16 +212,16 @@ export class FoundationLedgerState {
 		this.sequence = seq;
 	}
 
-	getRecords(): readonly FoundationRecordV1[] {
+	getRecords(): readonly FoundationRecord[] {
 		return clone(this.records);
 	}
 
-	getWriterLease(): LedgerWriterLeaseV1 | null {
+	getWriterLease(): LedgerWriterLease | null {
 		if (this.lease === null || this.lease.expiresAt <= this.clock()) return null;
 		return clone(this.lease);
 	}
 
-	getStoredWriterLease(): LedgerWriterLeaseV1 | null {
+	getStoredWriterLease(): LedgerWriterLease | null {
 		return this.lease === null ? null : clone(this.lease);
 	}
 
@@ -229,12 +229,12 @@ export class FoundationLedgerState {
 		return this.leaseRevision;
 	}
 
-	restoreLease(lease: LedgerWriterLeaseV1 | null, leaseRevision = lease?.leaseRevision ?? this.leaseRevision): void {
+	restoreLease(lease: LedgerWriterLease | null, leaseRevision = lease?.leaseRevision ?? this.leaseRevision): void {
 		this.lease = lease === null ? null : clone(lease);
 		this.leaseRevision = Math.max(this.leaseRevision, leaseRevision);
 	}
 
-	acquireWriterLease(options: AcquireWriterLeaseOptionsV1): LedgerWriterLeaseV1 {
+	acquireWriterLease(options: AcquireWriterLeaseOptions): LedgerWriterLease {
 		const ownerId = requireNonEmptyString(options.ownerId, "ownerId");
 		const ttlMs = this.leaseTtl(options.ttlMs);
 		const now = this.clock();
@@ -256,24 +256,24 @@ export class FoundationLedgerState {
 		return clone(this.lease);
 	}
 
-	renewWriterLease(options: RenewWriterLeaseOptionsV1): LedgerWriterLeaseV1 {
+	renewWriterLease(options: RenewWriterLeaseOptions): LedgerWriterLease {
 		const lease = this.requireLease(options.fencingToken);
 		const ttlMs = this.leaseTtl(options.ttlMs);
 		lease.expiresAt = this.clock() + ttlMs;
 		return clone(lease);
 	}
 
-	releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): void {
+	releaseWriterLease(options: ReleaseWriterLeaseOptions): void {
 		const lease = this.requireLease(options.fencingToken, false);
 		lease.expiresAt = 0;
 		this.lease = lease;
 	}
 
-	assertActiveFence(fencingToken: string): LedgerWriterLeaseV1 {
+	assertActiveFence(fencingToken: string): LedgerWriterLease {
 		return this.requireLease(fencingToken);
 	}
 
-	prepareAppend(record: ProvisionedFoundationRecordV1): PreparedAppend | AppendFoundationRecordResultV1 {
+	prepareAppend(record: ProvisionedFoundationRecord): PreparedAppend | AppendFoundationRecordResult {
 		const lease = record.fencingToken === undefined ? this.requireLeaseForAppend() : this.assertActiveFence(record.fencingToken);
 		const input = clone(record);
 		const key = foundationIdempotencyKey(input.kind, requireNonEmptyString(input.clientRequestId, "clientRequestId"));
@@ -294,7 +294,7 @@ export class FoundationLedgerState {
 		return prepared;
 	}
 
-	commitPrepared(prepared: PreparedAppend): FoundationRecordV1 {
+	commitPrepared(prepared: PreparedAppend): FoundationRecord {
 		if (prepared.record.seq !== this.nextSequence) {
 			throw new DurableLedgerError("session_writer_stale_revision", "Ledger changed before the durable record was committed", {
 				actualRevision: this.sequence,
@@ -304,13 +304,13 @@ export class FoundationLedgerState {
 		return clone(prepared.record);
 	}
 
-	appendFoundationRecord(record: ProvisionedFoundationRecordV1): AppendFoundationRecordResultV1 {
+	appendFoundationRecord(record: ProvisionedFoundationRecord): AppendFoundationRecordResult {
 		const prepared = this.prepareAppend(record);
 		if ("replayed" in prepared) return prepared;
 		return { record: this.commitPrepared(prepared), replayed: false };
 	}
 
-	setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): AppendFoundationRecordResultV1 {
+	setRetentionPolicy(policy: FoundationRetentionPolicy, options: SetRetentionPolicyOptions): AppendFoundationRecordResult {
 		return this.appendFoundationRecord({
 			schemaVersion: 1,
 			kind: "retention",
@@ -325,7 +325,7 @@ export class FoundationLedgerState {
 		});
 	}
 
-	applyPersistedRecord(record: FoundationRecordV1): void {
+	applyPersistedRecord(record: FoundationRecord): void {
 		this.validatePersistedRecord(record);
 		if (record.seq !== this.nextSequence) throw invalidDurableRecord(`record seq ${record.seq} is not ${this.nextSequence}`);
 		this.validateRecordTransition(record);
@@ -336,14 +336,14 @@ export class FoundationLedgerState {
 		this.applyRecord(record, fingerprint, key);
 	}
 
-	findFoundationRecords(query: FoundationRecordQueryV1 = {}): FoundationRecordV1[] {
+	findFoundationRecords(query: FoundationRecordQuery = {}): FoundationRecord[] {
 		if (query.limit !== undefined && (!Number.isSafeInteger(query.limit) || query.limit <= 0)) {
 			throw new DurableLedgerError("session_ledger_invalid_query", "limit must be a positive safe integer");
 		}
 		if (query.afterSeq !== undefined) requireNonNegativeInteger(query.afterSeq, "afterSeq");
 		if (query.beforeSeq !== undefined) requireNonNegativeInteger(query.beforeSeq, "beforeSeq");
 		const ordered = query.order === "oldestFirst" ? this.records : [...this.records].reverse();
-		const results: FoundationRecordV1[] = [];
+		const results: FoundationRecord[] = [];
 		for (const record of ordered) {
 			if (query.kind !== undefined && record.kind !== query.kind) continue;
 			if (query.objectType !== undefined && (record.kind === "retention" || record.objectType !== query.objectType)) continue;
@@ -358,7 +358,7 @@ export class FoundationLedgerState {
 		return results;
 	}
 
-	getFoundationObject(objectType: string, objectId: string): FoundationObjectResultV1 | undefined {
+	getFoundationObject(objectType: string, objectId: string): FoundationObjectResult | undefined {
 		return clone(this.objects.get(foundationObjectKey(requireNonEmptyString(objectType, "objectType"), requireNonEmptyString(objectId, "objectId"))));
 	}
 
@@ -369,7 +369,7 @@ export class FoundationLedgerState {
 	isObjectTombstoned(objectType: string, objectId: string): boolean {
 		return this.objects.get(foundationObjectKey(objectType, objectId))?.kind === "tombstone";
 	}
-	getRetentionPolicy(): FoundationRetentionPolicyV1 | undefined {
+	getRetentionPolicy(): FoundationRetentionPolicy | undefined {
 		return this.retentionPolicy === undefined ? undefined : clone(this.retentionPolicy);
 	}
 
@@ -377,7 +377,7 @@ export class FoundationLedgerState {
 		return this.retentionRevision;
 	}
 
-	prunableFoundationRecords(): readonly FoundationRecordV1[] {
+	prunableFoundationRecords(): readonly FoundationRecord[] {
 		return this.records.filter((record) => {
 			if (record.kind === "tombstone" || !this.isPruned(record)) return false;
 			if (record.kind === "fact" && this.objects.get(foundationObjectKey(record.objectType, record.objectId))?.id === record.id) return false;
@@ -387,7 +387,7 @@ export class FoundationLedgerState {
 		}).map(clone);
 	}
 
-	private buildRecord(input: ProvisionedFoundationRecordV1, fencingToken: string, fingerprint: string, key: string): PreparedAppend {
+	private buildRecord(input: ProvisionedFoundationRecord, fencingToken: string, fingerprint: string, key: string): PreparedAppend {
 		if (input.schemaVersion !== 1) throw new DurableLedgerError("session_ledger_unknown_format", "Unsupported durable record schema version");
 		const lane = requireNonEmptyString(input.lane, "lane");
 		const id = requireNonEmptyString(input.id, "id");
@@ -421,7 +421,7 @@ export class FoundationLedgerState {
 					correlation: normalizeCorrelation(input.correlation, this.sessionId, lane, input.retentionRevision, fencingToken),
 					fencingToken,
 					policy,
-				} as FoundationRetentionRecordV1,
+				} as FoundationRetentionRecord,
 			};
 		}
 
@@ -454,7 +454,7 @@ export class FoundationLedgerState {
 					revision: revision + 1,
 					correlation: normalizeCorrelation(input.correlation, this.sessionId, lane, revision + 1, fencingToken),
 					fencingToken,
-				} as FoundationIntentRecordV1,
+				} as FoundationIntentRecord,
 			};
 		}
 		if (input.kind === "fact") {
@@ -470,7 +470,7 @@ export class FoundationLedgerState {
 					revision: revision + 1,
 					correlation: normalizeCorrelation(input.correlation, this.sessionId, lane, revision + 1, fencingToken),
 					fencingToken,
-				} as FoundationFactRecordV1,
+				} as FoundationFactRecord,
 			};
 		}
 		const deleteIntentId = input.deleteIntentId;
@@ -492,11 +492,11 @@ export class FoundationLedgerState {
 				revision: revision + 1,
 				correlation: normalizeCorrelation(input.correlation, this.sessionId, lane, revision + 1, fencingToken),
 				fencingToken,
-			} as FoundationTombstoneRecordV1,
+			} as FoundationTombstoneRecord,
 		};
 	}
 
-	private applyRecord(record: FoundationRecordV1, fingerprint: string, key: string): void {
+	private applyRecord(record: FoundationRecord, fingerprint: string, key: string): void {
 		this.validatePersistedRecord(record);
 		this.validateRecordTransition(record);
 		this.sequence = record.seq;
@@ -518,7 +518,7 @@ export class FoundationLedgerState {
 		if (record.kind === "tombstone" && record.deleteIntentId !== undefined) this.tombstoneIntentIds.add(record.deleteIntentId);
 	}
 
-	private validatePersistedRecord(record: FoundationRecordV1): void {
+	private validatePersistedRecord(record: FoundationRecord): void {
 		if (!record || typeof record !== "object") throw invalidDurableRecord("durable record must be an object");
 		if (record.schemaVersion !== 1) throw new DurableLedgerError("session_ledger_unknown_format", "Unsupported durable record schema version");
 		requireNonEmptyString(record.id, "id");
@@ -546,7 +546,7 @@ export class FoundationLedgerState {
 		}
 	}
 
-	private validateRecordTransition(record: FoundationRecordV1): void {
+	private validateRecordTransition(record: FoundationRecord): void {
 		if (record.kind === "retention") {
 			if (record.retentionRevision !== this.retentionRevision + 1) {
 				throw invalidDurableRecord(`retention revision ${record.retentionRevision} is not ${this.retentionRevision + 1}`);
@@ -571,7 +571,7 @@ export class FoundationLedgerState {
 		}
 	}
 
-	private validateRetentionPolicy(policy: FoundationRetentionPolicyV1): FoundationRetentionPolicyV1 {
+	private validateRetentionPolicy(policy: FoundationRetentionPolicy): FoundationRetentionPolicy {
 		if (!policy || policy.schemaVersion !== 1) throw new DurableLedgerError("session_ledger_unknown_format", "Unsupported retention policy schema version");
 		const cutSequence = requireNonNegativeInteger(policy.cutSequence, "cutSequence");
 		if (this.retentionPolicy !== undefined && cutSequence < this.retentionPolicy.cutSequence) {
@@ -581,7 +581,7 @@ export class FoundationLedgerState {
 		return { ...clone(policy), cutSequence };
 	}
 
-	private isPruned(record: FoundationRecordV1): boolean {
+	private isPruned(record: FoundationRecord): boolean {
 		return record.kind !== "tombstone" && this.retentionPolicy !== undefined && record.seq <= this.retentionPolicy.cutSequence;
 	}
 
@@ -591,7 +591,7 @@ export class FoundationLedgerState {
 		return value;
 	}
 
-	private requireLease(fencingToken: string, rejectExpired = true): LedgerWriterLeaseV1 {
+	private requireLease(fencingToken: string, rejectExpired = true): LedgerWriterLease {
 		if (this.lease === null) throw new DurableLedgerError("session_writer_lease_lost", "No active session writer lease");
 		if (this.lease.fencingToken !== fencingToken) throw new DurableLedgerError("session_writer_fencing_token", "Writer fencing token is stale");
 		if (rejectExpired && this.lease.expiresAt <= this.clock()) {
@@ -600,24 +600,24 @@ export class FoundationLedgerState {
 		return this.lease;
 	}
 
-	private requireLeaseForAppend(): LedgerWriterLeaseV1 {
+	private requireLeaseForAppend(): LedgerWriterLease {
 		if (this.lease === null) throw new DurableLedgerError("session_writer_lease_lost", "No active session writer lease");
 		if (this.lease.expiresAt <= this.clock()) throw new DurableLedgerError("session_writer_lease_expired", "Session writer lease has expired");
 		return this.lease;
 	}
 
-	private provisionedFromRecord(record: FoundationRecordV1): ProvisionedFoundationRecordV1 {
+	private provisionedFromRecord(record: FoundationRecord): ProvisionedFoundationRecord {
 		if (record.kind === "retention") {
 			const { seq: _seq, timestamp: _timestamp, correlation, ...input } = record;
 			return {
 				...input,
 				correlation: { ...correlation, revision: 0 },
-			} as ProvisionedFoundationRecordV1;
+			} as ProvisionedFoundationRecord;
 		}
 		const { seq: _seq, timestamp: _timestamp, revision: _revision, correlation, ...input } = record;
 		return {
 			...input,
 			correlation: { ...correlation, revision: 0 },
-		} as ProvisionedFoundationRecordV1;
+		} as ProvisionedFoundationRecord;
 	}
 }

@@ -1,14 +1,14 @@
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
-	FingerprintV1Schema,
+	FingerprintSchema,
 	fingerprintFoundationValue,
 	FoundationError,
 	type FoundationJsonValue,
 	Result,
 	type Result as ResultValue,
-	type SessionLedgerV1,
-	validateEventPayloadForCategoryV1,
+	type SessionLedger,
+	validateEventPayloadForCategory,
 	validateExactShape,
 } from "@aos-agent/agent-core";
 import { type Static, Type } from "typebox";
@@ -25,7 +25,7 @@ export const ChildWorktreeRecordV1Schema = Type.Object(
 		childAgentInstanceId: Type.String({ minLength: 1 }),
 		attemptId: Type.String({ minLength: 1 }),
 		baseRef: Type.String({ minLength: 1 }),
-		worktreeDigest: FingerprintV1Schema,
+		worktreeDigest: FingerprintSchema,
 		apply: Type.Optional(
 			Type.Object(
 				{
@@ -82,7 +82,7 @@ export interface WorktreeAdapter {
 
 export interface ChildWorktreeHostV1 {
 	readonly adapter: WorktreeAdapter;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly sessionId: string;
 	readonly laneId: string;
 	readonly now?: () => number;
@@ -202,7 +202,7 @@ function eventPayload(record: ChildWorktreeRecordV1): FoundationJsonValue {
 }
 
 function recordFromEventPayload(value: unknown): ResultValue<ChildWorktreeRecordV1, FoundationError> {
-	if (!validateEventPayloadForCategoryV1("subagent.worktree_recorded", value) || value === null || typeof value !== "object" || Array.isArray(value)) {
+	if (!validateEventPayloadForCategory("subagent.worktree_recorded", value) || value === null || typeof value !== "object" || Array.isArray(value)) {
 		return conflict("Durable child worktree event is invalid");
 	}
 	const payload = value as Record<string, unknown>;
@@ -255,7 +255,7 @@ async function persistRecord(
 	expectedRevision: number,
 ): Promise<ResultValue<ChildWorktreeRecordV1, FoundationError>> {
 	const payload = eventPayload(record);
-	if (!validateEventPayloadForCategoryV1("subagent.worktree_recorded", payload)) return conflict("Child worktree durable event projection is invalid");
+	if (!validateEventPayloadForCategory("subagent.worktree_recorded", payload)) return conflict("Child worktree durable event projection is invalid");
 	try {
 		const stored = await host.ledger.appendFact(WORKTREE_OBJECT_TYPE, objectId(record), payload, {
 			clientRequestId: `subagent-worktree:${objectId(record)}:${expectedRevision + 1}`,

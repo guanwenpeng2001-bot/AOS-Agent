@@ -13,16 +13,16 @@ import {
 	T5_LEDGER_OBJECT_TYPES,
 	canonicalFoundationJson,
 	sha256HexValue,
-	type SessionRewindPlanV1,
+	type SessionRewindPlan,
 } from "../../src/index.ts";
-import { resolveInstructionSources, type InstructionLockV1 } from "../../src/harness/context/instruction.ts";
+import { resolveInstructionSources, type InstructionLock } from "../../src/harness/context/instruction.ts";
 import { applyCheckpointRewind } from "../../src/harness/context/checkpoint.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 const environments: NodeExecutionEnv[] = [];
 
-function resignRewindPlan(plan: SessionRewindPlanV1): SessionRewindPlanV1 {
+function resignRewindPlan(plan: SessionRewindPlan): SessionRewindPlan {
 	const { digest: _digest, planId: _planId, lane: _lane, ...body } = plan;
 	return { ...plan, digest: `sha256:${sha256HexValue(canonicalFoundationJson(body))}` };
 }
@@ -135,7 +135,7 @@ describe("T5 authority and CAS regressions", () => {
 
 		const reversed = resolveInstructionSources(
 			[child, parent, managed, excludedChild, excludedParent],
-			(await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionLock })).filter((record): record is Extract<typeof record, { kind: "fact" }> => record.kind === "fact").map((record) => record.payload as unknown as InstructionLockV1),
+			(await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionLock })).filter((record): record is Extract<typeof record, { kind: "fact" }> => record.kind === "fact").map((record) => record.payload as unknown as InstructionLock),
 			{ path: "/repo/project/file.ts" },
 		);
 		expect(reversed.digest).toBe(resolution.digest);

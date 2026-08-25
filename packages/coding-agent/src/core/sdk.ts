@@ -58,23 +58,23 @@ import {
 // provider-agnostic and does not import the AI compatibility entrypoint itself.
 setDefaultStreamFn(streamSimple);
 
-export type TrustedWorkerSandboxProviderOptionsV1 = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
+export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
 	readonly profile: WorkerSandboxProfileV1;
 };
 
 const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
 
-export interface TrustedWorkerSandboxCompositionV1 {
+export interface TrustedWorkerSandboxComposition {
 	readonly provider: WorkerSandboxProviderV1;
 	readonly [trustedWorkerSandboxBrand]: true;
 }
 
-export type TrustedWorkerSandboxFactoryV1 = () => TrustedWorkerSandboxCompositionV1;
+export type TrustedWorkerSandboxFactory = () => TrustedWorkerSandboxComposition;
 
 /** Construct a Worker provider only from trusted programmatic composition. */
-export function createTrustedWorkerSandboxCompositionV1(
-	options: TrustedWorkerSandboxProviderOptionsV1,
-): TrustedWorkerSandboxCompositionV1 {
+export function createTrustedWorkerSandboxComposition(
+	options: TrustedWorkerSandboxProviderOptions,
+): TrustedWorkerSandboxComposition {
 	return Object.freeze({
 		provider: new WorkerSandboxProviderV1(options),
 		[trustedWorkerSandboxBrand]: true as const,
@@ -82,7 +82,7 @@ export function createTrustedWorkerSandboxCompositionV1(
 }
 
 function requireTrustedWorkerSandboxProvider(
-	composition: TrustedWorkerSandboxCompositionV1,
+	composition: TrustedWorkerSandboxComposition,
 ): WorkerSandboxProviderV1 {
 	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProviderV1)) {
 		throw new TypeError("Trusted Worker composition is invalid");
@@ -167,7 +167,7 @@ export interface CreateAgentSessionOptions {
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Branded trusted programmatic Operation Worker composition; never read from config or RPC. */
-	trustedWorkerSandbox?: TrustedWorkerSandboxCompositionV1;
+	trustedWorkerSandbox?: TrustedWorkerSandboxComposition;
 	/** Trusted External Agent Adapter registry composed by the Host. */
 	externalAgentRegistry?: ExternalAgentAdapterRegistry;
 	/**

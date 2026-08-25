@@ -24,7 +24,7 @@ import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
-	type TrustedWorkerSandboxFactoryV1,
+	type TrustedWorkerSandboxFactory,
 	createAgentSession,
 } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -78,7 +78,7 @@ export interface CreateAgentSessionServicesOptions {
 	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
 	taskCredentialPolicyMaxTtlMs?: number;
 	/** Trusted composition factory invoked once for each Session created from these services. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -106,7 +106,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	taskCredentialPolicyMaxTtlMs?: CreateAgentSessionOptions["taskCredentialPolicyMaxTtlMs"];
 	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"];
 	/** Per-call trusted composition factory; invoked once for this created Session. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -142,7 +142,7 @@ export interface AgentSessionServices {
 	taskCredentialProvider?: TaskCredentialProvider;
 	taskCredentialPolicyMaxTtlMs?: number;
 	/** Trusted composition factory invoked once for each Session created from these services. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactoryV1;
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 

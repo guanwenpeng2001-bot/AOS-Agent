@@ -1,12 +1,12 @@
 import { FoundationError } from "../../../agent/src/harness/foundation/errors.ts";
-import type { ExecutionProviderDescriptorV1 } from "../../../agent/src/harness/foundation/providers.ts";
+import type { ExecutionProviderDescriptor } from "../../../agent/src/harness/foundation/providers.ts";
 
 export type SubagentProviderKindV1 = "in_process" | "fork" | "agent_runtime_host" | "acp" | "sdk";
 
 export interface SubagentProviderDescriptorV1 {
 	readonly schemaVersion: 1;
 	readonly providerKind: SubagentProviderKindV1;
-	readonly descriptor: Readonly<ExecutionProviderDescriptorV1>;
+	readonly descriptor: Readonly<ExecutionProviderDescriptor>;
 	readonly revision: number;
 	readonly capabilities: {
 		readonly resumeSupported: boolean;

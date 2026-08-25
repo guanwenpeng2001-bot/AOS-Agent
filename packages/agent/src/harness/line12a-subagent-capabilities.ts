@@ -7,7 +7,7 @@
  * remains on the Line 11 extension track and is not part of this ledger.
  */
 
-import { type FoundationCapabilityClosureV1, foundationClosureById } from "./foundation-v1-capabilities.ts";
+import { type FoundationCapabilityClosure, foundationClosureById } from "./foundation-capabilities.ts";
 
 export type Line12aSubagentCapabilityClosureStatus = "implemented" | "consumed_foundation";
 export type Line12aSubagentDeferredOwner = "12B" | "13" | "14" | "15";
@@ -18,7 +18,7 @@ export interface Line12aSubagentCapabilityClosureV1 {
 	ownerModule: string;
 	publicContract?: string;
 	tests: readonly string[];
-	foundationClosure?: FoundationCapabilityClosureV1;
+	foundationClosure?: FoundationCapabilityClosure;
 }
 
 export interface Line12aSubagentDeferredCapabilityV1 {
@@ -27,7 +27,7 @@ export interface Line12aSubagentDeferredCapabilityV1 {
 	reason: string;
 }
 
-function requireFoundationClosure(id: number): FoundationCapabilityClosureV1 {
+function requireFoundationClosure(id: number): FoundationCapabilityClosure {
 	const closure = foundationClosureById(id);
 	if (!closure) throw new Error(`Foundation capability ${id} is not closed`);
 	return closure;

@@ -5,34 +5,34 @@ import {
 	createBindingEpoch,
 	createModelProfileRevision,
 	createRoleRevision,
-	createTaskEnvelopeV1,
-	executeDispatchV1,
+	createTaskEnvelope,
+	executeDispatch,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	resolveAgentBinding,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type ArtifactDescriptorV1,
-	type ArtifactRefV1,
+	type AgentBinding,
+	type AgentInstance,
+	type ArtifactDescriptor,
+	type ArtifactRef,
 	type ArtifactStoreProvider,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type BindingEpochV1,
-	type DispatchV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type ModelProfileV1,
+	type AttemptReceipt,
+	type Attempt,
+	type BindingEpoch,
+	type Dispatch,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type ModelProfile,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type TaskEnvelopeV1,
-	type TaskExecutorAttemptContextV1,
+	type RevisionReference,
+	type RoleRevision,
+	type TaskEnvelope,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import {
@@ -47,7 +47,7 @@ const NOW = "2026-01-01T00:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
 const CHILD_LANE = "child-source-lane";
 const PARENT_LANE = "parent-host-lane";
-const ARTIFACT: ArtifactRefV1 = {
+const ARTIFACT: ArtifactRef = {
 	schemaVersion: 1,
 	artifactId: "artifact-result",
 	mediaType: "text/plain",
@@ -59,8 +59,8 @@ function must<T>(result: ResultValue<T, FoundationError>): T {
 	return result.value;
 }
 
-function task(taskId = "child-task"): TaskEnvelopeV1 {
-	return must(createTaskEnvelopeV1({
+function task(taskId = "child-task"): TaskEnvelope {
+	return must(createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-result",
@@ -77,7 +77,7 @@ function task(taskId = "child-task"): TaskEnvelopeV1 {
 	}));
 }
 
-function roleRevision(): RoleRevisionV1 {
+function roleRevision(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -97,7 +97,7 @@ function roleRevision(): RoleRevisionV1 {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-result",
@@ -109,12 +109,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskValue: TaskEnvelopeV1): AgentBindingV1 {
+function binding(taskValue: TaskEnvelope): AgentBinding {
 	return must(resolveAgentBinding({
 		task: taskValue,
 		roleRevision: roleRevision(),
@@ -135,11 +135,11 @@ class FauxArtifactStore implements ArtifactStoreProvider {
 	readonly validArtifactIds = new Set([ARTIFACT.artifactId]);
 	readonly verifyCalls: string[] = [];
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "artifact.verify", version: 1 }];
 	}
 
-	async put(descriptor: ArtifactDescriptorV1, data: Uint8Array) {
+	async put(descriptor: ArtifactDescriptor, data: Uint8Array) {
 		this.validArtifactIds.add(descriptor.artifactId);
 		return Result.ok({ schemaVersion: 1 as const, ref: descriptor.artifactId, sizeBytes: data.byteLength });
 	}
@@ -170,15 +170,15 @@ class FauxAgentExecutor implements TaskExecutorProvider {
 	readonly failedAttempts = new Set<string>();
 	forcedReceiptId: string | undefined;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "agent.execute", version: 1 }];
 	}
 
 	async createAttempt(
-		dispatch: DispatchV1,
-		_binding: AgentBindingV1,
-		context?: TaskExecutorAttemptContextV1,
-	): Promise<ResultValue<AttemptV1, FoundationError>> {
+		dispatch: Dispatch,
+		_binding: AgentBinding,
+		context?: TaskExecutorAttemptContext,
+	): Promise<ResultValue<Attempt, FoundationError>> {
 		if (context?.agentInstance === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "missing AgentInstance"));
 		return createAttempt({
 			attemptId: context.initialBindingEpoch.attemptId,
@@ -192,9 +192,9 @@ class FauxAgentExecutor implements TaskExecutorProvider {
 	}
 
 	async runAttempt(
-		attempt: AttemptV1,
-		options?: FoundationProviderExecutionOptionsV1,
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+		attempt: Attempt,
+		options?: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		if (options?.correlation === undefined || attempt.agentInstanceId === undefined) {
 			return Result.err(new FoundationError("invalid_correlation", "missing execution correlation"));
 		}
@@ -241,19 +241,19 @@ class FauxAgentExecutor implements TaskExecutorProvider {
 interface Fixture {
 	readonly session: Session;
 	readonly sessionId: string;
-	readonly task: TaskEnvelopeV1;
-	readonly binding: AgentBindingV1;
-	readonly agent: AgentInstanceV1;
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
+	readonly agent: AgentInstance;
 	readonly provider: FauxAgentExecutor;
 	readonly childWriter: SessionLedgerWriter;
-	readonly childGate: LayeredResultSettlementV1;
+	readonly childGate: LayeredResultSettlement;
 	readonly artifactStore: FauxArtifactStore;
 }
 
 async function fixture(sessionId: string): Promise<Fixture> {
 	const session = new Session(new InMemorySessionStorage({ id: sessionId, createdAt: 1 }));
 	const childWriter = new SessionLedgerWriter(session, { ownerId: `${sessionId}-child-writer`, lane: CHILD_LANE });
-	const ledger = new SessionLedgerV1(session, { writer: childWriter });
+	const ledger = new SessionLedger(session, { writer: childWriter });
 	const taskValue = task();
 	const bindingValue = binding(taskValue);
 	await ledger.appendFact("task", taskValue.taskId, taskValue, { clientRequestId: "seed:task", expectedRevision: 0, correlation: { taskId: taskValue.taskId } });
@@ -287,18 +287,18 @@ async function fixture(sessionId: string): Promise<Fixture> {
 		agent,
 		provider: new FauxAgentExecutor(),
 		childWriter,
-		childGate: new LayeredResultSettlementV1(session, { writer: childWriter }),
+		childGate: new LayeredResultSettlement(session, { writer: childWriter }),
 		artifactStore: new FauxArtifactStore(),
 	};
 }
 
 function dispatchInput(value: Fixture, ordinal: number): {
-	readonly dispatch: DispatchV1;
-	readonly epoch: BindingEpochV1;
-	readonly correlation: NonNullable<AttemptReceiptV1["provenance"]["correlation"]>;
+	readonly dispatch: Dispatch;
+	readonly epoch: BindingEpoch;
+	readonly correlation: NonNullable<AttemptReceipt["provenance"]["correlation"]>;
 } {
 	const attemptId = `attempt-${ordinal}`;
-	const dispatch: DispatchV1 = {
+	const dispatch: Dispatch = {
 		schemaVersion: 1,
 		dispatchId: `dispatch-${ordinal}`,
 		taskId: value.task.taskId,
@@ -334,7 +334,7 @@ function dispatchInput(value: Fixture, ordinal: number): {
 	};
 }
 
-async function executeReceipt(value: Fixture, ordinal: number, status: "succeeded" | "failed" = "succeeded"): Promise<AttemptReceiptV1> {
+async function executeReceipt(value: Fixture, ordinal: number, status: "succeeded" | "failed" = "succeeded"): Promise<AttemptReceipt> {
 	const input = dispatchInput(value, ordinal);
 	if (status === "failed") value.provider.failedAttempts.add(input.epoch.attemptId);
 	const executed = await value.childGate.executeDispatch({
@@ -349,9 +349,9 @@ async function executeReceipt(value: Fixture, ordinal: number, status: "succeede
 	return executed.value.receipt;
 }
 
-async function executeRawReceipt(value: Fixture, ordinal: number): Promise<AttemptReceiptV1> {
+async function executeRawReceipt(value: Fixture, ordinal: number): Promise<AttemptReceipt> {
 	const input = dispatchInput(value, ordinal);
-	const executed = await executeDispatchV1({
+	const executed = await executeDispatch({
 		provider: value.provider,
 		dispatch: input.dispatch,
 		binding: value.binding,
@@ -365,8 +365,8 @@ async function executeRawReceipt(value: Fixture, ordinal: number): Promise<Attem
 
 interface ParentHost {
 	readonly writer: SessionLedgerWriter;
-	readonly gate: LayeredResultSettlementV1;
-	readonly ledger: SessionLedgerV1;
+	readonly gate: LayeredResultSettlement;
+	readonly ledger: SessionLedger;
 }
 
 async function openParentHost(value: Fixture): Promise<ParentHost> {
@@ -374,14 +374,14 @@ async function openParentHost(value: Fixture): Promise<ParentHost> {
 	const writer = new SessionLedgerWriter(value.session, { ownerId: `${value.sessionId}-parent-writer`, lane: PARENT_LANE });
 	return {
 		writer,
-		gate: new LayeredResultSettlementV1(value.session, { writer }),
-		ledger: new SessionLedgerV1(value.session, { writer }),
+		gate: new LayeredResultSettlement(value.session, { writer }),
+		ledger: new SessionLedger(value.session, { writer }),
 	};
 }
 
 function settlementInput(
 	value: Fixture,
-	receipts: readonly AttemptReceiptV1[],
+	receipts: readonly AttemptReceipt[],
 	taskResultId: string,
 	policy: ChildTaskSettlementAdapterInputV1["policy"],
 	summary = `summary for ${taskResultId}`,
@@ -414,7 +414,7 @@ function settlementInput(
 
 async function projectionFixture(id: string, receiptCount = 1, settledReceiptCount = receiptCount, summary?: string) {
 	const value = await fixture(id);
-	const receipts: AttemptReceiptV1[] = [];
+	const receipts: AttemptReceipt[] = [];
 	for (let ordinal = 1; ordinal <= receiptCount; ordinal += 1) receipts.push(await executeReceipt(value, ordinal));
 	const taskResultId = `${id}-task-result`;
 	const parent = await openParentHost(value);
@@ -433,7 +433,7 @@ async function projectionFixture(id: string, receiptCount = 1, settledReceiptCou
 
 function taskResultTransport(
 	value: Awaited<ReturnType<typeof projectionFixture>>,
-	sourceReceipts: readonly AttemptReceiptV1[] = value.receipts,
+	sourceReceipts: readonly AttemptReceipt[] = value.receipts,
 	taskResult = value.taskResult,
 ) {
 	return {
@@ -495,7 +495,7 @@ describe("Subagent result transport and Host settlement", () => {
 		expect(await projectSafeChildResultV1(missing.host, taskResultTransport(missing))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 
 		const tampered = await projectionFixture("result-tampered-receipt");
-		const changedReceipt: AttemptReceiptV1 = { ...tampered.receipts[0]!, artifacts: [] };
+		const changedReceipt: AttemptReceipt = { ...tampered.receipts[0]!, artifacts: [] };
 		expect(await projectSafeChildResultV1(tampered.host, taskResultTransport(tampered, [changedReceipt]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 	});
 

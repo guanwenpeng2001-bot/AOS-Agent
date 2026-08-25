@@ -10,9 +10,9 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
-	createFoundationToolGatewayV1,
-	createLocalToolGatewayProviderV1,
-	createSandboxOperationToolGatewayProviderV1,
+	createFoundationToolGateway,
+	createLocalToolGatewayProvider,
+	createSandboxOperationToolGatewayProvider,
 	type SandboxOperationProvider,
 } from "@aos-agent/agent-core";
 import { registerFauxProvider } from "@aos-agent/ai/compat";
@@ -24,12 +24,12 @@ import {
 	createExternalAgentAdapterRegistry,
 	createRpcTransport,
 	getPackageDir,
-	SchedulerHostV1,
+	SchedulerHost,
 	SessionManager,
 	type CreateAgentSessionRuntimeFactory,
 	type ExtensionAPI,
 	type ExternalAgentAdapter,
-	type SchedulerHostOptionsV1,
+	type SchedulerHostOptions,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
@@ -441,7 +441,7 @@ const ac21 = defineLine13KnownGapCase({
 	scenario: {
 		fixture: () => ({ catalogUnavailable: false, callbackFailed: false, cancelled: [] as string[] }),
 		setup: async (fixture) => {
-			const invalidProvider = createLocalToolGatewayProviderV1({
+			const invalidProvider = createLocalToolGatewayProvider({
 				providerId: "catalog-provider",
 				routes: [
 					{ kind: "local", toolName: "read", namespace: "line13", providerId: "missing-provider", revision: 1 },
@@ -455,7 +455,7 @@ const ac21 = defineLine13KnownGapCase({
 						sideEffectState: "none",
 					}),
 			});
-			const invalidGateway = createFoundationToolGatewayV1({ gatewayId: "invalid-catalog", providers: [invalidProvider] });
+			const invalidGateway = createFoundationToolGateway({ gatewayId: "invalid-catalog", providers: [invalidProvider] });
 			try {
 				await invalidGateway.capabilities();
 			} catch (error) {
@@ -479,7 +479,7 @@ const ac21 = defineLine13KnownGapCase({
 				},
 				async dispose() {},
 			};
-			const provider = createSandboxOperationToolGatewayProviderV1({
+			const provider = createSandboxOperationToolGatewayProvider({
 				providerId: "sandbox-provider",
 				routes: [
 					{ kind: "sandbox", toolName: "write", namespace: "line13", providerId: "sandbox-provider", revision: 1 },
@@ -489,7 +489,7 @@ const ac21 = defineLine13KnownGapCase({
 					throw new Error("payload observer failed");
 				},
 			});
-			const gateway = createFoundationToolGatewayV1({ gatewayId: "cleanup-gateway", providers: [provider] });
+			const gateway = createFoundationToolGateway({ gatewayId: "cleanup-gateway", providers: [provider] });
 			try {
 				await gateway.execute({
 					schemaVersion: 1,
@@ -727,7 +727,7 @@ const ac24 = defineLine13KnownGapCase({
 					maxConcurrentAttempts: 2,
 					maxPendingWriteBytes: 64 * 1024,
 				},
-			} satisfies SchedulerHostOptionsV1 & {
+			} satisfies SchedulerHostOptions & {
 				readonly runtimeLimits: {
 					readonly maxGraphsPerTick: number;
 					readonly maxNodesPerTick: number;
@@ -735,7 +735,7 @@ const ac24 = defineLine13KnownGapCase({
 					readonly maxPendingWriteBytes: number;
 				};
 			};
-			const host = new SchedulerHostV1(withRuntimeClock(options, clock));
+			const host = new SchedulerHost(withRuntimeClock(options, clock));
 			host.start();
 			let peakResources = 0;
 			for (let iteration = 0; iteration < 256; iteration += 1) {

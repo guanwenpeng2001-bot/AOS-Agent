@@ -6,11 +6,11 @@ import {
 } from "../../src/harness/foundation/errors.ts";
 import {
 	EVENT_CATALOG,
-	createDurableEventV1,
-	eventCatalogEntriesV1,
-	projectEventEnvelopeV1,
-	validateDurableEventV1,
-	validateEventPayloadForCategoryV1,
+	createDurableEvent,
+	eventCatalogEntries,
+	projectEventEnvelope,
+	validateDurableEvent,
+	validateEventPayloadForCategory,
 } from "../../src/harness/foundation/event-catalog.ts";
 
 const SUBAGENT_CATEGORIES = [
@@ -90,7 +90,7 @@ describe("line 12A Foundation additions", () => {
 	});
 
 	it("preserves the subagent additions before the later Scheduler catalog entries", () => {
-		const partitions = eventCatalogEntriesV1();
+		const partitions = eventCatalogEntries();
 		expect(partitions.filter((entry) => entry.class === "durable").map((entry) => entry.category)).toEqual([
 			...EXISTING_DURABLE_CATEGORIES,
 			...SUBAGENT_CATEGORIES,
@@ -123,7 +123,7 @@ describe("line 12A Foundation additions", () => {
 	});
 
 	it("requires exact lifecycle payload and correlation identities", () => {
-		const event = createDurableEventV1({
+		const event = createDurableEvent({
 			category: "subagent.lifecycle_transitioned",
 			eventId: "event-lifecycle-1",
 			streamId: "session-1",
@@ -132,23 +132,23 @@ describe("line 12A Foundation additions", () => {
 			correlation,
 			payload: lifecyclePayload,
 		});
-		expect(projectEventEnvelopeV1(event).payload).toEqual(lifecyclePayload);
+		expect(projectEventEnvelope(event).payload).toEqual(lifecyclePayload);
 		for (const drift of [
 			{ agentInstanceId: "child-2" },
 			{ taskId: "task-2" },
 			{ dispatchId: "dispatch-2" },
 			{ attemptId: "attempt-2" },
 		]) {
-			expect(validateDurableEventV1({ ...event, correlation: { ...correlation, ...drift } }).ok).toBe(false);
+			expect(validateDurableEvent({ ...event, correlation: { ...correlation, ...drift } }).ok).toBe(false);
 		}
-		expect(validateDurableEventV1({ ...event, correlation: { sessionId: "session-1" } }).ok).toBe(false);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, rawFrame: "forbidden" })).toBe(false);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, status: "terminal" })).toBe(false);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...lifecyclePayload, ancestorIds: ["parent-2"] })).toBe(false);
+		expect(validateDurableEvent({ ...event, correlation: { sessionId: "session-1" } }).ok).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, rawFrame: "forbidden" })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, status: "terminal" })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, ancestorIds: ["parent-2"] })).toBe(false);
 	});
 
 	it("requires Scheduler payload identities to match the durable correlation", () => {
-		const event = createDurableEventV1({
+		const event = createDurableEvent({
 			category: "scheduler.queue_transitioned",
 			eventId: "event-scheduler-1",
 			streamId: "session-1",
@@ -164,12 +164,12 @@ describe("line 12A Foundation additions", () => {
 				revision: 1,
 			},
 		});
-		expect(validateDurableEventV1({ ...event, correlation: { sessionId: "session-2", taskId: "task-1" } }).ok).toBe(false);
-		expect(validateDurableEventV1({ ...event, correlation: { sessionId: "session-1", taskId: "task-2" } }).ok).toBe(false);
+		expect(validateDurableEvent({ ...event, correlation: { sessionId: "session-2", taskId: "task-1" } }).ok).toBe(false);
+		expect(validateDurableEvent({ ...event, correlation: { sessionId: "session-1", taskId: "task-2" } }).ok).toBe(false);
 	});
 
 	it("validates sent and acknowledged mailbox events and redacts message bodies", () => {
-		const sent = createDurableEventV1({
+		const sent = createDurableEvent({
 			category: "subagent.mailbox_message_sent",
 			eventId: "event-mailbox-1",
 			streamId: "session-1",
@@ -187,11 +187,11 @@ describe("line 12A Foundation additions", () => {
 				createdAt: timestamp,
 			},
 		});
-		expect(projectEventEnvelopeV1(sent).payload).toMatchObject({ body: "[redacted]" });
-		expect(validateDurableEventV1({ ...sent, correlation: { ...correlation, agentInstanceId: "parent-1" } }).ok).toBe(false);
-		expect(validateEventPayloadForCategoryV1(sent.category, { ...sent.payload, ack: { at: timestamp, byAttemptId: "attempt-1" } })).toBe(false);
+		expect(projectEventEnvelope(sent).payload).toMatchObject({ body: "[redacted]" });
+		expect(validateDurableEvent({ ...sent, correlation: { ...correlation, agentInstanceId: "parent-1" } }).ok).toBe(false);
+		expect(validateEventPayloadForCategory(sent.category, { ...sent.payload, ack: { at: timestamp, byAttemptId: "attempt-1" } })).toBe(false);
 
-		const acknowledged = createDurableEventV1({
+		const acknowledged = createDurableEvent({
 			category: "subagent.mailbox_message_acknowledged",
 			eventId: "event-mailbox-2",
 			streamId: "session-1",
@@ -207,12 +207,12 @@ describe("line 12A Foundation additions", () => {
 				byAttemptId: "attempt-1",
 			},
 		});
-		expect(projectEventEnvelopeV1(acknowledged).payload).toEqual(acknowledged.payload);
-		expect(validateDurableEventV1({ ...acknowledged, correlation: { ...correlation, attemptId: "attempt-2" } }).ok).toBe(false);
+		expect(projectEventEnvelope(acknowledged).payload).toEqual(acknowledged.payload);
+		expect(validateDurableEvent({ ...acknowledged, correlation: { ...correlation, attemptId: "attempt-2" } }).ok).toBe(false);
 	});
 
 	it("validates exact worktree audit facts without persisting a path", () => {
-		const event = createDurableEventV1({
+		const event = createDurableEvent({
 			category: "subagent.worktree_recorded",
 			eventId: "event-worktree-1",
 			streamId: "session-1",
@@ -229,10 +229,10 @@ describe("line 12A Foundation additions", () => {
 				cleanedUp: true,
 			},
 		});
-		expect(projectEventEnvelopeV1(event).payload).toEqual(event.payload);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...event.payload, path: "C:\\private" })).toBe(false);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...event.payload, baseRef: "C:\\private" })).toBe(false);
-		expect(validateEventPayloadForCategoryV1(event.category, { ...event.payload, apply: { status: "applied", at: timestamp, output: "raw" } })).toBe(false);
-		expect(validateDurableEventV1({ ...event, correlation: { ...correlation, agentInstanceId: "child-2" } }).ok).toBe(false);
+		expect(projectEventEnvelope(event).payload).toEqual(event.payload);
+		expect(validateEventPayloadForCategory(event.category, { ...event.payload, path: "C:\\private" })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...event.payload, baseRef: "C:\\private" })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...event.payload, apply: { status: "applied", at: timestamp, output: "raw" } })).toBe(false);
+		expect(validateDurableEvent({ ...event, correlation: { ...correlation, agentInstanceId: "child-2" } }).ok).toBe(false);
 	});
 });

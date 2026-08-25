@@ -14,7 +14,7 @@ import {
 	workerTransitionAllowedV1,
 	type WorkerBindingV1,
 	type WorkerLifecycleStateV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 	type WorkerTransitionV1,
 } from "../src/core/worker.ts";
 
@@ -50,7 +50,7 @@ function mustCreate(): WorkerLifecycleStateV1 {
 
 function command(
 	state: WorkerLifecycleStateV1,
-	to: WorkerLifecycleStatusV1,
+	to: WorkerLifecycleStatus,
 	index: number,
 	overrides: Partial<WorkerTransitionV1> = {},
 ): WorkerTransitionV1 {
@@ -79,7 +79,7 @@ function command(
 
 function mustApply(
 	state: WorkerLifecycleStateV1,
-	to: WorkerLifecycleStatusV1,
+	to: WorkerLifecycleStatus,
 	index: number,
 	overrides: Partial<WorkerTransitionV1> = {},
 ): WorkerLifecycleStateV1 {
@@ -88,7 +88,7 @@ function mustApply(
 	return result.value.state;
 }
 
-const PATHS: Readonly<Record<WorkerLifecycleStatusV1, readonly WorkerLifecycleStatusV1[]>> = {
+const PATHS: Readonly<Record<WorkerLifecycleStatus, readonly WorkerLifecycleStatus[]>> = {
 	new: [],
 	starting: ["starting"],
 	ready: ["starting", "ready"],
@@ -103,7 +103,7 @@ const PATHS: Readonly<Record<WorkerLifecycleStatusV1, readonly WorkerLifecycleSt
 	reclaim_unknown: ["starting", "lost", "reclaiming", "reclaim_unknown"],
 };
 
-function stateAt(status: WorkerLifecycleStatusV1): WorkerLifecycleStateV1 {
+function stateAt(status: WorkerLifecycleStatus): WorkerLifecycleStateV1 {
 	let state = mustCreate();
 	let index = 1;
 	for (const next of PATHS[status]) {

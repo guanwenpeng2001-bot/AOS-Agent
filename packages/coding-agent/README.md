@@ -63,7 +63,7 @@ In interactive mode, `/capabilities` lists the redacted capability catalog, `/ca
 
 Approvals are session-local: they are never written to settings and never override a deny from the active profile. Project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable rather than exposing connection internals.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports.
+Capability layer covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports.
 
 ### ModelBroker
 

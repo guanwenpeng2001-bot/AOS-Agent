@@ -7,27 +7,27 @@ import {
 	SubagentProviderRegistryV1,
 } from "../../../coding-agent/src/core/subagent-registry.ts";
 import {
-	type AttemptReceiptV1,
+	type AttemptReceipt,
 	type ChildAgentProvider,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
 	createAgentInstance,
 	createAttempt,
 	createBindingEpoch,
 	createModelProfileRevision,
 	createRoleRevision,
 	FoundationError,
-	type FoundationProviderCapabilityV1,
+	type FoundationProviderCapability,
 	fingerprintFoundationValue,
-	LayeredResultSettlementV1,
-	type ModelProfileV1,
-	negotiateProtocolV1,
-	type RevisionReferenceV1,
+	LayeredResultSettlement,
+	type ModelProfile,
+	negotiateProtocol,
+	type RevisionReference,
 	resolveAgentBinding,
-	SessionLedgerV1,
-	type TaskEnvelopeV1,
-	validateAttemptReceiptForProviderV1,
-	validateWorkerReceiptForProviderV1,
+	SessionLedger,
+	type TaskEnvelope,
+	validateAttemptReceiptForProvider,
+	validateWorkerReceiptForProvider,
 } from "../../src/harness/foundation/index.ts";
 import { Result } from "../../src/harness/result.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
@@ -39,23 +39,23 @@ const capabilities = (min: number, max: number) => ({
 
 describe("Foundation provider and transport conformance", () => {
 	it("negotiates a version present in the feature matrix", () => {
-		const result = negotiateProtocolV1(capabilities(1, 1), capabilities(1, 1));
+		const result = negotiateProtocol(capabilities(1, 1), capabilities(1, 1));
 		expect(result.ok).toBe(true);
 		if (result.ok) expect(result.value.version).toBe(1);
 	});
 
 	it("fails closed when the common range has no protocol matrix entry", () => {
-		const result = negotiateProtocolV1(capabilities(2, 2), capabilities(2, 2));
+		const result = negotiateProtocol(capabilities(2, 2), capabilities(2, 2));
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.error.code).toBe("protocol_unsupported_version");
 	});
 
 	it("keeps receipt producers bound to their provider class", () => {
-		const workerResult = validateWorkerReceiptForProviderV1(undefined, {
+		const workerResult = validateWorkerReceiptForProvider(undefined, {
 			providerId: "worker-1",
 			providerClass: "task_executor",
 		});
-		const attemptResult = validateAttemptReceiptForProviderV1(undefined, {
+		const attemptResult = validateAttemptReceiptForProvider(undefined, {
 			providerId: "worker-1",
 			providerClass: "operation_worker",
 		});
@@ -67,7 +67,7 @@ describe("Foundation provider and transport conformance", () => {
 describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentSpawn", () => {
 	const fakeNow = "2026-01-01T00:00:00.000Z";
 
-	const taskEnvelope = (id: string): TaskEnvelopeV1 => ({
+	const taskEnvelope = (id: string): TaskEnvelope => ({
 		schemaVersion: 1,
 		taskId: id,
 		goalId: "goal-fake",
@@ -83,7 +83,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		updatedAt: fakeNow,
 	});
 
-	const modelProfile = (id: string): ModelProfileV1 =>
+	const modelProfile = (id: string): ModelProfile =>
 		createModelProfileRevision({
 			schemaVersion: 1,
 			modelProfileId: id,
@@ -112,7 +112,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		now: () => fakeNow,
 	});
 
-	function immutableFact(type: string, id: string, revision = 1): RevisionReferenceV1 {
+	function immutableFact(type: string, id: string, revision = 1): RevisionReference {
 		const payload = { schemaVersion: 1 as const, type, id, revision };
 		return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
 	}
@@ -134,7 +134,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 	}
 
 	async function seedParentSpawnContext(session: Session, parentTaskId: string, parentSpawnId: string): Promise<void> {
-		const ledger = new SessionLedgerV1(session, { ownerId: `seed-parent-${parentSpawnId}` });
+		const ledger = new SessionLedger(session, { ownerId: `seed-parent-${parentSpawnId}` });
 		await ledger.appendFact("task", parentTaskId, taskEnvelope(parentTaskId), {
 			clientRequestId: `seed:parent-task:${parentTaskId}`,
 			expectedRevision: 0,
@@ -164,7 +164,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 
 	async function seedBindingFacts(session: Session, taskId: string, bindingId: string): Promise<void> {
 		const value = binding(bindingId, taskId);
-		const ledger = new SessionLedgerV1(session, { ownerId: `seed-${value.bindingId}` });
+		const ledger = new SessionLedger(session, { ownerId: `seed-${value.bindingId}` });
 		await ledger.appendFact("task", value.taskId, taskEnvelope(value.taskId), {
 			clientRequestId: `seed:task:${value.taskId}`,
 			expectedRevision: 0,
@@ -204,7 +204,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		readonly schemaVersion = 1 as const;
 		readonly providerClass = "agent" as const;
 		public spawnCalled = 0;
-		public lastSpawn: ChildSpawnResultV1 | undefined;
+		public lastSpawn: ChildSpawnResult | undefined;
 		public lastSpawnId: string | undefined;
 		public providerId: string;
 
@@ -212,11 +212,11 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 			this.providerId = providerId;
 		}
 
-		async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 			return [{ schemaVersion: 1, id: "foundation.conformance", version: 1 }];
 		}
 
-		async spawn(request: ChildSpawnRequestV1): Promise<Result<ChildSpawnResultV1, FoundationError>> {
+		async spawn(request: ChildSpawnRequest): Promise<Result<ChildSpawnResult, FoundationError>> {
 			this.spawnCalled++;
 			this.lastSpawnId = request.spawnId;
 			const childTaskId = request.taskEnvelope.taskId;
@@ -271,12 +271,12 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 			return Result.ok(this.lastSpawn);
 		}
 
-		async lookupSpawn(spawnId: string): Promise<Result<ChildSpawnResultV1 | undefined, FoundationError>> {
+		async lookupSpawn(spawnId: string): Promise<Result<ChildSpawnResult | undefined, FoundationError>> {
 			if (spawnId === this.lastSpawnId) return Result.ok(this.lastSpawn);
 			return Result.ok(undefined);
 		}
 
-		async resume(attemptId: string): Promise<Result<AttemptReceiptV1, FoundationError>> {
+		async resume(attemptId: string): Promise<Result<AttemptReceipt, FoundationError>> {
 			if (!this.lastSpawn) return Result.err(new FoundationError("subagent_provider_unavailable", "no spawn"));
 			if (attemptId !== this.lastSpawn.attempt.attemptId)
 				return Result.err(new FoundationError("subagent_provider_unavailable", "wrong id"));
@@ -326,7 +326,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		async dispose() {}
 	}
 
-	function spawnRequest(childTaskId: string): ChildSpawnRequestV1 {
+	function spawnRequest(childTaskId: string): ChildSpawnRequest {
 		const { fingerprint: _roleFingerprint, ...roleSnapshot } = roleRevision;
 		const callerRole = {
 			...roleSnapshot,
@@ -379,7 +379,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		await seedBindingFacts(session, childTaskId, `binding-${childTaskId}`);
 
 		const childBinding = binding(`binding-${childTaskId}`, childTaskId);
-		const seed = new SessionLedgerV1(session, { ownerId: `spawn-seed-${providerId}` });
+		const seed = new SessionLedger(session, { ownerId: `spawn-seed-${providerId}` });
 		await seed.appendFact("agent_binding", childBinding.bindingId, childBinding, {
 			clientRequestId: "spawn:binding",
 			correlation: { taskId: childBinding.taskId, bindingId: childBinding.bindingId },
@@ -387,7 +387,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		await seed.release();
 
 		const provider = new ConformanceTestProvider(providerId);
-		const settlement = new LayeredResultSettlementV1(session, { ownerId: `settlement-${providerId}` });
+		const settlement = new LayeredResultSettlement(session, { ownerId: `settlement-${providerId}` });
 		const request = spawnRequest(childTaskId);
 		const correlation = {
 			sessionId: `session-${providerId}`,
@@ -416,7 +416,7 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		const receiptResult = await provider.resume(result.value.attempt.attemptId);
 		expect(receiptResult.ok).toBe(true);
 		if (receiptResult.ok) {
-			const valid = validateAttemptReceiptForProviderV1(receiptResult.value, { providerId, providerClass: "agent" });
+			const valid = validateAttemptReceiptForProvider(receiptResult.value, { providerId, providerClass: "agent" });
 			expect(valid.ok).toBe(true);
 
 			expect(receiptResult.value.providerId).toBe(providerId);

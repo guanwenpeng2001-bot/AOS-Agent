@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SandboxOperationRequestV1 } from "@aos-agent/agent-core";
+import type { SandboxOperationRequest } from "@aos-agent/agent-core";
 import {
 	WorkerSupervisorV1,
 	type WorkerSupervisorConfigV1,
@@ -14,7 +14,7 @@ import {
 	createWorkerLifecycleV1,
 	type WorkerBindingV1,
 	type WorkerLifecycleStateV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 } from "../src/core/worker.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
@@ -85,7 +85,7 @@ async function activate(
 	if (!activated.ok) throw activated.error;
 }
 
-function request(workerBinding: WorkerBindingV1, operationId = "operation-1"): SandboxOperationRequestV1 {
+function request(workerBinding: WorkerBindingV1, operationId = "operation-1"): SandboxOperationRequest {
 	return {
 		schemaVersion: 1,
 		operationId,
@@ -101,7 +101,7 @@ function request(workerBinding: WorkerBindingV1, operationId = "operation-1"): S
 
 async function waitForStatus(
 	supervisor: WorkerSupervisorV1,
-	status: WorkerLifecycleStatusV1,
+	status: WorkerLifecycleStatus,
 	timeoutMs = 1_000,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
@@ -295,7 +295,7 @@ describe("Operation Worker supervisor", () => {
 	it("stops and cleans the child before returning an execute backpressure failure", async () => {
 		const current = create("success", { config: { maxPendingWriteBytes: 2_000 } });
 		await activate(current.supervisor, current.workerBinding);
-		const backpressuredRequest: SandboxOperationRequestV1 = {
+		const backpressuredRequest: SandboxOperationRequest = {
 			...request(current.workerBinding),
 			payload: { value: "x".repeat(4_000) },
 		};

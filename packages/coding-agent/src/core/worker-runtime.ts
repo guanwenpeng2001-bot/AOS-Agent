@@ -1,12 +1,12 @@
 import {
 	canonicalFoundationJson,
-	validateFoundationProviderCapabilityV1,
-	validateWorkerReceiptForProviderV1,
-	type ExecutionCorrelationV1,
+	validateFoundationProviderCapability,
+	validateWorkerReceiptForProvider,
+	type ExecutionCorrelation,
 	type FoundationError,
 	type Result,
 	type SandboxOperationProvider,
-	type WorkerReceiptV1,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
 	WorkerProtocolSessionV1,
@@ -161,7 +161,7 @@ export class WorkerRuntimeV1 {
 			const capabilityIds: string[] = [];
 			const seen = new Set<string>();
 			for (const capability of capabilities) {
-				const checked = validateFoundationProviderCapabilityV1(capability);
+				const checked = validateFoundationProviderCapability(capability);
 				if (!checked.ok || seen.has(checked.value.id)) {
 					await this.requestError(frame.requestId, "sandbox_capability_insufficient", "operation provider capability mismatch", true);
 					return;
@@ -201,7 +201,7 @@ export class WorkerRuntimeV1 {
 		this.pendingOperations.add(pending);
 	}
 
-	private async runOperation(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>, correlation: ExecutionCorrelationV1): Promise<void> {
+	private async runOperation(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>, correlation: ExecutionCorrelation): Promise<void> {
 		try {
 			const result = await this.provider.start(frame.request, { correlation });
 			if (this.closedValue) return;
@@ -234,8 +234,8 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private validReceipt(receipt: WorkerReceiptV1, correlation: ExecutionCorrelationV1, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): WorkerReceiptV1 | undefined {
-		const checked = validateWorkerReceiptForProviderV1(receipt, { providerId: this.provider.providerId, providerClass: "operation_worker" });
+	private validReceipt(receipt: WorkerReceipt, correlation: ExecutionCorrelation, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): WorkerReceipt | undefined {
+		const checked = validateWorkerReceiptForProvider(receipt, { providerId: this.provider.providerId, providerClass: "operation_worker" });
 		if (!checked.ok || checked.value.operationId !== request.operationId) return undefined;
 		for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
 			if (checked.value[field] !== request[field]) return undefined;
@@ -357,7 +357,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function operationCorrelation(binding: WorkerBindingV1, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): ExecutionCorrelationV1 {
+function operationCorrelation(binding: WorkerBindingV1, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): ExecutionCorrelation {
 	return {
 		sessionId: binding.sessionId,
 		laneId: binding.laneId,

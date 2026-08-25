@@ -10,8 +10,8 @@
 
 import {
 	foundationClosureById,
-	type FoundationCapabilityClosureV1,
-} from "./foundation-v1-capabilities.ts";
+	type FoundationCapabilityClosure,
+} from "./foundation-capabilities.ts";
 
 export type Line11WorkerCapabilityClosureStatus = "implemented" | "consumed_foundation";
 export type Line11WorkerDeferredOwner = "13" | "14";
@@ -22,7 +22,7 @@ export interface Line11WorkerCapabilityClosureV1 {
 	ownerModule: string;
 	publicContract: string;
 	tests: readonly string[];
-	foundationClosure?: FoundationCapabilityClosureV1;
+	foundationClosure?: FoundationCapabilityClosure;
 }
 
 export interface Line11WorkerDeferredCapabilityV1 {
@@ -37,7 +37,7 @@ export interface Line11WorkerReviewLedgerEntryV1 {
 	detail: string;
 }
 
-function requireFoundationClosure(id: number): FoundationCapabilityClosureV1 {
+function requireFoundationClosure(id: number): FoundationCapabilityClosure {
 	const closure = foundationClosureById(id);
 	if (!closure) {
 		throw new Error(`Foundation capability ${id} is not closed`);

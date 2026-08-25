@@ -13,7 +13,7 @@ import {
 	SessionError,
 	type SessionStats,
 } from "./types.ts";
-import type { FoundationRecordV1 } from "./durable/types.ts";
+import type { FoundationRecord } from "./durable/types.ts";
 
 export type SessionMutation =
 	| { kind: "entry"; lane?: string; entry: Entry }
@@ -76,7 +76,7 @@ export class SessionState {
 	 * records are not Session entries/records, but they still occupy the one
 	 * append-only Session sequence and id namespace.
 	 */
-	observeExternalSequence(seq: number, id?: string, foundation?: FoundationRecordV1): void {
+	observeExternalSequence(seq: number, id?: string, foundation?: FoundationRecord): void {
 		if (!Number.isSafeInteger(seq) || seq !== this.sequence + 1) {
 			throw new SessionError("invalid_entry", `External mutation has non-consecutive seq ${seq}`);
 		}

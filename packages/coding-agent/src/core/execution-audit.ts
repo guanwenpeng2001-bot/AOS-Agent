@@ -13,8 +13,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
 	cloneDeepFrozen,
 	fingerprintFoundationValue,
-	validateDurableEventV1,
-	type FoundationEventEnvelopeV1,
+	validateDurableEvent,
+	type FoundationEventEnvelope,
 } from "@aos-agent/agent-core";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
 import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
@@ -115,7 +115,7 @@ import {
 	WORKER_FORBIDDEN_KEYS,
 	workerTransitionAllowedV1,
 	validateWorkerRecordV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "./worker.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "./subagent-composition.ts";
@@ -555,7 +555,7 @@ export interface AuditWorkerLifecycleSummary {
 	readonly bindingEpochId?: string;
 	readonly attemptId?: string;
 	readonly profileId: string;
-	readonly status: WorkerLifecycleStatusV1;
+	readonly status: WorkerLifecycleStatus;
 	readonly revision: number;
 	readonly createdAt: string;
 	readonly readyAt?: string;
@@ -2117,7 +2117,7 @@ interface WorkerReceiptAuditRecord {
 }
 
 interface SchedulerAuditRecord {
-	readonly envelope: Extract<FoundationEventEnvelopeV1, { readonly class: "durable" }>;
+	readonly envelope: Extract<FoundationEventEnvelope, { readonly class: "durable" }>;
 }
 
 type SourceCandidate =
@@ -2670,7 +2670,7 @@ function parseSchedulerFact(
 		malformed();
 		return;
 	}
-	const parsed = validateDurableEventV1(entry.data);
+	const parsed = validateDurableEvent(entry.data);
 	if (!parsed.ok || parsed.value.class !== "durable" || parsed.value.category !== entry.customType || !(SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(parsed.value.category)) {
 		malformed();
 		return;

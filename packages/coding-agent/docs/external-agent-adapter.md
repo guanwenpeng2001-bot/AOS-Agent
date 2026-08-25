@@ -1,6 +1,6 @@
-# External Agent Adapter (v1)
+# External Agent Adapter
 
-This document freezes the v1 boundary for the External Agent Adapter: how a
+This document freezes the current boundary for the External Agent Adapter: how a
 trusted Host composition registers an external Agent implementation, how a Run
 explicitly selects one, how the target's protocol capabilities are proven
 before a Run is accepted, how the frozen AOS Binding is translated into a
@@ -131,7 +131,7 @@ Probe rules:
   tokens, stacks, and target self-reports stay inside the Adapter's
   diagnostics; unknown keys and unverifiable self-reports are rejected, never
   preserved in a public snapshot.
-- A snapshot is used for one `prepare` only. v1 does not persist probe
+- A snapshot is used for one `prepare` only. the current contract does not persist probe
   snapshots as long-term Session capability facts; recovery across restarts
   re-probes.
 
@@ -142,7 +142,7 @@ Minimum capability for a controlled Run (the `ready` gate):
 | `status` | must be `"ready"` |
 | `start` | must be `true` |
 | `receipt` | must be `"terminal"` |
-| `cancel` | must be `"cooperative"` or `"strong"`; `"none"` is unusable for v1 controlled Runs |
+| `cancel` | must be `"cooperative"` or `"strong"`; `"none"` is unusable for controlled Runs |
 | `protocol` | name/version must have a verified translator in the Adapter |
 | Binding translation | the current AOS Binding must map to a defined envelope |
 | `events` | optional; without events the Run still settles through the receipt |
@@ -221,7 +221,7 @@ Translation rules:
    target-owned tools, network, filesystem, or processes are covered by an AOS
    Sandbox. `tool-gateway` is produced only when the snapshot proves a
    verified `toolGateway` capability and a separate Tool Gateway contract,
-   Policy wiring, and tests exist; v1 ships without one. The v1 host path
+   Policy wiring, and tests exist; the current release ships without one. The current host path
    never derives `tool-gateway` from a target self-report: it invokes the
    trusted `adapter.prepare` and rejects any gateway-mode prepared binding
    until the separate contract exists.
@@ -416,7 +416,7 @@ intent wins even when the target later reports cancelled.
 
 ### Resume
 
-The v1 host contract has `start()` only — there is no same-ref resume API —
+The current host contract has `start()` only — there is no same-ref resume API —
 so every `run.resume` that carries an `externalAgent` selection is rejected
 with `external_agent_resume_unsupported` before any probe or preflight, and
 a selection never silently degrades into a new `start` or an implicit
@@ -502,7 +502,7 @@ into AOS capabilities; and cannot implement a queue, scheduler, preemption,
 or cross-Session parallelism. Task Graph consumes Adapter Runs only as
 ordinary attached Runs.
 
-Non-goals for v1:
+Current non-goals:
 
 - No automatic recognition of model providers, model IDs, config entries,
   URLs, or packages as external Agents.
@@ -528,7 +528,7 @@ Non-goals for v1:
   the one-active-Run-per-Session boundary is unchanged.
 - No automatic retry of a `side-effect-unknown` external execution, no
   implicit external successor, and no silent downgrade of `resume` to `start`.
-- No Task Credential, Task Lease, or worker identity authentication in v1;
+- No Task Credential, Task Lease, or worker identity authentication in the current release;
   the optional Remote Operation lease is the only lease contract reused.
 - No new Host Transport, WebSocket, TLS, database, message queue, or
   mandatory network dependency; stdio and loopback TCP framing are unchanged.

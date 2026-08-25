@@ -1,31 +1,31 @@
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
-	LayeredResultSettlementV1,
-	persistTaskEnvelopeBeforeResolverV1,
+	LayeredResultSettlement,
+	persistTaskEnvelopeBeforeResolver,
 	Result,
-	ROLE_RESOLUTION_ORDER_V1,
-	SessionLedgerV1,
+	ROLE_RESOLUTION_ORDER,
+	SessionLedger,
 	SessionLedgerWriter,
 	type AgentHarness,
-	type AttemptReceiptV1,
+	type AttemptReceipt,
 	type ArtifactStoreProvider,
 	type ChildAgentProvider,
-	type ChildSpawnResultV1,
+	type ChildSpawnResult,
 	type QuotaProvider,
-	type RoleRegistryV1,
+	type RoleRegistry,
 	type Result as ResultValue,
 	type ScopedMemoryStore,
 	type ScopedModelGateway,
 	type Session,
 	type SettleTaskResultInput,
 	type TaskExecutorProvider,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
-	type ModelProfileV1,
+	type TaskEnvelope,
+	type TaskResult,
+	type ModelProfile,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
 import {
@@ -76,7 +76,7 @@ import {
 import type { ChildAgentRecordV1, ChildLifecycleStatusV1 } from "./subagent.ts";
 import type { RunSubagentLifecycleHooks } from "./run-lifecycle.ts";
 import type {
-	PromptTaskCompositionRootOptionsV1,
+	PromptTaskCompositionRootOptions,
 	PromptTaskSubagentCompositionInputV1,
 	PromptTaskSubagentSpawnInputV1,
 	PromptTaskSubagentSpawnResultV1,
@@ -107,8 +107,8 @@ export interface TrustedSubagentCompositionOptionsV1 {
 	readonly enabled: true;
 	readonly session: Session;
 	readonly writer?: SessionLedgerWriter;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly sessionId: string;
 	readonly parentLaneId: string;
 	readonly quota: QuotaProvider;
@@ -140,7 +140,7 @@ export interface TrustedSubagentCompositionOptionsV1 {
 	readonly parentEndpoints?: readonly ChildMailboxEndpointV1[];
 	/** Product prompt spawning remains unavailable unless this trusted Host policy is supplied. */
 	readonly productPrompt?: {
-		readonly registry: Pick<RoleRegistryV1, "get" | "search" | "resolve">;
+		readonly registry: Pick<RoleRegistry, "get" | "search" | "resolve">;
 		readonly scope: "global" | "project";
 		readonly providerId: string;
 		readonly forkScope: "none" | "all" | "recent_n" | "task_package";
@@ -154,8 +154,8 @@ export interface TrustedSubagentCompositionOptionsV1 {
 		readonly composition?: TrustedProductPromptCompositionPolicyV1;
 		readonly childModelProfile?: (
 			roleId: string,
-			parentModelProfile: ModelProfileV1,
-		) => ModelProfileV1 | Promise<ModelProfileV1>;
+			parentModelProfile: ModelProfile,
+		) => ModelProfile | Promise<ModelProfile>;
 	};
 	readonly limits: {
 		readonly maxDepth: number;
@@ -194,8 +194,8 @@ export interface ExecuteTrustedSubagentPlanInputV1 {
 }
 
 export interface TrustedSubagentExecutionV1 {
-	readonly spawn: ChildSpawnResultV1;
-	readonly receipt: Awaited<ReturnType<LayeredResultSettlementV1["executeDispatch"]>> extends ResultValue<infer TValue, FoundationError>
+	readonly spawn: ChildSpawnResult;
+	readonly receipt: Awaited<ReturnType<LayeredResultSettlement["executeDispatch"]>> extends ResultValue<infer TValue, FoundationError>
 		? TValue
 		: never;
 }
@@ -211,7 +211,7 @@ export interface ResumeTrustedSubagentInputV1 {
 
 export interface TrustedSubagentResumeV1 {
 	readonly lifecycle: SafeSubagentLifecycleProjectionV1;
-	readonly receipt: AttemptReceiptV1;
+	readonly receipt: AttemptReceipt;
 }
 
 export type TrustedSubagentChainStepV1 =
@@ -233,7 +233,7 @@ export interface ExecuteTrustedSubagentCompositionInputV1 {
 	readonly steps: readonly TrustedSubagentChainStepV1[];
 	readonly join: ChildTaskSettlementPolicyV1;
 	readonly taskResultId: string;
-	readonly task: TaskEnvelopeV1;
+	readonly task: TaskEnvelope;
 	readonly summary: string;
 	readonly artifacts?: SettleTaskResultInput["artifacts"];
 	readonly diff?: SettleTaskResultInput["diff"];
@@ -245,7 +245,7 @@ export interface ExecuteTrustedSubagentCompositionInputV1 {
 export interface TrustedSubagentCompositionExecutionV1 {
 	readonly executions: readonly TrustedSubagentExecutionV1[];
 	readonly projections: readonly SafeChildResultProjectionV1[];
-	readonly taskResult: TaskResultV1;
+	readonly taskResult: TaskResult;
 	/** Exact unique AttemptReceipt ids accepted by the configured Host join. */
 	readonly attemptReceiptIds: readonly string[];
 }
@@ -304,8 +304,8 @@ export class TrustedSubagentCompositionV1 {
 	});
 	private readonly sessionId: string;
 	private readonly session: Session;
-	private readonly ledger: SessionLedgerV1;
-	private readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	private readonly ledger: SessionLedger;
+	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly parentLaneId: string;
 	private readonly artifactStore: ArtifactStoreProvider;
 	private readonly worktree: TrustedSubagentCompositionOptionsV1["worktree"];
@@ -318,8 +318,8 @@ export class TrustedSubagentCompositionV1 {
 	private readonly mailbox: SubagentMailboxV1;
 	private readonly mailboxIngress: SubagentContextIngressV1;
 	private readonly laneWriters = new Map<string, SessionLedgerWriter>();
-	private readonly laneLedgers = new Map<string, SessionLedgerV1>();
-	private readonly laneSettlements = new Map<string, LayeredResultSettlementV1>();
+	private readonly laneLedgers = new Map<string, SessionLedger>();
+	private readonly laneSettlements = new Map<string, LayeredResultSettlement>();
 	private readonly providers: ReadonlyMap<SubagentProviderKindV1, ExecutableChildProviderV1>;
 	private readonly runByChild = new Map<string, string>();
 	private readonly executionWorkspaces = new Map<string, string>();
@@ -362,7 +362,7 @@ export class TrustedSubagentCompositionV1 {
 			: (laneId) => {
 				const existing = this.laneLedgers.get(laneId);
 				if (existing !== undefined) return existing;
-				const ledger = new SessionLedgerV1(this.session, { writer: this.writerForLane(laneId) });
+				const ledger = new SessionLedger(this.session, { writer: this.writerForLane(laneId) });
 				this.laneLedgers.set(laneId, ledger);
 				return ledger;
 			};
@@ -493,7 +493,7 @@ export class TrustedSubagentCompositionV1 {
 		return Object.freeze([this.registry.get(IN_PROCESS_PROVIDER.descriptor.providerId), this.registry.get(FORK_PROVIDER.descriptor.providerId)]);
 	}
 
-	productPromptRoles(): PromptTaskCompositionRootOptionsV1["subagentRoles"] {
+	productPromptRoles(): PromptTaskCompositionRootOptions["subagentRoles"] {
 		if (this.productPrompt === undefined) return undefined;
 		return Object.freeze({
 			registry: this.productPrompt.registry,
@@ -632,7 +632,7 @@ export class TrustedSubagentCompositionV1 {
 			if (!decided.ok) return decided;
 			record = decided.value;
 		}
-		let acceptedReceipt: AttemptReceiptV1 | undefined;
+		let acceptedReceipt: AttemptReceipt | undefined;
 		const lookupSpawn = provider.lookupSpawn?.bind(provider);
 		const resumed = await this.supervisor.resume(input.childAgentInstanceId, {
 			providerId: provider.providerId,
@@ -1009,7 +1009,7 @@ export class TrustedSubagentCompositionV1 {
 			const childProfile = policy.childModelProfile === undefined
 				? input.parentModelProfile
 				: await policy.childModelProfile(input.selectedRoleRevision.roleId, input.parentModelProfile);
-			const childTask = createTaskEnvelopeV1({
+			const childTask = createTaskEnvelope({
 				schemaVersion: 1,
 				taskId: childTaskId,
 				goalId: input.parentTask.goalId,
@@ -1030,7 +1030,7 @@ export class TrustedSubagentCompositionV1 {
 				updatedAt: input.timestamp,
 			});
 			if (!childTask.ok) return childTask;
-			const persistedTask = await persistTaskEnvelopeBeforeResolverV1(this.session, childTask.value, {
+			const persistedTask = await persistTaskEnvelopeBeforeResolver(this.session, childTask.value, {
 				ownerId: `subagent-product:${this.sessionId}`,
 				...(this.writer === undefined ? {} : { writer: this.writerForLane(childLaneId) }),
 			});
@@ -1059,7 +1059,7 @@ export class TrustedSubagentCompositionV1 {
 				roleId: input.selectedRoleRevision.roleId,
 				scope: policy.scope,
 				modelProfile: childProfile,
-				orderedLayers: ROLE_RESOLUTION_ORDER_V1.map((layer, ordinal) => ({
+				orderedLayers: ROLE_RESOLUTION_ORDER.map((layer, ordinal) => ({
 					schemaVersion: 1 as const,
 					layer,
 					ordinal,
@@ -1320,7 +1320,7 @@ export class TrustedSubagentCompositionV1 {
 
 	private projectAttemptResult(
 		plan: SubagentSpawnPlanV1,
-		receipt: AttemptReceiptV1,
+		receipt: AttemptReceipt,
 	): Promise<ResultValue<SafeChildResultProjectionV1, FoundationError>> {
 		return projectSafeChildResultV1(
 			{
@@ -1473,7 +1473,7 @@ export class TrustedSubagentCompositionV1 {
 		payload: unknown,
 		correlation: { readonly taskId?: string; readonly attemptId?: string; readonly agentInstanceId?: string; readonly bindingId?: string },
 		clientRequestId: string,
-		ledger: SessionLedgerV1 = this.ledger,
+		ledger: SessionLedger = this.ledger,
 	): Promise<ResultValue<void, FoundationError>> {
 		try {
 			const existing = await ledger.get(objectType, objectId);
@@ -1507,7 +1507,7 @@ export class TrustedSubagentCompositionV1 {
 		record: ChildAgentRecordV1,
 		provider: ExecutableChildProviderV1,
 		signal?: AbortSignal,
-	): Promise<ChildSpawnResultV1 | undefined> {
+	): Promise<ChildSpawnResult | undefined> {
 		if (provider.lookupSpawn === undefined) return undefined;
 		try {
 			const found = await provider.lookupSpawn(record.spawnId, signal === undefined ? undefined : { signal });
@@ -1548,10 +1548,10 @@ export class TrustedSubagentCompositionV1 {
 		return writer;
 	}
 
-	private settlementForLane(laneId: string): LayeredResultSettlementV1 {
+	private settlementForLane(laneId: string): LayeredResultSettlement {
 		const existing = this.laneSettlements.get(laneId);
 		if (existing !== undefined) return existing;
-		const settlement = new LayeredResultSettlementV1(this.session, {
+		const settlement = new LayeredResultSettlement(this.session, {
 			ownerId: `subagent-host:${this.sessionId}:${laneId}`,
 			...(this.writer === undefined ? {} : { writer: this.writerForLane(laneId) }),
 		});

@@ -1,7 +1,7 @@
 import { FoundationError, Result } from "@aos-agent/agent-core";
 import { describe, expect, test } from "vitest";
 import { SYSTEM_RUNTIME_CLOCK, withRuntimeClock } from "../src/core/runtime-clock.ts";
-import { type SchedulerHostOptionsV1, SchedulerHostV1 } from "../src/core/scheduler.ts";
+import { type SchedulerHostOptions, SchedulerHost } from "../src/core/scheduler.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 describe("runtime clock", () => {
@@ -63,7 +63,7 @@ describe("runtime clock", () => {
 			monotonicTimeMs: 100,
 		});
 		const recoverOrder: string[] = [];
-		const options = (id: string): SchedulerHostOptionsV1 => ({
+		const options = (id: string): SchedulerHostOptions => ({
 			enabled: true,
 			sessionId: `session_${id}`,
 			ownerId: `owner_${id}`,
@@ -115,8 +115,8 @@ describe("runtime clock", () => {
 				return Result.ok(undefined);
 			},
 		});
-		const first = new SchedulerHostV1(withRuntimeClock(options("first"), clock));
-		const second = new SchedulerHostV1(withRuntimeClock(options("second"), clock));
+		const first = new SchedulerHost(withRuntimeClock(options("first"), clock));
+		const second = new SchedulerHost(withRuntimeClock(options("second"), clock));
 
 		expect(first.start()).toBe(true);
 		expect(second.start()).toBe(true);

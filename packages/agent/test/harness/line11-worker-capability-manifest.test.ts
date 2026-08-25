@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
 	foundationClosureById,
 	foundationFutureOwnerById,
-	FOUNDATION_V1_CAPABILITY_CLOSURES,
-	FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS,
-} from "../../src/harness/foundation-v1-capabilities.ts";
+	FOUNDATION_CAPABILITY_CLOSURES,
+	FOUNDATION_FUTURE_CAPABILITY_OWNERS,
+} from "../../src/harness/foundation-capabilities.ts";
 import {
 	LINE11_WORKER_CAPABILITY_CLOSURES,
 	LINE11_WORKER_DEFERRED_CAPABILITIES,
@@ -98,8 +98,8 @@ describe("Line 11 Worker capability manifest", () => {
 	});
 
 	it("does not mutate the sealed Foundation ledgers", () => {
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES).toHaveLength(79);
-		expect(FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
+		expect(FOUNDATION_CAPABILITY_CLOSURES).toHaveLength(79);
+		expect(FOUNDATION_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
 		expect(foundationFutureOwnerById(140)?.laterOwner).toBe("11");
 	});
 });

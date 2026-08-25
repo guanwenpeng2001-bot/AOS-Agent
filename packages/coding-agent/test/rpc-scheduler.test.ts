@@ -1,5 +1,5 @@
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import type { SchedulerSafeStatusV1 } from "../src/core/foundation-control-plane.ts";
+import type { SchedulerSafeStatus } from "../src/core/foundation-control-plane.ts";
 import { RpcHostController } from "../src/modes/rpc/rpc-host.ts";
 import type {
 	InitializeData,
@@ -20,7 +20,7 @@ const SENSITIVE_MARKERS = [
 ] as const;
 const SCHEDULER_STATUS_COMMAND: RpcSchedulerCommandType = "scheduler.status";
 
-const SAFE_STATUS: SchedulerSafeStatusV1 = {
+const SAFE_STATUS: SchedulerSafeStatus = {
 	schemaVersion: 1,
 	source: "scheduler",
 	sessionId: "scheduler-session",
@@ -39,15 +39,15 @@ const SAFE_STATUS: SchedulerSafeStatusV1 = {
 
 interface SchedulerRpcHarness {
 	readonly controller: RpcHostController;
-	readonly getSchedulerStatus: ReturnType<typeof vi.fn<() => SchedulerSafeStatusV1 | undefined>>;
+	readonly getSchedulerStatus: ReturnType<typeof vi.fn<() => SchedulerSafeStatus | undefined>>;
 	readonly context: TestSessionContext;
 }
 
 const harnesses: SchedulerRpcHarness[] = [];
 
-async function createHarness(status: SchedulerSafeStatusV1 | undefined): Promise<SchedulerRpcHarness> {
+async function createHarness(status: SchedulerSafeStatus | undefined): Promise<SchedulerRpcHarness> {
 	const context = await createTestSession({ inMemory: true });
-	const getSchedulerStatus = vi.fn<() => SchedulerSafeStatusV1 | undefined>(() => status);
+	const getSchedulerStatus = vi.fn<() => SchedulerSafeStatus | undefined>(() => status);
 	Object.defineProperty(context.session, "getSchedulerStatus", {
 		configurable: true,
 		value: getSchedulerStatus,

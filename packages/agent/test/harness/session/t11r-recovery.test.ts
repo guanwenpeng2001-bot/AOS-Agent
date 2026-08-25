@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NodeExecutionEnv } from "../../../src/harness/env/nodejs.ts";
 import { encodeFoundationMutation } from "../../../src/harness/session/durable/codec.ts";
-import type { ProvisionedFoundationRecordV1 } from "../../../src/harness/session/durable/types.ts";
+import type { ProvisionedFoundationRecord } from "../../../src/harness/session/durable/types.ts";
 import { JsonlSessionRepo } from "../../../src/harness/session/index.ts";
 import { FileError } from "../../../src/harness/types.ts";
 
@@ -25,7 +25,7 @@ function fact(
 	clientRequestId: string,
 	name: string,
 	expectedRevision?: number,
-): ProvisionedFoundationRecordV1 {
+): ProvisionedFoundationRecord {
 	return {
 		schemaVersion: 1,
 		kind: "fact",

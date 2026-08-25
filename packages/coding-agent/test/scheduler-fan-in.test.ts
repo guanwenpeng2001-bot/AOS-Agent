@@ -1,36 +1,36 @@
 import {
-	type AcceptanceFactV1,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
+	type AcceptanceFact,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
 	createAttempt,
 	createModelProfileRevision,
 	createRoleRevision,
-	type DispatchV1,
+	type Dispatch,
 	FoundationError,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	fingerprintFoundationValue,
 	InMemorySessionStorage,
-	type ModelProfileV1,
+	type ModelProfile,
 	Result,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
+	type RevisionReference,
 	resolveAgentBinding,
 	Session,
-	SessionLedgerV1,
-	type TaskEnvelopeV1,
-	type TaskExecutorAttemptContextV1,
+	SessionLedger,
+	type TaskEnvelope,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-	type ValidationResultV1,
-	validateAttemptReceiptForProviderV1,
+	type ValidationResult,
+	validateAttemptReceiptForProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
 import {
-	type SchedulerHostOptionsV1,
+	type SchedulerHostOptions,
 	type SchedulerHostRunAssociationV1,
-	SchedulerHostV1,
+	SchedulerHost,
 	type SchedulerJoinPlanV1,
 	type SchedulerNodeRefV1,
 	type SchedulerQueueEntryV1,
@@ -59,7 +59,7 @@ const SESSION_ID = "session_scheduler_fan_in";
 let harnessOrdinal = 0;
 const OWNER_ID = "scheduler_fan_in_host";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
-const CAPABILITY: FoundationProviderCapabilityV1 = {
+const CAPABILITY: FoundationProviderCapability = {
 	schemaVersion: 1,
 	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	version: 1,
@@ -70,12 +70,12 @@ const ARTIFACT = {
 	mediaType: "application/json",
 	digest: `sha256:${"d".repeat(64)}`,
 };
-const TEST_RESULT: ValidationResultV1 = {
+const TEST_RESULT: ValidationResult = {
 	name: "scheduler-fan-in",
 	required: true,
 	status: "passed",
 };
-const ACCEPTANCE_FACT: AcceptanceFactV1 = {
+const ACCEPTANCE_FACT: AcceptanceFact = {
 	schemaVersion: 1,
 	factId: "acceptance_scheduler_fan_in",
 	criterionId: "criterion_scheduler_fan_in",
@@ -91,7 +91,7 @@ const VALIDATION = {
 	requiredEvidencePresent: true,
 };
 
-function task(overrides: Partial<TaskEnvelopeV1> = {}): TaskEnvelopeV1 {
+function task(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: "task_scheduler_fan_in",
@@ -143,7 +143,7 @@ function roleRevision() {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile_scheduler_fan_in",
@@ -155,12 +155,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(currentTask: TaskEnvelopeV1): AgentBindingV1 {
+function binding(currentTask: TaskEnvelope): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: currentTask,
 		roleRevision: roleRevision(),
@@ -176,8 +176,8 @@ function binding(currentTask: TaskEnvelopeV1): AgentBindingV1 {
 	return resolved.value;
 }
 
-async function seedBindingFacts(session: Session, currentTask: TaskEnvelopeV1, value: AgentBindingV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: "scheduler_fan_in_seed" });
+async function seedBindingFacts(session: Session, currentTask: TaskEnvelope, value: AgentBinding): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: "scheduler_fan_in_seed" });
 	await ledger.appendFact("task", value.taskId, currentTask, {
 		clientRequestId: "fan-in-seed:task",
 		expectedRevision: 0,
@@ -221,10 +221,10 @@ async function seedBindingFacts(session: Session, currentTask: TaskEnvelopeV1, v
 type ReceiptStatus = "succeeded" | "failed" | "cancelled";
 
 function providerReceipt(
-	attempt: AttemptV1,
-	options: FoundationProviderExecutionOptionsV1 | undefined,
+	attempt: Attempt,
+	options: FoundationProviderExecutionOptions | undefined,
 	status: ReceiptStatus,
-): AttemptReceiptV1 {
+): AttemptReceipt {
 	const correlation = options?.correlation;
 	if (correlation === undefined) throw new FoundationError("invalid_correlation", "Provider correlation is required");
 	const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
@@ -274,11 +274,11 @@ class FauxTaskExecutor implements TaskExecutorProvider {
 	private blockPromise: Promise<void> = Promise.resolve();
 	private readonly cancelled = new Set<string>();
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [CAPABILITY];
 	}
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context === undefined)
 			return Result.err(new FoundationError("invalid_correlation", "Attempt context required"));
 		return createAttempt({
@@ -291,7 +291,7 @@ class FauxTaskExecutor implements TaskExecutorProvider {
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.active++;
 		this.startedCount++;
 		this.maxActive = Math.max(this.maxActive, this.active);
@@ -302,7 +302,7 @@ class FauxTaskExecutor implements TaskExecutorProvider {
 			this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true ? "cancelled" : this.nextStatus;
 		this.active--;
 		const receipt = providerReceipt(attempt, options, status);
-		return validateAttemptReceiptForProviderV1(
+		return validateAttemptReceiptForProvider(
 			status === "succeeded" && !this.emitSuccessArtifact ? { ...receipt, artifacts: [] } : receipt,
 			{
 				providerId: this.providerId,
@@ -364,8 +364,8 @@ interface FanInHarness {
 	readonly sessionId: string;
 	readonly foundationSession: Session;
 	readonly runSession: SessionManager;
-	readonly currentTask: TaskEnvelopeV1;
-	readonly currentBinding: AgentBindingV1;
+	readonly currentTask: TaskEnvelope;
+	readonly currentBinding: AgentBinding;
 	readonly queue: SchedulerQueueStore;
 	readonly dispatch: SchedulerDispatchController;
 	readonly fanIn: SchedulerFanInController;
@@ -383,7 +383,7 @@ interface FanInHarness {
 
 async function createHarness(
 	nodes: readonly { nodeId: string; dependsOn: readonly string[] }[],
-	taskOverrides: Partial<TaskEnvelopeV1> = {},
+	taskOverrides: Partial<TaskEnvelope> = {},
 ): Promise<FanInHarness> {
 	harnessOrdinal++;
 	const sessionId = `${SESSION_ID}_${harnessOrdinal}`;
@@ -492,7 +492,7 @@ async function executeDirectReceipt(
 	harness: FanInHarness,
 	nodeId: string,
 	status: ReceiptStatus,
-): Promise<AttemptReceiptV1> {
+): Promise<AttemptReceipt> {
 	harness.provider.nextStatus = status;
 	const entry: SchedulerQueueEntryV1 = {
 		schemaVersion: 1,
@@ -541,7 +541,7 @@ describe("scheduler production fan-in", () => {
 			{ nodeId: "child", dependsOn: ["root"] },
 		]);
 		let dispatchRunClaimedCalls = 0;
-		const host = new SchedulerHostV1({
+		const host = new SchedulerHost({
 			enabled: true,
 			sessionId: harness.sessionId,
 			ownerId: OWNER_ID,
@@ -738,7 +738,7 @@ describe("scheduler production fan-in", () => {
 
 	it("fails the Graph node when one of the four settlement gates rejects success", async () => {
 		const harness = await createHarness([{ nodeId: "rejected", dependsOn: [] }]);
-		const host = new SchedulerHostV1({
+		const host = new SchedulerHost({
 			enabled: true,
 			sessionId: harness.sessionId,
 			ownerId: OWNER_ID,
@@ -798,7 +798,7 @@ describe("scheduler production fan-in", () => {
 			now: () => NOW,
 		});
 		harness.provider.prepareBlock();
-		const host = new SchedulerHostV1({
+		const host = new SchedulerHost({
 			enabled: true,
 			sessionId: harness.sessionId,
 			ownerId: OWNER_ID,
@@ -874,7 +874,7 @@ describe("scheduler production fan-in", () => {
 		});
 		harness.provider.prepareBlock();
 		const associatedNodeIds: string[] = [];
-		const host = new SchedulerHostV1({
+		const host = new SchedulerHost({
 			enabled: true,
 			sessionId: harness.sessionId,
 			ownerId: OWNER_ID,
@@ -962,7 +962,7 @@ describe("scheduler production fan-in", () => {
 				return Result.err(new FoundationError("scheduler_queue_invalid", "not reached"));
 			},
 		};
-		const base: SchedulerHostOptionsV1 = {
+		const base: SchedulerHostOptions = {
 			sessionId: SESSION_ID,
 			ownerId: OWNER_ID,
 			graph,
@@ -981,11 +981,11 @@ describe("scheduler production fan-in", () => {
 				Result.err(new FoundationError("scheduler_not_found", "not reached")),
 			settleRunAtHost: async () => Result.ok(undefined),
 		};
-		const disabled = new SchedulerHostV1(base);
+		const disabled = new SchedulerHost(base);
 		expect(disabled.start()).toBe(false);
 		expect(await disabled.tick()).toMatchObject({ enabled: false, scannedGraphs: 0 });
 		expect(listCount).toBe(0);
-		const enabled = new SchedulerHostV1({
+		const enabled = new SchedulerHost({
 			...base,
 			enabled: true,
 			pollIntervalMs: 50,

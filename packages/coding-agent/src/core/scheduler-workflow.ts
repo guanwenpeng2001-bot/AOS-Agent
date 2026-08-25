@@ -7,33 +7,33 @@
  * facts on the Session ledger and fire at most once.
  */
 import {
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	createDurableEventV1,
-	type DurableEventCategoryV1,
-	type EventCorrelationRefV1,
+	type AgentBinding,
+	type AttemptReceipt,
+	createDurableEvent,
+	type DurableEventCategory,
+	type EventCorrelationRef,
 	fingerprintFoundationValue,
 	FoundationError,
-	type FoundationRecordV1,
-	type SchedulerWakeEventPayloadV1,
+	type FoundationRecord,
+	type SchedulerWakeEventPayload,
 	Result,
 	type Result as ResultValue,
 	type Session,
-	SessionLedgerV1,
-	type SideEffectStateV1,
-	type TaskEnvelopeV1,
-	type AgentStepV1,
-	type WorkflowStepStatusV1,
-	type WorkflowStepV1,
+	SessionLedger,
+	type SideEffectState,
+	type TaskEnvelope,
+	type AgentStep,
+	type WorkflowStepStatus,
+	type WorkflowStep,
 	WorkflowStore,
-	type WorkflowV1,
+	type Workflow,
 } from "@aos-agent/agent-core";
 import { SchedulerDispatchController } from "./scheduler-dispatch.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
 import { SchedulerFanInController, schedulerNodeJoinId } from "./scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "./scheduler-handoff.ts";
 import {
-	SchedulerMessageOrchestratorV1,
+	SchedulerMessageOrchestrator,
 	type SchedulerMessageSessionEndpointV1,
 } from "./scheduler-messages.ts";
 import { SchedulerQueueStore } from "./scheduler-queue.ts";
@@ -46,8 +46,8 @@ import {
 	parseSchedulerWake,
 	SCHEDULER_CLAIM_MAX_LEASE_TTL_MS,
 	SCHEDULER_DEFAULT_MAX_ATTEMPTS,
-	SchedulerHostV1,
-	type SchedulerHostTickResultV1,
+	SchedulerHost,
+	type SchedulerHostTickResult,
 	type SchedulerJoinPlanV1,
 	type SchedulerNodeRefV1,
 	type SchedulerOwnershipTransferV1,
@@ -63,8 +63,8 @@ export const SCHEDULER_WORKFLOW_POLICY_OBJECT_TYPE = "scheduler.workflow.policy"
 export const SCHEDULER_WORKFLOW_EXTERNAL_OBJECT_TYPE = "scheduler.workflow.external";
 export const SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE = "scheduler.workflow.compensation";
 
-const COMPLETED_STEP_STATUSES = new Set<WorkflowStepStatusV1>(["succeeded", "cancelled", "skipped"]);
-const EXECUTABLE_STEP_TYPES = new Set<WorkflowStepV1["type"]>(["agent", "tool"]);
+const COMPLETED_STEP_STATUSES = new Set<WorkflowStepStatus>(["succeeded", "cancelled", "skipped"]);
+const EXECUTABLE_STEP_TYPES = new Set<WorkflowStep["type"]>(["agent", "tool"]);
 
 export type SchedulerWorkflowCompensationPolicyV1 = "stop" | "bounded_retry" | "compensate";
 export type SchedulerWorkflowCompensationStateV1 = "scheduled" | "settled" | "failed";
@@ -86,7 +86,7 @@ export interface SchedulerWorkflowAttemptFactV1 {
 	readonly stepId: string;
 	readonly attemptsUsed: number;
 	readonly maxAttempts: number;
-	readonly lastSideEffect?: SideEffectStateV1;
+	readonly lastSideEffect?: SideEffectState;
 	readonly lastQueueEntryId?: string;
 }
 
@@ -135,8 +135,8 @@ export interface SchedulerWorkflowControllerOptionsV1 {
 	readonly targetGraph: TaskGraphStore;
 	readonly ownerId: string;
 	readonly registry: SchedulerExecutorRegistry;
-	readonly task: TaskEnvelopeV1;
-	readonly binding: AgentBindingV1;
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
 	readonly runLifecycleSession?: RunLedgerSession;
 	readonly runLifecycleHookOwnership?: "dispatch" | "host";
 	readonly executorOwnerId?: string;
@@ -151,7 +151,7 @@ export interface SchedulerWorkflowTickErrorV1 {
 	readonly code: string;
 }
 
-export interface SchedulerWorkflowTickResultV1 {
+export interface SchedulerWorkflowTickResult {
 	readonly enabled: boolean;
 	readonly workflows: number;
 	readonly scheduled: number;
@@ -279,7 +279,7 @@ function transferIdentity(queueEntryId: string): string {
 	return `tr_${stemId(queueEntryId)}`;
 }
 
-function emptyTick(enabled: boolean): SchedulerWorkflowTickResultV1 {
+function emptyTick(enabled: boolean): SchedulerWorkflowTickResult {
 	return {
 		enabled,
 		workflows: 0,
@@ -291,7 +291,7 @@ function emptyTick(enabled: boolean): SchedulerWorkflowTickResultV1 {
 	};
 }
 
-function depsSettled(workflow: WorkflowV1, step: WorkflowStepV1): boolean {
+function depsSettled(workflow: Workflow, step: WorkflowStep): boolean {
 	if (step.dependsOn === undefined || step.dependsOn.length === 0) return true;
 	return step.dependsOn.every((dependency) => {
 		const other = workflow.steps.find((candidate) => candidate.stepId === dependency);
@@ -299,40 +299,40 @@ function depsSettled(workflow: WorkflowV1, step: WorkflowStepV1): boolean {
 	});
 }
 
-function isExternalAgent(step: WorkflowStepV1): step is AgentStepV1 {
+function isExternalAgent(step: WorkflowStep): step is AgentStep {
 	return step.type === "agent" && step.executor === "external";
 }
 
-function isLocalExecutable(step: WorkflowStepV1): boolean {
+function isLocalExecutable(step: WorkflowStep): boolean {
 	if (step.type === "tool") return true;
 	return step.type === "agent" && step.executor === "local";
 }
 
-function asFact(record: FoundationRecordV1): Extract<FoundationRecordV1, { kind: "fact" }> | undefined {
+function asFact(record: FoundationRecord): Extract<FoundationRecord, { kind: "fact" }> | undefined {
 	return record.kind === "fact" ? record : undefined;
 }
 
 export class SchedulerWorkflowController {
 	readonly enabled: boolean;
 	readonly store: WorkflowStore;
-	readonly messages: SchedulerMessageOrchestratorV1;
+	readonly messages: SchedulerMessageOrchestrator;
 	readonly handoff: SchedulerHandoffController;
 	readonly dispatch: SchedulerDispatchController;
 	readonly fanIn: SchedulerFanInController;
-	readonly host: SchedulerHostV1;
+	readonly host: SchedulerHost;
 	readonly queue: SchedulerQueueStore;
 	private readonly sourceSession: Session;
 	private readonly sourceSessionId: string;
 	private readonly targetSessionId: string;
 	private readonly ownerId: string;
 	private readonly executorOwnerId: string | undefined;
-	private readonly task: TaskEnvelopeV1;
-	private readonly binding: AgentBindingV1;
+	private readonly task: TaskEnvelope;
+	private readonly binding: AgentBinding;
 	private readonly compensationPolicy: SchedulerWorkflowCompensationPolicyV1;
 	private readonly maxAttempts: number;
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
-	private readonly ledger: SessionLedgerV1;
+	private readonly ledger: SessionLedger;
 	private wakes = new Map<string, SchedulerWakeV1>();
 	private wakeRevisions = new Map<string, number>();
 	private eventRevisions = new Map<string, number>();
@@ -351,7 +351,7 @@ export class SchedulerWorkflowController {
 		this.maxAttempts = options.maxAttempts ?? SCHEDULER_DEFAULT_MAX_ATTEMPTS;
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.store = new WorkflowStore(options.sourceSession, { ownerId: options.ownerId });
-		this.ledger = new SessionLedgerV1(options.sourceSession, { ownerId: options.ownerId });
+		this.ledger = new SessionLedger(options.sourceSession, { ownerId: options.ownerId });
 		this.queue = new SchedulerQueueStore(
 			withRuntimeClock(
 				{
@@ -392,7 +392,7 @@ export class SchedulerWorkflowController {
 			{ session: options.sourceSession, taskGraph: options.sourceGraph },
 			{ session: options.targetSession, taskGraph: options.targetGraph },
 		];
-		this.messages = new SchedulerMessageOrchestratorV1(endpoints, { ownerId: options.ownerId });
+		this.messages = new SchedulerMessageOrchestrator(endpoints, { ownerId: options.ownerId });
 		this.handoff = new SchedulerHandoffController(
 			withRuntimeClock(
 				{
@@ -408,7 +408,7 @@ export class SchedulerWorkflowController {
 				this.clock,
 			),
 		);
-		this.host = new SchedulerHostV1(
+		this.host = new SchedulerHost(
 			withRuntimeClock(
 				{
 					enabled: false,
@@ -494,7 +494,7 @@ export class SchedulerWorkflowController {
 		return stored;
 	}
 
-	async tick(): Promise<SchedulerWorkflowTickResultV1> {
+	async tick(): Promise<SchedulerWorkflowTickResult> {
 		if (!this.enabled) return emptyTick(false);
 		const errors: SchedulerWorkflowTickErrorV1[] = [];
 		const woke = await this.fireDueWakes();
@@ -504,7 +504,7 @@ export class SchedulerWorkflowController {
 		let scheduled = 0;
 		let completed = 0;
 		let stopped = 0;
-		let listed: WorkflowV1[];
+		let listed: Workflow[];
 		try {
 			listed = await this.store.list(this.sourceSessionId);
 		} catch (error) {
@@ -529,7 +529,7 @@ export class SchedulerWorkflowController {
 		};
 	}
 
-	hostTick(): Promise<SchedulerHostTickResultV1> {
+	hostTick(): Promise<SchedulerHostTickResult> {
 		return this.host.tick();
 	}
 
@@ -610,7 +610,7 @@ export class SchedulerWorkflowController {
 		category: "scheduler.wake_scheduled" | "scheduler.wake_fired",
 		wake: SchedulerWakeV1,
 	): Promise<ResultValue<void, FoundationError>> {
-		const payload: SchedulerWakeEventPayloadV1 = {
+		const payload: SchedulerWakeEventPayload = {
 			schemaVersion: 1,
 			wakeId: wake.wakeId,
 			workflowId: wake.workflowId,
@@ -630,12 +630,12 @@ export class SchedulerWorkflowController {
 			);
 		}
 		const eventId = `evt_${wake.wakeId}_${wake.revision}_${category === "scheduler.wake_fired" ? "fired" : "scheduled"}`;
-		const correlation: EventCorrelationRefV1 = {
+		const correlation: EventCorrelationRef = {
 			sessionId: this.sourceSessionId,
 			workflowId: wake.workflowId,
 		};
 		try {
-			createDurableEventV1({
+			createDurableEvent({
 				category,
 				eventId,
 				streamId: this.sourceSessionId,
@@ -661,9 +661,9 @@ export class SchedulerWorkflowController {
 	}
 
 	private async appendEventFact(
-		category: DurableEventCategoryV1,
+		category: DurableEventCategory,
 		eventId: string,
-		payload: SchedulerWakeEventPayloadV1,
+		payload: SchedulerWakeEventPayload,
 		clientRequestId: string,
 		correlation: { readonly taskId: string; readonly parentId: string; readonly stepId?: string },
 	): Promise<ResultValue<void, FoundationError>> {
@@ -699,7 +699,7 @@ export class SchedulerWorkflowController {
 			return { scheduled, completed: false, stopped: false, errors };
 		}
 		for (let cycle = 0; cycle < 64; cycle++) {
-			let workflow: WorkflowV1;
+			let workflow: Workflow;
 			try {
 				workflow = await this.store.get(workflowId);
 			} catch (error) {
@@ -782,7 +782,7 @@ export class SchedulerWorkflowController {
 		return { scheduled, completed: false, stopped: false, errors };
 	}
 
-	private async promoteReady(workflow: WorkflowV1): Promise<ResultValue<boolean, FoundationError>> {
+	private async promoteReady(workflow: Workflow): Promise<ResultValue<boolean, FoundationError>> {
 		let progressed = false;
 		let current = workflow;
 		for (const step of current.steps) {
@@ -812,7 +812,7 @@ export class SchedulerWorkflowController {
 		workflowId: string,
 		stepId: string,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
-		let workflow: WorkflowV1;
+		let workflow: Workflow;
 		try {
 			workflow = await this.store.get(workflowId);
 		} catch (error) {
@@ -865,15 +865,15 @@ export class SchedulerWorkflowController {
 	}
 
 	private async advanceBlocked(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		return this.reconcileCompensation(workflow, step);
 	}
 
 	private async advanceRunning(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		if (step.type === "parallel" || step.type === "barrier") {
 			const joined = await this.settleJoin(workflow, step);
@@ -887,8 +887,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async advanceExternal(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		if (!isExternalAgent(step)) {
 			return Result.err(
@@ -969,8 +969,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async executeLocal(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 		compensation?: {
 			readonly queueEntryId: string;
 			readonly nodeId: string;
@@ -1134,8 +1134,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async settleJoin(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<void, FoundationError>> {
 		const predecessors =
 			step.type === "parallel"
@@ -1175,13 +1175,13 @@ export class SchedulerWorkflowController {
 	}
 
 	private async afterDispatchFailure(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
-		receipt: AttemptReceiptV1 | undefined,
+		workflow: Workflow,
+		step: WorkflowStep,
+		receipt: AttemptReceipt | undefined,
 		attemptsUsed: number,
 		fromCompensation: boolean,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
-		const sideEffect: SideEffectStateV1 = receipt?.sideEffectState ?? "side_effect_unknown";
+		const sideEffect: SideEffectState = receipt?.sideEffectState ?? "side_effect_unknown";
 		if (fromCompensation) return this.failCompensationAndStop(workflow, step);
 		const policy = await this.workflowPolicy(workflow.workflowId);
 		if (!policy.ok) return policy;
@@ -1194,9 +1194,9 @@ export class SchedulerWorkflowController {
 	}
 
 	private async handleFailure(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
-		sideEffect: SideEffectStateV1,
+		workflow: Workflow,
+		step: WorkflowStep,
+		sideEffect: SideEffectState,
 		retryable: boolean,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const policy = await this.workflowPolicy(workflow.workflowId);
@@ -1217,8 +1217,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async compensate(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const existing = await this.readCompensation(workflow.workflowId, step.stepId);
 		if (!existing.ok) return existing;
@@ -1260,8 +1260,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async reconcileCompensation(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 		known?: SchedulerWorkflowCompensationFactV1,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const loaded = known === undefined ? await this.readCompensation(workflow.workflowId, step.stepId) : Result.ok(known);
@@ -1288,9 +1288,9 @@ export class SchedulerWorkflowController {
 	}
 
 	private async blockOriginalStep(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
-	): Promise<ResultValue<WorkflowV1, FoundationError>> {
+		workflow: Workflow,
+		step: WorkflowStep,
+	): Promise<ResultValue<Workflow, FoundationError>> {
 		try {
 			const current = await this.store.get(workflow.workflowId);
 			const live = current.steps.find((candidate) => candidate.stepId === step.stepId);
@@ -1319,8 +1319,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async skipCompensatedStep(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		let current = await this.store.get(workflow.workflowId);
 		const statusOf = () => current.steps.find((candidate) => candidate.stepId === step.stepId)?.status;
@@ -1336,8 +1336,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async failCompensationAndStop(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const existing = await this.readCompensation(workflow.workflowId, step.stepId);
 		if (!existing.ok) return existing;
@@ -1353,8 +1353,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async stopWorkflow(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		try {
 			const current = await this.store.get(workflow.workflowId);
@@ -1374,8 +1374,8 @@ export class SchedulerWorkflowController {
 	}
 
 	private async reserveBudget(
-		workflow: WorkflowV1,
-		step: WorkflowStepV1,
+		workflow: Workflow,
+		step: WorkflowStep,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (workflow.budget === undefined || !isLocalExecutable(step)) return Result.ok(undefined);
 		try {
@@ -1399,9 +1399,9 @@ export class SchedulerWorkflowController {
 	}
 
 	private async transition(
-		workflow: WorkflowV1,
+		workflow: Workflow,
 		stepId: string,
-		status: WorkflowStepStatusV1,
+		status: WorkflowStepStatus,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		try {
 			await this.store.transitionStep(

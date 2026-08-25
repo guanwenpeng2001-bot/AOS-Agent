@@ -54,7 +54,7 @@ export type FoundationImplementationStage = "T1" | "T2" | "T3" | "T4" | "T5" | "
  * is closed by this seal; when {@link laterConsumer} is present, only the listed
  * later side stays future-only.
  */
-export interface FoundationCapabilityClosureV1 {
+export interface FoundationCapabilityClosure {
 	/** Capability id, unique across the closure manifest. */
 	id: number;
 	/** High-level atlas rows (01-10 or 10A) that use this capability. Exact per-id mapping is asserted in tests. */
@@ -82,7 +82,7 @@ export interface FoundationCapabilityClosureV1 {
  * Records the later owner line and the explicit Foundation upstream contracts it
  * consumes, proving the id is covered by a later line instead of dropped.
  */
-export interface FoundationFutureCapabilityOwnerV1 {
+export interface FoundationFutureCapabilityOwner {
 	/** Capability id, unique across the future owner map. */
 	id: number;
 	/** Later line responsible for closing this capability. */
@@ -1180,7 +1180,7 @@ const closures = [
 		laterConsumer: "15",
 		laterCapabilityIds: [141, 148],
 	},
-] as const satisfies readonly FoundationCapabilityClosureV1[];
+] as const satisfies readonly FoundationCapabilityClosure[];
 
 const futureOwners = [
 	// ---- 74-89: Operation Worker (line 11) with ops on line 14 ----
@@ -1689,32 +1689,32 @@ const futureOwners = [
 		description: "Fixes schema/doc drift such as the sessionFile return-field difference in RPC documentation.",
 		consumedFoundationContracts: ["protocol versioning/feature negotiation", "FoundationEnvelopeV1 command/event envelope"],
 	},
-] as const satisfies readonly FoundationFutureCapabilityOwnerV1[];
+] as const satisfies readonly FoundationFutureCapabilityOwner[];
 
 const foundationCapabilityClosures = closures.map((entry) => ({
 	...entry,
 	ownerModule: entry.ownerModule,
 	tests: [...entry.tests],
-})) satisfies readonly FoundationCapabilityClosureV1[];
+})) satisfies readonly FoundationCapabilityClosure[];
 
 /** All 79 closure entries (ids `1..73`, `98`, `127`, `128`, `129`, `145`, `146`). */
-export const FOUNDATION_V1_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosureV1[] = foundationCapabilityClosures;
+export const FOUNDATION_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosure[] = foundationCapabilityClosures;
 
 /** All 71 future owner entries (ids `74..97`, `99..126`, `130..144`, `147..150`). */
-export const FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS: readonly FoundationFutureCapabilityOwnerV1[] = futureOwners;
+export const FOUNDATION_FUTURE_CAPABILITY_OWNERS: readonly FoundationFutureCapabilityOwner[] = futureOwners;
 
 /** Closure ids as a set for machine checks. */
-export const FOUNDATION_V1_CLOSURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_V1_CAPABILITY_CLOSURES.map((entry) => entry.id));
+export const FOUNDATION_CLOSURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_CAPABILITY_CLOSURES.map((entry) => entry.id));
 
 /** Future owner ids as a set for machine checks. */
-export const FOUNDATION_V1_FUTURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id));
+export const FOUNDATION_FUTURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id));
 
 /** Look up a closure entry by capability id. */
-export function foundationClosureById(id: number): FoundationCapabilityClosureV1 | undefined {
-	return FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === id);
+export function foundationClosureById(id: number): FoundationCapabilityClosure | undefined {
+	return FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === id);
 }
 
 /** Look up a future owner entry by capability id. */
-export function foundationFutureOwnerById(id: number): FoundationFutureCapabilityOwnerV1 | undefined {
-	return FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.find((entry) => entry.id === id);
+export function foundationFutureOwnerById(id: number): FoundationFutureCapabilityOwner | undefined {
+	return FOUNDATION_FUTURE_CAPABILITY_OWNERS.find((entry) => entry.id === id);
 }

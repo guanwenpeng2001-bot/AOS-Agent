@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import {
 	InMemorySessionStorage,
 	Session,
-	type AgentBindingV1,
-	type TaskEnvelopeV1,
+	type AgentBinding,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
 import * as codingAgentEntry from "../../src/index.ts";
@@ -433,7 +433,7 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	};
 }
 
-function schedulerTask(): TaskEnvelopeV1 {
+function schedulerTask(): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: "task-line13-reopen",
@@ -487,7 +487,7 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 			ownerId: "line13-scheduler-owner",
 			registry: new SchedulerExecutorRegistry(),
 			task: schedulerTask(),
-			binding: { schemaVersion: 1 } as unknown as AgentBindingV1,
+			binding: { schemaVersion: 1 } as unknown as AgentBinding,
 			gateLookup: { getByBusinessKey: () => undefined },
 			resolveRunAssociation: async () => {
 				throw new Error("Line 13 Scheduler fixture contains no graph work");

@@ -1,4 +1,4 @@
-import type { FoundationRecordV1 } from "../session/durable/types.ts";
+import type { FoundationRecord } from "../session/durable/types.ts";
 import type { Session } from "../session/session.ts";
 import { SessionLedgerWriter, type SessionLedgerWriterOptions } from "../session/t5.ts";
 import { FOUNDATION_ERROR_CODES, FoundationError, type FoundationErrorCode } from "./errors.ts";
@@ -118,7 +118,7 @@ export async function readFact<TValue>(
 	writer: SessionLedgerWriter,
 	objectType: string,
 	objectId: string,
-): Promise<{ readonly record: Extract<FoundationRecordV1, { kind: "fact" }>; readonly value: TValue } | undefined> {
+): Promise<{ readonly record: Extract<FoundationRecord, { kind: "fact" }>; readonly value: TValue } | undefined> {
 	const found = await writer.readFact<FoundationJsonValue>(objectType, objectId);
 	return found === undefined ? undefined : { record: found.record, value: found.payload as TValue };
 }
@@ -126,7 +126,7 @@ export async function readFact<TValue>(
 export async function listFacts<TValue>(
 	writer: SessionLedgerWriter,
 	objectType: string,
-): Promise<readonly { readonly record: Extract<FoundationRecordV1, { kind: "fact" }>; readonly value: TValue }[]> {
+): Promise<readonly { readonly record: Extract<FoundationRecord, { kind: "fact" }>; readonly value: TValue }[]> {
 	const records = await writer.listFacts({ objectType, order: "oldestFirst", includePruned: true });
 	return records.map((record) => ({ record, value: record.payload as TValue }));
 }
@@ -183,7 +183,7 @@ export async function writeCommandIntent(
 	payload: string,
 	intent: "create" | "update" = "create",
 	expectedObjectRevision = 0,
-): Promise<Extract<FoundationRecordV1, { kind: "intent" }>> {
+): Promise<Extract<FoundationRecord, { kind: "intent" }>> {
 	const metadata = await writer.session.getMetadata();
 	const result = await writer.appendFoundationRecord({
 		schemaVersion: 1,
@@ -253,7 +253,7 @@ export async function writeFact<TValue extends FoundationJsonValue>(
 ): Promise<{
 	readonly value: TValue;
 	readonly replayed: boolean;
-	readonly record: Extract<FoundationRecordV1, { kind: "fact" }>;
+	readonly record: Extract<FoundationRecord, { kind: "fact" }>;
 }> {
 	const result = await writer.writeFact({
 		objectType,
@@ -272,7 +272,7 @@ export async function writeTombstone(
 	requestId: string,
 	expectedObjectRevision: number,
 	reason?: string,
-): Promise<Extract<FoundationRecordV1, { kind: "tombstone" }>> {
+): Promise<Extract<FoundationRecord, { kind: "tombstone" }>> {
 	const result = await writer.appendFoundationRecord({
 		schemaVersion: 1,
 		kind: "tombstone",
@@ -294,6 +294,6 @@ export async function recordsForObject(
 	writer: SessionLedgerWriter,
 	objectType: string,
 	objectId: string,
-): Promise<readonly FoundationRecordV1[]> {
+): Promise<readonly FoundationRecord[]> {
 	return writer.session.findFoundationRecords({ objectType, objectId, order: "oldestFirst", includePruned: true });
 }

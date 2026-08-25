@@ -4,13 +4,13 @@ import {
 	type FoundationJsonValue,
 } from "../foundation/index.ts";
 import type {
-	FoundationCorrelationInputV1,
-	FoundationObjectResultV1,
-	FoundationRecordQueryV1,
-	FoundationRecordV1,
-	LedgerWriterLeaseV1,
-	AppendFoundationRecordResultV1,
-	ProvisionedFoundationRecordV1,
+	FoundationCorrelationInput,
+	FoundationObjectResult,
+	FoundationRecordQuery,
+	FoundationRecord,
+	LedgerWriterLease,
+	AppendFoundationRecordResult,
+	ProvisionedFoundationRecord,
 } from "./durable/types.ts";
 import { DurableLedgerError } from "./durable/errors.ts";
 import type { Session } from "./session.ts";
@@ -66,7 +66,7 @@ export interface T5FactWriteOptions {
 	readonly payload: FoundationJsonValue;
 	readonly clientRequestId?: string;
 	readonly expectedRevision?: number;
-	readonly correlation?: Partial<FoundationCorrelationInputV1>;
+	readonly correlation?: Partial<FoundationCorrelationInput>;
 }
 
 /**
@@ -80,7 +80,7 @@ export class SessionLedgerWriter {
 	private readonly ownerId: string;
 	private readonly leaseTtlMs: number;
 	private readonly now: () => number;
-	private lease: LedgerWriterLeaseV1 | undefined;
+	private lease: LedgerWriterLease | undefined;
 
 	constructor(session: Session, options: SessionLedgerWriterOptions = {}) {
 		this.session = session;
@@ -97,7 +97,7 @@ export class SessionLedgerWriter {
 		}
 	}
 
-	async ensureLease(refresh = false): Promise<LedgerWriterLeaseV1> {
+	async ensureLease(refresh = false): Promise<LedgerWriterLease> {
 		const current = await this.session.getWriterLease();
 		if (
 			!refresh &&
@@ -135,7 +135,7 @@ export class SessionLedgerWriter {
 	}
 
 	/** Append a Foundation record under this writer's lease authority. */
-	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	async appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		const lease = await this.ensureLease(true);
 		return this.session.appendFoundationRecord({
 			...record,
@@ -146,7 +146,7 @@ export class SessionLedgerWriter {
 
 	async writeFact<TPayload extends FoundationJsonValue>(
 		options: Omit<T5FactWriteOptions, "payload"> & { payload: TPayload },
-	): Promise<{ record: Extract<FoundationRecordV1, { kind: "fact" }>; replayed: boolean; payload: TPayload }> {
+	): Promise<{ record: Extract<FoundationRecord, { kind: "fact" }>; replayed: boolean; payload: TPayload }> {
 		const lease = await this.ensureLease();
 		const metadata = await this.session.getMetadata();
 		const currentRevision = await this.session.getFoundationRevision(options.objectType, options.objectId);
@@ -155,7 +155,7 @@ export class SessionLedgerWriter {
 			...options.correlation,
 			revision: options.correlation?.revision ?? 0,
 		});
-		const record: ProvisionedFoundationRecordV1 = {
+		const record: ProvisionedFoundationRecord = {
 			schemaVersion: 1,
 			kind: "fact",
 			id: `t5_fact_${options.objectType.replace(/[^a-zA-Z0-9_-]/g, "_")}_${options.objectId}_${clientRequestId}`,
@@ -176,7 +176,7 @@ export class SessionLedgerWriter {
 	}
 
 	async readFact<TPayload extends FoundationJsonValue>(objectType: string, objectId: string): Promise<{
-		record: Extract<FoundationObjectResultV1, { kind: "fact" }>;
+		record: Extract<FoundationObjectResult, { kind: "fact" }>;
 		payload: TPayload;
 	} | undefined> {
 		const result = await this.session.getFoundationObject(objectType, objectId);
@@ -184,9 +184,9 @@ export class SessionLedgerWriter {
 		return { record: result, payload: result.payload as TPayload };
 	}
 
-	async listFacts(query: Omit<FoundationRecordQueryV1, "kind"> = {}): Promise<Extract<FoundationRecordV1, { kind: "fact" }>[]> {
+	async listFacts(query: Omit<FoundationRecordQuery, "kind"> = {}): Promise<Extract<FoundationRecord, { kind: "fact" }>[]> {
 		const records = await this.session.findFoundationRecords({ ...query, kind: "fact", order: query.order ?? "oldestFirst" });
-		return records.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact");
+		return records.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact");
 	}
 
 	async tombstone(options: {
@@ -194,8 +194,8 @@ export class SessionLedgerWriter {
 		readonly objectId: string;
 		readonly clientRequestId?: string;
 		readonly reason?: string;
-		readonly correlation?: Partial<FoundationCorrelationInputV1>;
-	}): Promise<Extract<FoundationRecordV1, { kind: "tombstone" }>> {
+		readonly correlation?: Partial<FoundationCorrelationInput>;
+	}): Promise<Extract<FoundationRecord, { kind: "tombstone" }>> {
 		const lease = await this.ensureLease();
 		const metadata = await this.session.getMetadata();
 		const revision = await this.session.getFoundationRevision(options.objectType, options.objectId);

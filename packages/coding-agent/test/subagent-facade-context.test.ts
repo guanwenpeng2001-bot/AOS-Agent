@@ -10,7 +10,7 @@ import {
 	InMemoryArtifactBlobStore,
 	Result,
 	SessionT5Ledger,
-	SessionLedgerV1,
+	SessionLedger,
 	type ArtifactStoreProvider,
 	type QuotaProvider,
 	type ScopedModelGateway,
@@ -137,11 +137,11 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			modelRuntime: modelRuntime(),
 			resourceLoader: resources(),
 		}, (session, sessionId, writer) => {
-			const ledgers = new Map<string, SessionLedgerV1>();
-			const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+			const ledgers = new Map<string, SessionLedger>();
+			const ledgerForLane = (laneId: string): SessionLedger => {
 				let ledger = ledgers.get(laneId);
 				if (ledger === undefined) {
-					ledger = new SessionLedgerV1(session, { writer });
+					ledger = new SessionLedger(session, { writer });
 					ledgers.set(laneId, ledger);
 				}
 				return ledger;

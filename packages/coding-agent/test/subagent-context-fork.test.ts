@@ -4,14 +4,14 @@ import {
 	canonicalFoundationJson,
 	createContextSnapshot,
 	createRoleRevision,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
-	projectTaskEnvelopeV1,
+	projectTaskEnvelope,
 	type AgentMessage,
 	type ContextSnapshot,
 	type Entry,
-	type RoleRevisionV1,
-	type TaskEnvelopeV1,
+	type RoleRevision,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import {
 	forkChildContextV1,
@@ -135,7 +135,7 @@ function parentSnapshot(entryCount = 4): ContextSnapshot {
 	});
 }
 
-function childRole(persona = "You are the child."): RoleRevisionV1 {
+function childRole(persona = "You are the child."): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -178,9 +178,9 @@ function criteria(count: number, description: string) {
 function childTask(
 	taskId = "task-child",
 	goal = "complete the child task",
-	overrides: Partial<Pick<TaskEnvelopeV1, "inputs" | "expectedOutputs" | "acceptanceCriteria">> = {},
-): TaskEnvelopeV1 {
-	const result = createTaskEnvelopeV1({
+	overrides: Partial<Pick<TaskEnvelope, "inputs" | "expectedOutputs" | "acceptanceCriteria">> = {},
+): TaskEnvelope {
+	const result = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-1",
@@ -199,8 +199,8 @@ function childTask(
 	return result.value;
 }
 
-function forkTaskPackage(task: TaskEnvelopeV1, childTokenBudget = 1_000_000) {
-	const projection = projectTaskEnvelopeV1(task);
+function forkTaskPackage(task: TaskEnvelope, childTokenBudget = 1_000_000) {
+	const projection = projectTaskEnvelope(task);
 	return forkChildContextV1(
 		forkInput({
 			forkScope: "task_package",
@@ -362,7 +362,7 @@ describe("child context fork", () => {
 
 	it("projects task_package into the runtime layer with bounded durable artifact refs", () => {
 		const task = childTask();
-		const projection = projectTaskEnvelopeV1(task);
+		const projection = projectTaskEnvelope(task);
 		const result = forkChildContextV1(
 			forkInput({
 				forkScope: "task_package",
@@ -392,7 +392,7 @@ describe("child context fork", () => {
 	it("rejects a task_package proof bound to a foreign task", () => {
 		const task = childTask();
 		const foreign = childTask("task-foreign");
-		const projection = projectTaskEnvelopeV1(foreign);
+		const projection = projectTaskEnvelope(foreign);
 		expect(
 			forkChildContextV1(
 				forkInput({
@@ -436,7 +436,7 @@ describe("child context fork", () => {
 			),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		const task = childTask();
-		const projection = projectTaskEnvelopeV1(task);
+		const projection = projectTaskEnvelope(task);
 		expect(
 			forkChildContextV1(
 				forkInput({
@@ -465,7 +465,7 @@ describe("child context fork", () => {
 			forkChildContextV1(forkInput({ forkScope: "none", childRoleRevision: oversizedRole, childTokenBudget: 8 })),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		const task = childTask("task-child", `complete the child task ${"goal ".repeat(400)}`);
-		const projection = projectTaskEnvelopeV1(task);
+		const projection = projectTaskEnvelope(task);
 		expect(
 			forkChildContextV1(
 				forkInput({
@@ -570,8 +570,8 @@ describe("child context fork", () => {
 		const evidenceJson = canonicalFoundationJson({
 			goal: evidence.goal,
 			acceptanceCriteria: [{ criterionId: "criterion-1", description: "done", required: true, satisfiedBy: "artifact" }],
-			inputs: projectTaskEnvelopeV1(evidence).inputs,
-			expectedOutputs: projectTaskEnvelopeV1(evidence).expectedOutputs,
+			inputs: projectTaskEnvelope(evidence).inputs,
+			expectedOutputs: projectTaskEnvelope(evidence).expectedOutputs,
 		});
 		const manualJson = canonicalFoundationJson({
 			goal: manual.goal,
@@ -579,8 +579,8 @@ describe("child context fork", () => {
 				{ criterionId: "criterion-1", description: "done", required: false, satisfiedBy: "evidence" },
 				{ criterionId: "criterion-2", description: "also", required: false, satisfiedBy: "manual" },
 			],
-			inputs: projectTaskEnvelopeV1(manual).inputs,
-			expectedOutputs: projectTaskEnvelopeV1(manual).expectedOutputs,
+			inputs: projectTaskEnvelope(manual).inputs,
+			expectedOutputs: projectTaskEnvelope(manual).expectedOutputs,
 		});
 		expect(evidenceJson).not.toBe(manualJson);
 		const instructionJson = canonicalFoundationJson({

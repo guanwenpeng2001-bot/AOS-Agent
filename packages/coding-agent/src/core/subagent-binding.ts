@@ -10,31 +10,31 @@ import {
 	cloneDeepFrozen,
 	canonicalFoundationJson,
 	fingerprintFoundationValue,
-	FingerprintV1Schema,
+	FingerprintSchema,
 	FoundationError,
-	ModelRouteV1Schema,
-	ResourceSelectorV1Schema,
+	ModelRouteSchema,
+	ResourceSelectorSchema,
 	Result,
-	RevisionReferenceV1Schema,
+	RevisionReferenceSchema,
 	selectorsNarrow,
-	validateBudgetV1,
+	validateBudget,
 	validateExactShape,
-	validateImmutableAgentBindingV1,
-	validateRoleRevisionV1,
-	validateSecretFreeModelProfileV1,
+	validateImmutableAgentBinding,
+	validateRoleRevision,
+	validateSecretFreeModelProfile,
 	validateTaskEnvelope,
-	type AgentBindingV1,
-	type BudgetV1,
-	type FingerprintV1,
-	type ModelProfileV1,
-	type ModelRouteV1,
-	type ResourceSelectorV1,
+	type AgentBinding,
+	type Budget,
+	type Fingerprint,
+	type ModelProfile,
+	type ModelRoute,
+	type ResourceSelector,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type SessionLedgerV1,
-	type TaskEnvelopeV1,
-	type VersionedReferenceV1,
+	type RevisionReference,
+	type RoleRevision,
+	type SessionLedger,
+	type TaskEnvelope,
+	type VersionedReference,
 } from "@aos-agent/agent-core";
 
 export const CHILD_BINDING_PROJECTION_SCHEMA_VERSION = 1 as const;
@@ -54,8 +54,8 @@ export type ChildBindingTighteningProofV1 = "equal" | "narrowed";
 
 export interface ChildBindingProjectionFieldRecordV1 {
 	readonly field: ChildBindingProjectionFieldV1;
-	readonly parentDigest: FingerprintV1;
-	readonly childDigest: FingerprintV1;
+	readonly parentDigest: Fingerprint;
+	readonly childDigest: Fingerprint;
 	readonly tighteningProof: ChildBindingTighteningProofV1;
 }
 
@@ -65,7 +65,7 @@ export interface ChildBindingProjectionV1 {
 	readonly childBindingId: string;
 	readonly spawnId: string;
 	readonly fields: readonly ChildBindingProjectionFieldRecordV1[];
-	readonly digest: FingerprintV1;
+	readonly digest: Fingerprint;
 	readonly createdAt: string;
 }
 
@@ -78,20 +78,20 @@ export interface ChildBindingHostPreflightV1 {
 export interface ProjectChildBindingInputV1 {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
-	readonly parentBinding: AgentBindingV1;
+	readonly parentBinding: AgentBinding;
 	readonly childBindingId: string;
-	readonly parentRoleRevision: RoleRevisionV1;
-	readonly childRoleRevision: RoleRevisionV1;
-	readonly parentModelProfile: ModelProfileV1;
-	readonly childModelProfile: ModelProfileV1;
-	readonly childTaskEnvelope: TaskEnvelopeV1;
+	readonly parentRoleRevision: RoleRevision;
+	readonly childRoleRevision: RoleRevision;
+	readonly parentModelProfile: ModelProfile;
+	readonly childModelProfile: ModelProfile;
+	readonly childTaskEnvelope: TaskEnvelope;
 	readonly createdAt: string;
-	readonly childModelRoute?: ModelRouteV1;
-	readonly childBudget?: BudgetV1;
-	readonly parentGitSelector?: ResourceSelectorV1;
-	readonly childGitSelector?: ResourceSelectorV1;
-	readonly childPolicyRevision?: RevisionReferenceV1;
-	readonly childCapabilityRevision?: RevisionReferenceV1;
+	readonly childModelRoute?: ModelRoute;
+	readonly childBudget?: Budget;
+	readonly parentGitSelector?: ResourceSelector;
+	readonly childGitSelector?: ResourceSelector;
+	readonly childPolicyRevision?: RevisionReference;
+	readonly childCapabilityRevision?: RevisionReference;
 	readonly managedLocks?: readonly ChildBindingProjectionFieldV1[];
 	readonly hostPreflight?: ChildBindingHostPreflightV1;
 }
@@ -123,8 +123,8 @@ const FIELD_LITERALS = CHILD_BINDING_PROJECTION_FIELDS.map((field) => Type.Liter
 const ChildBindingProjectionFieldRecordV1Schema = Type.Object(
 	{
 		field: Type.Union(FIELD_LITERALS),
-		parentDigest: FingerprintV1Schema,
-		childDigest: FingerprintV1Schema,
+		parentDigest: FingerprintSchema,
+		childDigest: FingerprintSchema,
 		tighteningProof: Type.Union([Type.Literal("equal"), Type.Literal("narrowed")]),
 	},
 	{ additionalProperties: false },
@@ -136,7 +136,7 @@ const ChildBindingProjectionV1Schema = Type.Object(
 		childBindingId: Type.String({ minLength: 1 }),
 		spawnId: Type.String({ minLength: 1 }),
 		fields: Type.Array(ChildBindingProjectionFieldRecordV1Schema),
-		digest: FingerprintV1Schema,
+		digest: FingerprintSchema,
 		createdAt: Type.String({ minLength: 1 }),
 	},
 	{ additionalProperties: false },
@@ -168,7 +168,7 @@ function isCanonicalTimestamp(value: unknown): value is string {
 	return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
-function routeFromProfile(profile: ModelProfileV1): ModelRouteV1 {
+function routeFromProfile(profile: ModelProfile): ModelRoute {
 	return {
 		provider: profile.provider,
 		model: profile.model,
@@ -178,8 +178,8 @@ function routeFromProfile(profile: ModelProfileV1): ModelRouteV1 {
 	};
 }
 
-function mergeBudgetMin(left: BudgetV1, right: BudgetV1): BudgetV1 {
-	const result: BudgetV1 = {};
+function mergeBudgetMin(left: Budget, right: Budget): Budget {
+	const result: Budget = {};
 	for (const key of BUDGET_KEYS) {
 		const a = left[key];
 		const b = right[key];
@@ -188,7 +188,7 @@ function mergeBudgetMin(left: BudgetV1, right: BudgetV1): BudgetV1 {
 	return result;
 }
 
-function budgetAtMost(candidate: BudgetV1, ceiling: BudgetV1): boolean {
+function budgetAtMost(candidate: Budget, ceiling: Budget): boolean {
 	for (const key of BUDGET_KEYS) {
 		const cap = ceiling[key];
 		const got = candidate[key];
@@ -198,12 +198,12 @@ function budgetAtMost(candidate: BudgetV1, ceiling: BudgetV1): boolean {
 	return true;
 }
 
-function cloneSelector(value: ResourceSelectorV1): ResourceSelectorV1 {
+function cloneSelector(value: ResourceSelector): ResourceSelector {
 	if (value.policy === "all" || value.policy === "none") return { policy: value.policy };
 	return { policy: value.policy, named: Object.freeze([...(value.named ?? [])]) };
 }
 
-function selectorProof(parent: ResourceSelectorV1, child: ResourceSelectorV1): ChildBindingTighteningProofV1 | undefined {
+function selectorProof(parent: ResourceSelector, child: ResourceSelector): ChildBindingTighteningProofV1 | undefined {
 	if (!selectorsNarrow(parent, child)) return undefined;
 	return canonicalFoundationJson(parent) === canonicalFoundationJson(child) ? "equal" : "narrowed";
 }
@@ -212,7 +212,7 @@ function sameJson(left: unknown, right: unknown): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 }
 
-function digestOf(value: unknown): FingerprintV1 {
+function digestOf(value: unknown): Fingerprint {
 	return fingerprintFoundationValue(value);
 }
 
@@ -227,8 +227,8 @@ function applyManagedLock(
 }
 
 function referenceProof(
-	parent: VersionedReferenceV1 | RevisionReferenceV1 | undefined,
-	child: VersionedReferenceV1 | RevisionReferenceV1 | undefined,
+	parent: VersionedReference | RevisionReference | undefined,
+	child: VersionedReference | RevisionReference | undefined,
 	preflightTighter: boolean,
 ): ChildBindingTighteningProofV1 | undefined {
 	if (parent === undefined && child === undefined) return "equal";
@@ -263,15 +263,15 @@ function fieldRecord(
 	};
 }
 
-function validateOptionalSelector(value: unknown, label: string): ResultValue<ResourceSelectorV1 | undefined, FoundationError> {
+function validateOptionalSelector(value: unknown, label: string): ResultValue<ResourceSelector | undefined, FoundationError> {
 	if (value === undefined) return Result.ok(undefined);
-	const checked = validateExactShape<ResourceSelectorV1>(ResourceSelectorV1Schema, value, "resource_selector");
+	const checked = validateExactShape<ResourceSelector>(ResourceSelectorSchema, value, "resource_selector");
 	return checked.ok ? checked : projectionError(`${label} is not an exact ResourceSelectorV1`);
 }
 
-function validateOptionalRevision(value: unknown, label: string): ResultValue<RevisionReferenceV1 | undefined, FoundationError> {
+function validateOptionalRevision(value: unknown, label: string): ResultValue<RevisionReference | undefined, FoundationError> {
 	if (value === undefined) return Result.ok(undefined);
-	const checked = validateExactShape<RevisionReferenceV1>(RevisionReferenceV1Schema, value, "revision_reference");
+	const checked = validateExactShape<RevisionReference>(RevisionReferenceSchema, value, "revision_reference");
 	return checked.ok ? checked : projectionError(`${label} is not an exact RevisionReferenceV1`);
 }
 
@@ -288,11 +288,11 @@ function validateInputShape(value: unknown): value is ProjectChildBindingInputV1
 
 function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): ResultValue<ChildBindingProjectionV1, FoundationError> {
 	if (input.childBudget !== undefined) {
-		const budget = validateBudgetV1(input.childBudget);
+		const budget = validateBudget(input.childBudget);
 		if (!budget.ok) return projectionError("Child budget is not an exact BudgetV1");
 	}
 	if (input.childModelRoute !== undefined) {
-		const route = validateExactShape<ModelRouteV1>(ModelRouteV1Schema, input.childModelRoute, "model_route");
+		const route = validateExactShape<ModelRoute>(ModelRouteSchema, input.childModelRoute, "model_route");
 		if (!route.ok) return projectionError("Child model route is not an exact ModelRouteV1");
 	}
 	if (input.hostPreflight !== undefined) {
@@ -308,15 +308,15 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	const childCapabilityRevision = validateOptionalRevision(input.childCapabilityRevision, "Child capability revision");
 	if (!childCapabilityRevision.ok) return childCapabilityRevision;
 
-	const parentBinding = validateImmutableAgentBindingV1(input.parentBinding);
+	const parentBinding = validateImmutableAgentBinding(input.parentBinding);
 	if (!parentBinding.ok) return projectionError("Parent AgentBinding is invalid");
-	const parentRole = validateRoleRevisionV1(input.parentRoleRevision);
+	const parentRole = validateRoleRevision(input.parentRoleRevision);
 	if (!parentRole.ok) return projectionError("Parent RoleRevision is invalid");
-	const childRole = validateRoleRevisionV1(input.childRoleRevision);
+	const childRole = validateRoleRevision(input.childRoleRevision);
 	if (!childRole.ok) return projectionError("Child RoleRevision is invalid");
-	const parentProfile = validateSecretFreeModelProfileV1(input.parentModelProfile);
+	const parentProfile = validateSecretFreeModelProfile(input.parentModelProfile);
 	if (!parentProfile.ok) return projectionError("Parent ModelProfile is invalid");
-	const childProfile = validateSecretFreeModelProfileV1(input.childModelProfile);
+	const childProfile = validateSecretFreeModelProfile(input.childModelProfile);
 	if (!childProfile.ok) return projectionError("Child ModelProfile is invalid");
 	const childTask = validateTaskEnvelope(input.childTaskEnvelope);
 	if (!childTask.ok) return projectionError("Child TaskEnvelope is invalid");
@@ -394,7 +394,7 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	);
 	const requested = input.childBudget;
 	if (requested !== undefined) {
-		const exactBudget = validateBudgetV1(requested);
+		const exactBudget = validateBudget(requested);
 		if (!exactBudget.ok) return projectionError("Child budget is not an exact BudgetV1");
 		if (!budgetAtMost(exactBudget.value, floor)) {
 			return projectionError("Child budget cannot exceed the parent, task, and model-profile minimum");
@@ -472,7 +472,7 @@ export function validateChildBindingProjectionV1(value: unknown): value is Child
 }
 
 export async function persistChildBindingProjectionV1(
-	ledger: SessionLedgerV1,
+	ledger: SessionLedger,
 	projection: ChildBindingProjectionV1,
 	options: {
 		readonly clientRequestId: string;
