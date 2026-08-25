@@ -224,7 +224,20 @@ async function seedRunReceipt(
 		runReceiptId: input.runReceiptId,
 		runId: input.runId,
 		terminalStatus: input.status,
+		...(input.status === "completed" ? { taskResultId: `task-result-${input.taskId}` } : {}),
 		attemptReceiptIds: ["attempt-receipt-1"],
+		usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+		...(input.status === "completed"
+			? {}
+			: {
+					terminalErrorCode: input.status === "cancelled" ? "run_cancelled" : "run_failed",
+					terminalError: {
+						code: input.status === "cancelled" ? "run_cancelled" : "run_failed",
+						message: input.status,
+						category: input.status === "cancelled" ? "cancelled" as const : "unknown" as const,
+						retryable: false,
+					},
+				}),
 		completedAt: T0,
 	};
 	const ledger = new SessionLedger(session, { ownerId: "foundation-t7" });

@@ -1,22 +1,17 @@
 import {
 	createDurableEvent,
 	type AttemptReceipt,
+	type CanonicalRunResult,
 	type DurableEventEnvelope,
 	type ExecutionCorrelation,
-	type FoundationFactRecord,
-	type FoundationJsonValue,
 	type PublicExecutionError,
 	type ResultStatus,
+	type RunReceipt,
 	type SideEffectState,
 	type TaskResult,
-	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	AutomationRunProjectionError,
-	projectAutomationRuns,
-	type CanonicalAutomationRunReceiptSource,
-} from "../src/core/automation-run-projection.ts";
+import { AutomationRunProjectionError, projectAutomationRuns } from "../src/core/automation-run-projection.ts";
 
 const SESSION_ID = "session-projection";
 const LANE_ID = "main";
@@ -25,34 +20,9 @@ function correlation(fields: Omit<ExecutionCorrelation, "sessionId" | "laneId" |
 	return { sessionId: SESSION_ID, laneId: LANE_ID, revision: 1, ...fields };
 }
 
-function fact(
-	seq: number,
-	objectType: string,
-	objectId: string,
-	payload: FoundationJsonValue,
-	fields: Omit<ExecutionCorrelation, "sessionId" | "laneId" | "revision">,
-	id = `fact-${seq}`,
-): FoundationFactRecord {
-	return {
-		schemaVersion: 1,
-		kind: "fact",
-		id,
-		seq,
-		lane: LANE_ID,
-		timestamp: Date.parse("2026-08-25T10:00:00.000Z") + seq,
-		objectType,
-		objectId,
-		revision: 1,
-		clientRequestId: `request-${seq}`,
-		fencingToken: "fence-1",
-		correlation: { ...correlation(fields), fencingToken: "fence-1" },
-		payload,
-	};
-}
-
 interface ChainOptions {
 	readonly suffix?: string;
-	readonly runStatus?: CanonicalAutomationRunReceiptSource["terminalStatus"];
+	readonly runStatus?: RunReceipt["terminalStatus"];
 	readonly resultStatus?: ResultStatus;
 	readonly attemptStatus?: ResultStatus;
 	readonly sideEffectState?: SideEffectState;
@@ -61,10 +31,10 @@ interface ChainOptions {
 }
 
 interface CanonicalChain {
-	readonly records: FoundationFactRecord[];
+	readonly canonicalRun: CanonicalRunResult;
 	readonly events: DurableEventEnvelope[];
 	readonly runId: string;
-	readonly runReceipt: CanonicalAutomationRunReceiptSource;
+	readonly runReceipt: RunReceipt;
 }
 
 function chain(options: ChainOptions = {}): CanonicalChain {
@@ -74,33 +44,12 @@ function chain(options: ChainOptions = {}): CanonicalChain {
 	const dispatchId = `dispatch-${suffix}`;
 	const attemptId = `attempt-${suffix}`;
 	const attemptReceiptId = `attempt-receipt-${suffix}`;
-	const workerReceiptId = `worker-receipt-${suffix}`;
 	const taskResultId = `task-result-${suffix}`;
 	const runReceiptId = `run-receipt-${suffix}`;
 	const runStatus = options.runStatus ?? "completed";
 	const resultStatus = options.resultStatus ?? "succeeded";
 	const attemptStatus = options.attemptStatus ?? resultStatus;
 	const sideEffectState = options.sideEffectState ?? "none";
-	const worker: WorkerReceipt = {
-		schemaVersion: 1,
-		workerReceiptId,
-		sandboxProviderId: "sandbox.fixture",
-		operationId: `operation-${suffix}`,
-		taskId,
-		dispatchId,
-		attemptId,
-		status: attemptStatus,
-		sideEffectState,
-		...(options.error === undefined ? {} : { error: options.error }),
-		provenance: {
-			producerKind: "operation_worker",
-			providerId: "sandbox.fixture",
-			producedAt: "2026-08-25T10:00:02.000Z",
-			correlation: correlation({ taskId, dispatchId, attemptId, operationId: `operation-${suffix}` }),
-		},
-		startedAt: "2026-08-25T10:00:01.000Z",
-		completedAt: "2026-08-25T10:00:02.000Z",
-	};
 	const attempt: AttemptReceipt = {
 		schemaVersion: 1,
 		attemptReceiptId,
@@ -111,7 +60,7 @@ function chain(options: ChainOptions = {}): CanonicalChain {
 		bindingId: `binding-${suffix}`,
 		bindingEpochIds: [`epoch-${suffix}`],
 		status: attemptStatus,
-		workerReceiptRefs: [{ schemaVersion: 1, type: "worker_receipt", id: workerReceiptId, revision: 1 }],
+		workerReceiptRefs: [{ schemaVersion: 1, type: "worker_receipt", id: `worker-receipt-${suffix}`, revision: 1 }],
 		artifacts: [],
 		...(options.error === undefined ? {} : { error: options.error }),
 		provenance: {
@@ -153,65 +102,61 @@ function chain(options: ChainOptions = {}): CanonicalChain {
 			requiredEvidencePresent: resultStatus === "succeeded",
 		},
 	};
-	const runReceipt: CanonicalAutomationRunReceiptSource = {
+	const runReceipt: RunReceipt = {
 		schemaVersion: 1,
 		runReceiptId,
 		runId,
 		terminalStatus: runStatus,
 		taskResultId,
 		attemptReceiptIds: [attemptReceiptId],
+		usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
 		...(options.terminalErrorCode === undefined ? {} : { terminalErrorCode: options.terminalErrorCode }),
-		usage: { input: 10, output: 5, totalTokens: 15 },
 		...(options.error === undefined ? {} : { terminalError: options.error }),
 		completedAt: "2026-08-25T10:00:05.000Z",
 	};
-	const records = [
-		fact(1, "worker_receipt", workerReceiptId, worker as unknown as FoundationJsonValue, { taskId, dispatchId, attemptId }),
-		fact(2, "attempt_receipt", attemptReceiptId, attempt as unknown as FoundationJsonValue, {
-			taskId,
-			dispatchId,
-			attemptId,
-			attemptReceiptId,
-		}),
-		fact(3, "task_result", taskResultId, taskResult as unknown as FoundationJsonValue, { taskId, taskResultId }),
-		fact(4, "run_receipt", runId, runReceipt as unknown as FoundationJsonValue, { runId, runReceiptId, taskResultId }),
-	];
-	const events = [
-		createDurableEvent({
-			category: "attempt.started",
-			eventId: `event-attempt-started-${suffix}`,
-			streamId: `stream-${suffix}`,
-			sequence: 10,
-			timestamp: "2026-08-25T10:00:00.000Z",
-			correlation: { sessionId: SESSION_ID, runId, taskId, dispatchId, attemptId },
-			payload: { schemaVersion: 1, taskId, dispatchId, attemptId },
-		}),
-		createDurableEvent({
-			category: "run_receipt.written",
-			eventId: `event-run-receipt-${suffix}`,
-			streamId: `stream-${suffix}`,
-			sequence: 1,
-			timestamp: "2026-08-25T10:00:05.000Z",
-			correlation: { sessionId: SESSION_ID, runId, runReceiptId },
-			payload: { schemaVersion: 1, runId, runReceiptId },
-		}),
-		createDurableEvent({
-			category: "usage.recorded",
-			eventId: `event-usage-${suffix}`,
-			streamId: `stream-${suffix}`,
-			sequence: 7,
-			timestamp: "2026-08-25T10:00:04.000Z",
-			correlation: { sessionId: SESSION_ID, runId },
-			payload: { schemaVersion: 1, input: 100, output: 50, total: 150 },
-		}),
-	];
-	return { records, events, runId, runReceipt };
+	const attemptStarted = createDurableEvent({
+		category: "attempt.started",
+		eventId: `event-attempt-started-${suffix}`,
+		streamId: `stream-${suffix}`,
+		sequence: 10,
+		timestamp: "2026-08-25T10:00:00.000Z",
+		correlation: { sessionId: SESSION_ID, runId, taskId, dispatchId, attemptId },
+		payload: { schemaVersion: 1, taskId, dispatchId, attemptId },
+	});
+	const writtenEvent = createDurableEvent({
+		category: "run_receipt.written",
+		eventId: `event-run-receipt-${suffix}`,
+		streamId: `stream-${suffix}`,
+		sequence: 1,
+		timestamp: "2026-08-25T10:00:05.000Z",
+		correlation: { sessionId: SESSION_ID, runId, runReceiptId },
+		payload: { schemaVersion: 1, runId, runReceiptId },
+	});
+	const usageRecorded = createDurableEvent({
+		category: "usage.recorded",
+		eventId: `event-usage-${suffix}`,
+		streamId: `stream-${suffix}`,
+		sequence: 7,
+		timestamp: "2026-08-25T10:00:04.000Z",
+		correlation: { sessionId: SESSION_ID, runId },
+		payload: { schemaVersion: 1, input: 100, output: 50, total: 150 },
+	});
+	return {
+		canonicalRun: { schemaVersion: 1, runReceipt, taskResult, attemptReceipts: [attempt], writtenEvent },
+		events: [attemptStarted, writtenEvent, usageRecorded],
+		runId,
+		runReceipt,
+	};
+}
+
+function project(fixture: CanonicalChain) {
+	return projectAutomationRuns({ canonicalRuns: [fixture.canonicalRun], events: fixture.events });
 }
 
 describe("canonical Automation Run projection", () => {
 	it("projects only canonically supported public Run fields", () => {
 		const fixture = chain();
-		expect(projectAutomationRuns(fixture)).toEqual([
+		expect(project(fixture)).toEqual([
 			{
 				id: fixture.runId,
 				sessionId: SESSION_ID,
@@ -233,10 +178,10 @@ describe("canonical Automation Run projection", () => {
 				},
 			},
 		]);
-		const terminal = projectAutomationRuns(fixture)[0]?.terminal;
+		const terminal = project(fixture)[0]?.terminal;
 		expect(terminal?.usage).toEqual({ input: 10, output: 5, total: 15 });
 		expect(terminal).not.toHaveProperty("finalText");
-		expect(projectAutomationRuns(fixture)[0]).not.toHaveProperty("model");
+		expect(project(fixture)[0]).not.toHaveProperty("model");
 	});
 
 	it.each([
@@ -278,7 +223,7 @@ describe("canonical Automation Run projection", () => {
 		},
 	] as const)("maps the $name outcome from canonical results", (scenario) => {
 		const fixture = chain({ ...scenario, suffix: scenario.name });
-		const projected = projectAutomationRuns(fixture)[0];
+		const projected = project(fixture)[0];
 		expect(projected).toMatchObject({
 			status: scenario.runStatus,
 			terminalError: scenario.error,
@@ -307,73 +252,66 @@ describe("canonical Automation Run projection", () => {
 			error: receiptError,
 			terminalErrorCode: receiptError.code,
 		});
-		const records = fixture.records.map((record) => {
-			if (record.objectType === "run_receipt") return record;
-			return {
-				...record,
-				payload: {
-					...(record.payload as Record<string, FoundationJsonValue>),
-					error: lowerError as unknown as FoundationJsonValue,
-				} as FoundationJsonValue,
-			};
-		});
-		expect(projectAutomationRuns({ records, events: fixture.events })[0]?.terminalError).toEqual(receiptError);
+		const canonicalRun: CanonicalRunResult = {
+			...fixture.canonicalRun,
+			taskResult: { ...fixture.canonicalRun.taskResult!, error: lowerError },
+			attemptReceipts: fixture.canonicalRun.attemptReceipts.map((attempt) => ({ ...attempt, error: lowerError })),
+		};
+		expect(projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events })[0]?.terminalError)
+			.toEqual(receiptError);
 	});
 
 	it("is deterministic across duplicates, out-of-order input, and restart replay", () => {
 		const fixture = chain();
 		const second = chain({ suffix: "second" });
-		const duplicateRun = { ...fixture.records.at(-1)!, id: "fact-run-duplicate", seq: 40 };
 		const first = projectAutomationRuns({
-			records: [...fixture.records, duplicateRun, ...second.records].reverse(),
+			canonicalRuns: [second.canonicalRun, fixture.canonicalRun, fixture.canonicalRun],
 			events: [...fixture.events, fixture.events[0]!, ...second.events].reverse(),
 		});
 		const restarted = projectAutomationRuns({
-			records: [...fixture.records, duplicateRun, ...second.records],
+			canonicalRuns: [fixture.canonicalRun, fixture.canonicalRun, second.canonicalRun],
 			events: [...fixture.events, fixture.events[0]!, ...second.events],
 		});
 		expect(first).toHaveLength(2);
 		expect(first).toEqual(restarted);
 	});
 
-	it("fails closed on conflicting duplicate terminal facts", () => {
+	it("fails closed on conflicting duplicate canonical results", () => {
 		const fixture = chain();
-		const runFact = fixture.records.at(-1)!;
-		const conflicting: CanonicalAutomationRunReceiptSource = {
-			...fixture.runReceipt,
-			terminalStatus: "failed",
-			terminalErrorCode: "conflict",
-			terminalError: { code: "conflict", message: "conflict", retryable: false },
+		const conflicting: CanonicalRunResult = {
+			...fixture.canonicalRun,
+			runReceipt: {
+				...fixture.runReceipt,
+				terminalStatus: "failed",
+				terminalErrorCode: "conflict",
+				terminalError: { code: "conflict", message: "conflict", retryable: false },
+			},
 		};
 		expect(() => projectAutomationRuns({
-			records: [
-				...fixture.records,
-				{ ...runFact, id: "fact-run-conflict", seq: 50, payload: conflicting as unknown as FoundationJsonValue },
-			],
+			canonicalRuns: [fixture.canonicalRun, conflicting],
 			events: fixture.events,
 		})).toThrow(AutomationRunProjectionError);
 	});
 
 	it("fails closed when a canonical result reference is missing", () => {
 		const fixture = chain();
-		expect(() => projectAutomationRuns({ records: fixture.records.slice(1), events: fixture.events }))
-			.toThrow(/missing WorkerReceipt/u);
+		const canonicalRun = { ...fixture.canonicalRun, attemptReceipts: [] };
+		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+			.toThrow(/missing or duplicate AttemptReceipt references/u);
 	});
 
-	it("requires usage on the immutable canonical RunReceipt fact", () => {
+	it("requires usage on the final canonical RunReceipt", () => {
 		const fixture = chain();
-		const runFact = fixture.records.at(-1)!;
 		const { usage: _usage, ...withoutUsage } = fixture.runReceipt;
-		expect(() => projectAutomationRuns({
-			records: [
-				...fixture.records.slice(0, -1),
-				{ ...runFact, payload: withoutUsage as unknown as FoundationJsonValue },
-			],
-			events: fixture.events,
-		})).toThrow(/missing usage/u);
+		const canonicalRun: CanonicalRunResult = {
+			...fixture.canonicalRun,
+			runReceipt: withoutUsage as unknown as RunReceipt,
+		};
+		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+			.toThrow(AutomationRunProjectionError);
 	});
 
-	it("requires the canonical terminal error and stable code to agree", () => {
+	it("requires the final canonical terminal error and stable code to agree", () => {
 		const fixture = chain({
 			suffix: "error-conflict",
 			runStatus: "failed",
@@ -382,14 +320,11 @@ describe("canonical Automation Run projection", () => {
 			error: { code: "canonical_failure", message: "failure", retryable: false },
 			terminalErrorCode: "canonical_failure",
 		});
-		const runFact = fixture.records.at(-1)!;
-		const conflicting = { ...fixture.runReceipt, terminalErrorCode: "different_failure" };
-		expect(() => projectAutomationRuns({
-			records: [
-				...fixture.records.slice(0, -1),
-				{ ...runFact, payload: conflicting as unknown as FoundationJsonValue },
-			],
-			events: fixture.events,
-		})).toThrow(/Terminal error conflicts/u);
+		const canonicalRun: CanonicalRunResult = {
+			...fixture.canonicalRun,
+			runReceipt: { ...fixture.runReceipt, terminalErrorCode: "different_failure" },
+		};
+		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+			.toThrow(AutomationRunProjectionError);
 	});
 });

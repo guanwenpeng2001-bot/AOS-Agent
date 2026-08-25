@@ -1,32 +1,22 @@
 import {
 	canonicalFoundationJson,
-	fingerprintFoundationValue,
 	validateAttemptReceipt,
 	validateDurableEvent,
-	validatePublicExecutionError,
 	validateRunReceipt,
 	validateTaskResult,
-	validateWorkerReceipt,
 	type AttemptReceipt,
+	type CanonicalRunResult,
 	type DurableEventEnvelope,
-	type FoundationFactRecord,
-	type FoundationRecord,
 	type PublicExecutionError,
 	type PublicExecutionErrorCategory,
 	type RunReceipt,
 	type SideEffectState,
 	type TaskResult,
-	type WorkerReceipt,
 } from "@aos-agent/agent-core";
-
-const RESULT_OBJECT_TYPES = new Set(["run_receipt", "task_result", "attempt_receipt", "worker_receipt"]);
 
 export type AutomationRunStatus = "completed" | "failed" | "cancelled";
 
-/**
- * Safe error projection. Canonical projections carry all fields directly from
- * RunReceipt; private legacy migration views may omit the entire error.
- */
+/** Safe error projection copied only from the final canonical RunReceipt. */
 export interface AutomationRunErrorProjection {
 	readonly code: string;
 	readonly message?: string;
@@ -40,16 +30,6 @@ export interface AutomationRunUsageProjection {
 	readonly output: number;
 	readonly total: number;
 }
-
-/** Temporary structural seam for the canonical T2A RunReceipt additions. */
-export type CanonicalAutomationRunReceiptSource = Omit<RunReceipt, "usage" | "terminalError"> & {
-	readonly usage: {
-		readonly input: number;
-		readonly output: number;
-		readonly totalTokens: number;
-	};
-	readonly terminalError?: PublicExecutionError;
-};
 
 export interface AutomationRunTerminalProjection {
 	readonly runId: string;
@@ -71,6 +51,13 @@ export interface AutomationRunCanonicalResultProjection {
 	readonly sideEffectState: SideEffectState;
 }
 
+/** Provenance attached only to a current record migrated from a legacy automation.run entry. */
+export interface AutomationRunMigrationProvenance {
+	readonly sourceKind: "automation.run";
+	readonly sourceSchemaVersion: 1;
+	readonly disposition: "legacy_migrated";
+}
+
 /**
  * Automation's read-only Run view. It intentionally omits legacy model,
  * binding, request, file, and final-text fields that the Foundation result
@@ -86,15 +73,19 @@ export interface AutomationRunProjection {
 	readonly terminal: AutomationRunTerminalProjection;
 	/** Present only for a projection backed by a canonical Foundation RunReceipt. */
 	readonly canonicalResult?: AutomationRunCanonicalResultProjection;
+	/** Present only when a complete legacy entry was migrated without a canonical receipt. */
+	readonly migration?: AutomationRunMigrationProvenance;
 }
 
 export interface CanonicalAutomationRunProjection extends AutomationRunProjection {
 	readonly terminal: CanonicalAutomationRunTerminalProjection;
 	readonly canonicalResult: AutomationRunCanonicalResultProjection;
+	readonly migration?: never;
 }
 
 export interface AutomationRunProjectionInput {
-	readonly records: readonly FoundationRecord[];
+	readonly canonicalRuns: readonly CanonicalRunResult[];
+	/** Supplemental events recover optional attempt start times and detect event conflicts. */
 	readonly events?: readonly DurableEventEnvelope[];
 }
 
@@ -105,16 +96,9 @@ export class AutomationRunProjectionError extends Error {
 	}
 }
 
-interface StoredFact<TPayload> {
-	readonly record: FoundationFactRecord;
-	readonly payload: TPayload;
-}
-
-interface ResultFacts {
-	readonly runs: Map<string, StoredFact<CanonicalAutomationRunReceiptSource>>;
-	readonly tasks: Map<string, StoredFact<TaskResult>>;
-	readonly attempts: Map<string, StoredFact<AttemptReceipt>>;
-	readonly workers: Map<string, StoredFact<WorkerReceipt>>;
+interface ValidatedCanonicalRun {
+	readonly result: CanonicalRunResult;
+	readonly sessionId: string;
 }
 
 function fail(message: string): never {
@@ -134,133 +118,134 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-	return Object.keys(value).every((key) => keys.includes(key)) && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function canonicalRunReceipt(value: unknown): CanonicalAutomationRunReceiptSource {
-	if (!isRecord(value) || !Object.hasOwn(value, "usage")) fail("Canonical run_receipt is missing usage");
-	const { usage, terminalError, ...base } = value;
-	const checked = validateRunReceipt(base);
-	if (!checked.ok) fail("Canonical run_receipt has an invalid exact shape");
-	if (
-		!isRecord(usage) ||
-		!hasExactKeys(usage, ["input", "output", "totalTokens"]) ||
-		![usage.input, usage.output, usage.totalTokens].every(
-			(candidate) => typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0,
-		)
-	) {
-		fail(`Canonical run_receipt ${checked.value.runReceiptId} has invalid usage`);
-	}
-	const checkedError = terminalError === undefined ? undefined : validatePublicExecutionError(terminalError);
-	if (checkedError !== undefined && !checkedError.ok) {
-		fail(`Canonical run_receipt ${checked.value.runReceiptId} has an invalid terminal error`);
-	}
-	if (checked.value.terminalStatus === "completed") {
-		if (terminalError !== undefined || checked.value.terminalErrorCode !== undefined) {
-			fail(`Completed Run ${checked.value.runId} carries a terminal error`);
-		}
-	} else if (
-		checkedError === undefined ||
-		checked.value.terminalErrorCode === undefined ||
-		checkedError.value.code !== checked.value.terminalErrorCode
-	) {
-		fail(`Terminal error conflicts for Run ${checked.value.runId}`);
-	}
-	return {
-		...checked.value,
-		usage: {
-			input: usage.input as number,
-			output: usage.output as number,
-			totalTokens: usage.totalTokens as number,
-		},
-		...(checkedError === undefined ? {} : { terminalError: checkedError.value }),
-	};
-}
-
-function insertFact<TPayload>(
-	map: Map<string, StoredFact<TPayload>>,
-	identity: string,
-	record: FoundationFactRecord,
-	payload: TPayload,
-): void {
-	const existing = map.get(identity);
-	if (existing === undefined) {
-		map.set(identity, { record, payload });
-		return;
-	}
-	if (
-		existing.record.objectId !== record.objectId ||
-		existing.record.revision !== record.revision ||
-		existing.record.correlation.sessionId !== record.correlation.sessionId ||
-		!canonicalEqual(existing.payload, payload)
-	) {
-		fail(`Canonical ${record.objectType} conflicts for ${identity}`);
-	}
-	if (record.seq < existing.record.seq || record.seq === existing.record.seq && record.id.localeCompare(existing.record.id) < 0) {
-		map.set(identity, { record, payload });
-	}
-}
-
-function requireFactRecord(record: FoundationRecord): FoundationFactRecord {
-	if (record.kind !== "fact") fail("Canonical result record is not an immutable fact");
-	if (record.correlation.sessionId.length === 0) fail(`Canonical ${record.objectType} has no Session correlation`);
-	return record;
+function hasExactKeys(
+	value: Record<string, unknown>,
+	required: readonly string[],
+	optional: readonly string[] = [],
+): boolean {
+	const allowed = new Set([...required, ...optional]);
+	return Object.keys(value).every((key) => allowed.has(key)) && required.every((key) => Object.hasOwn(value, key));
 }
 
 function requireProvenanceSession(
-	record: FoundationFactRecord,
-	provenance: AttemptReceipt["provenance"] | TaskResult["provenance"] | WorkerReceipt["provenance"],
+	sessionId: string,
+	kind: string,
+	provenance: AttemptReceipt["provenance"] | TaskResult["provenance"],
 ): void {
-	if (provenance.correlation?.sessionId !== record.correlation.sessionId) {
-		fail(`Canonical ${record.objectType} provenance belongs to another Session`);
+	if (provenance.correlation?.sessionId !== sessionId) {
+		fail(`Canonical ${kind} provenance belongs to another Session`);
 	}
 }
 
-function collectResultFacts(records: readonly FoundationRecord[]): ResultFacts {
-	const facts: ResultFacts = {
-		runs: new Map(),
-		tasks: new Map(),
-		attempts: new Map(),
-		workers: new Map(),
-	};
-	for (const candidate of records) {
-		if (!("objectType" in candidate) || !RESULT_OBJECT_TYPES.has(candidate.objectType)) continue;
-		const record = requireFactRecord(candidate);
-		if (record.objectType === "run_receipt") {
-			const receipt = canonicalRunReceipt(record.payload);
-			if (receipt.runId !== record.objectId || record.correlation.runId !== receipt.runId) {
-				fail(`Canonical run_receipt ${record.objectId} has conflicting Run identity`);
-			}
-			if (!isCanonicalTimestamp(receipt.completedAt)) fail(`Canonical run_receipt ${record.objectId} has an invalid completion time`);
-			insertFact(facts.runs, receipt.runId, record, receipt);
-			continue;
-		}
-		if (record.objectType === "task_result") {
-			const checked = validateTaskResult(record.payload);
-			if (!checked.ok || checked.value.provenance.producerKind !== "host") {
-				fail(`Canonical task_result ${record.objectId} is malformed or was not settled by the Host`);
-			}
-			if (checked.value.taskResultId !== record.objectId) fail(`Canonical task_result ${record.objectId} has conflicting identity`);
-			requireProvenanceSession(record, checked.value.provenance);
-			insertFact(facts.tasks, checked.value.taskResultId, record, checked.value);
-			continue;
-		}
-		if (record.objectType === "attempt_receipt") {
-			const checked = validateAttemptReceipt(record.payload);
-			if (!checked.ok) fail(`Canonical attempt_receipt ${record.objectId} is malformed`);
-			if (checked.value.attemptReceiptId !== record.objectId) fail(`Canonical attempt_receipt ${record.objectId} has conflicting identity`);
-			requireProvenanceSession(record, checked.value.provenance);
-			insertFact(facts.attempts, checked.value.attemptReceiptId, record, checked.value);
-			continue;
-		}
-		const checked = validateWorkerReceipt(record.payload);
-		if (!checked.ok) fail(`Canonical worker_receipt ${record.objectId} is malformed`);
-		if (checked.value.workerReceiptId !== record.objectId) fail(`Canonical worker_receipt ${record.objectId} has conflicting identity`);
-		requireProvenanceSession(record, checked.value.provenance);
-		insertFact(facts.workers, checked.value.workerReceiptId, record, checked.value);
+function taskStatusFromAttempts(attempts: readonly AttemptReceipt[]): TaskResult["status"] {
+	if (attempts.some((attempt) => attempt.status === "failed")) return "failed";
+	if (attempts.every((attempt) => attempt.status === "cancelled")) return "cancelled";
+	if (attempts.some((attempt) => attempt.status === "suspended")) return "suspended";
+	return "succeeded";
+}
+
+function validateCanonicalRunResult(candidate: CanonicalRunResult): ValidatedCanonicalRun {
+	if (
+		!isRecord(candidate) ||
+		!hasExactKeys(candidate, ["schemaVersion", "runReceipt", "attemptReceipts", "writtenEvent"], ["taskResult"]) ||
+		candidate.schemaVersion !== 1
+	) {
+		fail("Canonical Run result has an invalid exact shape");
 	}
-	return facts;
+
+	const checkedReceipt = validateRunReceipt(candidate.runReceipt);
+	if (!checkedReceipt.ok) fail("Canonical RunReceipt has an invalid exact shape");
+	const receipt = checkedReceipt.value;
+	if (!isCanonicalTimestamp(receipt.completedAt)) {
+		fail(`Canonical RunReceipt ${receipt.runReceiptId} has an invalid completion time`);
+	}
+
+	const checkedEvent = validateDurableEvent(candidate.writtenEvent);
+	if (
+		!checkedEvent.ok ||
+		checkedEvent.value.category !== "run_receipt.written" ||
+		!isCanonicalTimestamp(checkedEvent.value.timestamp) ||
+		!isRecord(checkedEvent.value.payload)
+	) {
+		fail(`Canonical RunReceipt ${receipt.runReceiptId} has an invalid written event`);
+	}
+	const sessionId = checkedEvent.value.correlation.sessionId;
+	if (sessionId.length === 0) fail(`Canonical RunReceipt ${receipt.runReceiptId} has no Session correlation`);
+	if (
+		checkedEvent.value.payload.runId !== receipt.runId ||
+		checkedEvent.value.payload.runReceiptId !== receipt.runReceiptId ||
+		checkedEvent.value.correlation.runId !== receipt.runId ||
+		(checkedEvent.value.correlation.runReceiptId !== undefined &&
+			checkedEvent.value.correlation.runReceiptId !== receipt.runReceiptId)
+	) {
+		fail(`Canonical run_receipt.written event conflicts for Run ${receipt.runId}`);
+	}
+
+	if (!Array.isArray(candidate.attemptReceipts)) {
+		fail(`Canonical RunReceipt ${receipt.runReceiptId} has invalid AttemptReceipt references`);
+	}
+	const attempts = candidate.attemptReceipts.map((value) => {
+		const checked = validateAttemptReceipt(value);
+		if (!checked.ok) fail(`Canonical RunReceipt ${receipt.runReceiptId} has a malformed AttemptReceipt`);
+		requireProvenanceSession(sessionId, `AttemptReceipt ${checked.value.attemptReceiptId}`, checked.value.provenance);
+		return checked.value;
+	});
+	const attemptsById = new Map(attempts.map((attempt) => [attempt.attemptReceiptId, attempt]));
+	if (
+		attemptsById.size !== attempts.length ||
+		receipt.attemptReceiptIds.length !== attempts.length ||
+		receipt.attemptReceiptIds.some((id) => !attemptsById.has(id))
+	) {
+		fail(`Canonical RunReceipt ${receipt.runReceiptId} has missing or duplicate AttemptReceipt references`);
+	}
+	const taskIds = new Set(attempts.map((attempt) => attempt.taskId));
+	if (taskIds.size !== 1) fail(`Canonical RunReceipt ${receipt.runReceiptId} references Attempts from different Tasks`);
+
+	let taskResult: TaskResult | undefined;
+	if (candidate.taskResult !== undefined) {
+		const checked = validateTaskResult(candidate.taskResult);
+		if (!checked.ok || checked.value.provenance.producerKind !== "host") {
+			fail(`Canonical RunReceipt ${receipt.runReceiptId} has a malformed or non-Host TaskResult`);
+		}
+		taskResult = checked.value;
+		requireProvenanceSession(sessionId, `TaskResult ${taskResult.taskResultId}`, taskResult.provenance);
+	}
+	if (receipt.taskResultId === undefined ? taskResult !== undefined : taskResult?.taskResultId !== receipt.taskResultId) {
+		fail(`Canonical RunReceipt ${receipt.runReceiptId} has a conflicting TaskResult reference`);
+	}
+	if (taskResult !== undefined) {
+		if (!taskIds.has(taskResult.taskId)) {
+			fail(`Canonical TaskResult ${taskResult.taskResultId} belongs to another Run chain`);
+		}
+		if (
+			taskResult.sourceAttemptReceiptIds.length === 0 ||
+			new Set(taskResult.sourceAttemptReceiptIds).size !== taskResult.sourceAttemptReceiptIds.length ||
+			taskResult.sourceAttemptReceiptIds.some((id) => !attemptsById.has(id))
+		) {
+			fail(`Canonical TaskResult ${taskResult.taskResultId} has invalid AttemptReceipt references`);
+		}
+		const sourceAttempts = taskResult.sourceAttemptReceiptIds.map((id) => {
+			const attempt = attemptsById.get(id);
+			if (attempt === undefined) fail(`Canonical TaskResult ${taskResult.taskResultId} references missing AttemptReceipt ${id}`);
+			return attempt;
+		});
+		if (taskStatusFromAttempts(sourceAttempts) !== taskResult.status) {
+			fail(`Canonical TaskResult ${taskResult.taskResultId} conflicts with its Attempt outcomes`);
+		}
+	} else if (receipt.terminalStatus === "completed") {
+		fail(`Completed Run ${receipt.runId} is missing its TaskResult`);
+	}
+
+	return {
+		result: {
+			schemaVersion: 1,
+			runReceipt: receipt,
+			...(taskResult === undefined ? {} : { taskResult }),
+			attemptReceipts: attempts,
+			writtenEvent: candidate.writtenEvent,
+		},
+		sessionId,
+	};
 }
 
 function normalizeEvents(events: readonly DurableEventEnvelope[]): DurableEventEnvelope[] {
@@ -293,13 +278,6 @@ function mergeSideEffectState(left: SideEffectState, right: SideEffectState): Si
 	return "none";
 }
 
-function taskStatusFromAttempts(attempts: readonly AttemptReceipt[]): TaskResult["status"] {
-	if (attempts.some((attempt) => attempt.status === "failed")) return "failed";
-	if (attempts.every((attempt) => attempt.status === "cancelled")) return "cancelled";
-	if (attempts.some((attempt) => attempt.status === "suspended")) return "suspended";
-	return "succeeded";
-}
-
 function errorProjection(value: PublicExecutionError): AutomationRunErrorProjection {
 	return {
 		code: value.code,
@@ -309,14 +287,9 @@ function errorProjection(value: PublicExecutionError): AutomationRunErrorProject
 	};
 }
 
-function terminalErrorFromReceipt(
-	receipt: CanonicalAutomationRunReceiptSource,
-): AutomationRunErrorProjection | undefined {
-	return receipt.terminalError === undefined ? undefined : errorProjection(receipt.terminalError);
-}
-
 function startedAtForRun(
 	runId: string,
+	sessionId: string,
 	attempts: readonly AttemptReceipt[],
 	events: readonly DurableEventEnvelope[],
 ): string | undefined {
@@ -326,6 +299,9 @@ function startedAtForRun(
 		if (event.category !== "attempt.started" || !isRecord(event.payload)) continue;
 		const attemptId = event.payload.attemptId;
 		if (typeof attemptId !== "string" || !attemptIds.has(attemptId)) continue;
+		if (event.correlation.sessionId !== sessionId) {
+			fail(`Canonical attempt.started event for ${attemptId} belongs to another Session`);
+		}
 		if (event.correlation.runId !== undefined && event.correlation.runId !== runId) {
 			fail(`Canonical attempt.started event for ${attemptId} belongs to another Run`);
 		}
@@ -335,34 +311,8 @@ function startedAtForRun(
 	return starts[0];
 }
 
-function requireWorkerChain(
-	sessionId: string,
-	attempt: AttemptReceipt,
-	facts: ResultFacts,
-): SideEffectState {
-	let state = attempt.sideEffectState;
-	for (const reference of attempt.workerReceiptRefs) {
-		const stored = facts.workers.get(reference.id);
-		if (stored === undefined) fail(`Canonical attempt_receipt ${attempt.attemptReceiptId} references missing WorkerReceipt ${reference.id}`);
-		const worker = stored.payload;
-		if (
-			stored.record.revision !== reference.revision ||
-			stored.record.correlation.sessionId !== sessionId ||
-			(reference.providerId !== undefined && reference.providerId !== worker.provenance.providerId) ||
-			(reference.fingerprint !== undefined && reference.fingerprint.value !== fingerprintFoundationValue(worker).value) ||
-			(worker.taskId !== undefined && worker.taskId !== attempt.taskId) ||
-			(worker.dispatchId !== undefined && worker.dispatchId !== attempt.dispatchId) ||
-			(worker.attemptId !== undefined && worker.attemptId !== attempt.attemptId)
-		) {
-			fail(`Canonical WorkerReceipt ${reference.id} conflicts with AttemptReceipt ${attempt.attemptReceiptId}`);
-		}
-		state = mergeSideEffectState(state, worker.sideEffectState);
-	}
-	return state;
-}
-
 function validateOutcome(
-	receipt: CanonicalAutomationRunReceiptSource,
+	receipt: RunReceipt,
 	taskResult: TaskResult | undefined,
 	sideEffectState: SideEffectState,
 	terminalError: AutomationRunErrorProjection | undefined,
@@ -389,7 +339,7 @@ function validateOutcome(
 	}
 }
 
-function verifyWrittenEvent(receipt: RunReceipt, events: readonly DurableEventEnvelope[]): void {
+function verifyWrittenEvents(receipt: RunReceipt, events: readonly DurableEventEnvelope[]): void {
 	for (const event of events) {
 		if (event.category !== "run_receipt.written" || !isRecord(event.payload)) continue;
 		if (event.payload.runId !== receipt.runId && event.correlation.runId !== receipt.runId) continue;
@@ -405,62 +355,20 @@ function verifyWrittenEvent(receipt: RunReceipt, events: readonly DurableEventEn
 }
 
 function projectRun(
-	storedRun: StoredFact<CanonicalAutomationRunReceiptSource>,
-	facts: ResultFacts,
+	validated: ValidatedCanonicalRun,
 	events: readonly DurableEventEnvelope[],
 ): CanonicalAutomationRunProjection {
-	const receipt = storedRun.payload;
-	const sessionId = storedRun.record.correlation.sessionId;
-	if (receipt.attemptReceiptIds.length === 0 || new Set(receipt.attemptReceiptIds).size !== receipt.attemptReceiptIds.length) {
-		fail(`Canonical RunReceipt ${receipt.runReceiptId} has missing or duplicate AttemptReceipt references`);
-	}
-	const attempts = receipt.attemptReceiptIds.map((attemptReceiptId) => {
-		const stored = facts.attempts.get(attemptReceiptId);
-		if (stored === undefined) fail(`Canonical RunReceipt ${receipt.runReceiptId} references missing AttemptReceipt ${attemptReceiptId}`);
-		if (stored.record.correlation.sessionId !== sessionId) fail(`Canonical AttemptReceipt ${attemptReceiptId} belongs to another Session`);
-		return stored.payload;
-	});
-	const taskIds = new Set(attempts.map((attempt) => attempt.taskId));
-	if (taskIds.size !== 1) fail(`Canonical RunReceipt ${receipt.runReceiptId} references Attempts from different Tasks`);
-
-	let taskResult: TaskResult | undefined;
-	if (receipt.taskResultId !== undefined) {
-		const stored = facts.tasks.get(receipt.taskResultId);
-		if (stored === undefined) fail(`Canonical RunReceipt ${receipt.runReceiptId} references missing TaskResult ${receipt.taskResultId}`);
-		if (stored.record.correlation.sessionId !== sessionId || !taskIds.has(stored.payload.taskId)) {
-			fail(`Canonical TaskResult ${receipt.taskResultId} belongs to another Run chain`);
-		}
-		if (
-			stored.payload.sourceAttemptReceiptIds.length === 0 ||
-			new Set(stored.payload.sourceAttemptReceiptIds).size !== stored.payload.sourceAttemptReceiptIds.length ||
-			stored.payload.sourceAttemptReceiptIds.some((id) => !receipt.attemptReceiptIds.includes(id))
-		) {
-			fail(`Canonical TaskResult ${receipt.taskResultId} has invalid AttemptReceipt references`);
-		}
-		const sourceAttempts = stored.payload.sourceAttemptReceiptIds.map((id) => {
-			const source = facts.attempts.get(id);
-			if (source === undefined) fail(`Canonical TaskResult ${receipt.taskResultId} references missing AttemptReceipt ${id}`);
-			return source.payload;
-		});
-		if (taskStatusFromAttempts(sourceAttempts) !== stored.payload.status) {
-			fail(`Canonical TaskResult ${receipt.taskResultId} conflicts with its Attempt outcomes`);
-		}
-		taskResult = stored.payload;
-	} else if (receipt.terminalStatus === "completed") {
-		fail(`Completed Run ${receipt.runId} is missing its TaskResult`);
-	}
-
+	const { result, sessionId } = validated;
+	const { runReceipt: receipt, taskResult, attemptReceipts: attempts } = result;
 	let sideEffectState: SideEffectState = "none";
-	for (const attempt of attempts) {
-		sideEffectState = mergeSideEffectState(sideEffectState, requireWorkerChain(sessionId, attempt, facts));
-	}
-	const terminalError = terminalErrorFromReceipt(receipt);
+	for (const attempt of attempts) sideEffectState = mergeSideEffectState(sideEffectState, attempt.sideEffectState);
+	const terminalError = receipt.terminalError === undefined ? undefined : errorProjection(receipt.terminalError);
 	validateOutcome(receipt, taskResult, sideEffectState, terminalError);
-	verifyWrittenEvent(receipt, events);
-	const startedAt = startedAtForRun(receipt.runId, attempts, events);
+	verifyWrittenEvents(receipt, events);
+	const startedAt = startedAtForRun(receipt.runId, sessionId, attempts, events);
 	const usage: AutomationRunUsageProjection = {
-		input: receipt.usage.input,
-		output: receipt.usage.output,
+		input: receipt.usage.inputTokens,
+		output: receipt.usage.outputTokens,
 		total: receipt.usage.totalTokens,
 	};
 	const terminal: CanonicalAutomationRunTerminalProjection = {
@@ -488,11 +396,26 @@ function projectRun(
 	};
 }
 
-/** Deterministically project terminal Automation Runs from canonical Foundation facts. */
+/** Deterministically project terminal Automation Runs from canonical Foundation results. */
 export function projectAutomationRuns(input: AutomationRunProjectionInput): readonly CanonicalAutomationRunProjection[] {
-	const facts = collectResultFacts(input.records);
-	const events = normalizeEvents(input.events ?? []);
-	return [...facts.runs.values()]
-		.sort((left, right) => left.record.seq - right.record.seq || left.payload.runId.localeCompare(right.payload.runId))
-		.map((stored) => projectRun(stored, facts, events));
+	const byRunId = new Map<string, ValidatedCanonicalRun>();
+	for (const candidate of input.canonicalRuns) {
+		const validated = validateCanonicalRunResult(candidate);
+		const existing = byRunId.get(validated.result.runReceipt.runId);
+		if (existing !== undefined && !canonicalEqual(existing.result, validated.result)) {
+			fail(`Canonical Run result conflicts for ${validated.result.runReceipt.runId}`);
+		}
+		if (existing === undefined) byRunId.set(validated.result.runReceipt.runId, validated);
+	}
+	const events = normalizeEvents([
+		...[...byRunId.values()].map(({ result }) => result.writtenEvent),
+		...(input.events ?? []),
+	]);
+	return [...byRunId.values()]
+		.sort(
+			(left, right) =>
+				left.result.writtenEvent.sequence - right.result.writtenEvent.sequence ||
+				left.result.runReceipt.runId.localeCompare(right.result.runReceipt.runId),
+		)
+		.map((validated) => projectRun(validated, events));
 }
