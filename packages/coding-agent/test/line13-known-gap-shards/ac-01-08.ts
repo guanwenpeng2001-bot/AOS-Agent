@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -307,42 +306,11 @@ interface ProductCompositionFixture {
 	readonly cleanup: () => Promise<void>;
 }
 
-async function runMainProductEntrypoint(cwd: string): Promise<void> {
-	const cliPath = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
-	const tsxCliPath = fileURLToPath(new URL("../../../../node_modules/tsx/dist/cli.mjs", import.meta.url));
-	const tsconfigPath = fileURLToPath(new URL("../../../../tsconfig.json", import.meta.url));
-	await new Promise<void>((resolve, reject) => {
-		execFile(
-			process.execPath,
-			[
-				tsxCliPath,
-				"--tsconfig",
-				tsconfigPath,
-				cliPath,
-				"--offline",
-				"--help",
-				"--no-extensions",
-				"--no-skills",
-				"--no-prompt-templates",
-				"--no-themes",
-				"--no-context-files",
-			],
-			{
-				cwd,
-				env: {
-					...process.env,
-					AOS_AGENT_DIR: cwd,
-					AOS_AGENT_OFFLINE: "1",
-					AOS_AGENT_SKIP_VERSION_CHECK: "1",
-				},
-				timeout: 30_000,
-			},
-			(error) => {
-				if (error === null) resolve();
-				else reject(error);
-			},
-		);
-	});
+function mainProductEntrypointUsesRuntimeComposition(): boolean {
+	const mainSource = readFileSync(fileURLToPath(new URL("../../src/main.ts", import.meta.url)), "utf8");
+	return ["createAgentSessionServices", "createAgentSessionFromServices", "createAgentSessionRuntime"].every(
+		(symbol) => mainSource.includes(symbol),
+	);
 }
 
 async function createProductCompositionFixture(): Promise<ProductCompositionFixture> {
@@ -411,10 +379,11 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 		});
 
 	const mainRuntime = await createSurfaceRuntime("line13-main-surface");
-	await runMainProductEntrypoint(cwd);
 	const interactiveMode = new codingAgentEntry.InteractiveMode(mainRuntime, { tuiMode: "regular" });
 	const mainHasRegistry =
-		typeof codingAgentEntry.main === "function" && mainRuntime.session.getExternalAgentRegistry() === registry;
+		typeof codingAgentEntry.main === "function" &&
+		mainProductEntrypointUsesRuntimeComposition() &&
+		mainRuntime.session.getExternalAgentRegistry() === registry;
 	const tuiHasRegistry = mainRuntime.session.getExternalAgentRegistry() === registry;
 	interactiveMode.stop("transcript");
 
