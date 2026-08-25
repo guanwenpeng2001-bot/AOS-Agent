@@ -1,6 +1,6 @@
-# Architecture Atlas: Foundation v1
+# Architecture Atlas: Foundation
 
-Foundation v1 closes Atlas rows 01–10 and 10A. Delivery status is a sealed
+Foundation closes Atlas rows 01–10 and 10A. Delivery status is a sealed
 integration candidate whose promotion requires exact-range external review and
 protected-branch CI. The user authorized that promotion workflow. Lines 11,
 12A, and 12B now have separate machine-checked implementation ledgers. Lines
@@ -10,17 +10,17 @@ protected-branch CI. The user authorized that promotion workflow. Lines 11,
 
 | Row | Foundation boundary | Status |
 | --- | --- | --- |
-| 01 | Agent loop, turn/step lifecycle, streaming, cancellation, deadlines, and queue behavior | Foundation v1 sealed |
-| 02 | Task/Attempt identity, context, model, policy, tools, structured results, and receipts | Foundation v1 sealed |
-| 03 | Durable events, observers, cursors, replay, and gap detection | Foundation v1 sealed |
-| 04 | Retry, cancellation, deadline, failure, and recovery semantics | Foundation v1 sealed |
-| 05 | Tool Gateway and the prepare/pre/guard/execute/post/finalize pipeline | Foundation v1 sealed |
-| 06 | Session JSONL, migration, reducer replay, fencing, and single-writer ordering | Foundation v1 sealed |
-| 07 | Plugins, MCP selection, runtime services, and extension lifecycle | Foundation v1 sealed |
-| 08 | Goal, Plan, Stage, Todo, Ask, Workflow, gates, and task graph contracts | Foundation v1 sealed |
-| 09 | Role, model profile, binding, provider, transport, and execution boundaries | Foundation v1 sealed; Line 12A native consumer implemented |
-| 10 | SDK/RPC/local-surface parity and contract conformance | Foundation v1 sealed |
-| 10A | Capability ledger, control APIs, evaluation, and future-owner accounting | Foundation v1 sealed |
+| 01 | Agent loop, turn/step lifecycle, streaming, cancellation, deadlines, and queue behavior | Foundation sealed |
+| 02 | Task/Attempt identity, context, model, policy, tools, structured results, and receipts | Foundation sealed |
+| 03 | Durable events, observers, cursors, replay, and gap detection | Foundation sealed |
+| 04 | Retry, cancellation, deadline, failure, and recovery semantics | Foundation sealed |
+| 05 | Tool Gateway and the prepare/pre/guard/execute/post/finalize pipeline | Foundation sealed |
+| 06 | Session JSONL, migration, reducer replay, fencing, and single-writer ordering | Foundation sealed |
+| 07 | Plugins, MCP selection, runtime services, and extension lifecycle | Foundation sealed |
+| 08 | Goal, Plan, Stage, Todo, Ask, Workflow, gates, and task graph contracts | Foundation sealed |
+| 09 | Role, model profile, binding, provider, transport, and execution boundaries | Foundation sealed; Line 12A native consumer implemented |
+| 10 | SDK/RPC/local-surface parity and contract conformance | Foundation sealed |
+| 10A | Capability ledger, control APIs, evaluation, and future-owner accounting | Foundation sealed |
 
 The Foundation seal closes contracts and their local runtime behavior. Line 11
 implements the local Operation Worker consumer. Line 12A implements native
@@ -67,7 +67,7 @@ second transcript, queue, model, tool, or lifecycle authority.
 ## Capability accounting
 
 The machine-readable ledger is
-`packages/agent/src/harness/foundation-v1-capabilities.ts`.
+`packages/agent/src/harness/foundation-capabilities.ts`.
 
 - Closure set: 79 unique ids — `1–73`, `98`, `127–129`, `145–146`.
 - Future-owner set: 71 unique ids — `74–97`, `99–126`, `130–144`, `147–150`.

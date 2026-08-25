@@ -1593,12 +1593,12 @@ Parse errors:
 
 ## Automation Host (protocolVersion 1)
 
-Automation Host v1 is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
+Automation Host is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
 
 The Automation Host reuses the existing agent loop, `AgentSession`, session
 persistence, and the strict JSONL transport. It is available over either the
 default stdio transport or the local TCP listener described above; it is not a
-second agent loop and v1 introduces no HTTP, WebSocket, database, or
+second agent loop and this layer introduces no HTTP, WebSocket, database, or
 remote-agent layer. The TCP listener remains deliberately unauthenticated and
 loopback-only, so it is not a remotely exposed service.
 
@@ -1742,7 +1742,7 @@ Capability, Policy, and Sandbox bindings used by the Run.
 
 Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
-- `start_rejected` when the host preflight rejects the input. In v1, inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
+- `start_rejected` when the host preflight rejects the input. Inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
 - `run_deadline_invalid` when `deadlineAt` is not a canonical UTC timestamp
 - `run_deadline_exceeded` when the deadline has expired before the run is accepted, including while asynchronous preflight is still running
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
@@ -1894,7 +1894,7 @@ Failures:
 - `source_run_not_found` when `sourceRunId` is not in the restored session's ledger
 - `source_run_not_resumable` when the source run cannot be the basis for a new attempt
 - `session_switch_cancelled` when a session-switch extension cancelled the switch
-- `start_rejected` when the new run input is rejected (including the v1 slash-command rule)
+- `start_rejected` when the new run input is rejected (including the slash-command rule)
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
 - `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
 - `run_deadline_invalid` or `run_deadline_exceeded` when the requested deadline is malformed or already expired
@@ -2039,7 +2039,7 @@ branch on stable `error.code`, not message text.
 
 ### Task Gate commands (task.gate.*)
 
-Task Gate is the v1 control-plane contract for human decisions about task stages. A Gate records whether a task stage may proceed; it is not an execution permission, a Policy approval, or a Run. The commands are additive Automation Host capabilities advertised as `taskGateCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch.
+Task Gate is the current control-plane contract for human decisions about task stages. A Gate records whether a task stage may proceed; it is not an execution permission, a Policy approval, or a Run. The commands are additive Automation Host capabilities advertised as `taskGateCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch.
 
 A Gate is identified by `gateId` and belongs to exactly one business key:
 
@@ -2047,7 +2047,7 @@ A Gate is identified by `gateId` and belongs to exactly one business key:
 sessionId + taskId + stageId + stageRevision
 ```
 
-A business key has at most one Gate. `taskId` and `stageId` are opaque external orchestration identifiers; v1 does not create Task or Stage objects. `stageRevision` is a positive integer that increments whenever the stage content or inputs change; a Gate is bound to one revision, and an old approval never migrates to a new revision. `runId` is optional and is only a correlation link to a stage's Run; it grants no permission to modify that Run.
+A business key has at most one Gate. `taskId` and `stageId` are opaque external orchestration identifiers; the current contract does not create Task or Stage objects. `stageRevision` is a positive integer that increments whenever the stage content or inputs change; a Gate is bound to one revision, and an old approval never migrates to a new revision. `runId` is optional and is only a correlation link to a stage's Run; it grants no permission to modify that Run.
 
 A Gate transitions:
 
@@ -2057,7 +2057,7 @@ task.gate.request → pending → approved  (task.gate.approve)
                            → cancelled (task.gate.cancel)
 ```
 
-`pending`, `approved`, `rejected`, and `cancelled` are the only statuses. `approved`, `rejected`, and `cancelled` are terminal: v1 never reopens a terminal Gate and has no `running`, `failed`, or `interrupted` Gate status.
+`pending`, `approved`, `rejected`, and `cancelled` are the only statuses. `approved`, `rejected`, and `cancelled` are terminal: the current contract never reopens a terminal Gate and has no `running`, `failed`, or `interrupted` Gate status.
 
 A Gate is a control-plane fact, not a Run terminal:
 
@@ -2096,9 +2096,9 @@ Field rules:
 - `sessionId`, `gateId`, `taskId`, `stageId`, `runId`, `actorId`, and `reasonCode` must pass the existing safe opaque identifier rules (bounded length, safe charset, no control characters); they are identifiers, not URLs, paths, commands, or payload containers.
 - `stageRevision` and `revision` are positive safe integers. `stageRevision` is immutable after the Gate is created.
 - `decidedAt` is present only for terminal statuses.
-- `actorId` is a trusted-Host-supplied operator label only; v1 performs no authentication, role check, or authorization of the actor.
+- `actorId` is a trusted-Host-supplied operator label only; the current contract performs no authentication, role check, or authorization of the actor.
 - `reasonCode` is a stable short code only. Free text, prompts, URLs, paths, commands, diffs, credentials, and model output are never Gate data.
-- v1 has no `expiresAt`; stale stages are invalidated by a new `stageRevision` or an explicit `cancel`.
+- the current contract has no `expiresAt`; stale stages are invalidated by a new `stageRevision` or an explicit `cancel`.
 
 #### task.gate.request
 
@@ -2182,7 +2182,7 @@ Success:
 }
 ```
 
-Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.gate.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a response may set `truncated: true` and introduces no cross-Session cursor. `task.gate.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
 
 #### task.gate.approve / task.gate.reject / task.gate.cancel
 
@@ -2209,7 +2209,7 @@ Decide a pending Gate. The three commands share this shape:
 }
 ```
 
-`reasonCode` is not accepted on `task.gate.approve`, and v1 defines no reason code for `task.gate.cancel`. A decision succeeds only when the Gate belongs to the current Session, is `pending`, and the transition appends successfully. Success returns the terminal Gate snapshot with `decidedAt` set and `idempotent: false` (or `true` for an idempotent replay).
+`reasonCode` is not accepted on `task.gate.approve`, and the current contract defines no reason code for `task.gate.cancel`. A decision succeeds only when the Gate belongs to the current Session, is `pending`, and the transition appends successfully. Success returns the terminal Gate snapshot with `decidedAt` set and `idempotent: false` (or `true` for an idempotent replay).
 
 Failures:
 
@@ -2251,7 +2251,7 @@ Each transition is persisted as a Session custom entry with `customType: "task.g
 
 ### Task Graph commands (task.graph.*)
 
-Task Graph is the v1 control-plane contract for decomposing a large goal into an immutable DAG of ordinary Run nodes and exposing the shared task state that results. A Graph records which nodes exist, what each node depends on, whether a node's stage Gate is satisfied, and which accepted Run executes each node. It is not a second Run ledger, not an execution engine, and not a scheduler: nodes are executed through the existing `run.start` / `run.resume` flow, and the Graph only observes and associates those Runs.
+Task Graph is the current control-plane contract for decomposing a large goal into an immutable DAG of ordinary Run nodes and exposing the shared task state that results. A Graph records which nodes exist, what each node depends on, whether a node's stage Gate is satisfied, and which accepted Run executes each node. It is not a second Run ledger, not an execution engine, and not a scheduler: nodes are executed through the existing `run.start` / `run.resume` flow, and the Graph only observes and associates those Runs.
 
 The commands are additive Automation Host capabilities advertised as `taskGraphCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
 
@@ -2283,7 +2283,7 @@ A Graph is identified by the business key:
 sessionId + taskId + graphRevision
 ```
 
-`taskId` is an opaque external orchestration identifier; v1 does not create a Task object. `graphRevision` is a positive integer; changing the node set or dependencies requires a new revision, which creates a new immutable Graph. Old graphs stay read-only, and facts on old graphs are never migrated. The same business key can only ever describe one Graph.
+`taskId` is an opaque external orchestration identifier; the current contract does not create a Task object. `graphRevision` is a positive integer; changing the node set or dependencies requires a new revision, which creates a new immutable Graph. Old graphs stay read-only, and facts on old graphs are never migrated. The same business key can only ever describe one Graph.
 
 `task.graph.create` submits the complete node set once:
 
@@ -2305,7 +2305,7 @@ Creation validates:
 
 - `taskId`, `nodeId`, and `stageId` pass the safe opaque identifier rules (bounded length, safe charset, no control characters), and `graphRevision` and `stageRevision` are positive safe integers;
 - node IDs are unique within the Graph; every `dependsOn` ID exists in the same Graph; a node cannot depend on itself; the Graph must be a DAG (a cycle returns `task_graph_dependency_cycle`);
-- the Graph contains at least one node, and node count, edge count, per-node dependency count, and total request size stay within server bounds (v1: 256 nodes, 1024 edges, 64 dependencies per node, 256-character task/node/stage IDs, 128-character `clientRequestId`);
+- the Graph contains at least one node, and node count, edge count, per-node dependency count, and total request size stay within server bounds (current limits: 256 nodes, 1024 edges, 64 dependencies per node, 256-character task/node/stage IDs, 128-character `clientRequestId`);
 - no prompt, message, command, args, cwd, path, content, environment, credential, or free text is accepted as node data.
 
 A successful `create` appends one immutable definition entry and returns the Graph with every node `pending`, the derived availability, the aggregate summary, `createdAt`, and the idempotency flag:
@@ -2338,7 +2338,7 @@ A successful `create` appends one immutable definition entry and returns the Gra
 
 #### Node status and derived availability
 
-Persisted node status is one of `pending`, `running`, `succeeded`, `failed`, or `cancelled`. `nodeRevision` is the monotonic transition version: `0` pending, `1` running, `2` terminal. v1 never reopens, retries, or rewrites a terminal node.
+Persisted node status is one of `pending`, `running`, `succeeded`, `failed`, or `cancelled`. `nodeRevision` is the monotonic transition version: `0` pending, `1` running, `2` terminal. the current contract never reopens, retries, or rewrites a terminal node.
 
 Node availability is a read-only value derived at read time from the node status, the dependency statuses, and the current Task Gate state. It is never persisted and never written back:
 
@@ -2406,7 +2406,7 @@ Success:
 }
 ```
 
-Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.graph.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a response may set `truncated: true` and introduces no cross-Session cursor. `task.graph.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
 
 #### task.graph.node.attach
 
@@ -2480,7 +2480,7 @@ Graphs are scoped to the current Session. `task.graph.*` commands require an ini
 
 Each Graph mutation is persisted as a Session custom entry with `customType: "task.graph"` (schemaVersion 1): `create` writes the complete validated definition with all pending node snapshots, and each `node.attached` / `node.succeeded` / `node.failed` / `node.cancelled` transition writes the full node snapshot, `previousNodeRevision`, and `clientRequestId`. On session load the Host folds entries in file order and rejects a mismatched `sessionId`, an unsupported schema, unknown dependencies, dependency cycles, non-contiguous `nodeRevision`s, a second Run association for one node, or illegal status jumps; malformed entries never reach RPC, Audit, or model context, and `task.graph` custom entries never enter the LLM context.
 
-Task Graph v1 preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
+Task Graph preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
 
 #### Audit summary
 
@@ -2488,7 +2488,7 @@ Each legal `task.graph` transition produces exactly one safe `task.graph` audit 
 
 #### Non-goals
 
-Task Graph v1 deliberately does not implement:
+Task Graph deliberately does not implement:
 
 - a Worker scheduler, queue, preemption, leader election, distributed lock, or parallel Run scheduling; each Session still runs at most one active Run;
 - automatic `run.start`, `run.resume`, `run.cancel`, retry, skip, or rewrite of failed nodes;
@@ -2503,7 +2503,7 @@ Graph commands are control-plane commands only. They are not registered as built
 
 ### Task Credential commands (task.credential.*)
 
-Task Credential / Lease is the v1 control-plane contract for a short-lived, revocable, auditable grant bound to one Task Execution Binding. It records which scopes a task stage / Run may expose, to which target, until which deadline, and whether delivery or revocation completed. It is not a ModelRuntime key, not a Remote Operation lease, and not a Worker scheduler.
+Task Credential / Lease is the current control-plane contract for a short-lived, revocable, auditable grant bound to one Task Execution Binding. It records which scopes a task stage / Run may expose, to which target, until which deadline, and whether delivery or revocation completed. It is not a ModelRuntime key, not a Remote Operation lease, and not a Worker scheduler.
 
 The commands are additive Automation Host capabilities advertised as `taskCredentialCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
 
@@ -2756,7 +2756,7 @@ Error codes:
 | `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
 | `host_not_initialized` | A versioned Automation Host command was sent before a successful `initialize` | no |
 | `session_busy` | A run is already active in the session; only one run per session at a time | yes |
-| `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
+| `start_rejected` | Host preflight rejected the run input (the current contract rejects inputs beginning with `/`) | no |
 | `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
 | `run_not_cancellable` | The run is not in a cancellable state | no |
 | `session_not_persistent` | The session has no `sessionFile`; it cannot be resumed | no |
@@ -2996,7 +2996,7 @@ has the same shape with the existing deadline metadata and stable code:
 
 ### One active run per session
 
-A session runs at most one active run at a time. A second `run.start` or `run.resume` while a run is active fails with `session_busy`, which is marked `retryable`: the caller should wait for the active run's terminal event and then retry. v1 does not queue or preempt; there is no implicit scheduling.
+A session runs at most one active run at a time. A second `run.start` or `run.resume` while a run is active fails with `session_busy`, which is marked `retryable`: the caller should wait for the active run's terminal event and then retry. the current contract does not queue or preempt; there is no implicit scheduling.
 
 ### Persistence and recovery
 

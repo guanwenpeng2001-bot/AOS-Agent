@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AskStore } from "../../src/harness/foundation/ask-store.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
-import type { ProvisionedFoundationRecordV1 } from "../../src/harness/session/durable/types.ts";
+import type { ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
 const DUE_AT = "2026-08-19T12:00:00.000Z";
@@ -39,7 +39,7 @@ async function createAsk(store: AskStore, requestId: string, suffix = "") {
 
 function injectAppendFault(
 	session: Session,
-	predicate: (record: ProvisionedFoundationRecordV1) => boolean,
+	predicate: (record: ProvisionedFoundationRecord) => boolean,
 	phase: "before" | "after",
 ): () => void {
 	const original = session.appendFoundationRecord.bind(session);

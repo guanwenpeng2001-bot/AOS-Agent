@@ -1,35 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
 import {
-	ScopedExecutionGatewayV1,
+	ScopedExecutionGateway,
 	createBindingEpoch,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
 	FoundationError,
 	resolveAgentBinding,
-	SessionLedgerV1,
+	SessionLedger,
 	validateImmutableAgentBinding,
-	validateRoleRevisionV1,
-	validateSecretFreeModelProfileV1,
-	type AgentBindingV1,
-	type BindingEpochV1,
-	type FoundationProviderCapabilityV1,
+	validateRoleRevision,
+	validateSecretFreeModelProfile,
+	type AgentBinding,
+	type BindingEpoch,
+	type FoundationProviderCapability,
 	type FoundationJsonValue,
-	type ModelProfileV1,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
+	type ModelProfile,
+	type RevisionReference,
+	type RoleRevision,
 	type ScopedModelGateway,
-	type ScopedModelRequestV1,
-	type ScopedModelResultV1,
-	type TaskEnvelopeV1,
+	type ScopedModelRequest,
+	type ScopedModelResult,
+	type TaskEnvelope,
 } from "../../src/harness/foundation/index.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const EXPIRES = "2026-01-01T00:05:00.000Z";
 const CREDENTIAL_SENTINEL = "credential-material-must-not-cross";
-const capability: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.t6.gateway", version: 1 };
+const capability: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.t6.gateway", version: 1 };
 
 interface CredentialTargetReferenceV1 {
 	readonly schemaVersion: 1;
@@ -55,11 +55,11 @@ interface ExternalExecutorRequestV1 {
 	readonly taskId: string;
 	readonly bindingEpochId: string;
 	readonly attemptId: string;
-	readonly modelProfileRevision: RevisionReferenceV1;
+	readonly modelProfileRevision: RevisionReference;
 	readonly input: FoundationJsonValue;
 }
 
-function task(): TaskEnvelopeV1 {
+function task(): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: "task-t6-gateway",
@@ -77,7 +77,7 @@ function task(): TaskEnvelopeV1 {
 	};
 }
 
-function roleRevision(): RoleRevisionV1 {
+function roleRevision(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -97,16 +97,16 @@ function roleRevision(): RoleRevisionV1 {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({ schemaVersion: 1, modelProfileId: "profile-t6-gateway", provider: "fake", model: "fake-model", budget: { modelCalls: 2 }, revision: 1, createdAt: NOW });
 }
 
-function immutableReference(type: string, id: string): RevisionReferenceV1 {
+function immutableReference(type: string, id: string): RevisionReference {
 	const payload = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
 }
 
-function binding(): AgentBindingV1 {
+function binding(): AgentBinding {
 	const currentTask = task();
 	const currentRole = roleRevision();
 	const currentProfile = modelProfile();
@@ -125,7 +125,7 @@ function binding(): AgentBindingV1 {
 	return result.value;
 }
 
-function epoch(currentBinding: AgentBindingV1): BindingEpochV1 {
+function epoch(currentBinding: AgentBinding): BindingEpoch {
 	const result = createBindingEpoch({
 		bindingEpochId: "epoch-t6-gateway",
 		taskId: currentBinding.taskId,
@@ -139,11 +139,11 @@ function epoch(currentBinding: AgentBindingV1): BindingEpochV1 {
 	return result.value;
 }
 
-function targetReference(currentBinding: AgentBindingV1): CredentialTargetReferenceV1 {
+function targetReference(currentBinding: AgentBinding): CredentialTargetReferenceV1 {
 	return { schemaVersion: 1, targetId: "target-t6-gateway", targetKind: "external-model", bindingId: currentBinding.bindingId, issuedAt: NOW, expiresAt: EXPIRES };
 }
 
-function leaseReference(currentBinding: AgentBindingV1, currentEpoch: BindingEpochV1): CredentialLeaseReferenceV1 {
+function leaseReference(currentBinding: AgentBinding, currentEpoch: BindingEpoch): CredentialLeaseReferenceV1 {
 	return { schemaVersion: 1, leaseId: "lease-t6-gateway", targetId: "target-t6-gateway", bindingId: currentBinding.bindingId, bindingEpochId: currentEpoch.bindingEpochId, issuedAt: NOW, expiresAt: EXPIRES };
 }
 
@@ -175,9 +175,9 @@ class ConsumerModelGateway implements ScopedModelGateway {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "model-gateway-t6";
 	readonly providerClass = "gateway" as const;
-	readonly requests: ScopedModelRequestV1[] = [];
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [capability]; }
-	async stream(request: ScopedModelRequestV1): Promise<ResultValue<ScopedModelResultV1, FoundationError>> {
+	readonly requests: ScopedModelRequest[] = [];
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [capability]; }
+	async stream(request: ScopedModelRequest): Promise<ResultValue<ScopedModelResult, FoundationError>> {
 		this.requests.push(request);
 		return Result.ok({ schemaVersion: 1, requestId: request.requestId, usage: { tokens: 1 }, stopReason: "stop" });
 	}
@@ -185,14 +185,14 @@ class ConsumerModelGateway implements ScopedModelGateway {
 }
 
 class ConsumerShapedExternalExecutor {
-	private readonly gateway: ScopedExecutionGatewayV1;
+	private readonly gateway: ScopedExecutionGateway;
 	private readonly logs: string[] = [];
 
-	constructor(gateway: ScopedExecutionGatewayV1) {
+	constructor(gateway: ScopedExecutionGateway) {
 		this.gateway = gateway;
 	}
 
-	async execute(request: ExternalExecutorRequestV1, target: CredentialTargetReferenceV1, lease: CredentialLeaseReferenceV1): Promise<ResultValue<ScopedModelResultV1, FoundationError>> {
+	async execute(request: ExternalExecutorRequestV1, target: CredentialTargetReferenceV1, lease: CredentialLeaseReferenceV1): Promise<ResultValue<ScopedModelResult, FoundationError>> {
 		if (!isShortLivedReference(target) || !isShortLivedReference(lease) || !("leaseId" in lease)) return Result.err(new FoundationError("tool_guard_denied", "External executor requires short-lived credential references"));
 		if (target.bindingId !== this.gateway.scope.bindingId || lease.bindingId !== this.gateway.scope.bindingId || lease.bindingEpochId !== this.gateway.scope.bindingEpochId || lease.targetId !== target.targetId) return Result.err(new FoundationError("invalid_correlation", "Credential references do not match the scoped gateway"));
 		this.logs.push(JSON.stringify({ requestId: request.requestId, bindingId: lease.bindingId, bindingEpochId: lease.bindingEpochId, targetId: target.targetId, leaseId: lease.leaseId }));
@@ -202,7 +202,7 @@ class ConsumerShapedExternalExecutor {
 	logEntries(): readonly string[] { return [...this.logs]; }
 }
 
-function request(currentBinding: AgentBindingV1, currentEpoch: BindingEpochV1, overrides: Partial<ExternalExecutorRequestV1> = {}): ExternalExecutorRequestV1 {
+function request(currentBinding: AgentBinding, currentEpoch: BindingEpoch, overrides: Partial<ExternalExecutorRequestV1> = {}): ExternalExecutorRequestV1 {
 	return {
 		requestId: "model-request-t6-gateway",
 		taskId: currentBinding.taskId,
@@ -214,8 +214,8 @@ function request(currentBinding: AgentBindingV1, currentEpoch: BindingEpochV1, o
 	};
 }
 
-async function persistCredentialFreeFacts(session: Session, currentBinding: AgentBindingV1, currentEpoch: BindingEpochV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: "t6-gateway-seed" });
+async function persistCredentialFreeFacts(session: Session, currentBinding: AgentBinding, currentEpoch: BindingEpoch): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: "t6-gateway-seed" });
 	await ledger.appendFact("task", currentBinding.taskId, task(), { clientRequestId: "t6-gateway:task", expectedRevision: 0, correlation: { taskId: currentBinding.taskId } });
 	await ledger.appendFact("role_revision", currentBinding.roleRevision.id, roleRevision(), { clientRequestId: "t6-gateway:role", expectedRevision: 0, correlation: { taskId: currentBinding.taskId } });
 	await ledger.appendFact("model_profile_revision", currentBinding.modelProfileRevision.id, modelProfile(), { clientRequestId: "t6-gateway:profile", expectedRevision: 0, correlation: { taskId: currentBinding.taskId } });
@@ -231,7 +231,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		const target = targetReference(currentBinding);
 		const lease = leaseReference(currentBinding, currentEpoch);
 		const model = new ConsumerModelGateway();
-		const gateway = new ScopedExecutionGatewayV1({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 1 } });
+		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 1 } });
 		const executor = new ConsumerShapedExternalExecutor(gateway);
 		const result = await executor.execute(request(currentBinding, currentEpoch), target, lease);
 		expect(result).toMatchObject({ ok: true, value: { requestId: "model-request-t6-gateway" } });
@@ -253,8 +253,8 @@ describe("T6 external executor scoped gateway conformance", () => {
 		const profileWithMaterial = { ...modelProfile(), credentialMaterial: CREDENTIAL_SENTINEL };
 		const roleWithMaterial = { ...roleRevision(), credentialMaterial: CREDENTIAL_SENTINEL };
 		const bindingWithMaterial = { ...currentBinding, credentialMaterial: CREDENTIAL_SENTINEL };
-		expect(validateSecretFreeModelProfileV1(profileWithMaterial).ok).toBe(false);
-		expect(validateRoleRevisionV1(roleWithMaterial).ok).toBe(false);
+		expect(validateSecretFreeModelProfile(profileWithMaterial).ok).toBe(false);
+		expect(validateRoleRevision(roleWithMaterial).ok).toBe(false);
 		expect(validateImmutableAgentBinding(bindingWithMaterial).ok).toBe(false);
 		const session = new Session(new InMemorySessionStorage({ id: "t6-gateway-session", createdAt: 1 }));
 		await persistCredentialFreeFacts(session, currentBinding, currentEpoch);
@@ -271,7 +271,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		const target = targetReference(currentBinding);
 		const lease = leaseReference(currentBinding, currentEpoch);
 		const model = new ConsumerModelGateway();
-		const gateway = new ScopedExecutionGatewayV1({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 2 } });
+		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 2 } });
 		const executor = new ConsumerShapedExternalExecutor(gateway);
 		const good = await executor.execute(request(currentBinding, currentEpoch), target, lease);
 		expect(good.ok).toBe(true);
@@ -282,7 +282,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		expect(profileResult).toMatchObject({ ok: false, error: { code: "binding_task_before_binding" } });
 		const otherBinding = { ...currentBinding, bindingId: "binding-other" };
 		const mismatchedEpoch = { ...currentEpoch, bindingId: otherBinding.bindingId };
-		const mismatchedGateway = new ScopedExecutionGatewayV1({ model, binding: currentBinding, epoch: mismatchedEpoch, providerClass: "external_connector" });
+		const mismatchedGateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: mismatchedEpoch, providerClass: "external_connector" });
 		const mismatchedExecutor = new ConsumerShapedExternalExecutor(mismatchedGateway);
 		const bindingResult = await mismatchedExecutor.execute(request(currentBinding, mismatchedEpoch), target, lease);
 		expect(bindingResult).toMatchObject({ ok: false, error: { code: "binding_epoch_mismatch" } });

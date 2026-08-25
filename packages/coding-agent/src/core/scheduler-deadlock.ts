@@ -8,22 +8,22 @@
  * Scans and ticks are iteration- and deadline-bounded.
  */
 import {
-	createDurableEventV1,
+	createDurableEvent,
 	type DurableLedgerApi,
 	DurableLedgerError,
-	type EventCorrelationRefV1,
+	type EventCorrelationRef,
 	fingerprintFoundationValue,
-	type FoundationFactRecordV1,
+	type FoundationFactRecord,
 	FoundationError,
 	type FoundationJsonValue,
-	type FoundationRecordV1,
-	type LedgerWriterLeaseV1,
+	type FoundationRecord,
+	type LedgerWriterLease,
 	Result,
 	type Result as ResultValue,
-	type SchedulerClaimEventPayloadV1,
-	type SchedulerDeadlockEventPayloadV1,
-	type SchedulerDispatchEventPayloadV1,
-	type SchedulerQueueEventPayloadV1,
+	type SchedulerClaimEventPayload,
+	type SchedulerDeadlockEventPayload,
+	type SchedulerDispatchEventPayload,
+	type SchedulerQueueEventPayload,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import { SCHEDULER_MESSAGE_OBJECT_TYPES_V1, type SchedulerAskWaitFactV1 } from "./scheduler-messages.ts";
@@ -121,7 +121,7 @@ export interface SchedulerDeadlockTickErrorV1 {
 	readonly code: string;
 }
 
-export interface SchedulerDeadlockTickResultV1 {
+export interface SchedulerDeadlockTickResult {
 	readonly enabled: boolean;
 	readonly scannedGraphs: number;
 	readonly scannedNodes: number;
@@ -186,7 +186,7 @@ function jsonPayload(value: object): FoundationJsonValue {
 	return value as FoundationJsonValue;
 }
 
-function asFact(record: FoundationRecordV1): FoundationFactRecordV1 | undefined {
+function asFact(record: FoundationRecord): FoundationFactRecord | undefined {
 	return record.kind === "fact" ? record : undefined;
 }
 
@@ -203,8 +203,8 @@ function mapLedgerError(error: unknown): FoundationError {
 	return schedulerError("scheduler_persistence_failed");
 }
 
-function omitUndefinedCorrelation(correlation: EventCorrelationRefV1): EventCorrelationRefV1 {
-	const next: EventCorrelationRefV1 = { sessionId: correlation.sessionId };
+function omitUndefinedCorrelation(correlation: EventCorrelationRef): EventCorrelationRef {
+	const next: EventCorrelationRef = { sessionId: correlation.sessionId };
 	if (correlation.laneId !== undefined) next.laneId = correlation.laneId;
 	if (correlation.taskId !== undefined) next.taskId = correlation.taskId;
 	if (correlation.dispatchId !== undefined) next.dispatchId = correlation.dispatchId;
@@ -215,8 +215,8 @@ function omitUndefinedCorrelation(correlation: EventCorrelationRefV1): EventCorr
 	return next;
 }
 
-function queueEventPayload(entry: SchedulerQueueEntryV1): SchedulerQueueEventPayloadV1 {
-	const payload: SchedulerQueueEventPayloadV1 = {
+function queueEventPayload(entry: SchedulerQueueEntryV1): SchedulerQueueEventPayload {
+	const payload: SchedulerQueueEventPayload = {
 		schemaVersion: 1,
 		queueEntryId: entry.queueEntryId,
 		sessionId: entry.sessionId,
@@ -234,8 +234,8 @@ function queueEventPayload(entry: SchedulerQueueEntryV1): SchedulerQueueEventPay
 	return payload;
 }
 
-function dispatchEventPayload(dispatch: SchedulerDispatchRecordV1): SchedulerDispatchEventPayloadV1 {
-	const payload: SchedulerDispatchEventPayloadV1 = {
+function dispatchEventPayload(dispatch: SchedulerDispatchRecordV1): SchedulerDispatchEventPayload {
+	const payload: SchedulerDispatchEventPayload = {
 		schemaVersion: 1,
 		queueEntryId: dispatch.queueEntryId,
 		claimId: dispatch.claimId,
@@ -257,7 +257,7 @@ function claimReleasedPayload(
 	ownerId: string,
 	revision: number,
 	sessionId: string,
-): SchedulerClaimEventPayloadV1 {
+): SchedulerClaimEventPayload {
 	return {
 		schemaVersion: 1,
 		claimId,
@@ -269,7 +269,7 @@ function claimReleasedPayload(
 	};
 }
 
-function deadlockEventPayload(fact: SchedulerDeadlockFactV1): SchedulerDeadlockEventPayloadV1 {
+function deadlockEventPayload(fact: SchedulerDeadlockFactV1): SchedulerDeadlockEventPayload {
 	return {
 		schemaVersion: 1,
 		detectionId: fact.detectionId,
@@ -330,7 +330,7 @@ export function schedulerOrderQueuedWorkV1(
 	});
 }
 
-function emptyTick(enabled: boolean): SchedulerDeadlockTickResultV1 {
+function emptyTick(enabled: boolean): SchedulerDeadlockTickResult {
 	return {
 		enabled,
 		scannedGraphs: 0,
@@ -456,12 +456,12 @@ export class SchedulerDeadlockController {
 	private readonly maxEdgesPerScan: number;
 	private readonly tickTimeoutMs: number;
 	private readonly agingMsPerPriorityUnit: number;
-	private writerLease: LedgerWriterLeaseV1 | undefined;
+	private writerLease: LedgerWriterLease | undefined;
 	private facts = new Map<string, SchedulerDeadlockFactV1>();
 	private factRevisions = new Map<string, number>();
 	private eventRevisions = new Map<string, number>();
 	private retained = new Map<string, SchedulerRetainedWorkV1>();
-	private inFlight: Promise<SchedulerDeadlockTickResultV1> | undefined;
+	private inFlight: Promise<SchedulerDeadlockTickResult> | undefined;
 	private fenceTimedOut = false;
 
 	constructor(options: SchedulerDeadlockControllerOptionsV1) {
@@ -527,7 +527,7 @@ export class SchedulerDeadlockController {
 		}
 	}
 
-	tick(): Promise<SchedulerDeadlockTickResultV1> {
+	tick(): Promise<SchedulerDeadlockTickResult> {
 		if (!this.enabled) return Promise.resolve(emptyTick(false));
 		if (this.inFlight !== undefined) {
 			if (this.fenceTimedOut) return Promise.resolve({ ...emptyTick(true), timedOut: true });
@@ -542,8 +542,8 @@ export class SchedulerDeadlockController {
 	}
 
 	private observeInFlight(
-		work: Promise<SchedulerDeadlockTickResultV1>,
-	): Promise<SchedulerDeadlockTickResultV1> {
+		work: Promise<SchedulerDeadlockTickResult>,
+	): Promise<SchedulerDeadlockTickResult> {
 		return new Promise((resolve) => {
 			let settled = false;
 			const timer = this.clock.setTimeout(() => {
@@ -607,7 +607,7 @@ export class SchedulerDeadlockController {
 		return false;
 	}
 
-	private async tickOnce(): Promise<SchedulerDeadlockTickResultV1> {
+	private async tickOnce(): Promise<SchedulerDeadlockTickResult> {
 		const scanned = applySchedulerEngineTransition("idle", "scanning");
 		if (!scanned.ok) {
 			return {
@@ -868,7 +868,7 @@ export class SchedulerDeadlockController {
 		const latest = new Map<string, { readonly revision: number; readonly payload: SchedulerAskWaitFactV1 }>();
 		for (const ledger of this.waitLedgers) {
 			if (this.expired(budget, deadlineAt)) break;
-			let records: FoundationRecordV1[];
+			let records: FoundationRecord[];
 			try {
 				records = await ledger.findFoundationRecords({
 					objectType: SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait,
@@ -1033,7 +1033,7 @@ export class SchedulerDeadlockController {
 			);
 			if (!written.ok) return written;
 			const eventId = `evt_dispatch_${dispatch.dispatchId}_${dispatch.revision}`;
-			const correlation: EventCorrelationRefV1 = {
+			const correlation: EventCorrelationRef = {
 				sessionId: this.sessionId,
 				taskId: entry.taskId,
 				dispatchId: dispatch.dispatchId,
@@ -1047,7 +1047,7 @@ export class SchedulerDeadlockController {
 				payload,
 				`scheduler.dispatch_transitioned:${dispatch.dispatchId}:${dispatch.revision}`,
 				(sequence) => {
-					createDurableEventV1({
+					createDurableEvent({
 						category: "scheduler.dispatch_transitioned",
 						eventId,
 						streamId: this.sessionId,
@@ -1071,7 +1071,7 @@ export class SchedulerDeadlockController {
 		);
 		if (!written.ok) return written;
 		const queueEventId = `evt_queue_${entry.queueEntryId}_${entry.revision}`;
-		const queueCorrelation: EventCorrelationRefV1 = { sessionId: entry.sessionId, taskId: entry.taskId };
+		const queueCorrelation: EventCorrelationRef = { sessionId: entry.sessionId, taskId: entry.taskId };
 		const queuePayload = queueEventPayload(entry);
 		const event = await this.writeCatalogEvent(
 			"scheduler.queue_transitioned",
@@ -1080,7 +1080,7 @@ export class SchedulerDeadlockController {
 			queuePayload,
 			`scheduler.queue_transitioned:${entry.queueEntryId}:${entry.revision}`,
 			(sequence) => {
-				createDurableEventV1({
+				createDurableEvent({
 					category: "scheduler.queue_transitioned",
 					eventId: queueEventId,
 					streamId: this.sessionId,
@@ -1094,7 +1094,7 @@ export class SchedulerDeadlockController {
 		if (!event.ok) return event;
 		if (claim === undefined) return Result.ok(undefined);
 		const claimEventId = `evt_claim_${claim.claimId}_${claim.revision}_released`;
-		const claimCorrelation: EventCorrelationRefV1 = { sessionId: this.sessionId, taskId: entry.taskId };
+		const claimCorrelation: EventCorrelationRef = { sessionId: this.sessionId, taskId: entry.taskId };
 		const claimPayload = claimReleasedPayload(
 			claim.claimId,
 			entry.queueEntryId,
@@ -1110,7 +1110,7 @@ export class SchedulerDeadlockController {
 			claimPayload,
 			`scheduler.claim_released:${claim.claimId}:${claim.revision}`,
 			(sequence) => {
-				createDurableEventV1({
+				createDurableEvent({
 					category: "scheduler.claim_released",
 					eventId: claimEventId,
 					streamId: this.sessionId,
@@ -1144,7 +1144,7 @@ export class SchedulerDeadlockController {
 		this.facts.set(serialized.detectionId, serialized);
 		this.factRevisions.set(serialized.detectionId, expectedRevision + (written.value.replayed ? 0 : 1));
 		const eventId = `evt_deadlock_${serialized.detectionId}`;
-		const deadlockCorrelation: EventCorrelationRefV1 = {
+		const deadlockCorrelation: EventCorrelationRef = {
 			sessionId: this.sessionId,
 			taskId: serialized.failedTaskIds[0],
 		};
@@ -1156,7 +1156,7 @@ export class SchedulerDeadlockController {
 			deadlockPayload,
 			`scheduler.deadlock_detected:${serialized.detectionId}`,
 			(sequence) => {
-				createDurableEventV1({
+				createDurableEvent({
 					category: "scheduler.deadlock_detected",
 					eventId,
 					streamId: this.sessionId,
@@ -1317,7 +1317,7 @@ export class SchedulerDeadlockController {
 			| "scheduler.claim_released"
 			| "scheduler.deadlock_detected",
 		eventId: string,
-		correlation: EventCorrelationRefV1,
+		correlation: EventCorrelationRef,
 		payload: object,
 		clientRequestId: string,
 		validate: (sequence: number) => void,
@@ -1349,7 +1349,7 @@ export class SchedulerDeadlockController {
 		payload: object,
 		clientRequestId: string,
 		expectedRevision: number,
-		correlation: EventCorrelationRefV1,
+		correlation: EventCorrelationRef,
 	): Promise<ResultValue<{ replayed: boolean }, FoundationError>> {
 		try {
 			const lease = await this.ensureWriterLease();
@@ -1377,7 +1377,7 @@ export class SchedulerDeadlockController {
 		}
 	}
 
-	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
+	private async ensureWriterLease(): Promise<LedgerWriterLease> {
 		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (

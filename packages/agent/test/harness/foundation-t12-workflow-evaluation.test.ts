@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-	parseWorkflowEvaluationSnapshotV1,
-	runWorkflowEvaluationV1,
-	serializeWorkflowEvaluationSnapshotV1,
-	type WorkflowEvaluationDatasetV1,
-	type WorkflowStatusV1,
-	type WorkflowV1,
+	parseWorkflowEvaluationSnapshot,
+	runWorkflowEvaluation,
+	serializeWorkflowEvaluationSnapshot,
+	type WorkflowEvaluationDataset,
+	type WorkflowStatus,
+	type Workflow,
 } from "../../src/harness/foundation/workflow.ts";
 
-function workflow(workflowId: string, status: WorkflowStatusV1, revision: number): WorkflowV1 {
+function workflow(workflowId: string, status: WorkflowStatus, revision: number): Workflow {
 	const contract = { schemaVersion: 1 as const, contractId: "none", kind: "none" as const, required: false };
 	return {
 		schemaVersion: 1,
@@ -47,7 +47,7 @@ function workflow(workflowId: string, status: WorkflowStatusV1, revision: number
 	};
 }
 
-function dataset(): WorkflowEvaluationDatasetV1 {
+function dataset(): WorkflowEvaluationDataset {
 	return {
 		schemaVersion: 1,
 		datasetId: "foundation-local",
@@ -80,7 +80,7 @@ function dataset(): WorkflowEvaluationDatasetV1 {
 
 describe("T12 workflow evaluation", () => {
 	it("produces a deterministic quality, cost, and recovery regression snapshot", () => {
-		const evaluated = runWorkflowEvaluationV1({
+		const evaluated = runWorkflowEvaluation({
 			dataset: dataset(),
 			observations: [
 				{ caseId: "ordinary", workflow: workflow("workflow-ordinary", "completed", 2), cost: 1.5, recovered: false },
@@ -106,7 +106,7 @@ describe("T12 workflow evaluation", () => {
 	});
 
 	it("round-trips result snapshots through the strict persistence shape", () => {
-		const evaluated = runWorkflowEvaluationV1({
+		const evaluated = runWorkflowEvaluation({
 			dataset: { ...dataset(), cases: [dataset().cases[0]!] },
 			observations: [
 				{ caseId: "ordinary", workflow: workflow("workflow-ordinary", "completed", 2), cost: 1, recovered: false },
@@ -116,15 +116,15 @@ describe("T12 workflow evaluation", () => {
 		});
 		if (!evaluated.ok) throw evaluated.error;
 
-		const serialized = serializeWorkflowEvaluationSnapshotV1(evaluated.value);
-		expect(parseWorkflowEvaluationSnapshotV1(serialized)).toEqual(evaluated);
-		expect(parseWorkflowEvaluationSnapshotV1(serialized.replace('"passed":true', '"passed":true,"extra":true'))).toMatchObject({
+		const serialized = serializeWorkflowEvaluationSnapshot(evaluated.value);
+		expect(parseWorkflowEvaluationSnapshot(serialized)).toEqual(evaluated);
+		expect(parseWorkflowEvaluationSnapshot(serialized.replace('"passed":true', '"passed":true,"extra":true'))).toMatchObject({
 			ok: false,
 		});
 	});
 
 	it("rejects incomplete observations and invalid dataset expectations", () => {
-		const missing = runWorkflowEvaluationV1({
+		const missing = runWorkflowEvaluation({
 			dataset: dataset(),
 			observations: [],
 			runId: "evaluation-run-3",
@@ -133,7 +133,7 @@ describe("T12 workflow evaluation", () => {
 		expect(missing).toMatchObject({ ok: false, error: { code: "structure_schema_invalid" } });
 
 		const invalidCase = dataset().cases[0]!;
-		const invalid = runWorkflowEvaluationV1({
+		const invalid = runWorkflowEvaluation({
 			dataset: {
 				...dataset(),
 				cases: [{ ...invalidCase, expectedSteps: [{ stepId: "missing", status: "succeeded" }] }],

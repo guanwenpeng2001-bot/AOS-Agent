@@ -3,36 +3,36 @@ import {
 	assertJsonSerializable,
 	type AgentMessage,
 	type BranchBounds,
-	type AcquireWriterLeaseOptionsV1,
-	type AppendFoundationRecordResultV1,
+	type AcquireWriterLeaseOptions,
+	type AppendFoundationRecordResult,
 	type DurableLedgerApi,
 	type Entry,
 	type EntryQuery,
 	type EntryOrder,
 	type LanePointer,
-	type LedgerWriterLeaseV1,
+	type LedgerWriterLease,
 	type LaneRecord,
 	type LogItem,
 	type LogOptions,
 	type NewRecord,
 	type OperationStartedRecord,
 	type ProvisionedEntry,
-	type ProvisionedFoundationRecordV1,
+	type ProvisionedFoundationRecord,
 	type RecordQuery,
-	type ReleaseWriterLeaseOptionsV1,
-	type RenewWriterLeaseOptionsV1,
+	type ReleaseWriterLeaseOptions,
+	type RenewWriterLeaseOptions,
 	SessionError,
 	type SessionMetadata,
 	type SessionStats,
 	type SessionStorage,
 	FoundationLedgerState,
 	FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
-	type FoundationObjectResultV1,
-	type FoundationRecordQueryV1,
-	type FoundationRecordV1,
-	type FoundationRetentionPolicyV1,
-	type SetRetentionPolicyOptionsV1,
-	validateFoundationToolResultEntryV1,
+	type FoundationObjectResult,
+	type FoundationRecordQuery,
+	type FoundationRecord,
+	type FoundationRetentionPolicy,
+	type SetRetentionPolicyOptions,
+	validateFoundationToolResultEntry,
 } from "@aos-agent/agent-core";
 import type {
 	CustomMessageEntry,
@@ -109,7 +109,7 @@ interface FoundationLabelFactEnvelope {
 interface FoundationDurableEnvelope {
 	schemaVersion: 1;
 	kind: "durable";
-	record: FoundationRecordV1;
+	record: FoundationRecord;
 }
 
 type FoundationEnvelope =
@@ -159,7 +159,7 @@ interface ParsedFoundationFact {
 interface ParsedFoundationDurable {
 	kind: "durable";
 	physical: SessionEntry;
-	record: FoundationRecordV1;
+	record: FoundationRecord;
 }
 
 type ParsedFoundation =
@@ -309,7 +309,7 @@ function parseFoundationEnvelope(physical: SessionEntry): ParsedFoundation | und
 		} catch (error) {
 			failClosed(error instanceof Error ? error.message : String(error));
 		}
-		return { kind: "durable", physical, record: clone(data.record) as unknown as FoundationRecordV1 };
+		return { kind: "durable", physical, record: clone(data.record) as unknown as FoundationRecord };
 	}
 	if (
 		(data.kind !== "name" && data.kind !== "label") ||
@@ -481,7 +481,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	private readonly manager: SessionManager;
 	private readonly metadata: CodingAgentSessionMetadata;
 	private readonly tail: { promise: Promise<void> } = { promise: Promise.resolve() };
-	private ledgerLease: LedgerWriterLeaseV1 | null = null;
+	private ledgerLease: LedgerWriterLease | null = null;
 	private ledgerLeaseRevision = 0;
 
 	constructor(manager: SessionManager) {
@@ -598,7 +598,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 						break;
 					case "custom": {
 						if (entry.customType === FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) {
-							const checked = validateFoundationToolResultEntryV1(entry.data);
+							const checked = validateFoundationToolResultEntry(entry.data);
 							if (checked.ok && checked.value.result.content.every((content) => content.type === "text")) {
 								projected.push({
 									type: "message",
@@ -902,7 +902,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return state;
 	}
 
-	acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	acquireWriterLease(options: AcquireWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.enqueue(async () => {
 			const lease = this.foundationState().acquireWriterLease(options);
 			this.ledgerLease = lease;
@@ -911,7 +911,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		});
 	}
 
-	renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	renewWriterLease(options: RenewWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.enqueue(async () => {
 			const lease = this.foundationState().renewWriterLease(options);
 			this.ledgerLease = lease;
@@ -920,14 +920,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		});
 	}
 
-	releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+	releaseWriterLease(options: ReleaseWriterLeaseOptions): Promise<void> {
 		return this.enqueue(async () => {
 			this.foundationState().releaseWriterLease(options);
 			this.ledgerLease = null;
 		});
 	}
 
-	getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	getWriterLease(): Promise<LedgerWriterLease | null> {
 		return Promise.resolve(this.foundationState().getWriterLease());
 	}
 
@@ -935,7 +935,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return Promise.resolve(this.foundationState().getLedgerRevision());
 	}
 
-	appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		return this.enqueue(async () => {
 			const state = this.foundationState();
 			const result = state.appendFoundationRecord(record);
@@ -952,9 +952,9 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	setRetentionPolicy(
-		policy: FoundationRetentionPolicyV1,
-		options: SetRetentionPolicyOptionsV1,
-	): Promise<AppendFoundationRecordResultV1> {
+		policy: FoundationRetentionPolicy,
+		options: SetRetentionPolicyOptions,
+	): Promise<AppendFoundationRecordResult> {
 		return this.enqueue(async () => {
 			const result = this.foundationState().setRetentionPolicy(policy, options);
 			if (!result.replayed) {
@@ -968,11 +968,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		});
 	}
 
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return Promise.resolve(this.foundationState().findFoundationRecords(query));
 	}
 
-	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return Promise.resolve(this.foundationState().getFoundationObject(objectType, objectId));
 	}
 
@@ -984,11 +984,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return Promise.resolve(this.foundationState().isObjectTombstoned(objectType, objectId));
 	}
 
-	getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return Promise.resolve(this.foundationState().getRetentionPolicy());
 	}
 
-	prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return Promise.resolve(this.foundationState().prunableFoundationRecords());
 	}
 

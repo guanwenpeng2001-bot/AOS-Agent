@@ -5,12 +5,12 @@ import {
 	cloneDeepFrozen,
 	FoundationError,
 	Result,
-	validateEventPayloadForCategoryV1,
-	type EventCorrelationRefV1,
+	validateEventPayloadForCategory,
+	type EventCorrelationRef,
 	type FoundationJsonValue,
-	type FoundationRecordV1,
+	type FoundationRecord,
 	type Result as ResultValue,
-	type SessionLedgerV1,
+	type SessionLedger,
 } from "@aos-agent/agent-core";
 import type { ChildAgentRosterEntryV1 } from "./subagent-supervisor.ts";
 
@@ -100,8 +100,8 @@ export interface ChildMailboxQueryV1 {
 
 export interface SubagentMailboxOptionsV1 {
 	readonly schemaVersion: 1;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly sessionId: string;
 	readonly laneId: string;
 	readonly roster: () => readonly ChildAgentRosterEntryV1[];
@@ -294,7 +294,7 @@ function validateSentPayload(value: unknown): value is ChildMailboxSentPayloadV1
 		isJson(value.body) &&
 		validateCorrelation(value.correlation) &&
 		isCanonicalTimestamp(value.createdAt) &&
-		validateEventPayloadForCategoryV1("subagent.mailbox_message_sent", value)
+		validateEventPayloadForCategory("subagent.mailbox_message_sent", value)
 	);
 }
 
@@ -311,7 +311,7 @@ function validateAckPayload(value: unknown): value is ChildMailboxAckPayloadV1 {
 		isIdentifier(value.toAgentInstanceId) &&
 		isCanonicalTimestamp(value.at) &&
 		isIdentifier(value.byAttemptId) &&
-		validateEventPayloadForCategoryV1("subagent.mailbox_message_acknowledged", value)
+		validateEventPayloadForCategory("subagent.mailbox_message_acknowledged", value)
 	);
 }
 
@@ -334,8 +334,8 @@ function inputMatchesStored(input: SendChildMailboxMessageInputV1, stored: Child
 }
 
 export class SubagentMailboxV1 {
-	private readonly ledger: SessionLedgerV1;
-	private readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	private readonly ledger: SessionLedger;
+	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly sessionId: string;
 	private readonly rosterSource: () => readonly ChildAgentRosterEntryV1[];
 	private readonly endpoints = new Map<string, ChildMailboxEndpointV1>();
@@ -855,7 +855,7 @@ export class SubagentMailboxV1 {
 	}
 
 	private validateStoredSentRecord(
-		record: FoundationRecordV1,
+		record: FoundationRecord,
 	): ResultValue<
 		| { readonly payload: ChildMailboxSentPayloadV1; readonly sequence: number; readonly timestamp: number }
 		| undefined,
@@ -913,7 +913,7 @@ export class SubagentMailboxV1 {
 	}
 
 	private validateStoredAckRecord(
-		record: FoundationRecordV1,
+		record: FoundationRecord,
 		sentById: ReadonlyMap<string, ChildMailboxSentPayloadV1>,
 	): ResultValue<ChildMailboxAckPayloadV1 | undefined, FoundationError> {
 		const endpoints = this.ownedEndpoints();
@@ -1036,6 +1036,6 @@ export class SubagentMailboxV1 {
 }
 
 /** Exact event correlation projection used by observers and tests. */
-export function childMailboxEventCorrelationV1(message: ChildMailboxMessageV1): EventCorrelationRefV1 {
+export function childMailboxEventCorrelationV1(message: ChildMailboxMessageV1): EventCorrelationRef {
 	return cloneDeepFrozen({ ...message.correlation });
 }

@@ -2,17 +2,17 @@ import { canonicalFoundationJson, type FoundationJsonValue } from "../../foundat
 import { err, ok, type Result } from "../../types.ts";
 import { JsonlDecodeError } from "../jsonl/errors.ts";
 import type {
-	FoundationFactRecordV1,
-	FoundationIntentRecordV1,
-	FoundationRecordV1,
-	FoundationRetentionRecordV1,
-	FoundationTombstoneRecordV1,
+	FoundationFactRecord,
+	FoundationIntentRecord,
+	FoundationRecord,
+	FoundationRetentionRecord,
+	FoundationTombstoneRecord,
 } from "./types.ts";
 
-export interface FoundationJsonlMutationV1 {
+export interface FoundationJsonlMutation {
 	kind: "foundation";
 	schemaVersion: 1;
-	record: FoundationRecordV1;
+	record: FoundationRecord;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -48,7 +48,7 @@ function requireExactKeys(value: Record<string, unknown>, required: readonly str
 	for (const key of Object.keys(value)) if (!allowed.has(key)) throw new JsonlDecodeError("schema", `has unknown field ${key}`);
 }
 
-function decodeCorrelation(value: unknown): FoundationRecordV1["correlation"] {
+function decodeCorrelation(value: unknown): FoundationRecord["correlation"] {
 	if (!isObject(value)) throw new JsonlDecodeError("schema", "has invalid correlation");
 	const allowed = new Set([
 		"sessionId", "laneId", "roleId", "roleRevisionId", "modelProfileId", "modelProfileRevisionId", "bindingId",
@@ -68,7 +68,7 @@ function decodeCorrelation(value: unknown): FoundationRecordV1["correlation"] {
 		if (key === "sessionId" || key === "laneId" || key === "revision" || key === "ancestorIds" || key === "fencingToken") continue;
 		if (typeof value[key] !== "string") throw new JsonlDecodeError("schema", `has invalid correlation.${key}`);
 	}
-	return { ...value, sessionId, laneId, revision, fencingToken } as FoundationRecordV1["correlation"];
+	return { ...value, sessionId, laneId, revision, fencingToken } as FoundationRecord["correlation"];
 }
 
 function parsePayload(value: unknown, field: string): FoundationJsonValue {
@@ -80,7 +80,7 @@ function parsePayload(value: unknown, field: string): FoundationJsonValue {
 	return value as FoundationJsonValue;
 }
 
-function decodeRecord(value: unknown): FoundationRecordV1 {
+function decodeRecord(value: unknown): FoundationRecord {
 	if (!isObject(value)) throw new JsonlDecodeError("schema", "foundation mutation record is not an object");
 	if (value.schemaVersion !== 1) throw new JsonlDecodeError("schema", "has unsupported durable schema version");
 	const kind = requireString(value.kind, "kind");
@@ -111,7 +111,7 @@ function decodeRecord(value: unknown): FoundationRecordV1 {
 			lane,
 			timestamp,
 			retentionRevision: value.retentionRevision as number,
-			policy: { ...policyValue, cutSequence: policyValue.cutSequence as number } as FoundationRetentionRecordV1["policy"],
+			policy: { ...policyValue, cutSequence: policyValue.cutSequence as number } as FoundationRetentionRecord["policy"],
 			clientRequestId,
 			...(value.expectedRevision === undefined ? {} : { expectedRevision: value.expectedRevision as number }),
 			fencingToken,
@@ -139,7 +139,7 @@ function decodeRecord(value: unknown): FoundationRecordV1 {
 			fencingToken,
 			correlation,
 			payload: parsePayload(value.payload, "payload"),
-		} satisfies FoundationFactRecordV1;
+		} satisfies FoundationFactRecord;
 	}
 	if (kind === "intent") {
 		requireExactKeys(value, [...baseRequired, "objectType", "objectId", "revision", "intent"], [...baseOptional, "payload"]);
@@ -160,7 +160,7 @@ function decodeRecord(value: unknown): FoundationRecordV1 {
 			fencingToken,
 			correlation,
 			...(value.payload === undefined ? {} : { payload: parsePayload(value.payload, "payload") }),
-		} satisfies FoundationIntentRecordV1;
+		} satisfies FoundationIntentRecord;
 	}
 	if (kind === "tombstone") {
 		requireExactKeys(value, [...baseRequired, "objectType", "objectId", "revision"], [...baseOptional, "deleteIntentId", "reason"]);
@@ -182,12 +182,12 @@ function decodeRecord(value: unknown): FoundationRecordV1 {
 			correlation,
 			...(value.deleteIntentId === undefined ? {} : { deleteIntentId: value.deleteIntentId as string }),
 			...(value.reason === undefined ? {} : { reason: value.reason as string }),
-		} satisfies FoundationTombstoneRecordV1;
+		} satisfies FoundationTombstoneRecord;
 	}
 	throw new JsonlDecodeError("schema", `has unknown durable record kind ${kind}`);
 }
 
-export function parseFoundationMutation(line: string): Result<FoundationRecordV1, JsonlDecodeError> {
+export function parseFoundationMutation(line: string): Result<FoundationRecord, JsonlDecodeError> {
 	try {
 		const value = parseObject(line);
 		if (value.kind !== "foundation") throw new JsonlDecodeError("schema", "is not a foundation mutation");
@@ -200,8 +200,8 @@ export function parseFoundationMutation(line: string): Result<FoundationRecordV1
 	}
 }
 
-export function encodeFoundationMutation(record: FoundationRecordV1): string {
-	const mutation: FoundationJsonlMutationV1 = { kind: "foundation", schemaVersion: 1, record };
+export function encodeFoundationMutation(record: FoundationRecord): string {
+	const mutation: FoundationJsonlMutation = { kind: "foundation", schemaVersion: 1, record };
 	return `${canonicalFoundationJson(mutation)}\n`;
 }
 

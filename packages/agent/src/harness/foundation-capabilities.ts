@@ -1,7 +1,7 @@
 /**
- * AOS Agent Foundation v1 capability manifest.
+ * AOS Agent Foundation capability manifest.
  *
- * This module is the machine-checkable ledger for the Foundation v1 one-shot seal
+ * This module is the machine-checkable ledger for the Foundation one-shot seal
  * (rows 01-10 and 10A of the architecture atlas). It contains:
  *
  * - `FOUNDATION_V1_CAPABILITY_CLOSURES`: exactly 79 closure entries with ids
@@ -31,7 +31,7 @@
  * `regression_locked` if regression locking applies, otherwise `implemented`.
  */
 
-/** Status of a Foundation v1 capability closure. See module doc for the selection rule. */
+/** Status of a Foundation capability closure. See module doc for the selection rule. */
 export type FoundationCapabilityClosureStatus = "implemented" | "regression_locked" | "contract_sealed";
 
 /** Later consumer line that may only implement the provider/consumer side of a frozen contract. */
@@ -50,11 +50,11 @@ export type FoundationHighLevelRow = "01" | "02" | "03" | "04" | "05" | "06" | "
 export type FoundationImplementationStage = "T1" | "T2" | "T3" | "T4" | "T5" | "T6" | "T7" | "T8" | "T9" | "T10" | "T11" | "T12";
 
 /**
- * Closure entry for one Foundation v1 capability. The front layer of the capability
+ * Closure entry for one Foundation capability. The front layer of the capability
  * is closed by this seal; when {@link laterConsumer} is present, only the listed
  * later side stays future-only.
  */
-export interface FoundationCapabilityClosureV1 {
+export interface FoundationCapabilityClosure {
 	/** Capability id, unique across the closure manifest. */
 	id: number;
 	/** High-level atlas rows (01-10 or 10A) that use this capability. Exact per-id mapping is asserted in tests. */
@@ -78,11 +78,11 @@ export interface FoundationCapabilityClosureV1 {
 }
 
 /**
- * Future owner entry for a capability that is NOT closed by Foundation v1.
+ * Future owner entry for a capability that is not closed by Foundation.
  * Records the later owner line and the explicit Foundation upstream contracts it
  * consumes, proving the id is covered by a later line instead of dropped.
  */
-export interface FoundationFutureCapabilityOwnerV1 {
+export interface FoundationFutureCapabilityOwner {
 	/** Capability id, unique across the future owner map. */
 	id: number;
 	/** Later line responsible for closing this capability. */
@@ -1180,7 +1180,7 @@ const closures = [
 		laterConsumer: "15",
 		laterCapabilityIds: [141, 148],
 	},
-] as const satisfies readonly FoundationCapabilityClosureV1[];
+] as const satisfies readonly FoundationCapabilityClosure[];
 
 const futureOwners = [
 	// ---- 74-89: Operation Worker (line 11) with ops on line 14 ----
@@ -1689,32 +1689,32 @@ const futureOwners = [
 		description: "Fixes schema/doc drift such as the sessionFile return-field difference in RPC documentation.",
 		consumedFoundationContracts: ["protocol versioning/feature negotiation", "FoundationEnvelopeV1 command/event envelope"],
 	},
-] as const satisfies readonly FoundationFutureCapabilityOwnerV1[];
+] as const satisfies readonly FoundationFutureCapabilityOwner[];
 
 const foundationCapabilityClosures = closures.map((entry) => ({
 	...entry,
 	ownerModule: entry.ownerModule,
 	tests: [...entry.tests],
-})) satisfies readonly FoundationCapabilityClosureV1[];
+})) satisfies readonly FoundationCapabilityClosure[];
 
 /** All 79 closure entries (ids `1..73`, `98`, `127`, `128`, `129`, `145`, `146`). */
-export const FOUNDATION_V1_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosureV1[] = foundationCapabilityClosures;
+export const FOUNDATION_CAPABILITY_CLOSURES: readonly FoundationCapabilityClosure[] = foundationCapabilityClosures;
 
 /** All 71 future owner entries (ids `74..97`, `99..126`, `130..144`, `147..150`). */
-export const FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS: readonly FoundationFutureCapabilityOwnerV1[] = futureOwners;
+export const FOUNDATION_FUTURE_CAPABILITY_OWNERS: readonly FoundationFutureCapabilityOwner[] = futureOwners;
 
 /** Closure ids as a set for machine checks. */
-export const FOUNDATION_V1_CLOSURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_V1_CAPABILITY_CLOSURES.map((entry) => entry.id));
+export const FOUNDATION_CLOSURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_CAPABILITY_CLOSURES.map((entry) => entry.id));
 
 /** Future owner ids as a set for machine checks. */
-export const FOUNDATION_V1_FUTURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id));
+export const FOUNDATION_FUTURE_IDS: ReadonlySet<number> = new Set(FOUNDATION_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id));
 
 /** Look up a closure entry by capability id. */
-export function foundationClosureById(id: number): FoundationCapabilityClosureV1 | undefined {
-	return FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === id);
+export function foundationClosureById(id: number): FoundationCapabilityClosure | undefined {
+	return FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === id);
 }
 
 /** Look up a future owner entry by capability id. */
-export function foundationFutureOwnerById(id: number): FoundationFutureCapabilityOwnerV1 | undefined {
-	return FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.find((entry) => entry.id === id);
+export function foundationFutureOwnerById(id: number): FoundationFutureCapabilityOwner | undefined {
+	return FOUNDATION_FUTURE_CAPABILITY_OWNERS.find((entry) => entry.id === id);
 }

@@ -1,13 +1,12 @@
 import { Type } from "typebox";
-import type { FoundationRecordV1 } from "../session/durable/types.ts";
+import type { FoundationRecord } from "../session/durable/types.ts";
 import type { Session } from "../session/session.ts";
+import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/t5.ts";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,
 	createStoreWriter,
 	expectedRevision,
-	type FoundationDurableStoreOptionsV1,
-	type FoundationMutationOptionsV1,
 	jsonValue,
 	mutationId,
 	readCommandResult,
@@ -21,7 +20,7 @@ import {
 } from "./durable-store.ts";
 import { FoundationError, type FoundationErrorCode } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
-import { type AskReplyV1, type AskStatusV1, type AskV1, validateAskV1 } from "./goal.ts";
+import { type AskReply, type AskStatus, type Ask, validateAsk } from "./goal.ts";
 import { canonicalFoundationJson, sha256HexValue } from "./identity.ts";
 import { validateExactShape } from "./schema.ts";
 
@@ -52,14 +51,20 @@ export interface AskTimedMutationInput {
 	readonly at: string;
 }
 
-export type AskMutationOptions = FoundationMutationOptionsV1;
-export type AskStoreOptions = FoundationDurableStoreOptionsV1;
-export type AskEventTypeV1 = "ask.created" | "ask.answered" | "ask.expired" | "ask.escalated" | "ask.cancelled";
+export interface AskMutationOptions {
+	readonly clientRequestId: string;
+	readonly expectedRevision: number;
+}
 
-export interface AskEventV1 {
+export interface AskStoreOptions extends SessionLedgerWriterOptions {
+	readonly writer?: SessionLedgerWriter;
+}
+export type AskEventType = "ask.created" | "ask.answered" | "ask.expired" | "ask.escalated" | "ask.cancelled";
+
+export interface AskEvent {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
-	readonly type: AskEventTypeV1;
+	readonly type: AskEventType;
 	readonly askId: string;
 	readonly revision: number;
 	readonly timestamp: string;
@@ -67,7 +72,7 @@ export interface AskEventV1 {
 	readonly commandPayload: string;
 }
 
-export const AskEventV1Schema = Type.Object(
+export const AskEventSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		eventId: Type.String({ minLength: 1 }),
@@ -115,8 +120,8 @@ function clone<TValue>(value: TValue): TValue {
 	return cloneStoreValue(value);
 }
 
-function assertAsk(value: unknown): AskV1 {
-	const result = validateAskV1(value);
+function assertAsk(value: unknown): Ask {
+	const result = validateAsk(value);
 	if (!result.ok) throw result.error;
 	const ask = result.value;
 	validateTimestamp(ask.createdAt, "ask createdAt");
@@ -145,15 +150,15 @@ function assertAsk(value: unknown): AskV1 {
 	return ask;
 }
 
-function assertAskEvent(value: unknown): AskEventV1 {
-	const result = validateExactShape<AskEventV1>(AskEventV1Schema, value, "ask_event");
+function assertAskEvent(value: unknown): AskEvent {
+	const result = validateExactShape<AskEvent>(AskEventSchema, value, "ask_event");
 	if (!result.ok) throw result.error;
 	validateTimestamp(result.value.timestamp, "ask event timestamp");
 	return result.value;
 }
 
-function latestRecords(records: readonly FoundationRecordV1[]): Map<string, FoundationRecordV1> {
-	const latest = new Map<string, FoundationRecordV1>();
+function latestRecords(records: readonly FoundationRecord[]): Map<string, FoundationRecord> {
+	const latest = new Map<string, FoundationRecord>();
 	for (const record of records) if (record.kind !== "retention") latest.set(record.objectId, record);
 	return latest;
 }
@@ -167,7 +172,7 @@ export class AskStore {
 		this.writer = createStoreWriter(session, options);
 	}
 
-	async create(input: AskCreateInput, options: AskMutationOptions): Promise<AskV1> {
+	async create(input: AskCreateInput, options: AskMutationOptions): Promise<Ask> {
 		return this.safe("ask_conflict", async () => {
 			const request = mutation(options);
 			if (request.expectedRevision !== 0) fail("ask_conflict", "Ask creation expectedRevision must be zero");
@@ -204,7 +209,7 @@ export class AskStore {
 			);
 			const replay = await this.resume(command, "ask.created");
 			if (replay !== undefined) return replay;
-			const ask: AskV1 = {
+			const ask: Ask = {
 				schemaVersion: 1,
 				...normalized,
 				status: "pending",
@@ -216,11 +221,11 @@ export class AskStore {
 		});
 	}
 
-	async get(askId: string): Promise<AskV1> {
+	async get(askId: string): Promise<Ask> {
 		return this.safe("ask_not_found", async () => this.load(storeId(askId, "askId")));
 	}
 
-	async list(sessionId?: string): Promise<AskV1[]> {
+	async list(sessionId?: string): Promise<Ask[]> {
 		return this.safe("ask_conflict", async () => {
 			const normalized = sessionId === undefined ? undefined : storeId(sessionId, "sessionId");
 			const records = await this.session.findFoundationRecords({
@@ -230,7 +235,7 @@ export class AskStore {
 				includePruned: true,
 			});
 			return [...latestRecords(records).values()]
-				.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact")
+				.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact")
 				.map((record) => assertAsk(record.payload))
 				.filter((ask) => normalized === undefined || ask.sessionId === normalized)
 				.sort(
@@ -240,7 +245,7 @@ export class AskStore {
 		});
 	}
 
-	async reply(askId: string, input: AskReplyInput, options: AskMutationOptions): Promise<AskV1> {
+	async reply(askId: string, input: AskReplyInput, options: AskMutationOptions): Promise<Ask> {
 		return this.safe("ask_conflict", async () => {
 			const request = mutation(options);
 			const normalizedAskId = storeId(askId, "askId");
@@ -263,7 +268,7 @@ export class AskStore {
 			if (replay !== undefined) return replay;
 			const ask = await this.load(normalizedAskId);
 			this.assertPending(ask, request.expectedRevision);
-			const reply: AskReplyV1 = {
+			const reply: AskReply = {
 				schemaVersion: 1,
 				replyId,
 				askId: normalizedAskId,
@@ -287,11 +292,11 @@ export class AskStore {
 		});
 	}
 
-	async expire(askId: string, input: AskTimedMutationInput, options: AskMutationOptions): Promise<AskV1> {
+	async expire(askId: string, input: AskTimedMutationInput, options: AskMutationOptions): Promise<Ask> {
 		return this.timedTransition(askId, input, options, "expired", "ask.expired", "dueAt", "ask_timeout_not_reached");
 	}
 
-	async escalate(askId: string, input: AskTimedMutationInput, options: AskMutationOptions): Promise<AskV1> {
+	async escalate(askId: string, input: AskTimedMutationInput, options: AskMutationOptions): Promise<Ask> {
 		return this.timedTransition(
 			askId,
 			input,
@@ -303,7 +308,7 @@ export class AskStore {
 		);
 	}
 
-	async cancel(askId: string, reason: string | undefined, options: AskMutationOptions): Promise<AskV1> {
+	async cancel(askId: string, reason: string | undefined, options: AskMutationOptions): Promise<Ask> {
 		return this.safe("ask_conflict", async () => {
 			const request = mutation(options);
 			const normalizedAskId = storeId(askId, "askId");
@@ -340,7 +345,7 @@ export class AskStore {
 		});
 	}
 
-	async eventsFor(askId: string): Promise<AskEventV1[]> {
+	async eventsFor(askId: string): Promise<AskEvent[]> {
 		return this.safe("ask_not_found", async () => {
 			const normalizedAskId = storeId(askId, "askId");
 			await this.load(normalizedAskId);
@@ -351,7 +356,7 @@ export class AskStore {
 				includePruned: true,
 			});
 			return records
-				.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact")
+				.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact")
 				.map((record) => assertAskEvent(record.payload))
 				.filter((event) => event.askId === normalizedAskId)
 				.map(clone);
@@ -362,11 +367,11 @@ export class AskStore {
 		askId: string,
 		input: AskTimedMutationInput,
 		options: AskMutationOptions,
-		status: Extract<AskStatusV1, "expired" | "escalated">,
-		eventType: Extract<AskEventTypeV1, "ask.expired" | "ask.escalated">,
+		status: Extract<AskStatus, "expired" | "escalated">,
+		eventType: Extract<AskEventType, "ask.expired" | "ask.escalated">,
 		thresholdField: "dueAt" | "escalationAt",
 		earlyCode: Extract<FoundationErrorCode, "ask_timeout_not_reached" | "ask_escalation_not_reached">,
-	): Promise<AskV1> {
+	): Promise<Ask> {
 		return this.safe("ask_conflict", async () => {
 			const request = mutation(options);
 			const normalizedAskId = storeId(askId, "askId");
@@ -408,8 +413,8 @@ export class AskStore {
 		return derivedId("ask_aggregate", request.clientRequestId);
 	}
 
-	private async resume(command: AskCommand, eventType: AskEventTypeV1): Promise<AskV1 | undefined> {
-		const stored = await readCommandResult<AskV1>(
+	private async resume(command: AskCommand, eventType: AskEventType): Promise<Ask | undefined> {
+		const stored = await readCommandResult<Ask>(
 			this.writer,
 			COMMAND_OBJECT_TYPE,
 			command.objectId,
@@ -428,7 +433,7 @@ export class AskStore {
 		const matched = [...records]
 			.reverse()
 			.find(
-				(record): record is Extract<FoundationRecordV1, { kind: "fact" }> =>
+				(record): record is Extract<FoundationRecord, { kind: "fact" }> =>
 					record.kind === "fact" && record.clientRequestId === aggregateRequestId,
 			);
 		if (matched === undefined) return undefined;
@@ -438,7 +443,7 @@ export class AskStore {
 		return this.finish(command, ask);
 	}
 
-	private async commit(command: AskCommand, ask: AskV1, eventType: AskEventTypeV1): Promise<AskV1> {
+	private async commit(command: AskCommand, ask: Ask, eventType: AskEventType): Promise<Ask> {
 		const accepted = await writeFact(
 			this.writer,
 			ASK_OBJECT_TYPE,
@@ -453,7 +458,7 @@ export class AskStore {
 		return this.finish(command, value);
 	}
 
-	private async finish(command: AskCommand, ask: AskV1): Promise<AskV1> {
+	private async finish(command: AskCommand, ask: Ask): Promise<Ask> {
 		return assertAsk(
 			await writeCommandResult(
 				this.writer,
@@ -467,8 +472,8 @@ export class AskStore {
 		);
 	}
 
-	private async writeEvent(command: AskCommand, ask: AskV1, type: AskEventTypeV1): Promise<void> {
-		const event: AskEventV1 = {
+	private async writeEvent(command: AskCommand, ask: Ask, type: AskEventType): Promise<void> {
+		const event: AskEvent = {
 			schemaVersion: 1,
 			eventId: derivedId("ask_event", command.request.clientRequestId),
 			type,
@@ -488,7 +493,7 @@ export class AskStore {
 		);
 	}
 
-	private async repairReply(ask: AskV1, requestId: string): Promise<void> {
+	private async repairReply(ask: Ask, requestId: string): Promise<void> {
 		if (ask.reply === undefined) return;
 		const records = await recordsForObject(this.writer, REPLY_OBJECT_TYPE, ask.reply.replyId);
 		const latest = records.at(-1);
@@ -505,7 +510,7 @@ export class AskStore {
 		);
 	}
 
-	private async load(askId: string): Promise<AskV1> {
+	private async load(askId: string): Promise<Ask> {
 		const records = await recordsForObject(this.writer, ASK_OBJECT_TYPE, askId);
 		const latest = records.at(-1);
 		if (latest === undefined) fail("ask_not_found", "Ask was not found");
@@ -513,7 +518,7 @@ export class AskStore {
 		return clone(assertAsk(latest.payload));
 	}
 
-	private assertPending(ask: AskV1, revision: number): void {
+	private assertPending(ask: Ask, revision: number): void {
 		if (ask.revision !== revision) fail("session_writer_stale_revision", "Ask revision is stale");
 		if (ask.status !== "pending") fail("ask_invalid_transition", "Ask is already settled");
 	}

@@ -1,6 +1,6 @@
-# Execution Audit / Replay / External Mapping Contract (v1)
+# Execution Audit / Replay / External Mapping Contract
 
-This document freezes the v1 boundary for the Execution Audit, read-only
+This document freezes the current boundary for the Execution Audit, read-only
 Replay, and external Session/Run mapping work. It is based on the existing
 Run, Context, Capability, ModelBroker, Policy, Sandbox, Session, and RPC
 contracts reviewed for the supplied audit/replay PR and implementation plan.
@@ -15,7 +15,7 @@ boundary.
 
 ## 1. Version, commands, and source mapping
 
-The v1 schema version is `1`. The additive Automation Host commands are:
+The schema version is `1`. The additive Automation Host commands are:
 
 ```text
 audit.query
@@ -89,7 +89,7 @@ The source files that establish these facts are:
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
-## 2. AuditEvent v1
+## 2. AuditEvent schema
 
 The exact event-type union is:
 
@@ -335,7 +335,7 @@ The External Agent Adapter introduces no new audit event type and no new
 Session custom entry. Adapter activity is exposed only through the existing
 safe sources: the Run facts (`run.accepted` / `run.started` / the terminal),
 the `external.mapping` entry, and the `remote.operation` receipt. A probe is a
-short-term preflight fact; v1 never persists a probe snapshot as a long-term
+short-term preflight fact; the current contract never persists a probe snapshot as a long-term
 Session capability fact, so replay never fabricates a probe result. An
 external terminal receipt is evidence for the existing Run terminal gate and
 never writes or overrides a Run terminal.
@@ -520,7 +520,7 @@ or Run. See [Sandbox Operation Worker contract](worker-contract.md).
 
 Line 12A exposes a separate digest-bound `subagent.lifecycle` projection for
 Audit and RPC consumers. It is not a new Audit event family and does not alter
-the v1 `AuditEventType` or Session custom-source unions. Its exact allowlist is:
+the current `AuditEventType` or Session custom-source unions. Its exact allowlist is:
 
 ```text
 schemaVersion, source, sessionId, runId, childAgentInstanceId,
@@ -911,5 +911,5 @@ integration also covers the adapter, controlled directory query/replay,
 append-only mapping persistence, Run lifecycle, RPC/client additions, and
 cross-layer regression cases. Existing Run lifecycle, Context snapshot,
 Capability binding, ModelBroker fallback, Policy/Sandbox, Session
-custom-entry, and RPC behavior remain unchanged outside the additive v1
+custom-entry, and RPC behavior remain unchanged outside the current additions
 surface.

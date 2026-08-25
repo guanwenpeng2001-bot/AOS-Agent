@@ -6,16 +6,16 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
 	type AgentHarness,
-	createSandboxOperationToolGatewayProviderV1,
+	createSandboxOperationToolGatewayProvider,
 	EVENT_CATALOG,
-	executeOperationV1,
+	executeOperation,
 	FoundationError,
 	InMemorySessionStorage,
 	Result,
 	Session,
-	type ExecutionCorrelationV1,
+	type ExecutionCorrelation,
 	type FoundationJsonValue,
-	type SandboxOperationRequestV1,
+	type SandboxOperationRequest,
 } from "@aos-agent/agent-core";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
@@ -158,7 +158,7 @@ function childPolicy(
 	});
 }
 
-function operation(operationId = "operation-1", deadlineAt?: number): SandboxOperationRequestV1 {
+function operation(operationId = "operation-1", deadlineAt?: number): SandboxOperationRequest {
 	return {
 		schemaVersion: 1,
 		operationId,
@@ -173,7 +173,7 @@ function operation(operationId = "operation-1", deadlineAt?: number): SandboxOpe
 	};
 }
 
-function correlation(operationId = "operation-1"): ExecutionCorrelationV1 {
+function correlation(operationId = "operation-1"): ExecutionCorrelation {
 	return {
 		sessionId: "session-1",
 		laneId: "main",
@@ -189,7 +189,7 @@ function correlation(operationId = "operation-1"): ExecutionCorrelationV1 {
 	};
 }
 
-function binding(request: SandboxOperationRequestV1, profileId: string): WorkerBindingV1 {
+function binding(request: SandboxOperationRequest, profileId: string): WorkerBindingV1 {
 	return {
 		schemaVersion: 1,
 		workerId: `worker-${request.operationId}`,
@@ -209,7 +209,7 @@ function binding(request: SandboxOperationRequestV1, profileId: string): WorkerB
 	};
 }
 
-function facts(request: SandboxOperationRequestV1, profileId: string): WorkerSandboxPreflightFactsV1 {
+function facts(request: SandboxOperationRequest, profileId: string): WorkerSandboxPreflightFactsV1 {
 	return {
 		binding: binding(request, profileId),
 		runAccepted: true,
@@ -226,7 +226,7 @@ function provider(
 	profileId: string | undefined,
 	overrides: {
 		readonly resolvePreflight?: (
-				request: SandboxOperationRequestV1,
+				request: SandboxOperationRequest,
 				options: Parameters<WorkerSandboxProviderOptionsV1["resolvePreflight"]>[1],
 			) => WorkerSandboxPreflightFactsV1 | Promise<WorkerSandboxPreflightFactsV1>;
 		readonly onRecord?: (record: WorkerRecordV1) => void;
@@ -315,7 +315,7 @@ class ExecuteGateWorkerSupervisor extends WorkerSupervisorV1 {
 		this.releaseExecuteGate();
 	}
 
-	override async execute(request: SandboxOperationRequestV1) {
+	override async execute(request: SandboxOperationRequest) {
 		this.resolveExecuteEntered();
 		await this.executeGate;
 		return super.execute(request);
@@ -656,7 +656,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return Promise.resolve(Result.ok(undefined));
 			}
 
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				events.push("execute");
 				return super.execute(request);
 			}
@@ -750,7 +750,7 @@ describe("WorkerSandboxProviderV1", () => {
 				)));
 			}
 
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				executeCalls += 1;
 				return super.execute(request);
 			}
@@ -806,7 +806,7 @@ describe("WorkerSandboxProviderV1", () => {
 				)));
 			}
 
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				executeCalls += 1;
 				return super.execute(request);
 			}
@@ -862,7 +862,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return Promise.resolve(Result.ok(undefined));
 			}
 
-			override async execute(request: SandboxOperationRequestV1) {
+			override async execute(request: SandboxOperationRequest) {
 				events.push("execute:start");
 				await executeGate;
 				return super.execute(request);
@@ -921,7 +921,7 @@ describe("WorkerSandboxProviderV1", () => {
 		let releaseExecute: () => void = () => undefined;
 		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
 		class CredentialRenewFailureSupervisor extends WorkerSupervisorV1 {
-			override async execute(request: SandboxOperationRequestV1) {
+			override async execute(request: SandboxOperationRequest) {
 				events.push("execute");
 				await executeGate;
 				return super.execute(request);
@@ -989,7 +989,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
 		const revokeGate = new Promise<void>((resolve) => { releaseRevoke = resolve; });
 		class CredentialRevokeFailureSupervisor extends WorkerSupervisorV1 {
-			override async execute(request: SandboxOperationRequestV1) {
+			override async execute(request: SandboxOperationRequest) {
 				events.push("execute");
 				await executeGate;
 				return super.execute(request);
@@ -1137,7 +1137,7 @@ describe("WorkerSandboxProviderV1", () => {
 		for (const profileId of ["success", "failure"] as const) {
 			const current = provider(profileId);
 			const request = operation(`operation-${profileId}`);
-			const executed = await executeOperationV1({
+			const executed = await executeOperation({
 				provider: current,
 				request,
 				correlation: correlation(request.operationId),
@@ -1149,7 +1149,7 @@ describe("WorkerSandboxProviderV1", () => {
 
 	it("uses the ToolGateway payload callback before executing the real provider", async () => {
 		const current = provider("success", { requireRegisteredPayload: true });
-		const gateway = createSandboxOperationToolGatewayProviderV1({
+		const gateway = createSandboxOperationToolGatewayProvider({
 			providerId: current.providerId,
 			routes: [{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 }],
 			sandbox: current,
@@ -1180,7 +1180,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const runId = "run-real-worker";
 		const policyBinding = realChildPolicyBinding(runId);
 		const current = realWorkerProvider(root, policyBinding.id, runId);
-		const gateway = createSandboxOperationToolGatewayProviderV1({
+		const gateway = createSandboxOperationToolGatewayProvider({
 			providerId: current.providerId,
 			routes: [
 				{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 },
@@ -1191,7 +1191,7 @@ describe("WorkerSandboxProviderV1", () => {
 			sandbox: current,
 			onOperationPayload: (operationId, payload) => current.onOperationPayload(operationId, payload),
 		});
-		const execute = (operationId: string, toolName: string, payload: SandboxOperationRequestV1["payload"]) => gateway.execute({
+		const execute = (operationId: string, toolName: string, payload: SandboxOperationRequest["payload"]) => gateway.execute({
 			schemaVersion: 1,
 			toolCallId: `call-${operationId}`,
 			toolName,
@@ -1373,7 +1373,7 @@ describe("WorkerSandboxProviderV1", () => {
 			],
 			mapResult: () => [],
 		});
-		const start = (operationId: string, payload: SandboxOperationRequestV1["payload"]) => childProvider.start({
+		const start = (operationId: string, payload: SandboxOperationRequest["payload"]) => childProvider.start({
 			...operation(operationId),
 			bindingId: policy.binding.id,
 			payload,
@@ -1388,7 +1388,7 @@ describe("WorkerSandboxProviderV1", () => {
 				revision: 0,
 			},
 		});
-		const invalidPayloads: readonly (readonly [string, SandboxOperationRequestV1["payload"]])[] = [
+		const invalidPayloads: readonly (readonly [string, SandboxOperationRequest["payload"]])[] = [
 			["confused-resource", { resource: "filesystem.read", operation: "file.write", path: "README.md", content: "write" }],
 			["read-content", { resource: "filesystem.read", operation: "file.read", path: "README.md", content: "hidden write" }],
 			["read-command", { resource: "filesystem.read", operation: "file.read", path: "README.md", command: process.execPath }],
@@ -1460,7 +1460,7 @@ describe("WorkerSandboxProviderV1", () => {
 			],
 			mapResult: () => [],
 		});
-		const start = (child: ReturnType<typeof createChild>, operationId: string, payload: SandboxOperationRequestV1["payload"]) => child.start({
+		const start = (child: ReturnType<typeof createChild>, operationId: string, payload: SandboxOperationRequest["payload"]) => child.start({
 			...operation(operationId),
 			bindingId: policy.binding.id,
 			payload,
@@ -1715,7 +1715,7 @@ describe("WorkerSandboxProviderV1", () => {
 			...operation("child-own-undefined"),
 			bindingId: policy.binding.id,
 			agentInstanceId: undefined,
-		} as unknown as SandboxOperationRequestV1)).toMatchObject({
+		} as unknown as SandboxOperationRequest)).toMatchObject({
 			ok: false,
 			error: { code: "worker_operation_invalid" },
 		});
@@ -1779,7 +1779,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const records: WorkerRecordV1[] = [];
 		const current = provider("cancel_success", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-cancel");
-		const started = executeOperationV1({ provider: current, request, correlation: correlation(request.operationId) });
+		const started = executeOperation({ provider: current, request, correlation: correlation(request.operationId) });
 		await waitForRecord(records, "ready");
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(await current.cancel(request.operationId)).toEqual({ ok: true, value: undefined });
@@ -1887,7 +1887,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const deadlineAt = Date.now() + 1_000;
 		const deadlineProvider = provider("deadline_late");
 		const deadlineRequest = operation("operation-deadline", deadlineAt);
-		expect(await executeOperationV1({ provider: deadlineProvider, request: deadlineRequest, correlation: correlation(deadlineRequest.operationId) })).toMatchObject({
+		expect(await executeOperation({ provider: deadlineProvider, request: deadlineRequest, correlation: correlation(deadlineRequest.operationId) })).toMatchObject({
 			ok: false,
 			error: { code: "worker_deadline_exceeded" },
 		});
@@ -1895,13 +1895,13 @@ describe("WorkerSandboxProviderV1", () => {
 		for (const [profileId, code] of [["disconnect", "worker_lost"], ["receipt_invalid", "worker_receipt_invalid"]] as const) {
 			const current = provider(profileId);
 			const request = operation(`operation-${profileId}`);
-			expect(await executeOperationV1({ provider: current, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: false, error: { code } });
+			expect(await executeOperation({ provider: current, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: false, error: { code } });
 		}
 
 		const records: WorkerRecordV1[] = [];
 		const reclaimUnknown = provider("reclaim_unknown", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-reclaim-unknown");
-		expect(await executeOperationV1({ provider: reclaimUnknown, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: true });
+		expect(await executeOperation({ provider: reclaimUnknown, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: true });
 		expect(records.some((record) => record.status === "reclaim_unknown")).toBe(true);
 	});
 
@@ -1909,8 +1909,8 @@ describe("WorkerSandboxProviderV1", () => {
 		const mismatches: readonly {
 			readonly name: string;
 			readonly code: string;
-			readonly resolvePreflight?: (request: SandboxOperationRequestV1) => WorkerSandboxPreflightFactsV1;
-			readonly executionCorrelation?: (operationId: string) => ExecutionCorrelationV1;
+			readonly resolvePreflight?: (request: SandboxOperationRequest) => WorkerSandboxPreflightFactsV1;
+			readonly executionCorrelation?: (operationId: string) => ExecutionCorrelation;
 		}[] = [
 			{ name: "run-accepted", code: "worker_unavailable", resolvePreflight: (request) => ({ ...facts(request, "success"), runAccepted: false }) },
 			{ name: "session-owned", code: "worker_binding_invalid", resolvePreflight: (request) => ({ ...facts(request, "success"), sessionOwned: false }) },
@@ -2193,8 +2193,8 @@ describe("WorkerSandboxProviderV1", () => {
 			operationId?: string;
 		};
 		const pending = current.start(
-			mutableRequest as unknown as SandboxOperationRequestV1,
-			{ correlation: mutableCorrelation as unknown as ExecutionCorrelationV1 },
+			mutableRequest as unknown as SandboxOperationRequest,
+			{ correlation: mutableCorrelation as unknown as ExecutionCorrelation },
 		);
 		await preflightEntered;
 		mutableRequest.operationId = "operation-snapshot-mutated";
@@ -2221,14 +2221,14 @@ describe("WorkerSandboxProviderV1", () => {
 		]) {
 			const invalidRequest = operation(String(invalidCorrelation.operationId));
 			expect(await current.start(invalidRequest, {
-				correlation: invalidCorrelation as unknown as ExecutionCorrelationV1,
+				correlation: invalidCorrelation as unknown as ExecutionCorrelation,
 			})).toMatchObject({ ok: false, error: { code: "invalid_correlation" } });
 		}
-		expect(await current.start(null as unknown as SandboxOperationRequestV1)).toMatchObject({ ok: false });
+		expect(await current.start(null as unknown as SandboxOperationRequest)).toMatchObject({ ok: false });
 		expect(await current.start({
 			...operation("operation-own-undefined"),
 			agentInstanceId: undefined,
-		} as unknown as SandboxOperationRequestV1)).toMatchObject({
+		} as unknown as SandboxOperationRequest)).toMatchObject({
 			ok: false,
 			error: { code: "foundation_schema_invalid_shape" },
 		});
@@ -2420,7 +2420,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const request = operation("operation-first-pending-run-reason");
 		const runlessCorrelation = { ...correlation(request.operationId) } as {
 			runId?: string;
-		} & ExecutionCorrelationV1;
+		} & ExecutionCorrelation;
 		delete runlessCorrelation.runId;
 		const pending = current.start(request, { correlation: runlessCorrelation });
 		await current.notifyRun("run-1", "deadline");
@@ -2572,7 +2572,7 @@ describe("WorkerSandboxProviderV1", () => {
 	it("persists an operation fence before execute and consumes a claimed-only crash prefix", async () => {
 		let executeCalls = 0;
 		class CountingSupervisor extends WorkerSupervisorV1 {
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				executeCalls += 1;
 				return super.execute(request);
 			}
@@ -2693,7 +2693,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return activation;
 			}
 
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				executeCalls += 1;
 				return super.execute(request);
 			}
@@ -2825,7 +2825,7 @@ describe("WorkerSandboxProviderV1", () => {
 			}),
 		});
 		const request = operation("operation-shuffled-capabilities");
-		expect(await executeOperationV1({
+		expect(await executeOperation({
 			provider: current,
 			request,
 			correlation: correlation(request.operationId),
@@ -2890,7 +2890,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const running = new Promise<WorkerRecordV1>((resolve) => { resolveRunning = resolve; });
 		let supervisor: WorkerSupervisorV1 | undefined;
 		class RunningObservedSupervisor extends WorkerSupervisorV1 {
-			override execute(request: SandboxOperationRequestV1) {
+			override execute(request: SandboxOperationRequest) {
 				const execution = super.execute(request);
 				const observeRunning = (): void => {
 					const record = this.snapshot.record;
@@ -3495,7 +3495,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const records: WorkerRecordV1[] = [];
 		const current = provider("late_heartbeat", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-late-heartbeat");
-		const result = await executeOperationV1({
+		const result = await executeOperation({
 			provider: current,
 			request,
 			correlation: correlation(request.operationId),
@@ -3513,7 +3513,7 @@ describe("WorkerSandboxProviderV1", () => {
 
 		const crossWorker = provider("late_heartbeat_cross_worker");
 		const crossRequest = operation("operation-cross-worker-heartbeat");
-		expect(await executeOperationV1({
+		expect(await executeOperation({
 			provider: crossWorker,
 			request: crossRequest,
 			correlation: correlation(crossRequest.operationId),

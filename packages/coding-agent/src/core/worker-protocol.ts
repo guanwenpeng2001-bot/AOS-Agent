@@ -12,15 +12,15 @@ import {
 	Result,
 	canonicalFoundationJson,
 	redactText,
-	validateSandboxOperationRequestV1,
+	validateSandboxOperationRequest,
 	validateWorkerReceipt,
-	type ArtifactRefV1,
+	type ArtifactRef,
 	type FoundationJsonValue,
-	type PublicExecutionErrorV1,
+	type PublicExecutionError,
 	type Result as ResultValue,
-	type SandboxOperationRequestV1,
-	type SideEffectStateV1,
-	type WorkerReceiptV1,
+	type SandboxOperationRequest,
+	type SideEffectState,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
 	WORKER_SCHEMA_VERSION,
@@ -107,10 +107,10 @@ export interface SafeOperationResultV1 {
 	readonly schemaVersion: 1;
 	readonly operationId: string;
 	readonly ok: boolean;
-	readonly sideEffectState: SideEffectStateV1;
+	readonly sideEffectState: SideEffectState;
 	readonly data?: FoundationJsonValue;
-	readonly artifacts?: readonly ArtifactRefV1[];
-	readonly error?: PublicExecutionErrorV1;
+	readonly artifacts?: readonly ArtifactRef[];
+	readonly error?: PublicExecutionError;
 }
 
 export type WorkerRequestFrameV1 =
@@ -124,7 +124,7 @@ export type WorkerRequestFrameV1 =
 			readonly requestId: string;
 			readonly workerId: string;
 			readonly operationId: string;
-			readonly request: SandboxOperationRequestV1;
+			readonly request: SandboxOperationRequest;
 	  }
 	| {
 			readonly type: "credential.project" | "credential.renew";
@@ -197,7 +197,7 @@ export type WorkerEventFrameV1 =
 	| {
 			readonly type: "receipt";
 			readonly requestId: string;
-			readonly receipt: WorkerReceiptV1;
+			readonly receipt: WorkerReceipt;
 	  }
 	| {
 			readonly type: "error";
@@ -445,7 +445,7 @@ function isBoundedFoundationJson(value: unknown, maxBytes: number): value is Fou
 	}
 }
 
-function isSafePublicError(value: unknown): value is PublicExecutionErrorV1 {
+function isSafePublicError(value: unknown): value is PublicExecutionError {
 	if (!isRecord(value) || !hasExactKeys(value, ["code", "message", "retryable"], ["category"])) return false;
 	const message = value.message;
 	if (
@@ -464,7 +464,7 @@ function isSafePublicError(value: unknown): value is PublicExecutionErrorV1 {
 	return value.category === undefined || (typeof value.category === "string" && PUBLIC_ERROR_CATEGORIES.has(value.category));
 }
 
-function isSafeArtifact(value: unknown): value is ArtifactRefV1 {
+function isSafeArtifact(value: unknown): value is ArtifactRef {
 	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "artifactId", "mediaType", "digest"], ["producer", "sizeBytes"])) return false;
 	return (
 		value.schemaVersion === WORKER_SCHEMA_VERSION &&
@@ -545,7 +545,7 @@ function sameStringSequence(left: readonly string[], right: readonly string[]): 
 	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function receiptMatchesRequestAndBinding(receipt: WorkerReceiptV1, request: WorkerProtocolRequestStateV1, binding: WorkerBindingV1): boolean {
+function receiptMatchesRequestAndBinding(receipt: WorkerReceipt, request: WorkerProtocolRequestStateV1, binding: WorkerBindingV1): boolean {
 	const correlation = receipt.provenance.correlation;
 	if (
 		correlation === undefined ||
@@ -566,7 +566,7 @@ function receiptMatchesRequestAndBinding(receipt: WorkerReceiptV1, request: Work
 	return true;
 }
 
-function validatePrivateWorkerReceipt(value: unknown): value is WorkerReceiptV1 {
+function validatePrivateWorkerReceipt(value: unknown): value is WorkerReceipt {
 	const checked = validateWorkerReceipt(value);
 	if (!checked.ok) return false;
 	const receipt = checked.value;
@@ -605,8 +605,8 @@ function isSafeRequestId(value: unknown): value is string {
 	return isSafeIdentifier(value);
 }
 
-function validateExecuteRequest(value: unknown): value is SandboxOperationRequestV1 {
-	const checked = validateSandboxOperationRequestV1(value);
+function validateExecuteRequest(value: unknown): value is SandboxOperationRequest {
+	const checked = validateSandboxOperationRequest(value);
 	return checked.ok && isSafeIdentifier(checked.value.operationId);
 }
 
@@ -914,7 +914,7 @@ interface WorkerRequestIdentityV1 {
 	readonly bindingEpochId?: string;
 }
 
-function requestIdentity(request: SandboxOperationRequestV1): WorkerRequestIdentityV1 {
+function requestIdentity(request: SandboxOperationRequest): WorkerRequestIdentityV1 {
 	return {
 		...(request.providerId === undefined ? {} : { providerId: request.providerId }),
 		...(request.taskId === undefined ? {} : { taskId: request.taskId }),
@@ -1101,7 +1101,7 @@ function updateOperation(state: WorkerProtocolStateV1, operationId: string, patc
 	return Result.ok(withState(state, { operations }));
 }
 
-function bindingMatchesRequest(binding: WorkerBindingV1, request: SandboxOperationRequestV1): boolean {
+function bindingMatchesRequest(binding: WorkerBindingV1, request: SandboxOperationRequest): boolean {
 	return (
 		(request.providerId === undefined || request.providerId === binding.providerId) &&
 		(request.bindingId === undefined || request.bindingId === binding.bindingId) &&

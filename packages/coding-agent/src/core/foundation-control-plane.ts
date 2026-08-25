@@ -4,13 +4,13 @@ import { basename } from "node:path";
 import {
 	canonicalFoundationJson,
 	FoundationError,
-	validateDurableEventV1,
-	type AgentBindingV1,
+	validateDurableEvent,
+	type AgentBinding,
 	type AgentHarness,
-	type FoundationEventEnvelopeV1,
+	type FoundationEventEnvelope,
 	type HarnessTool,
 	type Session,
-	type TaskEnvelopeV1,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import {
 	CapabilityError,
@@ -134,15 +134,15 @@ import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
 import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
 import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
-import type { SchedulerMessageOrchestratorV1 } from "./scheduler-messages.ts";
+import type { SchedulerMessageOrchestrator } from "./scheduler-messages.ts";
 import { SchedulerWorkflowController } from "./scheduler-workflow.ts";
 import {
 	SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MIN_POLL_INTERVAL_MS,
-	SchedulerHostV1,
+	SchedulerHost,
 	type SchedulerHostEventSourceV1,
-	type SchedulerHostOptionsV1,
+	type SchedulerHostOptions,
 } from "./scheduler.ts";
 import {
 	TaskGraphStore,
@@ -193,7 +193,7 @@ export interface FoundationControlPlaneOptions {
 	/** Explicit trusted Host opt-in. Project/model/RPC configuration cannot populate this option. */
 	subagents?: TrustedSubagentCompositionOptionsV1;
 	/** Explicit trusted Host-only Scheduler opt-in. Omission preserves the original runtime path. */
-	scheduler?: TrustedSchedulerCompositionOptionsV1;
+	scheduler?: TrustedSchedulerCompositionOptions;
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
 	workerFactCacheLimit?: number;
 	policyProfile?: string;
@@ -206,7 +206,7 @@ export interface FoundationControlPlaneOptions {
 	excludedToolNames?: ReadonlyArray<string>;
 }
 
-export interface TrustedSchedulerCompositionOptionsV1 {
+export interface TrustedSchedulerCompositionOptions {
 	readonly schemaVersion: 1;
 	readonly enabled: true;
 	readonly sourceSession: Session;
@@ -216,18 +216,18 @@ export interface TrustedSchedulerCompositionOptionsV1 {
 	readonly runLifecycleSession: SessionManager;
 	readonly ownerId: string;
 	readonly registry: SchedulerExecutorRegistry;
-	readonly task: TaskEnvelopeV1;
-	readonly binding: AgentBindingV1;
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
 	readonly gateLookup: TaskGraphGateLookup;
-	readonly resolveRunAssociation: SchedulerHostOptionsV1["resolveRunAssociation"];
-	readonly settlementEvidence?: SchedulerHostOptionsV1["settlementEvidence"];
-	readonly settleRunAtHost: SchedulerHostOptionsV1["settleRunAtHost"];
+	readonly resolveRunAssociation: SchedulerHostOptions["resolveRunAssociation"];
+	readonly settlementEvidence?: SchedulerHostOptions["settlementEvidence"];
+	readonly settleRunAtHost: SchedulerHostOptions["settleRunAtHost"];
 	readonly eventSource?: SchedulerHostEventSourceV1;
 	readonly pollIntervalMs?: number;
 	readonly now?: () => string;
 }
 
-export interface SchedulerSafeStatusV1 {
+export interface SchedulerSafeStatus {
 	readonly schemaVersion: 1;
 	readonly source: "scheduler";
 	readonly sessionId: string;
@@ -281,15 +281,15 @@ export interface SchedulerSafeStatusV1 {
  * before the Run coordinator is created so the T4 observation contract cannot
  * be bypassed by construction order.
  */
-export class TrustedSchedulerCompositionV1 {
+export class TrustedSchedulerComposition {
 	readonly runLifecycle: RunLifecycleCoordinator;
 	readonly graph: TaskGraphStore;
 	readonly workflow: SchedulerWorkflowController;
-	readonly messages: SchedulerMessageOrchestratorV1;
+	readonly messages: SchedulerMessageOrchestrator;
 	readonly handoff: SchedulerHandoffController;
 	readonly fanIn: SchedulerFanInController;
 	readonly deadlock: SchedulerDeadlockController;
-	private readonly host: SchedulerHostV1;
+	private readonly host: SchedulerHost;
 	private readonly sessionId: string;
 	private readonly pollIntervalMs: number;
 	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
@@ -306,9 +306,9 @@ export class TrustedSchedulerCompositionV1 {
 	private started = false;
 	private ticksCompleted = 0;
 	private tickFailures = 0;
-	private lastTick: SchedulerSafeStatusV1["lastTick"];
+	private lastTick: SchedulerSafeStatus["lastTick"];
 
-	constructor(options: TrustedSchedulerCompositionOptionsV1) {
+	constructor(options: TrustedSchedulerCompositionOptions) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler requires an explicit trusted Host opt-in");
 		}
@@ -330,7 +330,7 @@ export class TrustedSchedulerCompositionV1 {
 		let unregisterRunHooks: (() => void) | undefined;
 		let dispatchLifecycleHooks: RunSchedulerLifecycleHooks | undefined;
 		let workflow: SchedulerWorkflowController | undefined;
-		let host: SchedulerHostV1 | undefined;
+		let host: SchedulerHost | undefined;
 		try {
 			unregisterRunHooks = registerRunSchedulerLifecycleHooks(options.runLifecycleSession, {
 				onRunCancelRequested: (runId) => {
@@ -390,7 +390,7 @@ export class TrustedSchedulerCompositionV1 {
 			this.messages = this.workflow.messages;
 			this.handoff = this.workflow.handoff;
 			this.fanIn = this.workflow.fanIn;
-			host = new SchedulerHostV1(
+			host = new SchedulerHost(
 				withRuntimeClock(
 					{
 						enabled: true,
@@ -535,7 +535,7 @@ export class TrustedSchedulerCompositionV1 {
 		this.clock.unrefTimeout(this.timer);
 	}
 
-	status(): SchedulerSafeStatusV1 {
+	status(): SchedulerSafeStatus {
 		return {
 			schemaVersion: 1,
 			source: "scheduler",
@@ -657,7 +657,7 @@ export class FoundationControlPlane {
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
 	private readonly sandboxProviders: ReadonlyMap<string, SandboxProvider>;
 	private readonly workerSandboxProvider: WorkerSandboxProviderV1 | undefined;
-	private readonly scheduler: TrustedSchedulerCompositionV1 | undefined;
+	private readonly scheduler: TrustedSchedulerComposition | undefined;
 	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
@@ -765,7 +765,7 @@ export class FoundationControlPlane {
 		let releaseWorkerCredentialDetachSink: (() => void) | undefined;
 		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
 		let unregisterSubagentLifecycleHooks: (() => void) | undefined;
-		let scheduler: TrustedSchedulerCompositionV1 | undefined;
+		let scheduler: TrustedSchedulerComposition | undefined;
 		try {
 			if (this.subagents !== undefined) {
 				unregisterSubagentLifecycleHooks = registerRunSubagentLifecycleHooks(
@@ -807,7 +807,7 @@ export class FoundationControlPlane {
 				if (options.scheduler.runLifecycleSession !== this.sessionManager) {
 					throw new FoundationError("scheduler_queue_invalid", "Scheduler must use the control-plane Session");
 				}
-				scheduler = new TrustedSchedulerCompositionV1(options.scheduler);
+				scheduler = new TrustedSchedulerComposition(options.scheduler);
 			}
 		} catch (error) {
 			unregisterSubagentLifecycleHooks?.();
@@ -2198,7 +2198,7 @@ export class FoundationControlPlane {
 	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
 	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
 	getSubagentComposition(): TrustedSubagentCompositionV1 | undefined { return this.subagents; }
-	getSchedulerStatus(): SchedulerSafeStatusV1 | undefined { return this.scheduler?.status(); }
+	getSchedulerStatus(): SchedulerSafeStatus | undefined { return this.scheduler?.status(); }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to
 	 * dispose the live sandbox before a credential preflight. The control plane
@@ -2321,7 +2321,7 @@ export class FoundationControlPlane {
 			if (eventId === undefined) {
 				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event identity is invalid");
 			}
-			const event = validateDurableEventV1(entry.data);
+			const event = validateDurableEvent(entry.data);
 			if (!event.ok || entry.customType !== event.value.category) {
 				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event is invalid");
 			}
@@ -2702,7 +2702,7 @@ export class FoundationControlPlane {
 			if (fact.sessionId !== sessionId) {
 				throw new FoundationError("worker_persistence_failed", "Operation Worker fence session identity is invalid");
 			}
-			const event = validateDurableEventV1({
+			const event = validateDurableEvent({
 				schemaVersion: 1,
 				class: "durable",
 				category: "worker.operation_recorded",
@@ -2744,7 +2744,7 @@ export class FoundationControlPlane {
 			if (correlation === undefined || correlation.sessionId !== sessionId) {
 				throw new FoundationError("worker_persistence_failed", "Operation Worker receipt session identity is invalid");
 			}
-			const event = validateDurableEventV1({
+			const event = validateDurableEvent({
 				schemaVersion: 1,
 				class: "durable",
 				category: "worker_receipt.written",
@@ -2839,7 +2839,7 @@ export class FoundationControlPlane {
 				...(transition.operationId === undefined ? {} : { operationId: transition.operationId }),
 				...(transitionRecord.receiptId === undefined ? {} : { receiptId: transitionRecord.receiptId }),
 			};
-			const event = validateDurableEventV1({
+			const event = validateDurableEvent({
 				schemaVersion: 1,
 				class: "durable",
 				category: "worker.lifecycle_transitioned",
@@ -2881,7 +2881,7 @@ export class FoundationControlPlane {
 				...(transition.sideEffectState === undefined ? {} : { sideEffectState: transition.sideEffectState }),
 				...(transition.receiptId === undefined ? {} : { receiptId: transition.receiptId }),
 			};
-			const operationEvent = validateDurableEventV1({
+			const operationEvent = validateDurableEvent({
 				schemaVersion: 1,
 				class: "durable",
 				category: "worker.operation_recorded",
@@ -2903,7 +2903,7 @@ export class FoundationControlPlane {
 		}
 	}
 
-	private appendWorkerEvent(customType: string, event: FoundationEventEnvelopeV1): void {
+	private appendWorkerEvent(customType: string, event: FoundationEventEnvelope): void {
 		if (this.hasPersistedWorkerFact(customType, event)) return;
 		this.sessionManager.appendCustomEntry(customType, event);
 		this.markWorkerFactPersisted(event.eventId, customType, canonicalFoundationJson(event));
@@ -2923,7 +2923,7 @@ export class FoundationControlPlane {
 		}
 	}
 
-	private hasPersistedWorkerFact(customType: string, event: FoundationEventEnvelopeV1): boolean {
+	private hasPersistedWorkerFact(customType: string, event: FoundationEventEnvelope): boolean {
 		const entries = this.sessionManager.getPhysicalEntries();
 		const canonicalEnvelope = canonicalFoundationJson(event);
 		const cached = this.persistedWorkerFacts.get(event.eventId);

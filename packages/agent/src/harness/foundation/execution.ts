@@ -1,79 +1,79 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError } from "./errors.ts";
-import { canonicalFoundationJson, type ExecutionCorrelationV1 } from "./identity.ts";
+import { canonicalFoundationJson, type ExecutionCorrelation } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { validateImmutableAgentBinding, createOrderedBindingEpoch } from "./binding.ts";
-import type { AgentBindingV1, BindingEpochV1 } from "./role.ts";
+import type { AgentBinding, BindingEpoch } from "./role.ts";
 import {
-	validateChildSpawnRequestV1,
-	validateChildSpawnResultV1,
-	validateSandboxOperationRequestV1,
+	validateChildSpawnRequest,
+	validateChildSpawnResult,
+	validateSandboxOperationRequest,
 	type ChildAgentProvider,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
 	type SandboxOperationProvider,
-	type SandboxOperationRequestV1,
-	type TaskExecutorAttemptContextV1,
+	type SandboxOperationRequest,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "./providers.ts";
-import { validateAttemptReceiptForProviderV1, validateWorkerReceiptForProviderV1 } from "./conformance.ts";
-import type { AttemptReceiptV1, ResultProvenanceV1, WorkerReceiptV1 } from "./results.ts";
-import { validateAgentInstanceV1, validateBindingEpochV1, type AgentInstanceV1, type ModelProfileV1, type ModelRouteV1, type RoleRevisionV1 } from "./role.ts";
-import { validateAttempt, validateDispatch, type AttemptV1, type DispatchV1, type ModeSwitchIntentV1 } from "./task.ts";
+import { validateAttemptReceiptForProvider, validateWorkerReceiptForProvider } from "./conformance.ts";
+import type { AttemptReceipt, ResultProvenance, WorkerReceipt } from "./results.ts";
+import { validateAgentInstance, validateBindingEpoch, type AgentInstance, type ModelProfile, type ModelRoute, type RoleRevision } from "./role.ts";
+import { validateAttempt, validateDispatch, type Attempt, type Dispatch, type ModeSwitchIntent } from "./task.ts";
 
-export interface DispatchExecutionInputV1 {
-	readonly dispatch: DispatchV1;
-	readonly binding: AgentBindingV1;
-	readonly initialBindingEpoch: BindingEpochV1;
+export interface DispatchExecutionInput {
+	readonly dispatch: Dispatch;
+	readonly binding: AgentBinding;
+	readonly initialBindingEpoch: BindingEpoch;
 	readonly provider: TaskExecutorProvider;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly correlation: ExecutionCorrelation;
 	/** Canonical durable source facts supplied by the settlement gate. */
-	readonly roleRevision?: RoleRevisionV1;
-	readonly modelProfile?: ModelProfileV1;
-	readonly modelRoute?: ModelRouteV1;
-	readonly agentInstance?: AgentInstanceV1;
+	readonly roleRevision?: RoleRevision;
+	readonly modelProfile?: ModelProfile;
+	readonly modelRoute?: ModelRoute;
+	readonly agentInstance?: AgentInstance;
 	/** A previously persisted Attempt may be resumed after a crash. */
-	readonly existingAttempt?: AttemptV1;
+	readonly existingAttempt?: Attempt;
 	/** Internal provider-consumer hook used to persist the Attempt before runAttempt. */
-	readonly beforeRunAttempt?: (attempt: AttemptV1) => Promise<ResultValue<void, FoundationError>>;
+	readonly beforeRunAttempt?: (attempt: Attempt) => Promise<ResultValue<void, FoundationError>>;
 	readonly signal?: AbortSignal;
 }
 
 /** The only receipt accepted by the layered settlement gate is a provider-consumed execution. */
-export interface DispatchExecutionResultV1 {
-	readonly attempt: AttemptV1;
-	readonly receipt: AttemptReceiptV1;
+export interface DispatchExecutionResult {
+	readonly attempt: Attempt;
+	readonly receipt: AttemptReceipt;
 	readonly providerId: string;
 	readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector";
 }
 
-export interface DispatchAttemptStartResultV1 {
-	readonly attempt: AttemptV1;
+export interface DispatchAttemptStartResult {
+	readonly attempt: Attempt;
 	readonly providerId: string;
 	readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector";
 }
 
-export interface OperationExecutionInputV1 {
-	readonly request: SandboxOperationRequestV1;
+export interface OperationExecutionInput {
+	readonly request: SandboxOperationRequest;
 	readonly provider: SandboxOperationProvider;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly correlation: ExecutionCorrelation;
 	readonly signal?: AbortSignal;
 }
 
 export interface ChildSpawnExecutionInputV1 {
-	readonly request: ChildSpawnRequestV1;
+	readonly request: ChildSpawnRequest;
 	readonly provider: ChildAgentProvider;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly correlation: ExecutionCorrelation;
 	readonly signal?: AbortSignal;
 }
 
-export interface ModeSwitchExecutionInputV1 {
-	readonly intent: ModeSwitchIntentV1;
-	readonly currentEpoch: BindingEpochV1;
-	readonly correlation: ExecutionCorrelationV1;
+export interface ModeSwitchExecutionInput {
+	readonly intent: ModeSwitchIntent;
+	readonly currentEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
 	/** The immutable Binding must be supplied; an id alone is not a binding. */
-	readonly nextBinding?: AgentBindingV1;
+	readonly nextBinding?: AgentBinding;
 	readonly nextBindingId?: string;
 	readonly safeBoundary?: "turn_end" | "checkpoint" | "provider_idle";
 	readonly now?: () => string;
@@ -81,9 +81,9 @@ export interface ModeSwitchExecutionInputV1 {
 
 const CORRELATION_ID_FIELDS = ["sessionId", "laneId", "revision"] as const;
 const EXECUTION_IDENTITY_FIELDS = ["taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId", "agentInstanceId"] as const;
-type ExecutionIdentity = Partial<Pick<ExecutionCorrelationV1, (typeof EXECUTION_IDENTITY_FIELDS)[number]>>;
+type ExecutionIdentity = Partial<Pick<ExecutionCorrelation, (typeof EXECUTION_IDENTITY_FIELDS)[number]>>;
 
-function validateCompleteCorrelation(correlation: ExecutionCorrelationV1 | undefined, required: readonly (keyof ExecutionCorrelationV1)[], objectId: string): ResultValue<ExecutionCorrelationV1, FoundationError> {
+function validateCompleteCorrelation(correlation: ExecutionCorrelation | undefined, required: readonly (keyof ExecutionCorrelation)[], objectId: string): ResultValue<ExecutionCorrelation, FoundationError> {
 	if (correlation === undefined || typeof correlation.sessionId !== "string" || correlation.sessionId.length === 0 || typeof correlation.laneId !== "string" || correlation.laneId.length === 0 || !Number.isSafeInteger(correlation.revision) || correlation.revision < 0) return Result.err(new FoundationError("invalid_correlation", "ExecutionCorrelation is required and incomplete", { details: { objectId } }));
 	for (const key of required) {
 		const value = correlation[key];
@@ -93,7 +93,7 @@ function validateCompleteCorrelation(correlation: ExecutionCorrelationV1 | undef
 	return Result.ok(correlation);
 }
 
-function correlationMatchesIdentity(correlation: ExecutionCorrelationV1, expected: ExecutionIdentity, objectId: string): ResultValue<void, FoundationError> {
+function correlationMatchesIdentity(correlation: ExecutionCorrelation, expected: ExecutionIdentity, objectId: string): ResultValue<void, FoundationError> {
 	for (const field of EXECUTION_IDENTITY_FIELDS) {
 		const expectedValue = expected[field];
 		if (expectedValue !== undefined && correlation[field] !== expectedValue) return Result.err(new FoundationError("invalid_correlation", "ExecutionCorrelation does not match its execution identity", { details: { objectId, field } }));
@@ -101,7 +101,7 @@ function correlationMatchesIdentity(correlation: ExecutionCorrelationV1, expecte
 	return Result.ok(undefined);
 }
 
-function correlationMatches(actual: ResultProvenanceV1, expected: ExecutionCorrelationV1, required: readonly (keyof ExecutionCorrelationV1)[], objectId: string): ResultValue<void, FoundationError> {
+function correlationMatches(actual: ResultProvenance, expected: ExecutionCorrelation, required: readonly (keyof ExecutionCorrelation)[], objectId: string): ResultValue<void, FoundationError> {
 	const actualCorrelation = actual.correlation;
 	const complete = validateCompleteCorrelation(actualCorrelation, required, objectId);
 	if (!complete.ok) return Result.err(complete.error);
@@ -128,8 +128,8 @@ function providerError(error: unknown, message: string): ResultValue<never, Foun
 		: Result.err(new FoundationError("task_executor_invalid_provider_class", message, { cause: error }));
 }
 
-function validateInitialEpoch(input: DispatchExecutionInputV1): ResultValue<void, FoundationError> {
-	const checkedEpoch = validateBindingEpochV1(input.initialBindingEpoch);
+function validateInitialEpoch(input: DispatchExecutionInput): ResultValue<void, FoundationError> {
+	const checkedEpoch = validateBindingEpoch(input.initialBindingEpoch);
 	if (!checkedEpoch.ok) return checkedEpoch;
 	const epoch = checkedEpoch.value;
 	if (epoch.ordinal !== 0 || epoch.activationReason !== "attempt_started" || epoch.previousBindingEpochId !== undefined) return Result.err(new FoundationError("binding_epoch_invalid_ordinal", "Dispatch consumer requires an initial attempt BindingEpoch", { details: { bindingEpochId: epoch.bindingEpochId } }));
@@ -139,7 +139,7 @@ function validateInitialEpoch(input: DispatchExecutionInputV1): ResultValue<void
 	return Result.ok(undefined);
 }
 
-function validateAttemptCorrelation(attempt: AttemptV1, input: DispatchExecutionInputV1): ResultValue<void, FoundationError> {
+function validateAttemptCorrelation(attempt: Attempt, input: DispatchExecutionInput): ResultValue<void, FoundationError> {
 	if (attempt.attemptId !== input.initialBindingEpoch.attemptId || attempt.dispatchId !== input.dispatch.dispatchId || attempt.taskId !== input.dispatch.taskId || attempt.providerId !== input.provider.providerId || attempt.bindingId !== input.dispatch.bindingId) return Result.err(new FoundationError("invalid_correlation", "Provider-created Attempt does not match its Dispatch, Binding, or epoch", { details: { attemptId: attempt.attemptId, dispatchId: input.dispatch.dispatchId } }));
 	if (!attempt.bindingEpochIds.includes(input.initialBindingEpoch.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Provider-created Attempt omitted its initial BindingEpoch", { details: { attemptId: attempt.attemptId, bindingEpochId: input.initialBindingEpoch.bindingEpochId } }));
 	if (input.provider.providerClass === "agent" && attempt.agentInstanceId !== input.initialBindingEpoch.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent Attempt must retain the epoch AgentInstance", { details: { attemptId: attempt.attemptId } }));
@@ -148,14 +148,14 @@ function validateAttemptCorrelation(attempt: AttemptV1, input: DispatchExecution
 	return Result.ok(undefined);
 }
 
-function validateReceiptCorrelation(receipt: AttemptReceiptV1, attempt: AttemptV1, input: DispatchExecutionInputV1): ResultValue<void, FoundationError> {
+function validateReceiptCorrelation(receipt: AttemptReceipt, attempt: Attempt, input: DispatchExecutionInput): ResultValue<void, FoundationError> {
 	if (receipt.taskId !== attempt.taskId || receipt.dispatchId !== attempt.dispatchId || receipt.attemptId !== attempt.attemptId || receipt.providerId !== attempt.providerId || receipt.bindingId !== attempt.bindingId) return Result.err(new FoundationError("invalid_correlation", "Provider AttemptReceipt does not match its Attempt", { details: { attemptReceiptId: receipt.attemptReceiptId, attemptId: attempt.attemptId } }));
 	if (receipt.bindingEpochIds.length === 0 || attempt.bindingEpochIds.some((id) => !receipt.bindingEpochIds.includes(id))) return Result.err(new FoundationError("invalid_correlation", "AttemptReceipt does not retain the Attempt BindingEpoch chain", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if (receipt.agentInstanceId !== attempt.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "AttemptReceipt AgentInstance does not match its Attempt", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	return correlationMatches(receipt.provenance, input.correlation, ["sessionId", "laneId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"], receipt.attemptReceiptId);
 }
 
-function validateDispatchInput(input: DispatchExecutionInputV1): ResultValue<{ readonly dispatch: DispatchV1; readonly binding: AgentBindingV1; readonly correlation: ExecutionCorrelationV1 }, FoundationError> {
+function validateDispatchInput(input: DispatchExecutionInput): ResultValue<{ readonly dispatch: Dispatch; readonly binding: AgentBinding; readonly correlation: ExecutionCorrelation }, FoundationError> {
 	const checkedDispatch = validateDispatch(input.dispatch);
 	if (!checkedDispatch.ok) return checkedDispatch;
 	const checkedBinding = validateImmutableAgentBinding(input.binding);
@@ -172,10 +172,10 @@ function validateDispatchInput(input: DispatchExecutionInputV1): ResultValue<{ r
 }
 
 /** Creates or validates the first Attempt without running provider side effects. */
-export async function startDispatchAttemptV1(input: DispatchExecutionInputV1): Promise<ResultValue<DispatchAttemptStartResultV1, FoundationError>> {
+export async function startDispatchAttempt(input: DispatchExecutionInput): Promise<ResultValue<DispatchAttemptStartResult, FoundationError>> {
 	const checked = validateDispatchInput(input);
 	if (!checked.ok) return checked;
-	const context: TaskExecutorAttemptContextV1 = {
+	const context: TaskExecutorAttemptContext = {
 		initialBindingEpoch: input.initialBindingEpoch,
 		correlation: checked.value.correlation,
 		...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -200,9 +200,9 @@ export async function startDispatchAttemptV1(input: DispatchExecutionInputV1): P
 }
 
 /** Runs Dispatch -> selected provider -> provider-created Attempt -> AttemptReceipt. */
-export async function executeDispatchV1(input: DispatchExecutionInputV1): Promise<ResultValue<DispatchExecutionResultV1, FoundationError>> {
+export async function executeDispatch(input: DispatchExecutionInput): Promise<ResultValue<DispatchExecutionResult, FoundationError>> {
 	try {
-		const started = await startDispatchAttemptV1(input);
+		const started = await startDispatchAttempt(input);
 		if (!started.ok) return started;
 		const checkedAttempt = started.value.attempt;
 		if (input.beforeRunAttempt !== undefined) {
@@ -211,7 +211,7 @@ export async function executeDispatchV1(input: DispatchExecutionInputV1): Promis
 		}
 		const settled = await input.provider.runAttempt(checkedAttempt, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!settled.ok) return settled;
-		const checkedReceipt = validateAttemptReceiptForProviderV1(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		const checkedReceipt = validateAttemptReceiptForProvider(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 		if (!checkedReceipt.ok) return checkedReceipt;
 		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, checkedAttempt, input);
 		if (!receiptCorrelation.ok) return receiptCorrelation;
@@ -221,7 +221,7 @@ export async function executeDispatchV1(input: DispatchExecutionInputV1): Promis
 	}
 }
 
-function validateWorkerCorrelation(receipt: WorkerReceiptV1, request: SandboxOperationRequestV1, expected: ExecutionCorrelationV1 | undefined): ResultValue<void, FoundationError> {
+function validateWorkerCorrelation(receipt: WorkerReceipt, request: SandboxOperationRequest, expected: ExecutionCorrelation | undefined): ResultValue<void, FoundationError> {
 	if (receipt.operationId !== request.operationId) return Result.err(new FoundationError("invalid_correlation", "WorkerReceipt operation does not match its request", { details: { workerReceiptId: receipt.workerReceiptId } }));
 	for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
 		const expectedValue = request[field];
@@ -232,22 +232,22 @@ function validateWorkerCorrelation(receipt: WorkerReceiptV1, request: SandboxOpe
 	for (const field of ["taskId", "dispatchId", "attemptId"] as const) if (request[field] !== undefined) requestIdentity[field] = request[field];
 	const correlationIdentity = correlationMatchesIdentity(expected, requestIdentity, receipt.workerReceiptId);
 	if (!correlationIdentity.ok) return correlationIdentity;
-	const required: (keyof ExecutionCorrelationV1)[] = ["sessionId", "laneId"];
+	const required: (keyof ExecutionCorrelation)[] = ["sessionId", "laneId"];
 	for (const field of ["taskId", "dispatchId", "attemptId"] as const) if (request[field] !== undefined) required.push(field);
 	return correlationMatches(receipt.provenance, expected, required, receipt.workerReceiptId);
 }
 
 /** Runs an operation worker through its public start surface and validates the WorkerReceipt. */
-export async function executeOperationV1(input: OperationExecutionInputV1): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {
+export async function executeOperation(input: OperationExecutionInput): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 	if (input.provider.providerClass !== "operation_worker") return Result.err(new FoundationError("worker_receipt_invalid_producer", "Operation execution requires an Operation Worker provider", { details: { providerId: input.provider.providerId } }));
-	const checkedRequest = validateSandboxOperationRequestV1(input.request);
+	const checkedRequest = validateSandboxOperationRequest(input.request);
 	if (!checkedRequest.ok) return checkedRequest;
 	try {
 		const providerCorrelation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId"], checkedRequest.value.operationId);
 		if (!providerCorrelation.ok) return providerCorrelation;
 		const started = await input.provider.start(checkedRequest.value, { correlation: providerCorrelation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!started.ok) return started;
-		const checkedReceipt = validateWorkerReceiptForProviderV1(started.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		const checkedReceipt = validateWorkerReceiptForProvider(started.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 		if (!checkedReceipt.ok) return checkedReceipt;
 		const receiptCorrelation = validateWorkerCorrelation(checkedReceipt.value, checkedRequest.value, input.correlation);
 		if (!receiptCorrelation.ok) return Result.err(receiptCorrelation.error);
@@ -258,23 +258,23 @@ export async function executeOperationV1(input: OperationExecutionInputV1): Prom
 }
 
 /** Validates the Agent-only spawn result; an Operation Worker has no path to this function. */
-export async function executeAgentSpawnV1(input: ChildSpawnExecutionInputV1): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+export async function executeAgentSpawnV1(input: ChildSpawnExecutionInputV1): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 	if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
-	const checkedRequest = validateChildSpawnRequestV1(input.request);
+	const checkedRequest = validateChildSpawnRequest(input.request);
 	if (!checkedRequest.ok) return checkedRequest;
 	try {
 		const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "agentInstanceId"], checkedRequest.value.spawnId);
 		if (!correlation.ok) return correlation;
 		const spawned = await input.provider.spawn(checkedRequest.value, { correlation: correlation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!spawned.ok) return spawned;
-		const checked = validateChildSpawnResultV1(spawned.value);
+		const checked = validateChildSpawnResult(spawned.value);
 		if (!checked.ok) return checked;
 		const { attempt, agentInstance, initialBindingEpoch } = checked.value;
 		const checkedAttempt = validateAttempt(attempt);
 		if (!checkedAttempt.ok) return checkedAttempt;
-		const checkedAgent = validateAgentInstanceV1(agentInstance);
+		const checkedAgent = validateAgentInstance(agentInstance);
 		if (!checkedAgent.ok) return checkedAgent;
-		const checkedEpoch = validateBindingEpochV1(initialBindingEpoch);
+		const checkedEpoch = validateBindingEpoch(initialBindingEpoch);
 		if (!checkedEpoch.ok) return checkedEpoch;
 		if (checkedAttempt.value.providerId !== input.provider.providerId || checkedAttempt.value.taskId !== checkedRequest.value.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or task", { details: { spawnId: checkedRequest.value.spawnId } }));
 		if (checkedAgent.value.providerId !== input.provider.providerId || checkedAgent.value.taskId !== checkedAttempt.value.taskId || checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: checkedRequest.value.spawnId } }));
@@ -291,7 +291,7 @@ export async function executeAgentSpawnV1(input: ChildSpawnExecutionInputV1): Pr
 }
 
 /** Switches an existing AgentInstance to a new immutable Binding at an ordered safe boundary. */
-export function switchAgentModeV1(input: ModeSwitchExecutionInputV1): ResultValue<BindingEpochV1, FoundationError> {
+export function switchAgentMode(input: ModeSwitchExecutionInput): ResultValue<BindingEpoch, FoundationError> {
 	const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "attemptId", "bindingId", "bindingEpochId", "agentInstanceId"], input.intent.modeSwitchId);
 	if (!correlation.ok) return correlation;
 	if (input.nextBinding === undefined) return Result.err(new FoundationError("binding_required_fact", "Mode switch requires the next immutable Binding, not only its id"));

@@ -15,34 +15,34 @@ import {
 	createContextSnapshot,
 	createModelProfileRevision,
 	createRoleRevision,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	InMemorySessionStorage,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	resolveAgentBinding,
 	FoundationError,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
-	validateAttemptReceiptForProviderV1,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type AttemptReceiptV1,
-	type BudgetUsageV1,
-	type BudgetV1,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
-	type DispatchV1,
-	type FoundationProviderCapabilityV1,
+	validateAttemptReceiptForProvider,
+	type AgentBinding,
+	type AgentInstance,
+	type AttemptReceipt,
+	type BudgetUsage,
+	type Budget,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
+	type Dispatch,
+	type FoundationProviderCapability,
 	type HarnessTool,
-	type ModelProfileV1,
-	type QuotaAttributionV1,
+	type ModelProfile,
+	type QuotaAttribution,
 	type QuotaProvider,
-	type QuotaReservationV1,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type TaskEnvelopeV1,
+	type QuotaReservation,
+	type RevisionReference,
+	type RoleRevision,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
@@ -81,8 +81,8 @@ const CHILD_AGENT_ENTRY_SENTINEL = "AOS_CHILD_AGENT_FORK_OK";
 const CHILD_AGENT_PARENT_CONTEXT = "AOS_CHILD_AGENT_PARENT_CONTEXT";
 const TSX_IMPORT = import.meta.resolve("tsx");
 
-function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
-	const result = createTaskEnvelopeV1({
+function task(taskId: string, concurrency = 2): TaskEnvelope {
+	const result = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-1",
@@ -101,7 +101,7 @@ function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
 	return result.value;
 }
 
-function role(): RoleRevisionV1 {
+function role(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -121,7 +121,7 @@ function role(): RoleRevisionV1 {
 	});
 }
 
-function profile(): ModelProfileV1 {
+function profile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-child",
@@ -133,12 +133,12 @@ function profile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): AgentBindingV1 {
+function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelProfile: ModelProfile): AgentBinding {
 	const result = resolveAgentBinding({
 		task: taskEnvelope,
 		roleRevision,
@@ -154,7 +154,7 @@ function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, mod
 	return result.value;
 }
 
-function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevisionV1): AgentInstanceV1 {
+function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevision): AgentInstance {
 	const result = createAgentInstance({
 		agentInstanceId,
 		providerId: "parent-provider",
@@ -186,15 +186,15 @@ class RecordingQuota implements QuotaProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "quota-test";
 	readonly providerClass = "quota" as const;
-	readonly reservations: QuotaReservationV1[] = [];
-	readonly settlements: { readonly reservation: QuotaReservationV1; readonly usage: BudgetUsageV1 }[] = [];
+	readonly reservations: QuotaReservation[] = [];
+	readonly settlements: { readonly reservation: QuotaReservation; readonly usage: BudgetUsage }[] = [];
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "quota.test", version: 1 }];
 	}
 
-	async reserve(attribution: QuotaAttributionV1, budget: BudgetV1) {
-		const reservation: QuotaReservationV1 = {
+	async reserve(attribution: QuotaAttribution, budget: Budget) {
+		const reservation: QuotaReservation = {
 			schemaVersion: 1,
 			reservationId: `reservation-${this.reservations.length + 1}`,
 			attribution,
@@ -205,7 +205,7 @@ class RecordingQuota implements QuotaProvider {
 		return Result.ok(reservation);
 	}
 
-	async settle(reservation: QuotaReservationV1, usage: BudgetUsageV1) {
+	async settle(reservation: QuotaReservation, usage: BudgetUsage) {
 		this.settlements.push({ reservation, usage });
 		return Result.ok(usage);
 	}
@@ -430,7 +430,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 		}
 	}
 
-	private receipt(invalid: boolean): AttemptReceiptV1 {
+	private receipt(invalid: boolean): AttemptReceipt {
 		const init = this.initialize!;
 		const attemptReceiptId = `attempt-receipt:${init.attemptId}`;
 		if (invalid) {
@@ -478,7 +478,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 		};
 	}
 
-	private cancelledReceipt(): AttemptReceiptV1 {
+	private cancelledReceipt(): AttemptReceipt {
 		const base = this.receipt(false);
 		return { ...base, status: "cancelled" };
 	}
@@ -486,20 +486,20 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 
 interface Fixture {
 	readonly session: Session;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly supervisor: SubagentSupervisorV1;
-	readonly roleRevision: RoleRevisionV1;
-	readonly modelProfile: ModelProfileV1;
+	readonly roleRevision: RoleRevision;
+	readonly modelProfile: ModelProfile;
 }
 
 function fixture(): Fixture {
 	const session = new Session(new InMemorySessionStorage({ id: "session-fork", createdAt: 1 }));
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		let selected = ledgers.get(laneId);
 		if (selected === undefined) {
-			selected = new SessionLedgerV1(session, { ownerId: "supervisor-writer", laneId });
+			selected = new SessionLedger(session, { ownerId: "supervisor-writer", laneId });
 			ledgers.set(laneId, selected);
 		}
 		return selected;
@@ -628,7 +628,7 @@ async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInp
 		);
 	}
 	const parentSpawnId = `parent-${spawnId}`;
-	const request: ChildSpawnRequestV1 = overrides.request ?? {
+	const request: ChildSpawnRequest = overrides.request ?? {
 		schemaVersion: 1,
 		spawnId,
 		parentSpawn: {
@@ -683,7 +683,7 @@ async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInp
 	};
 }
 
-function dispatchFromSpawn(spawned: ChildSpawnResultV1): DispatchV1 {
+function dispatchFromSpawn(spawned: ChildSpawnResult): Dispatch {
 	return {
 		schemaVersion: 1,
 		dispatchId: spawned.attempt.dispatchId,
@@ -695,8 +695,8 @@ function dispatchFromSpawn(spawned: ChildSpawnResultV1): DispatchV1 {
 	};
 }
 
-function settlementFor(value: Fixture, laneId: string): LayeredResultSettlementV1 {
-	return new LayeredResultSettlementV1(value.session, {
+function settlementFor(value: Fixture, laneId: string): LayeredResultSettlement {
+	return new LayeredResultSettlement(value.session, {
 		writer: new SessionLedgerWriter(value.session, {
 			ownerId: "supervisor-writer",
 			lane: laneId,
@@ -754,7 +754,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 500): Promise<voi
 
 function childEntryInitialize(): {
 	readonly initialize: ChildAgentInitializeRequestV1;
-	readonly succeeded: AttemptReceiptV1;
+	readonly succeeded: AttemptReceipt;
 } {
 	const correlation = {
 		sessionId: "session-entry",
@@ -813,7 +813,7 @@ function childEntryInitialize(): {
 		bindingEpochId: "epoch-entry",
 		agentInstanceId: "child-entry",
 	};
-	const succeeded: AttemptReceiptV1 = {
+	const succeeded: AttemptReceipt = {
 		schemaVersion: 1,
 		attemptReceiptId: "attempt-receipt:attempt-entry",
 		taskId: "task-entry",
@@ -859,7 +859,7 @@ describe("ForkChildAgentProviderV1", () => {
 		});
 		if (!executed.ok) throw executed.error;
 		expect(executed.ok).toBe(true);
-		const checked = validateAttemptReceiptForProviderV1(executed.value.receipt, {
+		const checked = validateAttemptReceiptForProvider(executed.value.receipt, {
 			providerId: PROVIDER_ID,
 			providerClass: "agent",
 		});
@@ -994,7 +994,7 @@ describe("ForkChildAgentProviderV1", () => {
 			spawnId: planned.request.spawnId,
 			attemptId: planned.initialBindingEpoch.attemptId,
 		});
-		const checked = validateAttemptReceiptForProviderV1(resumed.value, {
+		const checked = validateAttemptReceiptForProvider(resumed.value, {
 			providerId: PROVIDER_ID,
 			providerClass: "agent",
 		});
@@ -1148,7 +1148,7 @@ describe("ForkChildAgentProviderV1", () => {
 		const input = new PassThrough();
 		const output = new PassThrough();
 		const diagnostic = new PassThrough();
-		const frames: { type: string; receipt?: AttemptReceiptV1; requestId?: string; code?: string; stopReason?: string }[] = [];
+		const frames: { type: string; receipt?: AttemptReceipt; requestId?: string; code?: string; stopReason?: string }[] = [];
 		let outputBuffer = "";
 		output.on("data", (chunk: string | Buffer) => {
 			outputBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -1162,7 +1162,7 @@ describe("ForkChildAgentProviderV1", () => {
 			}
 		});
 		const { initialize, succeeded } = childEntryInitialize();
-		const actualCancelled: AttemptReceiptV1 = { ...succeeded, status: "cancelled" };
+		const actualCancelled: AttemptReceipt = { ...succeeded, status: "cancelled" };
 		let turnStarted = false;
 		let abortObserved = false;
 		let cancelObserved = false;
@@ -1251,7 +1251,7 @@ describe("ForkChildAgentProviderV1", () => {
 	])("correlates a $status receipt with the protocol stop reason", async ({ status, expectedStopReason }) => {
 		const input = new PassThrough();
 		const output = new PassThrough();
-		const frames: { type: string; receipt?: AttemptReceiptV1; stopReason?: string }[] = [];
+		const frames: { type: string; receipt?: AttemptReceipt; stopReason?: string }[] = [];
 		let outputBuffer = "";
 		output.on("data", (chunk: string | Buffer) => {
 			outputBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -1264,7 +1264,7 @@ describe("ForkChildAgentProviderV1", () => {
 			}
 		});
 		const { initialize, succeeded } = childEntryInitialize();
-		const receipt: AttemptReceiptV1 = status === "failed"
+		const receipt: AttemptReceipt = status === "failed"
 			? {
 				...succeeded,
 				status,
@@ -1458,7 +1458,7 @@ describe("ForkChildAgentProviderV1", () => {
 		const input = new PassThrough();
 		const output = new PassThrough();
 		const diagnostic = new PassThrough();
-		const frames: { type: string; receipt?: AttemptReceiptV1; code?: string }[] = [];
+		const frames: { type: string; receipt?: AttemptReceipt; code?: string }[] = [];
 		let outputBuffer = "";
 		output.on("data", (chunk: string | Buffer) => {
 			outputBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");

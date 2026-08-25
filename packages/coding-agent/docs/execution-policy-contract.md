@@ -1,6 +1,6 @@
 # Execution Policy / Sandbox Contract (T0 freeze)
 
-This document freezes the v1 contract for the policy and sandbox work. It is
+This document freezes the current contract for the policy and sandbox work. It is
 the integration boundary for T1-T7. The contract is additive: T0 does not
 change the current runtime, settings parser, RPC protocol, CLI, or tool
 execution behavior.
@@ -471,7 +471,7 @@ and must remain distinguishable from policy denial and sandbox unavailability.
 
 ## 7. Stable errors and ModelBroker boundary
 
-The complete v1 error-code set is:
+The complete error-code set is:
 
 ```ts
 type PolicyErrorCode =

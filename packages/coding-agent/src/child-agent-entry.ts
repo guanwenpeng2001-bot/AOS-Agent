@@ -19,8 +19,8 @@ import {
 	Session,
 	type AgentHarness as AgentHarnessType,
 	type AgentHarnessOptions,
-	type AttemptReceiptV1,
-	type BudgetUsageV1,
+	type AttemptReceipt,
+	type BudgetUsage,
 	type HarnessTool,
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
@@ -39,8 +39,8 @@ import {
 } from "./core/subagent-fork-protocol.ts";
 
 export interface ChildAgentTurnResultV1 {
-	readonly receipt: AttemptReceiptV1;
-	readonly usage: BudgetUsageV1;
+	readonly receipt: AttemptReceipt;
+	readonly usage: BudgetUsage;
 	readonly stopReason: ChildAgentTurnCompletedEventV1["stopReason"];
 	readonly output?: string;
 }
@@ -229,7 +229,7 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 			if (!exactUsage.exact || exactUsage.modelCalls === 0) {
 				return Result.err(new FoundationError("quota_attribution_error", "Child Agent turn usage could not be established exactly"));
 			}
-			const harnessStatus: AttemptReceiptV1["status"] = prompted.value.kind === "completed"
+			const harnessStatus: AttemptReceipt["status"] = prompted.value.kind === "completed"
 				? "succeeded"
 				: prompted.value.kind === "aborted"
 					? "cancelled"
@@ -239,7 +239,7 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 			const sideEffectUnknown = exactUsage.toolExecutions.some((execution) =>
 				!execution.declaredNone || !execution.settled,
 			);
-			const status: AttemptReceiptV1["status"] = sideEffectUnknown ? "failed" : harnessStatus;
+			const status: AttemptReceipt["status"] = sideEffectUnknown ? "failed" : harnessStatus;
 			const finalMessage = "finalMessage" in prompted.value ? prompted.value.finalMessage : undefined;
 			const sideEffectError = {
 				code: "side_effect_unknown",
@@ -258,7 +258,7 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 				: finalMessage === undefined
 					? undefined
 					: contentText(finalMessage.content);
-			const usage: BudgetUsageV1 = {
+			const usage: BudgetUsage = {
 				tokens: exactUsage.tokens,
 				costUsd: exactUsage.costUsd,
 				modelCalls: exactUsage.modelCalls,

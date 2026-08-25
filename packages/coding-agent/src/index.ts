@@ -5,19 +5,19 @@ export {
 	PROMPT_TASK_DEPENDENCY_NAMES,
 	PromptTaskCompositionError,
 	createPromptTaskAdapter,
-	type PromptTaskAdapterV1,
-	type PromptTaskCompositionDependenciesV1,
-	type PromptTaskCompositionErrorCodeV1,
-	type PromptTaskCompositionRootOptionsV1,
-	type PromptTaskDependencyContextV1,
-	type PromptTaskDependencyNameV1,
-	type PromptTaskDependencyResolutionV1,
-	type PromptTaskDependencyV1,
-	type PromptTaskEnvelopeInputV1,
-	type PromptTaskExecutionV1,
-	type PromptTaskIdentityV1,
-	type PromptTaskInputV1,
-	type PromptTaskSettlementV1,
+	type PromptTaskAdapter,
+	type PromptTaskCompositionDependencies,
+	type PromptTaskCompositionErrorCode,
+	type PromptTaskCompositionRootOptions,
+	type PromptTaskDependencyContext,
+	type PromptTaskDependencyName,
+	type PromptTaskDependencyResolution,
+	type PromptTaskDependency,
+	type PromptTaskEnvelopeInput,
+	type PromptTaskExecution,
+	type PromptTaskIdentity,
+	type PromptTaskInput,
+	type PromptTaskSettlement,
 } from "./core/prompt-task-adapter.ts";
 
 // Config paths
@@ -43,19 +43,19 @@ export {
 } from "./core/agent-session.ts";
 export { createAgentSessionWithTrustedScheduler } from "./core/agent-session-facade.ts";
 export {
-	TrustedSchedulerCompositionV1,
-	type SchedulerSafeStatusV1,
-	type TrustedSchedulerCompositionOptionsV1,
+	TrustedSchedulerComposition,
+	type SchedulerSafeStatus,
+	type TrustedSchedulerCompositionOptions,
 } from "./core/foundation-control-plane.ts";
-export { SchedulerHostV1, type SchedulerHostOptionsV1, type SchedulerHostTickResultV1 } from "./core/scheduler.ts";
+export { SchedulerHost, type SchedulerHostOptions, type SchedulerHostTickResult } from "./core/scheduler.ts";
 export { SchedulerQueueStore } from "./core/scheduler-queue.ts";
 export { SchedulerExecutorRegistry, SchedulerInProcessTaskExecutorProvider } from "./core/scheduler-executors.ts";
 export { SchedulerDispatchController } from "./core/scheduler-dispatch.ts";
 export { SchedulerFanInController } from "./core/scheduler-fan-in.ts";
-export { SchedulerMessageOrchestratorV1 } from "./core/scheduler-messages.ts";
+export { SchedulerMessageOrchestrator } from "./core/scheduler-messages.ts";
 export { SchedulerHandoffController } from "./core/scheduler-handoff.ts";
-export { SchedulerWorkflowController, type SchedulerWorkflowTickResultV1 } from "./core/scheduler-workflow.ts";
-export { SchedulerDeadlockController, type SchedulerDeadlockTickResultV1 } from "./core/scheduler-deadlock.ts";
+export { SchedulerWorkflowController, type SchedulerWorkflowTickResult } from "./core/scheduler-workflow.ts";
+export { SchedulerDeadlockController, type SchedulerDeadlockTickResult } from "./core/scheduler-deadlock.ts";
 // Task Credential lifecycle service (session-owned; RPC Host registers it via AgentSession.getTaskCredentialService())
 export {
 	TaskCredentialService,
@@ -76,7 +76,7 @@ export {
 	type TaskCredentialSignalOutcome,
 	type TaskCredentialWorkerDetachInput,
 } from "./core/task-credential-service.ts";
-// Task Credential / Lease v1 public contract (safe records only; the
+// Task Credential / Lease public contract (safe records only; the
 // material-bearing test provider, target projection request, and provider
 // handles stay module-private and are never exported).
 export {
@@ -778,10 +778,10 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createTrustedWorkerSandboxCompositionV1,
-	type TrustedWorkerSandboxCompositionV1,
-	type TrustedWorkerSandboxFactoryV1,
-	type TrustedWorkerSandboxProviderOptionsV1,
+	createTrustedWorkerSandboxComposition,
+	type TrustedWorkerSandboxComposition,
+	type TrustedWorkerSandboxFactory,
+	type TrustedWorkerSandboxProviderOptions,
 	createBashTool,
 	// Tool factories (for custom cwd)
 	createCodingTools,
@@ -800,9 +800,9 @@ export {
 export {
 	RUNTIME_SESSION_SURFACES,
 	createRuntimeSessionSurfaceAdapter,
-	isRuntimeSessionSurfaceV1,
-	type RuntimeSessionSurfaceAdapterV1,
-	type RuntimeSessionSurfaceV1,
+	isRuntimeSessionSurface,
+	type RuntimeSessionSurfaceAdapter,
+	type RuntimeSessionSurface,
 } from "./core/runtime-session-surface.ts";
 export {
 	createSessionBranchBoundary,

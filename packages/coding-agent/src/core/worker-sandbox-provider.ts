@@ -3,18 +3,18 @@ import {
 	canonicalFoundationJson,
 	FoundationError,
 	Result,
-	validateSandboxOperationRequestV1,
-	validateFoundationProviderCapabilityV1,
-	validateWorkerReceiptForProviderV1,
-	type ExecutionCorrelationV1,
+	validateSandboxOperationRequest,
+	validateFoundationProviderCapability,
+	validateWorkerReceiptForProvider,
+	type ExecutionCorrelation,
 	type FoundationJsonValue,
 	type FoundationErrorCode,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
 	type SandboxOperationProvider,
-	type SandboxOperationRequestV1,
-	type WorkerReceiptV1,
+	type SandboxOperationRequest,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
 	WorkerSupervisorV1,
@@ -59,11 +59,11 @@ export interface WorkerSandboxProviderOptionsV1 {
 	readonly providerId: string;
 	/** Omission is the default inline/Host path and creates no Supervisor or child process. */
 	readonly profile?: WorkerSandboxProfileV1;
-	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly capabilities?: readonly FoundationProviderCapability[];
 	/** This callback must only read Host authority state. */
 	readonly resolvePreflight: (
-		request: SandboxOperationRequestV1,
-		options: FoundationProviderExecutionOptionsV1,
+		request: SandboxOperationRequest,
+		options: FoundationProviderExecutionOptions,
 	) => WorkerSandboxPreflightFactsV1 | Promise<WorkerSandboxPreflightFactsV1>;
 	readonly createSupervisor?: (config: WorkerSupervisorConfigV1) => WorkerSupervisorV1;
 	readonly requireRegisteredPayload?: boolean;
@@ -103,10 +103,10 @@ export type WorkerSandboxFactV1 =
 		readonly revision: number;
 		readonly recordedAt: string;
 	}
-	| { readonly type: "receipt"; readonly workerId: string; readonly terminalRecordRevision: number; readonly receipt: WorkerReceiptV1 };
+	| { readonly type: "receipt"; readonly workerId: string; readonly terminalRecordRevision: number; readonly receipt: WorkerReceipt };
 
 interface ActiveWorkerOperationV1 {
-	readonly request: SandboxOperationRequestV1;
+	readonly request: SandboxOperationRequest;
 	readonly supervisor: WorkerSupervisorV1;
 	readonly runId?: string;
 }
@@ -130,7 +130,7 @@ interface WorkerCredentialQueueV1 {
 
 interface StagedWorkerFactsV1 {
 	readonly records: Map<string, WorkerRecordV1>;
-	readonly receipts: Map<string, WorkerReceiptV1>;
+	readonly receipts: Map<string, WorkerReceipt>;
 	readonly completedOperationIds: Set<string>;
 	readonly consumedWorkerIds: Set<string>;
 }
@@ -177,7 +177,7 @@ interface WorkerOperationReservationV1 {
 
 export interface WorkerSandboxRecoveryV1 {
 	readonly records?: readonly WorkerRecordV1[];
-	readonly receipts?: readonly WorkerReceiptV1[];
+	readonly receipts?: readonly WorkerReceipt[];
 	readonly operationIds?: readonly string[];
 	readonly workerIds?: readonly string[];
 }
@@ -241,9 +241,9 @@ function sameWorkerIdentity(left: WorkerRecordV1, right: WorkerRecordV1): boolea
 }
 
 function correlationMatchesBinding(
-	correlation: ExecutionCorrelationV1 | undefined,
+	correlation: ExecutionCorrelation | undefined,
 	binding: WorkerBindingV1,
-	request: SandboxOperationRequestV1,
+	request: SandboxOperationRequest,
 	providerId: string,
 ): boolean {
 	if (correlation === undefined) return true;
@@ -262,7 +262,7 @@ function correlationMatchesBinding(
 		(correlation.agentInstanceId === undefined || correlation.agentInstanceId === request.agentInstanceId);
 }
 
-function requestMatchesBinding(request: SandboxOperationRequestV1, binding: WorkerBindingV1): boolean {
+function requestMatchesBinding(request: SandboxOperationRequest, binding: WorkerBindingV1): boolean {
 	return binding.providerId.length > 0 &&
 		(request.providerId === undefined || request.providerId === binding.providerId) &&
 		(request.bindingId === undefined || request.bindingId === binding.bindingId) &&
@@ -272,7 +272,7 @@ function requestMatchesBinding(request: SandboxOperationRequestV1, binding: Work
 		(request.deadlineAt === undefined || binding.deadlineAt !== undefined && binding.deadlineAt <= request.deadlineAt);
 }
 
-export function createWorkerRequestFingerprintV1(request: SandboxOperationRequestV1): string {
+export function createWorkerRequestFingerprintV1(request: SandboxOperationRequest): string {
 	return `sha256:${createHash("sha256").update(canonicalFoundationJson(request)).digest("hex")}`;
 }
 
@@ -287,7 +287,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	readonly providerId: string;
 
 	private readonly options: WorkerSandboxProviderOptionsV1;
-	private readonly declaredCapabilities: readonly FoundationProviderCapabilityV1[];
+	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
 	private readonly capabilityConfigurationValid: boolean;
 	private readonly maxRetainedRecords: number;
 	private readonly operations = new Map<string, ActiveWorkerOperationV1>();
@@ -296,7 +296,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	private readonly consumedWorkerIds = new Set<string>();
 	private readonly operationPayloads = new Map<string, FoundationJsonValue>();
 	private readonly records = new Map<string, WorkerRecordV1>();
-	private readonly receipts = new Map<string, WorkerReceiptV1>();
+	private readonly receipts = new Map<string, WorkerReceipt>();
 	private readonly credentialQueues = new Map<string, WorkerCredentialQueueV1>();
 	private readonly credentialTargets = new Map<string, WorkerCredentialQueueTargetV1>();
 	private readonly credentialTargetRegistry: ReadonlyMap<string, WorkerCredentialQueueTargetV1>;
@@ -317,7 +317,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			.map((capability) => Object.freeze({ ...capability })));
 		const declaredIds = this.declaredCapabilities.map((capability) => capability.id);
 		this.capabilityConfigurationValid =
-			this.declaredCapabilities.every((capability) => validateFoundationProviderCapabilityV1(capability).ok) &&
+			this.declaredCapabilities.every((capability) => validateFoundationProviderCapability(capability).ok) &&
 			new Set(declaredIds).size === declaredIds.length &&
 			(options.profile === undefined || sameStringSet(declaredIds, profileCapabilityIds));
 		this.maxRetainedRecords = options.maxRetainedRecords ?? 256;
@@ -330,7 +330,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		);
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return Object.freeze(this.declaredCapabilities.map((capability) => Object.freeze({ ...capability })));
 	}
 
@@ -358,12 +358,12 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return [...this.records.values()].map((record) => this.cloneRecord(record));
 	}
 
-	getWorkerReceipt(workerReceiptId: string): WorkerReceiptV1 | undefined {
+	getWorkerReceipt(workerReceiptId: string): WorkerReceipt | undefined {
 		const receipt = this.receipts.get(workerReceiptId);
 		return receipt === undefined ? undefined : this.cloneReceipt(receipt);
 	}
 
-	listWorkerReceipts(): readonly WorkerReceiptV1[] {
+	listWorkerReceipts(): readonly WorkerReceipt[] {
 		return [...this.receipts.values()].map((receipt) => this.cloneReceipt(receipt));
 	}
 
@@ -476,7 +476,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			stagedConsumedWorkerIds.add(record.workerId);
 		}
 		for (const receiptValue of recovery.receipts ?? []) {
-			const validated = validateWorkerReceiptForProviderV1(receiptValue, {
+			const validated = validateWorkerReceiptForProvider(receiptValue, {
 				providerId: this.providerId,
 				providerClass: this.providerClass,
 			});
@@ -597,11 +597,11 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	async start(
-		requestValue: SandboxOperationRequestV1,
-		executionOptions: FoundationProviderExecutionOptionsV1 = {},
-	): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {
+		requestValue: SandboxOperationRequest,
+		executionOptions: FoundationProviderExecutionOptions = {},
+	): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		if (this.disposed) return Result.err(providerError("worker_unavailable", "Operation Worker provider is disposed"));
-		const request = validateSandboxOperationRequestV1(requestValue);
+		const request = validateSandboxOperationRequest(requestValue);
 		if (!request.ok) {
 			const rawRequest: unknown = requestValue;
 			const rawOperationId = rawRequest !== null && typeof rawRequest === "object" && "operationId" in rawRequest
@@ -614,23 +614,23 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		try {
 			requestSnapshot = Object.freeze({
 				...request,
-				value: snapshotFoundationJson(request.value as unknown as FoundationJsonValue) as unknown as SandboxOperationRequestV1,
+				value: snapshotFoundationJson(request.value as unknown as FoundationJsonValue) as unknown as SandboxOperationRequest,
 			});
 		} catch {
 			this.operationPayloads.delete(request.value.operationId);
 			return Result.err(providerError("foundation_schema_invalid_shape", "Operation Worker request is not canonical"));
 		}
 		const signal = executionOptions.signal;
-		let correlationSnapshot: ExecutionCorrelationV1 | undefined;
+		let correlationSnapshot: ExecutionCorrelation | undefined;
 		try {
 			correlationSnapshot = executionOptions.correlation === undefined
 				? undefined
-				: snapshotFoundationJson(executionOptions.correlation as unknown as FoundationJsonValue) as unknown as ExecutionCorrelationV1;
+				: snapshotFoundationJson(executionOptions.correlation as unknown as FoundationJsonValue) as unknown as ExecutionCorrelation;
 		} catch {
 			this.operationPayloads.delete(requestSnapshot.value.operationId);
 			return Result.err(providerError("invalid_correlation", "Operation Worker correlation is invalid"));
 		}
-		const stableExecutionOptions: FoundationProviderExecutionOptionsV1 = Object.freeze({
+		const stableExecutionOptions: FoundationProviderExecutionOptions = Object.freeze({
 			...(correlationSnapshot === undefined ? {} : { correlation: correlationSnapshot }),
 			...(signal === undefined ? {} : { signal }),
 		});
@@ -699,7 +699,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		let cancellation: Promise<void> | undefined;
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let identityConsumed = false;
-		let outcome: ResultValue<WorkerReceiptV1, FoundationError> = Result.err(
+		let outcome: ResultValue<WorkerReceipt, FoundationError> = Result.err(
 			providerError("worker_unavailable", "Operation Worker operation did not start"),
 		);
 		const invalidateLiveReservation = (reason: WorkerInvalidationReasonV1): void => {
@@ -722,7 +722,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		};
 		armDeadline();
 		try {
-			outcome = await (async (): Promise<ResultValue<WorkerReceiptV1, FoundationError>> => {
+			outcome = await (async (): Promise<ResultValue<WorkerReceipt, FoundationError>> => {
 				const preflight = Promise.resolve()
 					.then(() => this.options.resolvePreflight(requestSnapshot.value, stableExecutionOptions))
 					.then(
@@ -847,7 +847,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				const executionFactError = this.publishRecord(supervisor);
 				if (executionFactError !== undefined) return Result.err(executionFactError);
 				if (!executed.ok) return executed;
-				const receipt = validateWorkerReceiptForProviderV1(executed.value, {
+				const receipt = validateWorkerReceiptForProvider(executed.value, {
 					providerId: this.providerId,
 					providerClass: this.providerClass,
 				});
@@ -1160,8 +1160,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	private validatePreflight(
-		request: SandboxOperationRequestV1,
-		correlation: ExecutionCorrelationV1 | undefined,
+		request: SandboxOperationRequest,
+		correlation: ExecutionCorrelation | undefined,
 		profile: WorkerSandboxProfileV1,
 		facts: WorkerSandboxPreflightFactsV1,
 	): FoundationError | undefined {
@@ -1258,7 +1258,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return undefined;
 	}
 
-	private retainReceipt(workerId: string, terminalRecordRevision: number, receipt: WorkerReceiptV1): FoundationError | undefined {
+	private retainReceipt(workerId: string, terminalRecordRevision: number, receipt: WorkerReceipt): FoundationError | undefined {
 		const safeReceipt = this.cloneReceipt(receipt);
 		const fact: WorkerSandboxFactV1 = {
 			type: "receipt",
@@ -1326,8 +1326,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return parsed.value;
 	}
 
-	private cloneReceipt(receipt: WorkerReceiptV1): WorkerReceiptV1 {
-		return JSON.parse(canonicalFoundationJson(receipt)) as WorkerReceiptV1;
+	private cloneReceipt(receipt: WorkerReceipt): WorkerReceipt {
+		return JSON.parse(canonicalFoundationJson(receipt)) as WorkerReceipt;
 	}
 }
 

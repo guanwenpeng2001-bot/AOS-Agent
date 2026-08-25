@@ -7,7 +7,7 @@ export const INSTRUCTION_SCHEMA_VERSION = 1 as const;
 export type InstructionScope = "managed" | "project" | "session" | "task" | "agent";
 
 /** Instruction source metadata; source text is held by an artifact reference only. */
-export interface InstructionSourceV1 {
+export interface InstructionSource {
 	readonly schemaVersion: 1;
 	readonly sourceId: string;
 	readonly scope: InstructionScope;
@@ -22,7 +22,7 @@ export interface InstructionSourceV1 {
 	readonly createdAt: number;
 }
 
-export interface InstructionLockV1 {
+export interface InstructionLock {
 	readonly schemaVersion: 1;
 	readonly sourceId: string;
 	readonly locked: boolean;
@@ -50,8 +50,8 @@ export interface InstructionSourceInput {
 }
 
 export interface InstructionResolution {
-	readonly sources: readonly InstructionSourceV1[];
-	readonly locks: readonly InstructionLockV1[];
+	readonly sources: readonly InstructionSource[];
+	readonly locks: readonly InstructionLock[];
 	readonly decisions: readonly InstructionResolutionDecision[];
 	readonly path?: string;
 	readonly resolutionId?: string;
@@ -75,14 +75,14 @@ export interface InstructionResolutionDecision {
 }
 
 /** Durable record of one instruction resolution, including excluded sources. */
-export interface InstructionResolutionRecordV1 {
+export interface InstructionResolutionRecord {
 	readonly schemaVersion: 1;
 	readonly resolutionId: string;
 	readonly path?: string;
 	readonly sourceIds: readonly string[];
 	readonly selectedSourceIds: readonly string[];
 	readonly decisions: readonly InstructionResolutionDecision[];
-	readonly locks: readonly InstructionLockV1[];
+	readonly locks: readonly InstructionLock[];
 	readonly digest: string;
 	readonly createdAt: number;
 }
@@ -118,7 +118,7 @@ function pathSpecificity(value: string | undefined): number {
 	return normalized === undefined ? 0 : normalized.split("/").filter((part) => part.length > 0).length;
 }
 
-function lockForSource(sourceId: string, locks: readonly InstructionLockV1[]): InstructionLockV1 | undefined {
+function lockForSource(sourceId: string, locks: readonly InstructionLock[]): InstructionLock | undefined {
 	return locks
 		.filter((lock) => lock.sourceId === sourceId)
 		.sort(
@@ -131,12 +131,12 @@ function lockForSource(sourceId: string, locks: readonly InstructionLockV1[]): I
 		)[0];
 }
 
-function lockRank(lock: InstructionLockV1 | undefined): number {
+function lockRank(lock: InstructionLock | undefined): number {
 	if (lock?.locked !== true) return 0;
 	return lock.managed ? 2 : 1;
 }
 
-function sourceOrder(left: InstructionSourceV1, right: InstructionSourceV1, locks: ReadonlyMap<string, InstructionLockV1>): number {
+function sourceOrder(left: InstructionSource, right: InstructionSource, locks: ReadonlyMap<string, InstructionLock>): number {
 	const leftLock = lockRank(locks.get(left.sourceId));
 	const rightLock = lockRank(locks.get(right.sourceId));
 	return (
@@ -149,8 +149,8 @@ function sourceOrder(left: InstructionSourceV1, right: InstructionSourceV1, lock
 }
 
 export function resolveInstructionSources(
-	sources: readonly InstructionSourceV1[],
-	locks: readonly InstructionLockV1[],
+	sources: readonly InstructionSource[],
+	locks: readonly InstructionLock[],
 	options: InstructionResolutionOptions = {},
 ): InstructionResolution {
 	const orderedSources = [...sources].sort((left, right) => left.sourceId.localeCompare(right.sourceId));
@@ -162,7 +162,7 @@ export function resolveInstructionSources(
 			Number(right.locked) - Number(left.locked) ||
 			left.lockedBy.localeCompare(right.lockedBy),
 	);
-	const lockBySource = new Map<string, InstructionLockV1>();
+	const lockBySource = new Map<string, InstructionLock>();
 	for (const source of orderedSources) {
 		const lock = lockForSource(source.sourceId, orderedLocks);
 		if (lock !== undefined) lockBySource.set(source.sourceId, lock);
@@ -171,7 +171,7 @@ export function resolveInstructionSources(
 	const decisions = new Map<string, InstructionResolutionDecision>();
 	const visiting = new Set<string>();
 
-	const evaluate = (source: InstructionSourceV1): InstructionResolutionDecision => {
+	const evaluate = (source: InstructionSource): InstructionResolutionDecision => {
 		const prior = decisions.get(source.sourceId);
 		if (prior !== undefined) return prior;
 		const lock = lockBySource.get(source.sourceId);

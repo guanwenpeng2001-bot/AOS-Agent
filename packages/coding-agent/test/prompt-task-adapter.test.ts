@@ -3,20 +3,20 @@ import {
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
-	InMemoryRoleRegistryV1,
+	InMemoryRoleRegistry,
 	Result,
 	Session,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type DispatchV1,
+	type AgentBinding,
+	type AgentInstance,
+	type AttemptReceipt,
+	type Attempt,
+	type Dispatch,
 	type ExecutionEnv,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type ModelProfileV1,
-	type RoleRevisionV1,
-	type TaskExecutorAttemptContextV1,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type ModelProfile,
+	type RoleRevision,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, type Api, type Model, type Models } from "@aos-agent/ai";
@@ -26,13 +26,13 @@ import {
 	PROMPT_TASK_DEPENDENCY_NAMES,
 	createPromptTaskAdapter,
 	type PromptTaskCompositionError,
-	type PromptTaskCompositionDependenciesV1,
-	type PromptTaskDependencyNameV1,
-	type PromptTaskInputV1,
+	type PromptTaskCompositionDependencies,
+	type PromptTaskDependencyName,
+	type PromptTaskInput,
 } from "../src/core/prompt-task-adapter.ts";
 
 const NOW = "2026-08-19T00:00:00.000Z";
-const PROVIDER_CAPABILITY: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.prompt-task", version: 1 };
+const PROVIDER_CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.prompt-task", version: 1 };
 const OUTPUT_ARTIFACT = { schemaVersion: 1 as const, artifactId: "artifact-prompt-task", mediaType: "text/plain", digest: `sha256:${"a".repeat(64)}` };
 
 function executionEnv(): ExecutionEnv {
@@ -64,7 +64,7 @@ function createModelsWithResponse(): { models: Models; model: Model<"google-gene
 	return { models: stub, model };
 }
 
-function roleRevision(): RoleRevisionV1 {
+function roleRevision(): RoleRevision {
 	const base = {
 		schemaVersion: 1 as const,
 		roleRevisionId: "role-revision-prompt-task",
@@ -84,7 +84,7 @@ function roleRevision(): RoleRevisionV1 {
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	const base = { schemaVersion: 1 as const, modelProfileId: "model-profile-prompt-task", provider: "google", model: "gemini-2.5-flash", budget: {}, revision: 1, createdAt: NOW };
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
@@ -104,7 +104,7 @@ const dependencyFactTypes = {
 	adapter: "external_agent_binding",
 } as const;
 
-function dependencies(calls: PromptTaskDependencyNameV1[]): PromptTaskCompositionDependenciesV1 {
+function dependencies(calls: PromptTaskDependencyName[]): PromptTaskCompositionDependencies {
 	return Object.fromEntries(PROMPT_TASK_DEPENDENCY_NAMES.map((name) => [name, {
 		name,
 		revision: 1,
@@ -113,10 +113,10 @@ function dependencies(calls: PromptTaskDependencyNameV1[]): PromptTaskCompositio
 			const payload = { schemaVersion: 1 as const, type: dependencyFactTypes[name], id: `${name}-binding-prompt-task`, revision: 1 };
 			return { reference: { ...payload, ...(name === "adapter" ? { providerId: "provider-prompt-task" } : {}), fingerprint: fingerprintFoundationValue(payload) }, payload };
 		},
-	}])) as unknown as PromptTaskCompositionDependenciesV1;
+	}])) as unknown as PromptTaskCompositionDependencies;
 }
 
-function promptInput(): PromptTaskInputV1 {
+function promptInput(): PromptTaskInput {
 	return {
 		prompt: "Implement the bound task",
 		task: {
@@ -150,13 +150,13 @@ class PromptTaskProvider implements TaskExecutorProvider {
 	readonly providerClass = "agent" as const;
 	createCount = 0;
 	runCount = 0;
-	receivedAgentInstance: AgentInstanceV1 | undefined;
-	receivedRoleRevision: RoleRevisionV1 | undefined;
-	receivedModelProfile: ModelProfileV1 | undefined;
+	receivedAgentInstance: AgentInstance | undefined;
+	receivedRoleRevision: RoleRevision | undefined;
+	receivedModelProfile: ModelProfile | undefined;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [PROVIDER_CAPABILITY]; }
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [PROVIDER_CAPABILITY]; }
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		this.createCount += 1;
 		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "Prompt Task provider requires attempt context"));
 		this.receivedAgentInstance = context.agentInstance;
@@ -165,11 +165,11 @@ class PromptTaskProvider implements TaskExecutorProvider {
 		return createAttempt({ attemptId: context.initialBindingEpoch.attemptId, dispatch, providerId: this.providerId, initialBindingEpoch: context.initialBindingEpoch, providerClass: this.providerClass, agentInstanceId: context.initialBindingEpoch.agentInstanceId });
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.runCount += 1;
 		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "Prompt Task provider requires execution correlation"));
 		const attemptReceiptId = `attempt-receipt-${attempt.attemptId}`;
-		return Result.ok<AttemptReceiptV1>({
+		return Result.ok<AttemptReceipt>({
 			schemaVersion: 1,
 			attemptReceiptId,
 			taskId: attempt.taskId,
@@ -201,11 +201,11 @@ describe("Foundation Prompt Task adapter", () => {
 		["explicit @agent", "@agent reviewer inspect this boundary"],
 		["description", "Please review security boundaries and unsafe output"],
 	])("routes %s selection through the Role Resolver before the agent provider", async (_selection, prompt) => {
-		const calls: PromptTaskDependencyNameV1[] = [];
+		const calls: PromptTaskDependencyName[] = [];
 		const session = new Session(new InMemorySessionStorage({ id: "session-prompt-subagent", createdAt: 1 }));
 		const provider = new PromptTaskProvider();
 		const runtime = createModelsWithResponse();
-		const registry = new InMemoryRoleRegistryV1({ now: () => NOW });
+		const registry = new InMemoryRoleRegistry({ now: () => NOW });
 		const created = registry.create({ definition: {
 			schemaVersion: 1,
 			roleId: "reviewer",
@@ -241,7 +241,7 @@ describe("Foundation Prompt Task adapter", () => {
 		expect(provider.receivedRoleRevision?.roleId).toBe("role-prompt-task");
 	});
 	it("drives the only Prompt Task chain through all injected dependencies and AgentHarness receipts", async () => {
-		const calls: PromptTaskDependencyNameV1[] = [];
+		const calls: PromptTaskDependencyName[] = [];
 		const session = new Session(new InMemorySessionStorage({ id: "session-prompt-task", createdAt: 1 }));
 		const env = executionEnv();
 		const provider = new PromptTaskProvider();
@@ -275,20 +275,20 @@ describe("Foundation Prompt Task adapter", () => {
 	});
 
 	it("fails construction when any required dependency is absent", () => {
-		const calls: PromptTaskDependencyNameV1[] = [];
+		const calls: PromptTaskDependencyName[] = [];
 		const { credential: _credential, ...missing } = dependencies(calls);
 		const provider = new PromptTaskProvider();
 		const session = new Session(new InMemorySessionStorage({ id: "session-missing-dependency", createdAt: 1 }));
 		const env = executionEnv();
 		const runtime = createModelsWithResponse();
-		expect(() => createPromptTaskAdapter({ dependencies: missing as PromptTaskCompositionDependenciesV1, provider, harness: { session, env, models: runtime.models, model: runtime.model } })).toThrowError(expect.objectContaining<Partial<PromptTaskCompositionError>>({ code: "prompt_task_dependency_missing", dependency: "credential" }));
+		expect(() => createPromptTaskAdapter({ dependencies: missing as PromptTaskCompositionDependencies, provider, harness: { session, env, models: runtime.models, model: runtime.model } })).toThrowError(expect.objectContaining<Partial<PromptTaskCompositionError>>({ code: "prompt_task_dependency_missing", dependency: "credential" }));
 		expect(provider.createCount).toBe(0);
 	});
 
 	it("persists Task first and fails closed before provider execution on a forged dependency fact", async () => {
-		const calls: PromptTaskDependencyNameV1[] = [];
+		const calls: PromptTaskDependencyName[] = [];
 		const complete = dependencies(calls);
-		const forged: PromptTaskCompositionDependenciesV1 = { ...complete, policy: { ...complete.policy, resolve: () => {
+		const forged: PromptTaskCompositionDependencies = { ...complete, policy: { ...complete.policy, resolve: () => {
 			const payload = { schemaVersion: 1 as const, type: "policy_binding", id: "policy-binding-prompt-task", revision: 1 };
 			return { reference: { ...payload, fingerprint: fingerprintFoundationValue({ ...payload, revision: 2 }) }, payload };
 		} } };
@@ -305,12 +305,12 @@ describe("Foundation Prompt Task adapter", () => {
 	});
 
 	it("fails closed before provider execution when settlement prerequisites are absent", async () => {
-		const calls: PromptTaskDependencyNameV1[] = [];
+		const calls: PromptTaskDependencyName[] = [];
 		const provider = new PromptTaskProvider();
 		const session = new Session(new InMemorySessionStorage({ id: "session-missing-settlement", createdAt: 1 }));
 		const runtime = createModelsWithResponse();
 		const adapter = createPromptTaskAdapter({ dependencies: dependencies(calls), provider, harness: { session, env: executionEnv(), models: runtime.models, model: runtime.model, tools: [], activeToolNames: [] } });
-		const input = { ...promptInput(), settlement: undefined } as unknown as PromptTaskInputV1;
+		const input = { ...promptInput(), settlement: undefined } as unknown as PromptTaskInput;
 		await expect(adapter.execute(input)).rejects.toMatchObject({ code: "prompt_task_input_invalid" });
 		expect(calls).toEqual([]);
 		expect(provider.createCount).toBe(0);

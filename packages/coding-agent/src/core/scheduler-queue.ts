@@ -8,16 +8,16 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import {
-	createDurableEventV1,
-	type DurableEventCategoryV1,
+	createDurableEvent,
+	type DurableEventCategory,
 	type DurableLedgerApi,
 	DurableLedgerError,
-	type EventCorrelationRefV1,
+	type EventCorrelationRef,
 	FoundationError,
-	type FoundationFactRecordV1,
+	type FoundationFactRecord,
 	type FoundationJsonValue,
-	type FoundationRecordV1,
-	type LedgerWriterLeaseV1,
+	type FoundationRecord,
+	type LedgerWriterLease,
 	Result,
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
@@ -287,7 +287,7 @@ function plusMs(nowIso: string, ttlMs: number): string {
 	return new Date(Date.parse(nowIso) + ttlMs).toISOString();
 }
 
-function asFact(record: FoundationRecordV1): FoundationFactRecordV1 | undefined {
+function asFact(record: FoundationRecord): FoundationFactRecord | undefined {
 	return record.kind === "fact" ? record : undefined;
 }
 
@@ -448,8 +448,8 @@ function sameClaimTransferIdentity(left: SchedulerClaimTransferV1, right: Schedu
 function optionalCorrelation(
 	entry: SchedulerQueueEntryV1,
 	extra: { dispatchId?: string; attemptId?: string } = {},
-): EventCorrelationRefV1 {
-	const correlation: EventCorrelationRefV1 = { sessionId: entry.sessionId, taskId: entry.taskId };
+): EventCorrelationRef {
+	const correlation: EventCorrelationRef = { sessionId: entry.sessionId, taskId: entry.taskId };
 	if (entry.workflowId !== undefined) correlation.workflowId = entry.workflowId;
 	if (extra.dispatchId !== undefined) correlation.dispatchId = extra.dispatchId;
 	if (extra.attemptId !== undefined) correlation.attemptId = extra.attemptId;
@@ -536,7 +536,7 @@ export class SchedulerQueueStore {
 	private readonly writerLeaseTtlMs: number;
 	private readonly cancelAttempt: SchedulerCancelAttemptV1 | undefined;
 	private readonly defaultMaxAttempts: number;
-	private writerLease: LedgerWriterLeaseV1 | undefined;
+	private writerLease: LedgerWriterLease | undefined;
 	private entries = new Map<string, SchedulerQueueEntryV1>();
 	private keys = new Map<string, string>();
 	private claims = new Map<string, SchedulerClaimV1>();
@@ -993,7 +993,7 @@ export class SchedulerQueueStore {
 		return `${objectType}\0${objectId}`;
 	}
 
-	private replay(records: readonly FoundationRecordV1[]): ResultValue<SchedulerQueueSnapshotV1, FoundationError> {
+	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerQueueSnapshotV1, FoundationError> {
 		this.entries = new Map();
 		this.keys = new Map();
 		this.claims = new Map();
@@ -1637,9 +1637,9 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeDurableEvent(
-		category: DurableEventCategoryV1,
+		category: DurableEventCategory,
 		eventId: string,
-		correlation: EventCorrelationRefV1,
+		correlation: EventCorrelationRef,
 		payload: FoundationJsonValue,
 		clientRequestId: string,
 	): Promise<ResultValue<void, FoundationError>> {
@@ -1651,7 +1651,7 @@ export class SchedulerQueueStore {
 		}
 		if (sequence < 1) sequence = 1;
 		try {
-			createDurableEventV1({
+			createDurableEvent({
 				category,
 				eventId,
 				streamId: this.sessionId,
@@ -1684,7 +1684,7 @@ export class SchedulerQueueStore {
 		payload: FoundationJsonValue | object,
 		clientRequestId: string,
 		expectedRevision: number,
-		correlation: EventCorrelationRefV1,
+		correlation: EventCorrelationRef,
 		staleCode: SchedulerErrorCodeV1,
 	): Promise<ResultValue<{ replayed: boolean }, FoundationError>> {
 		try {
@@ -1713,7 +1713,7 @@ export class SchedulerQueueStore {
 		}
 	}
 
-	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
+	private async ensureWriterLease(): Promise<LedgerWriterLease> {
 		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (
@@ -1750,8 +1750,8 @@ export class SchedulerQueueStore {
 	}
 }
 
-function omitUndefinedCorrelation(correlation: EventCorrelationRefV1): EventCorrelationRefV1 {
-	const next: EventCorrelationRefV1 = { sessionId: correlation.sessionId };
+function omitUndefinedCorrelation(correlation: EventCorrelationRef): EventCorrelationRef {
+	const next: EventCorrelationRef = { sessionId: correlation.sessionId };
 	if (correlation.laneId !== undefined) next.laneId = correlation.laneId;
 	if (correlation.taskId !== undefined) next.taskId = correlation.taskId;
 	if (correlation.dispatchId !== undefined) next.dispatchId = correlation.dispatchId;

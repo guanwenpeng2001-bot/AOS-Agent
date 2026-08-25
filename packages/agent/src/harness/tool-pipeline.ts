@@ -7,38 +7,38 @@ import {
 	redactText,
 	toFoundationError,
 	type FoundationErrorCode,
-	type PublicExecutionErrorV1,
+	type PublicExecutionError,
 } from "./foundation/errors.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
-import { canonicalFoundationJson, fingerprintFoundationValue, newFoundationId, type ExecutionCorrelationV1, type FingerprintV1 } from "./foundation/identity.ts";
-import type { BudgetUsageV1, BudgetV1 } from "./foundation/budget.ts";
+import { canonicalFoundationJson, fingerprintFoundationValue, newFoundationId, type ExecutionCorrelation, type Fingerprint } from "./foundation/identity.ts";
+import type { BudgetUsage, Budget } from "./foundation/budget.ts";
 import {
 	selectorsNarrow,
-	type ArtifactRefV1,
-	type CapabilitySelectorV1,
-	type RevisionReferenceV1,
-	type VersionedReferenceV1,
+	type ArtifactRef,
+	type ResourceSelector,
+	type RevisionReference,
+	type VersionedReference,
 } from "./foundation/reference.ts";
-import type { AgentBindingV1, BindingEpochV1 } from "./foundation/role.ts";
+import type { AgentBinding, BindingEpoch } from "./foundation/role.ts";
 import {
 	IDEMPOTENCY_STATES,
 	SIDE_EFFECT_STATES,
 	isSideEffectRetryable,
-	type IdempotencyV1,
-	type SideEffectStateV1,
+	type Idempotency,
+	type SideEffectState,
 } from "./foundation/side-effect.ts";
-import type { QuotaReservationV1 } from "./foundation/providers.ts";
+import type { QuotaReservation } from "./foundation/providers.ts";
 import type {
-	AppendFoundationRecordResultV1,
-	FoundationRecordQueryV1,
-	FoundationRecordV1,
-	ProvisionedFoundationRecordV1,
+	AppendFoundationRecordResult,
+	FoundationRecordQuery,
+	FoundationRecord,
+	ProvisionedFoundationRecord,
 } from "./session/durable/types.ts";
 import { DurableLedgerError } from "./session/durable/errors.ts";
 import { Result, type Result as ResultValue } from "./result.ts";
 import {
 	type ExactShapeIssue,
-	FingerprintV1Schema,
+	FingerprintSchema,
 	exactShapeIssues,
 	makeExactShapeGuard,
 	parseExactShape,
@@ -49,39 +49,39 @@ import {
 
 /** Schema version carried by every tool-pipeline durable fact. */
 export const TOOL_PIPELINE_SCHEMA_VERSION = 1 as const;
-export type ToolPipelineSchemaVersionV1 = typeof TOOL_PIPELINE_SCHEMA_VERSION;
+export type ToolPipelineSchemaVersion = typeof TOOL_PIPELINE_SCHEMA_VERSION;
 
 /** The only legal order for one tool invocation. */
-export const TOOL_PIPELINE_STAGES_V1 = ["prepare", "pre", "guard", "execute", "post", "finalize"] as const;
-export type ToolPipelineStageV1 = (typeof TOOL_PIPELINE_STAGES_V1)[number];
+export const TOOL_PIPELINE_STAGES = ["prepare", "pre", "guard", "execute", "post", "finalize"] as const;
+export type ToolPipelineStage = (typeof TOOL_PIPELINE_STAGES)[number];
 
 /** Monotonic gate kinds enforced by the guard stage. */
-export const TOOL_GATE_KINDS_V1 = ["capability", "policy", "approval", "sandbox", "quota", "conflict_lock"] as const;
-export type ToolGateKindV1 = (typeof TOOL_GATE_KINDS_V1)[number];
+export const TOOL_GATE_KINDS = ["capability", "policy", "approval", "sandbox", "quota", "conflict_lock"] as const;
+export type ToolGateKind = (typeof TOOL_GATE_KINDS)[number];
 
 /** Terminal outcomes of a finalized ToolReceipt. */
-export const TOOL_RECEIPT_OUTCOMES_V1 = ["succeeded", "failed", "blocked", "cancelled", "side_effect_unknown"] as const;
-export type ToolReceiptOutcomeV1 = (typeof TOOL_RECEIPT_OUTCOMES_V1)[number];
+export const TOOL_RECEIPT_OUTCOMES = ["succeeded", "failed", "blocked", "cancelled", "side_effect_unknown"] as const;
+export type ToolReceiptOutcome = (typeof TOOL_RECEIPT_OUTCOMES)[number];
 
 /** Deterministic batch join statuses. */
-export const TOOL_BATCH_STATUSES_V1 = ["succeeded", "partial_failure", "failed", "cancelled"] as const;
-export type ToolBatchStatusV1 = (typeof TOOL_BATCH_STATUSES_V1)[number];
+export const TOOL_BATCH_STATUSES = ["succeeded", "partial_failure", "failed", "cancelled"] as const;
+export type ToolBatchStatus = (typeof TOOL_BATCH_STATUSES)[number];
 
 /** Transform provenance kinds for accepted arguments versus original arguments. */
-export const TOOL_TRANSFORM_KINDS_V1 = ["original", "defaulted", "normalized", "coerced", "removed", "redacted"] as const;
-export type ToolArgumentTransformKindV1 = (typeof TOOL_TRANSFORM_KINDS_V1)[number];
+export const TOOL_TRANSFORM_KINDS = ["original", "defaulted", "normalized", "coerced", "removed", "redacted"] as const;
+export type ToolArgumentTransformKind = (typeof TOOL_TRANSFORM_KINDS)[number];
 
 /** Frozen revision consumed by one invocation. */
-export interface ToolRevisionV1 {
+export interface ToolRevision {
 	schemaVersion: 1;
 	type: "tool_revision";
 	id: string;
 	revision: number;
-	fingerprint?: FingerprintV1;
+	fingerprint?: Fingerprint;
 }
 
 /** Frozen binding identity consumed by one invocation. */
-export interface ToolBindingRefV1 {
+export interface ToolBindingRef {
 	schemaVersion: 1;
 	/** Full durable execution identity. Present for AgentHarness calls. */
 	sessionId?: string;
@@ -98,121 +98,121 @@ export interface ToolBindingRefV1 {
 }
 
 /** Digests are recorded before and after argument preparation. */
-export interface ToolArgumentDigestsV1 {
-	original: FingerprintV1;
-	accepted: FingerprintV1;
+export interface ToolArgumentDigests {
+	original: Fingerprint;
+	accepted: Fingerprint;
 }
 
 /** Durable execution fence armed with the accepted argument digest. */
-export interface ToolIntentFenceV1 {
+export interface ToolIntentFence {
 	schemaVersion: 1;
 	fenceId: string;
 	intentId: string;
 	bindingEpochId: string;
-	acceptedArgumentsDigest: FingerprintV1;
+	acceptedArgumentsDigest: Fingerprint;
 	armedAt: string;
 }
 
 /** Per-field argument transform provenance. */
-export interface ToolTransformProvenanceV1 {
+export interface ToolTransformProvenance {
 	field: string;
-	kind: ToolArgumentTransformKindV1;
+	kind: ToolArgumentTransformKind;
 	/** Stable identity and revision of the transformer that produced this field. */
 	transformerId: string;
 	transformerRevision: number;
-	beforeDigest: FingerprintV1;
-	afterDigest: FingerprintV1;
+	beforeDigest: Fingerprint;
+	afterDigest: Fingerprint;
 }
 
-export interface ToolArgumentTransformerV1 {
+export interface ToolArgumentTransformer {
 	transformerId: string;
 	transformerRevision: number;
 	transform(args: unknown): unknown;
 }
 
 /** Verdict record for one monotonic gate. */
-export interface ToolGateRecordV1 {
-	kind: ToolGateKindV1;
+export interface ToolGateRecord {
+	kind: ToolGateKind;
 	verdict: "allowed" | "denied" | "reserved";
 	/** The revision against which this verdict was evaluated. */
-	reference: VersionedReferenceV1;
+	reference: VersionedReference;
 	reason?: string;
 }
 
 /** Durable pre-call intent. It is written before guard or execute. */
-export interface ToolIntentV1 {
+export interface ToolIntent {
 	schemaVersion: 1;
 	intentId: string;
 	toolCallId: string;
 	toolName: string;
 	namespace?: string;
-	toolRevision: ToolRevisionV1;
-	binding: ToolBindingRefV1;
+	toolRevision: ToolRevision;
+	binding: ToolBindingRef;
 	idempotencyKey?: string;
-	argumentDigests: ToolArgumentDigestsV1;
-	fence: ToolIntentFenceV1;
-	transformProvenance: readonly ToolTransformProvenanceV1[];
+	argumentDigests: ToolArgumentDigests;
+	fence: ToolIntentFence;
+	transformProvenance: readonly ToolTransformProvenance[];
 	attempt: number;
 	writtenAt: string;
 }
 
 /** Finalized durable result for one invocation. */
-export interface ToolReceiptV1 {
+export interface ToolReceipt {
 	schemaVersion: 1;
 	toolReceiptId: string;
 	toolCallId: string;
 	toolName: string;
 	namespace?: string;
-	toolRevision: ToolRevisionV1;
-	binding: ToolBindingRefV1;
+	toolRevision: ToolRevision;
+	binding: ToolBindingRef;
 	idempotencyKey?: string;
-	argumentDigests: ToolArgumentDigestsV1;
-	transformProvenance: readonly ToolTransformProvenanceV1[];
-	gates: readonly ToolGateRecordV1[];
-	sideEffectState: SideEffectStateV1;
-	idempotency: IdempotencyV1;
+	argumentDigests: ToolArgumentDigests;
+	transformProvenance: readonly ToolTransformProvenance[];
+	gates: readonly ToolGateRecord[];
+	sideEffectState: SideEffectState;
+	idempotency: Idempotency;
 	attempt: number;
 	retried: number;
 	startedAt?: string;
 	completedAt: string;
-	outcome: ToolReceiptOutcomeV1;
-	artifacts?: readonly ArtifactRefV1[];
-	usage?: BudgetUsageV1;
+	outcome: ToolReceiptOutcome;
+	artifacts?: readonly ArtifactRef[];
+	usage?: BudgetUsage;
 	/** Provider-neutral, JSON-safe result retained for durable dedup replay. */
-	result?: ToolResultPayloadV1;
-	error?: PublicExecutionErrorV1;
+	result?: ToolResultPayload;
+	error?: PublicExecutionError;
 	/** Set when this receipt replays an earlier receipt with the same key. */
 	deduplicatedFrom?: string;
-	digest: FingerprintV1;
+	digest: Fingerprint;
 }
 
 /**
  * Durable projection of an AgentToolResult. It intentionally contains only
  * provider-neutral JSON fields; credentials are rejected before persistence.
  */
-export interface ToolResultPayloadV1 {
+export interface ToolResultPayload {
 	schemaVersion: 1;
-	content: readonly ToolResultContentV1[];
+	content: readonly ToolResultContent[];
 	details?: FoundationJsonValue;
-	usage?: ToolResultUsageV1;
+	usage?: ToolResultUsage;
 	addedToolNames?: readonly string[];
 	terminate?: boolean;
 }
 
-export interface ToolResultTextContentV1 {
+export interface ToolResultTextContent {
 	type: "text";
 	text: string;
 }
 
-export interface ToolResultImageContentV1 {
+export interface ToolResultImageContent {
 	type: "image";
-	artifact: ArtifactRefV1;
+	artifact: ArtifactRef;
 }
 
-export type ToolResultContentV1 = ToolResultTextContentV1 | ToolResultImageContentV1;
+export type ToolResultContent = ToolResultTextContent | ToolResultImageContent;
 
 /** Exact provider-neutral projection of the runtime Usage shape. */
-export interface ToolResultUsageV1 {
+export interface ToolResultUsage {
 	input: number;
 	output: number;
 	cacheRead: number;
@@ -232,18 +232,18 @@ export interface ToolResultUsageV1 {
 /** Reserved Session custom entry carrying the canonical durable tool result. */
 export const FOUNDATION_TOOL_RESULT_CUSTOM_TYPE = "foundation.tool_result";
 
-export interface FoundationToolResultEntryV1 {
+export interface FoundationToolResultEntry {
 	schemaVersion: 1;
 	runId: string;
 	operationId: string;
 	toolCallId: string;
 	toolName: string;
 	isError: boolean;
-	result: ToolResultPayloadV1;
+	result: ToolResultPayload;
 }
 
 /** Maximum canonical size of a durable tool result projection. */
-export const TOOL_RESULT_PAYLOAD_MAX_BYTES_V1 = 1024 * 1024;
+export const TOOL_RESULT_PAYLOAD_MAX_BYTES = 1024 * 1024;
 
 function isDurableResultProjectionSafe(value: unknown): boolean {
 	try {
@@ -254,26 +254,26 @@ function isDurableResultProjectionSafe(value: unknown): boolean {
 }
 
 /** One overlapping conflict-key group in a batch. */
-export interface ToolConflictV1 {
+export interface ToolConflict {
 	keys: readonly string[];
 	toolCallIds: readonly string[];
 }
 
 /** Deterministic source-order join of a batch. */
-export interface ToolBatchResultV1 {
+export interface ToolBatchResult {
 	schemaVersion: 1;
 	batchId: string;
-	status: ToolBatchStatusV1;
-	receipts: readonly ToolReceiptV1[];
-	usage: BudgetUsageV1;
-	conflicts: readonly ToolConflictV1[];
+	status: ToolBatchStatus;
+	receipts: readonly ToolReceipt[];
+	usage: BudgetUsage;
+	conflicts: readonly ToolConflict[];
 	/** Effective concurrency cap for this batch. */
 	maxConcurrency: number;
 	durationMs: number;
 }
 
 /** A tool call submitted to the pipeline. */
-export interface ToolCallV1 {
+export interface ToolCall {
 	toolCallId: string;
 	toolName: string;
 	namespace?: string;
@@ -284,14 +284,14 @@ export interface ToolCallV1 {
 }
 
 /** Immutable execution context captured for a pipeline run. */
-export interface ToolPipelineContextV1 {
+export interface ToolPipelineContext {
 	sessionId: string;
 	laneId: string;
 	/** Durable operation identity; runId is an alias retained for correlation clarity. */
 	runId?: string;
 	operationId?: string;
-	binding: AgentBindingV1;
-	bindingEpoch: BindingEpochV1;
+	binding: AgentBinding;
+	bindingEpoch: BindingEpoch;
 	taskId: string;
 	dispatchId?: string;
 	providerId?: string;
@@ -303,19 +303,19 @@ export interface ToolPipelineContextV1 {
 }
 
 /** Provider-neutral result produced by a tool. */
-export interface ToolExecutionV1 {
+export interface ToolExecution {
 	ok: boolean;
-	sideEffectState: SideEffectStateV1;
-	artifacts?: readonly ArtifactRefV1[];
-	usage?: BudgetUsageV1;
-	result?: ToolResultPayloadV1;
-	error?: PublicExecutionErrorV1;
+	sideEffectState: SideEffectState;
+	artifacts?: readonly ArtifactRef[];
+	usage?: BudgetUsage;
+	result?: ToolResultPayload;
+	error?: PublicExecutionError;
 }
 
-export interface ToolExecuteOptionsV1 {
+export interface ToolExecuteOptions {
 	toolCallId: string;
 	signal?: AbortSignal;
-	context: ToolPipelineContextV1;
+	context: ToolPipelineContext;
 	attempt: number;
 	deadlineAt?: number;
 	onUpdate?: (partial: unknown) => void;
@@ -325,74 +325,74 @@ export interface ToolExecuteOptionsV1 {
  * Provider-neutral tool definition. The pipeline snapshots this definition
  * at prepare and never resolves it again during execute or retry.
  */
-export interface ToolDefinitionV1 {
+export interface ToolDefinition {
 	name: string;
 	namespace?: string;
 	label?: string;
 	description?: string;
-	toolRevision: ToolRevisionV1;
+	toolRevision: ToolRevision;
 	capabilities: readonly string[];
 	parameters: TSchema;
 	executionMode?: "sequential" | "parallel";
 	prepareArguments?: (args: unknown) => unknown;
-	argumentTransformer?: ToolArgumentTransformerV1;
+	argumentTransformer?: ToolArgumentTransformer;
 	/** Provider-neutral read-only hook, evaluated after prepare and before guard. */
-	preHook?: ToolPreHookV1;
+	preHook?: ToolPreHook;
 	/** Provider-neutral post normalizer; it may only return result/artifacts/usage. */
-	postProcessor?: ToolPostProcessorV1;
+	postProcessor?: ToolPostProcessor;
 	conflictKeys?: (args: Record<string, unknown>) => readonly string[];
-	idempotency?: IdempotencyV1;
-	execute(args: Record<string, unknown>, options: ToolExecuteOptionsV1): Promise<ToolExecutionV1>;
+	idempotency?: Idempotency;
+	execute(args: Record<string, unknown>, options: ToolExecuteOptions): Promise<ToolExecution>;
 }
 
-export interface ToolPreHookScopeV1 {
-	readonly context: Readonly<ToolPipelineContextV1>;
-	readonly tool: Readonly<ToolDefinitionV1>;
+export interface ToolPreHookScope {
+	readonly context: Readonly<ToolPipelineContext>;
+	readonly tool: Readonly<ToolDefinition>;
 	readonly args: Readonly<Record<string, unknown>>;
-	readonly intent: Readonly<ToolIntentV1>;
+	readonly intent: Readonly<ToolIntent>;
 }
 
-export type ToolPreHookResultV1 = void | boolean | ResultValue<void, FoundationError>;
-export type ToolPreHookV1 = (scope: ToolPreHookScopeV1) => ToolPreHookResultV1 | Promise<ToolPreHookResultV1>;
+export type ToolPreHookResult = void | boolean | ResultValue<void, FoundationError>;
+export type ToolPreHook = (scope: ToolPreHookScope) => ToolPreHookResult | Promise<ToolPreHookResult>;
 
-export interface ToolPostProcessorScopeV1 {
-	readonly context: Readonly<ToolPipelineContextV1>;
-	readonly tool: Readonly<ToolDefinitionV1>;
+export interface ToolPostProcessorScope {
+	readonly context: Readonly<ToolPipelineContext>;
+	readonly tool: Readonly<ToolDefinition>;
 	readonly args: Readonly<Record<string, unknown>>;
-	readonly intent: Readonly<ToolIntentV1>;
-	readonly execution: Readonly<ToolExecutionV1>;
+	readonly intent: Readonly<ToolIntent>;
+	readonly execution: Readonly<ToolExecution>;
 }
 
-export interface ToolPostNormalizationV1 {
-	result?: ToolResultPayloadV1;
-	artifacts?: readonly ArtifactRefV1[];
-	usage?: BudgetUsageV1;
+export interface ToolPostNormalization {
+	result?: ToolResultPayload;
+	artifacts?: readonly ArtifactRef[];
+	usage?: BudgetUsage;
 }
 
-export type ToolPostProcessorV1 = (scope: ToolPostProcessorScopeV1) => ToolPostNormalizationV1 | ResultValue<ToolPostNormalizationV1, FoundationError> | undefined | Promise<ToolPostNormalizationV1 | ResultValue<ToolPostNormalizationV1, FoundationError> | undefined>;
+export type ToolPostProcessor = (scope: ToolPostProcessorScope) => ToolPostNormalization | ResultValue<ToolPostNormalization, FoundationError> | undefined | Promise<ToolPostNormalization | ResultValue<ToolPostNormalization, FoundationError> | undefined>;
 
-export interface ToolDefinitionRegistryV1 {
-	resolve(toolName: string, namespace?: string): ResultValue<ToolDefinitionV1, FoundationError>;
+export interface ToolDefinitionRegistry {
+	resolve(toolName: string, namespace?: string): ResultValue<ToolDefinition, FoundationError>;
 }
 
 /** Verdict of one gate check. References must be explicit and versioned. */
-export interface ToolGateVerdictV1 {
+export interface ToolGateVerdict {
 	allowed: boolean;
-	reference: VersionedReferenceV1;
+	reference: VersionedReference;
 	reason?: string;
 }
 
-export type ToolGateCheckV1 = (
-	scope: ToolGateScopeV1,
-) => ResultValue<ToolGateVerdictV1, FoundationError> | Promise<ResultValue<ToolGateVerdictV1, FoundationError>>;
+export type ToolGateCheck = (
+	scope: ToolGateScope,
+) => ResultValue<ToolGateVerdict, FoundationError> | Promise<ResultValue<ToolGateVerdict, FoundationError>>;
 
 /** Everything consulted by a gate. */
-export interface ToolGateScopeV1 {
-	context: ToolPipelineContextV1;
-	tool: ToolDefinitionV1;
+export interface ToolGateScope {
+	context: ToolPipelineContext;
+	tool: ToolDefinition;
 	args: Record<string, unknown>;
-	intent: ToolIntentV1;
-	acceptedArgsDigest: FingerprintV1;
+	intent: ToolIntent;
+	acceptedArgsDigest: Fingerprint;
 	conflictKeys: readonly string[];
 }
 
@@ -400,61 +400,61 @@ export interface ToolGateScopeV1 {
  * Guard implementations must not widen a previous denial. `release` is an
  * optional lifecycle hook for conflict locks and quota reservations.
  */
-export interface ToolGuardSetV1 {
-	guard(scope: ToolGateScopeV1): Promise<ResultValue<readonly ToolGateRecordV1[], FoundationError>>;
-	release?(scope: ToolGateScopeV1): Promise<void> | void;
+export interface ToolGuardSet {
+	guard(scope: ToolGateScope): Promise<ResultValue<readonly ToolGateRecord[], FoundationError>>;
+	release?(scope: ToolGateScope): Promise<void> | void;
 	cleanup?(): Promise<void> | void;
 }
 
 /** Durable storage consumed by the pre and finalize stages. */
-export interface ToolPipelineStorageV1 {
-	writeIntent(intent: ToolIntentV1): Promise<ResultValue<ToolIntentV1, FoundationError>>;
-	finalizeReceipt(receipt: ToolReceiptV1): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>>;
+export interface ToolPipelineStorage {
+	writeIntent(intent: ToolIntent): Promise<ResultValue<ToolIntent, FoundationError>>;
+	finalizeReceipt(receipt: ToolReceipt): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>>;
 	/** Optional durable snapshots used to recover intents left without a fact. */
-	listIntents?(query?: ToolPipelineStorageQueryV1): Promise<readonly ToolIntentV1[]>;
-	listReceipts?(query?: ToolPipelineStorageQueryV1): Promise<readonly ToolReceiptV1[]>;
+	listIntents?(query?: ToolPipelineStorageQuery): Promise<readonly ToolIntent[]>;
+	listReceipts?(query?: ToolPipelineStorageQuery): Promise<readonly ToolReceipt[]>;
 }
 
-export interface ToolPipelineStorageQueryV1 {
-	correlation?: Partial<ExecutionCorrelationV1>;
+export interface ToolPipelineStorageQuery {
+	correlation?: Partial<ExecutionCorrelation>;
 }
 
 /** Minimal append/query surface used to keep tool facts in the Session ledger. */
-export interface ToolPipelineLedgerV1 {
-	appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1>;
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]>;
+export interface ToolPipelineLedger {
+	appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult>;
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]>;
 }
 
-export interface SessionToolPipelineStorageOptionsV1 {
-	ledger: ToolPipelineLedgerV1;
+export interface SessionToolPipelineStorageOptions {
+	ledger: ToolPipelineLedger;
 	laneId: string;
-	correlationFor: (kind: "intent" | "receipt", value: ToolIntentV1 | ToolReceiptV1) => ExecutionCorrelationV1;
+	correlationFor: (kind: "intent" | "receipt", value: ToolIntent | ToolReceipt) => ExecutionCorrelation;
 	/** Supplies the current writer fence for every default ledger append. */
 	fencingToken?: () => string | Promise<string>;
 }
 
 /** Session-backed storage: intents and receipts share the one Foundation ledger. */
-export class SessionToolPipelineStorageV1 implements ToolPipelineStorageV1 {
-	private readonly ledger: ToolPipelineLedgerV1;
+export class SessionToolPipelineStorage implements ToolPipelineStorage {
+	private readonly ledger: ToolPipelineLedger;
 	private readonly laneId: string;
-	private readonly correlationFor: SessionToolPipelineStorageOptionsV1["correlationFor"];
-	private readonly fencingToken?: SessionToolPipelineStorageOptionsV1["fencingToken"];
+	private readonly correlationFor: SessionToolPipelineStorageOptions["correlationFor"];
+	private readonly fencingToken?: SessionToolPipelineStorageOptions["fencingToken"];
 
-	constructor(options: SessionToolPipelineStorageOptionsV1) {
+	constructor(options: SessionToolPipelineStorageOptions) {
 		this.ledger = options.ledger;
 		this.laneId = options.laneId;
 		this.correlationFor = options.correlationFor;
 		this.fencingToken = options.fencingToken;
 	}
 
-	async writeIntent(intent: ToolIntentV1): Promise<ResultValue<ToolIntentV1, FoundationError>> {
+	async writeIntent(intent: ToolIntent): Promise<ResultValue<ToolIntent, FoundationError>> {
 		try {
 			const correlation = validateToolCorrelation(intent, this.correlationFor("intent", intent), this.laneId);
 			if (!correlation.ok) return correlation;
 			const prior = await this.ledger.findFoundationRecords({ kind: "intent", objectType: "tool_intent", objectId: intent.intentId, includePruned: true, order: "oldestFirst", correlation: correlationQuery(correlation.value) });
 			const existing = prior.find((record) => record.kind === "intent");
 			if (existing?.payload !== undefined) {
-				const checked = validateToolIntentV1(existing.payload);
+				const checked = validateToolIntent(existing.payload);
 				if (!checked.ok) return checked;
 				return canonicalFoundationJson(checked.value) === canonicalFoundationJson(intent)
 					? Result.ok(checked.value)
@@ -475,16 +475,16 @@ export class SessionToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 				correlation: { ...correlation.value, ...(fencingToken === undefined ? {} : { fencingToken }) },
 			});
 			if (result.record.kind !== "intent" || result.record.payload === undefined) return Result.err(new FoundationError("foundation_schema_invalid_shape", "Session ledger returned an invalid tool intent"));
-			const checked = validateToolIntentV1(result.record.payload);
+			const checked = validateToolIntent(result.record.payload);
 			return checked;
 		} catch (error) {
 			return Result.err(toToolPipelineStorageError(error));
 		}
 	}
 
-	async finalizeReceipt(receipt: ToolReceiptV1): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
+	async finalizeReceipt(receipt: ToolReceipt): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
 		try {
-			const checkedReceipt = validateAndVerifyToolReceiptV1(receipt);
+			const checkedReceipt = validateAndVerifyToolReceipt(receipt);
 			if (!checkedReceipt.ok) return checkedReceipt;
 			const correlation = validateToolCorrelation(receipt, this.correlationFor("receipt", receipt), this.laneId);
 			if (!correlation.ok) return correlation;
@@ -508,19 +508,19 @@ export class SessionToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 		}
 	}
 
-	async listIntents(query?: ToolPipelineStorageQueryV1): Promise<readonly ToolIntentV1[]> {
+	async listIntents(query?: ToolPipelineStorageQuery): Promise<readonly ToolIntent[]> {
 		const records = await this.ledger.findFoundationRecords({ kind: "intent", objectType: "tool_intent", includePruned: true, order: "oldestFirst", ...(query?.correlation === undefined ? {} : { correlation: query.correlation }) });
-		return records.filter((record): record is Extract<FoundationRecordV1, { kind: "intent" }> => record.kind === "intent" && record.payload !== undefined).map((record) => {
-			const checked = validateToolIntentV1(record.payload);
+		return records.filter((record): record is Extract<FoundationRecord, { kind: "intent" }> => record.kind === "intent" && record.payload !== undefined).map((record) => {
+			const checked = validateToolIntent(record.payload);
 			if (!checked.ok) throw checked.error;
 			return checked.value;
 		});
 	}
 
-	async listReceipts(query?: ToolPipelineStorageQueryV1): Promise<readonly ToolReceiptV1[]> {
+	async listReceipts(query?: ToolPipelineStorageQuery): Promise<readonly ToolReceipt[]> {
 		const records = await this.ledger.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", includePruned: true, order: "oldestFirst", ...(query?.correlation === undefined ? {} : { correlation: query.correlation }) });
-		return records.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact").map((record) => {
-			const checked = validateToolReceiptV1(record.payload);
+		return records.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact").map((record) => {
+			const checked = validateToolReceipt(record.payload);
 			if (!checked.ok) throw checked.error;
 			return checked.value;
 		});
@@ -528,12 +528,12 @@ export class SessionToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 }
 
 function validateToolCorrelation(
-	value: ToolIntentV1 | ToolReceiptV1,
-	correlation: ExecutionCorrelationV1,
+	value: ToolIntent | ToolReceipt,
+	correlation: ExecutionCorrelation,
 	laneId: string,
-): ResultValue<ExecutionCorrelationV1, FoundationError> {
+): ResultValue<ExecutionCorrelation, FoundationError> {
 	const binding = value.binding;
-	const expected: Array<[keyof ExecutionCorrelationV1, string | undefined]> = [
+	const expected: Array<[keyof ExecutionCorrelation, string | undefined]> = [
 		["sessionId", binding.sessionId],
 		["laneId", binding.laneId ?? laneId],
 		["runId", binding.runId ?? binding.operationId],
@@ -555,7 +555,7 @@ function validateToolCorrelation(
 	return Result.ok(correlation);
 }
 
-function correlationQuery(correlation: ExecutionCorrelationV1): Partial<ExecutionCorrelationV1> {
+function correlationQuery(correlation: ExecutionCorrelation): Partial<ExecutionCorrelation> {
 	const { revision: _revision, fencingToken: _fencingToken, ...identity } = correlation;
 	return identity;
 }
@@ -565,38 +565,38 @@ function toToolPipelineStorageError(error: unknown): FoundationError {
 	return toFoundationError(error, "side_effect_unknown");
 }
 
-export interface ToolPipelineCleanupV1 {
-	release(scope?: ToolGateScopeV1): Promise<void>;
+export interface ToolPipelineCleanup {
+	release(scope?: ToolGateScope): Promise<void>;
 }
 
 /** Host-side quota accounting used by the default quota gate. */
-export interface ToolQuotaAccountV1 extends ToolPipelineCleanupV1 {
-	reserve(scope: ToolGateScopeV1): ResultValue<VersionedReferenceV1, FoundationError>;
-	settle(receipt: ToolReceiptV1): void;
-	readonly usage: BudgetUsageV1;
-	readonly reservations: readonly QuotaReservationV1[];
+export interface ToolQuotaAccount extends ToolPipelineCleanup {
+	reserve(scope: ToolGateScope): ResultValue<VersionedReference, FoundationError>;
+	settle(receipt: ToolReceipt): void;
+	readonly usage: BudgetUsage;
+	readonly reservations: readonly QuotaReservation[];
 }
 
-export interface FoundationToolGuardOptionsV1 {
-	capability?: { check?: ToolGateCheckV1 };
-	policy?: { check?: ToolGateCheckV1 };
-	approval?: { check?: ToolGateCheckV1 };
-	sandbox?: { check?: ToolGateCheckV1 };
-	quota?: { account?: ToolQuotaAccountV1; check?: ToolGateCheckV1 };
-	conflictLock?: { check?: ToolGateCheckV1 };
+export interface FoundationToolGuardOptions {
+	capability?: { check?: ToolGateCheck };
+	policy?: { check?: ToolGateCheck };
+	approval?: { check?: ToolGateCheck };
+	sandbox?: { check?: ToolGateCheck };
+	quota?: { account?: ToolQuotaAccount; check?: ToolGateCheck };
+	conflictLock?: { check?: ToolGateCheck };
 }
 
-export interface ToolPipelineStageEventV1 {
-	stage: ToolPipelineStageV1;
+export interface ToolPipelineStageEvent {
+	stage: ToolPipelineStage;
 	toolCallId: string;
 }
 
-export interface ToolPipelineOptionsV1 {
-	registry: ToolDefinitionRegistryV1;
-	guard?: ToolGuardSetV1;
-	storage?: ToolPipelineStorageV1;
-	quotaAccount?: ToolQuotaAccountV1;
-	budget?: BudgetV1;
+export interface ToolPipelineOptions {
+	registry: ToolDefinitionRegistry;
+	guard?: ToolGuardSet;
+	storage?: ToolPipelineStorage;
+	quotaAccount?: ToolQuotaAccount;
+	budget?: Budget;
 	maxConcurrency?: number;
 	maxToolCalls?: number;
 	maxRetries?: number;
@@ -604,10 +604,10 @@ export interface ToolPipelineOptionsV1 {
 	nowMs?: () => number;
 	idGenerator?: (prefix: string) => string;
 	canonicalizeConflictKey?: (key: string) => string;
-	onStage?: (event: ToolPipelineStageEventV1) => void | Promise<void>;
+	onStage?: (event: ToolPipelineStageEvent) => void | Promise<void>;
 }
 
-export function createToolBindingRefV1(context: ToolPipelineContextV1): ToolBindingRefV1 {
+export function createToolBindingRef(context: ToolPipelineContext): ToolBindingRef {
 	return freeze({
 		schemaVersion: 1,
 		...(context.sessionId === undefined ? {} : { sessionId: context.sessionId }),
@@ -624,7 +624,7 @@ export function createToolBindingRefV1(context: ToolPipelineContextV1): ToolBind
 	});
 }
 
-function toVersionedReference(reference: RevisionReferenceV1): VersionedReferenceV1 {
+function toVersionedReference(reference: RevisionReference): VersionedReference {
 	return freeze({
 		schemaVersion: 1,
 		type: reference.type,
@@ -635,7 +635,7 @@ function toVersionedReference(reference: RevisionReferenceV1): VersionedReferenc
 	});
 }
 
-function capacityReference(context: ToolPipelineContextV1, type = "agent_binding"): VersionedReferenceV1 {
+function capacityReference(context: ToolPipelineContext, type = "agent_binding"): VersionedReference {
 	return {
 		schemaVersion: 1,
 		type,
@@ -645,11 +645,11 @@ function capacityReference(context: ToolPipelineContextV1, type = "agent_binding
 }
 
 /** Default capability gate: required tool capabilities must fit the binding selector. */
-function defaultCapabilityCheck(scope: ToolGateScopeV1): ResultValue<ToolGateVerdictV1, FoundationError> {
+function defaultCapabilityCheck(scope: ToolGateScope): ResultValue<ToolGateVerdict, FoundationError> {
 	const required = scope.tool.capabilities;
 	const reference = toVersionedReference(scope.context.binding.capabilityRevision);
 	if (required.length === 0) return Result.ok({ allowed: true, reference });
-	const requested: CapabilitySelectorV1 = { policy: "named", named: [...required] };
+	const requested: ResourceSelector = { policy: "named", named: [...required] };
 	const allowed = selectorsNarrow(scope.context.binding.capabilitySelector, requested);
 	return Result.ok({
 		allowed,
@@ -659,13 +659,13 @@ function defaultCapabilityCheck(scope: ToolGateScopeV1): ResultValue<ToolGateVer
 }
 
 /** Default storage keeps standalone pipeline use deterministic and testable. */
-export class InMemoryToolPipelineStorageV1 implements ToolPipelineStorageV1 {
-	readonly intents: ToolIntentV1[] = [];
-	readonly receipts: ToolReceiptV1[] = [];
-	private readonly intentsById = new Map<string, ToolIntentV1>();
-	private readonly receiptsById = new Map<string, ToolReceiptV1>();
+export class InMemoryToolPipelineStorage implements ToolPipelineStorage {
+	readonly intents: ToolIntent[] = [];
+	readonly receipts: ToolReceipt[] = [];
+	private readonly intentsById = new Map<string, ToolIntent>();
+	private readonly receiptsById = new Map<string, ToolReceipt>();
 
-	async writeIntent(intent: ToolIntentV1): Promise<ResultValue<ToolIntentV1, FoundationError>> {
+	async writeIntent(intent: ToolIntent): Promise<ResultValue<ToolIntent, FoundationError>> {
 		const existing = this.intentsById.get(intent.intentId);
 		if (existing !== undefined) {
 			return canonicalFoundationJson(existing) === canonicalFoundationJson(intent)
@@ -678,8 +678,8 @@ export class InMemoryToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 		return Result.ok(stored);
 	}
 
-	async finalizeReceipt(receipt: ToolReceiptV1): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
-		const checkedReceipt = validateAndVerifyToolReceiptV1(receipt);
+	async finalizeReceipt(receipt: ToolReceipt): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
+		const checkedReceipt = validateAndVerifyToolReceipt(receipt);
 		if (!checkedReceipt.ok) return checkedReceipt;
 		const existing = this.receiptsById.get(receipt.toolReceiptId);
 		if (existing !== undefined) {
@@ -693,17 +693,17 @@ export class InMemoryToolPipelineStorageV1 implements ToolPipelineStorageV1 {
 		return Result.ok({ toolReceiptRef: stored.toolReceiptId });
 	}
 
-	async listIntents(): Promise<readonly ToolIntentV1[]> {
+	async listIntents(): Promise<readonly ToolIntent[]> {
 		return [...this.intents];
 	}
 
-	async listReceipts(): Promise<readonly ToolReceiptV1[]> {
+	async listReceipts(): Promise<readonly ToolReceipt[]> {
 		return [...this.receipts];
 	}
 }
 
-export interface FoundationToolQuotaAccountOptionsV1 {
-	budget?: BudgetV1;
+export interface FoundationToolQuotaAccountOptions {
+	budget?: Budget;
 	maxToolCalls?: number;
 	idGenerator?: (prefix: string) => string;
 	now?: () => string;
@@ -719,25 +719,25 @@ interface ToolReservationScopeV1 {
  * Small single-host quota account. Reservations are made synchronously at the
  * quota gate, so parallel calls cannot race the tool-call limit.
  */
-export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
-	readonly usage: BudgetUsageV1 = {};
-	readonly reservations: QuotaReservationV1[] = [];
+export class FoundationToolQuotaAccount implements ToolQuotaAccount {
+	readonly usage: BudgetUsage = {};
+	readonly reservations: QuotaReservation[] = [];
 
-	private readonly budget: BudgetV1;
+	private readonly budget: Budget;
 	private readonly maxToolCalls: number | undefined;
 	private readonly idGenerator: (prefix: string) => string;
 	private readonly now: () => string;
 	private readonly reservationKeys = new Map<string, ToolReservationScopeV1>();
 
-	constructor(options: FoundationToolQuotaAccountOptionsV1 = {}) {
+	constructor(options: FoundationToolQuotaAccountOptions = {}) {
 		this.budget = freeze({ ...(options.budget ?? {}) });
 		this.maxToolCalls = options.maxToolCalls;
 		this.idGenerator = options.idGenerator ?? ((prefix) => newFoundationId(prefix.replace(/[^a-z0-9-]/gi, "-")));
 		this.now = options.now ?? (() => new Date().toISOString());
 	}
 
-	reserve(scope: ToolGateScopeV1): ResultValue<VersionedReferenceV1, FoundationError> {
-		const budget: BudgetV1 = freeze(tightenBudget(scope.context.binding.budget, this.budget));
+	reserve(scope: ToolGateScope): ResultValue<VersionedReference, FoundationError> {
+		const budget: Budget = freeze(tightenBudget(scope.context.binding.budget, this.budget));
 		const scopeKey: ToolReservationScopeV1 = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
 		const existingReservation = this.reservations.find((reservation) => sameReservationScope(this.reservationKeys.get(reservation.reservationId), scopeKey));
 		if (existingReservation !== undefined) return Result.ok(capacityReference(scope.context, "tool_quota"));
@@ -762,7 +762,7 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 			);
 		}
 		this.usage.toolCalls = nextToolCalls;
-		const reservation: QuotaReservationV1 = {
+		const reservation: QuotaReservation = {
 			schemaVersion: 1,
 			reservationId: this.idGenerator("quota_reservation"),
 			attribution: {
@@ -782,7 +782,7 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 		return Result.ok(capacityReference(scope.context, "tool_quota"));
 	}
 
-	settle(receipt: ToolReceiptV1): void {
+	settle(receipt: ToolReceipt): void {
 		if (receipt.usage === undefined || receipt.deduplicatedFrom !== undefined) return;
 		this.usage.tokens = (this.usage.tokens ?? 0) + (receipt.usage.tokens ?? 0);
 		this.usage.costUsd = (this.usage.costUsd ?? 0) + (receipt.usage.costUsd ?? 0);
@@ -790,7 +790,7 @@ export class FoundationToolQuotaAccountV1 implements ToolQuotaAccountV1 {
 		this.usage.wallClockMs = (this.usage.wallClockMs ?? 0) + (receipt.usage.wallClockMs ?? 0);
 	}
 
-	async release(scope?: ToolGateScopeV1): Promise<void> {
+	async release(scope?: ToolGateScope): Promise<void> {
 		if (scope === undefined) {
 			this.reservations.splice(0);
 			this.reservationKeys.clear();
@@ -814,27 +814,27 @@ function sameReservationScope(left: ToolReservationScopeV1 | undefined, right: T
  * Default monotonic guard. Denials are sticky for a binding epoch and gate
  * reference; conflict locks are held until the pipeline releases the scope.
  */
-export class FoundationToolGuardV1 implements ToolGuardSetV1 {
-	private readonly checks: Record<ToolGateKindV1, ToolGateCheckV1>;
-	private readonly denials = new Map<string, ToolGateRecordV1>();
+export class FoundationToolGuard implements ToolGuardSet {
+	private readonly checks: Record<ToolGateKind, ToolGateCheck>;
+	private readonly denials = new Map<string, ToolGateRecord>();
 	private readonly conflictOwners = new Map<string, string>();
-	private readonly quotaAccount: ToolQuotaAccountV1 | undefined;
+	private readonly quotaAccount: ToolQuotaAccount | undefined;
 
-	constructor(options: FoundationToolGuardOptionsV1 = {}) {
+	constructor(options: FoundationToolGuardOptions = {}) {
 		this.quotaAccount = options.quota?.account;
-		const deniedByDefault = (kind: ToolGateKindV1): ToolGateCheckV1 => (scope) => Result.ok({
+		const deniedByDefault = (kind: ToolGateKind): ToolGateCheck => (scope) => Result.ok({
 			allowed: false,
 			reference: capacityReference(scope.context, `tool_${kind}`),
 			reason: `${kind} guard has no configured authority`,
 		});
-		const defaultQuota: ToolGateCheckV1 = (scope) => {
+		const defaultQuota: ToolGateCheck = (scope) => {
 			if (this.quotaAccount === undefined) return Result.ok({ allowed: false, reference: capacityReference(scope.context, "tool_quota"), reason: "quota guard has no configured account" });
 			const reserved = this.quotaAccount.reserve(scope);
 			return reserved.ok
 				? Result.ok({ allowed: true, reference: reserved.value })
 				: Result.ok({ allowed: false, reference: capacityReference(scope.context, "tool_quota"), reason: reserved.error.message });
 		};
-		const defaultConflictLock: ToolGateCheckV1 = (scope) => {
+		const defaultConflictLock: ToolGateCheck = (scope) => {
 			const keys = scope.conflictKeys;
 			for (const key of keys) {
 				const owner = this.conflictOwners.get(conflictOwnerKey(scope, key));
@@ -862,9 +862,9 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 		};
 	}
 
-	async guard(scope: ToolGateScopeV1): Promise<ResultValue<readonly ToolGateRecordV1[], FoundationError>> {
-		const records: ToolGateRecordV1[] = [];
-		for (const kind of TOOL_GATE_KINDS_V1) {
+	async guard(scope: ToolGateScope): Promise<ResultValue<readonly ToolGateRecord[], FoundationError>> {
+		const records: ToolGateRecord[] = [];
+		for (const kind of TOOL_GATE_KINDS) {
 			const checked = await this.checkKind(kind, scope);
 			if (!checked.ok) return checked;
 			records.push(checked.value);
@@ -873,7 +873,7 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 		return Result.ok(freeze(records));
 	}
 
-	async release(scope: ToolGateScopeV1): Promise<void> {
+	async release(scope: ToolGateScope): Promise<void> {
 		for (const key of scope.conflictKeys) {
 			const ownerKey = conflictOwnerKey(scope, key);
 			if (this.conflictOwners.get(ownerKey) === scope.intent.toolCallId) this.conflictOwners.delete(ownerKey);
@@ -886,8 +886,8 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 		await this.quotaAccount?.release();
 	}
 
-	private async checkKind(kind: ToolGateKindV1, scope: ToolGateScopeV1): Promise<ResultValue<ToolGateRecordV1, FoundationError>> {
-		let verdict: ResultValue<ToolGateVerdictV1, FoundationError>;
+	private async checkKind(kind: ToolGateKind, scope: ToolGateScope): Promise<ResultValue<ToolGateRecord, FoundationError>> {
+		let verdict: ResultValue<ToolGateVerdict, FoundationError>;
 		try {
 			verdict = await this.checks[kind](scope);
 		} catch (error) {
@@ -897,7 +897,7 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 		const windowKey = `${scope.context.bindingEpoch.bindingEpochId}:${kind}:${verdict.value.reference.type}:${verdict.value.reference.id}:${verdict.value.reference.revision ?? 0}`;
 		const denied = this.denials.get(windowKey);
 		if (denied !== undefined) return Result.ok(denied);
-		const record: ToolGateRecordV1 = {
+		const record: ToolGateRecord = {
 			kind,
 			verdict: verdict.value.allowed ? kind === "quota" || kind === "conflict_lock" ? "reserved" : "allowed" : "denied",
 			reference: freeze({ ...verdict.value.reference }),
@@ -909,27 +909,27 @@ export class FoundationToolGuardV1 implements ToolGuardSetV1 {
 }
 
 /** Fixed prepare -> pre -> guard -> execute -> post -> finalize pipeline. */
-export class FoundationToolPipelineV1 {
-	private readonly registry: ToolDefinitionRegistryV1;
-	private readonly guard: ToolGuardSetV1;
-	private readonly storage: ToolPipelineStorageV1;
-	private readonly budget: BudgetV1;
+export class FoundationToolPipeline {
+	private readonly registry: ToolDefinitionRegistry;
+	private readonly guard: ToolGuardSet;
+	private readonly storage: ToolPipelineStorage;
+	private readonly budget: Budget;
 	private readonly maxConcurrency: number | undefined;
 	private readonly maxRetries: number;
 	private readonly now: () => string;
 	private readonly nowMs: () => number;
 	private readonly idGenerator: (prefix: string) => string;
 	private readonly canonicalizeConflictKey: (key: string) => string;
-	private readonly quotaAccount: ToolQuotaAccountV1;
-	private readonly onStage: ((event: ToolPipelineStageEventV1) => void | Promise<void>) | undefined;
-	private readonly completedByKey = new Map<string, { receipt: ToolReceiptV1; signature: string; semantic: string }>();
-	private readonly persistedIntents = new Map<string, ToolIntentV1>();
-	private readonly persistedReceipts = new Map<string, ToolReceiptV1>();
+	private readonly quotaAccount: ToolQuotaAccount;
+	private readonly onStage: ((event: ToolPipelineStageEvent) => void | Promise<void>) | undefined;
+	private readonly completedByKey = new Map<string, { receipt: ToolReceipt; signature: string; semantic: string }>();
+	private readonly persistedIntents = new Map<string, ToolIntent>();
+	private readonly persistedReceipts = new Map<string, ToolReceipt>();
 	private readonly recoveredScopes = new Set<string>();
 
-	constructor(options: ToolPipelineOptionsV1) {
+	constructor(options: ToolPipelineOptions) {
 		this.registry = options.registry;
-		this.storage = options.storage ?? new InMemoryToolPipelineStorageV1();
+		this.storage = options.storage ?? new InMemoryToolPipelineStorage();
 		this.budget = freeze({ ...(options.budget ?? {}) });
 		this.maxConcurrency = normalizePositiveLimit(options.maxConcurrency ?? this.budget.concurrency);
 		this.maxRetries = normalizeNonNegativeInteger(options.maxRetries ?? 0, "maxRetries");
@@ -937,17 +937,17 @@ export class FoundationToolPipelineV1 {
 		this.nowMs = options.nowMs ?? Date.now;
 		this.idGenerator = options.idGenerator ?? ((prefix) => newFoundationId(prefix.replace(/[^a-z0-9-]/gi, "-")));
 		this.canonicalizeConflictKey = options.canonicalizeConflictKey ?? ((key) => key.trim());
-		this.quotaAccount = options.quotaAccount ?? new FoundationToolQuotaAccountV1({ budget: this.budget, maxToolCalls: options.maxToolCalls, idGenerator: this.idGenerator, now: this.now });
-		this.guard = options.guard ?? new FoundationToolGuardV1({ quota: { account: this.quotaAccount } });
+		this.quotaAccount = options.quotaAccount ?? new FoundationToolQuotaAccount({ budget: this.budget, maxToolCalls: options.maxToolCalls, idGenerator: this.idGenerator, now: this.now });
+		this.guard = options.guard ?? new FoundationToolGuard({ quota: { account: this.quotaAccount } });
 		this.onStage = options.onStage;
 	}
 
 	/** Single-call convenience API. */
 	async execute(
-		call: ToolCallV1,
-		context: ToolPipelineContextV1,
+		call: ToolCall,
+		context: ToolPipelineContext,
 		options: { signal?: AbortSignal; deadlineAt?: number; onUpdate?: (partial: unknown) => void } = {},
-	): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
+	): Promise<ResultValue<ToolReceipt, FoundationError>> {
 		const batch = await this.executeBatch([call], context, options);
 		if (!batch.ok) return batch;
 		const receipt = batch.value.receipts[0];
@@ -959,10 +959,10 @@ export class FoundationToolPipelineV1 {
 	 * a provider: after an uncertain side effect the only safe outcome is an
 	 * explicit side_effect_unknown receipt.
 	 */
-	async recoverUnsettled(context?: ToolPipelineContextV1): Promise<ResultValue<readonly ToolReceiptV1[], FoundationError>> {
+	async recoverUnsettled(context?: ToolPipelineContext): Promise<ResultValue<readonly ToolReceipt[], FoundationError>> {
 		if (this.storage.listIntents === undefined || this.storage.listReceipts === undefined) return Result.ok([]);
-		let intents: readonly ToolIntentV1[];
-		let receipts: readonly ToolReceiptV1[];
+		let intents: readonly ToolIntent[];
+		let receipts: readonly ToolReceipt[];
 		try {
 			const query = context === undefined ? undefined : toolStorageQuery(context);
 			intents = await this.storage.listIntents(query);
@@ -970,15 +970,15 @@ export class FoundationToolPipelineV1 {
 		} catch (error) {
 			return Result.err(toFoundationError(error, "side_effect_unknown"));
 		}
-		const recovered: ToolReceiptV1[] = [];
+		const recovered: ToolReceipt[] = [];
 		for (const intent of intents) {
-			const checkedIntent = validateToolIntentV1(intent);
+			const checkedIntent = validateToolIntent(intent);
 			if (!checkedIntent.ok) return checkedIntent;
 			if (context !== undefined && !toolIdentityMatchesContext(intent, context)) continue;
 			const matching = receipts.filter((receipt) => receiptIdentityMatchesIntent(receipt, intent));
 			let foundExact = false;
 			for (const candidate of matching) {
-				const checkedReceipt = validateAndVerifyToolReceiptV1(candidate);
+				const checkedReceipt = validateAndVerifyToolReceipt(candidate);
 				if (!checkedReceipt.ok) return checkedReceipt;
 				if (receiptMatchesIntent(checkedReceipt.value, intent)) {
 					foundExact = true;
@@ -987,7 +987,7 @@ export class FoundationToolPipelineV1 {
 				return Result.err(new FoundationError("invalid_correlation", "durable tool receipt identity or digest does not match its intent"));
 			}
 			if (foundExact) continue;
-			const receipt = finalizeToolReceiptV1({
+			const receipt = finalizeToolReceipt({
 				schemaVersion: 1,
 				toolReceiptId: this.idGenerator("tool_recovery_receipt"),
 				toolCallId: intent.toolCallId,
@@ -1020,23 +1020,23 @@ export class FoundationToolPipelineV1 {
 		return Result.ok(recovered);
 	}
 
-	async recoverPending(): Promise<ResultValue<readonly ToolReceiptV1[], FoundationError>> {
+	async recoverPending(): Promise<ResultValue<readonly ToolReceipt[], FoundationError>> {
 		return this.recoverUnsettled();
 	}
 
-	async recoverPendingIntents(): Promise<ResultValue<readonly ToolReceiptV1[], FoundationError>> {
+	async recoverPendingIntents(): Promise<ResultValue<readonly ToolReceipt[], FoundationError>> {
 		return this.recoverUnsettled();
 	}
 
-	async recover(): Promise<ResultValue<readonly ToolReceiptV1[], FoundationError>> {
+	async recover(): Promise<ResultValue<readonly ToolReceipt[], FoundationError>> {
 		return this.recoverUnsettled();
 	}
 
 	async executeBatch(
-		calls: readonly ToolCallV1[],
-		context: ToolPipelineContextV1,
+		calls: readonly ToolCall[],
+		context: ToolPipelineContext,
 		options: { signal?: AbortSignal; deadlineAt?: number; onUpdate?: (partial: unknown) => void } = {},
-	): Promise<ResultValue<ToolBatchResultV1, FoundationError>> {
+	): Promise<ResultValue<ToolBatchResult, FoundationError>> {
 		const startedAt = this.nowMs();
 		const batchId = this.idGenerator("tool_batch");
 		try {
@@ -1064,7 +1064,7 @@ export class FoundationToolPipelineV1 {
 			const conflicts = detectConflicts(prepared);
 			const dependencies = computeDependencies(prepared);
 			const conflictDependencies = computeConflictDependencies(prepared);
-			const receipts = new Array<ToolReceiptV1 | undefined>(prepared.length);
+			const receipts = new Array<ToolReceipt | undefined>(prepared.length);
 			const settledStates = new Array<SettledCallStateV1 | undefined>(prepared.length);
 			const errors: FoundationError[] = [];
 			const settled = prepared.map(() => deferred<void>());
@@ -1099,7 +1099,7 @@ export class FoundationToolPipelineV1 {
 					settled[index]!.resolve();
 					return;
 				}
-				let scope: ToolGateScopeV1 | undefined;
+				let scope: ToolGateScope | undefined;
 				try {
 					if (entry.preHookError !== undefined) {
 						const denied = await this.finalize(entry, context, { outcome: "blocked", sideEffectState: "none", error: entry.preHookError });
@@ -1195,7 +1195,7 @@ export class FoundationToolPipelineV1 {
 
 	private peakConcurrency = 0;
 
-	private async prepare(call: ToolCallV1, context: ToolPipelineContextV1): Promise<ResultValue<PreparedCallV1, FoundationError>> {
+	private async prepare(call: ToolCall, context: ToolPipelineContext): Promise<ResultValue<PreparedCallV1, FoundationError>> {
 		if (call.toolCallId.length === 0 || call.toolName.length === 0) return Result.err(new FoundationError("invalid_identifier", "tool call id and name must not be empty"));
 		if (call.idempotencyKey !== undefined && call.idempotencyKey.length === 0) return Result.err(new FoundationError("invalid_identifier", "idempotency key must not be empty"));
 		const resolved = this.registry.resolve(call.toolName, call.namespace);
@@ -1239,7 +1239,7 @@ export class FoundationToolPipelineV1 {
 			toolName: tool.name,
 			...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
 			toolRevision: cloneToolRevision(tool.toolRevision),
-			binding: createToolBindingRefV1(context),
+			binding: createToolBindingRef(context),
 			...(call.idempotencyKey === undefined ? {} : { idempotencyKey: call.idempotencyKey }),
 			argumentDigests: { original: originalDigest, accepted: acceptedDigest },
 			fence: {
@@ -1268,14 +1268,14 @@ export class FoundationToolPipelineV1 {
 		if (!durableIntent.ok) return durableIntent;
 		await this.onStage?.({ stage: "prepare", toolCallId: call.toolCallId });
 		await this.onStage?.({ stage: "pre", toolCallId: call.toolCallId });
-		let preHookError: PublicExecutionErrorV1 | undefined;
+		let preHookError: PublicExecutionError | undefined;
 		const acceptedDigestBeforePreHook = acceptedDigest;
 		const intentBeforePreHook = canonicalFoundationJson(durableIntent.value);
 		const preHook = tool.preHook;
 		if (preHook !== undefined) {
 			try {
 				const hookResult = await preHook(freeze({
-					context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContextV1>,
+					context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContext>,
 					tool: snapshotToolDefinition(tool),
 					args: freeze(cloneUnknownRecord(acceptedArgs)),
 					intent: freeze(cloneToolIntent(durableIntent.value)),
@@ -1322,27 +1322,27 @@ export class FoundationToolPipelineV1 {
 		});
 	}
 
-	private readonly persistentByKey = new Map<string, { receipt: ToolReceiptV1; signature: string; semantic: string }>();
+	private readonly persistentByKey = new Map<string, { receipt: ToolReceipt; signature: string; semantic: string }>();
 	private readonly persistentConflicts = new Set<string>();
 
-	private async loadPersistentState(context: ToolPipelineContextV1): Promise<void> {
+	private async loadPersistentState(context: ToolPipelineContext): Promise<void> {
 		const query = toolStorageQuery(context);
 		if (this.storage.listIntents !== undefined) {
 			for (const intent of await this.storage.listIntents(query)) {
-				const checked = validateToolIntentV1(intent);
+				const checked = validateToolIntent(intent);
 				if (!checked.ok) throw checked.error;
 				this.persistedIntents.set(intent.intentId, checked.value);
 			}
 		}
 		if (this.storage.listReceipts !== undefined) {
 			for (const receipt of await this.storage.listReceipts(query)) {
-				const checked = validateAndVerifyToolReceiptV1(receipt);
+				const checked = validateAndVerifyToolReceipt(receipt);
 				if (!checked.ok) throw checked.error;
 				this.persistedReceipts.set(receipt.toolReceiptId, checked.value);
 				if (receipt.idempotencyKey !== undefined) {
 					const key = idempotencyScopeKeyFromBinding(receipt.binding, receipt.idempotencyKey);
 					const signature = invocationSignatureFromReceipt(checked.value);
-					const semantic = projectToolReceiptExecutionSemanticsV1(checked.value);
+					const semantic = projectToolReceiptExecutionSemantics(checked.value);
 					const existing = this.persistentByKey.get(key);
 					if (existing !== undefined && existing.signature !== signature) throw new FoundationError("goal_conflict", "durable receipts disagree for one idempotency identity");
 					if (existing !== undefined && existing.semantic !== semantic) {
@@ -1355,7 +1355,7 @@ export class FoundationToolPipelineV1 {
 		}
 	}
 
-	private scopeFor(entry: PreparedCallV1, context: ToolPipelineContextV1): ToolGateScopeV1 {
+	private scopeFor(entry: PreparedCallV1, context: ToolPipelineContext): ToolGateScope {
 		return {
 			context,
 			tool: entry.tool,
@@ -1368,11 +1368,11 @@ export class FoundationToolPipelineV1 {
 
 	private async runPrepared(
 		prepared: PreparedCallV1,
-		context: ToolPipelineContextV1,
+		context: ToolPipelineContext,
 		signal: AbortSignal | undefined,
-		scope: ToolGateScopeV1,
+		scope: ToolGateScope,
 		options: { deadlineAt?: number; onUpdate?: (partial: unknown) => void },
-	): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
+	): Promise<ResultValue<ToolReceipt, FoundationError>> {
 		if (prepared.replay !== undefined) return this.withDedup(prepared, prepared.replay);
 		await this.onStage?.({ stage: "guard", toolCallId: prepared.call.toolCallId });
 		const guarded = await this.guard.guard(scope);
@@ -1404,10 +1404,10 @@ export class FoundationToolPipelineV1 {
 			return this.finalize(prepared, context, { outcome: signal?.aborted ? "cancelled" : "failed", sideEffectState: "none", error: signal?.aborted ? cancellationError() : deadlineError() });
 		}
 
-		const idempotency: IdempotencyV1 = prepared.tool.idempotency ?? "non_idempotent";
+		const idempotency: Idempotency = prepared.tool.idempotency ?? "non_idempotent";
 		const startedAt = this.now();
 		let retried = 0;
-		let execution: ToolExecutionV1 | undefined;
+		let execution: ToolExecution | undefined;
 		for (;;) {
 			if (signal?.aborted || deadlineReached(options.deadlineAt ?? context.deadlineAt, this.nowMs())) {
 				return this.finalize(prepared, context, { outcome: signal?.aborted ? "cancelled" : "failed", sideEffectState: "none", error: signal?.aborted ? cancellationError() : deadlineError(), retried });
@@ -1448,10 +1448,10 @@ export class FoundationToolPipelineV1 {
 		const normalizedExecution = await this.applyPostProcessor(prepared, context, execution);
 		if (!normalizedExecution.ok) execution = { ok: false, sideEffectState: execution.sideEffectState, error: normalizedExecution.error.toPublicExecutionError() };
 		else execution = normalizedExecution.value;
-		const sideEffectState: SideEffectStateV1 = execution?.sideEffectState === "none"
+		const sideEffectState: SideEffectState = execution?.sideEffectState === "none"
 			? "none"
 			: "side_effect_unknown";
-		const outcome: ToolReceiptOutcomeV1 =
+		const outcome: ToolReceiptOutcome =
 			sideEffectState === "side_effect_unknown"
 			? "side_effect_unknown"
 			: execution?.ok === true
@@ -1469,22 +1469,22 @@ export class FoundationToolPipelineV1 {
 		});
 	}
 
-	private async applyPostProcessor(prepared: PreparedCallV1, context: ToolPipelineContextV1, execution: ToolExecutionV1): Promise<ResultValue<ToolExecutionV1, FoundationError>> {
+	private async applyPostProcessor(prepared: PreparedCallV1, context: ToolPipelineContext, execution: ToolExecution): Promise<ResultValue<ToolExecution, FoundationError>> {
 		const processor = prepared.tool.postProcessor;
 		if (processor === undefined) return Result.ok(execution);
-		let candidate: ToolPostNormalizationV1 | undefined;
+		let candidate: ToolPostNormalization | undefined;
 		try {
 			const returned = await processor(freeze({
-				context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContextV1>,
+				context: freeze(cloneUnknownRecord(context as unknown as Record<string, unknown>)) as Readonly<ToolPipelineContext>,
 				tool: snapshotToolDefinition(prepared.tool),
 				args: freeze(cloneUnknownRecord(prepared.acceptedArgs)),
 				intent: freeze(cloneToolIntent(prepared.intent)),
-				execution: freeze(cloneUnknownRecord(execution as unknown as Record<string, unknown>)) as Readonly<ToolExecutionV1>,
+				execution: freeze(cloneUnknownRecord(execution as unknown as Record<string, unknown>)) as Readonly<ToolExecution>,
 			}));
 			if (returned !== undefined && typeof returned === "object" && returned !== null && "ok" in returned && typeof returned.ok === "boolean") {
 				if (!returned.ok) return Result.err(this.stablePostValidationError(returned.error));
 				candidate = returned.value;
-			} else candidate = returned as ToolPostNormalizationV1 | undefined;
+			} else candidate = returned as ToolPostNormalization | undefined;
 		} catch (error) {
 			return Result.err(this.stablePostValidationError(error));
 		}
@@ -1493,18 +1493,18 @@ export class FoundationToolPipelineV1 {
 		const keys = Object.keys(candidate);
 		if (keys.some((key) => key !== "result" && key !== "artifacts" && key !== "usage")) return Result.err(new FoundationError("tool_post_validation_failed", "post processor cannot change execution settlement fields"));
 		if (candidate.result !== undefined) {
-			const checkedResult = validateToolResultPayloadV1(candidate.result);
+			const checkedResult = validateToolResultPayload(candidate.result);
 			if (!checkedResult.ok) return Result.err(this.stablePostValidationError(checkedResult.error));
 		}
 		if (candidate.artifacts !== undefined) {
-			const checkedArtifacts = validateExactShape<readonly ArtifactRefV1[]>(Type.Array(artifactRefSchema), candidate.artifacts, "tool post artifacts");
+			const checkedArtifacts = validateExactShape<readonly ArtifactRef[]>(Type.Array(artifactRefSchema), candidate.artifacts, "tool post artifacts");
 			if (!checkedArtifacts.ok) return Result.err(this.stablePostValidationError(checkedArtifacts.error));
 		}
 		const artifacts = candidate.artifacts ?? execution.artifacts;
 		const artifactCheck = validateDurableResultArtifacts(candidate.result ?? execution.result, artifacts);
 		if (!artifactCheck.ok) return Result.err(this.stablePostValidationError(artifactCheck.error));
 		if (candidate.usage !== undefined) {
-			const checkedUsage = validateExactShape<BudgetUsageV1>(usageSchema, candidate.usage, "tool post usage");
+			const checkedUsage = validateExactShape<BudgetUsage>(usageSchema, candidate.usage, "tool post usage");
 			if (!checkedUsage.ok) return Result.err(this.stablePostValidationError(checkedUsage.error));
 			if (!isValidBudgetUsage(checkedUsage.value)) return Result.err(new FoundationError("tool_post_validation_failed", "post processor returned invalid usage"));
 		}
@@ -1518,30 +1518,30 @@ export class FoundationToolPipelineV1 {
 
 	private async finalize(
 		prepared: PreparedCallV1,
-		context: ToolPipelineContextV1,
+		context: ToolPipelineContext,
 		state: {
-			outcome: ToolReceiptOutcomeV1;
-			sideEffectState: SideEffectStateV1;
-			error?: PublicExecutionErrorV1;
-			usage?: BudgetUsageV1;
-			result?: ToolResultPayloadV1;
-			artifacts?: readonly ArtifactRefV1[];
+			outcome: ToolReceiptOutcome;
+			sideEffectState: SideEffectState;
+			error?: PublicExecutionError;
+			usage?: BudgetUsage;
+			result?: ToolResultPayload;
+			artifacts?: readonly ArtifactRef[];
 			startedAt?: string;
 			retried?: number;
 		},
-	): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
-		let durableResult: ToolResultPayloadV1 | undefined;
+	): Promise<ResultValue<ToolReceipt, FoundationError>> {
+		let durableResult: ToolResultPayload | undefined;
 		const persistResult = state.outcome === "succeeded" && state.sideEffectState === "none";
 		const durableArtifacts = persistResult ? state.artifacts : undefined;
 		if (persistResult && state.result !== undefined) {
-			const checkedResult = validateToolResultPayloadV1(state.result);
+			const checkedResult = validateToolResultPayload(state.result);
 			if (!checkedResult.ok) return checkedResult;
 			durableResult = checkedResult.value;
 		}
 		const artifactCheck = validateDurableResultArtifacts(durableResult, durableArtifacts);
 		if (!artifactCheck.ok) return artifactCheck;
 		await this.onStage?.({ stage: "finalize", toolCallId: prepared.call.toolCallId });
-		const receipt = finalizeToolReceiptV1({
+		const receipt = finalizeToolReceipt({
 			schemaVersion: 1,
 			toolReceiptId: this.idGenerator("tool_receipt"),
 			toolCallId: prepared.call.toolCallId,
@@ -1573,19 +1573,19 @@ export class FoundationToolPipelineV1 {
 		}
 		if (!stored.ok) return Result.err(sideEffectUnknownError(stored.error));
 		const key = prepared.intent.idempotencyKey === undefined ? undefined : idempotencyScopeKey(context, prepared.intent.idempotencyKey);
-		if (key !== undefined) this.completedByKey.set(key, { receipt, signature: invocationSignature(prepared.intent), semantic: projectToolReceiptExecutionSemanticsV1(receipt) });
+		if (key !== undefined) this.completedByKey.set(key, { receipt, signature: invocationSignature(prepared.intent), semantic: projectToolReceiptExecutionSemantics(receipt) });
 		this.quotaAccount.settle(receipt);
 		return Result.ok(receipt);
 	}
 
-	private async withDedup(prepared: PreparedCallV1, source: ToolReceiptV1): Promise<ResultValue<ToolReceiptV1, FoundationError>> {
+	private async withDedup(prepared: PreparedCallV1, source: ToolReceipt): Promise<ResultValue<ToolReceipt, FoundationError>> {
 		const replayMissingResult = source.outcome === "succeeded" && source.result === undefined;
-		const replayOutcome: ToolReceiptOutcomeV1 = replayMissingResult ? "side_effect_unknown" : source.outcome;
-		const replaySideEffectState: SideEffectStateV1 = replayMissingResult ? "side_effect_unknown" : source.sideEffectState;
+		const replayOutcome: ToolReceiptOutcome = replayMissingResult ? "side_effect_unknown" : source.outcome;
+		const replaySideEffectState: SideEffectState = replayMissingResult ? "side_effect_unknown" : source.sideEffectState;
 		const replayError = replayMissingResult
 			? publicExecutionError("side_effect_unknown", "durable tool result payload is missing or unrecoverable", { category: "side_effect_unknown", retryable: false })
 			: source.error;
-		const receipt = finalizeToolReceiptV1({
+		const receipt = finalizeToolReceipt({
 			schemaVersion: 1,
 			toolReceiptId: this.idGenerator("tool_receipt"),
 			toolCallId: prepared.call.toolCallId,
@@ -1620,8 +1620,8 @@ export class FoundationToolPipelineV1 {
 		return Result.ok(receipt);
 	}
 
-	private syntheticCancelledReceipt(entry: PreparedCallV1, context: ToolPipelineContextV1): ToolReceiptV1 {
-		return finalizeToolReceiptV1({
+	private syntheticCancelledReceipt(entry: PreparedCallV1, context: ToolPipelineContext): ToolReceipt {
+		return finalizeToolReceipt({
 			schemaVersion: 1,
 			toolReceiptId: this.idGenerator("tool_receipt"),
 			toolCallId: entry.call.toolCallId,
@@ -1644,26 +1644,23 @@ export class FoundationToolPipelineV1 {
 	}
 }
 
-export const ToolPipelineV1 = FoundationToolPipelineV1;
-export const FoundationToolPipeline = FoundationToolPipelineV1;
-
-export function createFoundationToolPipelineV1(options: ToolPipelineOptionsV1): FoundationToolPipelineV1 {
-	return new FoundationToolPipelineV1(options);
+export function createFoundationToolPipeline(options: ToolPipelineOptions): FoundationToolPipeline {
+	return new FoundationToolPipeline(options);
 }
 
 interface PreparedCallV1 {
-	call: ToolCallV1;
-	tool: ToolDefinitionV1;
-	intent: ToolIntentV1;
+	call: ToolCall;
+	tool: ToolDefinition;
+	intent: ToolIntent;
 	acceptedArgs: Record<string, unknown>;
 	conflictKeys: readonly string[];
-	gateRecords: readonly ToolGateRecordV1[];
-	preHookError?: PublicExecutionErrorV1;
-	replay?: ToolReceiptV1;
+	gateRecords: readonly ToolGateRecord[];
+	preHookError?: PublicExecutionError;
+	replay?: ToolReceipt;
 }
 
 interface SettledCallStateV1 {
-	receipt?: ToolReceiptV1;
+	receipt?: ToolReceipt;
 	error?: FoundationError;
 }
 
@@ -1680,12 +1677,12 @@ function normalizeArguments(value: unknown): ResultValue<Record<string, unknown>
 	}
 }
 
-function argumentTransformProvenance(original: FoundationJsonValue, accepted: Record<string, unknown>, tool: ToolDefinitionV1): readonly ToolTransformProvenanceV1[] {
+function argumentTransformProvenance(original: FoundationJsonValue, accepted: Record<string, unknown>, tool: ToolDefinition): readonly ToolTransformProvenance[] {
 	const originalRecord = original !== null && typeof original === "object" && !Array.isArray(original) ? original : undefined;
 	const fields = new Set([...(originalRecord === undefined ? [] : Object.keys(originalRecord)), ...Object.keys(accepted)]);
 	const transformerId = tool.argumentTransformer?.transformerId ?? `tool:${tool.toolRevision.id}:prepareArguments`;
 	const transformerRevision = tool.argumentTransformer?.transformerRevision ?? tool.toolRevision.revision;
-	const provenance: ToolTransformProvenanceV1[] = [];
+	const provenance: ToolTransformProvenance[] = [];
 	for (const field of fields) {
 		const hadOriginal = originalRecord !== undefined && field in originalRecord;
 		const hasAccepted = field in accepted;
@@ -1702,7 +1699,7 @@ function argumentTransformProvenance(original: FoundationJsonValue, accepted: Re
 			} catch {
 				same = false;
 			}
-			const kind: ToolArgumentTransformKindV1 = same
+			const kind: ToolArgumentTransformKind = same
 				? "original"
 				: typeof before !== typeof after
 					? "coerced"
@@ -1716,7 +1713,7 @@ function argumentTransformProvenance(original: FoundationJsonValue, accepted: Re
 }
 
 function collectConflictKeys(
-	tool: ToolDefinitionV1,
+	tool: ToolDefinition,
 	args: Record<string, unknown>,
 	canonicalize: (key: string) => string,
 ): ResultValue<readonly string[], FoundationError> {
@@ -1734,7 +1731,7 @@ function collectConflictKeys(
 	}
 }
 
-function detectConflicts(prepared: readonly PreparedCallV1[]): readonly ToolConflictV1[] {
+function detectConflicts(prepared: readonly PreparedCallV1[]): readonly ToolConflict[] {
 	const keyToCallIds = new Map<string, string[]>();
 	for (const call of prepared) {
 		for (const key of call.conflictKeys) {
@@ -1799,7 +1796,7 @@ function findConflictDependencyFailure(
 	return undefined;
 }
 
-function joinStatus(receipts: readonly ToolReceiptV1[]): ToolBatchStatusV1 {
+function joinStatus(receipts: readonly ToolReceipt[]): ToolBatchStatus {
 	if (receipts.length === 0 || receipts.every((receipt) => receipt.outcome === "succeeded")) return "succeeded";
 	if (receipts.every((receipt) => receipt.outcome === "cancelled")) return "cancelled";
 	if (receipts.some((receipt) => receipt.outcome === "succeeded")) return "partial_failure";
@@ -1807,8 +1804,8 @@ function joinStatus(receipts: readonly ToolReceiptV1[]): ToolBatchStatusV1 {
 	return receipts.some((receipt) => receipt.outcome === "cancelled") ? "partial_failure" : "failed";
 }
 
-function summarizeUsage(receipts: readonly ToolReceiptV1[]): BudgetUsageV1 {
-	const usage: BudgetUsageV1 = { toolCalls: receipts.length };
+function summarizeUsage(receipts: readonly ToolReceipt[]): BudgetUsage {
+	const usage: BudgetUsage = { toolCalls: receipts.length };
 	for (const receipt of receipts) {
 		if (receipt.usage === undefined) continue;
 		usage.tokens = (usage.tokens ?? 0) + (receipt.usage.tokens ?? 0);
@@ -1819,15 +1816,15 @@ function summarizeUsage(receipts: readonly ToolReceiptV1[]): BudgetUsageV1 {
 	return freeze(usage);
 }
 
-function isValidBudgetUsage(usage: BudgetUsageV1): boolean {
+function isValidBudgetUsage(usage: BudgetUsage): boolean {
 	for (const value of Object.values(usage)) {
 		if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) return false;
 	}
 	return true;
 }
 
-function tightenBudget(binding: BudgetV1, local: BudgetV1): BudgetV1 {
-	const result: BudgetV1 = {};
+function tightenBudget(binding: Budget, local: Budget): Budget {
+	const result: Budget = {};
 	for (const key of ["tokens", "costUsd", "modelCalls", "toolCalls", "wallClockMs", "concurrency"] as const) {
 		const bindingLimit = binding[key];
 		const localLimit = local[key];
@@ -1839,9 +1836,9 @@ function tightenBudget(binding: BudgetV1, local: BudgetV1): BudgetV1 {
 }
 
 /** Compute the ToolReceipt digest from every field except `digest`. */
-export function finalizeToolReceiptV1(receipt: Omit<ToolReceiptV1, "digest">): ToolReceiptV1 {
+export function finalizeToolReceipt(receipt: Omit<ToolReceipt, "digest">): ToolReceipt {
 	const snapshot = cloneUnknownRecord(receipt);
-	return freeze({ ...snapshot, digest: fingerprintFoundationValue(snapshot) } as ToolReceiptV1);
+	return freeze({ ...snapshot, digest: fingerprintFoundationValue(snapshot) } as ToolReceipt);
 }
 
 /**
@@ -1849,7 +1846,7 @@ export function finalizeToolReceiptV1(receipt: Omit<ToolReceiptV1, "digest">): T
  * comparison. Receipt id, completedAt, deduplicatedFrom and digest are
  * envelope fields and are excluded; every other execution field remains.
  */
-export function projectToolReceiptExecutionSemanticsV1(receipt: ToolReceiptV1): string {
+export function projectToolReceiptExecutionSemantics(receipt: ToolReceipt): string {
 	return canonicalFoundationJson({
 		schemaVersion: receipt.schemaVersion,
 		toolCallId: receipt.toolCallId,
@@ -1875,12 +1872,12 @@ export function projectToolReceiptExecutionSemanticsV1(receipt: ToolReceiptV1): 
 }
 
 /** Validates the exact, bounded and credential-free durable result projection. */
-export function validateToolResultPayloadV1(value: unknown): ResultValue<ToolResultPayloadV1, FoundationError> {
-	const checked = validateExactShape<ToolResultPayloadV1>(toolResultPayloadSchema, value, "tool_result_payload");
+export function validateToolResultPayload(value: unknown): ResultValue<ToolResultPayload, FoundationError> {
+	const checked = validateExactShape<ToolResultPayload>(toolResultPayloadSchema, value, "tool_result_payload");
 	if (!checked.ok) return checked;
 	try {
 		const canonical = canonicalFoundationJson(checked.value);
-		if (new TextEncoder().encode(canonical).byteLength > TOOL_RESULT_PAYLOAD_MAX_BYTES_V1) {
+		if (new TextEncoder().encode(canonical).byteLength > TOOL_RESULT_PAYLOAD_MAX_BYTES) {
 			return Result.err(new FoundationError("side_effect_unknown", "durable tool result payload exceeds the bounded replay limit"));
 		}
 		if (checked.value.details !== undefined && !isDurableResultProjectionSafe(checked.value.details)) {
@@ -1901,7 +1898,7 @@ export function validateToolResultPayloadV1(value: unknown): ResultValue<ToolRes
 }
 
 /** Validates the exact reserved Session entry used to project durable results. */
-export function validateFoundationToolResultEntryV1(value: unknown): ResultValue<FoundationToolResultEntryV1, FoundationError> {
+export function validateFoundationToolResultEntry(value: unknown): ResultValue<FoundationToolResultEntry, FoundationError> {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return Result.err(new FoundationError("side_effect_unknown", "durable tool result entry is not an object"));
 	const record = value as Record<string, unknown>;
 	const expectedKeys = ["isError", "operationId", "result", "runId", "schemaVersion", "toolCallId", "toolName"];
@@ -1910,13 +1907,13 @@ export function validateFoundationToolResultEntryV1(value: unknown): ResultValue
 	if (record.schemaVersion !== 1 || typeof record.runId !== "string" || record.runId.length === 0 || typeof record.operationId !== "string" || record.operationId.length === 0 || typeof record.toolCallId !== "string" || record.toolCallId.length === 0 || typeof record.toolName !== "string" || record.toolName.length === 0 || typeof record.isError !== "boolean") {
 		return Result.err(new FoundationError("side_effect_unknown", "durable tool result entry has an invalid identity"));
 	}
-	const result = validateToolResultPayloadV1(record.result);
+	const result = validateToolResultPayload(record.result);
 	if (!result.ok) return result;
 	return Result.ok({ schemaVersion: 1, runId: record.runId, operationId: record.operationId, toolCallId: record.toolCallId, toolName: record.toolName, isError: record.isError, result: result.value });
 }
 
-function validateDurableResultArtifacts(result: ToolResultPayloadV1 | undefined, artifacts: readonly ArtifactRefV1[] | undefined): ResultValue<true, FoundationError> {
-	const expected = result === undefined ? [] : result.content.filter((content): content is ToolResultImageContentV1 => content.type === "image").map((content) => content.artifact);
+function validateDurableResultArtifacts(result: ToolResultPayload | undefined, artifacts: readonly ArtifactRef[] | undefined): ResultValue<true, FoundationError> {
+	const expected = result === undefined ? [] : result.content.filter((content): content is ToolResultImageContent => content.type === "image").map((content) => content.artifact);
 	const provided = artifacts ?? [];
 	if (provided.length !== expected.length) return Result.err(new FoundationError("side_effect_unknown", "tool result image artifacts do not exactly match the durable result payload"));
 	for (let index = 0; index < expected.length; index += 1) {
@@ -1932,11 +1929,11 @@ export function digestToolArguments(value: unknown): string {
 
 export const argumentDigest = digestToolArguments;
 
-export function digestToolArgumentsV1(value: unknown): FingerprintV1 {
+export function fingerprintToolArguments(value: unknown): Fingerprint {
 	return fingerprintFoundationValue(value);
 }
 
-function snapshotToolDefinition(tool: ToolDefinitionV1): ToolDefinitionV1 {
+function snapshotToolDefinition(tool: ToolDefinition): ToolDefinition {
 	if (tool.name.length === 0 || tool.toolRevision.id.length === 0 || tool.toolRevision.revision < 0) throw new FoundationError("invalid_identifier", "tool definition has an invalid identity");
 	if (tool.prepareArguments !== undefined && tool.argumentTransformer !== undefined) throw new FoundationError("foundation_schema_invalid_shape", "tool definition cannot declare two argument transformers");
 	if (tool.argumentTransformer !== undefined && (tool.argumentTransformer.transformerId.trim().length === 0 || !Number.isInteger(tool.argumentTransformer.transformerRevision) || tool.argumentTransformer.transformerRevision < 0)) throw new FoundationError("foundation_schema_invalid_shape", "tool argument transformer identity is invalid");
@@ -1948,7 +1945,7 @@ function snapshotToolDefinition(tool: ToolDefinitionV1): ToolDefinitionV1 {
 	});
 }
 
-function cloneToolRevision(value: ToolRevisionV1): ToolRevisionV1 {
+function cloneToolRevision(value: ToolRevision): ToolRevision {
 	return freeze({
 		schemaVersion: 1 as const,
 		type: "tool_revision" as const,
@@ -1958,7 +1955,7 @@ function cloneToolRevision(value: ToolRevisionV1): ToolRevisionV1 {
 	});
 }
 
-function validatePipelineContext(context: ToolPipelineContextV1): ResultValue<ToolPipelineContextV1, FoundationError> {
+function validatePipelineContext(context: ToolPipelineContext): ResultValue<ToolPipelineContext, FoundationError> {
 	if (context.sessionId.length === 0 || context.laneId.length === 0 || context.taskId.length === 0 || context.workspace.length === 0) return Result.err(new FoundationError("invalid_identifier", "tool pipeline context is incomplete"));
 	if (context.binding.taskId !== context.taskId) return Result.err(new FoundationError("binding_task_before_binding", "binding references a different task"));
 	if (context.bindingEpoch.taskId !== context.taskId || context.bindingEpoch.bindingId !== context.binding.bindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "binding epoch does not match the task binding"));
@@ -1975,12 +1972,12 @@ function cloneUnknownRecord(value: Record<string, unknown>): Record<string, unkn
 	return JSON.parse(canonical) as Record<string, unknown>;
 }
 
-function cloneToolIntent(value: ToolIntentV1): ToolIntentV1 {
-	return JSON.parse(canonicalFoundationJson(value)) as ToolIntentV1;
+function cloneToolIntent(value: ToolIntent): ToolIntent {
+	return JSON.parse(canonicalFoundationJson(value)) as ToolIntent;
 }
 
-function cloneToolReceipt(value: ToolReceiptV1): ToolReceiptV1 {
-	return JSON.parse(canonicalFoundationJson(value)) as ToolReceiptV1;
+function cloneToolReceipt(value: ToolReceipt): ToolReceipt {
+	return JSON.parse(canonicalFoundationJson(value)) as ToolReceipt;
 }
 
 function freeze<T>(value: T): T {
@@ -1991,16 +1988,16 @@ function freeze<T>(value: T): T {
 	return value;
 }
 
-function idempotencyScopeKey(context: ToolPipelineContextV1, key: string): string {
-	return idempotencyScopeKeyFromBinding(createToolBindingRefV1(context), key);
+function idempotencyScopeKey(context: ToolPipelineContext, key: string): string {
+	return idempotencyScopeKeyFromBinding(createToolBindingRef(context), key);
 }
 
-function contextRecoveryScope(context: ToolPipelineContextV1): string {
+function contextRecoveryScope(context: ToolPipelineContext): string {
 	return canonicalFoundationJson(toolStorageQuery(context));
 }
 
-function toolStorageQuery(context: ToolPipelineContextV1): ToolPipelineStorageQueryV1 {
-	const binding = createToolBindingRefV1(context);
+function toolStorageQuery(context: ToolPipelineContext): ToolPipelineStorageQuery {
+	const binding = createToolBindingRef(context);
 	return {
 		correlation: {
 			sessionId: context.sessionId,
@@ -2018,7 +2015,7 @@ function toolStorageQuery(context: ToolPipelineContextV1): ToolPipelineStorageQu
 	};
 }
 
-function idempotencyScopeKeyFromBinding(binding: ToolBindingRefV1, key: string): string {
+function idempotencyScopeKeyFromBinding(binding: ToolBindingRef, key: string): string {
 	const identity: Record<string, string> = { key, bindingId: binding.bindingId, bindingEpochId: binding.bindingEpochId, taskId: binding.taskId };
 	for (const [field, value] of [
 		["sessionId", binding.sessionId],
@@ -2035,10 +2032,10 @@ function idempotencyScopeKeyFromBinding(binding: ToolBindingRefV1, key: string):
 	return canonicalFoundationJson(identity);
 }
 
-function toolIdentityMatchesContext(value: ToolIntentV1 | ToolReceiptV1, context: ToolPipelineContextV1): boolean {
+function toolIdentityMatchesContext(value: ToolIntent | ToolReceipt, context: ToolPipelineContext): boolean {
 	const binding = value.binding;
 	const fullIdentity = context.runId !== undefined || context.operationId !== undefined;
-	const expected: Array<[keyof ToolBindingRefV1, string | undefined]> = [
+	const expected: Array<[keyof ToolBindingRef, string | undefined]> = [
 		["sessionId", context.sessionId],
 		["laneId", context.laneId],
 		["runId", context.runId],
@@ -2057,7 +2054,7 @@ function toolIdentityMatchesContext(value: ToolIntentV1 | ToolReceiptV1, context
 	return true;
 }
 
-function receiptIdentityMatchesIntent(receipt: ToolReceiptV1, intent: ToolIntentV1): boolean {
+function receiptIdentityMatchesIntent(receipt: ToolReceipt, intent: ToolIntent): boolean {
 	return receipt.toolCallId === intent.toolCallId
 		&& receipt.toolName === intent.toolName
 		&& receipt.namespace === intent.namespace
@@ -2071,7 +2068,7 @@ function deadlineReached(deadlineAt: number | undefined, nowMs: number): boolean
 	return deadlineAt !== undefined && nowMs >= deadlineAt;
 }
 
-function invocationSignature(intent: ToolIntentV1): string {
+function invocationSignature(intent: ToolIntent): string {
 	const value = {
 		toolCallId: intent.toolCallId,
 		toolName: intent.toolName,
@@ -2083,7 +2080,7 @@ function invocationSignature(intent: ToolIntentV1): string {
 	return canonicalFoundationJson(value);
 }
 
-function invocationSignatureFromReceipt(receipt: ToolReceiptV1): string {
+function invocationSignatureFromReceipt(receipt: ToolReceipt): string {
 	return canonicalFoundationJson({
 		toolCallId: receipt.toolCallId,
 		toolName: receipt.toolName,
@@ -2094,8 +2091,8 @@ function invocationSignatureFromReceipt(receipt: ToolReceiptV1): string {
 	});
 }
 
-export function validateAndVerifyToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> {
-	const checked = validateToolReceiptV1(value);
+export function validateAndVerifyToolReceipt(value: unknown): ResultValue<ToolReceipt, FoundationError> {
+	const checked = validateToolReceipt(value);
 	if (!checked.ok) return checked;
 	const { digest: _digest, ...withoutDigest } = checked.value;
 	const expected = fingerprintFoundationValue(withoutDigest);
@@ -2105,7 +2102,7 @@ export function validateAndVerifyToolReceiptV1(value: unknown): ResultValue<Tool
 	return checked;
 }
 
-function receiptMatchesIntent(receipt: ToolReceiptV1, intent: ToolIntentV1): boolean {
+function receiptMatchesIntent(receipt: ToolReceipt, intent: ToolIntent): boolean {
 	return receipt.toolCallId === intent.toolCallId
 		&& receipt.toolName === intent.toolName
 		&& receipt.namespace === intent.namespace
@@ -2120,8 +2117,8 @@ function receiptMatchesIntent(receipt: ToolReceiptV1, intent: ToolIntentV1): boo
 		&& canonicalFoundationJson(receipt.transformProvenance) === canonicalFoundationJson(intent.transformProvenance);
 }
 
-function validateDurableIntent(value: ToolIntentV1, expected: ToolIntentV1): ResultValue<ToolIntentV1, FoundationError> {
-	const shape = validateToolIntentV1(value);
+function validateDurableIntent(value: ToolIntent, expected: ToolIntent): ResultValue<ToolIntent, FoundationError> {
+	const shape = validateToolIntent(value);
 	if (!shape.ok) return shape;
 	const intent = shape.value;
 	const sameDigest = intent.argumentDigests.accepted.algorithm === expected.argumentDigests.accepted.algorithm && intent.argumentDigests.accepted.value === expected.argumentDigests.accepted.value;
@@ -2132,11 +2129,11 @@ function validateDurableIntent(value: ToolIntentV1, expected: ToolIntentV1): Res
 	return Result.ok(intent);
 }
 
-function validateMonotonicGateRecords(records: readonly ToolGateRecordV1[]): ResultValue<true, FoundationError> {
+function validateMonotonicGateRecords(records: readonly ToolGateRecord[]): ResultValue<true, FoundationError> {
 	let denied = false;
 	for (let index = 0; index < records.length; index += 1) {
 		const record = records[index]!;
-		if (record.kind !== TOOL_GATE_KINDS_V1[index]) {
+		if (record.kind !== TOOL_GATE_KINDS[index]) {
 			return Result.err(new FoundationError("tool_guard_denied", "tool guards must run in the fixed capability, policy, approval, sandbox, quota, conflict-lock order"));
 		}
 		if (denied) {
@@ -2147,13 +2144,13 @@ function validateMonotonicGateRecords(records: readonly ToolGateRecordV1[]): Res
 		}
 		if (record.verdict === "denied") denied = true;
 	}
-	if (!denied && records.length !== TOOL_GATE_KINDS_V1.length) {
+	if (!denied && records.length !== TOOL_GATE_KINDS.length) {
 		return Result.err(new FoundationError("tool_guard_denied", "all fixed tool guards must run before a side effect"));
 	}
 	return Result.ok(true);
 }
 
-function conflictOwnerKey(scope: ToolGateScopeV1, key: string): string {
+function conflictOwnerKey(scope: ToolGateScope, key: string): string {
 	return `${scope.context.bindingEpoch.bindingEpochId}:${key}`;
 }
 
@@ -2172,7 +2169,7 @@ function elapsed(now: number, started: number): number {
 	return Math.max(0, now - started);
 }
 
-function findDuplicateCallId(calls: readonly ToolCallV1[]): string | undefined {
+function findDuplicateCallId(calls: readonly ToolCall[]): string | undefined {
 	const seen = new Set<string>();
 	for (const call of calls) {
 		if (seen.has(call.toolCallId)) return call.toolCallId;
@@ -2181,11 +2178,11 @@ function findDuplicateCallId(calls: readonly ToolCallV1[]): string | undefined {
 	return undefined;
 }
 
-function cancellationError(): PublicExecutionErrorV1 {
+function cancellationError(): PublicExecutionError {
 	return publicExecutionError("tool_cancelled", "tool execution was cancelled", { category: "cancelled" });
 }
 
-function deadlineError(): PublicExecutionErrorV1 {
+function deadlineError(): PublicExecutionError {
 	return publicExecutionError("deadline_exceeded", "tool execution deadline was exceeded", { category: "deadline", retryable: false });
 }
 
@@ -2206,25 +2203,25 @@ function deferred<T>(): { promise: Promise<T>; resolve: () => void } {
 }
 
 const toolRevisionSchema = Type.Object(
-	{ schemaVersion: Type.Literal(1), type: Type.Literal("tool_revision"), id: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), fingerprint: Type.Optional(FingerprintV1Schema) },
+	{ schemaVersion: Type.Literal(1), type: Type.Literal("tool_revision"), id: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), fingerprint: Type.Optional(FingerprintSchema) },
 	{ additionalProperties: false },
 );
 const toolBindingRefSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), sessionId: Type.Optional(Type.String({ minLength: 1 })), laneId: Type.Optional(Type.String({ minLength: 1 })), runId: Type.Optional(Type.String({ minLength: 1 })), operationId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), bindingId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), dispatchId: Type.Optional(Type.String({ minLength: 1 })), providerId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })) },
 	{ additionalProperties: false },
 );
-const toolArgumentDigestsSchema = Type.Object({ original: FingerprintV1Schema, accepted: FingerprintV1Schema }, { additionalProperties: false });
+const toolArgumentDigestsSchema = Type.Object({ original: FingerprintSchema, accepted: FingerprintSchema }, { additionalProperties: false });
 const toolIntentFenceSchema = Type.Object(
-	{ schemaVersion: Type.Literal(1), fenceId: Type.String({ minLength: 1 }), intentId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), acceptedArgumentsDigest: FingerprintV1Schema, armedAt: Type.String({ minLength: 1 }) },
+	{ schemaVersion: Type.Literal(1), fenceId: Type.String({ minLength: 1 }), intentId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), acceptedArgumentsDigest: FingerprintSchema, armedAt: Type.String({ minLength: 1 }) },
 	{ additionalProperties: false },
 );
-const toolTransformProvenanceSchema = Type.Object({ field: Type.String({ minLength: 1 }), kind: Type.Union(TOOL_TRANSFORM_KINDS_V1.map((kind) => Type.Literal(kind))), transformerId: Type.String({ minLength: 1 }), transformerRevision: Type.Integer({ minimum: 0 }), beforeDigest: FingerprintV1Schema, afterDigest: FingerprintV1Schema }, { additionalProperties: false });
+const toolTransformProvenanceSchema = Type.Object({ field: Type.String({ minLength: 1 }), kind: Type.Union(TOOL_TRANSFORM_KINDS.map((kind) => Type.Literal(kind))), transformerId: Type.String({ minLength: 1 }), transformerRevision: Type.Integer({ minimum: 0 }), beforeDigest: FingerprintSchema, afterDigest: FingerprintSchema }, { additionalProperties: false });
 const toolGateReferenceSchema = Type.Object(
-	{ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), fingerprint: Type.Optional(FingerprintV1Schema), providerId: Type.Optional(Type.String({ minLength: 1 })) },
+	{ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), fingerprint: Type.Optional(FingerprintSchema), providerId: Type.Optional(Type.String({ minLength: 1 })) },
 	{ additionalProperties: false },
 );
 const toolGateRecordSchema = Type.Object(
-	{ kind: Type.Union(TOOL_GATE_KINDS_V1.map((kind) => Type.Literal(kind))), verdict: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("reserved")]), reference: toolGateReferenceSchema, reason: Type.Optional(Type.String()) },
+	{ kind: Type.Union(TOOL_GATE_KINDS.map((kind) => Type.Literal(kind))), verdict: Type.Union([Type.Literal("allowed"), Type.Literal("denied"), Type.Literal("reserved")]), reference: toolGateReferenceSchema, reason: Type.Optional(Type.String()) },
 	{ additionalProperties: false },
 );
 const publicErrorSchema = Type.Object(
@@ -2281,25 +2278,25 @@ const toolResultPayloadSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
-export const ToolIntentV1Schema = Type.Object(
+export const ToolIntentSchema = Type.Object(
 	{ schemaVersion: Type.Literal(1), intentId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, fence: toolIntentFenceSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), attempt: Type.Integer({ minimum: 1 }), writtenAt: Type.String({ minLength: 1 }) },
 	{ additionalProperties: false },
 );
-export const ToolReceiptV1Schema = Type.Object(
-	{ schemaVersion: Type.Literal(1), toolReceiptId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), gates: Type.Array(toolGateRecordSchema), sideEffectState: Type.Union(SIDE_EFFECT_STATES.map((state) => Type.Literal(state))), idempotency: Type.Union(IDEMPOTENCY_STATES.map((state) => Type.Literal(state))), attempt: Type.Integer({ minimum: 1 }), retried: Type.Integer({ minimum: 0 }), startedAt: Type.Optional(Type.String({ minLength: 1 })), completedAt: Type.String({ minLength: 1 }), outcome: Type.Union(TOOL_RECEIPT_OUTCOMES_V1.map((outcome) => Type.Literal(outcome))), artifacts: Type.Optional(Type.Array(artifactRefSchema)), usage: Type.Optional(usageSchema), result: Type.Optional(toolResultPayloadSchema), error: Type.Optional(publicErrorSchema), deduplicatedFrom: Type.Optional(Type.String({ minLength: 1 })), digest: FingerprintV1Schema },
+export const ToolReceiptSchema = Type.Object(
+	{ schemaVersion: Type.Literal(1), toolReceiptId: Type.String({ minLength: 1 }), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), toolRevision: toolRevisionSchema, binding: toolBindingRefSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), argumentDigests: toolArgumentDigestsSchema, transformProvenance: Type.Array(toolTransformProvenanceSchema), gates: Type.Array(toolGateRecordSchema), sideEffectState: Type.Union(SIDE_EFFECT_STATES.map((state) => Type.Literal(state))), idempotency: Type.Union(IDEMPOTENCY_STATES.map((state) => Type.Literal(state))), attempt: Type.Integer({ minimum: 1 }), retried: Type.Integer({ minimum: 0 }), startedAt: Type.Optional(Type.String({ minLength: 1 })), completedAt: Type.String({ minLength: 1 }), outcome: Type.Union(TOOL_RECEIPT_OUTCOMES.map((outcome) => Type.Literal(outcome))), artifacts: Type.Optional(Type.Array(artifactRefSchema)), usage: Type.Optional(usageSchema), result: Type.Optional(toolResultPayloadSchema), error: Type.Optional(publicErrorSchema), deduplicatedFrom: Type.Optional(Type.String({ minLength: 1 })), digest: FingerprintSchema },
 	{ additionalProperties: false },
 );
-export const ToolBatchResultV1Schema = Type.Object(
-	{ schemaVersion: Type.Literal(1), batchId: Type.String({ minLength: 1 }), status: Type.Union(TOOL_BATCH_STATUSES_V1.map((status) => Type.Literal(status))), receipts: Type.Array(ToolReceiptV1Schema), usage: usageSchema, conflicts: Type.Array(Type.Object({ keys: Type.Array(Type.String({ minLength: 1 })), toolCallIds: Type.Array(Type.String({ minLength: 1 })) }, { additionalProperties: false })), maxConcurrency: Type.Integer({ minimum: 0 }), durationMs: Type.Integer({ minimum: 0 }) },
+export const ToolBatchResultSchema = Type.Object(
+	{ schemaVersion: Type.Literal(1), batchId: Type.String({ minLength: 1 }), status: Type.Union(TOOL_BATCH_STATUSES.map((status) => Type.Literal(status))), receipts: Type.Array(ToolReceiptSchema), usage: usageSchema, conflicts: Type.Array(Type.Object({ keys: Type.Array(Type.String({ minLength: 1 })), toolCallIds: Type.Array(Type.String({ minLength: 1 })) }, { additionalProperties: false })), maxConcurrency: Type.Integer({ minimum: 0 }), durationMs: Type.Integer({ minimum: 0 }) },
 	{ additionalProperties: false },
 );
-export const isToolIntentV1Shape = makeExactShapeGuard<ToolIntentV1>(ToolIntentV1Schema, "tool_intent");
-export const isToolReceiptV1Shape = makeExactShapeGuard<ToolReceiptV1>(ToolReceiptV1Schema, "tool_receipt");
-export function validateToolIntentV1(value: unknown): ResultValue<ToolIntentV1, FoundationError> { return validateExactShape<ToolIntentV1>(ToolIntentV1Schema, value, "tool_intent"); }
-export function serializeToolIntentV1(value: ToolIntentV1): string { return serializeExactShape(ToolIntentV1Schema, value, "tool_intent"); }
-export function parseToolIntentV1(text: string): ResultValue<ToolIntentV1, FoundationError> { return parseExactShape(ToolIntentV1Schema, text, "tool_intent"); }
-export function validateToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1, FoundationError> {
-	const checked = validateExactShape<ToolReceiptV1>(ToolReceiptV1Schema, value, "tool_receipt");
+export const isToolIntentShape = makeExactShapeGuard<ToolIntent>(ToolIntentSchema, "tool_intent");
+export const isToolReceiptShape = makeExactShapeGuard<ToolReceipt>(ToolReceiptSchema, "tool_receipt");
+export function validateToolIntent(value: unknown): ResultValue<ToolIntent, FoundationError> { return validateExactShape<ToolIntent>(ToolIntentSchema, value, "tool_intent"); }
+export function serializeToolIntent(value: ToolIntent): string { return serializeExactShape(ToolIntentSchema, value, "tool_intent"); }
+export function parseToolIntent(text: string): ResultValue<ToolIntent, FoundationError> { return parseExactShape(ToolIntentSchema, text, "tool_intent"); }
+export function validateToolReceipt(value: unknown): ResultValue<ToolReceipt, FoundationError> {
+	const checked = validateExactShape<ToolReceipt>(ToolReceiptSchema, value, "tool_receipt");
 	if (!checked.ok) return checked;
 	if (checked.value.result === undefined) {
 		const artifactCheck = validateDurableResultArtifacts(undefined, checked.value.artifacts);
@@ -2308,14 +2305,14 @@ export function validateToolReceiptV1(value: unknown): ResultValue<ToolReceiptV1
 	if (checked.value.outcome !== "succeeded" || checked.value.sideEffectState !== "none") {
 		return Result.err(new FoundationError("side_effect_unknown", "non-successful tool receipts cannot carry a durable result payload"));
 	}
-	const checkedResult = validateToolResultPayloadV1(checked.value.result);
+	const checkedResult = validateToolResultPayload(checked.value.result);
 	if (!checkedResult.ok) return Result.err(checkedResult.error);
 	const artifactCheck = validateDurableResultArtifacts(checkedResult.value, checked.value.artifacts);
 	return artifactCheck.ok ? checked : Result.err(artifactCheck.error);
 }
-export function serializeToolReceiptV1(value: ToolReceiptV1): string { return serializeExactShape(ToolReceiptV1Schema, value, "tool_receipt"); }
-export function parseToolReceiptV1(text: string): ResultValue<ToolReceiptV1, FoundationError> { return parseExactShape(ToolReceiptV1Schema, text, "tool_receipt"); }
-export function validateToolBatchResultV1(value: unknown): ResultValue<ToolBatchResultV1, FoundationError> { return validateExactShape<ToolBatchResultV1>(ToolBatchResultV1Schema, value, "tool_batch_result"); }
-export function serializeToolBatchResultV1(value: ToolBatchResultV1): string { return serializeExactShape(ToolBatchResultV1Schema, value, "tool_batch_result"); }
-export function parseToolBatchResultV1(text: string): ResultValue<ToolBatchResultV1, FoundationError> { return parseExactShape(ToolBatchResultV1Schema, text, "tool_batch_result"); }
-export function toolReceiptIssuesV1(value: unknown): ExactShapeIssue[] { return exactShapeIssues(ToolReceiptV1Schema, value); }
+export function serializeToolReceipt(value: ToolReceipt): string { return serializeExactShape(ToolReceiptSchema, value, "tool_receipt"); }
+export function parseToolReceipt(text: string): ResultValue<ToolReceipt, FoundationError> { return parseExactShape(ToolReceiptSchema, text, "tool_receipt"); }
+export function validateToolBatchResult(value: unknown): ResultValue<ToolBatchResult, FoundationError> { return validateExactShape<ToolBatchResult>(ToolBatchResultSchema, value, "tool_batch_result"); }
+export function serializeToolBatchResult(value: ToolBatchResult): string { return serializeExactShape(ToolBatchResultSchema, value, "tool_batch_result"); }
+export function parseToolBatchResult(text: string): ResultValue<ToolBatchResult, FoundationError> { return parseExactShape(ToolBatchResultSchema, text, "tool_batch_result"); }
+export function toolReceiptIssues(value: unknown): ExactShapeIssue[] { return exactShapeIssues(ToolReceiptSchema, value); }

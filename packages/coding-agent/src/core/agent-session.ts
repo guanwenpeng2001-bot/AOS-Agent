@@ -27,7 +27,7 @@ import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
+import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
@@ -150,7 +150,7 @@ export interface PromptOptions {
 	images?: ImageContent[];
 	streamingBehavior?: "steer" | "followUp";
 	source?: InputSource;
-	surface?: RuntimeSessionSurfaceV1;
+	surface?: RuntimeSessionSurface;
 	preflightResult?: (success: boolean) => void;
 	runId?: string;
 	signal?: AbortSignal;

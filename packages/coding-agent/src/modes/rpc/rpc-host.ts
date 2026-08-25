@@ -158,7 +158,7 @@ import type { SourceInfo } from "../../core/source-info.ts";
 import {
 	WORKER_LIFECYCLE_STATUSES,
 	validateWorkerRecordV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "../../core/worker.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
@@ -418,7 +418,7 @@ function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
 const RPC_WORKER_DEFAULT_LIMIT = 50;
 const RPC_WORKER_MAX_LIMIT = 100;
 const RPC_WORKER_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
-const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatus> = new Set([
 	"completed",
 	"failed",
 	"cancelled",
@@ -427,7 +427,7 @@ const RPC_WORKER_RECLAIMABLE_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = ne
 	"reclaimed",
 	"reclaim_unknown",
 ]);
-const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatusV1> = new Set([
+const RPC_WORKER_RECLAIM_TERMINAL_STATUSES: ReadonlySet<WorkerLifecycleStatus> = new Set([
 	"reclaimed",
 	"reclaim_unknown",
 ]);
@@ -501,7 +501,7 @@ function isRpcWorkerCommandShapeValid(command: RpcCommand): boolean {
 	);
 }
 
-function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatusV1 {
+function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatus {
 	return typeof value === "string" && (WORKER_LIFECYCLE_STATUSES as readonly string[]).includes(value);
 }
 
@@ -798,7 +798,7 @@ export class RpcHostController {
 		let unsubscribe: (() => void) | undefined;
 		let unsubscribeBackpressure: (() => void) | undefined;
 
-		// Automation Host v1 state
+		// Automation Host state
 		let hostInitialized = false;
 		let coordinator: RunLifecycleCoordinator | undefined;
 		let taskGateStore: TaskGateStore | undefined;
@@ -1129,7 +1129,7 @@ export class RpcHostController {
 		let shuttingDown = false;
 
 		// ---------------------------------------------------------------------
-		// Automation Host v1 helpers
+		// Automation Host helpers
 		// ---------------------------------------------------------------------
 
 		/** Legacy commands that mutate session/model/run state; rejected once the host is initialized. */
@@ -2527,7 +2527,7 @@ export class RpcHostController {
 					),
 				);
 			}
-			// The v1 adapter contract has start() only; there is no same-ref resume
+			// The adapter contract has start() only; there is no same-ref resume
 			// API, so an external run.resume can never be honored. Reject it instead
 			// of silently starting a fresh execution with a new operation id.
 			if (commandType === "run.resume" && externalAgent !== undefined) {
@@ -3299,7 +3299,7 @@ export class RpcHostController {
 					if (!verifyExternalAgentPreparedBinding(prepared, prepareRequest, probe.snapshot)) {
 						throw new ExternalAgentError("external_agent_binding_unsupported");
 					}
-					// v1 has no independent tool-call/Policy/cancel/result gateway
+					// The adapter has no independent tool-call/Policy/cancel/result gateway
 					// contract and the selection carries no explicit gateway opt-in:
 					// a target self-reporting toolGateway=true must never expand the
 					// AOS boundary or claim AOS tools, so a gateway-mode prepared
@@ -5323,7 +5323,7 @@ export class RpcHostController {
 									),
 								);
 							}
-							// The v1 adapter contract has start() only; there is no same-ref
+							// The adapter contract has start() only; there is no same-ref
 							// resume API, so an external run.resume can never be honored.
 							// Reject it instead of silently starting a fresh execution.
 							if (command.externalAgent !== undefined) {
@@ -5502,7 +5502,7 @@ export class RpcHostController {
 								);
 							}
 							// Resume execution-kind consistency: an external source run can only
-							// be resumed through an External Agent Adapter, which v1 cannot
+							// be resumed through an External Agent Adapter, which cannot
 							// honor; rejecting here avoids silently resuming a different
 							// execution kind locally.
 							const sourceIsExternal =

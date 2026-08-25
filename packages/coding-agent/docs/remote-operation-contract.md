@@ -1,4 +1,4 @@
-# Remote-Neutral Operation Contract (v1)
+# Remote-Neutral Operation Contract
 
 This document freezes the smallest operation boundary needed by a future
 remote provider. It is transport- and provider-agnostic: the current fixture

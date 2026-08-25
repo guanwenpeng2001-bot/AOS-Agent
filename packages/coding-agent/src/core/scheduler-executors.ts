@@ -23,23 +23,23 @@ import {
 	canonicalFoundationJson,
 	createAttempt,
 	fingerprintFoundationValue,
-	validateAttemptReceiptForProviderV1,
-	validateBudgetUsageV1,
-	validateQuotaAttributionV1,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type BudgetUsageV1,
-	type BudgetV1,
-	type DispatchV1,
-	type FingerprintV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type QuotaAttributionV1,
+	validateAttemptReceiptForProvider,
+	validateBudgetUsage,
+	validateQuotaAttribution,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
+	type BudgetUsage,
+	type Budget,
+	type Dispatch,
+	type Fingerprint,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type QuotaAttribution,
 	type QuotaProvider,
 	type Result as ResultValue,
 	type SchedulerTaskExecutorProvider,
-	type TaskExecutorAttemptContextV1,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import {
@@ -87,9 +87,9 @@ export interface SchedulerExecutorRegistrationV1 {
 
 export interface SchedulerExecutorSelectionInputV1 {
 	readonly queueEntry: SchedulerQueueEntryV1;
-	readonly requiredCapabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly sessionId?: string;
-	readonly workspaceDigest?: FingerprintV1;
+	readonly workspaceDigest?: Fingerprint;
 	readonly decidedAt: string;
 }
 
@@ -111,21 +111,21 @@ export interface SchedulerExecutorSelectedCatalogPayloadV1 {
 }
 
 export interface SchedulerHostAttemptWorkV1 {
-	readonly usage: BudgetUsageV1;
-	readonly receipt: AttemptReceiptV1;
+	readonly usage: BudgetUsage;
+	readonly receipt: AttemptReceipt;
 }
 
 /** Host attempt-runner seam. T4 binds production work; a missing runner fails closed. */
 export type SchedulerHostAttemptRunnerV1 = (
-	attempt: AttemptV1,
-	options?: FoundationProviderExecutionOptionsV1,
+	attempt: Attempt,
+	options?: FoundationProviderExecutionOptions,
 ) => Promise<ResultValue<SchedulerHostAttemptWorkV1, FoundationError>>;
 
 export interface SchedulerInProcessTaskExecutorOptionsV1 {
 	readonly providerId?: string;
 	readonly quota?: QuotaProvider;
 	readonly now?: () => string;
-	readonly budget?: BudgetV1;
+	readonly budget?: Budget;
 	readonly hostAttemptRunner?: SchedulerHostAttemptRunnerV1;
 }
 
@@ -154,20 +154,20 @@ function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0;
 }
 
-function compareCapabilities(left: FoundationProviderCapabilityV1, right: FoundationProviderCapabilityV1): number {
+function compareCapabilities(left: FoundationProviderCapability, right: FoundationProviderCapability): number {
 	return left.id < right.id ? -1 : left.id > right.id ? 1 : left.version - right.version;
 }
 
-function capabilitySatisfied(have: readonly FoundationProviderCapabilityV1[], required: FoundationProviderCapabilityV1): boolean {
+function capabilitySatisfied(have: readonly FoundationProviderCapability[], required: FoundationProviderCapability): boolean {
 	return have.some((item) => item.id === required.id && item.version >= required.version);
 }
 
-function copyCapabilities(value: readonly FoundationProviderCapabilityV1[]): FoundationProviderCapabilityV1[] {
+function copyCapabilities(value: readonly FoundationProviderCapability[]): FoundationProviderCapability[] {
 	return value.map((item) => ({ schemaVersion: 1 as const, id: item.id, version: item.version })).sort(compareCapabilities);
 }
 
 /** Quota ownerKind is fixed by provider class; task_executor is Host-owned. */
-export function schedulerQuotaOwnerKind(providerClass: SchedulerProviderClassV1): QuotaAttributionV1["ownerKind"] {
+export function schedulerQuotaOwnerKind(providerClass: SchedulerProviderClassV1): QuotaAttribution["ownerKind"] {
 	if (providerClass === "task_executor" || providerClass === "scheduler") return "host";
 	if (providerClass === "agent") return "agent_executor";
 	return "external_connector";
@@ -194,7 +194,7 @@ export function scoreSchedulerExecutorV1(
 
 export function executorPassesHardFiltersV1(
 	candidate: SchedulerExecutorCandidateV1,
-	requiredCapabilities: readonly FoundationProviderCapabilityV1[],
+	requiredCapabilities: readonly FoundationProviderCapability[],
 ): boolean {
 	if (!(SCHEDULER_PROVIDER_CLASSES as readonly string[]).includes(candidate.entry.descriptor.providerClass)) return false;
 	if (candidate.trusted !== true) return false;
@@ -205,7 +205,7 @@ function executorHasCapacity(candidate: SchedulerExecutorCandidateV1): boolean {
 	return candidate.load < candidate.maxConcurrency;
 }
 
-function selectionInputs(candidates: readonly SchedulerExecutorCandidateV1[], input: SchedulerExecutorSelectionInputV1, requiredCapabilities: readonly FoundationProviderCapabilityV1[]) {
+function selectionInputs(candidates: readonly SchedulerExecutorCandidateV1[], input: SchedulerExecutorSelectionInputV1, requiredCapabilities: readonly FoundationProviderCapability[]) {
 	return {
 		queueEntryId: input.queueEntry.queueEntryId,
 		taskId: input.queueEntry.taskId,
@@ -411,11 +411,11 @@ export class SchedulerExecutorRegistry {
 	}
 }
 
-function inProcessCapability(): FoundationProviderCapabilityV1 {
+function inProcessCapability(): FoundationProviderCapability {
 	return { schemaVersion: 1, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 };
 }
 
-function receiptCorrelation(attempt: AttemptV1, options: FoundationProviderExecutionOptionsV1 | undefined, attemptReceiptId: string) {
+function receiptCorrelation(attempt: Attempt, options: FoundationProviderExecutionOptions | undefined, attemptReceiptId: string) {
 	const correlation = options?.correlation;
 	if (
 		correlation === undefined ||
@@ -440,7 +440,7 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	readonly providerClass = "task_executor" as const;
 	private readonly quota: QuotaProvider | undefined;
 	private readonly now: () => string;
-	private readonly budget: BudgetV1;
+	private readonly budget: Budget;
 	private readonly hostAttemptRunner: SchedulerHostAttemptRunnerV1 | undefined;
 	private readonly cancelled = new Set<string>();
 
@@ -452,11 +452,11 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 		this.hostAttemptRunner = options.hostAttemptRunner;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [inProcessCapability()];
 	}
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "In-process scheduler executor requires attempt context"));
 		if (context.agentInstance !== undefined || context.initialBindingEpoch.agentInstanceId !== undefined) {
 			return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "In-process scheduler executor cannot carry an AgentInstance"));
@@ -471,7 +471,7 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		try {
 			if (attempt.agentInstanceId !== undefined) {
 				return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "In-process scheduler executor cannot carry an AgentInstance"));
@@ -507,32 +507,32 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	async dispose(): Promise<void> {}
 
 	private async runHostWork(
-		attempt: AttemptV1,
-		options: FoundationProviderExecutionOptionsV1 | undefined,
+		attempt: Attempt,
+		options: FoundationProviderExecutionOptions | undefined,
 	): Promise<ResultValue<SchedulerHostAttemptWorkV1, FoundationError>> {
 		if (this.hostAttemptRunner === undefined) return schedulerFail("scheduler_executor_unavailable");
 		if (this.quota === undefined) {
 			const work = await this.hostAttemptRunner(attempt, options);
 			if (!work.ok) return work;
-			const usage = validateBudgetUsageV1(work.value.usage);
+			const usage = validateBudgetUsage(work.value.usage);
 			if (!usage.ok) return usage;
 			return Result.ok({ usage: usage.value, receipt: work.value.receipt });
 		}
-		const attribution: QuotaAttributionV1 = {
+		const attribution: QuotaAttribution = {
 			schemaVersion: 1,
 			taskId: attempt.taskId,
 			attemptId: attempt.attemptId,
 			providerId: this.providerId,
 			ownerKind: schedulerQuotaOwnerKind(this.providerClass),
 		};
-		const checkedAttribution = validateQuotaAttributionV1(attribution);
+		const checkedAttribution = validateQuotaAttribution(attribution);
 		if (!checkedAttribution.ok) return checkedAttribution;
 		const reserved = await this.quota.reserve(checkedAttribution.value, this.budget, options?.signal === undefined ? {} : { signal: options.signal });
 		if (!reserved.ok) {
 			return Result.err(new FoundationError("scheduler_budget_exhausted_wait", "Scheduler concurrency or quota is exhausted; keep the entry queued.", { retryable: true, cause: reserved.error }));
 		}
 		const work = await this.hostAttemptRunner(attempt, options);
-		const usage = work.ok ? validateBudgetUsageV1(work.value.usage) : Result.ok({});
+		const usage = work.ok ? validateBudgetUsage(work.value.usage) : Result.ok({});
 		const settledUsage = usage.ok ? usage.value : {};
 		const settled = await this.quota.settle(reserved.value, settledUsage);
 		if (!settled.ok) {
@@ -544,11 +544,11 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	}
 
 	private acceptHostRunnerReceipt(
-		receipt: AttemptReceiptV1,
-		attempt: AttemptV1,
+		receipt: AttemptReceipt,
+		attempt: Attempt,
 		expected: NonNullable<ReturnType<typeof receiptCorrelation>>,
-	): ResultValue<AttemptReceiptV1, FoundationError> {
-		const checked = validateAttemptReceiptForProviderV1(receipt, {
+	): ResultValue<AttemptReceipt, FoundationError> {
+		const checked = validateAttemptReceiptForProvider(receipt, {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});
@@ -591,12 +591,12 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	}
 
 	private settle(
-		attempt: AttemptV1,
+		attempt: Attempt,
 		attemptReceiptId: string,
 		correlation: NonNullable<ReturnType<typeof receiptCorrelation>>,
 		status: "cancelled",
-	): ResultValue<AttemptReceiptV1, FoundationError> {
-		const receipt: AttemptReceiptV1 = {
+	): ResultValue<AttemptReceipt, FoundationError> {
+		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
 			attemptReceiptId,
 			taskId: attempt.taskId,
@@ -617,6 +617,6 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 			sideEffectState: "none",
 			error: { code: "cancelled", message: "Attempt cancelled", retryable: false },
 		};
-		return validateAttemptReceiptForProviderV1(receipt, { providerId: this.providerId, providerClass: this.providerClass });
+		return validateAttemptReceiptForProvider(receipt, { providerId: this.providerId, providerClass: this.providerClass });
 	}
 }

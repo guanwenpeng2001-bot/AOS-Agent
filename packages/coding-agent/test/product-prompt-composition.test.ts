@@ -1,27 +1,27 @@
 import {
 	AgentHarness,
 	createScopedMemoryStore,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	FoundationError,
 	InMemoryArtifactBlobStore,
-	InMemoryRoleRegistryV1,
+	InMemoryRoleRegistry,
 	InMemorySessionStorage,
 	resolveAgentBinding,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionT5Ledger,
 	sha256HexValue,
-	type AgentBindingV1,
+	type AgentBinding,
 	type AgentHarness as AgentHarnessType,
 	type ArtifactStoreProvider,
-	type ChildSpawnRequestV1,
+	type ChildSpawnRequest,
 	type FoundationJsonValue,
 	type QuotaProvider,
-	type RevisionReferenceV1,
+	type RevisionReference,
 	type ScopedModelGateway,
 	type StreamFn,
-	type TaskEnvelopeV1,
+	type TaskEnvelope,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
 import {
@@ -66,9 +66,9 @@ function response(text: string): AssistantMessage {
 	};
 }
 
-function childTask(input: PromptTaskSubagentCompositionInputV1): TaskEnvelopeV1 {
+function childTask(input: PromptTaskSubagentCompositionInputV1): TaskEnvelope {
 	const token = sha256HexValue(input.runId).slice(0, 24);
-	const created = createTaskEnvelopeV1({
+	const created = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId: `task_product_composition_${token}`,
 		goalId: input.parentTask.goalId,
@@ -92,9 +92,9 @@ function childTask(input: PromptTaskSubagentCompositionInputV1): TaskEnvelopeV1 
 
 function childBinding(
 	input: PromptTaskSubagentCompositionInputV1,
-	task: TaskEnvelopeV1,
+	task: TaskEnvelope,
 	suffix: string,
-): AgentBindingV1 {
+): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task,
 		roleRevision: input.parentRoleRevision,
@@ -113,9 +113,9 @@ function childBinding(
 async function preparePlan(
 	input: PromptTaskSubagentCompositionInputV1,
 	composition: TrustedSubagentCompositionV1,
-	ledger: SessionLedgerV1,
+	ledger: SessionLedger,
 	descriptor: SubagentProviderDescriptorV1,
-	task: TaskEnvelopeV1,
+	task: TaskEnvelope,
 	suffix: string,
 ): Promise<SubagentSpawnPlanV1> {
 	const binding = childBinding(input, task, suffix);
@@ -144,7 +144,7 @@ async function preparePlan(
 		["capability_binding", binding.capabilityRevision],
 		["model_broker_binding", binding.modelBrokerBindingRevision],
 		["policy_binding", binding.policyRevision],
-	] as const satisfies readonly (readonly [string, RevisionReferenceV1])[]) {
+	] as const satisfies readonly (readonly [string, RevisionReference])[]) {
 		await seed(objectType, reference.id, {
 			schemaVersion: 1,
 			type: reference.type,
@@ -163,7 +163,7 @@ async function preparePlan(
 		lineage: { schemaVersion: 1, entityType: "context", entityId: `context_${parentSpawnId}`, depth: 0 },
 		createdAt: input.timestamp,
 	});
-	const request: ChildSpawnRequestV1 = {
+	const request: ChildSpawnRequest = {
 		schemaVersion: 1,
 		spawnId,
 		parentSpawn: {
@@ -231,11 +231,11 @@ async function createFixture(options: {
 		return stream;
 	};
 	const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		const existing = ledgers.get(laneId);
 		if (existing !== undefined) return existing;
-		const ledger = new SessionLedgerV1(session, { writer: created.harness.t5.writer, laneId });
+		const ledger = new SessionLedger(session, { writer: created.harness.t5.writer, laneId });
 		ledgers.set(laneId, ledger);
 		return ledger;
 	};
@@ -317,7 +317,7 @@ async function createFixture(options: {
 			};
 		},
 	};
-	const registry = new InMemoryRoleRegistryV1({ now: () => NOW });
+	const registry = new InMemoryRoleRegistry({ now: () => NOW });
 	composition = new TrustedSubagentCompositionV1({
 		schemaVersion: 1,
 		enabled: true,

@@ -1,12 +1,12 @@
 import {
 	FoundationError,
 	Result,
-	type ExecutionCorrelationV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type ExecutionCorrelation,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
-	type SandboxOperationRequestV1,
-	type WorkerReceiptV1,
+	type SandboxOperationRequest,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import type {
 	SafeLeaseProjectionV1,
@@ -30,12 +30,12 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "operation_worker" as const;
 	readonly providerId: string;
-	readonly starts: Array<{ readonly request: SandboxOperationRequestV1; readonly correlation: ExecutionCorrelationV1 }> = [];
+	readonly starts: Array<{ readonly request: SandboxOperationRequest; readonly correlation: ExecutionCorrelation }> = [];
 	readonly cancellations: string[] = [];
 	readonly projectedLeases: SafeLeaseProjectionV1[] = [];
 	readonly renewedLeases: SafeLeaseProjectionV1[] = [];
 	readonly revokedLeases: SafeLeaseReferenceV1[] = [];
-	readonly receipts: WorkerReceiptV1[] = [];
+	readonly receipts: WorkerReceipt[] = [];
 	capabilityCalls = 0;
 	disposeCalls = 0;
 
@@ -44,9 +44,9 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	private readonly failedCredentialActions: ReadonlySet<FakeWorkerCredentialActionV1>;
 	private readonly cancelFails: boolean;
 	private readonly disposeThrows: boolean;
-	private pendingResolve?: (receipt: WorkerReceiptV1) => void;
-	private pendingRequest?: SandboxOperationRequestV1;
-	private pendingCorrelation?: ExecutionCorrelationV1;
+	private pendingResolve?: (receipt: WorkerReceipt) => void;
+	private pendingRequest?: SandboxOperationRequest;
+	private pendingCorrelation?: ExecutionCorrelation;
 
 	constructor(options: FakeWorkerProviderOptionsV1 = {}) {
 		this.providerId = options.providerId ?? "sandbox-worker";
@@ -57,12 +57,12 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 		this.disposeThrows = options.disposeThrows ?? false;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		this.capabilityCalls += 1;
 		return this.capabilityIds.map((id) => ({ schemaVersion: 1, id, version: 1 }));
 	}
 
-	async start(request: SandboxOperationRequestV1, options?: FoundationProviderExecutionOptionsV1): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {
+	async start(request: SandboxOperationRequest, options?: FoundationProviderExecutionOptions): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		const correlation = options?.correlation;
 		if (correlation === undefined) throw new Error("fake provider requires execution correlation");
 		this.starts.push({ request, correlation });
@@ -127,7 +127,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 			: Result.ok(undefined);
 	}
 
-	private receipt(request: SandboxOperationRequestV1, correlation: ExecutionCorrelationV1): WorkerReceiptV1 {
+	private receipt(request: SandboxOperationRequest, correlation: ExecutionCorrelation): WorkerReceipt {
 		const artifacts = this.startBehavior === "oversized-frame"
 			? Array.from({ length: 64 }, (_, index) => {
 					const marker = "oversized-provider-result";

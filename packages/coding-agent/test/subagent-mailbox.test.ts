@@ -1,4 +1,4 @@
-import { InMemorySessionStorage, Session, SessionLedgerV1 } from "@aos-agent/agent-core";
+import { InMemorySessionStorage, Session, SessionLedger } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	SUBAGENT_MAILBOX_ACK_OBJECT_TYPE,
@@ -44,8 +44,8 @@ const parentEndpoint: ChildMailboxEndpointV1 = {
 
 interface Fixture {
 	readonly mailbox: SubagentMailboxV1;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly roster: ChildAgentRosterEntryV1[];
 	readonly delayCalls: number[];
 	readonly setNow: (milliseconds: number) => void;
@@ -64,11 +64,11 @@ function fixture(
 	} = {},
 ): Fixture {
 	const session = overrides.session ?? new Session(new InMemorySessionStorage({ id: "session-mailbox", createdAt: 1 }));
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		let ledger = ledgers.get(laneId);
 		if (ledger === undefined) {
-			ledger = new SessionLedgerV1(session, { ownerId: "mailbox-writer", laneId });
+			ledger = new SessionLedger(session, { ownerId: "mailbox-writer", laneId });
 			ledgers.set(laneId, ledger);
 		}
 		return ledger;

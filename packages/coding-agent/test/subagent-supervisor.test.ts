@@ -3,28 +3,28 @@ import {
 	createAttempt,
 	createModelProfileRevision,
 	createRoleRevision,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	resolveAgentBinding,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
-	validateAgentInstanceV1,
+	validateAgentInstance,
 	validateAttempt,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type AttemptReceiptV1,
+	type AgentBinding,
+	type AgentInstance,
+	type AttemptReceipt,
 	type ChildAgentProvider,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
-	type ModelProfileV1,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type TaskEnvelopeV1,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
+	type ModelProfile,
+	type RevisionReference,
+	type RoleRevision,
+	type TaskEnvelope,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
@@ -39,8 +39,8 @@ import {
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.in_process";
 
-function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
-	const result = createTaskEnvelopeV1({
+function task(taskId: string, concurrency = 2): TaskEnvelope {
+	const result = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-1",
@@ -59,7 +59,7 @@ function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
 	return result.value;
 }
 
-function role(): RoleRevisionV1 {
+function role(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -79,7 +79,7 @@ function role(): RoleRevisionV1 {
 	});
 }
 
-function profile(): ModelProfileV1 {
+function profile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-child",
@@ -91,12 +91,12 @@ function profile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): AgentBindingV1 {
+function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelProfile: ModelProfile): AgentBinding {
 	const result = resolveAgentBinding({
 		task: taskEnvelope,
 		roleRevision,
@@ -112,7 +112,7 @@ function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, mod
 	return result.value;
 }
 
-function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevisionV1): AgentInstanceV1 {
+function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevision): AgentInstance {
 	const result = createAgentInstance({
 		agentInstanceId,
 		providerId: "parent-provider",
@@ -125,7 +125,7 @@ function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRe
 	return result.value;
 }
 
-function childAgent(agentInstanceId: string, taskId: string, parent: AgentInstanceV1, roleRevision: RoleRevisionV1): AgentInstanceV1 {
+function childAgent(agentInstanceId: string, taskId: string, parent: AgentInstance, roleRevision: RoleRevision): AgentInstance {
 	const result = createAgentInstance({
 		agentInstanceId,
 		providerId: "parent-provider",
@@ -156,11 +156,11 @@ const descriptor: SubagentProviderDescriptorV1 = {
 
 interface Fixture {
 	readonly session: Session;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly supervisor: SubagentSupervisorV1;
-	readonly roleRevision: RoleRevisionV1;
-	readonly modelProfile: ModelProfileV1;
+	readonly roleRevision: RoleRevision;
+	readonly modelProfile: ModelProfile;
 	readonly misdirectChildWrites: () => void;
 	readonly scheduledQueueTimeouts: readonly { readonly milliseconds: number; readonly fire: () => void; readonly cancelled: () => boolean }[];
 }
@@ -177,14 +177,14 @@ function fixture(
 ): Fixture {
 	const session = options.session ?? new Session(new InMemorySessionStorage({ id: "session-supervisor", createdAt: 1 }));
 	const controlLaneId = options.controlLaneId ?? "control-lane";
-	const ledgers = new Map<string, SessionLedgerV1>();
+	const ledgers = new Map<string, SessionLedger>();
 	const scheduledQueueTimeouts: { milliseconds: number; fire: () => void; cancelled: () => boolean }[] = [];
 	let misdirect = false;
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		const selectedLane = misdirect && laneId !== controlLaneId ? controlLaneId : laneId;
 		let ledger = ledgers.get(selectedLane);
 		if (ledger === undefined) {
-			ledger = new SessionLedgerV1(session, { ownerId: "supervisor-writer", laneId: selectedLane });
+			ledger = new SessionLedger(session, { ownerId: "supervisor-writer", laneId: selectedLane });
 			ledgers.set(selectedLane, ledger);
 		}
 		return ledger;
@@ -326,7 +326,7 @@ async function planInput(
 	}
 	const spawnId = overrides.request?.spawnId ?? `spawn-${overrides.childAgentInstanceId ?? "1"}`;
 	const parentSpawnId = `parent-${spawnId}`;
-	const request: ChildSpawnRequestV1 = overrides.request ?? {
+	const request: ChildSpawnRequest = overrides.request ?? {
 		schemaVersion: 1,
 		spawnId,
 		parentSpawn: {
@@ -383,7 +383,7 @@ async function planInput(
 	};
 }
 
-function spawnResult(plan: SubagentSpawnPlanV1): ChildSpawnResultV1 {
+function spawnResult(plan: SubagentSpawnPlanV1): ChildSpawnResult {
 	const attempt = createAttempt({
 		attemptId: plan.initialBindingEpoch.attemptId,
 		dispatch: plan.dispatch,
@@ -425,7 +425,7 @@ async function makeRunning(value: Fixture, input: PlanSubagentSpawnInputV1): Pro
 	const childProvider = provider({
 		spawn: async () => Result.ok(spawnResult(planned.value)),
 	});
-	const settlement = new LayeredResultSettlementV1(value.session, {
+	const settlement = new LayeredResultSettlement(value.session, {
 		writer: new SessionLedgerWriter(value.session, {
 			ownerId: "supervisor-writer",
 			lane: planned.value.childLaneId,
@@ -436,7 +436,7 @@ async function makeRunning(value: Fixture, input: PlanSubagentSpawnInputV1): Pro
 	return planned.value;
 }
 
-function receipt(plan: SubagentSpawnPlanV1, status: AttemptReceiptV1["status"] = "succeeded"): AttemptReceiptV1 {
+function receipt(plan: SubagentSpawnPlanV1, status: AttemptReceipt["status"] = "succeeded"): AttemptReceipt {
 	return {
 		schemaVersion: 1,
 		attemptReceiptId: `receipt-${plan.initialBindingEpoch.attemptId}`,
@@ -463,8 +463,8 @@ function receipt(plan: SubagentSpawnPlanV1, status: AttemptReceiptV1["status"] =
 async function persistReceipt(
 	value: Fixture,
 	plan: SubagentSpawnPlanV1,
-	status: AttemptReceiptV1["status"] = "succeeded",
-): Promise<AttemptReceiptV1> {
+	status: AttemptReceipt["status"] = "succeeded",
+): Promise<AttemptReceipt> {
 	const produced = receipt(plan, status);
 	const durableAttempt = await value.ledger.get("attempt", plan.initialBindingEpoch.attemptId);
 	const attempt = durableAttempt?.kind === "fact" ? validateAttempt(durableAttempt.payload) : undefined;
@@ -491,7 +491,7 @@ async function persistReceipt(
 		ownerId: "supervisor-writer",
 		lane: plan.childLaneId,
 	});
-	const settlement = new LayeredResultSettlementV1(value.session, { writer });
+	const settlement = new LayeredResultSettlement(value.session, { writer });
 	const accepted = await settlement.executeDispatch({
 		dispatch: plan.dispatch,
 		binding: plan.childBinding,
@@ -665,7 +665,7 @@ describe("SubagentSupervisorV1", () => {
 		const parentPlan = await makeRunning(nested, await planInput(nested));
 		const durableParentAgent = await nested.ledger.get("agent_instance", parentPlan.agentInstance.agentInstanceId);
 		const checkedParentAgent = durableParentAgent?.kind === "fact"
-			? validateAgentInstanceV1(durableParentAgent.payload)
+			? validateAgentInstance(durableParentAgent.payload)
 			: undefined;
 		if (checkedParentAgent === undefined || !checkedParentAgent.ok) throw new Error("missing durable nested parent AgentInstance");
 		const grandchildInput = await planInput(nested, {
@@ -993,7 +993,7 @@ describe("SubagentSupervisorV1", () => {
 		const planned = await failing.supervisor.planSpawn(failingInput);
 		if (!planned.ok) throw planned.error;
 		failing.misdirectChildWrites();
-		const settlement = new LayeredResultSettlementV1(failing.session, {
+		const settlement = new LayeredResultSettlement(failing.session, {
 			writer: new SessionLedgerWriter(failing.session, {
 				ownerId: "supervisor-writer",
 				lane: planned.value.childLaneId,

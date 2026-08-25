@@ -2,8 +2,8 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Model, t
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { AgentHarness, type AgentHarnessFoundationExecution, type AgentHarnessOptions, type HarnessTool } from "../../src/harness/agent-harness.ts";
-import { canonicalFoundationJson, createAttempt, createHostTerminalGateAuthorityV1, fingerprintFoundationValue, FoundationError, SessionLedgerV1, type AgentBindingV1, type ArtifactStoreProvider, type AttemptReceiptV1, type AttemptV1, type DispatchV1, type FoundationJsonValue, type FoundationProviderCapabilityV1, type FoundationProviderExecutionOptionsV1, type ModelProfileV1, type RoleRevisionV1, type TaskExecutorAttemptContextV1, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
-import { FoundationToolGuardV1, FoundationToolPipelineV1, SessionToolPipelineStorageV1, finalizeToolReceiptV1, validateToolIntentV1, validateToolReceiptV1, type ToolDefinitionRegistryV1, type ToolPipelineContextV1 } from "../../src/harness/tool-pipeline.ts";
+import { canonicalFoundationJson, createAttempt, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type ArtifactStoreProvider, type AttemptReceipt, type Attempt, type Dispatch, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type RoleRevision, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
+import { FoundationToolGuard, FoundationToolPipeline, SessionToolPipelineStorage, finalizeToolReceipt, validateToolIntent, validateToolReceipt, type ToolDefinitionRegistry, type ToolPipelineContext } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
 import { InMemorySessionStorage, Session, T5_LEDGER_OBJECT_TYPES } from "../../src/harness/session/index.ts";
@@ -69,7 +69,7 @@ function immutableReference(type: string, id: string) {
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function t4RoleRevision(): RoleRevisionV1 {
+function t4RoleRevision(): RoleRevision {
 	const base = {
 		schemaVersion: 1 as const,
 		roleRevisionId: "role",
@@ -89,7 +89,7 @@ function t4RoleRevision(): RoleRevisionV1 {
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function t4ModelProfile(): ModelProfileV1 {
+function t4ModelProfile(): ModelProfile {
 	const base = { schemaVersion: 1 as const, modelProfileId: "model", provider: "openai", model: "tool-model", budget: {}, revision: 1, createdAt: T4_NOW };
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
@@ -129,11 +129,11 @@ function execution(): AgentHarnessFoundationExecution {
 		agentInstance: { schemaVersion: 1, agentInstanceId, providerId: "agent-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision }, bindingEpochIds: [bindingEpoch.bindingEpochId], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: agentInstanceId, depth: 0 }, createdAt: T4_NOW, updatedAt: T4_NOW },
 		bindingEpochIds: [bindingEpoch.bindingEpochId],
 		settlement: { tests: [{ name: "T4 public tool", required: true, status: "passed" }], evidence: [] },
-		hostAuthority: createHostTerminalGateAuthorityV1("host-public-tool"),
+		hostAuthority: createHostTerminalGateAuthority("host-public-tool"),
 	};
 }
 
-const t4ProviderCapability: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "foundation.t4.public-tool", version: 1 };
+const t4ProviderCapability: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.t4.public-tool", version: 1 };
 
 class T4FoundationProvider implements TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
@@ -143,14 +143,14 @@ class T4FoundationProvider implements TaskExecutorProvider {
 
 	constructor(session: Session) { this.session = session; }
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> { return [t4ProviderCapability]; }
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [t4ProviderCapability]; }
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider attempt context"));
 		return createAttempt({ attemptId: context.initialBindingEpoch.attemptId, dispatch, providerId: this.providerId, initialBindingEpoch: context.initialBindingEpoch, providerClass: this.providerClass, agentInstanceId: context.initialBindingEpoch.agentInstanceId, now: () => T4_NOW });
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider execution correlation"));
 		const toolReceipts = await this.session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
 		let failed = false;
@@ -162,7 +162,7 @@ class T4FoundationProvider implements TaskExecutorProvider {
 			if (payload.sideEffectState === "side_effect_unknown") sideEffectState = "side_effect_unknown";
 		}
 		const correlation = { ...options.correlation, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: `attempt_receipt_${options.correlation.runId ?? attempt.attemptId}` };
-		return Result.ok<AttemptReceiptV1>({ schemaVersion: 1, attemptReceiptId: correlation.attemptReceiptId!, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: failed || sideEffectState !== "none" ? "failed" : "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: T4_NOW, correlation }, sideEffectState, ...(failed || sideEffectState !== "none" ? { error: { code: sideEffectState === "none" ? "tool_execution_failed" : "side_effect_unknown", message: sideEffectState === "none" ? "Tool execution failed" : "Tool side effect did not converge", retryable: false } } : {}) });
+		return Result.ok<AttemptReceipt>({ schemaVersion: 1, attemptReceiptId: correlation.attemptReceiptId!, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: failed || sideEffectState !== "none" ? "failed" : "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: T4_NOW, correlation }, sideEffectState, ...(failed || sideEffectState !== "none" ? { error: { code: sideEffectState === "none" ? "tool_execution_failed" : "side_effect_unknown", message: sideEffectState === "none" ? "Tool execution failed" : "Tool side effect did not converge", retryable: false } } : {}) });
 	}
 
 	async cancelAttempt(_attemptId: string) { return Result.ok(undefined); }
@@ -170,7 +170,7 @@ class T4FoundationProvider implements TaskExecutorProvider {
 }
 
 async function seedT4Foundation(session: Session, foundation: AgentHarnessFoundationExecution): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: "t4-foundation-seed" });
+	const ledger = new SessionLedger(session, { ownerId: "t4-foundation-seed" });
 	const role = t4RoleRevision();
 	const profile = t4ModelProfile();
 	const refs = [
@@ -195,10 +195,10 @@ async function createFoundationHarness(options: AgentHarnessOptions): Promise<Aw
 	return AgentHarness.create({ ...options, foundationProvider: new T4FoundationProvider(options.session) });
 }
 
-function allowAllGuards(): FoundationToolGuardV1 {
+function allowAllGuards(): FoundationToolGuard {
 	const reference = (type: string) => ({ schemaVersion: 1 as const, type, id: type, revision: 1 });
 	const allow = (type: string) => () => Result.ok({ allowed: true, reference: reference(type) });
-	return new FoundationToolGuardV1({ capability: { check: allow("capability") }, policy: { check: allow("policy") }, approval: { check: allow("approval") }, sandbox: { check: allow("sandbox") }, quota: { check: allow("quota") }, conflictLock: { check: allow("conflict_lock") } });
+	return new FoundationToolGuard({ capability: { check: allow("capability") }, policy: { check: allow("policy") }, approval: { check: allow("approval") }, sandbox: { check: allow("sandbox") }, quota: { check: allow("quota") }, conflictLock: { check: allow("conflict_lock") } });
 }
 
 function consumerModels(toolName: string): { model: Model<"openai-responses">; models: Models; requests: () => number; contexts: () => readonly AgentContext[] } {
@@ -275,10 +275,10 @@ async function assertProjectorRejectsTamper(tamper: ProjectorTamper): Promise<vo
 					const binding = payload.binding;
 					if (binding !== null && typeof binding === "object" && !Array.isArray(binding)) (binding as Record<string, unknown>).attemptId = "tampered-step-attempt";
 				}
-				const checked = validateToolReceiptV1(payload);
+				const checked = validateToolReceipt(payload);
 				if (!checked.ok) throw checked.error;
 				const { digest: _digest, ...withoutDigest } = checked.value;
-				return { ...record, payload: foundationJson(finalizeToolReceiptV1(withoutDigest)) };
+				return { ...record, payload: foundationJson(finalizeToolReceipt(withoutDigest)) };
 			}
 			return record;
 		});
@@ -330,7 +330,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(JSON.stringify(firstReceipt.payload)).toContain('"message":"[redacted]"');
 		const intentRecord = intents[0];
 		if (intentRecord?.kind !== "intent" || intentRecord.payload === undefined) throw new Error("missing public tool intent");
-		const checkedIntent = validateToolIntentV1(intentRecord.payload);
+		const checkedIntent = validateToolIntent(intentRecord.payload);
 		if (!checkedIntent.ok) throw checkedIntent.error;
 		if (checkedIntent.value.idempotencyKey === undefined) throw new Error("public tool did not derive an idempotency key");
 		const operation = (await session.findRecords({ lane: "main", type: "operation_started", order: "oldestFirst" }))[0];
@@ -343,7 +343,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 		const restarted = await createFoundationHarness({ session, models, model, tools: [write], foundationExecution: foundation, toolPipelineOptions: { guard: allowAllGuards() } });
 		await restarted.harness.close();
 		const lease = await session.acquireWriterLease({ ownerId: "public-tool-replay" });
-		const replayContext: ToolPipelineContextV1 = {
+		const replayContext: ToolPipelineContext = {
 			sessionId: "public-tool-session",
 			laneId: "main",
 			runId: operation.id,
@@ -358,7 +358,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 			agentInstanceId: foundation.agentInstanceId,
 			workspace: foundation.task.workspace,
 		};
-		const replayStorage = new SessionToolPipelineStorageV1({
+		const replayStorage = new SessionToolPipelineStorage({
 			ledger: session,
 			laneId: "main",
 			correlationFor: (_kind, value) => createExecutionCorrelation(value.binding.sessionId!, value.binding.laneId!, {
@@ -375,10 +375,10 @@ describe("T4 public AgentHarness tool consumer", () => {
 			}),
 			fencingToken: () => lease.fencingToken,
 		});
-		const replayRegistry: ToolDefinitionRegistryV1 = {
+		const replayRegistry: ToolDefinitionRegistry = {
 			resolve: () => Result.ok({ name: "write", toolRevision: { schemaVersion: 1, type: "tool_revision", id: "tool:write", revision: 1 }, capabilities: [], parameters: Type.Object({ value: Type.String() }, { additionalProperties: false }), execute: async () => { sideEffects += 1; return { ok: true, sideEffectState: "none" }; } }),
 		};
-		const replayPipeline = new FoundationToolPipelineV1({ registry: replayRegistry, storage: replayStorage, guard: allowAllGuards() });
+		const replayPipeline = new FoundationToolPipeline({ registry: replayRegistry, storage: replayStorage, guard: allowAllGuards() });
 		const replay = await replayPipeline.execute({ toolCallId: checkedIntent.value.toolCallId, toolName: checkedIntent.value.toolName, idempotencyKey: checkedIntent.value.idempotencyKey, attempt: checkedIntent.value.attempt, args: { value: "x" } }, replayContext);
 		expect(replay).toMatchObject({ ok: true, value: { deduplicatedFrom: expect.any(String) } });
 		expect(JSON.stringify(replay.ok ? replay.value.result : undefined)).toContain('"token":"[redacted]"');
@@ -692,10 +692,10 @@ describe("T4 public AgentHarness tool consumer", () => {
 			const accepted = await originalAppend(record);
 			if (!injected && record.kind === "fact" && record.objectType === "tool_receipt" && record.payload !== undefined) {
 				injected = true;
-				const checked = validateToolReceiptV1(record.payload);
+				const checked = validateToolReceipt(record.payload);
 				if (!checked.ok) throw checked.error;
 				const { digest: _digest, result: _result, artifacts: _artifacts, ...withoutResult } = checked.value;
-				const unknown = finalizeToolReceiptV1({
+				const unknown = finalizeToolReceipt({
 					...withoutResult,
 					toolReceiptId: "duplicate-unknown",
 					outcome: "side_effect_unknown",
@@ -703,7 +703,7 @@ describe("T4 public AgentHarness tool consumer", () => {
 					error: { code: "side_effect_unknown", message: "duplicate outcome unknown", retryable: false },
 				});
 				const { digest: _successDigest, ...withoutSuccessDigest } = checked.value;
-				const success = finalizeToolReceiptV1({ ...withoutSuccessDigest, toolReceiptId: "duplicate-success" });
+				const success = finalizeToolReceipt({ ...withoutSuccessDigest, toolReceiptId: "duplicate-success" });
 				await originalAppend({ ...record, id: "tool_receipt:duplicate-unknown", objectId: unknown.toolReceiptId, clientRequestId: "duplicate-unknown", payload: foundationJson(unknown) });
 				await originalAppend({ ...record, id: "tool_receipt:duplicate-success", objectId: success.toolReceiptId, clientRequestId: "duplicate-success", payload: foundationJson(success) });
 			}

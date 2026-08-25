@@ -11,8 +11,8 @@ import type {
 	ToolStartedRecord,
 	WriteDeferredRecord,
 } from "./session/types.ts";
-import { canonicalFoundationJson, type ExecutionCorrelationV1 } from "./foundation/identity.ts";
-import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, projectToolReceiptExecutionSemanticsV1, validateFoundationToolResultEntryV1, type ToolBindingRefV1, type ToolIntentV1, type ToolReceiptV1 } from "./tool-pipeline.ts";
+import { canonicalFoundationJson, type ExecutionCorrelation } from "./foundation/identity.ts";
+import { FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, projectToolReceiptExecutionSemantics, validateFoundationToolResultEntry, type ToolBindingRef, type ToolIntent, type ToolReceipt } from "./tool-pipeline.ts";
 
 /**
  * Machine-readable category for a contradiction in a lane's durable recovery
@@ -76,8 +76,8 @@ export interface ToolBatchState {
 		toolIndex: number;
 		toolCall: AgentToolCall;
 		started?: ToolStartedRecord;
-		intent?: ToolIntentV1;
-		receipt?: ToolReceiptV1;
+		intent?: ToolIntent;
+		receipt?: ToolReceipt;
 		resultExists: boolean;
 		terminate?: boolean;
 	}[];
@@ -303,10 +303,10 @@ export interface LaneReductionInput extends RecordLogSlice {
 	configurationEntries: readonly Entry[];
 	/** Harness option fallbacks used when no persisted value exists. */
 	defaults: EffectiveLaneConfiguration;
-	toolIntents?: readonly ToolIntentV1[];
-	toolReceipts?: readonly ToolReceiptV1[];
+	toolIntents?: readonly ToolIntent[];
+	toolReceipts?: readonly ToolReceipt[];
 	/** Complete execution identity used to exclude tool facts from another attempt or operation. */
-	toolIdentity?: Partial<ExecutionCorrelationV1>;
+	toolIdentity?: Partial<ExecutionCorrelation>;
 }
 
 export interface LaneReductionResult {
@@ -463,7 +463,7 @@ function validateToolStart(
 		(entry) => {
 			if (entry.type === "message") return entry.message.role === "toolResult" && entry.message.toolCallId === record.toolCallId && entry.message.toolName === record.toolName;
 			if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
-			const checked = validateFoundationToolResultEntryV1(entry.data);
+			const checked = validateFoundationToolResultEntry(entry.data);
 			return checked.ok && checked.value.runId === record.runId && checked.value.operationId === record.runId && checked.value.toolCallId === record.toolCallId && checked.value.toolName === record.toolName;
 		},
 		"tool result",
@@ -790,10 +790,10 @@ function deriveNewestOwn(
 }
 
 function toolIdentityMatches(
-	binding: ToolBindingRefV1,
-	identity: Partial<ExecutionCorrelationV1>,
+	binding: ToolBindingRef,
+	identity: Partial<ExecutionCorrelation>,
 ): boolean {
-	const expected: Array<[keyof ToolBindingRefV1, string | undefined]> = [
+	const expected: Array<[keyof ToolBindingRef, string | undefined]> = [
 		["sessionId", identity.sessionId],
 		["laneId", identity.laneId],
 		["runId", identity.runId],
@@ -812,8 +812,8 @@ function toolIdentityMatches(
 	return true;
 }
 
-function foldToolReceiptsByCallId(receipts: readonly ToolReceiptV1[], identity: Partial<ExecutionCorrelationV1>): { values: Map<string, ToolReceiptV1>; conflict: boolean } {
-	const folded = new Map<string, ToolReceiptV1>();
+function foldToolReceiptsByCallId(receipts: readonly ToolReceipt[], identity: Partial<ExecutionCorrelation>): { values: Map<string, ToolReceipt>; conflict: boolean } {
+	const folded = new Map<string, ToolReceipt>();
 	let conflict = false;
 	for (const receipt of receipts) {
 		if (!toolIdentityMatches(receipt.binding, identity)) continue;
@@ -822,7 +822,7 @@ function foldToolReceiptsByCallId(receipts: readonly ToolReceiptV1[], identity: 
 			folded.set(receipt.toolCallId, receipt);
 			continue;
 		}
-		if (projectToolReceiptExecutionSemanticsV1(existing) !== projectToolReceiptExecutionSemanticsV1(receipt)) {
+		if (projectToolReceiptExecutionSemantics(existing) !== projectToolReceiptExecutionSemantics(receipt)) {
 			conflict = true;
 		}
 		const existingCanonical = canonicalFoundationJson(existing);
@@ -840,9 +840,9 @@ function deriveToolBatch(
 	ownEntries: readonly Entry[],
 	entriesById: ReadonlyMap<string, Entry>,
 	deferredWriteIds: ReadonlySet<string>,
-	toolIntents: readonly ToolIntentV1[] = [],
-	toolReceipts: readonly ToolReceiptV1[] = [],
-	toolIdentity: Partial<ExecutionCorrelationV1> = {},
+	toolIntents: readonly ToolIntent[] = [],
+	toolReceipts: readonly ToolReceipt[] = [],
+	toolIdentity: Partial<ExecutionCorrelation> = {},
 ): ToolBatchState | null {
 	const assistantEntry = [...ownEntries]
 		.reverse()
@@ -857,7 +857,7 @@ function deriveToolBatch(
 	const toolCalls = assistantEntry.message.content.filter(
 		(content): content is AgentToolCall => content.type === "toolCall",
 	);
-	const identity: Partial<ExecutionCorrelationV1> = {
+	const identity: Partial<ExecutionCorrelation> = {
 		...toolIdentity,
 		...(toolIdentity.sessionId === undefined && sessionId === undefined ? {} : { sessionId: toolIdentity.sessionId ?? sessionId }),
 		laneId,
@@ -865,7 +865,7 @@ function deriveToolBatch(
 		operationId: toolIdentity.operationId ?? operationId,
 	};
 	const starts = new Map<number, ToolStartedRecord>();
-	const intents = new Map<string, ToolIntentV1>();
+	const intents = new Map<string, ToolIntent>();
 	for (const intent of toolIntents) {
 		if (toolIdentityMatches(intent.binding, identity)) intents.set(intent.toolCallId, intent);
 	}
@@ -886,7 +886,7 @@ function deriveToolBatch(
 			return entry.message.role === "toolResult" && entry.message.toolCallId === toolCallId && entry.message.toolName === toolName;
 		}
 		if (entry.type !== "custom" || entry.customType !== FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) return false;
-		const checked = validateFoundationToolResultEntryV1(entry.data);
+		const checked = validateFoundationToolResultEntry(entry.data);
 		return checked.ok && (expectedRunId === undefined || (checked.value.runId === expectedRunId && checked.value.operationId === expectedRunId)) && checked.value.toolCallId === toolCallId && checked.value.toolName === toolName;
 	};
 

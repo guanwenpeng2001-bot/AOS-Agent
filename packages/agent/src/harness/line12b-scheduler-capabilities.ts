@@ -2,8 +2,8 @@
 
 import {
 	foundationClosureById,
-	type FoundationCapabilityClosureV1,
-} from "./foundation-v1-capabilities.ts";
+	type FoundationCapabilityClosure,
+} from "./foundation-capabilities.ts";
 
 export type Line12bSchedulerClosureStatus = "implemented" | "consumed_foundation";
 export type Line12bSchedulerDeferredOwner = "12A" | "13" | "14" | "15";
@@ -14,7 +14,7 @@ export interface Line12bSchedulerCapabilityClosureV1 {
 	readonly ownerModule: string;
 	readonly publicContract: string;
 	readonly tests: readonly string[];
-	readonly foundationClosure?: FoundationCapabilityClosureV1;
+	readonly foundationClosure?: FoundationCapabilityClosure;
 }
 
 export interface Line12bSchedulerDeferredCapabilityV1 {
@@ -23,7 +23,7 @@ export interface Line12bSchedulerDeferredCapabilityV1 {
 	readonly reason: string;
 }
 
-function requireFoundationClosure(id: number): FoundationCapabilityClosureV1 {
+function requireFoundationClosure(id: number): FoundationCapabilityClosure {
 	const closure = foundationClosureById(id);
 	if (closure === undefined) throw new Error(`Foundation capability ${id} is not closed`);
 	return closure;

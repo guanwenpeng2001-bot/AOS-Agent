@@ -5,12 +5,12 @@ import {
 	FoundationError,
 	Result,
 	type ArtifactStoreProvider,
-	type AttemptReceiptV1,
-	type FingerprintV1,
+	type AttemptReceipt,
+	type Fingerprint,
 	type Result as ResultValue,
-	type SessionLedgerV1,
-	validateAttemptReceiptV1,
-	validateTaskResultV1,
+	type SessionLedger,
+	validateAttemptReceipt,
+	validateTaskResult,
 } from "@aos-agent/agent-core";
 import type {
 	ChildMailboxMessageV1,
@@ -66,7 +66,7 @@ export interface SafeChildMailboxContextV1 {
 	readonly kind: "input" | "query" | "notice";
 	readonly safeText: string;
 	readonly trust: "untrusted_child_output";
-	readonly digest: FingerprintV1;
+	readonly digest: Fingerprint;
 	readonly producedAt: string;
 }
 
@@ -75,7 +75,7 @@ export type SafeSubagentNextTurnContextV1 = SafeChildMailboxContextV1 | SafeChil
 export interface SubagentContextIngressOptionsV1 {
 	readonly schemaVersion: 1;
 	readonly mailbox: Pick<SubagentMailboxV1, "consume">;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly artifactStore: ArtifactStoreProvider;
 	readonly sessionId: string;
 	readonly parentLaneId: string;
@@ -111,7 +111,7 @@ function canonicalText(value: string): string {
 	return value.normalize("NFC").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 }
 
-function fingerprintMatches(left: FingerprintV1, right: FingerprintV1): boolean {
+function fingerprintMatches(left: Fingerprint, right: Fingerprint): boolean {
 	return left.algorithm === right.algorithm && left.value === right.value;
 }
 
@@ -208,7 +208,7 @@ async function resolveResultReference(
 	) {
 		return untrusted("Child result_ref body has an invalid exact shape");
 	}
-	let durable: Awaited<ReturnType<SessionLedgerV1["get"]>>;
+	let durable: Awaited<ReturnType<SessionLedger["get"]>>;
 	try {
 		durable = await options.ledger.get(body.objectType, body.objectId);
 	} catch {
@@ -219,12 +219,12 @@ async function resolveResultReference(
 		durable.kind !== "fact" ||
 		durable.objectType !== body.objectType ||
 		durable.objectId !== body.objectId ||
-		!fingerprintMatches(body.digest as unknown as FingerprintV1, fingerprintFoundationValue(durable.payload))
+		!fingerprintMatches(body.digest as unknown as Fingerprint, fingerprintFoundationValue(durable.payload))
 	) {
 		return untrusted("Child result_ref does not match an immutable durable source");
 	}
 	if (body.objectType === "attempt_receipt") {
-		const receipt = validateAttemptReceiptV1(durable.payload, { providerClass: "agent" });
+		const receipt = validateAttemptReceipt(durable.payload, { providerClass: "agent" });
 		if (!receipt.ok || receipt.value.agentInstanceId === undefined) {
 			return untrusted("Child result_ref does not resolve to an agent AttemptReceipt");
 		}
@@ -245,14 +245,14 @@ async function resolveResultReference(
 			},
 		);
 	}
-	const taskResult = validateTaskResultV1(durable.payload);
+	const taskResult = validateTaskResult(durable.payload);
 	if (!taskResult.ok) return untrusted("Child result_ref does not resolve to a TaskResult");
-	const receipts: AttemptReceiptV1[] = [];
+	const receipts: AttemptReceipt[] = [];
 	let childLaneId: string | undefined;
 	for (const receiptId of taskResult.value.sourceAttemptReceiptIds) {
 		const record = await options.ledger.get("attempt_receipt", receiptId).catch(() => undefined);
 		if (record === undefined || record.kind !== "fact") return untrusted("Child TaskResult source receipt is missing");
-		const receipt = validateAttemptReceiptV1(record.payload, { providerClass: "agent" });
+		const receipt = validateAttemptReceipt(record.payload, { providerClass: "agent" });
 		if (!receipt.ok || receipt.value.agentInstanceId === undefined) return untrusted("Child TaskResult source receipt is invalid");
 		if (childLaneId !== undefined && childLaneId !== record.lane) return untrusted("Child TaskResult source lanes are inconsistent");
 		childLaneId = record.lane;

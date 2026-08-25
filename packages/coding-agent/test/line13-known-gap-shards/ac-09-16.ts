@@ -16,7 +16,7 @@ import {
 	FoundationError,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	createAttempt,
 	createBindingEpoch,
 	createExecutionCorrelation,
@@ -24,22 +24,22 @@ import {
 	createRoleRevision,
 	fingerprintFoundationValue,
 	resolveAgentBinding,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type BudgetUsageV1,
-	type DispatchV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type ModelProfileV1,
-	type QuotaAttributionV1,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Attempt,
+	type BudgetUsage,
+	type Dispatch,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type ModelProfile,
+	type QuotaAttribution,
 	type QuotaProvider,
-	type QuotaReservationV1,
-	type RevisionReferenceV1,
-	type TaskEnvelopeV1,
-	type TaskExecutorAttemptContextV1,
+	type QuotaReservation,
+	type RevisionReference,
+	type TaskEnvelope,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-	validateAttemptReceiptForProviderV1,
+	validateAttemptReceiptForProvider,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import ts from "typescript";
@@ -66,12 +66,13 @@ import {
 	getCapabilityPublicIdentityPath,
 } from "../../src/core/capability-public-identity.ts";
 import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "../../src/core/scheduler-executors.ts";
-import type {
-	SchedulerExecutorEntryV1,
-	SchedulerQueueEntryV1,
-} from "../../src/core/scheduler.ts";
+import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../../src/core/scheduler.ts";
 import { SessionManagerStorage } from "../../src/core/session-manager-storage.ts";
-import { defineLine13KnownGapCase, defineLine13KnownGapCaseShard } from "../support/line13-known-gaps.ts";
+import {
+	defineLine13KnownGapCase,
+	defineLine13KnownGapCaseShard,
+	defineLine13ResolvedCase,
+} from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
 
 const BASE_SHA = "db279303b9e894b58acea165ab44f74bfdf0cddb" as const;
@@ -80,13 +81,13 @@ const LATER = "2026-08-25T00:01:00.000Z";
 const SESSION_ID = "line13-ac09-session";
 const TASK_ID = "line13-ac09-task";
 const OWNER_ID = "line13-ac09-owner";
-const CAPABILITY: FoundationProviderCapabilityV1 = {
+const CAPABILITY: FoundationProviderCapability = {
 	schemaVersion: 1,
 	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	version: 1,
 };
 
-function taskEnvelope(): TaskEnvelopeV1 {
+function taskEnvelope(): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: TASK_ID,
@@ -129,7 +130,7 @@ function roleRevision() {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "line13-ac09-profile",
@@ -141,12 +142,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(): AgentBindingV1 {
+function binding(): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: taskEnvelope(),
 		roleRevision: roleRevision(),
@@ -162,8 +163,8 @@ function binding(): AgentBindingV1 {
 	return resolved.value;
 }
 
-async function seedBindingFacts(session: Session, value: AgentBindingV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: `${OWNER_ID}-seed` });
+async function seedBindingFacts(session: Session, value: AgentBinding): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: `${OWNER_ID}-seed` });
 	await ledger.appendFact("task", value.taskId, taskEnvelope(), {
 		clientRequestId: "line13-ac09-seed-task",
 		expectedRevision: 0,
@@ -250,12 +251,12 @@ async function registerExecutor(
 
 interface SelectionReplayFixture {
 	readonly session: Session;
-	readonly currentBinding: AgentBindingV1;
+	readonly currentBinding: AgentBinding;
 	reopenedController?: SchedulerDispatchController;
 	request?: {
 		readonly queueEntryId: string;
 		readonly fencingToken: string;
-		readonly binding: AgentBindingV1;
+		readonly binding: AgentBinding;
 	};
 }
 
@@ -327,15 +328,11 @@ class Line13AgentTaskExecutor implements TaskExecutorProvider {
 	readonly providerId = "line13.native-agent";
 	readonly providerClass = "agent" as const;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [];
 	}
 
-	async createAttempt(
-		dispatch: DispatchV1,
-		_binding: AgentBindingV1,
-		context?: TaskExecutorAttemptContextV1,
-	) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context?.agentInstance === undefined) {
 			return Result.err(
 				new FoundationError(
@@ -355,7 +352,7 @@ class Line13AgentTaskExecutor implements TaskExecutorProvider {
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		const correlation = options?.correlation;
 		if (
 			attempt.agentInstanceId === undefined ||
@@ -367,7 +364,7 @@ class Line13AgentTaskExecutor implements TaskExecutorProvider {
 			);
 		}
 		const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
-		const receipt: AttemptReceiptV1 = {
+		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
 			attemptReceiptId,
 			taskId: attempt.taskId,
@@ -388,7 +385,7 @@ class Line13AgentTaskExecutor implements TaskExecutorProvider {
 			},
 			sideEffectState: "none",
 		};
-		return validateAttemptReceiptForProviderV1(receipt, {
+		return validateAttemptReceiptForProvider(receipt, {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});
@@ -407,7 +404,7 @@ interface AgentDispatchFixture {
 	readonly registry: SchedulerExecutorRegistry;
 	readonly controller: SchedulerDispatchController;
 	readonly provider: Line13AgentTaskExecutor;
-	readonly currentBinding: AgentBindingV1;
+	readonly currentBinding: AgentBinding;
 	fencingToken?: string;
 }
 
@@ -484,7 +481,7 @@ async function prepareCapacityFixture(fixture: CapacityFixture): Promise<void> {
 
 interface QuotaThrowFixture {
 	readonly provider: SchedulerInProcessTaskExecutorProvider;
-	readonly attempt: AttemptV1;
+	readonly attempt: Attempt;
 	readonly correlation: ReturnType<typeof createExecutionCorrelation>;
 	readonly settled: { count: number };
 }
@@ -496,7 +493,7 @@ function quotaThrowFixture(): QuotaThrowFixture {
 		providerId: "line13.scheduler.quota",
 		providerClass: "quota",
 		capabilities: async () => [],
-		reserve: async (attribution: QuotaAttributionV1, budget: QuotaReservationV1["budget"]) =>
+		reserve: async (attribution: QuotaAttribution, budget: QuotaReservation["budget"]) =>
 			Result.ok({
 				schemaVersion: 1,
 				reservationId: "line13-ac12-reservation",
@@ -504,7 +501,7 @@ function quotaThrowFixture(): QuotaThrowFixture {
 				budget,
 				grantedAt: NOW,
 			}),
-		settle: async (_reservation: QuotaReservationV1, usage: BudgetUsageV1) => {
+		settle: async (_reservation: QuotaReservation, usage: BudgetUsage) => {
 			settled.count += 1;
 			return Result.ok(usage);
 		},
@@ -661,11 +658,11 @@ function declarationVersionTarget(declaration: ts.Declaration): string | undefin
 function versionedTarget(checker: ts.TypeChecker, symbol: ts.Symbol): string | undefined {
 	if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
 		const aliased = checker.getAliasedSymbol(symbol);
-		if (/V\d+$/.test(aliased.name)) return aliased.name;
+		if (/_?V\d+(?=[A-Z_]|$)/.test(aliased.name)) return aliased.name;
 	}
 	for (const declaration of symbol.declarations ?? []) {
 		const target = declarationVersionTarget(declaration);
-		if (target !== undefined && /V\d+$/.test(target)) return target;
+		if (target !== undefined && /_?V\d+(?=[A-Z_]|$)/.test(target)) return target;
 	}
 	return undefined;
 }
@@ -695,7 +692,7 @@ function currentVersionedPublicExports(): readonly string[] {
 		const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
 		if (moduleSymbol === undefined) throw new Error(`Missing module symbol for ${publicRoot.source}`);
 		for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
-			if (/V\d+$/.test(symbol.name) || versionedTarget(checker, symbol) !== undefined) {
+			if (/_?V\d+(?=[A-Z_]|$)/.test(symbol.name) || versionedTarget(checker, symbol) !== undefined) {
 				found.push(`${publicRoot.packageName}:${publicRoot.specifier}:${symbol.name}`);
 			}
 		}
@@ -873,7 +870,11 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 						throw new Error("Selection replay fixture is incomplete");
 					}
 					const replayed = await fixture.reopenedController.dispatchClaimed(fixture.request);
-					assert.equal(replayed.ok, false, "expected the restarted Scheduler to reject an unavailable durable selection");
+					assert.equal(
+						replayed.ok,
+						false,
+						"expected the restarted Scheduler to reject an unavailable durable selection",
+					);
 					if (replayed.ok) return;
 					assert.equal(
 						replayed.error.code,
@@ -1023,31 +1024,9 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 		}),
 		defineLine13KnownGapCase({
 			entry: {
-				ac: "AC-14",
-				fullTestName: "Line 13 AC-14 removes version-suffixed business exports and aliases from public roots",
-				baseSha: BASE_SHA,
-				ownerStage: "T1a",
-				mode: "fails",
-				expectedFailure: {
-					reason: "public.version_suffix_exported",
-					fingerprint: "sha256:bb1618b6e76a7d139b5ad09d68e4303bda0a4e6fa40c509bf824416949231b67",
-				},
-			},
-			scenario: {
-				fixture: currentVersionedPublicExports,
-				assertion: (versionedExports) => {
-					assert.equal(
-						versionedExports.length,
-						0,
-						"expected public roots to expose no version-suffixed business declarations or aliases",
-					);
-				},
-			},
-		}),
-		defineLine13KnownGapCase({
-			entry: {
 				ac: "AC-15",
-				fullTestName: "Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
+				fullTestName:
+					"Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
 				baseSha: BASE_SHA,
 				ownerStage: "T9a",
 				mode: "fails",
@@ -1109,6 +1088,22 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				},
 				cleanup: ({ tempDir }) => {
 					rmSync(tempDir, { recursive: true, force: true });
+				},
+			},
+		}),
+	],
+	resolvedCases: [
+		defineLine13ResolvedCase({
+			ac: "AC-14",
+			fullTestName: "Line 13 AC-14 removes version-suffixed business exports and aliases from public roots",
+			scenario: {
+				fixture: currentVersionedPublicExports,
+				assertion: (versionedExports) => {
+					assert.equal(
+						versionedExports.length,
+						0,
+						`expected public roots to expose no version-suffixed business declarations or aliases: ${versionedExports.join(", ")}`,
+					);
 				},
 			},
 		}),

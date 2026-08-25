@@ -7,27 +7,27 @@ import {
 	FoundationError,
 	Result,
 	sha256HexValue,
-	validateAttemptReceiptForProviderV1,
-	validateAndVerifyToolReceiptV1,
-	validateToolExecutionResultV1,
+	validateAttemptReceiptForProvider,
+	validateAndVerifyToolReceipt,
+	validateToolExecutionResult,
 	validateWorkerReceipt,
-	validateWorkerReceiptForProviderV1,
-	type AgentBindingV1,
+	validateWorkerReceiptForProvider,
+	type AgentBinding,
 	type AgentHarness,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type DispatchV1,
+	type AttemptReceipt,
+	type Attempt,
+	type Dispatch,
 	type FoundationJsonValue,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
-	type ToolExecutionResultV1,
-	type WorkerReceiptRefV1,
-	type ModelProfileV1,
-	type RoleRevisionV1,
+	type ToolExecutionResult,
+	type WorkerReceiptRef,
+	type ModelProfile,
+	type RoleRevision,
 	type Session,
 	type StepAttemptRecord,
-	type TaskExecutorAttemptContextV1,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
@@ -35,12 +35,12 @@ import type { Api, ImageContent, Model, Models } from "@aos-agent/ai";
 import {
 	PROMPT_TASK_DEPENDENCY_NAMES,
 	createPromptTaskAdapter,
-	type PromptTaskCompositionDependenciesV1,
-	type PromptTaskDependencyContextV1,
-	type PromptTaskDependencyNameV1,
-	type PromptTaskExecutionV1,
+	type PromptTaskCompositionDependencies,
+	type PromptTaskDependencyContext,
+	type PromptTaskDependencyName,
+	type PromptTaskExecution,
 } from "./prompt-task-adapter.ts";
-import { isRuntimeSessionSurfaceV1, type RuntimeSessionSurfaceV1 } from "./runtime-session-surface.ts";
+import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { TrustedSubagentCompositionV1 } from "./subagent-composition.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
@@ -64,7 +64,7 @@ interface WorkerToolExecutionFactV1 {
 	readonly bindingId: string;
 	readonly bindingEpochId: string;
 	readonly agentInstanceId?: string;
-	readonly result: ToolExecutionResultV1;
+	readonly result: ToolExecutionResult;
 }
 
 const WORKER_TOOL_EXECUTION_FACT_KEYS = new Set([
@@ -106,7 +106,7 @@ const DEPENDENCY_FACT_TYPES = {
 	graph: "task_graph_binding",
 	credential: "credential_lease_binding",
 	adapter: "external_agent_binding",
-} as const satisfies Record<PromptTaskDependencyNameV1, string>;
+} as const satisfies Record<PromptTaskDependencyName, string>;
 
 type ProductPromptIngressFactV1 = {
 	readonly schemaVersion: 1;
@@ -114,7 +114,7 @@ type ProductPromptIngressFactV1 = {
 	readonly id: string;
 	readonly revision: 1;
 	readonly runId: string;
-	readonly surface: RuntimeSessionSurfaceV1;
+	readonly surface: RuntimeSessionSurface;
 	readonly inputDigest: string;
 	readonly submittedAt: string;
 } & { readonly [key: string]: FoundationJsonValue };
@@ -135,7 +135,7 @@ export interface ProductPromptIngressOptionsV1 {
 	readonly currentModel: () => Model<Api>;
 	readonly currentThinkingLevel: () => ThinkingLevel;
 	readonly dependencySnapshot: (
-		name: PromptTaskDependencyNameV1,
+		name: PromptTaskDependencyName,
 		context: ProductPromptDependencySnapshotContextV1,
 	) => FoundationJsonValue;
 	/** Explicit trusted Host opt-in. Omission keeps product prompts on the existing path. */
@@ -145,7 +145,7 @@ export interface ProductPromptIngressOptionsV1 {
 
 export interface ProductPromptInputV1 {
 	readonly prompt: string;
-	readonly surface: RuntimeSessionSurfaceV1;
+	readonly surface: RuntimeSessionSurface;
 	readonly images?: readonly ImageContent[];
 	readonly continuation?: boolean;
 	readonly runId?: string;
@@ -165,12 +165,12 @@ function promptToken(runId: string): string {
 function inputDigest(
 	prompt: string,
 	images: readonly ImageContent[] | undefined,
-	surface: RuntimeSessionSurfaceV1,
+	surface: RuntimeSessionSurface,
 ): string {
 	return fingerprintFoundationValue({ prompt, images: images ?? [], surface }).value;
 }
 
-function roleRevision(token: string, modelProfile: ModelProfileV1, timestamp: string): RoleRevisionV1 {
+function roleRevision(token: string, modelProfile: ModelProfile, timestamp: string): RoleRevision {
 	const base = {
 		schemaVersion: 1 as const,
 		roleRevisionId: `role_revision_coding_agent_${token}`,
@@ -196,7 +196,7 @@ function roleRevision(token: string, modelProfile: ModelProfileV1, timestamp: st
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
-function modelProfile(token: string, model: Model<Api>, thinkingLevel: ThinkingLevel, timestamp: string): ModelProfileV1 {
+function modelProfile(token: string, model: Model<Api>, thinkingLevel: ThinkingLevel, timestamp: string): ModelProfile {
 	const base = {
 		schemaVersion: 1 as const,
 		modelProfileId: `model_profile_coding_agent_${token}`,
@@ -216,11 +216,11 @@ function dependencies(
 	providerId: string,
 	snapshot: ProductPromptIngressOptionsV1["dependencySnapshot"],
 	context: ProductPromptDependencySnapshotContextV1,
-): PromptTaskCompositionDependenciesV1 {
+): PromptTaskCompositionDependencies {
 	return Object.fromEntries(PROMPT_TASK_DEPENDENCY_NAMES.map((name) => [name, {
 		name,
 		revision: 1,
-		resolve: (_dependencyContext: PromptTaskDependencyContextV1) => {
+		resolve: (_dependencyContext: PromptTaskDependencyContext) => {
 			const payload = {
 				schemaVersion: 1 as const,
 				type: DEPENDENCY_FACT_TYPES[name],
@@ -240,7 +240,7 @@ function dependencies(
 				payload,
 			};
 		},
-	}])) as unknown as PromptTaskCompositionDependenciesV1;
+	}])) as unknown as PromptTaskCompositionDependencies;
 }
 
 class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
@@ -254,11 +254,11 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 	}
 
 	private async workerReceiptRefs(
-		attempt: AttemptV1,
-		correlation: NonNullable<FoundationProviderExecutionOptionsV1["correlation"]>,
-	): Promise<ResultValue<readonly WorkerReceiptRefV1[], FoundationError>> {
+		attempt: Attempt,
+		correlation: NonNullable<FoundationProviderExecutionOptions["correlation"]>,
+	): Promise<ResultValue<readonly WorkerReceiptRef[], FoundationError>> {
 		const executionRecords = await this.session.findFoundationRecords({ kind: "fact", objectType: WORKER_TOOL_EXECUTION_OBJECT_TYPE, includePruned: true, order: "oldestFirst" });
-		const byId = new Map<string, WorkerReceiptRefV1>();
+		const byId = new Map<string, WorkerReceiptRef>();
 		for (const record of executionRecords) {
 			if (record.kind !== "fact") continue;
 			const durableCorrelationBelongsToAttempt =
@@ -292,7 +292,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Durable Worker ToolExecutionResult does not match the current Attempt"));
 			}
-			const checkedResult = validateToolExecutionResultV1(fact.result);
+			const checkedResult = validateToolExecutionResult(fact.result);
 			if (!checkedResult.ok || checkedResult.value.toolReceiptRef === undefined) {
 				return Result.err(new FoundationError("worker_receipt_invalid", "Durable Worker ToolExecutionResult has no validated receipt reference"));
 			}
@@ -305,7 +305,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			}
 			const genericWorker = validateWorkerReceipt(stored.payload);
 			if (!genericWorker.ok) return Result.err(new FoundationError("worker_receipt_invalid", "Durable WorkerReceipt fact is malformed"));
-			const worker = validateWorkerReceiptForProviderV1(genericWorker.value, { providerId: fact.providerId, providerClass: "operation_worker" });
+			const worker = validateWorkerReceiptForProvider(genericWorker.value, { providerId: fact.providerId, providerClass: "operation_worker" });
 			if (!worker.ok) return Result.err(worker.error);
 			if (worker.value.taskId !== fact.taskId || worker.value.dispatchId !== fact.dispatchId || worker.value.attemptId !== fact.attemptId) return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
 			const workerCorrelation = worker.value.provenance.correlation;
@@ -332,7 +332,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
 			}
-			const reference: WorkerReceiptRefV1 = {
+			const reference: WorkerReceiptRef = {
 				schemaVersion: 1,
 				type: "worker_receipt",
 				id: worker.value.workerReceiptId,
@@ -348,14 +348,14 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		return Result.ok([...byId.values()].sort((left, right) => left.id.localeCompare(right.id)));
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "foundation.prompt-task", version: 1 }];
 	}
 
 	async createAttempt(
-		dispatch: DispatchV1,
-		_binding: AgentBindingV1,
-		context?: TaskExecutorAttemptContextV1,
+		dispatch: Dispatch,
+		_binding: AgentBinding,
+		context?: TaskExecutorAttemptContext,
 	) {
 		if (context === undefined || context.initialBindingEpoch.agentInstanceId === undefined) {
 			return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Coding-agent provider requires the bound AgentInstance"));
@@ -370,7 +370,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		const correlation = options?.correlation;
 		if (
 			correlation?.runId === undefined ||
@@ -429,7 +429,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		});
 		const toolReceipts = toolReceiptRecords.flatMap((record) => {
 			if (record.kind !== "fact") return [];
-			const checked = validateAndVerifyToolReceiptV1(record.payload);
+			const checked = validateAndVerifyToolReceipt(record.payload);
 			return checked.ok ? [checked.value] : [];
 		});
 		const toolsSucceeded = toolStarts.every((start) => {
@@ -448,7 +448,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		const producedAt = new Date(assistant.timestamp).toISOString();
 		const workerReceiptRefs = await this.workerReceiptRefs(attempt, correlation);
 		if (!workerReceiptRefs.ok) return workerReceiptRefs;
-		const receipt: AttemptReceiptV1 = {
+		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
 			attemptReceiptId,
 			taskId: attempt.taskId,
@@ -477,7 +477,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			},
 			sideEffectState: sideEffectUnknown ? "side_effect_unknown" : "none",
 		};
-		return validateAttemptReceiptForProviderV1(receipt, { providerId: this.providerId, providerClass: this.providerClass });
+		return validateAttemptReceiptForProvider(receipt, { providerId: this.providerId, providerClass: this.providerClass });
 	}
 
 	async cancelAttempt(_attemptId: string) {
@@ -503,7 +503,7 @@ export class ProductPromptIngressV1 {
 		runId: string,
 		prompt: string,
 		images: readonly ImageContent[] | undefined,
-		surface: RuntimeSessionSurfaceV1,
+		surface: RuntimeSessionSurface,
 	): Promise<ProductPromptIngressFactV1> {
 		const id = `product_prompt_${promptToken(runId)}`;
 		const digest = inputDigest(prompt, images, surface);
@@ -519,7 +519,7 @@ export class ProductPromptIngressV1 {
 				fact.id !== id ||
 				fact.revision !== 1 ||
 				fact.runId !== runId ||
-				!isRuntimeSessionSurfaceV1(fact.surface) ||
+				!isRuntimeSessionSurface(fact.surface) ||
 				fact.surface !== surface ||
 				fact.inputDigest !== digest ||
 				Number.isNaN(Date.parse(fact.submittedAt))
@@ -554,9 +554,9 @@ export class ProductPromptIngressV1 {
 		return written.payload;
 	}
 
-	async execute(input: ProductPromptInputV1): Promise<PromptTaskExecutionV1> {
+	async execute(input: ProductPromptInputV1): Promise<PromptTaskExecution> {
 		if (input.prompt.trim().length === 0) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt must be non-empty");
-		if (!isRuntimeSessionSurfaceV1(input.surface)) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt surface is invalid");
+		if (!isRuntimeSessionSurface(input.surface)) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt surface is invalid");
 		const runId = requireRunId(input.runId ?? randomUUID());
 		const ingress = await this.establishIngressFact(runId, input.prompt, input.images, input.surface);
 		const token = promptToken(runId);

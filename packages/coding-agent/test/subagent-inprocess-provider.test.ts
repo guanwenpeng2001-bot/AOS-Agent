@@ -4,42 +4,42 @@ import {
 	createContextSnapshot,
 	createModelProfileRevision,
 	createRoleRevision,
-	createTaskEnvelopeV1,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
 	InMemoryArtifactBlobStore,
-	LayeredResultSettlementV1,
+	LayeredResultSettlement,
 	resolveAgentBinding,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
 	SessionT5Ledger,
 	createScopedMemoryStore,
-	validateAttemptReceiptForProviderV1,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type BudgetUsageV1,
-	type BudgetV1,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
+	validateAttemptReceiptForProvider,
+	type AgentBinding,
+	type AgentInstance,
+	type BudgetUsage,
+	type Budget,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
 	type ContextSnapshot,
-	type DispatchV1,
-	type FoundationProviderCapabilityV1,
-	type ModelProfileV1,
-	type QuotaAttributionV1,
+	type Dispatch,
+	type FoundationProviderCapability,
+	type ModelProfile,
+	type QuotaAttribution,
 	type QuotaProvider,
-	type QuotaReservationV1,
-	type RevisionReferenceV1,
+	type QuotaReservation,
+	type RevisionReference,
 	type Result as ResultValue,
-	type RoleRevisionV1,
+	type RoleRevision,
 	type ScopedMemoryStore,
 	type ScopedModelGateway,
-	type ScopedModelRequestV1,
-	type TaskEnvelopeV1,
+	type ScopedModelRequest,
+	type TaskEnvelope,
 	type ToolGateway,
-	type ToolGatewayRequestV1,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
@@ -58,8 +58,8 @@ import {
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.in_process";
 
-function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
-	const result = createTaskEnvelopeV1({
+function task(taskId: string, concurrency = 2): TaskEnvelope {
+	const result = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId,
 		goalId: "goal-1",
@@ -78,7 +78,7 @@ function task(taskId: string, concurrency = 2): TaskEnvelopeV1 {
 	return result.value;
 }
 
-function role(): RoleRevisionV1 {
+function role(): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -98,7 +98,7 @@ function role(): RoleRevisionV1 {
 	});
 }
 
-function profile(): ModelProfileV1 {
+function profile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-child",
@@ -110,12 +110,12 @@ function profile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, modelProfile: ModelProfileV1): AgentBindingV1 {
+function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelProfile: ModelProfile): AgentBinding {
 	const result = resolveAgentBinding({
 		task: taskEnvelope,
 		roleRevision,
@@ -131,7 +131,7 @@ function binding(taskEnvelope: TaskEnvelopeV1, roleRevision: RoleRevisionV1, mod
 	return result.value;
 }
 
-function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevisionV1): AgentInstanceV1 {
+function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRevision): AgentInstance {
 	const result = createAgentInstance({
 		agentInstanceId,
 		providerId: "parent-provider",
@@ -163,18 +163,18 @@ class RecordingQuota implements QuotaProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "quota-test";
 	readonly providerClass = "quota" as const;
-	readonly reservations: QuotaReservationV1[] = [];
-	readonly settlements: { readonly reservation: QuotaReservationV1; readonly usage: BudgetUsageV1 }[] = [];
+	readonly reservations: QuotaReservation[] = [];
+	readonly settlements: { readonly reservation: QuotaReservation; readonly usage: BudgetUsage }[] = [];
 	failReserve = false;
 	failSettle = false;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "quota.test", version: 1 }];
 	}
 
-	async reserve(attribution: QuotaAttributionV1, budget: BudgetV1) {
+	async reserve(attribution: QuotaAttribution, budget: Budget) {
 		if (this.failReserve) return Result.err(new FoundationError("quota_exceeded", "quota denied"));
-		const reservation: QuotaReservationV1 = {
+		const reservation: QuotaReservation = {
 			schemaVersion: 1,
 			reservationId: `reservation-${this.reservations.length + 1}`,
 			attribution,
@@ -185,7 +185,7 @@ class RecordingQuota implements QuotaProvider {
 		return Result.ok(reservation);
 	}
 
-	async settle(reservation: QuotaReservationV1, usage: BudgetUsageV1) {
+	async settle(reservation: QuotaReservation, usage: BudgetUsage) {
 		if (this.failSettle) return Result.err(new FoundationError("quota_exceeded", "quota settle denied"));
 		this.settlements.push({ reservation, usage });
 		return Result.ok(usage);
@@ -199,13 +199,13 @@ class RecordingModelGateway implements ScopedModelGateway {
 	readonly providerId = "model-gateway-test";
 	readonly providerClass = "gateway" as const;
 	calls = 0;
-	lastRequest: ScopedModelRequestV1 | undefined;
+	lastRequest: ScopedModelRequest | undefined;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "model.gateway.test", version: 1 }];
 	}
 
-	async stream(request: ScopedModelRequestV1) {
+	async stream(request: ScopedModelRequest) {
 		this.calls += 1;
 		this.lastRequest = request;
 		return Result.ok({
@@ -225,11 +225,11 @@ class RecordingToolGateway implements ToolGateway {
 	readonly providerClass = "gateway" as const;
 	calls = 0;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "tool.gateway.test", version: 1 }];
 	}
 
-	async execute(request: ToolGatewayRequestV1) {
+	async execute(request: ToolGatewayRequest) {
 		this.calls += 1;
 		return Result.ok({
 			schemaVersion: 1 as const,
@@ -245,20 +245,20 @@ class RecordingToolGateway implements ToolGateway {
 
 interface Fixture {
 	readonly session: Session;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly supervisor: SubagentSupervisorV1;
-	readonly roleRevision: RoleRevisionV1;
-	readonly modelProfile: ModelProfileV1;
+	readonly roleRevision: RoleRevision;
+	readonly modelProfile: ModelProfile;
 }
 
 function fixture(): Fixture {
 	const session = new Session(new InMemorySessionStorage({ id: "session-inprocess", createdAt: 1 }));
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		let selected = ledgers.get(laneId);
 		if (selected === undefined) {
-			selected = new SessionLedgerV1(session, { ownerId: "supervisor-writer", laneId });
+			selected = new SessionLedger(session, { ownerId: "supervisor-writer", laneId });
 			ledgers.set(laneId, selected);
 		}
 		return selected;
@@ -369,7 +369,7 @@ async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInp
 	}
 	const spawnId = overrides.request?.spawnId ?? `spawn-${overrides.childAgentInstanceId ?? "1"}`;
 	const parentSpawnId = `parent-${spawnId}`;
-	const request: ChildSpawnRequestV1 = overrides.request ?? {
+	const request: ChildSpawnRequest = overrides.request ?? {
 		schemaVersion: 1,
 		spawnId,
 		parentSpawn: {
@@ -501,7 +501,7 @@ async function createHarness(input: ChildAgentHarnessCreateInputV1): Promise<Age
 	return created.harness;
 }
 
-function dispatchFromSpawn(spawned: ChildSpawnResultV1): DispatchV1 {
+function dispatchFromSpawn(spawned: ChildSpawnResult): Dispatch {
 	return {
 		schemaVersion: 1,
 		dispatchId: spawned.attempt.dispatchId,
@@ -559,8 +559,8 @@ function providerFor(
 	});
 }
 
-function settlementFor(value: Fixture, laneId: string): LayeredResultSettlementV1 {
-	return new LayeredResultSettlementV1(value.session, {
+function settlementFor(value: Fixture, laneId: string): LayeredResultSettlement {
+	return new LayeredResultSettlement(value.session, {
 		writer: new SessionLedgerWriter(value.session, {
 			ownerId: "supervisor-writer",
 			lane: laneId,
@@ -642,7 +642,7 @@ describe("InProcessChildAgentProviderV1", () => {
 		});
 		if (!executed.ok) throw executed.error;
 		expect(executed.ok).toBe(true);
-		const checked = validateAttemptReceiptForProviderV1(executed.value.receipt, {
+		const checked = validateAttemptReceiptForProvider(executed.value.receipt, {
 			providerId: PROVIDER_ID,
 			providerClass: "agent",
 		});

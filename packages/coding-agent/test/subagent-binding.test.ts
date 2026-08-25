@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
 	createRoleRevision,
-	createSecretFreeModelProfileV1,
-	createTaskEnvelopeV1,
+	createSecretFreeModelProfile,
+	createTaskEnvelope,
 	fingerprintFoundationValue,
 	InMemorySessionStorage,
 	resolveAgentBinding,
 	selectorsNarrow,
 	Session,
-	SessionLedgerV1,
-	type AgentBindingV1,
-	type ModelProfileV1,
-	type ResourceSelectorV1,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type TaskEnvelopeV1,
+	SessionLedger,
+	type AgentBinding,
+	type ModelProfile,
+	type ResourceSelector,
+	type RevisionReference,
+	type RoleRevision,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
@@ -29,7 +29,7 @@ import {
 const NOW = "2026-01-01T00:00:00.000Z";
 const ARTIFACT_DIGEST = `sha256:${"ab".repeat(32)}`;
 
-function immutableFact(type: string, id: string, revision = 1): RevisionReferenceV1 {
+function immutableFact(type: string, id: string, revision = 1): RevisionReference {
 	const payload = { schemaVersion: 1 as const, type, id, revision };
 	return { ...payload, fingerprint: fingerprintFoundationValue(payload) };
 }
@@ -43,8 +43,8 @@ function bindingFacts() {
 	};
 }
 
-function modelProfile(overrides: Partial<Omit<ModelProfileV1, "fingerprint" | "schemaVersion">> = {}): ModelProfileV1 {
-	const result = createSecretFreeModelProfileV1({
+function modelProfile(overrides: Partial<Omit<ModelProfile, "fingerprint" | "schemaVersion">> = {}): ModelProfile {
+	const result = createSecretFreeModelProfile({
 		schemaVersion: 1,
 		modelProfileId: "profile-1",
 		provider: "fake",
@@ -58,7 +58,7 @@ function modelProfile(overrides: Partial<Omit<ModelProfileV1, "fingerprint" | "s
 	return result.value;
 }
 
-function role(overrides: Partial<RoleRevisionV1> & { skillSelector?: ResourceSelectorV1; mcpSelector?: ResourceSelectorV1 } = {}): RoleRevisionV1 {
+function role(overrides: Partial<RoleRevision> & { skillSelector?: ResourceSelector; mcpSelector?: ResourceSelector } = {}): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
@@ -79,8 +79,8 @@ function role(overrides: Partial<RoleRevisionV1> & { skillSelector?: ResourceSel
 	});
 }
 
-function task(overrides: Partial<TaskEnvelopeV1> = {}): TaskEnvelopeV1 {
-	const result = createTaskEnvelopeV1({
+function task(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
+	const result = createTaskEnvelope({
 		schemaVersion: 1,
 		taskId: "task-child",
 		goalId: "goal-1",
@@ -100,7 +100,7 @@ function task(overrides: Partial<TaskEnvelopeV1> = {}): TaskEnvelopeV1 {
 	return result.value;
 }
 
-function parentBinding(parentRole: RoleRevisionV1, profile: ModelProfileV1, budget?: TaskEnvelopeV1["budget"]): AgentBindingV1 {
+function parentBinding(parentRole: RoleRevision, profile: ModelProfile, budget?: TaskEnvelope["budget"]): AgentBinding {
 	const result = resolveAgentBinding({
 		task: task({ taskId: "task-parent", budget: budget ?? { tokens: 8000, concurrency: 4 } }),
 		roleRevision: parentRole,
@@ -152,7 +152,7 @@ function proof(projection: ReturnType<typeof mustProject>, field: ChildBindingPr
 	return projection.fields.find((entry) => entry.field === field)?.tighteningProof;
 }
 
-const SELECTORS: readonly ResourceSelectorV1[] = [
+const SELECTORS: readonly ResourceSelector[] = [
 	{ policy: "all" },
 	{ policy: "none" },
 	{ policy: "named", named: ["a"] },
@@ -370,7 +370,7 @@ describe("child binding projection", () => {
 	it("persists the projection as a durable Session fact", async () => {
 		const projection = mustProject(input());
 		const session = new Session(new InMemorySessionStorage({ id: "session-binding", createdAt: 1 }));
-		const ledger = new SessionLedgerV1(session);
+		const ledger = new SessionLedger(session);
 		const persisted = await persistChildBindingProjectionV1(ledger, projection, {
 			clientRequestId: "project-1",
 			correlation: { taskId: "task-child" },

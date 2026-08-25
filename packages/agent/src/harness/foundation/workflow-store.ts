@@ -1,20 +1,19 @@
 import { Type } from "typebox";
-import type { FoundationRecordV1 } from "../session/durable/types.ts";
+import type { FoundationRecord } from "../session/durable/types.ts";
 import type { Session } from "../session/session.ts";
+import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/t5.ts";
 import {
-	type BudgetUsageV1,
-	type BudgetV1,
+	type BudgetUsage,
+	type Budget,
 	budgetExhaustionReason,
-	validateBudgetUsageV1,
-	validateBudgetV1,
+	validateBudgetUsage,
+	validateBudget,
 } from "./budget.ts";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,
 	createStoreWriter,
 	expectedRevision,
-	type FoundationDurableStoreOptionsV1,
-	type FoundationMutationOptionsV1,
 	jsonValue,
 	mutationId,
 	readCommandResult,
@@ -30,20 +29,20 @@ import { canonicalFoundationJson, sha256HexValue } from "./identity.ts";
 import { validateExactShape } from "./schema.ts";
 import {
 	FOUNDATION_WORKFLOW_DSL_VERSION,
-	validateWorkflowV1,
-	type WorkflowStatusV1,
-	type WorkflowStepStatusV1,
-	type WorkflowStepV1,
-	type WorkflowV1,
+	validateWorkflow,
+	type WorkflowStatus,
+	type WorkflowStepStatus,
+	type WorkflowStep,
+	type Workflow,
 } from "./workflow.ts";
 
 const WORKFLOW_OBJECT_TYPE = "foundation.workflow";
 const EVENT_OBJECT_TYPE = "foundation.workflow.event";
 const COMMAND_OBJECT_TYPE = "foundation.workflow.command";
 
-const TERMINAL_STEP_STATUSES = new Set<WorkflowStepStatusV1>(["succeeded", "failed", "cancelled", "skipped"]);
-const COMPLETED_STEP_STATUSES = new Set<WorkflowStepStatusV1>(["succeeded", "cancelled", "skipped"]);
-const STEP_TRANSITIONS: Readonly<Record<WorkflowStepStatusV1, readonly WorkflowStepStatusV1[]>> = {
+const TERMINAL_STEP_STATUSES = new Set<WorkflowStepStatus>(["succeeded", "failed", "cancelled", "skipped"]);
+const COMPLETED_STEP_STATUSES = new Set<WorkflowStepStatus>(["succeeded", "cancelled", "skipped"]);
+const STEP_TRANSITIONS: Readonly<Record<WorkflowStepStatus, readonly WorkflowStepStatus[]>> = {
 	pending: ["ready", "cancelled", "skipped"],
 	ready: ["running", "waiting_user", "awaiting_dispatch", "blocked", "cancelled", "skipped"],
 	running: ["waiting_user", "awaiting_dispatch", "blocked", "succeeded", "failed", "cancelled"],
@@ -61,23 +60,29 @@ export interface WorkflowCreateInput {
 	readonly workflowId?: string;
 	readonly goalId?: string;
 	readonly planId?: string;
-	readonly budget?: BudgetV1;
-	readonly steps: readonly WorkflowStepV1[];
+	readonly budget?: Budget;
+	readonly steps: readonly WorkflowStep[];
 }
 
 export interface WorkflowStepTransitionInput {
 	readonly stepId: string;
-	readonly status: WorkflowStepStatusV1;
+	readonly status: WorkflowStepStatus;
 }
 
-export type WorkflowMutationOptions = FoundationMutationOptionsV1;
-export type WorkflowStoreOptions = FoundationDurableStoreOptionsV1;
-export type WorkflowEventTypeV1 = "workflow.created" | "workflow.activated" | "workflow.paused" | "workflow.resumed" | "workflow.stopped" | "workflow.completed" | "workflow.budget_set" | "workflow.budget_recorded" | "workflow.step_transitioned";
+export interface WorkflowMutationOptions {
+	readonly clientRequestId: string;
+	readonly expectedRevision: number;
+}
 
-export interface WorkflowEventV1 {
+export interface WorkflowStoreOptions extends SessionLedgerWriterOptions {
+	readonly writer?: SessionLedgerWriter;
+}
+export type WorkflowEventType = "workflow.created" | "workflow.activated" | "workflow.paused" | "workflow.resumed" | "workflow.stopped" | "workflow.completed" | "workflow.budget_set" | "workflow.budget_recorded" | "workflow.step_transitioned";
+
+export interface WorkflowEvent {
 	readonly schemaVersion: 1;
 	readonly eventId: string;
-	readonly type: WorkflowEventTypeV1;
+	readonly type: WorkflowEventType;
 	readonly workflowId: string;
 	readonly revision: number;
 	readonly timestamp: string;
@@ -85,7 +90,7 @@ export interface WorkflowEventV1 {
 	readonly commandPayload: string;
 }
 
-export const WorkflowEventV1Schema = Type.Object(
+export const WorkflowEventSchema = Type.Object(
 	{
 		schemaVersion: Type.Literal(1),
 		eventId: Type.String({ minLength: 1 }),
@@ -133,8 +138,8 @@ function clone<TValue>(value: TValue): TValue {
 	return cloneStoreValue(value);
 }
 
-function assertWorkflow(value: unknown): WorkflowV1 {
-	const result = validateWorkflowV1(value);
+function assertWorkflow(value: unknown): Workflow {
+	const result = validateWorkflow(value);
 	if (!result.ok) throw result.error;
 	const workflow = result.value;
 	validateTimestamp(workflow.createdAt, "workflow createdAt");
@@ -149,21 +154,21 @@ function assertWorkflow(value: unknown): WorkflowV1 {
 	return workflow;
 }
 
-function assertWorkflowEvent(value: unknown): WorkflowEventV1 {
-	const result = validateExactShape<WorkflowEventV1>(WorkflowEventV1Schema, value, "workflow_event");
+function assertWorkflowEvent(value: unknown): WorkflowEvent {
+	const result = validateExactShape<WorkflowEvent>(WorkflowEventSchema, value, "workflow_event");
 	if (!result.ok) throw result.error;
 	validateTimestamp(result.value.timestamp, "workflow event timestamp");
 	return result.value;
 }
 
-function latestRecords(records: readonly FoundationRecordV1[]): Map<string, FoundationRecordV1> {
-	const latest = new Map<string, FoundationRecordV1>();
+function latestRecords(records: readonly FoundationRecord[]): Map<string, FoundationRecord> {
+	const latest = new Map<string, FoundationRecord>();
 	for (const record of records) if (record.kind !== "retention") latest.set(record.objectId, record);
 	return latest;
 }
 
-function addBudgetUsage(left: BudgetUsageV1, right: BudgetUsageV1): BudgetUsageV1 {
-	const result: BudgetUsageV1 = {};
+function addBudgetUsage(left: BudgetUsage, right: BudgetUsage): BudgetUsage {
+	const result: BudgetUsage = {};
 	for (const key of ["tokens", "costUsd", "modelCalls", "toolCalls", "wallClockMs", "concurrency"] as const) {
 		const value = (left[key] ?? 0) + (right[key] ?? 0);
 		if (value !== 0) result[key] = value;
@@ -180,7 +185,7 @@ export class WorkflowStore {
 		this.writer = createStoreWriter(session, options);
 	}
 
-	async create(input: WorkflowCreateInput, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async create(input: WorkflowCreateInput, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const request = mutation(options);
 			if (request.expectedRevision !== 0)
@@ -229,11 +234,11 @@ export class WorkflowStore {
 		});
 	}
 
-	async get(workflowId: string): Promise<WorkflowV1> {
+	async get(workflowId: string): Promise<Workflow> {
 		return this.safe("workflow_not_found", async () => this.load(storeId(workflowId, "workflowId")));
 	}
 
-	async list(sessionId?: string): Promise<WorkflowV1[]> {
+	async list(sessionId?: string): Promise<Workflow[]> {
 		return this.safe("workflow_conflict", async () => {
 			const normalized = sessionId === undefined ? undefined : storeId(sessionId, "sessionId");
 			const records = await this.session.findFoundationRecords({
@@ -243,7 +248,7 @@ export class WorkflowStore {
 				includePruned: true,
 			});
 			return [...latestRecords(records).values()]
-				.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact")
+				.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact")
 				.map((record) => assertWorkflow(record.payload))
 				.filter((workflow) => normalized === undefined || workflow.sessionId === normalized)
 				.sort(
@@ -254,7 +259,7 @@ export class WorkflowStore {
 		});
 	}
 
-	async activate(workflowId: string, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async activate(workflowId: string, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.workflowTransition(
 			workflowId,
 			options,
@@ -265,15 +270,15 @@ export class WorkflowStore {
 		);
 	}
 
-	async pause(workflowId: string, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async pause(workflowId: string, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.workflowTransition(workflowId, options, "workflow.pause", "workflow.paused", ["active"], "paused");
 	}
 
-	async resume(workflowId: string, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async resume(workflowId: string, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.workflowTransition(workflowId, options, "workflow.resume", "workflow.resumed", ["paused"], "active");
 	}
 
-	async complete(workflowId: string, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async complete(workflowId: string, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const prepared = await this.prepare(workflowId, options, "workflow.complete");
 			const replay = await this.recoverCommand(prepared.command, "workflow.completed");
@@ -298,7 +303,7 @@ export class WorkflowStore {
 		});
 	}
 
-	async stop(workflowId: string, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async stop(workflowId: string, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const prepared = await this.prepare(workflowId, options, "workflow.stop");
 			const replay = await this.recoverCommand(prepared.command, "workflow.stopped");
@@ -325,7 +330,7 @@ export class WorkflowStore {
 		});
 	}
 
-	async setBudget(workflowId: string, budget: BudgetV1, options: WorkflowMutationOptions): Promise<WorkflowV1> {
+	async setBudget(workflowId: string, budget: Budget, options: WorkflowMutationOptions): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const normalized = this.checkedBudget(budget);
 			const prepared = await this.prepare(workflowId, options, "workflow.set_budget", { budget: normalized });
@@ -345,9 +350,9 @@ export class WorkflowStore {
 
 	async recordBudgetUsage(
 		workflowId: string,
-		usage: BudgetUsageV1,
+		usage: BudgetUsage,
 		options: WorkflowMutationOptions,
-	): Promise<WorkflowV1> {
+	): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const normalized = this.checkedUsage(usage);
 			const prepared = await this.prepare(workflowId, options, "workflow.record_budget", { usage: normalized });
@@ -370,7 +375,7 @@ export class WorkflowStore {
 		workflowId: string,
 		input: WorkflowStepTransitionInput,
 		options: WorkflowMutationOptions,
-	): Promise<WorkflowV1> {
+	): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const stepId = storeId(input.stepId, "stepId");
 			const status = input.status;
@@ -403,7 +408,7 @@ export class WorkflowStore {
 		});
 	}
 
-	async eventsFor(workflowId: string): Promise<WorkflowEventV1[]> {
+	async eventsFor(workflowId: string): Promise<WorkflowEvent[]> {
 		return this.safe("workflow_not_found", async () => {
 			const normalized = storeId(workflowId, "workflowId");
 			await this.load(normalized);
@@ -414,7 +419,7 @@ export class WorkflowStore {
 				includePruned: true,
 			});
 			return records
-				.filter((record): record is Extract<FoundationRecordV1, { kind: "fact" }> => record.kind === "fact")
+				.filter((record): record is Extract<FoundationRecord, { kind: "fact" }> => record.kind === "fact")
 				.map((record) => assertWorkflowEvent(record.payload))
 				.filter((event) => event.workflowId === normalized)
 				.map(clone);
@@ -425,10 +430,10 @@ export class WorkflowStore {
 		workflowId: string,
 		options: WorkflowMutationOptions,
 		commandName: string,
-		eventType: WorkflowEventTypeV1,
-		from: readonly WorkflowStatusV1[],
-		to: WorkflowStatusV1,
-	): Promise<WorkflowV1> {
+		eventType: WorkflowEventType,
+		from: readonly WorkflowStatus[],
+		to: WorkflowStatus,
+	): Promise<Workflow> {
 		return this.safe("workflow_conflict", async () => {
 			const prepared = await this.prepare(workflowId, options, commandName);
 			const replay = await this.recoverCommand(prepared.command, eventType);
@@ -476,8 +481,8 @@ export class WorkflowStore {
 		return derivedId("workflow_aggregate", request.clientRequestId);
 	}
 
-	private async recoverCommand(command: WorkflowCommand, eventType: WorkflowEventTypeV1): Promise<WorkflowV1 | undefined> {
-		const stored = await readCommandResult<WorkflowV1>(
+	private async recoverCommand(command: WorkflowCommand, eventType: WorkflowEventType): Promise<Workflow | undefined> {
+		const stored = await readCommandResult<Workflow>(
 			this.writer,
 			COMMAND_OBJECT_TYPE,
 			command.objectId,
@@ -496,7 +501,7 @@ export class WorkflowStore {
 		const matched = [...records]
 			.reverse()
 			.find(
-				(record): record is Extract<FoundationRecordV1, { kind: "fact" }> =>
+				(record): record is Extract<FoundationRecord, { kind: "fact" }> =>
 					record.kind === "fact" && record.clientRequestId === aggregateRequestId,
 			);
 		if (matched === undefined) return undefined;
@@ -505,7 +510,7 @@ export class WorkflowStore {
 		return this.finish(command, workflow);
 	}
 
-	private async commit(command: WorkflowCommand, workflow: WorkflowV1, eventType: WorkflowEventTypeV1): Promise<WorkflowV1> {
+	private async commit(command: WorkflowCommand, workflow: Workflow, eventType: WorkflowEventType): Promise<Workflow> {
 		const checked = assertWorkflow(workflow);
 		const accepted = await writeFact(
 			this.writer,
@@ -520,7 +525,7 @@ export class WorkflowStore {
 		return this.finish(command, value);
 	}
 
-	private async finish(command: WorkflowCommand, workflow: WorkflowV1): Promise<WorkflowV1> {
+	private async finish(command: WorkflowCommand, workflow: Workflow): Promise<Workflow> {
 		return assertWorkflow(
 			await writeCommandResult(
 				this.writer,
@@ -534,8 +539,8 @@ export class WorkflowStore {
 		);
 	}
 
-	private async writeEvent(command: WorkflowCommand, workflow: WorkflowV1, type: WorkflowEventTypeV1): Promise<void> {
-		const event: WorkflowEventV1 = {
+	private async writeEvent(command: WorkflowCommand, workflow: Workflow, type: WorkflowEventType): Promise<void> {
+		const event: WorkflowEvent = {
 			schemaVersion: 1,
 			eventId: derivedId("workflow_event", command.request.clientRequestId),
 			type,
@@ -555,7 +560,7 @@ export class WorkflowStore {
 		);
 	}
 
-	private async load(workflowId: string): Promise<WorkflowV1> {
+	private async load(workflowId: string): Promise<Workflow> {
 		const records = await recordsForObject(this.writer, WORKFLOW_OBJECT_TYPE, workflowId);
 		const latest = records.at(-1);
 		if (latest === undefined) fail("workflow_not_found", "Workflow was not found");
@@ -564,13 +569,13 @@ export class WorkflowStore {
 		return clone(assertWorkflow(latest.payload));
 	}
 
-	private assertWorkflowState(workflow: WorkflowV1, revision: number, statuses: readonly WorkflowStatusV1[]): void {
+	private assertWorkflowState(workflow: Workflow, revision: number, statuses: readonly WorkflowStatus[]): void {
 		if (workflow.revision !== revision) fail("session_writer_stale_revision", "Workflow revision is stale");
 		if (!statuses.includes(workflow.status))
 			fail("workflow_invalid_transition", `Workflow cannot transition from ${workflow.status}`);
 	}
 
-	private assertExecutorTransition(step: WorkflowStepV1, status: WorkflowStepStatusV1): void {
+	private assertExecutorTransition(step: WorkflowStep, status: WorkflowStepStatus): void {
 		if (step.type === "agent" && step.executor === "external" && status === "running")
 			fail("workflow_invalid_transition", "External Agent step cannot claim running state");
 		if (step.type === "agent" && step.executor === "local" && status === "awaiting_dispatch")
@@ -583,14 +588,14 @@ export class WorkflowStore {
 			fail("workflow_invalid_transition", "Only AwaitUser step can wait for user input");
 	}
 
-	private checkedBudget(value: BudgetV1): BudgetV1 {
-		const result = validateBudgetV1(value);
+	private checkedBudget(value: Budget): Budget {
+		const result = validateBudget(value);
 		if (!result.ok) throw result.error;
 		return clone(result.value);
 	}
 
-	private checkedUsage(value: BudgetUsageV1): BudgetUsageV1 {
-		const result = validateBudgetUsageV1(value);
+	private checkedUsage(value: BudgetUsage): BudgetUsage {
+		const result = validateBudgetUsage(value);
 		if (!result.ok) throw result.error;
 		return clone(result.value);
 	}

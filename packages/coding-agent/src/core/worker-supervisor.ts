@@ -16,8 +16,8 @@ import {
 	FoundationError,
 	Result,
 	type Result as ResultValue,
-	type SandboxOperationRequestV1,
-	type WorkerReceiptV1,
+	type SandboxOperationRequest,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
@@ -41,7 +41,7 @@ import {
 	validateWorkerLifecycleStateV1,
 	type WorkerBindingV1,
 	type WorkerLifecycleStateV1,
-	type WorkerLifecycleStatusV1,
+	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "./worker.ts";
 import {
@@ -207,7 +207,7 @@ export class WorkerSupervisorV1 {
 	private stdoutBuffer = "";
 	private requestSequence = 0;
 	private readyWaiter?: Deferred<ResultValue<WorkerRecordV1, FoundationError>>;
-	private receiptWaiter?: Deferred<ResultValue<WorkerReceiptV1, FoundationError>>;
+	private receiptWaiter?: Deferred<ResultValue<WorkerReceipt, FoundationError>>;
 	private terminalWaiter?: Deferred<boolean>;
 	private exitWaiter?: Deferred<void>;
 	private watchdogTimer?: NodeJS.Timeout;
@@ -370,7 +370,7 @@ export class WorkerSupervisorV1 {
 		return Result.err(failure);
 	}
 
-	async execute(request: SandboxOperationRequestV1): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {
+	async execute(request: SandboxOperationRequest): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		if (
 			this.child === undefined ||
 			this.lifecycle === undefined ||
@@ -403,7 +403,7 @@ export class WorkerSupervisorV1 {
 			if (this.snapshot.record?.status === "lost") await this.ensureProcessStoppedAndCleaned();
 			return outcome;
 		}
-		const expectedStatus: WorkerLifecycleStatusV1 =
+		const expectedStatus: WorkerLifecycleStatus =
 			outcome.value.status === "succeeded"
 				? "completed"
 				: outcome.value.status === "failed"
@@ -795,7 +795,7 @@ export class WorkerSupervisorV1 {
 
 		if (receiptFrame === undefined) return;
 		const receipt = receiptFrame.receipt;
-		const status: WorkerLifecycleStatusV1 | undefined =
+		const status: WorkerLifecycleStatus | undefined =
 			receipt.status === "succeeded"
 				? "completed"
 				: receipt.status === "failed"
@@ -876,7 +876,7 @@ export class WorkerSupervisorV1 {
 	}
 
 	private transition(
-		to: WorkerLifecycleStatusV1,
+		to: WorkerLifecycleStatus,
 		facts: {
 			readonly activeOperationId?: string;
 			readonly receiptId?: string;

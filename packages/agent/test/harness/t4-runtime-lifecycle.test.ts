@@ -5,34 +5,34 @@ import { describe, expect, it } from "vitest";
 import {
 	EffectScope,
 	LifecycleExtensionRegistrar,
-	RuntimeToolRegistryV1,
+	RuntimeToolRegistry,
 	RuntimeServiceRegistry,
-	orderRuntimeHooksV1,
-	validateRuntimeServiceDAGV1,
+	orderRuntimeHooks,
+	validateRuntimeServiceDAG,
 } from "../../src/harness/runtime-services.ts";
 import {
 	LocalPluginRegistry,
-	LocalFilePluginRegistryStorageV1,
-	InMemoryLocalPluginRegistryStorageV1,
-	createPluginContractV1,
-	pluginContentsDigestV1,
-	type LocalPluginRegistryFileSystemV1,
-	type LocalPluginRegistryStorageV1,
-	type LocalPluginRegistrySnapshotV1,
-	type LocalPluginPackageV1,
-	type PluginActivationContextV1,
-	validateLocalPluginPackageV1,
+	LocalFilePluginRegistryStorage,
+	InMemoryLocalPluginRegistryStorage,
+	createPluginContract,
+	pluginContentsDigest,
+	type LocalPluginRegistryFileSystem,
+	type LocalPluginRegistryStorage,
+	type LocalPluginRegistrySnapshot,
+	type LocalPluginPackage,
+	type PluginActivationContext,
+	validateLocalPluginPackage,
 } from "../../src/harness/plugins.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
-import { applyProfilePatchV1, composeProfileBundleV1, resolveChildExecutorMcpSelectorsV1, selectResourcesV1 } from "../../src/harness/profile.ts";
+import { applyProfilePatch, composeProfileBundle, resolveChildExecutorMcpSelectors, selectResources } from "../../src/harness/profile.ts";
 import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
 import { FileError } from "../../src/harness/types.ts";
 import { Type } from "typebox";
-import { validateProfileContractV1, type LspExtensionContractV1, type MonitorExtensionContractV1 } from "../../src/harness/foundation/profile.ts";
-import type { ResourceSelectorV1 } from "../../src/harness/foundation/reference.ts";
+import { validateProfileContract, type LspExtensionContract, type MonitorExtensionContract } from "../../src/harness/foundation/profile.ts";
+import type { ResourceSelector } from "../../src/harness/foundation/reference.ts";
 
-const lsp: LspExtensionContractV1 = {
+const lsp: LspExtensionContract = {
 	schemaVersion: 1,
 	extensionId: "typescript",
 	kind: "lsp",
@@ -41,7 +41,7 @@ const lsp: LspExtensionContractV1 = {
 	serverCommand: "tsserver",
 };
 
-const monitor: MonitorExtensionContractV1 = {
+const monitor: MonitorExtensionContract = {
 	schemaVersion: 1,
 	extensionId: "health",
 	kind: "monitor",
@@ -56,7 +56,7 @@ function pluginPackage(version = "1.0.0", pluginId = "local-plugin", namespace =
 	const contents = { lsp: [lsp], monitors: [monitor] };
 	return {
 		schemaVersion: 1 as const,
-		contract: createPluginContractV1({
+		contract: createPluginContract({
 			namespace,
 			pluginId,
 			version,
@@ -66,7 +66,7 @@ function pluginPackage(version = "1.0.0", pluginId = "local-plugin", namespace =
 		contents,
 		source: "local" as const,
 		sourcePath: "C:/workspace/local-plugin",
-		signatureMetadata: { algorithm: "test", keyId: "key", value: "signature", contentDigest: pluginContentsDigestV1(contents) },
+		signatureMetadata: { algorithm: "test", keyId: "key", value: "signature", contentDigest: pluginContentsDigest(contents) },
 	};
 }
 
@@ -78,7 +78,7 @@ interface FaultRule {
 	failureCalls?: readonly number[];
 }
 
-function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperation | FaultRule | readonly FaultRule[], target?: FaultTarget, failureCalls: readonly number[] = [1]): LocalPluginRegistryFileSystemV1 {
+function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperation | FaultRule | readonly FaultRule[], target?: FaultTarget, failureCalls: readonly number[] = [1]): LocalPluginRegistryFileSystem {
 	const rules: readonly FaultRule[] = typeof operation === "string" ? [{ operation, target: target!, failureCalls }] : Array.isArray(operation) ? operation : [operation];
 	const matchingCalls = new Map<string, number>();
 	const matchesTarget = (path: string, faultTarget: FaultTarget, faultOperation: FaultOperation): boolean => {
@@ -113,14 +113,14 @@ function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperat
 
 describe("T4 runtime service and extension lifecycle", () => {
 	it("topologically orders the runtime service DAG and rejects missing/cyclic dependencies", () => {
-		const valid = validateRuntimeServiceDAGV1([
+		const valid = validateRuntimeServiceDAG([
 			{ serviceId: "tool", version: "1", providerId: "host", dependencies: [{ serviceId: "sandbox", version: "2" }] },
 			{ serviceId: "sandbox", version: "2", providerId: "host" },
 		]);
 		expect(valid).toMatchObject({ ok: true, value: { order: ["sandbox", "tool"] } });
 		if (valid.ok) expect(valid.value.services[1]?.dependencies).toEqual([{ serviceId: "sandbox", version: "2" }]);
-		expect(validateRuntimeServiceDAGV1([{ serviceId: "tool", version: "1", providerId: "host", dependencies: ["missing"] }])).toMatchObject({ ok: false });
-		expect(validateRuntimeServiceDAGV1([
+		expect(validateRuntimeServiceDAG([{ serviceId: "tool", version: "1", providerId: "host", dependencies: ["missing"] }])).toMatchObject({ ok: false });
+		expect(validateRuntimeServiceDAG([
 			{ serviceId: "a", version: "1", providerId: "host", dependencies: ["b"] },
 			{ serviceId: "b", version: "1", providerId: "host", dependencies: ["a"] },
 		])).toMatchObject({ ok: false });
@@ -131,7 +131,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 	});
 
 	it("orders hooks deterministically and disposes effect scopes in reverse order", async () => {
-		const hooks = orderRuntimeHooksV1([
+		const hooks = orderRuntimeHooks([
 			{ hookId: "after", phase: "after", priority: -100, conflict: "error" },
 			{ hookId: "before", phase: "before", priority: 20, conflict: "error" },
 		]);
@@ -146,7 +146,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(disposed).toEqual(["second", "first"]);
 		expect(scope.register("hook", "late", () => undefined)).toMatchObject({ ok: false });
 
-		const dynamic = new RuntimeToolRegistryV1();
+		const dynamic = new RuntimeToolRegistry();
 		const definition = { name: "dynamic", toolRevision: { schemaVersion: 1 as const, type: "tool_revision" as const, id: "dynamic", revision: 1 }, capabilities: [], parameters: Type.Object({}, { additionalProperties: false }), execute: async () => ({ ok: true, sideEffectState: "none" as const }) };
 		expect(dynamic.register({ tool: definition, providerId: "p1", version: "1", revision: 1 }).ok).toBe(true);
 		expect(dynamic.register({ tool: { ...definition, toolRevision: { ...definition.toolRevision, revision: 2 } }, providerId: "p2", version: "2", revision: 2 })).toMatchObject({ ok: false });
@@ -182,9 +182,9 @@ describe("T4 runtime service and extension lifecycle", () => {
 	});
 
 	it("tightens MCP selectors and keeps plugin lifecycle local with rollback", async () => {
-		expect(selectResourcesV1({ policy: "except", named: ["blocked"] }, ["allowed", "blocked"])).toEqual(["allowed"]);
-		expect(resolveChildExecutorMcpSelectorsV1({ policy: "named", named: ["allowed"] }, { policy: "all" })).toMatchObject({ ok: false });
-		const packageWithSelectors = (packageSelector: ResourceSelectorV1 | undefined, agentSelector: ResourceSelectorV1 | undefined) => {
+		expect(selectResources({ policy: "except", named: ["blocked"] }, ["allowed", "blocked"])).toEqual(["allowed"]);
+		expect(resolveChildExecutorMcpSelectors({ policy: "named", named: ["allowed"] }, { policy: "all" })).toMatchObject({ ok: false });
+		const packageWithSelectors = (packageSelector: ResourceSelector | undefined, agentSelector: ResourceSelector | undefined) => {
 			const base = pluginPackage();
 			return {
 				...base,
@@ -193,11 +193,11 @@ describe("T4 runtime service and extension lifecycle", () => {
 			};
 		};
 		for (const parent of [{ policy: "none" }, { policy: "named", named: ["allowed"] }] as const) {
-			expect(validateLocalPluginPackageV1(packageWithSelectors({ policy: "all" }, undefined), parent)).toMatchObject({ ok: false, error: { code: "role_resolver_scope_widened" } });
-			expect(validateLocalPluginPackageV1(packageWithSelectors(undefined, { policy: "all" }), parent)).toMatchObject({ ok: false, error: { code: "role_resolver_scope_widened" } });
+			expect(validateLocalPluginPackage(packageWithSelectors({ policy: "all" }, undefined), parent)).toMatchObject({ ok: false, error: { code: "role_resolver_scope_widened" } });
+			expect(validateLocalPluginPackage(packageWithSelectors(undefined, { policy: "all" }), parent)).toMatchObject({ ok: false, error: { code: "role_resolver_scope_widened" } });
 		}
-		expect(validateLocalPluginPackageV1(packageWithSelectors({ policy: "named", named: ["allowed"] }, { policy: "named", named: ["allowed"] }), { policy: "all" })).toMatchObject({ ok: true });
-		expect(validateLocalPluginPackageV1(packageWithSelectors({ policy: "named", named: ["allowed"] }, { policy: "none" }), { policy: "named", named: ["allowed", "other"] })).toMatchObject({ ok: true });
+		expect(validateLocalPluginPackage(packageWithSelectors({ policy: "named", named: ["allowed"] }, { policy: "named", named: ["allowed"] }), { policy: "all" })).toMatchObject({ ok: true });
+		expect(validateLocalPluginPackage(packageWithSelectors({ policy: "named", named: ["allowed"] }, { policy: "none" }), { policy: "named", named: ["allowed", "other"] })).toMatchObject({ ok: true });
 
 		let disposed = 0;
 		const pkg = pluginPackage();
@@ -226,7 +226,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(rolledBack).toBe(1);
 
 		const signed = pluginPackage();
-		const signedPackage = { ...signed, signatureMetadata: { algorithm: "test", keyId: "key", value: "signature", contentDigest: pluginContentsDigestV1(signed.contents) } };
+		const signedPackage = { ...signed, signatureMetadata: { algorithm: "test", keyId: "key", value: "signature", contentDigest: pluginContentsDigest(signed.contents) } };
 		const mutated = { ...signedPackage, contents: { ...signedPackage.contents, lsp: [] } };
 		expect(await new LocalPluginRegistry().install({ ...signedPackage, signatureMetadata: undefined })).toMatchObject({ ok: false });
 		const signedRegistry = new LocalPluginRegistry();
@@ -269,23 +269,23 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(updateCleanupAttempts).toBe(3);
 
 		const profile = { schemaVersion: 1 as const, profileId: "profile", revision: 1, kind: "execution" as const, values: { mode: "safe", timeout: 10 }, managedKeys: ["mode"], createdAt: "now" };
-		expect(validateProfileContractV1({ ...profile, managedKeys: [] }).ok).toBe(false);
+		expect(validateProfileContract({ ...profile, managedKeys: [] }).ok).toBe(false);
 		const emptyManagedKeysProfile = { ...profile, profileId: "empty-managed-profile", managedKeys: [] };
-		expect(applyProfilePatchV1(emptyManagedKeysProfile, { schemaVersion: 1, patchId: "empty-managed-keys", targetProfileId: emptyManagedKeysProfile.profileId, revision: 2, source: "project", values: { timeout: 20 } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
-		expect(applyProfilePatchV1({ ...profile, profileId: "invalid-managed-profile", managedKeys: [""] }, { schemaVersion: 1, patchId: "invalid-managed-keys", targetProfileId: "invalid-managed-profile", revision: 2, source: "project", values: { timeout: 20 } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(applyProfilePatch(emptyManagedKeysProfile, { schemaVersion: 1, patchId: "empty-managed-keys", targetProfileId: emptyManagedKeysProfile.profileId, revision: 2, source: "project", values: { timeout: 20 } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(applyProfilePatch({ ...profile, profileId: "invalid-managed-profile", managedKeys: [""] }, { schemaVersion: 1, patchId: "invalid-managed-keys", targetProfileId: "invalid-managed-profile", revision: 2, source: "project", values: { timeout: 20 } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
 		const omittedManagedKeys = { schemaVersion: 1 as const, patchId: "managed-unset", targetProfileId: "profile", revision: 2, source: "project", unset: ["mode"] };
-		expect(applyProfilePatchV1(profile, omittedManagedKeys)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
-		expect(applyProfilePatchV1(profile, { ...omittedManagedKeys, patchId: "managed-replace", unset: undefined, values: { mode: "fast" } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
-		expect(applyProfilePatchV1(profile, { ...omittedManagedKeys, patchId: "forged-managed-keys", unset: undefined, values: { mode: "fast" }, managedKeys: [] } as never)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
-		expect(applyProfilePatchV1(profile, { ...omittedManagedKeys, patchId: "forged-managed-key-name", unset: undefined, values: { mode: "fast" }, managedKeys: ["timeout"] } as never)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
-		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "managed-unset-bundle", revision: 1, source: "global", profiles: [profile], patches: [omittedManagedKeys] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
-		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "managed-replace-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "managed-replace", unset: undefined, values: { mode: "fast" } }] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
-		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "forged-managed-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "forged-managed", unset: undefined, values: { mode: "fast" }, managedKeys: [] } as never] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
-		expect(composeProfileBundleV1({ schemaVersion: 1, bundleId: "bundle", revision: 1, source: "global", profiles: [profile], patches: [{ schemaVersion: 1, patchId: "patch", targetProfileId: "profile", revision: 2, source: "project", values: { timeout: 20 } }] })).toMatchObject({ ok: true, value: { profiles: [{ values: { mode: "safe", timeout: 20 }, managedKeys: ["mode"] }] } });
+		expect(applyProfilePatch(profile, omittedManagedKeys)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(applyProfilePatch(profile, { ...omittedManagedKeys, patchId: "managed-replace", unset: undefined, values: { mode: "fast" } })).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(applyProfilePatch(profile, { ...omittedManagedKeys, patchId: "forged-managed-keys", unset: undefined, values: { mode: "fast" }, managedKeys: [] } as never)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(applyProfilePatch(profile, { ...omittedManagedKeys, patchId: "forged-managed-key-name", unset: undefined, values: { mode: "fast" }, managedKeys: ["timeout"] } as never)).toMatchObject({ ok: false, error: { code: "profile_conflict" } });
+		expect(composeProfileBundle({ schemaVersion: 1, bundleId: "managed-unset-bundle", revision: 1, source: "global", profiles: [profile], patches: [omittedManagedKeys] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
+		expect(composeProfileBundle({ schemaVersion: 1, bundleId: "managed-replace-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "managed-replace", unset: undefined, values: { mode: "fast" } }] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
+		expect(composeProfileBundle({ schemaVersion: 1, bundleId: "forged-managed-bundle", revision: 1, source: "global", profiles: [profile], patches: [{ ...omittedManagedKeys, patchId: "forged-managed", unset: undefined, values: { mode: "fast" }, managedKeys: [] } as never] })).toMatchObject({ ok: true, value: { conflicts: [{ field: "mode", reason: "managed_lock" }], profiles: [{ values: { mode: "safe", timeout: 10 } }] } });
+		expect(composeProfileBundle({ schemaVersion: 1, bundleId: "bundle", revision: 1, source: "global", profiles: [profile], patches: [{ schemaVersion: 1, patchId: "patch", targetProfileId: "profile", revision: 2, source: "project", values: { timeout: 20 } }] })).toMatchObject({ ok: true, value: { profiles: [{ values: { mode: "safe", timeout: 20 }, managedKeys: ["mode"] }] } });
 	});
 
 	it("persists an atomic activation pointer, recovers after restart, and cleans failed staging", async () => {
-		const storage = new InMemoryLocalPluginRegistryStorageV1();
+		const storage = new InMemoryLocalPluginRegistryStorage();
 		const pkg = pluginPackage();
 		const registry = new LocalPluginRegistry({ storage, now: () => "now" });
 		expect(await registry.install(pkg)).toMatchObject({ ok: true });
@@ -302,7 +302,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(storage.snapshot.previous).toHaveLength(1);
 		expect(storage.snapshot.pointers).toMatchObject([{ pluginId: "local-plugin", state: "uninstalled" }]);
 
-		const failingStorage = new InMemoryLocalPluginRegistryStorageV1();
+		const failingStorage = new InMemoryLocalPluginRegistryStorage();
 		const failing = new LocalPluginRegistry({ storage: failingStorage, onActivate: async () => { throw new Error("activation failed"); } });
 		expect(await failing.install(pkg)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
 		expect(failingStorage.snapshot.active).toHaveLength(0);
@@ -315,7 +315,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			const pkg = pluginPackage();
 			const registryDirectory = "registry";
 			const registry = new LocalPluginRegistry({
-				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
 				now: () => "installed",
 			});
 			expect(await registry.install(pkg)).toMatchObject({ ok: true });
@@ -325,7 +325,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			expect(pointer.snapshotFile).toMatch(/^snapshot-\d+-[0-9a-f-]+\.json$/);
 
 			const reopened = await LocalPluginRegistry.open({
-				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
 				now: () => "reopened",
 			});
 			expect(reopened).toMatchObject({ ok: true });
@@ -336,7 +336,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			expect(await reopened.value.rollback(pkg.contract.pluginId)).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
 
 			const reinstalled = await LocalPluginRegistry.open({
-				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
 				now: () => "reinstalled",
 			});
 			expect(reinstalled).toMatchObject({ ok: true });
@@ -353,7 +353,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		try {
 			const registryDirectory = "registry";
 			const pkg = pluginPackage();
-			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const storage = new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
 			const registry = new LocalPluginRegistry({ storage, now: () => "installed" });
 			expect(await registry.install(pkg)).toMatchObject({ ok: true });
 			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
@@ -364,7 +364,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			const snapshotPath = join(directory, registryDirectory, "snapshots", pointer.snapshotFile);
 			const snapshotText = await readFile(snapshotPath, "utf8");
 			const expectCorrupt = async (message?: string): Promise<void> => {
-				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
 				expect(reopened).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
 				if (!reopened.ok && message !== undefined) expect(reopened.error.message).toBe(message);
 			};
@@ -387,7 +387,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			await expectCorrupt();
 			await writeFile(snapshotPath, snapshotText, "utf8");
 
-			const correlationMutations: Array<(snapshot: LocalPluginRegistrySnapshotV1) => void> = [
+			const correlationMutations: Array<(snapshot: LocalPluginRegistrySnapshot) => void> = [
 				(snapshot) => { snapshot.active[0]!.record.pluginId = "tampered-plugin"; },
 				(snapshot) => { snapshot.active[0]!.record.namespace = "tampered-namespace"; },
 				(snapshot) => { snapshot.active[0]!.record.version = "9.9.9"; },
@@ -397,7 +397,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 				(snapshot) => { snapshot.previous[0]!.record.version = "9.9.9"; },
 			];
 			for (const mutate of correlationMutations) {
-				const tampered = JSON.parse(snapshotText) as LocalPluginRegistrySnapshotV1;
+				const tampered = JSON.parse(snapshotText) as LocalPluginRegistrySnapshot;
 				mutate(tampered);
 				await writeFile(snapshotPath, JSON.stringify(tampered), "utf8");
 				await expectCorrupt();
@@ -405,7 +405,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			await writeFile(snapshotPath, snapshotText, "utf8");
 
 			expect(await storage.stagePackage({
-				stageId: `local-plugin:3:${pluginContentsDigestV1(pluginPackage("3.0.0").contents).value}`,
+				stageId: `local-plugin:3:${pluginContentsDigest(pluginPackage("3.0.0").contents).value}`,
 				operation: "update",
 				pluginId: pkg.contract.pluginId,
 				revision: 3,
@@ -415,25 +415,25 @@ describe("T4 runtime service and extension lifecycle", () => {
 			const stagedPointer = JSON.parse(await readFile(pointerPath, "utf8")) as { snapshotFile: string };
 			const stagedPath = join(directory, registryDirectory, "snapshots", stagedPointer.snapshotFile);
 			const stagedSnapshotText = await readFile(stagedPath, "utf8");
-			const stagedSnapshot = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshotV1;
+			const stagedSnapshot = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshot;
 			stagedSnapshot.staged[0]!.pluginId = "tampered-plugin";
 			await writeFile(stagedPath, JSON.stringify(stagedSnapshot), "utf8");
 			await expectCorrupt();
 
-			const tamperCases: Array<{ message: string; mutate: (snapshot: LocalPluginRegistrySnapshotV1) => void }> = [
+			const tamperCases: Array<{ message: string; mutate: (snapshot: LocalPluginRegistrySnapshot) => void }> = [
 				{ message: "plugin registry snapshot generation is invalid", mutate: (snapshot) => { snapshot.generation += 1; } },
 				{ message: "plugin registry snapshot pointer generation does not match its snapshot", mutate: (snapshot) => { snapshot.pointers[0]!.generation -= 1; } },
 				{ message: "plugin registry snapshot active and previous revisions are out of order", mutate: (snapshot) => { snapshot.active[0]!.record.revision = snapshot.previous[0]!.record.revision; } },
 				{ message: "durable install stage does not match plugin state", mutate: (snapshot) => { snapshot.staged[0]!.operation = "install"; } },
 				{ message: "durable update stage does not match plugin revision", mutate: (snapshot) => {
 					snapshot.staged[0]!.revision = 4;
-					snapshot.staged[0]!.stageId = `local-plugin:4:${pluginContentsDigestV1(snapshot.staged[0]!.package.contents).value}`;
+					snapshot.staged[0]!.stageId = `local-plugin:4:${pluginContentsDigest(snapshot.staged[0]!.package.contents).value}`;
 				} },
 				{ message: "durable staged plugin identity does not match its package", mutate: (snapshot) => { snapshot.staged[0]!.stageId = "forged-stage"; } },
 				{ message: "plugin registry snapshot pointer stage identity is inconsistent", mutate: (snapshot) => { snapshot.pointers[0]!.stageId = "forged-stage"; } },
 			];
 			for (const tamperCase of tamperCases) {
-				const tampered = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshotV1;
+				const tampered = JSON.parse(stagedSnapshotText) as LocalPluginRegistrySnapshot;
 				tamperCase.mutate(tampered);
 				await writeFile(stagedPath, JSON.stringify(tampered), "utf8");
 				await expectCorrupt(tamperCase.message);
@@ -448,15 +448,15 @@ describe("T4 runtime service and extension lifecycle", () => {
 		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-missing-pointer-"));
 		try {
 			const registryDirectory = "registry";
-			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const storage = new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
 			const registry = new LocalPluginRegistry({ storage });
 			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
 			await rm(join(directory, registryDirectory, "activation-pointer.json"));
-			expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) })).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
+			expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory) })).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
 
 			const emptyDirectory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-empty-"));
 			try {
-				expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: emptyDirectory }), registryDirectory) })).toMatchObject({ ok: true });
+				expect(await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: emptyDirectory }), registryDirectory) })).toMatchObject({ ok: true });
 			} finally {
 				await rm(emptyDirectory, { recursive: true, force: true });
 			}
@@ -481,7 +481,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			try {
 				const registryDirectory = "registry";
 				const pkg = pluginPackage();
-				const initialStorage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+				const initialStorage = new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
 				const registry = new LocalPluginRegistry({ storage: initialStorage, now: () => "installed" });
 				expect(await registry.install(pkg)).toMatchObject({ ok: true });
 				const active = registry.active(pkg.contract.pluginId);
@@ -493,7 +493,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 				const snapshotPath = join(directory, registryDirectory, "snapshots", pointer.snapshotFile);
 				const snapshotBefore = await readFile(snapshotPath, "utf8");
 
-				const failingStorage = new LocalFilePluginRegistryStorageV1(
+				const failingStorage = new LocalFilePluginRegistryStorage(
 					faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), failure.operation, failure.target),
 					registryDirectory,
 				);
@@ -501,7 +501,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 				expect(switched).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
 				expect(await readFile(pointerPath, "utf8")).toBe(pointerBefore);
 				expect(await readFile(snapshotPath, "utf8")).toBe(snapshotBefore);
-				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+				const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
 				expect(reopened).toMatchObject({ ok: true });
 				if (!reopened.ok) return;
 				expect(reopened.value.active(pkg.contract.pluginId)).toMatchObject({ pluginId: pkg.contract.pluginId, revision: 1 });
@@ -520,13 +520,13 @@ describe("T4 runtime service and extension lifecycle", () => {
 			const registryDirectory = "registry";
 			const pkg = pluginPackage();
 			const base = new NodeExecutionEnv({ cwd: directory });
-			const initialStorage = new LocalFilePluginRegistryStorageV1(base, registryDirectory);
+			const initialStorage = new LocalFilePluginRegistryStorage(base, registryDirectory);
 			const registry = new LocalPluginRegistry({ storage: initialStorage });
 			expect(await registry.install(pkg)).toMatchObject({ ok: true });
 			const active = registry.active(pkg.contract.pluginId);
 			expect(active).toBeDefined();
 			if (active === undefined) return;
-			const failingStorage = new LocalFilePluginRegistryStorageV1(
+			const failingStorage = new LocalFilePluginRegistryStorage(
 				faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), { operation: "syncDirectory", target: "pointer", failureCalls: [1, 2] }),
 				registryDirectory,
 			);
@@ -547,7 +547,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		try {
 			const registryDirectory = "registry";
 			const faultingFileSystem = faultInjectingFileSystem(new NodeExecutionEnv({ cwd: directory }), { operation: "syncDirectory", target: "pointer", failureCalls: [6, 9] });
-			const storage = new LocalFilePluginRegistryStorageV1(faultingFileSystem, registryDirectory);
+			const storage = new LocalFilePluginRegistryStorage(faultingFileSystem, registryDirectory);
 			const registry = new LocalPluginRegistry({ storage });
 			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
 			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
@@ -556,7 +556,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			expect(await registry.rollback("local-plugin")).toMatchObject({ ok: false, error: { _tag: "FoundationError" } });
 			expect(registry.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
 
-			const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
+			const reopened = await LocalPluginRegistry.open({ storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory) });
 			expect(reopened).toMatchObject({ ok: true });
 			if (!reopened.ok) return;
 			expect(reopened.value.active("local-plugin")).toMatchObject({ version: "2.0.0", revision: 2 });
@@ -566,14 +566,14 @@ describe("T4 runtime service and extension lifecycle", () => {
 	});
 
 	it("rolls back every recovered plugin scope in reverse order when orphan cleanup fails", async () => {
-		const storage = new InMemoryLocalPluginRegistryStorageV1();
+		const storage = new InMemoryLocalPluginRegistryStorage();
 		const first = pluginPackage("1.0.0", "first-plugin", "first");
 		const second = pluginPackage("1.0.0", "second-plugin", "second");
 		const registry = new LocalPluginRegistry({ storage });
 		expect(await registry.install(first)).toMatchObject({ ok: true });
 		expect(await registry.install(second)).toMatchObject({ ok: true });
 		expect(await storage.stagePackage({
-			stageId: `first-plugin:2:${pluginContentsDigestV1(pluginPackage("2.0.0", first.contract.pluginId, first.contract.namespace).contents).value}`,
+			stageId: `first-plugin:2:${pluginContentsDigest(pluginPackage("2.0.0", first.contract.pluginId, first.contract.namespace).contents).value}`,
 			operation: "update",
 			pluginId: first.contract.pluginId,
 			revision: 2,
@@ -581,7 +581,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 			stagedAt: "before-crash",
 		})).toMatchObject({ ok: true });
 		expect(await storage.stagePackage({
-			stageId: `second-plugin:2:${pluginContentsDigestV1(pluginPackage("2.0.0", second.contract.pluginId, second.contract.namespace).contents).value}`,
+			stageId: `second-plugin:2:${pluginContentsDigest(pluginPackage("2.0.0", second.contract.pluginId, second.contract.namespace).contents).value}`,
 			operation: "update",
 			pluginId: second.contract.pluginId,
 			revision: 2,
@@ -592,7 +592,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 		const disposed: string[] = [];
 		let failFirstDisposer = true;
 		let failLaterRemoval = true;
-		const storageAdapter: LocalPluginRegistryStorageV1 = {
+		const storageAdapter: LocalPluginRegistryStorage = {
 			load: () => storage.load(),
 			stagePackage: (record) => storage.stagePackage(record),
 			atomicSwitch: (change) => storage.atomicSwitch(change),
@@ -634,11 +634,11 @@ describe("T4 runtime service and extension lifecycle", () => {
 	});
 
 	it("reconciles indeterminate staging and failed activation cleanup from durable state", async () => {
-		const stagedStorage = new InMemoryLocalPluginRegistryStorageV1();
+		const stagedStorage = new InMemoryLocalPluginRegistryStorage();
 		const initial = new LocalPluginRegistry({ storage: stagedStorage });
 		expect(await initial.install(pluginPackage())).toMatchObject({ ok: true });
 		let reportStageFailure = true;
-		const stagingAdapter: LocalPluginRegistryStorageV1 = {
+		const stagingAdapter: LocalPluginRegistryStorage = {
 			load: () => stagedStorage.load(),
 			stagePackage: async (record) => {
 				const staged = await stagedStorage.stagePackage(record);
@@ -659,9 +659,9 @@ describe("T4 runtime service and extension lifecycle", () => {
 		expect(stagingRegistry.value.active("local-plugin")).toMatchObject({ version: "1.0.0", revision: 1 });
 		expect(stagedStorage.snapshot.staged).toEqual([]);
 
-		const cleanupStorage = new InMemoryLocalPluginRegistryStorageV1();
+		const cleanupStorage = new InMemoryLocalPluginRegistryStorage();
 		let failFirstRemoval = true;
-		const cleanupAdapter: LocalPluginRegistryStorageV1 = {
+		const cleanupAdapter: LocalPluginRegistryStorage = {
 			load: () => cleanupStorage.load(),
 			stagePackage: (record) => cleanupStorage.stagePackage(record),
 			atomicSwitch: (change) => cleanupStorage.atomicSwitch(change),
@@ -688,7 +688,7 @@ describe("T4 runtime service and extension lifecycle", () => {
 	it("preserves the rollback point on disk when rollback cleanup fails", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "aos-agent-plugin-rollback-"));
 		let failVersionTwoCleanup = true;
-		const onActivate = async (pkg: LocalPluginPackageV1, context: PluginActivationContextV1) => {
+		const onActivate = async (pkg: LocalPluginPackage, context: PluginActivationContext) => {
 			context.register("listener", `version:${pkg.contract.version}`, () => {
 				if (pkg.contract.version === "2.0.0" && failVersionTwoCleanup) {
 					failVersionTwoCleanup = false;
@@ -698,14 +698,14 @@ describe("T4 runtime service and extension lifecycle", () => {
 		};
 		try {
 			const registryDirectory = "registry";
-			const storage = new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
+			const storage = new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory);
 			const registry = new LocalPluginRegistry({ storage, onActivate });
 			expect(await registry.install(pluginPackage())).toMatchObject({ ok: true });
 			expect(await registry.update(pluginPackage("2.0.0"))).toMatchObject({ ok: true });
 			expect(await registry.rollback("local-plugin")).toMatchObject({ ok: false, error: { code: "plugin_rollback_failed" } });
 
 			const reopened = await LocalPluginRegistry.open({
-				storage: new LocalFilePluginRegistryStorageV1(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
+				storage: new LocalFilePluginRegistryStorage(new NodeExecutionEnv({ cwd: directory }), registryDirectory),
 				onActivate,
 			});
 			expect(reopened).toMatchObject({ ok: true });

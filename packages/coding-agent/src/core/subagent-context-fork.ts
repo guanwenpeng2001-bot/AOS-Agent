@@ -13,31 +13,31 @@ import {
 	canonicalFoundationJson,
 	contextSnapshotFromJSON,
 	createContextSnapshot,
-	FingerprintV1Schema,
+	FingerprintSchema,
 	fingerprintFoundationValue,
 	FoundationError,
-	projectTaskEnvelopeV1,
+	projectTaskEnvelope,
 	Result,
-	RevisionReferenceV1Schema,
-	TaskEnvelopePublicProjectionV1Schema,
+	RevisionReferenceSchema,
+	TaskEnvelopePublicProjectionSchema,
 	validateExactShape,
-	validateRoleRevisionV1,
+	validateRoleRevision,
 	validateTaskEnvelope,
-	validateTaskEnvelopePublicProjectionV1,
+	validateTaskEnvelopePublicProjection,
 	type ContextForkMode,
 	type ContextSnapshot,
 	type ContextSnapshotSource,
-	type ContextSnapshotV1,
+	type ContextSnapshotRecord,
 	type Entry,
-	type FingerprintV1,
+	type Fingerprint,
 	type MessageEntry,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
-	type RoleRevisionV1,
-	type TaskArtifactProjectionV1,
-	type TaskContextPackageV1,
-	type TaskEnvelopePublicProjectionV1,
-	type TaskEnvelopeV1,
+	type RevisionReference,
+	type RoleRevision,
+	type TaskArtifactProjection,
+	type TaskContextPackage,
+	type TaskEnvelopePublicProjection,
+	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScopeV1 } from "./subagent.ts";
 
@@ -53,15 +53,15 @@ export interface ChildContextForkPlanV1 {
 	readonly forkScope: ChildContextForkScopeV1;
 	readonly recentN?: number;
 	readonly taskPackageRef?: string;
-	readonly sourceContextDigest?: FingerprintV1;
-	readonly childSnapshotRef: RevisionReferenceV1;
+	readonly sourceContextDigest?: Fingerprint;
+	readonly childSnapshotRef: RevisionReference;
 	readonly tokenBudget: number;
 }
 
 export interface PersistedTaskPackageProofV1 {
 	readonly ref: string;
-	readonly digest: FingerprintV1;
-	readonly projection: TaskEnvelopePublicProjectionV1;
+	readonly digest: Fingerprint;
+	readonly projection: TaskEnvelopePublicProjection;
 }
 
 export interface ChildRuntimeCriterionV1 {
@@ -79,30 +79,30 @@ export interface ChildRuntimeLayerV1 {
 	readonly customInstructions: string;
 	readonly goal: string;
 	readonly acceptanceCriteria: readonly ChildRuntimeCriterionV1[];
-	readonly inputs: readonly TaskArtifactProjectionV1[];
-	readonly expectedOutputs: readonly TaskArtifactProjectionV1[];
+	readonly inputs: readonly TaskArtifactProjection[];
+	readonly expectedOutputs: readonly TaskArtifactProjection[];
 }
 
 export interface ForkChildContextInputV1 {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
 	readonly forkScope: ChildContextForkScopeV1;
-	readonly parentSnapshot: ContextSnapshot | ContextSnapshotV1;
-	readonly childRoleRevision: RoleRevisionV1;
-	readonly childTaskEnvelope: TaskEnvelopeV1;
+	readonly parentSnapshot: ContextSnapshot | ContextSnapshotRecord;
+	readonly childRoleRevision: RoleRevision;
+	readonly childTaskEnvelope: TaskEnvelope;
 	readonly childBindingEpochId: string;
 	readonly childTokenBudget: number;
 	readonly parentEntries?: readonly Entry[];
 	readonly recentN?: number;
 	readonly taskPackageRef?: string;
-	readonly sourceContextDigest?: FingerprintV1;
+	readonly sourceContextDigest?: Fingerprint;
 	readonly persistedTaskPackage?: PersistedTaskPackageProofV1;
 }
 
 export interface ChildContextForkResultV1 {
 	readonly plan: ChildContextForkPlanV1;
 	readonly snapshot: ContextSnapshot;
-	readonly record: ContextSnapshotV1;
+	readonly record: ContextSnapshotRecord;
 	readonly runtimeProjection: ChildRuntimeLayerV1;
 }
 
@@ -127,8 +127,8 @@ const CONTROL_ENTRY_TYPES = new Set(["thinking_level_change", "model_change", "a
 const PersistedTaskPackageProofV1Schema = Type.Object(
 	{
 		ref: Type.String({ minLength: 1 }),
-		digest: FingerprintV1Schema,
-		projection: TaskEnvelopePublicProjectionV1Schema,
+		digest: FingerprintSchema,
+		projection: TaskEnvelopePublicProjectionSchema,
 	},
 	{ additionalProperties: false },
 );
@@ -139,8 +139,8 @@ const ChildContextForkPlanV1Schema = Type.Object(
 		forkScope: Type.Union([Type.Literal("none"), Type.Literal("all"), Type.Literal("recent_n"), Type.Literal("task_package")]),
 		recentN: Type.Optional(Type.Integer({ minimum: 1 })),
 		taskPackageRef: Type.Optional(Type.String({ minLength: 1 })),
-		sourceContextDigest: Type.Optional(FingerprintV1Schema),
-		childSnapshotRef: RevisionReferenceV1Schema,
+		sourceContextDigest: Type.Optional(FingerprintSchema),
+		childSnapshotRef: RevisionReferenceSchema,
 		tokenBudget: Type.Number({ minimum: 0 }),
 	},
 	{ additionalProperties: false },
@@ -158,16 +158,16 @@ function isSafeIdentifier(value: unknown): value is string {
 	return typeof value === "string" && IDENTIFIER_PATTERN.test(value);
 }
 
-function isLiveSnapshot(value: ContextSnapshot | ContextSnapshotV1): value is ContextSnapshot {
+function isLiveSnapshot(value: ContextSnapshot | ContextSnapshotRecord): value is ContextSnapshot {
 	return typeof (value as ContextSnapshot).toJSON === "function" && typeof (value as ContextSnapshot).entries === "function";
 }
 
-function digestFingerprint(digest: string): FingerprintV1 {
+function digestFingerprint(digest: string): Fingerprint {
 	const value = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
 	return { algorithm: "sha256", value };
 }
 
-function fingerprintMatchesDigest(fingerprint: FingerprintV1, digest: string): boolean {
+function fingerprintMatchesDigest(fingerprint: Fingerprint, digest: string): boolean {
 	if (fingerprint.algorithm !== "sha256") return false;
 	return digest === fingerprint.value || digest === `sha256:${fingerprint.value}` || fingerprint.value === digest.replace(/^sha256:/, "");
 }
@@ -263,7 +263,7 @@ function relinkChain(entries: readonly Entry[]): Entry[] {
 	}));
 }
 
-function instructionSource(role: RoleRevisionV1, estimatedTokens: number): ContextSnapshotSource {
+function instructionSource(role: RoleRevision, estimatedTokens: number): ContextSnapshotSource {
 	return {
 		sourceId: "child-role-instructions",
 		kind: "instruction",
@@ -274,7 +274,7 @@ function instructionSource(role: RoleRevisionV1, estimatedTokens: number): Conte
 	};
 }
 
-function taskSource(projection: TaskEnvelopePublicProjectionV1, estimatedTokens: number): ContextSnapshotSource {
+function taskSource(projection: TaskEnvelopePublicProjection, estimatedTokens: number): ContextSnapshotSource {
 	return {
 		sourceId: "child-task-envelope",
 		kind: "task",
@@ -309,7 +309,7 @@ function boundTaskPackageLayer(layer: ChildRuntimeLayerV1): ResultValue<ChildRun
 	return Result.ok(layer);
 }
 
-function buildRuntimeLayer(role: RoleRevisionV1, task: TaskEnvelopeV1, projection: TaskEnvelopePublicProjectionV1): ChildRuntimeLayerV1 {
+function buildRuntimeLayer(role: RoleRevision, task: TaskEnvelope, projection: TaskEnvelopePublicProjection): ChildRuntimeLayerV1 {
 	return cloneDeepFrozen({
 		schemaVersion: 1 as const,
 		kind: "system_task" as const,
@@ -373,8 +373,8 @@ function resolveParentSnapshot(input: ForkChildContextInputV1): ResultValue<Cont
 
 function resolveTaskPackage(
 	input: ForkChildContextInputV1,
-	task: TaskEnvelopeV1,
-	currentProjection: TaskEnvelopePublicProjectionV1,
+	task: TaskEnvelope,
+	currentProjection: TaskEnvelopePublicProjection,
 ): ResultValue<PersistedTaskPackageProofV1, FoundationError> {
 	if (input.taskPackageRef === undefined || input.taskPackageRef.length === 0) {
 		return forkError("task_package fork requires taskPackageRef");
@@ -386,7 +386,7 @@ function resolveTaskPackage(
 			"task_package_proof",
 		);
 		if (!proof.ok) return forkError("Persisted task package proof is not an exact shape");
-		const projection = validateTaskEnvelopePublicProjectionV1(proof.value.projection);
+		const projection = validateTaskEnvelopePublicProjection(proof.value.projection);
 		if (!projection.ok) return forkError("Persisted task package projection is invalid");
 		if (proof.value.ref !== input.taskPackageRef) {
 			return forkError("taskPackageRef does not match the persisted task package");
@@ -416,7 +416,7 @@ function resolveTaskPackage(
 function buildPlan(
 	input: ForkChildContextInputV1,
 	snapshot: ContextSnapshot,
-	sourceContextDigest: FingerprintV1 | undefined,
+	sourceContextDigest: Fingerprint | undefined,
 ): ChildContextForkPlanV1 {
 	return cloneDeepFrozen({
 		schemaVersion: CHILD_CONTEXT_FORK_SCHEMA_VERSION,
@@ -445,7 +445,7 @@ function validateInputShape(value: unknown): value is ForkChildContextInputV1 {
 		return false;
 	}
 	if (value.sourceContextDigest !== undefined) {
-		const digest = validateExactShape<FingerprintV1>(FingerprintV1Schema, value.sourceContextDigest, "fingerprint");
+		const digest = validateExactShape<Fingerprint>(FingerprintSchema, value.sourceContextDigest, "fingerprint");
 		if (!digest.ok) return false;
 	}
 	return true;
@@ -475,7 +475,7 @@ function parentConversationEntries(parent: ContextSnapshot, scope: ChildContextF
 }
 
 function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<ChildContextForkResultV1, FoundationError> {
-	const role = validateRoleRevisionV1(input.childRoleRevision);
+	const role = validateRoleRevision(input.childRoleRevision);
 	if (!role.ok) return forkError("Child RoleRevision is invalid");
 	const task = validateTaskEnvelope(input.childTaskEnvelope);
 	if (!task.ok) return forkError("Child TaskEnvelope is invalid");
@@ -484,7 +484,7 @@ function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<
 	const parentRecord = parent.value.toJSON();
 	const parentDigest = digestFingerprint(parentRecord.digest);
 	if (input.sourceContextDigest !== undefined) {
-		const digest = validateExactShape<FingerprintV1>(FingerprintV1Schema, input.sourceContextDigest, "fingerprint");
+		const digest = validateExactShape<Fingerprint>(FingerprintSchema, input.sourceContextDigest, "fingerprint");
 		if (!digest.ok) return forkError("sourceContextDigest is not an exact FingerprintV1");
 		if (!fingerprintMatchesDigest(digest.value, parentRecord.digest)) {
 			return forkError("Parent Context digest does not match sourceContextDigest");
@@ -499,7 +499,7 @@ function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<
 		return forkError("task_package fork requires taskPackageRef");
 	}
 
-	const taskProjection = projectTaskEnvelopeV1(task.value);
+	const taskProjection = projectTaskEnvelope(task.value);
 	let runtimeProjection = buildRuntimeLayer(role.value, task.value, taskProjection);
 	if (input.forkScope === "task_package") {
 		const bounded = boundTaskPackageLayer(runtimeProjection);
@@ -523,7 +523,7 @@ function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<
 		instructionSource(role.value, tokenParts.instruction),
 		taskSource(taskProjection, tokenParts.task),
 	];
-	let taskPackage: TaskContextPackageV1;
+	let taskPackage: TaskContextPackage;
 	if (input.forkScope === "task_package") {
 		const pack = resolveTaskPackage(input, task.value, taskProjection);
 		if (!pack.ok) return pack;

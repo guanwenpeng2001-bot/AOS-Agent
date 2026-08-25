@@ -10,7 +10,7 @@ import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
 import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SchedulerSafeStatusV1 } from "../../core/foundation-control-plane.ts";
+import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -66,7 +66,7 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { WorkerLifecycleStatusV1 } from "../../core/worker.ts";
+import type { WorkerLifecycleStatus } from "../../core/worker.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -373,7 +373,7 @@ export type RpcCommand =
 			id?: string;
 			type: "worker.list";
 			runId?: string;
-			status?: WorkerLifecycleStatusV1;
+			status?: WorkerLifecycleStatus;
 			limit?: number;
 			cursor?: string;
 	  }
@@ -942,13 +942,13 @@ export type RpcCommandType = RpcCommand["type"];
 // Automation Host (protocolVersion 1)
 // ============================================================================
 
-/** Commands introduced by the Automation Host v1 protocol. */
+/** Commands introduced by the Automation Host RPC protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
-/** Automation Host v1 audit and external mapping commands. */
+/** Automation Host audit and external mapping commands. */
 export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
 
-/** Task Gate v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Gate control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGateCommandType =
 	| "task.gate.request"
 	| "task.gate.get"
@@ -957,7 +957,7 @@ export type RpcTaskGateCommandType =
 	| "task.gate.reject"
 	| "task.gate.cancel";
 
-/** Task Graph v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Graph control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGraphCommandType =
 	| "task.graph.create"
 	| "task.graph.get"
@@ -965,7 +965,7 @@ export type RpcTaskGraphCommandType =
 	| "task.graph.node.attach"
 	| "task.graph.node.settle";
 
-/** Task Credential v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Credential control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskCredentialCommandType =
 	| "task.credential.issue"
 	| "task.credential.get"
@@ -980,7 +980,7 @@ export type RpcWorkerCommandType = "worker.get" | "worker.list" | "worker.reclai
 export type RpcSubagentCommandType = "subagent.get" | "subagent.list" | "subagent.cancel";
 export type RpcSchedulerCommandType = "scheduler.status";
 
-/** The full Automation Host v1 command set (initialize + run commands). */
+/** The full Automation Host command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
 	| RpcRunCommandType
@@ -1162,7 +1162,7 @@ export interface RpcWorkerRecord {
 	bindingEpochId?: string;
 	attemptId?: string;
 	profileId: string;
-	status: WorkerLifecycleStatusV1;
+	status: WorkerLifecycleStatus;
 	revision: number;
 	createdAt: string;
 	readyAt?: string;
@@ -1245,7 +1245,7 @@ export type RpcSubagentResponse =
 	| { id?: string; type: "response"; command: RpcSubagentCommandType; success: false; error: RpcSubagentError };
 
 export interface SchedulerStatusData {
-	readonly scheduler: SchedulerSafeStatusV1;
+	readonly scheduler: SchedulerSafeStatus;
 }
 
 export type RpcSchedulerResponse =
@@ -1259,7 +1259,7 @@ export type RpcSchedulerResponse =
 	  };
 
 /**
- * Automation Host v1 responses.
+ * Automation Host responses.
  *
  * Success responses mirror the corresponding commands. Every failure carries a
  * structured {@link AutomationError} instead of the legacy string `error`, so

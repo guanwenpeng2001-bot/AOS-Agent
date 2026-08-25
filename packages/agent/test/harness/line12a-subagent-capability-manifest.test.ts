@@ -3,11 +3,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	FOUNDATION_V1_CAPABILITY_CLOSURES,
-	FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS,
+	FOUNDATION_CAPABILITY_CLOSURES,
+	FOUNDATION_FUTURE_CAPABILITY_OWNERS,
 	foundationClosureById,
 	foundationFutureOwnerById,
-} from "../../src/harness/foundation-v1-capabilities.ts";
+} from "../../src/harness/foundation-capabilities.ts";
 import { LINE11_WORKER_CAPABILITY_CLOSURES } from "../../src/harness/line11-worker-capabilities.ts";
 import {
 	LINE12A_SUBAGENT_CAPABILITY_CLOSURES,
@@ -78,7 +78,7 @@ describe("Line 12A Native Subagent capability manifest", () => {
 				(entry) => entry.id,
 			),
 		);
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.some((entry) => implemented.has(entry.id))).toBe(false);
+		expect(FOUNDATION_CAPABILITY_CLOSURES.some((entry) => implemented.has(entry.id))).toBe(false);
 		expect(LINE11_WORKER_CAPABILITY_CLOSURES.some((entry) => implemented.has(entry.id))).toBe(false);
 	});
 
@@ -98,10 +98,10 @@ describe("Line 12A Native Subagent capability manifest", () => {
 	});
 
 	it("keeps the sealed Foundation ledgers unchanged", () => {
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES).toHaveLength(79);
-		expect(FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
+		expect(FOUNDATION_CAPABILITY_CLOSURES).toHaveLength(79);
+		expect(FOUNDATION_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
 		expect(
-			FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.filter((entry) => entry.laterOwner === "12A").map((entry) => entry.id),
+			FOUNDATION_FUTURE_CAPABILITY_OWNERS.filter((entry) => entry.laterOwner === "12A").map((entry) => entry.id),
 		).toEqual(IMPLEMENTED_IDS);
 	});
 });

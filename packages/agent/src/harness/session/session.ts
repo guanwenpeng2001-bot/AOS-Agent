@@ -20,7 +20,7 @@ import type {
 	SessionTree,
 } from "./types.ts";
 import { SessionError } from "./types.ts";
-import { isDurableLedgerStorage, type DurableLedgerApi, type AcquireWriterLeaseOptionsV1, type AppendFoundationRecordResultV1, type FoundationObjectResultV1, type FoundationRecordQueryV1, type FoundationRecordV1, type FoundationRetentionPolicyV1, type LedgerWriterLeaseV1, type ProvisionedFoundationRecordV1, type ReleaseWriterLeaseOptionsV1, type RenewWriterLeaseOptionsV1, type SetRetentionPolicyOptionsV1 } from "./durable/types.ts";
+import { isDurableLedgerStorage, type DurableLedgerApi, type AcquireWriterLeaseOptions, type AppendFoundationRecordResult, type FoundationObjectResult, type FoundationRecordQuery, type FoundationRecord, type FoundationRetentionPolicy, type LedgerWriterLease, type ProvisionedFoundationRecord, type ReleaseWriterLeaseOptions, type RenewWriterLeaseOptions, type SetRetentionPolicyOptions } from "./durable/types.ts";
 
 type JsonValidationFrame = { value: unknown } | { exit: object };
 
@@ -206,19 +206,19 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.commitRecord(record);
 	}
 
-	async acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	async acquireWriterLease(options: AcquireWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.durable().acquireWriterLease(options);
 	}
 
-	async renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	async renewWriterLease(options: RenewWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.durable().renewWriterLease(options);
 	}
 
-	async releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+	async releaseWriterLease(options: ReleaseWriterLeaseOptions): Promise<void> {
 		return this.durable().releaseWriterLease(options);
 	}
 
-	async getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	async getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.durable().getWriterLease();
 	}
 
@@ -226,19 +226,19 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.durable().getLedgerRevision();
 	}
 
-	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	async appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		return this.durable().appendFoundationRecord(record);
 	}
 
-	async setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): Promise<AppendFoundationRecordResultV1> {
+	async setRetentionPolicy(policy: FoundationRetentionPolicy, options: SetRetentionPolicyOptions): Promise<AppendFoundationRecordResult> {
 		return this.durable().setRetentionPolicy(policy, options);
 	}
 
-	async findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	async findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.durable().findFoundationRecords(query);
 	}
 
-	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.durable().getFoundationObject(objectType, objectId);
 	}
 
@@ -250,11 +250,11 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.durable().isObjectTombstoned(objectType, objectId);
 	}
 
-	async getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	async getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.durable().getRetentionPolicy();
 	}
 
-	async prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	async prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.durable().prunableFoundationRecords();
 	}
 

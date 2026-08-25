@@ -3,18 +3,18 @@ import { Session } from "./session.ts";
 import { SessionState } from "./state.ts";
 import { FoundationLedgerState, prepareForkFoundationRecords } from "./durable/state.ts";
 import type {
-	AcquireWriterLeaseOptionsV1,
-	AppendFoundationRecordResultV1,
+	AcquireWriterLeaseOptions,
+	AppendFoundationRecordResult,
 	DurableLedgerApi,
-	FoundationRecordQueryV1,
-	FoundationRecordV1,
-	FoundationObjectResultV1,
-	FoundationRetentionPolicyV1,
-	LedgerWriterLeaseV1,
-	ProvisionedFoundationRecordV1,
-	ReleaseWriterLeaseOptionsV1,
-	RenewWriterLeaseOptionsV1,
-	SetRetentionPolicyOptionsV1,
+	FoundationRecordQuery,
+	FoundationRecord,
+	FoundationObjectResult,
+	FoundationRetentionPolicy,
+	LedgerWriterLease,
+	ProvisionedFoundationRecord,
+	ReleaseWriterLeaseOptions,
+	RenewWriterLeaseOptions,
+	SetRetentionPolicyOptions,
 } from "./durable/types.ts";
 import {
 	type BranchBounds,
@@ -181,19 +181,19 @@ export class InMemorySessionStorage implements SessionStorage, DurableLedgerApi 
 		return structuredClone(this.state.getStats());
 	}
 
-	async acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	async acquireWriterLease(options: AcquireWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.durableState.acquireWriterLease(options);
 	}
 
-	async renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	async renewWriterLease(options: RenewWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.durableState.renewWriterLease(options);
 	}
 
-	async releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+	async releaseWriterLease(options: ReleaseWriterLeaseOptions): Promise<void> {
 		this.durableState.releaseWriterLease(options);
 	}
 
-	async getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	async getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.durableState.getWriterLease();
 	}
 
@@ -201,25 +201,25 @@ export class InMemorySessionStorage implements SessionStorage, DurableLedgerApi 
 		return this.durableState.getLedgerRevision();
 	}
 
-	async appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	async appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		this.alignDurableCursor();
 		const result = this.durableState.appendFoundationRecord(record);
 		if (!result.replayed) this.state.observeExternalSequence(result.record.seq, result.record.id, result.record);
 		return result;
 	}
 
-	async setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): Promise<AppendFoundationRecordResultV1> {
+	async setRetentionPolicy(policy: FoundationRetentionPolicy, options: SetRetentionPolicyOptions): Promise<AppendFoundationRecordResult> {
 		this.alignDurableCursor();
 		const result = this.durableState.setRetentionPolicy(policy, options);
 		if (!result.replayed) this.state.observeExternalSequence(result.record.seq, result.record.id, result.record);
 		return result;
 	}
 
-	async findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	async findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.durableState.findFoundationRecords(query);
 	}
 
-	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.durableState.getFoundationObject(objectType, objectId);
 	}
 
@@ -231,11 +231,11 @@ export class InMemorySessionStorage implements SessionStorage, DurableLedgerApi 
 		return this.durableState.isObjectTombstoned(objectType, objectId);
 	}
 
-	async getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	async getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.durableState.getRetentionPolicy();
 	}
 
-	async prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	async prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.durableState.prunableFoundationRecords();
 	}
 

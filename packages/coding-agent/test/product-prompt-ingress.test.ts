@@ -2,18 +2,18 @@ import {
 	AgentHarness,
 	createScopedMemoryStore,
 	FoundationError,
-	InMemoryRoleRegistryV1,
+	InMemoryRoleRegistry,
 	InMemorySessionStorage,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	sha256HexValue,
-	type FoundationProviderExecutionOptionsV1,
+	type FoundationProviderExecutionOptions,
 	type FoundationJsonValue,
 	type ArtifactStoreProvider,
 	type QuotaProvider,
 	type SandboxOperationProvider,
-	type SandboxOperationRequestV1,
+	type SandboxOperationRequest,
 	type StreamFn,
 	type ScopedModelGateway,
 	type ToolGateway,
@@ -55,7 +55,7 @@ function workerProvider(): SandboxOperationProvider {
 		providerClass: "operation_worker",
 		providerId: "test.operation-worker",
 		capabilities: async () => [{ schemaVersion: 1, id: "tool_gateway", version: 1 }],
-		start: async (request: SandboxOperationRequestV1, options: FoundationProviderExecutionOptionsV1 = {}) => {
+		start: async (request: SandboxOperationRequest, options: FoundationProviderExecutionOptions = {}) => {
 			const correlation = options.correlation;
 			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "test Worker requires correlation"));
 			const { agentInstanceId: _agentInstanceId, ...workerCorrelation } = correlation;
@@ -128,16 +128,16 @@ describe("ProductPromptIngressV1", () => {
 			return stream;
 		};
 		const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
-		const ledgers = new Map<string, SessionLedgerV1>();
-		const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+		const ledgers = new Map<string, SessionLedger>();
+		const ledgerForLane = (laneId: string): SessionLedger => {
 			let ledger = ledgers.get(laneId);
 			if (ledger === undefined) {
-				ledger = new SessionLedgerV1(session, { writer: created.harness.t5.writer, laneId });
+				ledger = new SessionLedger(session, { writer: created.harness.t5.writer, laneId });
 				ledgers.set(laneId, ledger);
 			}
 			return ledger;
 		};
-		const registry = new InMemoryRoleRegistryV1({ now: () => "2026-08-20T00:00:00.000Z" });
+		const registry = new InMemoryRoleRegistry({ now: () => "2026-08-20T00:00:00.000Z" });
 		const registered = registry.create({ definition: {
 			schemaVersion: 1,
 			roleId: "reviewer",
@@ -506,7 +506,7 @@ describe("ProductPromptIngressV1", () => {
 			const forgedAttemptId = `attempt_coding_agent_${forgedToken}`;
 			const forgedAgentInstanceId = `agent_instance_coding_agent_${forgedToken}`;
 			const forgedOperationId = `sandbox-operation-${forgedToken}`;
-			const ledger = new SessionLedgerV1(session, { writer: created.harness.t5.writer });
+			const ledger = new SessionLedger(session, { writer: created.harness.t5.writer });
 			await ledger.appendFact("worker_receipt", "bad-receipt", {
 				schemaVersion: 1,
 				workerReceiptId: "bad-receipt",

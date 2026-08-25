@@ -2,26 +2,26 @@ import { FoundationError, publicExecutionError, toFoundationError } from "./foun
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
 import { canonicalFoundationJson, newFoundationId } from "./foundation/identity.ts";
 import {
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderV1,
+	type FoundationProviderCapability,
+	type FoundationProvider,
 	type SandboxOperationProvider,
-	type SandboxOperationRequestV1,
-	type ToolExecutionResultV1,
+	type SandboxOperationRequest,
+	type ToolExecutionResult,
 	type ToolGateway,
-	type ToolGatewayRequestV1,
-	validateSandboxOperationRequestV1,
-	validateToolExecutionResultV1,
-	validateToolGatewayRequestV1,
+	type ToolGatewayRequest,
+	validateSandboxOperationRequest,
+	validateToolExecutionResult,
+	validateToolGatewayRequest,
 } from "./foundation/providers.ts";
-import { validateWorkerReceipt, type WorkerReceiptV1 } from "./foundation/results.ts";
+import { validateWorkerReceipt, type WorkerReceipt } from "./foundation/results.ts";
 import type { Result as ResultValue } from "./result.ts";
 import { Result } from "./result.ts";
 
-export type ToolGatewayRouteKindV1 = "local" | "sandbox" | "external";
+export type ToolGatewayRouteKind = "local" | "sandbox" | "external";
 
 /** Route identity of one tool exposed by one gateway provider. */
-export interface ToolGatewayRouteV1 {
-	kind: ToolGatewayRouteKindV1;
+export interface ToolGatewayRoute {
+	kind: ToolGatewayRouteKind;
 	toolName: string;
 	/** Optional namespace such as an MCP server id or a sandbox name. */
 	namespace?: string;
@@ -31,29 +31,29 @@ export interface ToolGatewayRouteV1 {
 }
 
 /** Provider-neutral adapter registered in a FoundationToolGateway. */
-export interface ToolGatewayProviderV1 {
+export interface ToolGatewayProvider {
 	readonly providerId: string;
-	readonly kind: ToolGatewayRouteKindV1;
-	readonly routes: readonly ToolGatewayRouteV1[];
-	capabilities(): Promise<readonly FoundationProviderCapabilityV1[]>;
+	readonly kind: ToolGatewayRouteKind;
+	readonly routes: readonly ToolGatewayRoute[];
+	capabilities(): Promise<readonly FoundationProviderCapability[]>;
 	execute(
-		request: ToolGatewayRequestV1,
+		request: ToolGatewayRequest,
 		options?: { signal?: AbortSignal },
-	): Promise<ResultValue<ToolExecutionResultV1, FoundationError>>;
+	): Promise<ResultValue<ToolExecutionResult, FoundationError>>;
 	dispose(): Promise<void>;
 }
 
-export interface FoundationToolGatewayOptionsV1 {
+export interface FoundationToolGatewayOptions {
 	readonly gatewayId: string;
-	readonly providers: readonly ToolGatewayProviderV1[];
+	readonly providers: readonly ToolGatewayProvider[];
 }
 
-export interface ConsumerToolGatewayFakeOptionsV1 {
+export interface ConsumerToolGatewayFakeOptions {
 	readonly providerId?: string;
-	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly capabilities?: readonly FoundationProviderCapability[];
 	readonly nowMs?: () => number;
 	/** Consumer-facing behavior; it returns provider-neutral execution results, never final receipts. */
-	readonly invoke?: (request: ToolGatewayRequestV1, options: { signal?: AbortSignal }) => Promise<ResultValue<ToolExecutionResultV1, FoundationError>>;
+	readonly invoke?: (request: ToolGatewayRequest, options: { signal?: AbortSignal }) => Promise<ResultValue<ToolExecutionResult, FoundationError>>;
 }
 
 /**
@@ -61,18 +61,18 @@ export interface ConsumerToolGatewayFakeOptionsV1 {
  * boundary as a real consumer and keeps only provider-neutral settlements for
  * restart recovery; it never manufactures ToolReceipt/TaskResult/RunReceipt.
  */
-export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProviderV1 {
+export class ConsumerToolGatewayFake implements ToolGateway, FoundationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId: string;
 	readonly providerClass = "gateway" as const;
-	private readonly invoke: NonNullable<ConsumerToolGatewayFakeOptionsV1["invoke"]>;
-	private readonly declared: readonly FoundationProviderCapabilityV1[];
+	private readonly invoke: NonNullable<ConsumerToolGatewayFakeOptions["invoke"]>;
+	private readonly declared: readonly FoundationProviderCapability[];
 	private readonly nowMs: () => number;
-	private readonly settlements = new Map<string, ToolExecutionResultV1>();
+	private readonly settlements = new Map<string, ToolExecutionResult>();
 	private readonly inFlight = new Set<string>();
 	private disposed = false;
 
-	constructor(options: ConsumerToolGatewayFakeOptionsV1 = {}) {
+	constructor(options: ConsumerToolGatewayFakeOptions = {}) {
 		this.providerId = options.providerId ?? "consumer-tool-gateway-fake";
 		if (this.providerId.length === 0) throw new TypeError("providerId must not be empty");
 		this.invoke = options.invoke ?? (async (request) => Result.ok({ schemaVersion: 1, toolCallId: request.toolCallId, toolName: request.toolName, ok: true, sideEffectState: "none" }));
@@ -80,17 +80,17 @@ export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProvide
 		this.nowMs = options.nowMs ?? Date.now;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [{ schemaVersion: 1, id: "consumer_tool_gateway_fake", version: 1 }, ...this.declared];
 	}
 
-	async execute(request: ToolGatewayRequestV1, options: { signal?: AbortSignal } = {}): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
+	async execute(request: ToolGatewayRequest, options: { signal?: AbortSignal } = {}): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 		if (this.disposed) return Result.err(new FoundationError("invalid_identifier", "consumer ToolGateway fake is disposed"));
-		const checkedRequest = validateToolGatewayRequestV1(request);
+		const checkedRequest = validateToolGatewayRequest(request);
 		if (!checkedRequest.ok) return checkedRequest;
 		const value = checkedRequest.value;
-		const settle = (result: ToolExecutionResultV1): ResultValue<ToolExecutionResultV1, FoundationError> => {
-			const checked = validateToolExecutionResultV1(result);
+		const settle = (result: ToolExecutionResult): ResultValue<ToolExecutionResult, FoundationError> => {
+			const checked = validateToolExecutionResult(result);
 			if (!checked.ok) return checked;
 			this.settlements.set(value.toolCallId, checked.value);
 			return Result.ok(checked.value);
@@ -99,7 +99,7 @@ export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProvide
 		if (value.deadlineAt !== undefined && this.nowMs() >= value.deadlineAt) return settle({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: false, sideEffectState: "none", error: publicExecutionError("deadline_exceeded", "tool execution deadline was exceeded", { category: "deadline", retryable: false }) });
 		this.inFlight.add(value.toolCallId);
 		try {
-			let result: ResultValue<ToolExecutionResultV1, FoundationError>;
+			let result: ResultValue<ToolExecutionResult, FoundationError>;
 			try {
 				result = await this.invoke(value, options);
 			} catch (error) {
@@ -116,7 +116,7 @@ export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProvide
 	}
 
 	/** Return provider-neutral settlements that a restarted consumer can reconcile. */
-	recoverSettlements(toolCallId?: string): readonly ToolExecutionResultV1[] {
+	recoverSettlements(toolCallId?: string): readonly ToolExecutionResult[] {
 		if (toolCallId !== undefined) {
 			const settlement = this.settlements.get(toolCallId);
 			return settlement === undefined ? [] : [settlement];
@@ -130,44 +130,41 @@ export class ConsumerToolGatewayFakeV1 implements ToolGateway, FoundationProvide
 	}
 }
 
-export function createConsumerToolGatewayFakeV1(options: ConsumerToolGatewayFakeOptionsV1 = {}): ConsumerToolGatewayFakeV1 {
-	return new ConsumerToolGatewayFakeV1(options);
+export function createConsumerToolGatewayFake(options: ConsumerToolGatewayFakeOptions = {}): ConsumerToolGatewayFake {
+	return new ConsumerToolGatewayFake(options);
 }
-
-export const PublicToolGatewayFakeV1 = ConsumerToolGatewayFakeV1;
-export const createPublicToolGatewayFakeV1 = createConsumerToolGatewayFakeV1;
 
 /**
  * Provider-neutral ToolGateway consuming the T1 contracts. It validates every
  * request with the frozen exact-shape schema, routes by `(namespace, toolName)`
  * and never falls through to a broader default when no route matches.
  */
-export class FoundationToolGatewayV1 implements ToolGateway, FoundationProviderV1 {
+export class FoundationToolGateway implements ToolGateway, FoundationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId: string;
 	readonly providerClass = "gateway" as const;
 
-	private readonly routes: readonly ToolGatewayRouteV1[];
-	private readonly providers: readonly ToolGatewayProviderV1[];
+	private readonly routes: readonly ToolGatewayRoute[];
+	private readonly providers: readonly ToolGatewayProvider[];
 
-	constructor(options: FoundationToolGatewayOptionsV1) {
+	constructor(options: FoundationToolGatewayOptions) {
 		if (options.gatewayId.length === 0) throw new TypeError("gatewayId must not be empty");
 		this.providerId = options.gatewayId;
 		this.providers = options.providers;
 		this.routes = options.providers.flatMap((provider) => provider.routes);
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
-		const gateway: FoundationProviderCapabilityV1 = { schemaVersion: 1, id: "tool_gateway", version: 1 };
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
+		const gateway: FoundationProviderCapability = { schemaVersion: 1, id: "tool_gateway", version: 1 };
 		const providerCapabilities = await Promise.all(this.providers.map((provider) => provider.capabilities()));
 		return [gateway, ...providerCapabilities.flat()];
 	}
 
 	async execute(
-		request: ToolGatewayRequestV1,
+		request: ToolGatewayRequest,
 		options: { signal?: AbortSignal } = {},
-	): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
-		const checked = validateToolGatewayRequestV1(request);
+	): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
+		const checked = validateToolGatewayRequest(request);
 		if (!checked.ok) return checked;
 		const value = checked.value;
 		const namespace = value.namespace ?? "";
@@ -203,37 +200,37 @@ export class FoundationToolGatewayV1 implements ToolGateway, FoundationProviderV
 	}
 }
 
-export function createFoundationToolGatewayV1(options: FoundationToolGatewayOptionsV1): FoundationToolGatewayV1 {
-	return new FoundationToolGatewayV1(options);
+export function createFoundationToolGateway(options: FoundationToolGatewayOptions): FoundationToolGateway {
+	return new FoundationToolGateway(options);
 }
 
-export interface LocalToolGatewayProviderOptionsV1 {
+export interface LocalToolGatewayProviderOptions {
 	readonly providerId: string;
-	readonly routes: readonly ToolGatewayRouteV1[];
+	readonly routes: readonly ToolGatewayRoute[];
 	readonly invoke: (
-		request: ToolGatewayRequestV1,
+		request: ToolGatewayRequest,
 		options?: { signal?: AbortSignal },
-	) => Promise<ResultValue<ToolExecutionResultV1, FoundationError>>;
-	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	) => Promise<ResultValue<ToolExecutionResult, FoundationError>>;
+	readonly capabilities?: readonly FoundationProviderCapability[];
 }
 
 /** Local tool provider: the host executes the tool and returns a validated T1 result. */
-export function createLocalToolGatewayProviderV1(options: LocalToolGatewayProviderOptionsV1): ToolGatewayProviderV1 {
+export function createLocalToolGatewayProvider(options: LocalToolGatewayProviderOptions): ToolGatewayProvider {
 	const declared = options.capabilities ?? [];
 	return {
 		providerId: options.providerId,
 		kind: "local",
 		routes: options.routes,
-		async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 			return declared;
 		},
 		async execute(
-			request: ToolGatewayRequestV1,
+			request: ToolGatewayRequest,
 			gatewayOptions: { signal?: AbortSignal } = {},
-		): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
+		): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 			const result = await options.invoke(request, gatewayOptions);
 			if (!result.ok) return result;
-			const checked = validateToolExecutionResultV1(result.value);
+			const checked = validateToolExecutionResult(result.value);
 			return checked.ok ? checked : Result.err(checked.error);
 		},
 		async dispose(): Promise<void> {},
@@ -245,15 +242,15 @@ export function createLocalToolGatewayProviderV1(options: LocalToolGatewayProvid
  * It maps a T1 ToolGateway request onto a T1 SandboxOperationRequest; the
  * provider stays opaque about how the operation is performed.
  */
-export interface SandboxOperationTranslatorV1 {
-	translate(request: ToolGatewayRequestV1): ResultValue<SandboxOperationRequestV1, FoundationError>;
+export interface SandboxOperationTranslator {
+	translate(request: ToolGatewayRequest): ResultValue<SandboxOperationRequest, FoundationError>;
 }
 
-export function createDefaultSandboxOperationTranslatorV1(
+export function createDefaultSandboxOperationTranslator(
 	operationIdGenerator: (prefix: string) => string = newFoundationId,
-): SandboxOperationTranslatorV1 {
+): SandboxOperationTranslator {
 	return {
-		translate(request: ToolGatewayRequestV1): ResultValue<SandboxOperationRequestV1, FoundationError> {
+		translate(request: ToolGatewayRequest): ResultValue<SandboxOperationRequest, FoundationError> {
 			const args = recordOf(request.originalArguments);
 			const operationId = request.context.operationId ?? operationIdGenerator("operation");
 			const credentialTargets: readonly string[] | undefined = stringArray(args.credentialTargets);
@@ -279,14 +276,14 @@ export function createDefaultSandboxOperationTranslatorV1(
 	};
 }
 
-export interface SandboxOperationToolGatewayProviderOptionsV1 {
+export interface SandboxOperationToolGatewayProviderOptions {
 	readonly providerId: string;
-	readonly routes: readonly ToolGatewayRouteV1[];
+	readonly routes: readonly ToolGatewayRoute[];
 	readonly sandbox: SandboxOperationProvider;
-	readonly translator?: SandboxOperationTranslatorV1;
+	readonly translator?: SandboxOperationTranslator;
 	/** Records the invocation payload per operation id so a real line-11 Worker can resolve it later. */
 	readonly onOperationPayload?: (operationId: string, args: FoundationJsonValue) => void;
-	readonly capabilities?: readonly FoundationProviderCapabilityV1[];
+	readonly capabilities?: readonly FoundationProviderCapability[];
 }
 
 /**
@@ -294,24 +291,24 @@ export interface SandboxOperationToolGatewayProviderOptionsV1 {
  * contract. The WorkerReceipt is exact-shape validated and mapped onto the T1
  * ToolExecutionResult; the gateway only ever sees provider-neutral values.
  */
-export function createSandboxOperationToolGatewayProviderV1(
-	options: SandboxOperationToolGatewayProviderOptionsV1,
-): ToolGatewayProviderV1 {
+export function createSandboxOperationToolGatewayProvider(
+	options: SandboxOperationToolGatewayProviderOptions,
+): ToolGatewayProvider {
 	const sandbox = options.sandbox;
-	const translator = options.translator ?? createDefaultSandboxOperationTranslatorV1();
+	const translator = options.translator ?? createDefaultSandboxOperationTranslator();
 	const inFlight = new Map<string, { operationId: string; args: FoundationJsonValue }>();
 	const declared = options.capabilities ?? [];
 	return {
 		providerId: options.providerId,
 		kind: "sandbox",
 		routes: options.routes,
-		async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+		async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 			return declared;
 		},
 		async execute(
-			request: ToolGatewayRequestV1,
+			request: ToolGatewayRequest,
 			gatewayOptions: { signal?: AbortSignal } = {},
-		): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
+		): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 			const translated = translator.translate(request);
 			if (!translated.ok) return translated;
 			const operation = translated.value;
@@ -339,8 +336,8 @@ export function createSandboxOperationToolGatewayProviderV1(
 				if (!started.ok) return started;
 				const receiptChecked = validateWorkerReceipt(started.value);
 				if (!receiptChecked.ok) return Result.err(new FoundationError("worker_receipt_invalid_producer", "sandbox provider returned an invalid WorkerReceipt", { details: { operationId: operation.operationId } }));
-				const receipt: WorkerReceiptV1 = receiptChecked.value;
-				const result: ToolExecutionResultV1 = {
+				const receipt: WorkerReceipt = receiptChecked.value;
+				const result: ToolExecutionResult = {
 					schemaVersion: 1,
 					toolCallId: request.toolCallId,
 					toolName: request.toolName,
@@ -350,7 +347,7 @@ export function createSandboxOperationToolGatewayProviderV1(
 					...(receipt.artifacts === undefined ? {} : { artifacts: [...receipt.artifacts] }),
 					...(receipt.error === undefined ? {} : { error: receipt.error }),
 				};
-				const checked = validateToolExecutionResultV1(result);
+				const checked = validateToolExecutionResult(result);
 				return checked.ok ? checked : Result.err(checked.error);
 			} finally {
 				inFlight.delete(operation.operationId);
@@ -377,7 +374,7 @@ function stringArray(value: unknown): readonly string[] | undefined {
 		: undefined;
 }
 
-function isSandboxOperationRequestValid(value: SandboxOperationRequestV1): boolean {
-	const checked = validateSandboxOperationRequestV1(value);
+function isSandboxOperationRequestValid(value: SandboxOperationRequest): boolean {
+	const checked = validateSandboxOperationRequest(value);
 	return checked.ok;
 }

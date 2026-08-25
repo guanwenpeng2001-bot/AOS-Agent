@@ -9,15 +9,15 @@ export const RUNTIME_SESSION_SURFACES = [
 	"automation_host",
 ] as const;
 
-export type RuntimeSessionSurfaceV1 = (typeof RUNTIME_SESSION_SURFACES)[number];
+export type RuntimeSessionSurface = (typeof RUNTIME_SESSION_SURFACES)[number];
 
-export interface RuntimeSessionSurfaceAdapterV1 {
-	readonly surface: RuntimeSessionSurfaceV1;
+export interface RuntimeSessionSurfaceAdapter {
+	readonly surface: RuntimeSessionSurface;
 	readonly session: AgentSession;
 	prompt(prompt: string, options?: PromptOptions): Promise<void>;
 }
 
-export function isRuntimeSessionSurfaceV1(value: unknown): value is RuntimeSessionSurfaceV1 {
+export function isRuntimeSessionSurface(value: unknown): value is RuntimeSessionSurface {
 	return typeof value === "string" && RUNTIME_SESSION_SURFACES.some((surface) => surface === value);
 }
 
@@ -30,8 +30,8 @@ export function isRuntimeSessionSurfaceV1(value: unknown): value is RuntimeSessi
  */
 export function createRuntimeSessionSurfaceAdapter(
 	session: AgentSession,
-	surface: RuntimeSessionSurfaceV1,
-): RuntimeSessionSurfaceAdapterV1 {
+	surface: RuntimeSessionSurface,
+): RuntimeSessionSurfaceAdapter {
 	return {
 		surface,
 		session,

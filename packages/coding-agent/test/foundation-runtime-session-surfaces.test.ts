@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	Session,
-	type AgentBindingV1,
-	type AttemptReceiptV1,
-	type DispatchV1,
-	type RunReceiptV1,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
+	type AgentBinding,
+	type AttemptReceipt,
+	type Dispatch,
+	type RunReceipt,
+	type TaskEnvelope,
+	type TaskResult,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
@@ -100,12 +100,12 @@ describe("Foundation RuntimeSession public surfaces", () => {
 		};
 		const assertLatestChain = async (surface: string): Promise<void> => {
 			const ingress = await latestFact<{ readonly surface: string }>("coding_agent.product_prompt_ingress");
-			const task = await latestFact<TaskEnvelopeV1>("task");
-			const binding = await latestFact<AgentBindingV1>("agent_binding");
-			const dispatch = await latestFact<DispatchV1>("dispatch");
-			const attemptReceipt = await latestFact<AttemptReceiptV1>("attempt_receipt");
-			const taskResult = await latestFact<TaskResultV1>("task_result");
-			const runReceipt = await latestFact<RunReceiptV1>("run_receipt");
+			const task = await latestFact<TaskEnvelope>("task");
+			const binding = await latestFact<AgentBinding>("agent_binding");
+			const dispatch = await latestFact<Dispatch>("dispatch");
+			const attemptReceipt = await latestFact<AttemptReceipt>("attempt_receipt");
+			const taskResult = await latestFact<TaskResult>("task_result");
+			const runReceipt = await latestFact<RunReceipt>("run_receipt");
 			expect(ingress.surface).toBe(surface);
 			expect(binding.taskId).toBe(task.taskId);
 			expect(dispatch.bindingId).toBe(binding.bindingId);

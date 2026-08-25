@@ -1,5 +1,5 @@
 import { canonicalFoundationJson, sha256HexValue } from "../foundation/index.ts";
-import type { PromptCacheInvalidationOptions, PromptCacheLookup, PromptCacheRecordV1, PromptCacheWriteOptions, SessionT5Ledger } from "./ledger.ts";
+import type { PromptCacheInvalidationOptions, PromptCacheLookup, PromptCacheRecord, PromptCacheWriteOptions, SessionT5Ledger } from "./ledger.ts";
 
 export const CONTEXT_CACHE_SCHEMA_VERSION = 1 as const;
 
@@ -178,7 +178,7 @@ export class SessionPromptCache {
 		this.ledger = ledger;
 	}
 
-	put(options: PromptCacheWriteOptions): Promise<PromptCacheRecordV1> {
+	put(options: PromptCacheWriteOptions): Promise<PromptCacheRecord> {
 		return this.ledger.recordPromptCache(options);
 	}
 

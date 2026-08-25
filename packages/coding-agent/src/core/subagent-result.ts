@@ -1,26 +1,26 @@
 import {
-	ArtifactRefV1Schema,
+	ArtifactRefSchema,
 	canonicalFoundationJson,
 	cloneDeepFrozen,
-	type ArtifactRefV1,
+	type ArtifactRef,
 	type ArtifactStoreProvider,
-	type AttemptReceiptV1,
-	FingerprintV1Schema,
+	type AttemptReceipt,
+	FingerprintSchema,
 	fingerprintFoundationValue,
 	FoundationError,
 	type FoundationJsonValue,
-	type LayeredResultSettlementV1,
+	type LayeredResultSettlement,
 	Result,
 	type Result as ResultValue,
-	type ResultProvenanceV1,
-	type SessionLedgerV1,
+	type ResultProvenance,
+	type SessionLedger,
 	type SettleTaskResultInput,
-	type TaskEnvelopeV1,
-	type TaskResultV1,
+	type TaskEnvelope,
+	type TaskResult,
 	validateArtifactRef,
-	validateAttemptReceiptV1,
+	validateAttemptReceipt,
 	validateExactShape,
-	validateTaskResultV1,
+	validateTaskResult,
 } from "@aos-agent/agent-core";
 import { type Static, Type } from "typebox";
 
@@ -36,16 +36,16 @@ export const SafeChildResultProjectionV1Schema = Type.Object(
 		attemptReceiptId: Type.String({ minLength: 1 }),
 		taskResultId: Type.Optional(Type.String({ minLength: 1 })),
 		summary: Type.String(),
-		artifacts: Type.Array(ArtifactRefV1Schema, { maxItems: MAX_ARTIFACTS }),
+		artifacts: Type.Array(ArtifactRefSchema, { maxItems: MAX_ARTIFACTS }),
 		trust: Type.Literal("untrusted_child_output"),
-		digest: FingerprintV1Schema,
+		digest: FingerprintSchema,
 		producedAt: Type.String({ minLength: 1 }),
 	},
 	{ additionalProperties: false },
 );
 
 export type SafeChildResultProjectionV1 = Omit<Static<typeof SafeChildResultProjectionV1Schema>, "artifacts"> & {
-	readonly artifacts: readonly ArtifactRefV1[];
+	readonly artifacts: readonly ArtifactRef[];
 };
 
 const ChildResultTransportInputV1Schema = Type.Union([
@@ -76,7 +76,7 @@ export type ChildResultTransportInputV1 = Static<typeof ChildResultTransportInpu
 
 export interface ChildResultTransportHostV1 {
 	readonly artifactStore: ArtifactStoreProvider;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly sessionId: string;
 	readonly childLaneId: string;
 	readonly parentLaneId: string;
@@ -86,12 +86,12 @@ export interface ChildResultTransportHostV1 {
 interface ValidatedChildResultV1 {
 	readonly childAgentInstanceId: string;
 	readonly taskId: string;
-	readonly receipt: AttemptReceiptV1;
+	readonly receipt: AttemptReceipt;
 	readonly taskResultId?: string;
-	readonly taskResult?: TaskResultV1;
-	readonly sourceReceipts: readonly AttemptReceiptV1[];
+	readonly taskResult?: TaskResult;
+	readonly sourceReceipts: readonly AttemptReceipt[];
 	readonly summary: string;
-	readonly artifacts: readonly ArtifactRefV1[];
+	readonly artifacts: readonly ArtifactRef[];
 }
 
 function untrusted(message: string, cause?: FoundationError): ResultValue<never, FoundationError> {
@@ -126,8 +126,8 @@ function truncateSummary(summary: string): string {
 	return `${prefix}${TRUNCATION_MARKER}`;
 }
 
-function validateAgentReceipt(value: unknown): ResultValue<AttemptReceiptV1, FoundationError> {
-	const checked = validateAttemptReceiptV1(value, { providerClass: "agent" });
+function validateAgentReceipt(value: unknown): ResultValue<AttemptReceipt, FoundationError> {
+	const checked = validateAttemptReceipt(value, { providerClass: "agent" });
 	if (!checked.ok) return untrusted("Child source is not an exact agent_executor AttemptReceipt", checked.error);
 	if (checked.value.provenance.producerKind !== "agent_executor" || checked.value.agentInstanceId === undefined) {
 		return untrusted("Child source must be produced by an agent_executor");
@@ -154,13 +154,13 @@ function validateTransportInput(value: unknown): ResultValue<ValidatedChildResul
 		});
 	}
 
-	const taskResult = validateTaskResultV1(input.value.taskResult);
+	const taskResult = validateTaskResult(input.value.taskResult);
 	if (!taskResult.ok) return untrusted("Child TaskResult has an invalid exact shape or correlation", taskResult.error);
 	if (taskResult.value.taskId !== input.value.taskId) return untrusted("Child TaskResult does not match its task identity");
 	if (new Set(taskResult.value.sourceAttemptReceiptIds).size !== taskResult.value.sourceAttemptReceiptIds.length) {
 		return untrusted("Child TaskResult repeats a source AttemptReceipt");
 	}
-	const receiptsById = new Map<string, AttemptReceiptV1>();
+	const receiptsById = new Map<string, AttemptReceipt>();
 	for (const candidate of input.value.sourceReceipts) {
 		const receipt = validateAgentReceipt(candidate);
 		if (!receipt.ok) return receipt;
@@ -173,7 +173,7 @@ function validateTransportInput(value: unknown): ResultValue<ValidatedChildResul
 	if (receiptsById.size !== taskResult.value.sourceAttemptReceiptIds.length) {
 		return untrusted("Child TaskResult does not match its complete source receipt set");
 	}
-	const receipts: AttemptReceiptV1[] = [];
+	const receipts: AttemptReceipt[] = [];
 	for (const id of taskResult.value.sourceAttemptReceiptIds) {
 		const receipt = receiptsById.get(id);
 		if (receipt === undefined) return untrusted("Child TaskResult does not match its declared source receipt order");
@@ -254,8 +254,8 @@ async function verifyDurableSources(
 
 async function verifyArtifacts(
 	artifactStore: ArtifactStoreProvider,
-	artifacts: readonly ArtifactRefV1[],
-): Promise<ResultValue<readonly ArtifactRefV1[], FoundationError>> {
+	artifacts: readonly ArtifactRef[],
+): Promise<ResultValue<readonly ArtifactRef[], FoundationError>> {
 	const retained = artifacts.slice(0, MAX_ARTIFACTS);
 	for (const artifact of retained) {
 		const shape = validateArtifactRef(artifact);
@@ -279,7 +279,7 @@ function projectionObjectId(value: ValidatedChildResultV1): string {
 
 function buildProjection(
 	value: ValidatedChildResultV1,
-	artifacts: readonly ArtifactRefV1[],
+	artifacts: readonly ArtifactRef[],
 	producedAt: string,
 ): SafeChildResultProjectionV1 {
 	const base = {
@@ -298,7 +298,7 @@ function buildProjection(
 function projectionRecordMatches(
 	host: ChildResultTransportHostV1,
 	value: ValidatedChildResultV1,
-	record: Awaited<ReturnType<SessionLedgerV1["get"]>>,
+	record: Awaited<ReturnType<SessionLedger["get"]>>,
 ): boolean {
 	return record !== undefined &&
 		record.kind === "fact" &&
@@ -401,26 +401,26 @@ export type ChildTaskSettlementPolicyV1 =
 
 export interface ChildTaskSettlementAdapterInputV1 {
 	readonly taskResultId: string;
-	readonly task: TaskEnvelopeV1;
-	readonly receipts: readonly AttemptReceiptV1[];
+	readonly task: TaskEnvelope;
+	readonly receipts: readonly AttemptReceipt[];
 	readonly policy: ChildTaskSettlementPolicyV1;
 	readonly summary: string;
 	readonly artifacts?: SettleTaskResultInput["artifacts"];
 	readonly diff?: SettleTaskResultInput["diff"];
 	readonly tests: SettleTaskResultInput["tests"];
 	readonly evidence: SettleTaskResultInput["evidence"];
-	readonly producer: ResultProvenanceV1;
+	readonly producer: ResultProvenance;
 	readonly validation?: SettleTaskResultInput["validation"];
 }
 
 function selectSettlementReceipts(
 	input: ChildTaskSettlementAdapterInputV1,
-): ResultValue<readonly AttemptReceiptV1[], FoundationError> {
+): ResultValue<readonly AttemptReceipt[], FoundationError> {
 	if (input.producer.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Only the Host settlement gate may synthesize child results"));
 	if (input.receipts.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Child result synthesis requires provider receipts"));
-	const byId = new Map<string, AttemptReceiptV1>();
+	const byId = new Map<string, AttemptReceipt>();
 	for (const candidate of input.receipts) {
-		const checked = validateAttemptReceiptV1(candidate, { providerClass: "agent" });
+		const checked = validateAttemptReceipt(candidate, { providerClass: "agent" });
 		if (!checked.ok) return Result.err(checked.error);
 		if (checked.value.taskId !== input.task.taskId) return Result.err(new FoundationError("task_result_receipt_task_mismatch", "Child receipt does not belong to the synthesis task"));
 		const previous = byId.get(checked.value.attemptReceiptId);
@@ -451,9 +451,9 @@ function selectSettlementReceipts(
 }
 
 export async function settleChildTaskResultV1(
-	hostGate: Pick<LayeredResultSettlementV1, "getAttemptReceipt" | "settle">,
+	hostGate: Pick<LayeredResultSettlement, "getAttemptReceipt" | "settle">,
 	input: ChildTaskSettlementAdapterInputV1,
-): Promise<ResultValue<TaskResultV1, FoundationError>> {
+): Promise<ResultValue<TaskResult, FoundationError>> {
 	const selected = selectSettlementReceipts(input);
 	if (!selected.ok) return selected;
 	for (const receipt of input.receipts) {

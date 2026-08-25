@@ -4,37 +4,37 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
-	SessionLedgerV1,
+	SessionLedger,
 	createAttempt,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
 	resolveAgentBinding,
-	validateAttemptReceiptForProviderV1,
-	type AgentBindingV1,
-	type AppendFoundationRecordResultV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type BudgetUsageV1,
-	type DispatchV1,
+	validateAttemptReceiptForProvider,
+	type AgentBinding,
+	type AppendFoundationRecordResult,
+	type AttemptReceipt,
+	type Attempt,
+	type BudgetUsage,
+	type Dispatch,
 	type DurableLedgerApi,
-	type FoundationObjectResultV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type FoundationRecordQueryV1,
-	type FoundationRecordV1,
-	type FoundationRetentionPolicyV1,
-	type LedgerWriterLeaseV1,
-	type ModelProfileV1,
-	type ProvisionedFoundationRecordV1,
-	type QuotaAttributionV1,
+	type FoundationObjectResult,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type FoundationRecordQuery,
+	type FoundationRecord,
+	type FoundationRetentionPolicy,
+	type LedgerWriterLease,
+	type ModelProfile,
+	type ProvisionedFoundationRecord,
+	type QuotaAttribution,
 	type QuotaProvider,
-	type QuotaReservationV1,
+	type QuotaReservation,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
-	type SetRetentionPolicyOptionsV1,
-	type TaskEnvelopeV1,
-	type TaskExecutorAttemptContextV1,
+	type RevisionReference,
+	type SetRetentionPolicyOptions,
+	type TaskEnvelope,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
@@ -58,7 +58,7 @@ const NOW = "2026-08-22T10:00:00.000Z";
 const LATER = "2026-08-22T10:20:00.000Z";
 const OWNER_ID = "scheduler_dispatch_owner";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
-const CAPABILITY: FoundationProviderCapabilityV1 = {
+const CAPABILITY: FoundationProviderCapability = {
 	schemaVersion: 1,
 	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	version: 1,
@@ -75,7 +75,7 @@ function expectCode(result: { ok: false; error: { code: string } } | { ok: true 
 	if (!result.ok) expect(result.error.code).toBe(code);
 }
 
-function task(): TaskEnvelopeV1 {
+function task(): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId: "task_dispatch_1",
@@ -118,7 +118,7 @@ function roleRevision() {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile_dispatch_1",
@@ -130,12 +130,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(): AgentBindingV1 {
+function binding(): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: task(),
 		roleRevision: roleRevision(),
@@ -151,8 +151,8 @@ function binding(): AgentBindingV1 {
 	return resolved.value;
 }
 
-async function seedBindingFacts(session: Session, value: AgentBindingV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: "scheduler_dispatch_seed" });
+async function seedBindingFacts(session: Session, value: AgentBinding): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: "scheduler_dispatch_seed" });
 	await ledger.appendFact("task", value.taskId, task(), {
 		clientRequestId: "dispatch-seed:task",
 		expectedRevision: 0,
@@ -206,10 +206,10 @@ function queued(deadlineAt?: string): SchedulerQueueEntryV1 {
 }
 
 function providerReceipt(
-	attempt: AttemptV1,
-	options: FoundationProviderExecutionOptionsV1 | undefined,
+	attempt: Attempt,
+	options: FoundationProviderExecutionOptions | undefined,
 	status: "succeeded" | "cancelled" = "succeeded",
-): AttemptReceiptV1 {
+): AttemptReceipt {
 	const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
 	const correlation = options?.correlation;
 	if (correlation === undefined) throw new FoundationError("invalid_correlation", "Test provider requires correlation");
@@ -242,12 +242,12 @@ class RecordingQuota implements QuotaProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "quota_scheduler_dispatch";
 	readonly providerClass = "quota" as const;
-	reserved: QuotaAttributionV1 | undefined;
-	settled: BudgetUsageV1 | undefined;
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	reserved: QuotaAttribution | undefined;
+	settled: BudgetUsage | undefined;
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [];
 	}
-	async reserve(attribution: QuotaAttributionV1, budget: QuotaReservationV1["budget"]) {
+	async reserve(attribution: QuotaAttribution, budget: QuotaReservation["budget"]) {
 		this.reserved = attribution;
 		return Result.ok({
 			schemaVersion: 1 as const,
@@ -257,7 +257,7 @@ class RecordingQuota implements QuotaProvider {
 			grantedAt: NOW,
 		});
 	}
-	async settle(_reservation: QuotaReservationV1, usage: BudgetUsageV1) {
+	async settle(_reservation: QuotaReservation, usage: BudgetUsage) {
 		this.settled = usage;
 		return Result.ok(usage);
 	}
@@ -285,11 +285,11 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 		});
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [CAPABILITY];
 	}
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "Attempt context required"));
 		return createAttempt({
 			attemptId: context.initialBindingEpoch.attemptId,
@@ -301,7 +301,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.runCount += 1;
 		this.startRun();
 		if (this.mode === "fail") return Result.err(new FoundationError("worker_lost", "Injected worker loss"));
@@ -313,7 +313,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 		const status = this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true
 			? "cancelled"
 			: "succeeded";
-		return validateAttemptReceiptForProviderV1(providerReceipt(attempt, options, status), {
+		return validateAttemptReceiptForProvider(providerReceipt(attempt, options, status), {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});
@@ -342,14 +342,14 @@ class ResumableTaskExecutor extends ScriptedTaskExecutor {
 
 	async resumeAttempt(
 		attemptId: string,
-		options: FoundationProviderExecutionOptionsV1,
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+		options: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		this.resumeCount += 1;
 		const ids = schedulerDispatchIdentityV1(this.queueEntryId, this.claimId);
 		if (attemptId !== ids.attemptId) {
 			return Result.err(new FoundationError("invalid_correlation", "Resume attempt identity mismatch"));
 		}
-		const attempt: AttemptV1 = {
+		const attempt: Attempt = {
 			schemaVersion: 1,
 			attemptId,
 			dispatchId: ids.dispatchId,
@@ -360,7 +360,7 @@ class ResumableTaskExecutor extends ScriptedTaskExecutor {
 			status: "starting",
 			startedAt: NOW,
 		};
-		return validateAttemptReceiptForProviderV1(providerReceipt(attempt, options), {
+		return validateAttemptReceiptForProvider(providerReceipt(attempt, options), {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});
@@ -395,22 +395,22 @@ class FailDispatchedEntryLedger implements DurableLedgerApi {
 		this.inner = inner;
 	}
 
-	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	acquireWriterLease(options: { ownerId: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.acquireWriterLease(options);
 	}
-	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLeaseV1> {
+	renewWriterLease(options: { fencingToken: string; ttlMs?: number }): Promise<LedgerWriterLease> {
 		return this.inner.renewWriterLease(options);
 	}
 	releaseWriterLease(options: { fencingToken: string }): Promise<void> {
 		return this.inner.releaseWriterLease(options);
 	}
-	getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.inner.getWriterLease();
 	}
 	getLedgerRevision(): Promise<number> {
 		return this.inner.getLedgerRevision();
 	}
-	appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		if (
 			this.failDispatchedEntry &&
 			record.kind === "fact" &&
@@ -426,15 +426,15 @@ class FailDispatchedEntryLedger implements DurableLedgerApi {
 		return this.inner.appendFoundationRecord(record);
 	}
 	setRetentionPolicy(
-		policy: FoundationRetentionPolicyV1,
-		options: SetRetentionPolicyOptionsV1,
-	): Promise<AppendFoundationRecordResultV1> {
+		policy: FoundationRetentionPolicy,
+		options: SetRetentionPolicyOptions,
+	): Promise<AppendFoundationRecordResult> {
 		return this.inner.setRetentionPolicy(policy, options);
 	}
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.inner.findFoundationRecords(query);
 	}
-	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.inner.getFoundationObject(objectType, objectId);
 	}
 	getFoundationRevision(objectType: string, objectId: string): Promise<number> {
@@ -443,10 +443,10 @@ class FailDispatchedEntryLedger implements DurableLedgerApi {
 	isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
 		return this.inner.isObjectTombstoned(objectType, objectId);
 	}
-	getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.inner.getRetentionPolicy();
 	}
-	prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.inner.prunableFoundationRecords();
 	}
 }
@@ -460,7 +460,7 @@ async function claimedHarness(options: {
 } = {}): Promise<{
 	readonly session: Session;
 	readonly queue: SchedulerQueueStore;
-	readonly binding: AgentBindingV1;
+	readonly binding: AgentBinding;
 	readonly claim: SchedulerClaimV1;
 }> {
 	const session = options.session ?? new Session(new InMemorySessionStorage({ id: "session_dispatch_1", createdAt: 1 }));

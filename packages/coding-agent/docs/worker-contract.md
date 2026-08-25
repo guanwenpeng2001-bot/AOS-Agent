@@ -26,7 +26,7 @@ This distinction is required because Operation Workers are not Agent-class provi
 
 ## Operation and receipt settlement
 
-An operation is claimed, started, and settled under a monotonically increasing revision. Terminal output is bounded and redacted before it crosses the protocol. The Worker writes a `WorkerReceipt` for the bounded operation; the Sandbox Operation ToolGateway validates it and copies `WorkerReceipt.workerReceiptId` into `ToolExecutionResultV1.toolReceiptRef`. That closes a sealed-contract omission in receipt propagation and does not redesign either schema.
+An operation is claimed, started, and settled under a monotonically increasing revision. Terminal output is bounded and redacted before it crosses the protocol. The Worker writes a `WorkerReceipt` for the bounded operation; the Sandbox Operation ToolGateway validates it and copies `WorkerReceipt.workerReceiptId` into `ToolExecutionResult.toolReceiptRef`. That closes a sealed-contract omission in receipt propagation and does not redesign either schema.
 
 `WorkerReceipt` remains distinct from `AttemptReceipt`, `TaskResult`, and `RunReceipt`. The Host may join the receipt into later facts, but the Worker cannot promote it into another result layer.
 

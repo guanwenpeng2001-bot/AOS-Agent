@@ -1,30 +1,30 @@
 import {
-	type AgentBindingV1,
+	type AgentBinding,
 	createAttempt,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemorySessionStorage,
-	type ModelProfileV1,
-	type AttemptReceiptV1,
-	type AttemptV1,
-	type DispatchV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
+	type ModelProfile,
+	type AttemptReceipt,
+	type Attempt,
+	type Dispatch,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	resolveAgentBinding,
 	Result,
 	type Result as ResultValue,
-	type RevisionReferenceV1,
+	type RevisionReference,
 	Session,
-	SessionLedgerV1,
-	type SideEffectStateV1,
-	type TaskEnvelopeV1,
-	type TaskExecutorAttemptContextV1,
+	SessionLedger,
+	type SideEffectState,
+	type TaskEnvelope,
+	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-	type TaskResultV1,
-	validateAttemptReceiptForProviderV1,
-	type WorkflowStepV1,
+	type TaskResult,
+	validateAttemptReceiptForProvider,
+	type WorkflowStep,
 	type WorkflowStore,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
@@ -33,8 +33,8 @@ import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from ".
 import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
-import { SchedulerMessageOrchestratorV1 } from "../src/core/scheduler-messages.ts";
-import { SchedulerHostV1, type SchedulerWakeV1 } from "../src/core/scheduler.ts";
+import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
+import { SchedulerHost, type SchedulerWakeV1 } from "../src/core/scheduler.ts";
 import {
 	SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
 	SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
@@ -72,7 +72,7 @@ const T2 = "2026-08-22T12:02:00.000Z";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
 const OWNER_ID = "workflow_owner";
 const EXECUTOR_OWNER_ID = "workflow_executor";
-const CAPABILITY: FoundationProviderCapabilityV1 = {
+const CAPABILITY: FoundationProviderCapability = {
 	schemaVersion: 1,
 	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	version: 1,
@@ -91,9 +91,9 @@ function contract(contractId: string) {
 }
 
 function baseStep(stepId: string, ordinal: number, dependsOn?: readonly string[]): Omit<
-	WorkflowStepV1,
+	WorkflowStep,
 	"type"
-> & { type?: WorkflowStepV1["type"] } {
+> & { type?: WorkflowStep["type"] } {
 	return {
 		schemaVersion: 1,
 		stepId,
@@ -106,7 +106,7 @@ function baseStep(stepId: string, ordinal: number, dependsOn?: readonly string[]
 	};
 }
 
-function toolStep(stepId: string, ordinal: number, dependsOn?: readonly string[]): WorkflowStepV1 {
+function toolStep(stepId: string, ordinal: number, dependsOn?: readonly string[]): WorkflowStep {
 	return { ...baseStep(stepId, ordinal, dependsOn), type: "tool", toolName: "read" };
 }
 
@@ -116,7 +116,7 @@ function agentStep(
 	executor: "local" | "external",
 	taskId: string,
 	dependsOn?: readonly string[],
-): WorkflowStepV1 {
+): WorkflowStep {
 	return {
 		...baseStep(stepId, ordinal, dependsOn),
 		type: "agent",
@@ -131,7 +131,7 @@ function parallelStep(
 	ordinal: number,
 	intents: readonly { stepId: string; executor: "local" | "external" }[],
 	dependsOn: readonly string[],
-): WorkflowStepV1 {
+): WorkflowStep {
 	return {
 		...baseStep(stepId, ordinal, dependsOn),
 		type: "parallel",
@@ -144,15 +144,15 @@ function parallelStep(
 	};
 }
 
-function barrierStep(stepId: string, ordinal: number, dependsOn: readonly string[]): WorkflowStepV1 {
+function barrierStep(stepId: string, ordinal: number, dependsOn: readonly string[]): WorkflowStep {
 	return { ...baseStep(stepId, ordinal, dependsOn), type: "barrier", barrierId: `barrier_${stepId}` };
 }
 
-function awaitUserStep(stepId: string, ordinal: number, dependsOn?: readonly string[]): WorkflowStepV1 {
+function awaitUserStep(stepId: string, ordinal: number, dependsOn?: readonly string[]): WorkflowStep {
 	return { ...baseStep(stepId, ordinal, dependsOn), type: "await_user", askId: `ask_${stepId}` };
 }
 
-function taskEnvelope(taskId: string, goalId: string): TaskEnvelopeV1 {
+function taskEnvelope(taskId: string, goalId: string): TaskEnvelope {
 	return {
 		schemaVersion: 1,
 		taskId,
@@ -190,7 +190,7 @@ function roleRevision() {
 	});
 }
 
-function modelProfile(): ModelProfileV1 {
+function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile_workflow",
@@ -202,12 +202,12 @@ function modelProfile(): ModelProfileV1 {
 	});
 }
 
-function immutableFact(type: string, id: string): RevisionReferenceV1 {
+function immutableFact(type: string, id: string): RevisionReference {
 	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function bindingFor(task: TaskEnvelopeV1): AgentBindingV1 {
+function bindingFor(task: TaskEnvelope): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task,
 		roleRevision: roleRevision(),
@@ -223,8 +223,8 @@ function bindingFor(task: TaskEnvelopeV1): AgentBindingV1 {
 	return resolved.value;
 }
 
-async function seedBindingFacts(session: Session, task: TaskEnvelopeV1, value: AgentBindingV1): Promise<void> {
-	const ledger = new SessionLedgerV1(session, { ownerId: `${OWNER_ID}_seed` });
+async function seedBindingFacts(session: Session, task: TaskEnvelope, value: AgentBinding): Promise<void> {
+	const ledger = new SessionLedger(session, { ownerId: `${OWNER_ID}_seed` });
 	await ledger.appendFact("task", value.taskId, task, {
 		clientRequestId: `workflow-seed:task:${value.taskId}`,
 		expectedRevision: 0,
@@ -265,16 +265,16 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 	readonly providerId = "task_executor_scheduler_workflow";
 	readonly providerClass = "task_executor" as const;
 	failuresRemaining = 0;
-	nextSideEffect: SideEffectStateV1 = "none";
+	nextSideEffect: SideEffectState = "none";
 	runCount = 0;
 	resumeCount = 0;
 	readonly queueEntryIds: string[] = [];
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [CAPABILITY];
 	}
 
-	async createAttempt(dispatch: DispatchV1, _binding: AgentBindingV1, context?: TaskExecutorAttemptContextV1) {
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
 		if (context === undefined) {
 			return Result.err(new FoundationError("invalid_correlation", "Attempt context required"));
 		}
@@ -288,7 +288,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 		});
 	}
 
-	async runAttempt(attempt: AttemptV1, options?: FoundationProviderExecutionOptionsV1) {
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.runCount += 1;
 		this.queueEntryIds.push(attempt.dispatchId);
 		const fail = this.failuresRemaining > 0;
@@ -300,7 +300,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 			return Result.err(new FoundationError("invalid_correlation", "Provider correlation is required"));
 		}
 		const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
-		const receipt: AttemptReceiptV1 = {
+		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
 			attemptReceiptId,
 			taskId: attempt.taskId,
@@ -329,7 +329,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 						},
 					}),
 		};
-		return validateAttemptReceiptForProviderV1(receipt, {
+		return validateAttemptReceiptForProvider(receipt, {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});
@@ -337,8 +337,8 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 
 	async resumeAttempt(
 		_attemptId: string,
-		_options: FoundationProviderExecutionOptionsV1,
-	): Promise<ResultValue<AttemptReceiptV1, FoundationError>> {
+		_options: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		this.resumeCount += 1;
 		return Result.err(new FoundationError("scheduler_attempt_recovery_failed", "Implicit replay is forbidden"));
 	}
@@ -361,7 +361,7 @@ interface WorkflowHarness {
 	readonly store: WorkflowStore;
 	readonly controller: SchedulerWorkflowController;
 	readonly provider: ScriptedTaskExecutor;
-	readonly task: TaskEnvelopeV1;
+	readonly task: TaskEnvelope;
 	readonly now: () => string;
 	setNow: (iso: string) => void;
 }
@@ -506,9 +506,9 @@ async function reopenController(
 
 async function createActiveWorkflow(
 	harness: WorkflowHarness,
-	steps: readonly WorkflowStepV1[],
+	steps: readonly WorkflowStep[],
 	workflowId: string,
-	budget?: TaskEnvelopeV1["budget"],
+	budget?: TaskEnvelope["budget"],
 ) {
 	const created = await harness.store.create(
 		{
@@ -564,7 +564,7 @@ async function seedTargetTaskResult(
 	readonly id: string;
 	readonly revision: number;
 }> {
-	const result: TaskResultV1 = {
+	const result: TaskResult = {
 		schemaVersion: 1,
 		taskResultId: input.taskResultId,
 		taskId: input.taskId,
@@ -593,7 +593,7 @@ async function seedTargetTaskResult(
 			requiredEvidencePresent: true,
 		},
 	};
-	const ledger = new SessionLedgerV1(session, { ownerId: OWNER_ID });
+	const ledger = new SessionLedger(session, { ownerId: OWNER_ID });
 	const stored = await ledger.appendFact("task_result", input.taskResultId, result, {
 		clientRequestId: `seed-task-result-${input.taskResultId}`,
 		expectedRevision: 0,
@@ -612,8 +612,8 @@ async function seedTargetTaskResult(
 async function completeExternal(
 	harness: WorkflowHarness,
 	workflowId: string,
-	step: WorkflowStepV1,
-	messages: SchedulerMessageOrchestratorV1 = harness.controller.messages,
+	step: WorkflowStep,
+	messages: SchedulerMessageOrchestrator = harness.controller.messages,
 ): Promise<void> {
 	if (step.type !== "agent") throw new Error("expected agent step");
 	const ids = schedulerWorkflowExternalIds(workflowId, step.stepId);
@@ -642,11 +642,11 @@ describe("scheduler T7 production Workflow controller", () => {
 	it("is default-off and does not schedule, dispatch, or fire wakes", async () => {
 		const harness = await createHarness();
 		expect(harness.controller.enabled).toBe(false);
-		expect(harness.controller.messages).toBeInstanceOf(SchedulerMessageOrchestratorV1);
+		expect(harness.controller.messages).toBeInstanceOf(SchedulerMessageOrchestrator);
 		expect(harness.controller.handoff).toBeInstanceOf(SchedulerHandoffController);
 		expect(harness.controller.dispatch).toBeInstanceOf(SchedulerDispatchController);
 		expect(harness.controller.fanIn).toBeInstanceOf(SchedulerFanInController);
-		expect(harness.controller.host).toBeInstanceOf(SchedulerHostV1);
+		expect(harness.controller.host).toBeInstanceOf(SchedulerHost);
 		const dispatch = vi.spyOn(harness.controller.dispatch, "dispatchClaimed");
 		const fanIn = vi.spyOn(harness.controller.fanIn, "settle");
 		const submit = vi.spyOn(harness.controller.messages, "submitCrossSessionTask");
@@ -980,7 +980,7 @@ describe("scheduler T7 production Workflow controller", () => {
 		expect(offer).toHaveBeenCalled();
 		expect(accept).toHaveBeenCalled();
 		expect(submit).toHaveBeenCalled();
-		expect(harness.controller.messages).toBeInstanceOf(SchedulerMessageOrchestratorV1);
+		expect(harness.controller.messages).toBeInstanceOf(SchedulerMessageOrchestrator);
 		expect(harness.controller.handoff).toBeInstanceOf(SchedulerHandoffController);
 		expect(harness.controller.dispatch).toBeInstanceOf(SchedulerDispatchController);
 		expect(harness.controller.fanIn).toBeInstanceOf(SchedulerFanInController);
@@ -1062,7 +1062,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			{ clientRequestId: "missing_running", expectedRevision: current.revision },
 		);
 		expect(current.steps[0]?.status).toBe("running");
-		const ledger = new SessionLedgerV1(harness.sourceSession, { ownerId: OWNER_ID });
+		const ledger = new SessionLedger(harness.sourceSession, { ownerId: OWNER_ID });
 		await ledger.appendFact(
 			SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
 			`${workflow.workflowId}:tool1`,
@@ -1110,7 +1110,7 @@ describe("scheduler T7 production Workflow controller", () => {
 		const harness = await createHarness({ enabled: true, compensationPolicy: "stop", maxAttempts: 1 });
 		const workflow = await createActiveWorkflow(harness, [toolStep("tool1", 0)], "workflow_policy_reload");
 		await harness.controller.dispose();
-		const ledger = new SessionLedgerV1(harness.sourceSession, { ownerId: OWNER_ID });
+		const ledger = new SessionLedger(harness.sourceSession, { ownerId: OWNER_ID });
 		await ledger.appendFact(
 			SCHEDULER_WORKFLOW_POLICY_OBJECT_TYPE,
 			workflow.workflowId,

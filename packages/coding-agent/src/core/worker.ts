@@ -12,7 +12,7 @@ import {
 	FoundationError,
 	Result,
 	type Result as ResultValue,
-	type SideEffectStateV1,
+	type SideEffectState,
 } from "@aos-agent/agent-core";
 
 export const WORKER_SCHEMA_VERSION = 1 as const;
@@ -31,7 +31,7 @@ export const WORKER_LIFECYCLE_STATUSES = [
 	"reclaimed",
 	"reclaim_unknown",
 ] as const;
-export type WorkerLifecycleStatusV1 = (typeof WORKER_LIFECYCLE_STATUSES)[number];
+export type WorkerLifecycleStatus = (typeof WORKER_LIFECYCLE_STATUSES)[number];
 
 export const WORKER_EXECUTION_TERMINAL_STATUSES = ["completed", "failed", "cancelled", "lost"] as const;
 export type WorkerExecutionTerminalStatusV1 = (typeof WORKER_EXECUTION_TERMINAL_STATUSES)[number];
@@ -70,7 +70,7 @@ export interface WorkerRecordV1 {
 	readonly bindingEpochId?: string;
 	readonly attemptId?: string;
 	readonly profileId: string;
-	readonly status: WorkerLifecycleStatusV1;
+	readonly status: WorkerLifecycleStatus;
 	readonly revision: number;
 	readonly createdAt: string;
 	readonly readyAt?: string;
@@ -86,25 +86,25 @@ export interface WorkerTransitionV1 {
 	readonly clientRequestId: string;
 	readonly expectedRevision: number;
 	readonly binding: WorkerBindingV1;
-	readonly to: WorkerLifecycleStatusV1;
+	readonly to: WorkerLifecycleStatus;
 	readonly at: string;
 	readonly activeOperationId?: string;
 	readonly receiptId?: string;
-	readonly sideEffectState?: SideEffectStateV1;
+	readonly sideEffectState?: SideEffectState;
 }
 
 export interface WorkerTransitionReceiptV1 {
 	readonly schemaVersion: 1;
 	readonly clientRequestId: string;
 	readonly requestFingerprint: string;
-	readonly from: WorkerLifecycleStatusV1;
-	readonly to: WorkerLifecycleStatusV1;
+	readonly from: WorkerLifecycleStatus;
+	readonly to: WorkerLifecycleStatus;
 	readonly previousRevision: number;
 	readonly revision: number;
 	readonly at: string;
 	readonly operationId?: string;
 	readonly receiptId?: string;
-	readonly sideEffectState?: SideEffectStateV1;
+	readonly sideEffectState?: SideEffectState;
 }
 
 /** Monotonic liveness fact. It never extends a deadline or lease. */
@@ -227,7 +227,7 @@ export const WORKER_FORBIDDEN_KEYS = Object.freeze([
 	"frame",
 ]);
 
-const ALLOWED_TRANSITIONS: Readonly<Record<WorkerLifecycleStatusV1, readonly WorkerLifecycleStatusV1[]>> = {
+const ALLOWED_TRANSITIONS: Readonly<Record<WorkerLifecycleStatus, readonly WorkerLifecycleStatus[]>> = {
 	new: ["starting"],
 	starting: ["ready", "failed", "lost"],
 	ready: ["running", "cancelling", "lost"],
@@ -345,20 +345,20 @@ function cloneRecord(value: WorkerRecordV1): WorkerRecordV1 {
 }
 
 export function isWorkerExecutionTerminalStatusV1(
-	status: WorkerLifecycleStatusV1,
+	status: WorkerLifecycleStatus,
 ): status is WorkerExecutionTerminalStatusV1 {
 	return WORKER_EXECUTION_TERMINAL_STATUSES.includes(status as WorkerExecutionTerminalStatusV1);
 }
 
 export function isWorkerReclaimTerminalStatusV1(
-	status: WorkerLifecycleStatusV1,
+	status: WorkerLifecycleStatus,
 ): status is WorkerReclaimTerminalStatusV1 {
 	return WORKER_RECLAIM_TERMINAL_STATUSES.includes(status as WorkerReclaimTerminalStatusV1);
 }
 
 export function workerTransitionAllowedV1(
-	from: WorkerLifecycleStatusV1,
-	to: WorkerLifecycleStatusV1,
+	from: WorkerLifecycleStatus,
+	to: WorkerLifecycleStatus,
 ): boolean {
 	return ALLOWED_TRANSITIONS[from].includes(to);
 }
@@ -386,7 +386,7 @@ export function validateWorkerBindingV1(value: unknown): value is WorkerBindingV
 }
 
 function recordStatusShape(value: Record<string, unknown>): boolean {
-	const status = value.status as WorkerLifecycleStatusV1;
+	const status = value.status as WorkerLifecycleStatus;
 	const hasReady = value.readyAt !== undefined;
 	const hasEnded = value.endedAt !== undefined;
 	const hasOperation = value.activeOperationId !== undefined;
@@ -430,7 +430,7 @@ export function validateWorkerRecordV1(value: unknown): value is WorkerRecordV1 
 		!isOptionalIdentifier(value.bindingEpochId) ||
 		!isOptionalIdentifier(value.attemptId) ||
 		!isSafeIdentifier(value.profileId) ||
-		!WORKER_LIFECYCLE_STATUSES.includes(value.status as WorkerLifecycleStatusV1) ||
+		!WORKER_LIFECYCLE_STATUSES.includes(value.status as WorkerLifecycleStatus) ||
 		!isNonNegativeInteger(value.revision) ||
 		!isCanonicalTimestamp(value.createdAt) ||
 		(value.readyAt !== undefined && !isCanonicalTimestamp(value.readyAt)) ||
@@ -459,7 +459,7 @@ function validateWorkerTransitionV1(value: unknown): value is WorkerTransitionV1
 		isSafeIdentifier(value.clientRequestId) &&
 		isNonNegativeInteger(value.expectedRevision) &&
 		validateWorkerBindingV1(value.binding) &&
-		WORKER_LIFECYCLE_STATUSES.includes(value.to as WorkerLifecycleStatusV1) &&
+		WORKER_LIFECYCLE_STATUSES.includes(value.to as WorkerLifecycleStatus) &&
 		isCanonicalTimestamp(value.at) &&
 		isOptionalIdentifier(value.activeOperationId) &&
 		isOptionalIdentifier(value.receiptId) &&
@@ -594,8 +594,8 @@ function validateWorkerTransitionReceiptV1(value: unknown): value is WorkerTrans
 		isSafeIdentifier(value.clientRequestId) &&
 		typeof value.requestFingerprint === "string" &&
 		DIGEST_PATTERN.test(value.requestFingerprint) &&
-		WORKER_LIFECYCLE_STATUSES.includes(value.from as WorkerLifecycleStatusV1) &&
-		WORKER_LIFECYCLE_STATUSES.includes(value.to as WorkerLifecycleStatusV1) &&
+		WORKER_LIFECYCLE_STATUSES.includes(value.from as WorkerLifecycleStatus) &&
+		WORKER_LIFECYCLE_STATUSES.includes(value.to as WorkerLifecycleStatus) &&
 		isNonNegativeInteger(value.previousRevision) &&
 		isPositiveInteger(value.revision) &&
 		isCanonicalTimestamp(value.at) &&

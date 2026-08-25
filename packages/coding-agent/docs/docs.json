@@ -90,12 +90,12 @@
       "title": "Reference",
       "items": [
         {
-          "title": "Architecture Atlas: Foundation v1",
-          "path": "architecture-atlas-foundation-v1.md"
+          "title": "Architecture Atlas: Foundation",
+          "path": "architecture-atlas-foundation.md"
         },
         {
-          "title": "Foundation v1 Final Audit",
-          "path": "foundation-v1-final-audit.md"
+          "title": "Foundation Final Audit",
+          "path": "foundation-final-audit.md"
         },
         {
           "title": "Native Subagent Contract",

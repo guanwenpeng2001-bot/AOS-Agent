@@ -4,11 +4,11 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
-	SessionLedgerV1,
-	type ArtifactDescriptorV1,
+	SessionLedger,
+	type ArtifactDescriptor,
 	type ArtifactStoreProvider,
 	type FoundationJsonValue,
-	type FoundationProviderCapabilityV1,
+	type FoundationProviderCapability,
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
@@ -37,11 +37,11 @@ class FauxArtifactStore implements ArtifactStoreProvider {
 	readonly providerId = "faux-artifact-store";
 	readonly providerClass = "store" as const;
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [];
 	}
 
-	async put(descriptor: ArtifactDescriptorV1, data: Uint8Array) {
+	async put(descriptor: ArtifactDescriptor, data: Uint8Array) {
 		return Result.ok({ schemaVersion: 1 as const, ref: descriptor.artifactId, sizeBytes: data.byteLength });
 	}
 
@@ -63,17 +63,17 @@ class FauxArtifactStore implements ArtifactStoreProvider {
 interface Fixture {
 	readonly mailbox: SubagentMailboxV1;
 	readonly ingress: SubagentContextIngressV1;
-	readonly ledger: SessionLedgerV1;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledger: SessionLedger;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 }
 
 function fixture(): Fixture {
 	const session = new Session(new InMemorySessionStorage({ id: SESSION_ID, createdAt: 1 }));
-	const ledgers = new Map<string, SessionLedgerV1>();
-	const ledgerForLane = (laneId: string): SessionLedgerV1 => {
+	const ledgers = new Map<string, SessionLedger>();
+	const ledgerForLane = (laneId: string): SessionLedger => {
 		let ledger = ledgers.get(laneId);
 		if (ledger === undefined) {
-			ledger = new SessionLedgerV1(session, { ownerId: "context-ingress-writer", laneId });
+			ledger = new SessionLedger(session, { ownerId: "context-ingress-writer", laneId });
 			ledgers.set(laneId, ledger);
 		}
 		return ledger;

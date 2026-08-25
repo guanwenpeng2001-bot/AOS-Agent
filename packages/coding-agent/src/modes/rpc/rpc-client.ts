@@ -200,7 +200,7 @@ function isRpcTransportErrorRecord(value: unknown): value is RpcTransportErrorRe
 	return isRpcTransportErrorCode(error.code) && typeof error.message === "string";
 }
 
-/** Structured error thrown when an Automation Host v1 command fails. */
+/** Structured error thrown when an Automation Host command fails. */
 export class AutomationRpcError extends Error {
 	readonly code: AutomationErrorCode;
 	readonly retryable: boolean;
@@ -869,7 +869,7 @@ export class RpcClient {
 	 * @param policyProfile - Optional named Execution Policy profile selector for
 	 * the new attempt's successor binding.
 	 * @param externalAgent - Optional explicit trusted External Agent Adapter
-	 * selection. The v1 adapter contract has start() only, so run.resume with an
+	 * selection. The adapter contract has start() only, so run.resume with an
 	 * externalAgent selection is always rejected with
 	 * external_agent_resume_unsupported instead of silently starting a fresh
 	 * execution.

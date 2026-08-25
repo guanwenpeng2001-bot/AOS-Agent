@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease v1 provider (T2, provider contract).
+ * Task Credential / Lease provider (T2, provider contract).
  *
  * Provider-neutral issuer / target capabilities with material-free request
  * contracts and safe receipts. A `TaskCredentialProvider` bundles two

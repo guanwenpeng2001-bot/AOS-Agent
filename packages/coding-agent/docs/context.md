@@ -135,6 +135,6 @@ Structured codes include:
 
 Call-before-model failures do not start the Agent loop. If a run was already accepted by Automation Host, the host ends with `run.failed` and a stable error code where applicable.
 
-## Out of scope (v1)
+## Current out of scope
 
 Vector RAG, automatic long-term memory, cross-project memory, external agent adapters, MCP lifecycle changes, model routing, and OS sandbox changes.

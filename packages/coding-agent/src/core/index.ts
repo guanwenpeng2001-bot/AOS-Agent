@@ -20,9 +20,9 @@ export {
 export {
 	RUNTIME_SESSION_SURFACES,
 	createRuntimeSessionSurfaceAdapter,
-	isRuntimeSessionSurfaceV1,
-	type RuntimeSessionSurfaceAdapterV1,
-	type RuntimeSessionSurfaceV1,
+	isRuntimeSessionSurface,
+	type RuntimeSessionSurfaceAdapter,
+	type RuntimeSessionSurface,
 } from "./runtime-session-surface.ts";
 export {
 	type AgentSessionRuntimeDiagnostic,
@@ -125,7 +125,7 @@ export {
 	type TaskLeaseReference,
 	type TaskLeaseVerificationResult,
 } from "./remote-operation.ts";
-// Task Credential / Lease v1 core contract (safe public records only; no
+// Task Credential / Lease core contract (safe public records only; no
 // material-bearing types or handles are exported).
 export {
 	TASK_CREDENTIAL_ACTION,
@@ -254,17 +254,17 @@ export {
 	PROMPT_TASK_DEPENDENCY_NAMES,
 	PromptTaskCompositionError,
 	createPromptTaskAdapter,
-	type PromptTaskAdapterV1,
-	type PromptTaskCompositionDependenciesV1,
-	type PromptTaskCompositionErrorCodeV1,
-	type PromptTaskCompositionRootOptionsV1,
-	type PromptTaskDependencyContextV1,
-	type PromptTaskDependencyNameV1,
-	type PromptTaskDependencyResolutionV1,
-	type PromptTaskDependencyV1,
-	type PromptTaskEnvelopeInputV1,
-	type PromptTaskExecutionV1,
-	type PromptTaskIdentityV1,
-	type PromptTaskInputV1,
-	type PromptTaskSettlementV1,
+	type PromptTaskAdapter,
+	type PromptTaskCompositionDependencies,
+	type PromptTaskCompositionErrorCode,
+	type PromptTaskCompositionRootOptions,
+	type PromptTaskDependencyContext,
+	type PromptTaskDependencyName,
+	type PromptTaskDependencyResolution,
+	type PromptTaskDependency,
+	type PromptTaskEnvelopeInput,
+	type PromptTaskExecution,
+	type PromptTaskIdentity,
+	type PromptTaskInput,
+	type PromptTaskSettlement,
 } from "./prompt-task-adapter.ts";

@@ -8,7 +8,7 @@ import {
 	schedulerOrderQueuedWorkV1,
 } from "../src/core/scheduler-deadlock.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
-import { SchedulerMessageOrchestratorV1 } from "../src/core/scheduler-messages.ts";
+import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";
 import type { SchedulerOwnershipTransferV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
@@ -291,7 +291,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			nodes: [{ nodeId: "node_task_b", dependsOn: [] }],
 			clientRequestId: "g_b",
 		});
-		const messages = new SchedulerMessageOrchestratorV1(
+		const messages = new SchedulerMessageOrchestrator(
 			[
 				{ session: sourceSession, taskGraph: sourceGraph },
 				{ session: targetSession, taskGraph: targetGraph },
@@ -370,7 +370,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			nodes: [{ nodeId: "node_task_b", dependsOn: [] }],
 			clientRequestId: "g_b",
 		});
-		const messages = new SchedulerMessageOrchestratorV1(
+		const messages = new SchedulerMessageOrchestrator(
 			[
 				{ session: sourceSession, taskGraph: sourceGraph },
 				{ session: targetSession, taskGraph: targetGraph },
@@ -464,7 +464,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			nodes: [{ nodeId: "node_task_b", dependsOn: [] }],
 			clientRequestId: "g_b",
 		});
-		const messages = new SchedulerMessageOrchestratorV1(
+		const messages = new SchedulerMessageOrchestrator(
 			[
 				{ session: sourceSession, taskGraph: sourceGraph },
 				{ session: targetSession, taskGraph: targetGraph },
@@ -543,7 +543,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			nodes: [{ nodeId: "node_task_b", dependsOn: [] }],
 			clientRequestId: "g_b",
 		});
-		const messages = new SchedulerMessageOrchestratorV1(
+		const messages = new SchedulerMessageOrchestrator(
 			[
 				{ session: sourceSession, taskGraph: sourceGraph },
 				{ session: targetSession, taskGraph: targetGraph },

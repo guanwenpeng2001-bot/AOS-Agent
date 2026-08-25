@@ -3,15 +3,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	FOUNDATION_V1_CAPABILITY_CLOSURES,
-	FOUNDATION_V1_CLOSURE_IDS,
-	FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS,
-	FOUNDATION_V1_FUTURE_IDS,
+	FOUNDATION_CAPABILITY_CLOSURES,
+	FOUNDATION_CLOSURE_IDS,
+	FOUNDATION_FUTURE_CAPABILITY_OWNERS,
+	FOUNDATION_FUTURE_IDS,
 	type FoundationCapabilityClosureStatus,
 	type FoundationHighLevelRow,
 	type FoundationImplementationStage,
 	type FoundationLaterConsumerLine,
-} from "../../src/harness/foundation-v1-capabilities.ts";
+} from "../../src/harness/foundation-capabilities.ts";
 
 const CLOSURE_STATUSES: readonly FoundationCapabilityClosureStatus[] = ["implemented", "regression_locked", "contract_sealed"];
 const HIGH_LEVEL_ROWS: readonly FoundationHighLevelRow[] = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "10A"];
@@ -403,29 +403,29 @@ function futureOwnerLinesFor(id: number): readonly FoundationLaterConsumerLine[]
 
 describe("Foundation v1 capability manifest", () => {
 	it("contains exactly 79 closure ids covering 1..73, 98, 127, 128, 129, 145, 146", () => {
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES).toHaveLength(79);
-		const ids = FOUNDATION_V1_CAPABILITY_CLOSURES.map((entry) => entry.id);
+		expect(FOUNDATION_CAPABILITY_CLOSURES).toHaveLength(79);
+		const ids = FOUNDATION_CAPABILITY_CLOSURES.map((entry) => entry.id);
 		expect(ids.slice().sort((a, b) => a - b)).toEqual(EXPECTED_CLOSURE_IDS);
-		expect(FOUNDATION_V1_CLOSURE_IDS.size).toBe(79);
+		expect(FOUNDATION_CLOSURE_IDS.size).toBe(79);
 	});
 
 	it("contains exactly 71 future owner ids covering 74..97, 99..126, 130..144, 147..150", () => {
-		expect(FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
-		const ids = FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id);
+		expect(FOUNDATION_FUTURE_CAPABILITY_OWNERS).toHaveLength(71);
+		const ids = FOUNDATION_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id);
 		expect(ids.slice().sort((a, b) => a - b)).toEqual(EXPECTED_FUTURE_IDS);
-		expect(FOUNDATION_V1_FUTURE_IDS.size).toBe(71);
+		expect(FOUNDATION_FUTURE_IDS.size).toBe(71);
 	});
 
 	it("has no duplicate ids within either ledger", () => {
-		const closureIds = FOUNDATION_V1_CAPABILITY_CLOSURES.map((entry) => entry.id);
-		const futureIds = FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id);
+		const closureIds = FOUNDATION_CAPABILITY_CLOSURES.map((entry) => entry.id);
+		const futureIds = FOUNDATION_FUTURE_CAPABILITY_OWNERS.map((entry) => entry.id);
 		expect(new Set(closureIds).size).toBe(closureIds.length);
 		expect(new Set(futureIds).size).toBe(futureIds.length);
 	});
 
 	it("covers 1..150 exactly as the disjoint union of closures and future owners", () => {
-		const allIds = new Set([...FOUNDATION_V1_CLOSURE_IDS, ...FOUNDATION_V1_FUTURE_IDS]);
-		expect(FOUNDATION_V1_CLOSURE_IDS.size + FOUNDATION_V1_FUTURE_IDS.size).toBe(150);
+		const allIds = new Set([...FOUNDATION_CLOSURE_IDS, ...FOUNDATION_FUTURE_IDS]);
+		expect(FOUNDATION_CLOSURE_IDS.size + FOUNDATION_FUTURE_IDS.size).toBe(150);
 		for (let id = 1; id <= 150; id++) {
 			expect(allIds.has(id), `capability id ${id} must be covered exactly once`).toBe(true);
 		}
@@ -433,14 +433,14 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("fills nonempty owner, rows, tests and description metadata on every entry", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			expect(entry.ownerModule.trim(), `closure ${entry.id} needs an owner module`).not.toBe("");
 			expect(entry.highLevelRows.length, `closure ${entry.id} needs high-level rows`).toBeGreaterThan(0);
 			expect(entry.tests.length, `closure ${entry.id} needs tests`).toBeGreaterThan(0);
 			for (const test of entry.tests) expect(test.trim(), `closure ${entry.id} has an empty test reference`).not.toBe("");
 			expect(entry.publicContract?.trim().length ?? 0, `closure ${entry.id} publicContract must not be blank`).toBeGreaterThan(0);
 		}
-		for (const entry of FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS) {
+		for (const entry of FOUNDATION_FUTURE_CAPABILITY_OWNERS) {
 			expect(entry.title.trim(), `future ${entry.id} needs a title`).not.toBe("");
 			expect(entry.description.trim(), `future ${entry.id} needs a description`).not.toBe("");
 			expect(
@@ -454,31 +454,31 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("resolves every ownerModule and test reference to an existing repository path", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			expect(existsSync(resolve(REPOSITORY_ROOT, entry.ownerModule)), `closure ${entry.id} ownerModule is missing: ${entry.ownerModule}`).toBe(true);
 			for (const test of entry.tests) expect(existsSync(resolve(REPOSITORY_ROOT, test)), `closure ${entry.id} test path is missing: ${test}`).toBe(true);
 		}
 	});
 
 	it("uses only the declared closure statuses, high-level rows and later lines", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			expect(CLOSURE_STATUSES).toContain(entry.closure);
 			for (const row of entry.highLevelRows) expect(HIGH_LEVEL_ROWS).toContain(row);
 			if (entry.laterConsumer !== undefined) expect(LATER_LINES).toContain(entry.laterConsumer);
 		}
-		for (const entry of FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS) {
+		for (const entry of FOUNDATION_FUTURE_CAPABILITY_OWNERS) {
 			expect(LATER_LINES).toContain(entry.laterOwner);
 		}
 	});
 
 	it("rejects duplicate test references within one closure entry", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			expect(new Set(entry.tests).size, `closure ${entry.id} repeats a test reference`).toBe(entry.tests.length);
 		}
 	});
 
 	it("matches the complete T4 status and evidence manifest", () => {
-		const actual = FOUNDATION_V1_CAPABILITY_CLOSURES
+		const actual = FOUNDATION_CAPABILITY_CLOSURES
 			.filter((entry) => EXPECTED_T4_CLOSURE_IDS.includes(entry.id))
 			.sort((a, b) => a.id - b.id);
 		expect(actual.map((entry) => entry.id)).toEqual(EXPECTED_T4_CLOSURE_IDS);
@@ -495,7 +495,7 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("matches the complete T5 status, owner, and evidence manifest", () => {
-		const actual = FOUNDATION_V1_CAPABILITY_CLOSURES
+		const actual = FOUNDATION_CAPABILITY_CLOSURES
 			.filter((entry) => EXPECTED_T5_CLOSURE_IDS.includes(entry.id))
 			.sort((a, b) => a.id - b.id);
 		expect(actual.map((entry) => entry.id)).toEqual(EXPECTED_T5_CLOSURE_IDS);
@@ -514,7 +514,7 @@ describe("Foundation v1 capability manifest", () => {
 	it("keeps the T7 Goal, Ask, and Workflow closures wired", () => {
 		for (const [idText, expected] of Object.entries(EXPECTED_T7_CLOSURES)) {
 			const id = Number(idText);
-			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
+			const entry = FOUNDATION_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
 			expect(entry, `T7 closure ${id} is missing`).toBeDefined();
 			expect(entry).toMatchObject(expected);
 			expect(entry?.tests).toEqual(expected.tests);
@@ -524,27 +524,27 @@ describe("Foundation v1 capability manifest", () => {
 	it("keeps every T11 recovery and migration capability wired", () => {
 		const t11Ids = expandStageSpec(EXPECTED_STAGE_SPECS.T11);
 		for (const id of t11Ids) {
-			const entry = FOUNDATION_V1_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
+			const entry = FOUNDATION_CAPABILITY_CLOSURES.find((candidate) => candidate.id === id);
 			expect(entry, `T11 closure ${id} is missing`).toBeDefined();
 			expect(CLOSURE_STATUSES).toContain(entry?.closure);
 		}
 		for (const [idText, expected] of Object.entries(EXPECTED_T11_ADVANCED_CLOSURES)) {
 			const id = Number(idText);
-			expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === id)).toMatchObject(expected);
+			expect(FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === id)).toMatchObject(expected);
 		}
 	});
 
 	it("seals every T12 closure with concrete implementation evidence", () => {
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.every((entry) => CLOSURE_STATUSES.includes(entry.closure))).toBe(true);
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 51)).toMatchObject({
+		expect(FOUNDATION_CAPABILITY_CLOSURES.every((entry) => CLOSURE_STATUSES.includes(entry.closure))).toBe(true);
+		expect(FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === 51)).toMatchObject({
 			closure: "contract_sealed",
 			ownerModule: "packages/coding-agent/src/core/capability-registry.ts",
 		});
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 52)).toMatchObject({
+		expect(FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === 52)).toMatchObject({
 			closure: "regression_locked",
 			ownerModule: "packages/coding-agent/src/core/execution-policy.ts",
 		});
-		expect(FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)).toMatchObject({
+		expect(FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === 73)).toMatchObject({
 			closure: "implemented",
 			ownerModule: "packages/agent/src/harness/foundation/workflow.ts",
 			tests: expect.arrayContaining(["packages/agent/test/harness/foundation-t12-workflow-evaluation.test.ts"]),
@@ -552,19 +552,19 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("matches the seal PR high-level row mapping exactly", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			const expected = EXPECTED_HIGH_LEVEL_ROWS[entry.id];
 			expect(expected, `closure ${entry.id} has no expected row mapping`).toBeDefined();
 			expect(entry.highLevelRows.slice().sort(), `closure ${entry.id} row mismatch`).toEqual(expected.slice().sort());
 		}
 		// Every row and row 10A is covered by at least one closure.
-		const coveredRows = new Set(FOUNDATION_V1_CAPABILITY_CLOSURES.flatMap((entry) => entry.highLevelRows));
+		const coveredRows = new Set(FOUNDATION_CAPABILITY_CLOSURES.flatMap((entry) => entry.highLevelRows));
 		expect([...coveredRows].sort()).toEqual(HIGH_LEVEL_ROWS.slice().sort());
 		expect(coveredRows.has("10A")).toBe(true);
 	});
 
 	it("gives every closure a nonempty implementation-stage set restricted to T1..T12", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			expect(
 				entry.implementationStages.length,
 				`closure ${entry.id} needs at least one post-T0 implementation stage`,
@@ -582,7 +582,7 @@ describe("Foundation v1 capability manifest", () => {
 	it("inverts the per-entry stage mapping to exactly the implementation plan table", () => {
 		for (const stage of STAGES) {
 			const expected = expandStageSpec(EXPECTED_STAGE_SPECS[stage]);
-			const actual = FOUNDATION_V1_CAPABILITY_CLOSURES.filter((entry) =>
+			const actual = FOUNDATION_CAPABILITY_CLOSURES.filter((entry) =>
 				entry.implementationStages.includes(stage),
 			)
 				.map((entry) => entry.id)
@@ -592,16 +592,16 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("covers every post-T0 stage by at least one closure and seals the full closure set at T12", () => {
-		const coveredStages = new Set(FOUNDATION_V1_CAPABILITY_CLOSURES.flatMap((entry) => entry.implementationStages));
+		const coveredStages = new Set(FOUNDATION_CAPABILITY_CLOSURES.flatMap((entry) => entry.implementationStages));
 		expect([...coveredStages].sort()).toEqual(STAGES.slice().sort());
-		const sealIds = FOUNDATION_V1_CAPABILITY_CLOSURES.filter((entry) => entry.implementationStages.includes("T12"))
+		const sealIds = FOUNDATION_CAPABILITY_CLOSURES.filter((entry) => entry.implementationStages.includes("T12"))
 			.map((entry) => entry.id)
 			.sort((a, b) => a - b);
 		expect(sealIds).toEqual(EXPECTED_CLOSURE_IDS);
 	});
 
 	it("requires a public contract for every contract_sealed closure", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			if (entry.closure !== "contract_sealed") continue;
 			expect(entry.publicContract, `contract_sealed closure ${entry.id} needs a public contract`).toBeDefined();
 			expect(entry.publicContract!.trim(), `contract_sealed closure ${entry.id} needs a public contract`).not.toBe("");
@@ -609,8 +609,8 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("seals C011 and C050 at the gateway layer while leaving ModelBroker composition to T8", () => {
-		const c011 = FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 11);
-		const c050 = FOUNDATION_V1_CAPABILITY_CLOSURES.find((entry) => entry.id === 50);
+		const c011 = FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === 11);
+		const c050 = FOUNDATION_CAPABILITY_CLOSURES.find((entry) => entry.id === 50);
 		expect(c011).toMatchObject({ closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/gateway.ts" });
 		expect(c050).toMatchObject({ closure: "contract_sealed", ownerModule: "packages/agent/src/harness/foundation/gateway.ts" });
 		for (const entry of [c011, c050]) {
@@ -622,7 +622,7 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("never claims a later provider as closed, and future-only ids stay within the owned capability space", () => {
-		for (const entry of FOUNDATION_V1_CAPABILITY_CLOSURES) {
+		for (const entry of FOUNDATION_CAPABILITY_CLOSURES) {
 			if (entry.laterConsumer === undefined) continue;
 			expect(entry.laterCapabilityIds?.length ?? 0, `closure ${entry.id} with a later consumer must list later capability ids`).toBeGreaterThan(0);
 			for (const laterId of entry.laterCapabilityIds ?? []) {
@@ -633,7 +633,7 @@ describe("Foundation v1 capability manifest", () => {
 	});
 
 	it("keeps every future owner on a later line allowed for its id range", () => {
-		for (const entry of FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS) {
+		for (const entry of FOUNDATION_FUTURE_CAPABILITY_OWNERS) {
 			const allowed = futureOwnerLinesFor(entry.id);
 			expect(allowed.length).toBeGreaterThan(0);
 			expect(allowed).toContain(entry.laterOwner);
@@ -642,7 +642,7 @@ describe("Foundation v1 capability manifest", () => {
 
 	it("explicitly lists role upstream contracts for future Role ids 91, 96, 109, 110, 132, 138, 147", () => {
 		for (const id of FUTURE_ROLE_CONTRACT_IDS) {
-			const entry = FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.find((owner) => owner.id === id);
+			const entry = FOUNDATION_FUTURE_CAPABILITY_OWNERS.find((owner) => owner.id === id);
 			expect(entry, `future role id ${id} must exist as an explicit owner`).toBeDefined();
 			const consumed = entry!.consumedFoundationContracts.join(" ");
 			const hasRoleContract = ROLE_CONTRACT_TOKENS.some((token) => consumed.includes(token));
@@ -652,7 +652,7 @@ describe("Foundation v1 capability manifest", () => {
 
 	it("explicitly lists result upstream contracts for future result ids 99..101 and 122..126", () => {
 		for (const id of FUTURE_RESULT_CONTRACT_IDS) {
-			const entry = FOUNDATION_V1_FUTURE_CAPABILITY_OWNERS.find((owner) => owner.id === id);
+			const entry = FOUNDATION_FUTURE_CAPABILITY_OWNERS.find((owner) => owner.id === id);
 			expect(entry, `future result id ${id} must exist as an explicit owner`).toBeDefined();
 			const consumed = entry!.consumedFoundationContracts.join(" ");
 			const hasResultContract = RESULT_CONTRACT_TOKENS.some((token) => consumed.includes(token));

@@ -3,7 +3,7 @@ export const FOUNDATION_SCHEMA_VERSION = 1 as const;
 export type FoundationSchemaVersion = typeof FOUNDATION_SCHEMA_VERSION;
 
 /** Explicit execution relationships shared by durable records and transports. */
-export interface ExecutionCorrelationV1 {
+export interface ExecutionCorrelation {
 	sessionId: string;
 	laneId: string;
 	roleId?: string;
@@ -37,26 +37,24 @@ export interface ExecutionCorrelationV1 {
 	fencingToken?: string;
 }
 
-export type ExecutionCorrelation = ExecutionCorrelationV1;
-
 export function createExecutionCorrelation(
 	sessionId: string,
 	laneId: string,
-	options: Omit<ExecutionCorrelationV1, "sessionId" | "laneId" | "revision"> & { revision?: number } = {},
-): ExecutionCorrelationV1 {
+	options: Omit<ExecutionCorrelation, "sessionId" | "laneId" | "revision"> & { revision?: number } = {},
+): ExecutionCorrelation {
 	return { sessionId, laneId, revision: options.revision ?? 0, ...options };
 }
 
-export function withCorrelationField<K extends Exclude<keyof ExecutionCorrelationV1, "sessionId" | "laneId" | "revision">>(
-	correlation: ExecutionCorrelationV1,
+export function withCorrelationField<K extends Exclude<keyof ExecutionCorrelation, "sessionId" | "laneId" | "revision">>(
+	correlation: ExecutionCorrelation,
 	key: K,
-	value: NonNullable<ExecutionCorrelationV1[K]>,
-): ExecutionCorrelationV1 {
+	value: NonNullable<ExecutionCorrelation[K]>,
+): ExecutionCorrelation {
 	return { ...correlation, [key]: value };
 }
 
 /** Immutable parent/ancestor relationship for Foundation entities. */
-export interface FoundationLineageV1 {
+export interface FoundationLineage {
 	schemaVersion: 1;
 	entityType: string;
 	entityId: string;
@@ -65,16 +63,14 @@ export interface FoundationLineageV1 {
 	depth: number;
 }
 
-export type LineageV1 = FoundationLineageV1;
-
-export function rootFoundationLineage(entityType: string, entityId: string): FoundationLineageV1 {
+export function rootFoundationLineage(entityType: string, entityId: string): FoundationLineage {
 	return { schemaVersion: 1, entityType, entityId, depth: 0 };
 }
 
 export function extendFoundationLineage(
-	parent: FoundationLineageV1,
+	parent: FoundationLineage,
 	child: { entityType?: string; entityId: string },
-): FoundationLineageV1 {
+): FoundationLineage {
 	return {
 		schemaVersion: 1,
 		entityType: child.entityType ?? parent.entityType,
@@ -86,12 +82,10 @@ export function extendFoundationLineage(
 }
 
 /** Deterministic content fingerprint. */
-export interface FingerprintV1 {
+export interface Fingerprint {
 	algorithm: "sha256";
 	value: string;
 }
-
-export type Fingerprint = FingerprintV1;
 
 export function canonicalFoundationJson(value: unknown): string {
 	const active = new Set<object>();
@@ -128,7 +122,7 @@ export function canonicalJson(value: unknown): string {
 	return canonicalFoundationJson(value);
 }
 
-export function fingerprintFoundationValue(value: unknown): FingerprintV1 {
+export function fingerprintFoundationValue(value: unknown): Fingerprint {
 	return { algorithm: "sha256", value: sha256HexValue(canonicalFoundationJson(value)) };
 }
 

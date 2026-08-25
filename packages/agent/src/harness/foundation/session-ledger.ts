@@ -1,42 +1,42 @@
 import type { Session } from "../session/session.ts";
-import type { ExecutionCorrelationV1 } from "./identity.ts";
+import type { ExecutionCorrelation } from "./identity.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import { canonicalFoundationJson, newFoundationId } from "./identity.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import type {
-	FoundationFactRecordV1,
-	FoundationIntentRecordV1,
-	FoundationObjectResultV1,
-	FoundationRecordQueryV1,
-	FoundationRecordV1,
-	LedgerWriterLeaseV1,
-	ProvisionedFoundationRecordV1,
+	FoundationFactRecord,
+	FoundationIntentRecord,
+	FoundationObjectResult,
+	FoundationRecordQuery,
+	FoundationRecord,
+	LedgerWriterLease,
+	ProvisionedFoundationRecord,
 } from "../session/durable/types.ts";
 import { assertSessionLedgerWriterSession, type SessionLedgerWriter } from "../session/t5.ts";
 
 /** The only state retained by a Foundation facade is a lease token; objects live in Session. */
-export interface SessionLedgerOptionsV1 {
+export interface SessionLedgerOptions {
 	readonly ownerId?: string;
 	readonly laneId?: string;
 	readonly leaseTtlMs?: number;
 	readonly writer?: SessionLedgerWriter;
 }
 
-export interface AppendFoundationFactOptionsV1 {
+export interface AppendFoundationFactOptions {
 	readonly clientRequestId: string;
 	readonly expectedRevision?: number;
-	readonly correlation: Omit<ExecutionCorrelationV1, "sessionId" | "laneId" | "revision"> & { revision?: number };
+	readonly correlation: Omit<ExecutionCorrelation, "sessionId" | "laneId" | "revision"> & { revision?: number };
 }
 
-export interface SessionLedgerFactResultV1<TPayload> {
-	readonly record: FoundationFactRecordV1;
+export interface SessionLedgerFactResult<TPayload> {
+	readonly record: FoundationFactRecord;
 	readonly payload: TPayload;
 	readonly replayed: boolean;
 }
 
-export interface SessionLedgerIntentResultV1 {
-	readonly record: FoundationIntentRecordV1;
+export interface SessionLedgerIntentResult {
+	readonly record: FoundationIntentRecord;
 	readonly replayed: boolean;
 }
 
@@ -45,15 +45,15 @@ export interface SessionLedgerIntentResultV1 {
  * does not cache objects: every read comes from the Session reducer and every write
  * uses object CAS plus the durable writer fencing token.
  */
-export class SessionLedgerV1 {
+export class SessionLedger {
 	private readonly session: Session;
 	private readonly ownerId: string;
 	private readonly laneId: string;
 	private readonly leaseTtlMs: number;
 	private readonly writer: SessionLedgerWriter | undefined;
-	private lease: LedgerWriterLeaseV1 | undefined;
+	private lease: LedgerWriterLease | undefined;
 
-	constructor(session: Session, options: SessionLedgerOptionsV1 = {}) {
+	constructor(session: Session, options: SessionLedgerOptions = {}) {
 		this.session = session;
 		this.writer = options.writer;
 		if (this.writer !== undefined) assertSessionLedgerWriterSession(session, this.writer, "SessionLedgerV1");
@@ -62,17 +62,17 @@ export class SessionLedgerV1 {
 		this.leaseTtlMs = options.leaseTtlMs ?? 15 * 60 * 1000;
 	}
 
-	async get(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	async get(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.session.getFoundationObject(objectType, objectId);
 	}
 
-	async getFact<TPayload>(objectType: string, objectId: string): Promise<SessionLedgerFactResultV1<TPayload> | undefined> {
+	async getFact<TPayload>(objectType: string, objectId: string): Promise<SessionLedgerFactResult<TPayload> | undefined> {
 		const record = await this.session.getFoundationObject(objectType, objectId);
 		if (record === undefined || record.kind !== "fact") return undefined;
 		return { record, payload: record.payload as TPayload, replayed: false };
 	}
 
-	async find(query: FoundationRecordQueryV1 = {}): Promise<readonly FoundationRecordV1[]> {
+	async find(query: FoundationRecordQuery = {}): Promise<readonly FoundationRecord[]> {
 		return this.session.findFoundationRecords(query);
 	}
 
@@ -80,7 +80,7 @@ export class SessionLedgerV1 {
 		return this.session.getFoundationRevision(objectType, objectId);
 	}
 
-	async appendFact<TPayload>(objectType: string, objectId: string, payload: TPayload, options: AppendFoundationFactOptionsV1): Promise<SessionLedgerFactResultV1<TPayload>> {
+	async appendFact<TPayload>(objectType: string, objectId: string, payload: TPayload, options: AppendFoundationFactOptions): Promise<SessionLedgerFactResult<TPayload>> {
 		const current = await this.session.getFoundationObject(objectType, objectId);
 		const actualRevision = await this.session.getFoundationRevision(objectType, objectId);
 		if (options.expectedRevision !== undefined && options.expectedRevision !== actualRevision) throw new FoundationError("session_writer_stale_revision", "Foundation object revision does not match the compare-and-set expectation", { details: { objectType, objectId, expectedRevision: options.expectedRevision, actualRevision } });
@@ -107,7 +107,7 @@ export class SessionLedgerV1 {
 			laneId: this.laneId,
 			revision: 0,
 		};
-		const input: ProvisionedFoundationRecordV1 = {
+		const input: ProvisionedFoundationRecord = {
 			schemaVersion: 1,
 			kind: "fact",
 			id: `${objectType}:${objectId}:${options.clientRequestId}`,
@@ -122,7 +122,7 @@ export class SessionLedgerV1 {
 		};
 		try {
 			const appended = await this.session.appendFoundationRecord(input);
-			return { record: appended.record as FoundationFactRecordV1, payload: appended.record.kind === "fact" ? appended.record.payload as TPayload : payload, replayed: appended.replayed };
+			return { record: appended.record as FoundationFactRecord, payload: appended.record.kind === "fact" ? appended.record.payload as TPayload : payload, replayed: appended.replayed };
 		} catch (error) {
 			if (error instanceof DurableLedgerError) throw error;
 			throw toFoundationError(error, "session_writer_stale_revision");
@@ -134,7 +134,7 @@ export class SessionLedgerV1 {
 	 * The client request id is the durable idempotency key; replaying the same
 	 * intent returns the original record without advancing the ledger.
 	 */
-	async appendIntent(objectType: string, objectId: string, options: AppendFoundationFactOptionsV1 & { readonly intent: "create" | "update" | "delete"; readonly payload?: FoundationJsonValue }): Promise<SessionLedgerIntentResultV1> {
+	async appendIntent(objectType: string, objectId: string, options: AppendFoundationFactOptions & { readonly intent: "create" | "update" | "delete"; readonly payload?: FoundationJsonValue }): Promise<SessionLedgerIntentResult> {
 		const existing = await this.session.findFoundationRecords({ kind: "intent", objectType, objectId, includePruned: true, order: "oldestFirst" });
 		const replay = existing.find((record) => record.kind === "intent" && record.clientRequestId === options.clientRequestId);
 		if (replay !== undefined && replay.kind === "intent") return { record: replay, replayed: true };
@@ -148,7 +148,7 @@ export class SessionLedgerV1 {
 			laneId: this.laneId,
 			revision: 0,
 		};
-		const input: ProvisionedFoundationRecordV1 = {
+		const input: ProvisionedFoundationRecord = {
 			schemaVersion: 1,
 			kind: "intent",
 			id: `${objectType}:${objectId}:${options.clientRequestId}`,
@@ -166,7 +166,7 @@ export class SessionLedgerV1 {
 			const appended = this.writer === undefined
 				? await this.session.appendFoundationRecord(input)
 				: await this.writer.appendFoundationRecord(input);
-			return { record: appended.record as FoundationIntentRecordV1, replayed: appended.replayed };
+			return { record: appended.record as FoundationIntentRecord, replayed: appended.replayed };
 		} catch (error) {
 			if (error instanceof DurableLedgerError) throw error;
 			throw toFoundationError(error, "session_writer_stale_revision");
@@ -183,7 +183,7 @@ export class SessionLedgerV1 {
 		}
 	}
 
-	private async ensureLease(): Promise<LedgerWriterLeaseV1> {
+	private async ensureLease(): Promise<LedgerWriterLease> {
 		try {
 			if (this.writer !== undefined) return this.writer.ensureLease();
 			if (this.lease !== undefined && this.lease.expiresAt > Date.now() + 1000) {
@@ -199,4 +199,4 @@ export class SessionLedgerV1 {
 	}
 }
 
-export const FoundationSessionLedger = SessionLedgerV1;
+export const FoundationSessionLedger = SessionLedger;

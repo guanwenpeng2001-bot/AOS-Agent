@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease v1 lifecycle service (T4).
+ * Task Credential / Lease lifecycle service (T4).
  *
  * Session-scoped facade that owns the {@link TaskCredentialStore} and turns
  * host lifecycle signals into fail-closed revoke / quarantine / settle

@@ -1,21 +1,21 @@
 import {
-	type AcceptanceFactV1,
-	type ArtifactRefV1,
+	type AcceptanceFact,
+	type ArtifactRef,
 	AskStore,
-	type AskV1,
+	type Ask,
 	canonicalFoundationJson,
-	type FingerprintV1,
+	type Fingerprint,
 	FoundationError,
-	type FoundationFactRecordV1,
+	type FoundationFactRecord,
 	fingerprintFoundationValue,
-	type RunReceiptV1,
+	type RunReceipt,
 	type Session,
-	SessionLedgerV1,
+	SessionLedger,
 	SessionLedgerWriter,
-	type TaskResultV1,
+	type TaskResult,
 	validateArtifactRef,
-	validateRunReceiptV1,
-	validateTaskResultV1,
+	validateRunReceipt,
+	validateTaskResult,
 } from "@aos-agent/agent-core";
 import {
 	applySchedulerMessageAck,
@@ -86,12 +86,12 @@ export interface SchedulerRunReceiptReferenceV1 {
 export type SchedulerResultReferenceV1 = SchedulerTaskResultReferenceV1 | SchedulerRunReceiptReferenceV1;
 
 export type SchedulerMessageMaterialV1 =
-	| { readonly schemaVersion: 1; readonly kind: "fingerprint"; readonly fingerprint: FingerprintV1 }
+	| { readonly schemaVersion: 1; readonly kind: "fingerprint"; readonly fingerprint: Fingerprint }
 	| {
 			readonly schemaVersion: 1;
 			readonly kind: "artifact";
 			readonly sessionId: string;
-			readonly artifact: ArtifactRefV1;
+			readonly artifact: ArtifactRef;
 	  }
 	| { readonly schemaVersion: 1; readonly kind: "task_result"; readonly reference: SchedulerTaskResultReferenceV1 }
 	| { readonly schemaVersion: 1; readonly kind: "run_receipt"; readonly reference: SchedulerRunReceiptReferenceV1 };
@@ -167,12 +167,12 @@ export interface SchedulerAskWaitFactV1 {
 	readonly askId: string;
 	readonly threadId: string;
 	readonly messageId: string;
-	readonly questionDigest: FingerprintV1;
+	readonly questionDigest: Fingerprint;
 	readonly status: "waiting" | "answered" | "expired" | "escalated" | "cancelled";
 	readonly dueAt: string;
 	readonly escalationAt?: string;
 	readonly observedAt: string;
-	readonly evidence?: AcceptanceFactV1;
+	readonly evidence?: AcceptanceFact;
 	readonly responseMessageId?: string;
 }
 
@@ -180,7 +180,7 @@ export type SchedulerWaitFactV1 = SchedulerTaskWaitFactV1 | SchedulerAskWaitFact
 
 export interface SchedulerResultResolutionV1 {
 	readonly reference: SchedulerResultReferenceV1;
-	readonly status: TaskResultV1["status"] | RunReceiptV1["terminalStatus"];
+	readonly status: TaskResult["status"] | RunReceipt["terminalStatus"];
 }
 
 export interface SchedulerResultReclaimFactV1 {
@@ -198,8 +198,8 @@ export interface SchedulerResultReclaimFactV1 {
 
 export interface SchedulerAskResolutionV1 {
 	readonly askId: string;
-	readonly status: AskV1["status"];
-	readonly evidence?: AcceptanceFactV1;
+	readonly status: Ask["status"];
+	readonly evidence?: AcceptanceFact;
 	readonly message?: SchedulerMessageV1;
 }
 
@@ -207,7 +207,7 @@ export interface SchedulerAskStateV1 {
 	readonly schemaVersion: 1;
 	readonly askId: string;
 	readonly targetSessionId: string;
-	readonly status: AskV1["status"];
+	readonly status: Ask["status"];
 	readonly revision: number;
 }
 
@@ -215,7 +215,7 @@ interface EndpointState {
 	readonly session: Session;
 	readonly taskGraph: TaskGraphStore;
 	readonly writer: SessionLedgerWriter;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly asks: AskStore;
 }
 
@@ -297,7 +297,6 @@ function assertNoForbiddenKeys(value: unknown): void {
 		}
 	}
 }
-
 function assertSafeMessageIdentifiers(message: SchedulerMessageV1): void {
 	if (
 		!safeId(message.messageId) ||
@@ -315,7 +314,7 @@ function assertSafeMessageIdentifiers(message: SchedulerMessageV1): void {
 	}
 }
 
-function parseFingerprint(value: unknown): FingerprintV1 {
+function parseFingerprint(value: unknown): Fingerprint {
 	if (
 		!isRecord(value) ||
 		!hasOnlyKeys(value, ["algorithm", "value"]) ||
@@ -327,7 +326,7 @@ function parseFingerprint(value: unknown): FingerprintV1 {
 	return { algorithm: "sha256", value: String(value.value) };
 }
 
-function assertArtifactIdentity(value: ArtifactRefV1): void {
+function assertArtifactIdentity(value: ArtifactRef): void {
 	if (!safeId(value.artifactId) || (value.producer !== undefined && !safeId(value.producer))) {
 		invalid("Scheduler artifact reference contains a path or unsafe identity");
 	}
@@ -409,7 +408,7 @@ function parseMaterial(value: unknown): SchedulerMessageMaterialV1 {
 	invalid("Scheduler message material kind is unsupported");
 }
 
-function materialDigest(material: SchedulerMessageMaterialV1): FingerprintV1 {
+function materialDigest(material: SchedulerMessageMaterialV1): Fingerprint {
 	return material.kind === "fingerprint" ? clone(material.fingerprint) : fingerprintFoundationValue(material);
 }
 
@@ -535,7 +534,7 @@ function parseRequiredTimestamp(record: Record<string, unknown>, key: string): s
 	return value;
 }
 
-function safeAskState(ask: AskV1): SchedulerAskStateV1 {
+function safeAskState(ask: Ask): SchedulerAskStateV1 {
 	return {
 		schemaVersion: 1,
 		askId: ask.askId,
@@ -545,7 +544,7 @@ function safeAskState(ask: AskV1): SchedulerAskStateV1 {
 	};
 }
 
-export class SchedulerMessageOrchestratorV1 {
+export class SchedulerMessageOrchestrator {
 	private readonly endpointStates: readonly [EndpointState, EndpointState];
 	private readonly initialized: Promise<ReadonlyMap<string, EndpointState>>;
 
@@ -562,7 +561,7 @@ export class SchedulerMessageOrchestratorV1 {
 				session: endpoint.session,
 				taskGraph: endpoint.taskGraph,
 				writer,
-				ledger: new SessionLedgerV1(endpoint.session, { writer }),
+				ledger: new SessionLedger(endpoint.session, { writer }),
 				asks: new AskStore(endpoint.session, { writer }),
 			};
 		}) as unknown as readonly [EndpointState, EndpointState];
@@ -1362,7 +1361,7 @@ export class SchedulerMessageOrchestratorV1 {
 			invalid("Ask reached an unsupported terminal state");
 		}
 		const observedAt = ask.settledAt ?? at;
-		const evidence: AcceptanceFactV1 = {
+		const evidence: AcceptanceFact = {
 			schemaVersion: 1,
 			factId: `scheduler-ask-${wait.askId}-${ask.revision}-${responseMessageId}`,
 			outcome: ask.status === "answered" ? "satisfied" : ask.status === "escalated" ? "pending" : "unsatisfied",
@@ -1509,14 +1508,14 @@ export class SchedulerMessageOrchestratorV1 {
 		}
 	}
 
-	private async facts(objectType: string, objectId: string): Promise<readonly FoundationFactRecordV1[]> {
+	private async facts(objectType: string, objectId: string): Promise<readonly FoundationFactRecord[]> {
 		const endpoints = await this.initialized;
 		const records = await Promise.all(
 			[...endpoints.values()].map((endpoint) =>
 				endpoint.ledger.find({ kind: "fact", objectType, objectId, order: "oldestFirst", includePruned: true }),
 			),
 		);
-		return records.flat().filter((record): record is FoundationFactRecordV1 => record.kind === "fact");
+		return records.flat().filter((record): record is FoundationFactRecord => record.kind === "fact");
 	}
 
 	private async loadMessage(messageId: string): Promise<MessageState> {
@@ -1612,7 +1611,7 @@ export class SchedulerMessageOrchestratorV1 {
 			if (stored === undefined || stored.kind !== "fact" || stored.revision !== reference.revision) {
 				invalid("TaskResult reference does not resolve in its owning Session");
 			}
-			const checked = validateTaskResultV1(stored.payload);
+			const checked = validateTaskResult(stored.payload);
 			if (!checked.ok) throw checked.error;
 			if (
 				checked.value.taskResultId !== reference.id ||
@@ -1627,7 +1626,7 @@ export class SchedulerMessageOrchestratorV1 {
 		if (stored === undefined || stored.kind !== "fact" || stored.revision !== reference.revision) {
 			invalid("RunReceipt reference does not resolve in its owning Session");
 		}
-		const checked = validateRunReceiptV1(stored.payload);
+		const checked = validateRunReceipt(stored.payload);
 		if (!checked.ok) throw checked.error;
 		if (
 			checked.value.runReceiptId !== reference.id ||
@@ -1641,7 +1640,7 @@ export class SchedulerMessageOrchestratorV1 {
 			const taskResult = await endpoint.ledger.get("task_result", checked.value.taskResultId);
 			if (taskResult === undefined || taskResult.kind !== "fact")
 				invalid("RunReceipt references a missing TaskResult");
-			const validatedTaskResult = validateTaskResultV1(taskResult.payload);
+			const validatedTaskResult = validateTaskResult(taskResult.payload);
 			if (!validatedTaskResult.ok || validatedTaskResult.value.taskId !== taskId) {
 				invalid("RunReceipt TaskResult belongs to another task");
 			}
@@ -1649,5 +1648,3 @@ export class SchedulerMessageOrchestratorV1 {
 		return { reference: clone(reference), status: checked.value.terminalStatus };
 	}
 }
-
-export const SchedulerMessageOrchestrator = SchedulerMessageOrchestratorV1;

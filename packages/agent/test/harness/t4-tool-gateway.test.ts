@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-	createDefaultSandboxOperationTranslatorV1,
-	createConsumerToolGatewayFakeV1,
-	createFoundationToolGatewayV1,
-	createLocalToolGatewayProviderV1,
-	createSandboxOperationToolGatewayProviderV1,
+	createDefaultSandboxOperationTranslator,
+	createConsumerToolGatewayFake,
+	createFoundationToolGateway,
+	createLocalToolGatewayProvider,
+	createSandboxOperationToolGatewayProvider,
 } from "../../src/harness/tool-gateway.ts";
 import type { SandboxOperationProvider } from "../../src/harness/foundation/providers.ts";
 import type { ToolGateway } from "../../src/harness/foundation/providers.ts";
@@ -21,9 +21,9 @@ const request = {
 
 describe("T4 ToolGateway and SandboxOperationProvider", () => {
 	it("routes by namespace and tool name and validates provider results", async () => {
-		const gateway = createFoundationToolGatewayV1({
+		const gateway = createFoundationToolGateway({
 			gatewayId: "gateway-1",
-			providers: [createLocalToolGatewayProviderV1({
+			providers: [createLocalToolGatewayProvider({
 				providerId: "local-1",
 				routes: [{ kind: "local", namespace: "mcp-server", toolName: "read", providerId: "local-1", revision: 1 }],
 				invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
@@ -60,13 +60,13 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 			cancel: async () => Result.ok(undefined),
 			dispose: async () => { disposed = true; },
 		};
-		const provider = createSandboxOperationToolGatewayProviderV1({
+		const provider = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
 			sandbox,
-			translator: createDefaultSandboxOperationTranslatorV1(() => "operation-1"),
+			translator: createDefaultSandboxOperationTranslator(() => "operation-1"),
 		});
-		const gateway = createFoundationToolGatewayV1({ gatewayId: "gateway-2", providers: [provider] });
+		const gateway = createFoundationToolGateway({ gatewayId: "gateway-2", providers: [provider] });
 
 		expect(await gateway.execute(request)).toMatchObject({
 			ok: true,
@@ -78,29 +78,29 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 
 		const mismatched = await gateway.execute({ ...request, context: { ...request.context, providerId: "other-provider" } });
 		expect(mismatched).toMatchObject({ ok: false, error: { code: "invalid_identifier" } });
-		const payloadTampered = createSandboxOperationToolGatewayProviderV1({
+		const payloadTampered = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
 			sandbox,
 			translator: { translate: () => Result.ok({ schemaVersion: 1, operationId: "tampered", providerId: "sandbox-1", bindingId: "binding-1", bindingEpochId: "epoch-1", toolCallId: "call-1", toolName: "read", namespace: "mcp-server", taskId: "task-1", payload: { path: "other.txt" } }) },
 		});
-		const payloadGateway = createFoundationToolGatewayV1({ gatewayId: "gateway-payload", providers: [payloadTampered] });
+		const payloadGateway = createFoundationToolGateway({ gatewayId: "gateway-payload", providers: [payloadTampered] });
 		expect(await payloadGateway.execute(request)).toMatchObject({ ok: false, error: { code: "foundation_schema_invalid_shape" } });
 	});
 
 	it("rejects ambiguous routes instead of falling through", async () => {
-		const provider = (providerId: string) => createLocalToolGatewayProviderV1({
+		const provider = (providerId: string) => createLocalToolGatewayProvider({
 			providerId,
 			routes: [{ kind: "local", toolName: "read", providerId, revision: 1 }],
 			invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 		});
-		const gateway = createFoundationToolGatewayV1({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] });
+		const gateway = createFoundationToolGateway({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] });
 		expect(await gateway.execute({ ...request, namespace: undefined, toolName: "read" })).toMatchObject({ ok: false, error: { code: "invalid_identifier" } });
 	});
 
 	it("drives the public consumer-shaped fake through success/failure/cancel/deadline/recovery settlements", async () => {
 		let invoked = 0;
-		const fake = createConsumerToolGatewayFakeV1({
+		const fake = createConsumerToolGatewayFake({
 			nowMs: () => 100,
 			invoke: async (value, options) => {
 				invoked += 1;

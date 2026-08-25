@@ -13,27 +13,27 @@ import {
 	createBindingEpoch,
 	FoundationError,
 	Result,
-	validateAgentInstanceV1,
+	validateAgentInstance,
 	validateAttemptReceipt,
-	validateBindingEpochV1,
-	validateChildSpawnRequestV1,
+	validateBindingEpoch,
+	validateChildSpawnRequest,
 	validateDispatch,
-	validateEventPayloadForCategoryV1,
-	validateExecutionCorrelationV1,
-	validateImmutableAgentBindingV1,
+	validateEventPayloadForCategory,
+	validateExecutionCorrelation,
+	validateImmutableAgentBinding,
 	validateAttempt,
 	validateSpawnAgentIntent,
-	type AgentBindingV1,
-	type AgentInstanceV1,
-	type BindingEpochV1,
+	type AgentBinding,
+	type AgentInstance,
+	type BindingEpoch,
 	type ChildAgentProvider,
-	type ChildSpawnRequestV1,
-	type ChildSpawnResultV1,
-	type DispatchV1,
-	type ExecutionCorrelationV1,
-	type LayeredResultSettlementV1,
+	type ChildSpawnRequest,
+	type ChildSpawnResult,
+	type Dispatch,
+	type ExecutionCorrelation,
+	type LayeredResultSettlement,
 	type Result as ResultValue,
-	type SessionLedgerV1,
+	type SessionLedger,
 } from "@aos-agent/agent-core";
 import {
 	createChildAgentRecordV1,
@@ -50,10 +50,10 @@ export const SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE = "subagent.supervisor_cont
 
 export interface SubagentSupervisorOptionsV1 {
 	readonly schemaVersion: 1;
-	readonly ledger: SessionLedgerV1;
+	readonly ledger: SessionLedger;
 	readonly sessionId: string;
 	readonly laneId: string;
-	readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly maxDepth: number;
 	readonly maxConcurrent: number;
 	readonly maxTurns: number;
@@ -70,12 +70,12 @@ export interface SubagentQueuePolicyV1 {
 
 export interface PlanSubagentSpawnInputV1 {
 	readonly schemaVersion: 1;
-	readonly request: ChildSpawnRequestV1;
-	readonly originParentAgentInstance: AgentInstanceV1;
+	readonly request: ChildSpawnRequest;
+	readonly originParentAgentInstance: AgentInstance;
 	readonly originParentAttemptId: string;
-	readonly lineageParentAgentInstance?: AgentInstanceV1;
+	readonly lineageParentAgentInstance?: AgentInstance;
 	readonly childLaneId: string;
-	readonly childBinding: AgentBindingV1;
+	readonly childBinding: AgentBinding;
 	readonly providerDescriptor: SubagentProviderDescriptorV1;
 	readonly childAgentInstanceId: string;
 	readonly dispatchId: string;
@@ -89,12 +89,12 @@ export interface PlanSubagentSpawnInputV1 {
 
 export interface SubagentSpawnPlanV1 {
 	readonly schemaVersion: 1;
-	readonly request: ChildSpawnRequestV1;
-	readonly childBinding: AgentBindingV1;
-	readonly dispatch: DispatchV1;
-	readonly agentInstance: AgentInstanceV1;
-	readonly initialBindingEpoch: BindingEpochV1;
-	readonly correlation: ExecutionCorrelationV1;
+	readonly request: ChildSpawnRequest;
+	readonly childBinding: AgentBinding;
+	readonly dispatch: Dispatch;
+	readonly agentInstance: AgentInstance;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
 	readonly childLaneId: string;
 	readonly providerKind: SubagentProviderDescriptorV1["providerKind"];
 	readonly providerId: string;
@@ -271,7 +271,7 @@ function isCanonicalTimestamp(value: unknown): value is string {
 	return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
-function validateLineage(agent: AgentInstanceV1): boolean {
+function validateLineage(agent: AgentInstance): boolean {
 	const lineage = agent.lineage;
 	if (lineage.entityType !== "agent_instance" || lineage.entityId !== agent.agentInstanceId) return false;
 	const ancestors = lineage.ancestorIds ?? [];
@@ -361,7 +361,7 @@ function validatePlanInputShape(value: unknown): value is PlanSubagentSpawnInput
 	return validateProviderDescriptor(value.providerDescriptor);
 }
 
-function lineageParentAllowed(origin: AgentInstanceV1, lineageParent: AgentInstanceV1): boolean {
+function lineageParentAllowed(origin: AgentInstance, lineageParent: AgentInstance): boolean {
 	if (origin.agentInstanceId === lineageParent.agentInstanceId) {
 		return canonicalFoundationJson(origin.lineage) === canonicalFoundationJson(lineageParent.lineage);
 	}
@@ -372,7 +372,7 @@ function lineageParentAllowed(origin: AgentInstanceV1, lineageParent: AgentInsta
 	return canonicalFoundationJson(lineageParent.lineage.ancestorIds ?? []) === canonicalFoundationJson(expectedPrefix);
 }
 
-function childDeadline(request: ChildSpawnRequestV1, parentDeadlineAt: string | undefined): ResultValue<string | undefined, FoundationError> {
+function childDeadline(request: ChildSpawnRequest, parentDeadlineAt: string | undefined): ResultValue<string | undefined, FoundationError> {
 	const requested = request.taskEnvelope.requirements?.deadlineAt;
 	if (requested !== undefined && !isCanonicalTimestamp(requested)) {
 		return Result.err(new FoundationError("subagent_spawn_invalid", "Child deadline is invalid"));
@@ -383,7 +383,7 @@ function childDeadline(request: ChildSpawnRequestV1, parentDeadlineAt: string | 
 	return Result.ok(requested ?? parentDeadlineAt);
 }
 
-function sameSpawnResultIdentity(plan: SubagentSpawnPlanV1, result: ChildSpawnResultV1): boolean {
+function sameSpawnResultIdentity(plan: SubagentSpawnPlanV1, result: ChildSpawnResult): boolean {
 	return (
 		result.attempt.attemptId === plan.initialBindingEpoch.attemptId &&
 		result.attempt.dispatchId === plan.dispatch.dispatchId &&
@@ -404,8 +404,8 @@ function sameSpawnResultIdentity(plan: SubagentSpawnPlanV1, result: ChildSpawnRe
  * maps contain no provider handle or terminal authority.
  */
 export class SubagentSupervisorV1 {
-	private readonly ledger: SessionLedgerV1;
-	private readonly ledgerForLane: (laneId: string) => SessionLedgerV1;
+	private readonly ledger: SessionLedger;
+	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly sessionId: string;
 	private readonly laneId: string;
 	private readonly maxDepth: number;
@@ -595,12 +595,12 @@ export class SubagentSupervisorV1 {
 		if (input.childLaneId === this.laneId || [...this.controls.values()].some((control) => control.childLaneId === input.childLaneId)) {
 			return Result.err(new FoundationError("subagent_conflict", "Each Child Agent requires a unique durable lane"));
 		}
-		const checkedRequest = validateChildSpawnRequestV1(input.request);
-		const checkedOrigin = validateAgentInstanceV1(input.originParentAgentInstance);
-		const checkedLineageParent = validateAgentInstanceV1(
+		const checkedRequest = validateChildSpawnRequest(input.request);
+		const checkedOrigin = validateAgentInstance(input.originParentAgentInstance);
+		const checkedLineageParent = validateAgentInstance(
 			input.lineageParentAgentInstance ?? input.originParentAgentInstance,
 		);
-		const checkedBinding = validateImmutableAgentBindingV1(input.childBinding);
+		const checkedBinding = validateImmutableAgentBinding(input.childBinding);
 		if (!checkedRequest.ok || !checkedOrigin.ok || !checkedLineageParent.ok || !checkedBinding.ok) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn plan references invalid Foundation objects"));
 		}
@@ -756,7 +756,7 @@ export class SubagentSupervisorV1 {
 				now: this.now,
 			});
 			if (!createdEpoch.ok) return createdEpoch;
-			const dispatch: DispatchV1 = {
+			const dispatch: Dispatch = {
 				schemaVersion: 1,
 				dispatchId: input.dispatchId,
 				taskId: request.taskEnvelope.taskId,
@@ -768,7 +768,7 @@ export class SubagentSupervisorV1 {
 			};
 			const checkedDispatch = validateDispatch(dispatch);
 			if (!checkedDispatch.ok) return checkedDispatch;
-			const correlation: ExecutionCorrelationV1 = {
+			const correlation: ExecutionCorrelation = {
 				sessionId: this.sessionId,
 				laneId: input.childLaneId,
 				taskId: request.taskEnvelope.taskId,
@@ -856,17 +856,17 @@ export class SubagentSupervisorV1 {
 	async executeSpawn(
 		plan: SubagentSpawnPlanV1,
 		provider: ChildAgentProvider,
-		settlement: LayeredResultSettlementV1,
-	): Promise<ResultValue<ChildSpawnResultV1, FoundationError>> {
+		settlement: LayeredResultSettlement,
+	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (!isRecord(plan) || !exactKeys(plan, SPAWN_PLAN_KEYS) || plan.schemaVersion !== 1) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn plan is invalid"));
 		}
-		const checkedRequest = validateChildSpawnRequestV1(plan.request);
-		const checkedBinding = validateImmutableAgentBindingV1(plan.childBinding);
+		const checkedRequest = validateChildSpawnRequest(plan.request);
+		const checkedBinding = validateImmutableAgentBinding(plan.childBinding);
 		const checkedDispatch = validateDispatch(plan.dispatch);
-		const checkedAgent = validateAgentInstanceV1(plan.agentInstance);
-		const checkedEpoch = validateBindingEpochV1(plan.initialBindingEpoch);
-		const checkedCorrelation = validateExecutionCorrelationV1(plan.correlation);
+		const checkedAgent = validateAgentInstance(plan.agentInstance);
+		const checkedEpoch = validateBindingEpoch(plan.initialBindingEpoch);
+		const checkedCorrelation = validateExecutionCorrelation(plan.correlation);
 		if (
 			!checkedRequest.ok ||
 			!checkedBinding.ok ||
@@ -1126,7 +1126,7 @@ export class SubagentSupervisorV1 {
 				new FoundationError("subagent_conflict", "Child Agent receipt identity does not match"),
 			);
 		}
-		let durableReceipt: Awaited<ReturnType<SessionLedgerV1["get"]>>;
+		let durableReceipt: Awaited<ReturnType<SessionLedger["get"]>>;
 		try {
 			durableReceipt = await this.ledger.get("attempt_receipt", receipt.value.attemptReceiptId);
 		} catch {
@@ -1409,7 +1409,7 @@ export class SubagentSupervisorV1 {
 		expectedRevision: number,
 		childLaneId = this.controls.get(record.childAgentInstanceId)?.childLaneId,
 	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
-		if (!validateEventPayloadForCategoryV1("subagent.lifecycle_transitioned", record)) {
+		if (!validateEventPayloadForCategory("subagent.lifecycle_transitioned", record)) {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child Agent lifecycle event is invalid"));
 		}
 		if (childLaneId === undefined) {

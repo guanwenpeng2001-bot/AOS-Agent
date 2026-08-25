@@ -4,7 +4,7 @@ import {
 	Result,
 	type ContextSnapshot,
 	type Result as ResultValue,
-	type ChildSpawnRequestV1,
+	type ChildSpawnRequest,
 } from "@aos-agent/agent-core";
 import {
 	forkChildContextV1,
@@ -24,7 +24,7 @@ export type LoadParentContextV1 = (
 
 export interface ProjectProviderChildContextInputV1 {
 	readonly schemaVersion: 1;
-	readonly request: ChildSpawnRequestV1;
+	readonly request: ChildSpawnRequest;
 	readonly childBindingEpochId: string;
 	readonly loadParentContext: LoadParentContextV1;
 }

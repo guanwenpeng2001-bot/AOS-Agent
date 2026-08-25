@@ -91,7 +91,7 @@ Capability trust: project-scoped sources default to untrusted and are force-deni
 
 MCP content (resources and prompts) is never loaded automatically. The `/mcp` command family lists catalogs and reads or attaches one resource or prompt at a time, always as explicit actions with a confirmation step before anything enters the session. Output is restricted to digest/metadata receipts labeled untrusted; raw URIs, prompt names and argument values, tokens, and remote original text are never displayed. Errors use fixed safe messages. OAuth authorization is Streamable HTTP only (stdio servers never use OAuth) and stores credentials only in the MCP credential namespace; see [Capabilities and MCP](capabilities.md#mcp-authentication) for the full contract.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP, including explicit MCP resource/prompt inspection and attach and Streamable-HTTP-only MCP OAuth. It does not include the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
+Capability layer covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP, including explicit MCP resource/prompt inspection and attach and Streamable-HTTP-only MCP OAuth. It does not include the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
 
 ## Message Queue
 
