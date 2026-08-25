@@ -10,9 +10,11 @@ import {
 	decodeLegacyAutomationRunLedgerEntryV1,
 	migrateLegacyAutomationRunLedgerV1,
 	planLegacyAutomationRunLedgerMigrationV1,
+	reconcileLegacyAutomationRunLedgerV1,
 	type LegacyAutomationRunLedgerSourceEntryV1,
 } from "../src/core/migrations/automation-run-ledger.ts";
 import { PrivateMigrationError } from "../src/core/migrations/session-entry.ts";
+import type { CanonicalAutomationRunProjection } from "../src/core/automation-run-projection.ts";
 
 const SESSION_ID = "session-1";
 const RUN_ID = "run-1";
@@ -220,6 +222,34 @@ function source(sequence: number, entryId: string, data: unknown): LegacyAutomat
 	return { sequence, entryId, data };
 }
 
+function canonicalProjection(status: "completed" | "failed" | "cancelled" = "completed"): CanonicalAutomationRunProjection {
+	const terminalError = status === "completed"
+		? undefined
+		: { code: `canonical_${status}`, message: status, retryable: false };
+	return {
+		id: RUN_ID,
+		sessionId: SESSION_ID,
+		status,
+		startedAt: "2026-01-01T00:00:01.000Z",
+		endedAt: "2026-01-01T00:00:02.000Z",
+		...(terminalError === undefined ? {} : { terminalError }),
+		terminal: {
+			runId: RUN_ID,
+			sessionId: SESSION_ID,
+			status,
+			usage: { input: 1, output: 2, total: 3 },
+			...(terminalError === undefined ? {} : { terminalError }),
+		},
+		canonicalResult: {
+			runReceiptId: "canonical-run-receipt-1",
+			taskResultId: "canonical-task-result-1",
+			attemptReceiptIds: ["canonical-attempt-receipt-1"],
+			taskSummary: "canonical summary",
+			sideEffectState: "none",
+		},
+	};
+}
+
 describe("private automation.run ledger migration", () => {
 	it("replays accepted, started, and terminal facts in deterministic ledger order", () => {
 		const entries = [
@@ -397,5 +427,68 @@ describe("private automation.run ledger migration", () => {
 				record: { ...accepted().record, status: "completed" },
 			}),
 		).toThrow("accepted-state invariants");
+	});
+
+	it("records equivalent legacy terminal data as migration evidence", () => {
+		const canonical = canonicalProjection();
+		const result = reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
+			[canonical],
+		);
+		expect(result.runs).toEqual([canonical]);
+		expect(result.evidence).toEqual([{ runId: RUN_ID, disposition: "canonical_equal" }]);
+	});
+
+	it("migrates complete legacy evidence only when the canonical receipt is missing", () => {
+		const result = reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
+			[],
+		);
+		expect(result.evidence).toEqual([{ runId: RUN_ID, disposition: "legacy_migrated" }]);
+		expect(result.runs).toEqual([
+			{
+				id: RUN_ID,
+				sessionId: SESSION_ID,
+				status: "completed",
+				startedAt: "2026-01-01T00:00:01.000Z",
+				endedAt: "2026-01-01T00:00:02.000Z",
+				terminal: { runId: RUN_ID, sessionId: SESSION_ID, status: "completed" },
+			},
+		]);
+		expect(result.runs[0]?.terminal).not.toHaveProperty("usage");
+		expect(result.runs[0]?.terminal).not.toHaveProperty("finalText");
+		expect(result.runs[0]).not.toHaveProperty("canonicalResult");
+	});
+
+	it("does not promote legacy usage or error into canonical projection fields", () => {
+		const result = reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
+			[],
+		);
+		expect(result.runs[0]).toMatchObject({ status: "failed", terminal: { status: "failed" } });
+		expect(result.runs[0]).not.toHaveProperty("terminalError");
+		expect(result.runs[0]?.terminal).not.toHaveProperty("terminalError");
+		expect(result.runs[0]?.terminal).not.toHaveProperty("usage");
+	});
+
+	it("does not invent a terminal Run from incomplete legacy evidence", () => {
+		const result = reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started())],
+			[],
+		);
+		expect(result.runs).toEqual([]);
+		expect(result.evidence).toEqual([{ runId: RUN_ID, disposition: "legacy_incomplete" }]);
+	});
+
+	it("fails closed when complete legacy evidence conflicts with canonical terminal truth", () => {
+		expect(() => reconcileLegacyAutomationRunLedgerV1(
+			SESSION_ID,
+			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
+			[canonicalProjection("failed")],
+		)).toThrow(/conflicts with canonical Run/u);
 	});
 });
