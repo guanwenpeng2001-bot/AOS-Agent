@@ -14,7 +14,10 @@
 import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
+	LayeredResultSettlement,
+	Session,
 	type FoundationError,
+	type CanonicalRunResult,
 	type Result as ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
@@ -40,7 +43,6 @@ import type {
 import {
 	foldModelBrokerLedger,
 	type ModelBindingLedgerRecord,
-	serializePublicModelAttempt,
 } from "../../core/model-broker-ledger.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
@@ -71,7 +73,6 @@ import {
 	type ExternalAgentCapabilitySnapshot,
 	type ExternalAgentPreparedBinding,
 	type ExternalAgentPrepareRequest,
-	type ExternalAgentReceipt,
 	type ExternalAgentRunHandle,
 	type ExternalAgentSelection,
 	type ExternalAgentStartRequest,
@@ -86,7 +87,6 @@ import {
 	type RemoteOperationLease,
 	type RemoteOperationRequest,
 	type RemoteOperationResult,
-	type RemoteOperationSideEffectState,
 } from "../../core/remote-operation.ts";
 import { createRunBindingAssociation } from "../../core/binding-handles.ts";
 import { isExternalExecutionRef, serializeExternalExecutionRef, type ExternalAdapterIdentity } from "../../core/external-session-mapping.ts";
@@ -114,14 +114,13 @@ import {
 import type { TaskCredentialService } from "../../core/task-credential-service.ts";
 import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
+import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
 import type {
 	AutomationError,
 	RunFinalModelReference,
 	RunHandle,
 	RunId,
 	RunLifecycleCoordinator,
-	RunModelAttemptSummary,
-	RunModelBudgetSummary,
 	RunModelReference,
 	RunRequestLookup,
 	RunResult,
@@ -148,7 +147,6 @@ import {
 	serializePublicContextSnapshot,
 	serializePublicRunReceipt,
 	serializePublicRunRecord,
-	runAttachmentSummaryFromMcpAttachment,
 	serializePublicRunStreamEvent,
 	serializePublicSessionEntry,
 	serializePublicSessionEvent,
@@ -683,15 +681,14 @@ const EXTERNAL_AGENT_START_REJECTED_MESSAGES: ReadonlySet<string> = new Set([
 
 /**
  * Wrap a validated External Agent Adapter run handle in the existing Remote
- * Operation invoker contract, so an external execution settles through
- * `startRemoteOperation` and its Session ledger instead of a second loop or
- * ledger. `execute` awaits the driver terminal receipt and maps only bounded
+ * Operation invoker contract, so its observation is recorded through
+ * `startRemoteOperation` and its Session ledger instead of a second loop.
+ * `execute` awaits the driver terminal receipt and maps only bounded
  * artifacts and the side-effect vocabulary; `cancel` and `heartbeat` delegate
  * to the driver handle, which is idempotent. Without a lease in the adapter
  * start request, heartbeat fails closed (the driver and the operation both
- * reject). The stable external error code is preserved by the caller from the
- * adapter receipt for the Run terminal; the Remote Operation receipt keeps
- * only the small error-category vocabulary.
+ * reject). The adapter and Remote Operation receipts remain observations; only
+ * a canonical Foundation result can author the Automation terminal state.
  */
 export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHandle): RemoteOperationInvoker {
 	return {
@@ -808,15 +805,13 @@ export class RpcHostController {
 		/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
 		let activeReservation: RunReservation | undefined;
 		const runPromptPromises = new Map<RunId, Promise<void>>();
-		const settledRunIds = new Set<RunId>();
-		/** Terminal error detected from agent_end (stopReason "error"); used to settle failed/model_error. */
-		const terminalErrorByRun = new Map<RunId, AutomationError>();
+		/** Run ids whose one canonical terminal event was emitted by this controller. */
+		const terminalEventRunIds = new Set<RunId>();
 		const runDeadlineTimers = new Map<RunId, ReturnType<typeof setTimeout>>();
 		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
 		/**
 		 * Active external agent executions keyed by runId. Cancel is forwarded to
-		 * the adapter handle, which the driver makes idempotent; the terminal
-		 * settlement path owns the Run terminal record.
+		 * the adapter handle, which the driver makes idempotent.
 		 */
 		const externalRuns = new Map<RunId, { cancel: () => Promise<void> }>();
 		/** Tracked external settlement promises keyed by runId (set by trackExternalRun). */
@@ -824,7 +819,7 @@ export class RpcHostController {
 		/**
 		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
 		 * them for external runs only, so a pending start readiness race or a
-		 * started settlement race resolves even when the adapter never returns.
+		 * started observation race resolves even when the adapter never returns.
 		 */
 		const runAbortControllers = new Map<RunId, AbortController>();
 		/**
@@ -1514,7 +1509,7 @@ export class RpcHostController {
 		 * Rebuild the Automation Host state stores for the current Session. The Run
 		 * lookup and Task Gate lookup are read-only adapters over the live
 		 * coordinator/gate store, so attach only sees current-Session accepted or
-		 * running Runs and settle only sees the current terminal receipt; the Task
+		 * running Runs and terminal lookup sees only canonical receipt projections; the Task
 		 * Graph store never starts, cancels, or rewrites a Run and never creates,
 		 * approves, rejects, or cancels a Gate. The Task Credential service is
 		 * session-owned and lazily created by the Session from its configured
@@ -1680,17 +1675,6 @@ export class RpcHostController {
 		): AutomationError => {
 			const agentError = err instanceof ExternalAgentError ? err : toExternalAgentError(err, fallback);
 			return createAutomationError(agentError.code, agentError.message, agentError.retryable);
-		};
-
-		/**
-		 * Merge the receipt-side-effect vocabulary the way the Remote Operation
-		 * contract does: unknown wins, then associated, then none. Associated or
-		 * unknown side effects fail the run closed; they are never cancelled.
-		 */
-		const mergeExternalAgentSideEffects = (receipt: ExternalAgentReceipt): RemoteOperationSideEffectState => {
-			if (receipt.sideEffects === "unknown" || receipt.error?.sideEffects === "unknown") return "unknown";
-			if (receipt.sideEffects === "associated" || receipt.error?.sideEffects === "associated") return "associated";
-			return "none";
 		};
 
 		const asAutomationError = (err: unknown): AutomationError => {
@@ -1921,102 +1905,6 @@ export class RpcHostController {
 			};
 		};
 
-		const serializeRunModelAttempt = (value: unknown): RunModelAttemptSummary | undefined => {
-			const attempt = serializePublicModelAttempt(value);
-			if (attempt === undefined) return undefined;
-			return {
-				attemptId: attempt.attemptId,
-				bindingId: attempt.bindingId,
-				candidate: {
-					provider: attempt.candidate.provider,
-					modelId: attempt.candidate.modelId,
-					...(attempt.candidate.thinkingLevel === undefined
-						? {}
-						: { thinkingLevel: attempt.candidate.thinkingLevel }),
-				},
-				order: attempt.order,
-				status: attempt.status,
-				startedAt: attempt.startedAt,
-				...(attempt.endedAt === undefined ? {} : { endedAt: attempt.endedAt }),
-				...(attempt.failureCategory === undefined ? {} : { failureCategory: attempt.failureCategory }),
-				...(attempt.usage === undefined ? {} : { usage: { ...attempt.usage } }),
-				...(attempt.visibleOutput === undefined ? {} : { visibleOutput: attempt.visibleOutput }),
-				...(attempt.contextSnapshotId === undefined ? {} : { contextSnapshotId: attempt.contextSnapshotId }),
-				...(attempt.summary === undefined ? {} : { summary: attempt.summary }),
-			};
-		};
-
-		const modelAttemptsForBinding = (
-			bindingId: string | undefined,
-		): ReadonlyArray<RunModelAttemptSummary> | undefined => {
-			if (bindingId === undefined) return undefined;
-			const replay = foldModelBrokerLedger(session.sessionManager.getEntries());
-			const attempts = [...replay.attempts.values()]
-				.filter((attempt) => attempt.bindingId === bindingId)
-				.map((attempt) => serializeRunModelAttempt(attempt))
-				.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined)
-				.sort((a, b) => a.order - b.order || a.startedAt.localeCompare(b.startedAt));
-			return attempts.length === 0 ? undefined : attempts;
-		};
-
-		const runModelMetadata = (
-			handle: RunHandle,
-		): {
-			modelBindingId?: string;
-			previousModelBindingId?: string;
-			finalModel?: RunFinalModelReference;
-			modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
-			modelBudget?: RunModelBudgetSummary;
-		} => {
-			const record = handle.record;
-			const modelAttempts = modelAttemptsForBinding(record.modelBindingId);
-			const bindingBudget =
-				record.modelBindingId === undefined
-					? undefined
-					: session.modelBroker.getBindingBudgetSummary(record.modelBindingId);
-			const finalModel =
-				modelAttempts === undefined
-					? record.finalModel
-					: (modelAttempts[modelAttempts.length - 1]?.candidate ?? record.finalModel);
-			return {
-				...(record.modelBindingId === undefined ? {} : { modelBindingId: record.modelBindingId }),
-				...(record.previousModelBindingId === undefined
-					? {}
-					: { previousModelBindingId: record.previousModelBindingId }),
-				...(finalModel === undefined ? {} : { finalModel }),
-				...(modelAttempts === undefined ? {} : { modelAttempts }),
-				...(bindingBudget === undefined
-					? {}
-					: {
-							modelBudget: {
-								...(bindingBudget.committed.modelCalls === undefined
-									? {}
-									: { modelCalls: bindingBudget.committed.modelCalls }),
-								inputTokens: bindingBudget.committed.inputTokens,
-								outputTokens: bindingBudget.committed.outputTokens,
-								totalTokens: bindingBudget.committed.totalTokens,
-								costUsd: bindingBudget.committed.cost,
-								...(bindingBudget.budget.maxModelCalls === undefined
-									? {}
-									: { maxModelCalls: bindingBudget.budget.maxModelCalls }),
-								...(bindingBudget.budget.maxInputTokens === undefined
-									? {}
-									: { maxInputTokens: bindingBudget.budget.maxInputTokens }),
-								...(bindingBudget.budget.maxOutputTokens === undefined
-									? {}
-									: { maxOutputTokens: bindingBudget.budget.maxOutputTokens }),
-								...(bindingBudget.budget.maxTotalTokens === undefined
-									? {}
-									: { maxTotalTokens: bindingBudget.budget.maxTotalTokens }),
-								...(bindingBudget.budget.maxCostUsd === undefined
-									? {}
-									: { maxCostUsd: bindingBudget.budget.maxCostUsd }),
-								exceeded: bindingBudget.exceeded,
-							},
-						}),
-			};
-		};
-
 		/** Serialize a run stream event, applying JSON-safe event conversion to wrapped session events. */
 		const outputRunEvent = (event: RunStreamEvent): void => {
 			const publicEvent = serializePublicRunStreamEvent(event);
@@ -2197,75 +2085,75 @@ export class RpcHostController {
 			pendingRunRequests.delete(identity.key);
 		};
 
-		const finalizeRun = async (
-			handle: RunHandle,
-			outcome: "completed" | "failed",
-			terminalError?: AutomationError,
-		): Promise<void> => {
-			if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
-			settledRunIds.add(handle.runId);
-			let terminal: RunStreamEvent | undefined;
+		const readCanonicalRun = async (runId: RunId): Promise<CanonicalRunResult | undefined> => {
+			const storage = createSessionManagerStorage(session.sessionManager);
+			const settlement = new LayeredResultSettlement(new Session(storage));
 			try {
-				terminal = handle.settle({
-					outcome,
-					terminalError,
-					currentUsage: usageSnapshot(),
-					contextSnapshotId: session.getContextSnapshotIdForRun(handle.runId),
-					attachments: session.listMcpAttachments().map(runAttachmentSummaryFromMcpAttachment),
-					...runModelMetadata(handle),
-				});
+				const lookup = await settlement.lookupCanonicalRun(runId);
+				if (!lookup.ok) throw lookup.error;
+				return lookup.value;
+			} finally {
+				await settlement.release();
+			}
+		};
+
+		const observeRunCompletion = async (handle: RunHandle): Promise<void> => {
+			if (activeHandle !== handle || terminalEventRunIds.has(handle.runId)) return;
+			let canonical: CanonicalRunResult | undefined;
+			try {
+				canonical = await readCanonicalRun(handle.runId);
 			} catch {
-				// The terminal append is the durable transition. Rebuild the coordinator
-				// from accepted/started facts so a failed append leaves the run visible as
-				// interrupted and does not leave a phantom in-memory session lock.
-				settledRunIds.delete(handle.runId);
+				canonical = undefined;
+			}
+			if (canonical === undefined) {
+				// Prompt promises, adapter receipts, process state, and agent events are
+				// observations only. Without the durable RunReceipt chain the Run stays
+				// non-terminal and recovery reports it interrupted.
 				if (activeHandle === handle) {
 					activeHandle = undefined;
 					coordinator = createRunLifecycleCoordinator(session.sessionManager);
 				}
 				clearRunDeadline(handle.runId);
 				runPromptPromises.delete(handle.runId);
-				terminalErrorByRun.delete(handle.runId);
+				return;
+			}
+			terminalEventRunIds.add(handle.runId);
+			let terminal: RunStreamEvent | undefined;
+			try {
+				terminal = handle.observeCanonicalResult(canonical);
+			} catch {
+				// A malformed or mismatched result chain fails closed as non-terminal.
+				terminalEventRunIds.delete(handle.runId);
+				if (activeHandle === handle) {
+					activeHandle = undefined;
+					coordinator = createRunLifecycleCoordinator(session.sessionManager);
+				}
+				clearRunDeadline(handle.runId);
+				runPromptPromises.delete(handle.runId);
 				return;
 			}
 			if (terminal !== undefined) outputRunEvent(terminal);
 			clearRunDeadline(handle.runId);
 			activeHandle = undefined;
 			runPromptPromises.delete(handle.runId);
-			terminalErrorByRun.delete(handle.runId);
 			await waitForOutput();
 		};
 
-		const settleActiveRun = async (handle: RunHandle): Promise<void> => {
-			if (activeHandle !== handle || settledRunIds.has(handle.runId)) return;
-			// Await the tracked prompt so a post-preflight failure settles the run as
-			// failed first; the settledRunIds guard makes this later settle a no-op.
+		const observeActiveRunCompletion = async (handle: RunHandle): Promise<void> => {
+			if (activeHandle !== handle || terminalEventRunIds.has(handle.runId)) return;
+			// Await the tracked prompt, then look up the canonical Foundation result.
 			await runPromptPromises.get(handle.runId);
-			const terminalError = terminalErrorByRun.get(handle.runId);
-			await finalizeRun(handle, terminalError === undefined ? "completed" : "failed", terminalError);
+			await observeRunCompletion(handle);
 		};
 
-		/**
-		 * Track a started prompt so settleActiveRun can await it and post-preflight
-		 * failures surface as a run.failed terminal carrying a model_error.
-		 */
+		/** Track a started prompt as an observation before canonical result lookup. */
 		const trackRunPrompt = (handle: RunHandle, prompt: Promise<unknown>): void => {
 			const tracked = (async () => {
 				try {
 					await prompt;
-					// Settle directly on completion so a run started by a preflight that
-					// never emits agent_settled (e.g. an extension-handled prompt) cannot
-					// leak an active run. A terminal error detected from agent_end marks
-					// the run failed/model_error; otherwise it completed.
-					const terminalError = terminalErrorByRun.get(handle.runId);
-					await finalizeRun(handle, terminalError !== undefined ? "failed" : "completed", terminalError);
+					await observeRunCompletion(handle);
 				} catch {
-					const terminalError = terminalErrorByRun.get(handle.runId);
-					await finalizeRun(
-						handle,
-						"failed",
-						terminalError ?? createAutomationError("model_error", "Run failed.", false),
-					);
+					await observeRunCompletion(handle);
 				}
 			})();
 			runPromptPromises.set(handle.runId, tracked);
@@ -2295,14 +2183,10 @@ export class RpcHostController {
 		};
 
 		/**
-		 * Track an external agent execution: settle through the existing Remote
-		 * Operation machinery (invoker wrapping the same adapter run handle,
-		 * `startRemoteOperation`, Session ledger record) and the Run terminal
-		 * gate. The adapter receipt is preserved separately for the stable
-		 * external error code and the bounded event forwarding. Side effects
-		 * associated or unknown settle the run failed
-		 * external_agent_side_effect_unknown, never cancelled or retried; the
-		 * Remote Operation receipt fail-closes the same way.
+		 * Track an external execution through the existing Remote Operation
+		 * machinery and forward bounded events. Adapter and Remote Operation
+		 * receipts are observations only; terminal status requires a canonical
+		 * Foundation result chain.
 		 */
 		const trackExternalRun = (
 			handle: RunHandle,
@@ -2328,9 +2212,8 @@ export class RpcHostController {
 				...(handle.record.deadlineAt === undefined ? {} : { deadlineAt: handle.record.deadlineAt }),
 				...(adapter === undefined ? {} : { adapter }),
 			};
-			// A remote.operation ledger append failure must never let the Run report
-			// completed or cancelled on an unrecorded external outcome: the observer
-			// flag below fails the Run closed with external_agent_persistence_failed.
+			// A remote.operation ledger append failure is observed but cannot author
+			// Automation terminal state.
 			let operationLedgerFailed = false;
 			const remoteHandle = startRemoteOperation(createExternalAgentRemoteInvoker(adapterRun), remoteRequest, {
 				signal: deadlineSignal,
@@ -2349,52 +2232,26 @@ export class RpcHostController {
 				},
 			});
 			const tracked = (async (): Promise<void> => {
-				// The Remote Operation receipt is the remote terminal and is durably
-				// recorded in the Session ledger by startRemoteOperation. The Run
-				// deadline remains a hard bound: if it fires first, settle the Run
-				// failed run_deadline_exceeded without waiting for an unresponsive
-				// adapter.
+				// The Remote Operation receipt is durably recorded as an observation.
+				// The Run deadline still bounds how long this transport waits.
 				const remoteReceipt = await raceWithDeadlineSignal(deadlineSignal ?? new AbortController().signal, remoteHandle.receipt);
 				if (remoteReceipt === undefined) {
-					await finalizeRun(
-						handle,
-						"failed",
-						terminalErrorByRun.get(handle.runId) ??
-							createAutomationError("run_deadline_exceeded", "The Run deadline was exceeded.", false),
-					);
+					handle.requestDeadlineExceeded();
+					await observeRunCompletion(handle);
 					return;
 				}
 				// The Remote Operation maps the same Run deadline into its own
 				// request.deadlineAt timer. When that timer fires before the host
-				// deadlineController, the operation receipt settles cancelled with
-				// error.category "deadline": the accepted Run's deadline intent still
-				// wins over any target cancelled receipt (PR section 7.4), so settle
-				// failed + run_deadline_exceeded and never requestCancel. The host
-				// hard-bound race above still covers unresponsive adapters.
+				// deadlineController, record deadline intent and wait for Foundation;
+				// the observation itself cannot decide failed versus cancelled.
 				if (remoteReceipt.error?.category === "deadline") {
 					handle.requestDeadlineExceeded();
-					await finalizeRun(
-						handle,
-						"failed",
-						terminalErrorByRun.get(handle.runId) ??
-							createAutomationError("run_deadline_exceeded", "The Run deadline was exceeded.", false),
-					);
+					await observeRunCompletion(handle);
 					return;
 				}
-				// A failed remote.operation ledger append means the external terminal
-				// was not durably recorded: fail closed with
-				// external_agent_persistence_failed instead of completing or
-				// cancelling the Run on an unrecorded outcome.
+				// A failed observation append cannot complete or cancel the Run.
 				if (operationLedgerFailed) {
-					await finalizeRun(
-						handle,
-						"failed",
-						createAutomationError(
-							"external_agent_persistence_failed",
-							externalAgentMessage("external_agent_persistence_failed"),
-							false,
-						),
-					);
+					await observeRunCompletion(handle);
 					return;
 				}
 				// Map bounded events only: validated started/progress/artifact
@@ -2404,31 +2261,12 @@ export class RpcHostController {
 					const emitted = handle.captureSessionEvent({ type: "external_agent_event", event });
 					if (emitted !== undefined) outputRunEvent(emitted);
 				}
-				// Run terminal gate: the adapter receipt preserves the stable
-				// external error code; side effects associated or unknown settle
-				// failed external_agent_side_effect_unknown, never cancelled or
-				// retried. A cancelled adapter receipt is side-effect-free by the
-				// driver's fail-closed rewrite.
+				// The adapter receipt is an observation only. Until the External
+				// Connector creates the canonical Foundation result chain, every
+				// outcome (including side-effect-unknown) remains non-terminal.
 				const adapterReceipt = await adapterRun.receipt;
-				let outcome: "completed" | "failed";
-				let terminalError: AutomationError | undefined;
-				if (adapterReceipt.status === "completed") {
-					outcome = "completed";
-				} else if (adapterReceipt.status === "cancelled") {
-					handle.requestCancel();
-					outcome = "completed";
-				} else {
-					outcome = "failed";
-					const sideEffects = mergeExternalAgentSideEffects(adapterReceipt);
-					const code =
-						sideEffects === "none" &&
-						adapterReceipt.error !== undefined &&
-						isAutomationErrorCode(adapterReceipt.error.code)
-							? adapterReceipt.error.code
-							: "external_agent_side_effect_unknown";
-					terminalError = createAutomationError(code, externalAgentMessage(code), false);
-				}
-				await finalizeRun(handle, outcome, terminalError);
+				if (adapterReceipt.status === "cancelled") handle.requestCancel();
+				await observeRunCompletion(handle);
 			})();
 			externalRunSettlements.set(handle.runId, tracked);
 			void tracked.then(
@@ -2447,11 +2285,10 @@ export class RpcHostController {
 		 * Forward the existing Run cancellation intent to the adapter's idempotent
 		 * cancel path during a host lifecycle transition (transport detach, host
 		 * shutdown, session switch). The run's deadline controller is aborted
-		 * first so a pending start readiness race or a started settlement race
+		 * first so a pending start readiness race or started observation race
 		 * resolves even when the adapter never returns: the driver cancel alone
 		 * awaits startGate and cannot unblock a start that never resolves. Started
-		 * settlements are awaited so the terminal is durably recorded through the
-		 * existing Run and Remote Operation gates; a pending start fails closed
+		 * observations are awaited before canonical lookup; a pending start fails closed
 		 * through its own continuation, which forwards the same idempotent cancel.
 		 * Local runs are untouched and keep the session.abort() path. Returns true
 		 * when the run was an external execution.
@@ -2987,17 +2824,11 @@ export class RpcHostController {
 			if (deadlineAt !== undefined) {
 				const deadlineTimer = setTimeout(
 					() => {
-						const deadlineError = createAutomationError(
-							"run_deadline_exceeded",
-							"The Run deadline was exceeded.",
-							false,
-						);
-						terminalErrorByRun.set(proposedRunId, deadlineError);
 						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
 						if (activeHandle?.runId === proposedRunId) {
 							activeHandle.requestDeadlineExceeded();
 							void session.abort().catch(() => {
-								// The normal Run settlement path owns the terminal transition.
+								// Foundation remains the only terminal authority.
 							});
 						}
 					},
@@ -3017,7 +2848,6 @@ export class RpcHostController {
 				if (activeReservation !== reservation) return;
 				activeReservation = undefined;
 				clearRunDeadline(proposedRunId);
-				terminalErrorByRun.delete(proposedRunId);
 				try {
 					reservation.release();
 				} catch {
@@ -3040,8 +2870,8 @@ export class RpcHostController {
 			// The existing Model/Capability/Policy/Sandbox preflight ran above; the
 			// prompt-preflight policy/sandbox preparation runs without the model
 			// loop, the adapter executes with the bounded in-memory input, and the
-			// run settles through the existing Remote Operation and Run terminal
-			// gates. Every external failure maps to a stable external_agent_* code.
+			// adapter observations use the existing Remote Operation path. They do
+			// not create an Automation terminal result.
 			let externalAccepted = false;
 			let externalAdapterRun: ExternalAgentRunHandle | undefined;
 			const failExternalStart = (
@@ -3059,7 +2889,7 @@ export class RpcHostController {
 					coordinator = createRunLifecycleCoordinator(session.sessionManager);
 					externalRuns.delete(proposedRunId);
 					void externalAdapterRun?.cancel().catch(() => {
-						// The driver retries idempotently; the receipt settles the run.
+						// The driver retries idempotently.
 					});
 				} else if (activeReservation === reservation) {
 					activeReservation = undefined;
@@ -3070,7 +2900,6 @@ export class RpcHostController {
 					}
 				}
 				clearRunDeadline(proposedRunId);
-				terminalErrorByRun.delete(proposedRunId);
 				const startError = mapExternalStartError(err, fallback);
 				const response = automationError(id, commandType, startError);
 				output(response);
@@ -3574,8 +3403,7 @@ export class RpcHostController {
 											modelBindingId: modelSelection.resolution.bindingId,
 											finalModel: finalModelForResolution(modelSelection.resolution),
 										}),
-								// Persist the frozen binding as the run's capability binding;
-								// its id is recorded on the terminal receipt.
+								// Persist the frozen binding on the accepted transport record.
 								capabilityBinding: session.getActiveCapabilityBinding(),
 								policyBinding: session.getActiveExecutionPolicyBinding(),
 								policySummary: session.getActiveExecutionPolicySummary(),
@@ -3589,7 +3417,6 @@ export class RpcHostController {
 						} catch (err) {
 							activeReservation = undefined;
 							clearRunDeadline(proposedRunId);
-							terminalErrorByRun.delete(proposedRunId);
 							if (handle === undefined) {
 								try {
 									reservation.release();
@@ -4039,13 +3866,12 @@ export class RpcHostController {
 				activeReservation = undefined;
 			}
 			session = runtimeHost.session;
-			// Rebuild the run coordinator for the current session's ledger. When the
-			// host is initialized, a fresh coordinator folds the new session's
-			// automation.run custom entries so run.get and run.resume work after a switch.
+			// Rebuild the run coordinator for the current Session. Transport facts
+			// restore accepted/started state and Foundation facts project terminal state.
 			if (hostInitialized) {
 				rebuildAutomationStores();
 				activeHandle = undefined;
-				settledRunIds.clear();
+				terminalEventRunIds.clear();
 				runPromptPromises.clear();
 				externalRuns.clear();
 				externalRunSettlements.clear();
@@ -4092,27 +3918,6 @@ export class RpcHostController {
 				if (activeHandle !== undefined) {
 					const emitted = activeHandle.captureSessionEvent(event);
 					if (emitted !== undefined) outputRunEvent(emitted);
-					// Provider errors surface as a final assistant message with stopReason
-					// "error" on agent_end; record it so the run settles failed/model_error.
-					if (event.type === "agent_end" && event.willRetry !== true) {
-						let errorText: string | undefined;
-						for (const message of event.messages) {
-							if (message.role === "assistant" && message.stopReason === "error") {
-								errorText = message.errorMessage ?? "Agent run failed";
-							}
-						}
-						if (errorText !== undefined) {
-							const terminalCode =
-								errorText === "Model budget exceeded."
-									? "model_budget_exceeded"
-									: errorText === "Model fallback exhausted."
-										? "model_fallback_exhausted"
-										: "model_error";
-							terminalErrorByRun.set(activeHandle.runId, createAutomationError(terminalCode, errorText, false));
-						} else if (terminalErrorByRun.get(activeHandle.runId)?.code !== "run_deadline_exceeded") {
-							terminalErrorByRun.delete(activeHandle.runId);
-						}
-					}
 				} else if (activeReservation !== undefined) {
 					// Buffer session events observed during preflight; start() flushes them.
 					activeReservation.captureSessionEvent(event);
@@ -4121,7 +3926,7 @@ export class RpcHostController {
 				}
 				if (event.type === "agent_settled") {
 					if (activeHandle !== undefined) {
-						void settleActiveRun(activeHandle);
+						void observeActiveRunCompletion(activeHandle);
 					}
 					void checkShutdownRequested();
 				}
@@ -5279,14 +5084,13 @@ export class RpcHostController {
 					// signal reaches the adapter through the same driver); a local run
 					// triggers the existing abort path without waiting for its idle
 					// promise so the command response describes the current running
-					// state. The subscriber emits the unique run.cancelled event only
-					// after Session settlement.
+					// state. A terminal event is emitted only after canonical lookup.
 					const externalRun = externalRuns.get(command.runId);
 					if (externalRun !== undefined) {
 						void externalRun.cancel();
 					} else {
 						void session.abort().catch(() => {
-							// The run remains governed by its normal settle/recovery path.
+							// Foundation remains the only terminal authority.
 						});
 					}
 					const cancelResponse: RpcAutomationResponse = {
@@ -5505,8 +5309,7 @@ export class RpcHostController {
 							// be resumed through an External Agent Adapter, which cannot
 							// honor; rejecting here avoids silently resuming a different
 							// execution kind locally.
-							const sourceIsExternal =
-								sourceRun.record.external !== undefined || sourceRun.receipt?.external !== undefined;
+							const sourceIsExternal = sourceRun.record.external !== undefined;
 							if (sourceIsExternal) {
 								return resumeFailure(
 									automationError(
@@ -5522,12 +5325,9 @@ export class RpcHostController {
 							}
 							// An interrupted run may have an accepted record but no terminal
 							// receipt. Preserve #6's binding-drift guard for that recovery path.
-							const previousBindingId =
-								sourceRun.receipt?.capabilityBindingId ?? sourceRun.record.capabilityBindingId;
-							const previousPolicyBindingId =
-								sourceRun.receipt?.policyBindingId ?? sourceRun.record.policyBindingId;
-							const previousModelBindingId =
-								sourceRun.receipt?.modelBindingId ?? sourceRun.record.modelBindingId;
+							const previousBindingId = sourceRun.record.capabilityBindingId;
+							const previousPolicyBindingId = sourceRun.record.policyBindingId;
+							const previousModelBindingId = sourceRun.record.modelBindingId;
 							const inheritedModelBinding =
 								previousModelBindingId === undefined
 									? undefined
@@ -6217,10 +6017,8 @@ export class RpcHostController {
 			shuttingDown = true;
 			hostController.shuttingDown = true;
 			shutdownPromise = (async () => {
-				// Stop accepting new runs and abort the active run. session.abort() waits for
-				// the session to settle, letting the subscriber emit the run's terminal event
-				// before we tear down. If the process is force-killed or exceeds the graceful
-				// window, the last persisted ledger state is authoritative.
+				// Stop accepting new runs and abort the active run. Session completion is
+				// only an observation; the last canonical Foundation state is authoritative.
 				if (activeReservation !== undefined) {
 					try {
 						activeReservation.release();
@@ -6236,7 +6034,7 @@ export class RpcHostController {
 						try {
 							await session.abort();
 						} catch {
-							// settle proceeds regardless of abort errors
+							// Canonical lookup proceeds independently of abort errors.
 						}
 					}
 				}
@@ -6282,15 +6080,15 @@ export class RpcHostController {
 					// The Run cancellation intent is forwarded to the adapter's
 					// idempotent cancel path for external executions: the Session
 					// agent loop does not drive them, so session.abort() alone would
-					// leave the external execution running and un-settled. Local runs
-					// keep the existing abort + tracked-prompt settlement.
+					// leave the external execution running. Local runs keep the existing
+					// abort plus tracked-prompt observation.
 					handleAtDetach.requestCancel();
 					const forwarded = await forwardExternalRunLifecycleCancel(handleAtDetach.runId);
 					if (!forwarded) {
 						try {
 							await session.abort();
 						} catch {
-							// The terminal transition is attempted below even when abort reports an error.
+							// Canonical lookup remains independent of the abort observation.
 						}
 						await runPromptPromises.get(handleAtDetach.runId);
 					}
