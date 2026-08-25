@@ -12,57 +12,46 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import {
-	createDurableEvent,
-	FoundationError,
-	validateAttemptReceipt,
-	validateRunReceipt as validateCanonicalRunReceipt,
-	validateTaskResult,
 	type AgentMessage,
 	type AttemptReceipt,
-	type CanonicalRunResult,
-	type DurableEventEnvelope,
 	type RunReceipt as CanonicalRunReceipt,
+	type CanonicalRunResult,
+	canonicalFoundationJson,
+	createDurableEvent,
+	type DurableEventEnvelope,
+	FoundationError,
+	type FoundationFactRecord,
+	FoundationLedgerState,
+	type FoundationRecord,
+	invalidDurableRecord,
+	parseFoundationMutation,
 	type SideEffectState,
 	type TaskResult,
 	type ThinkingLevel,
+	validateAttemptReceipt,
+	validateRunReceipt as validateCanonicalRunReceipt,
+	validateTaskResult,
 } from "@aos-agent/agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import {
+	type AutomationRunProjection,
+	type CanonicalAutomationRunProjection,
+	projectAutomationRuns,
+} from "./automation-run-projection.ts";
+import {
+	type BindingHandle,
 	createRunBindingAssociation,
 	parseRunBindingAssociation,
-	serializePublicRunBindingAssociation,
-	type BindingHandle,
 	type RunBindingAssociation,
+	serializePublicRunBindingAssociation,
 } from "./binding-handles.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
-import type { McpAttachment } from "./mcp-attachment.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
-import {
-	MODEL_ATTEMPT_CUSTOM_TYPE,
-	MODEL_BINDING_CUSTOM_TYPE,
-	serializePublicModelBrokerLedgerEntry,
-	type PublicModelAttemptLedgerRecord,
-	type PublicModelBindingLedgerRecord,
-} from "./model-broker-ledger.ts";
-import {
-	createExecutionPolicyLedger,
-	POLICY_APPROVAL_CUSTOM_TYPE,
-	POLICY_DECISION_CUSTOM_TYPE,
-	POLICY_VIOLATION_CUSTOM_TYPE,
-	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
-	type PolicyApprovalLedgerRecord,
-	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
-	type PolicyDecisionLedgerRecord,
-	type PolicyLedgerRecord,
-	type PolicyViolationLedgerRecord,
-	type SandboxLifecycleLedgerRecord,
-} from "./execution-policy-ledger.ts";
 import {
 	POLICY_BINDING_CUSTOM_TYPE,
-	toPublicPolicySummary,
-	type PolicyApprovalRequest,
+	type PolicyAction,
 	type PolicyApprovalOutcome,
+	type PolicyApprovalRequest,
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
@@ -70,31 +59,50 @@ import {
 	type PolicyEnforcement,
 	type PolicyErrorCode,
 	type PolicyResource,
-	type PolicyAction,
 	type PolicyTrust,
 	type PublicPolicySummary,
 	type SandboxCapabilities,
 	type SandboxStatus,
+	toPublicPolicySummary,
 } from "./execution-policy.ts";
 import {
-	ExternalMappingError,
-	ExternalSessionMappingStore,
-	isExternalExecutionRef,
-	serializeExternalExecutionRef,
+	createExecutionPolicyLedger,
+	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
+	POLICY_APPROVAL_CUSTOM_TYPE,
+	POLICY_DECISION_CUSTOM_TYPE,
+	POLICY_VIOLATION_CUSTOM_TYPE,
+	type PolicyApprovalLedgerRecord,
+	type PolicyDecisionLedgerRecord,
+	type PolicyLedgerRecord,
+	type PolicyViolationLedgerRecord,
+	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+	type SandboxLifecycleLedgerRecord,
+} from "./execution-policy-ledger.ts";
+import { type ExternalAgentSelection, serializeExternalAgentSelection } from "./external-agent-adapter.ts";
+import {
 	type ExternalExecutionMapping,
 	type ExternalExecutionRef,
+	ExternalMappingError,
 	type ExternalMappingPersistenceResult,
 	type ExternalMappingRequest,
 	type ExternalMappingWarning,
+	ExternalSessionMappingStore,
+	isExternalExecutionRef,
+	serializeExternalExecutionRef,
 } from "./external-session-mapping.ts";
+import type { McpAttachment } from "./mcp-attachment.ts";
 import {
-	serializeExternalAgentSelection,
-	type ExternalAgentSelection,
-} from "./external-agent-adapter.ts";
+	type LegacyAutomationRunLedgerSourceEntryV1,
+	reconcileLegacyAutomationRunLedgerV1,
+} from "./migrations/automation-run-ledger.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
 import {
-	projectAutomationRuns,
-	type CanonicalAutomationRunProjection,
-} from "./automation-run-projection.ts";
+	MODEL_ATTEMPT_CUSTOM_TYPE,
+	MODEL_BINDING_CUSTOM_TYPE,
+	type PublicModelAttemptLedgerRecord,
+	type PublicModelBindingLedgerRecord,
+	serializePublicModelBrokerLedgerEntry,
+} from "./model-broker-ledger.ts";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
 
 export type SessionId = string;
@@ -465,9 +473,7 @@ export function runAttachmentSummaryFromMcpAttachment(attachment: McpAttachment)
 		kind: attachment.kind,
 		...(attachment.descriptorId === undefined ? {} : { descriptorId: attachment.descriptorId }),
 		...(attachment.descriptorRevision === undefined ? {} : { revision: attachment.descriptorRevision }),
-		...(attachment.capabilityBindingId === undefined
-			? {}
-			: { capabilityBindingId: attachment.capabilityBindingId }),
+		...(attachment.capabilityBindingId === undefined ? {} : { capabilityBindingId: attachment.capabilityBindingId }),
 		...(attachment.policyBindingId === undefined ? {} : { policyBindingId: attachment.policyBindingId }),
 		contentDigest: attachment.contentDigest,
 		byteCount: attachment.byteCount,
@@ -902,7 +908,8 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 /** Scheme with optional URL userinfo (user:pass@) — group 1 is kept, group 2 is the host/path. */
 const URL_USERINFO_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)(?:[^/@\s]+@)?([^\s?#]*)/gi;
 /** Well-known secret assignments such as `token=...` / `authorization: Bearer <jwt>` / `api_key=...`. */
-const SECRET_ASSIGNMENT_PATTERN = /\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi;
+const SECRET_ASSIGNMENT_PATTERN =
+	/\b(bearer|token|api[_-]?key|secret|password|authorization)\b\s*[:=]\s*(?:bearer\s+)?[^\s"'`,;]+/gi;
 /** A bare `Bearer <token>` not preceded by a secret key assignment. */
 const BEARER_TOKEN_PATTERN = /\bbearer\s+[^\s"'`,;]+/gi;
 
@@ -1102,23 +1109,26 @@ export interface RunWorkerLifecycleHooks {
 
 export interface RunSubagentLifecycleHooks extends RunWorkerLifecycleHooks {}
 
-const registeredRunWorkerHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunWorkerLifecycleHooks;
-}>();
+const registeredRunWorkerHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunWorkerLifecycleHooks;
+	}
+>();
 
-const registeredRunSubagentHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunSubagentLifecycleHooks;
-}>();
+const registeredRunSubagentHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunSubagentLifecycleHooks;
+	}
+>();
 
 /** Bind one session's production coordinator construction path to its Worker owner. */
-export function registerRunWorkerLifecycleHooks(
-	session: RunLedgerSession,
-	hooks: RunWorkerLifecycleHooks,
-): () => void {
+export function registerRunWorkerLifecycleHooks(session: RunLedgerSession, hooks: RunWorkerLifecycleHooks): () => void {
 	const sessionId = session.getSessionId();
 	if (registeredRunWorkerHooks.has(sessionId)) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks already have an owner");
@@ -1159,11 +1169,14 @@ export interface RunSchedulerLifecycleHooks {
 	onRunTerminal?: (runId: RunId, receipt: PublicRunReceipt) => void;
 }
 
-const registeredRunSchedulerHooks = new Map<string, {
-	readonly token: symbol;
-	readonly session: RunLedgerSession;
-	readonly hooks: RunSchedulerLifecycleHooks;
-}>();
+const registeredRunSchedulerHooks = new Map<
+	string,
+	{
+		readonly token: symbol;
+		readonly session: RunLedgerSession;
+		readonly hooks: RunSchedulerLifecycleHooks;
+	}
+>();
 
 /** Bind one Session's production coordinator construction path to its Scheduler owner. */
 export function registerRunSchedulerLifecycleHooks(
@@ -1400,7 +1413,9 @@ function isRunRequestRelation(value: unknown): value is RunRequestRelation {
 
 function requestRelationFromRecord(record: RunRecord): RunRequestRelation | undefined {
 	const hasRelation =
-		record.requestScope !== undefined || record.clientRequestId !== undefined || record.requestFingerprint !== undefined;
+		record.requestScope !== undefined ||
+		record.clientRequestId !== undefined ||
+		record.requestFingerprint !== undefined;
 	if (!hasRelation) return undefined;
 	const relation = {
 		scope: record.requestScope,
@@ -1416,7 +1431,9 @@ function validateRequestRelationOptions(options: {
 	requestFingerprint?: string;
 }): void {
 	const hasRelation =
-		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+		options.requestScope !== undefined ||
+		options.clientRequestId !== undefined ||
+		options.requestFingerprint !== undefined;
 	if (!hasRelation) return;
 	if (
 		!isRunRequestScope(options.requestScope) ||
@@ -1433,7 +1450,9 @@ function requestIdentityFromOptions(options: {
 	requestFingerprint?: unknown;
 }): RunRequestIdentity | undefined {
 	const hasIdentity =
-		options.requestScope !== undefined || options.clientRequestId !== undefined || options.requestFingerprint !== undefined;
+		options.requestScope !== undefined ||
+		options.clientRequestId !== undefined ||
+		options.requestFingerprint !== undefined;
 	if (!hasIdentity) return undefined;
 	const identity = {
 		scope: options.requestScope,
@@ -1459,7 +1478,11 @@ function runRequestConflictError(): AutomationError {
 }
 
 function requestIdentityFromRecord(record: RunRecord): RunRequestIdentity | undefined {
-	if (record.requestScope === undefined && record.clientRequestId === undefined && record.requestFingerprint === undefined) {
+	if (
+		record.requestScope === undefined &&
+		record.clientRequestId === undefined &&
+		record.requestFingerprint === undefined
+	) {
 		return undefined;
 	}
 	const identity = {
@@ -1651,7 +1674,9 @@ function cloneRunModelAttempt(value: RunModelAttemptSummary): RunModelAttemptSum
 }
 
 function cloneRunModelAttempts(value: ReadonlyArray<RunModelAttemptSummary>): RunModelAttemptSummary[] {
-	return value.map((attempt) => cloneRunModelAttempt(attempt)).filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
+	return value
+		.map((attempt) => cloneRunModelAttempt(attempt))
+		.filter((attempt): attempt is RunModelAttemptSummary => attempt !== undefined);
 }
 
 function cloneRunModelBudget(value: RunModelBudgetSummary): RunModelBudgetSummary | undefined {
@@ -1705,7 +1730,10 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
 	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
-	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+	if (
+		obj.modelAttempts !== undefined &&
+		(!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
@@ -1740,12 +1768,18 @@ function isLegacyRunReceipt(value: unknown): value is LegacyRunReceipt {
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
 	if (obj.previousPolicyBindingId !== undefined && !isRunMetadataId(obj.previousPolicyBindingId)) return false;
 	if (obj.finalModel !== undefined && !isRunFinalModelReference(obj.finalModel)) return false;
-	if (obj.modelAttempts !== undefined && (!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))) {
+	if (
+		obj.modelAttempts !== undefined &&
+		(!Array.isArray(obj.modelAttempts) || obj.modelAttempts.some((attempt) => !isRunModelAttemptSummary(attempt)))
+	) {
 		return false;
 	}
 	if (obj.modelBudget !== undefined && !isRunModelBudgetSummary(obj.modelBudget)) return false;
 	if (obj.policySummary !== undefined && !isPublicPolicySummary(obj.policySummary)) return false;
-	if (obj.attachments !== undefined && (!Array.isArray(obj.attachments) || obj.attachments.some((attachment) => !isRunAttachmentSummary(attachment)))) {
+	if (
+		obj.attachments !== undefined &&
+		(!Array.isArray(obj.attachments) || obj.attachments.some((attachment) => !isRunAttachmentSummary(attachment)))
+	) {
 		return false;
 	}
 	return true;
@@ -1767,7 +1801,8 @@ function isRunAttachmentSummary(value: unknown): value is RunAttachmentSummary {
 	if (obj.revision !== undefined && !isOpaqueCapabilityRevision(obj.revision)) return false;
 	if (obj.capabilityBindingId !== undefined && !isOpaqueCapabilityBindingId(obj.capabilityBindingId)) return false;
 	if (obj.policyBindingId !== undefined && !isRunMetadataId(obj.policyBindingId)) return false;
-	if (typeof obj.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(obj.contentDigest)) return false;
+	if (typeof obj.contentDigest !== "string" || !RUN_ATTACHMENT_CONTENT_DIGEST_PATTERN.test(obj.contentDigest))
+		return false;
 	if (typeof obj.byteCount !== "number" || !Number.isInteger(obj.byteCount) || obj.byteCount < 0) return false;
 	if (typeof obj.blockCount !== "number" || !Number.isInteger(obj.blockCount) || obj.blockCount < 0) return false;
 	if (obj.mimeTypes !== undefined) {
@@ -2541,7 +2576,8 @@ function publicPolicySummaryFromDecisionRecord(record: PolicyDecisionLedgerRecor
 }
 
 function clonePublicPolicyApproval(record: PolicyApprovalLedgerRecord): PolicyApprovalLedgerRecord | undefined {
-	if (!isRunMetadataId(record.id) || !isRunMetadataId(record.bindingId) || !isPolicyResource(record.resource)) return undefined;
+	if (!isRunMetadataId(record.id) || !isRunMetadataId(record.bindingId) || !isPolicyResource(record.resource))
+		return undefined;
 	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
 	if (record.outcome !== undefined && !isPolicyApprovalOutcome(record.outcome)) return undefined;
 	if (record.source !== undefined && !isPolicyApprovalSource(record.source)) return undefined;
@@ -2569,7 +2605,8 @@ function clonePublicPolicyApproval(record: PolicyApprovalLedgerRecord): PolicyAp
 }
 
 function clonePublicSandboxLifecycle(record: SandboxLifecycleLedgerRecord): SandboxLifecycleLedgerRecord | undefined {
-	if (!isRunMetadataId(record.bindingId) || !isSandboxStatus(record.status) || !isRunMetadataText(record.timestamp)) return undefined;
+	if (!isRunMetadataId(record.bindingId) || !isSandboxStatus(record.status) || !isRunMetadataText(record.timestamp))
+		return undefined;
 	if (record.providerId !== undefined && !isRunMetadataId(record.providerId)) return undefined;
 	if (record.capabilities !== undefined && !isSandboxCapabilities(record.capabilities)) return undefined;
 	if (record.reasonCode !== undefined && !isPolicyErrorCode(record.reasonCode)) return undefined;
@@ -2584,7 +2621,12 @@ function clonePublicSandboxLifecycle(record: SandboxLifecycleLedgerRecord): Sand
 }
 
 function clonePublicPolicyViolation(record: PolicyViolationLedgerRecord): PolicyViolationLedgerRecord | undefined {
-	if (!isRunMetadataId(record.bindingId) || !isRunMetadataText(record.timestamp) || !isPolicyErrorCode(record.reasonCode)) return undefined;
+	if (
+		!isRunMetadataId(record.bindingId) ||
+		!isRunMetadataText(record.timestamp) ||
+		!isPolicyErrorCode(record.reasonCode)
+	)
+		return undefined;
 	if (record.resource !== undefined && !isPolicyResource(record.resource)) return undefined;
 	if (record.requestId !== undefined && !isRunMetadataId(record.requestId)) return undefined;
 	return {
@@ -2745,62 +2787,71 @@ function cloneRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
 	return copy;
 }
 
-interface FoundationFactSnapshot {
-	readonly id: string;
-	readonly seq: number;
-	readonly timestamp: number;
-	readonly objectType: string;
-	readonly objectId: string;
-	readonly payload: unknown;
-	readonly correlation: {
-		readonly sessionId: string;
-		readonly laneId: string;
-	};
-}
-
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Read canonical facts directly from the physical Session log without writing or taking a lease. */
-function foundationFactSnapshots(session: RunLedgerSession): FoundationFactSnapshot[] {
-	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
-	const facts: FoundationFactSnapshot[] = [];
-	for (const entry of entries) {
-		if (entry.type !== "custom" || entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) continue;
-		if (!isObjectRecord(entry.data) || entry.data.schemaVersion !== 1 || entry.data.kind !== "durable") continue;
-		const record = entry.data.record;
-		if (
-			!isObjectRecord(record) ||
-			record.schemaVersion !== 1 ||
-			record.kind !== "fact" ||
-			typeof record.id !== "string" ||
-			typeof record.seq !== "number" ||
-			!Number.isSafeInteger(record.seq) ||
-			typeof record.timestamp !== "number" ||
-			!Number.isFinite(record.timestamp) ||
-			typeof record.objectType !== "string" ||
-			typeof record.objectId !== "string" ||
-			!isObjectRecord(record.correlation) ||
-			typeof record.correlation.sessionId !== "string" ||
-			typeof record.correlation.laneId !== "string"
-		) {
-			continue;
-		}
-		facts.push({
-			id: record.id,
-			seq: record.seq,
-			timestamp: record.timestamp,
-			objectType: record.objectType,
-			objectId: record.objectId,
-			payload: record.payload,
-			correlation: {
-				sessionId: record.correlation.sessionId,
-				laneId: record.correlation.laneId,
-			},
-		});
+function parseFoundationDurableEnvelope(value: unknown): FoundationRecord {
+	if (!isObjectRecord(value)) throw invalidDurableRecord("Foundation durable envelope must be an object");
+	const keys = Object.keys(value);
+	if (
+		keys.length !== 3 ||
+		!keys.includes("schemaVersion") ||
+		!keys.includes("kind") ||
+		!keys.includes("record") ||
+		value.schemaVersion !== 1 ||
+		value.kind !== "durable"
+	) {
+		throw invalidDurableRecord("Foundation durable envelope has an invalid shape");
 	}
-	return facts.sort((left, right) => left.seq - right.seq);
+	let mutation: string;
+	try {
+		canonicalFoundationJson(value);
+		mutation = canonicalFoundationJson({ kind: "foundation", schemaVersion: 1, record: value.record });
+	} catch (error) {
+		throw invalidDurableRecord(
+			`Foundation durable record is not canonical JSON: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const parsed = parseFoundationMutation(mutation);
+	if (!parsed.ok) throw invalidDurableRecord(`Foundation durable record ${parsed.error.message}`);
+	return parsed.value;
+}
+
+/** Exact-fold canonical facts directly from the physical Session log without writing or taking a lease. */
+function foundationFactSnapshots(session: RunLedgerSession): FoundationFactRecord[] {
+	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
+	const state = new FoundationLedgerState({ sessionId: session.getSessionId() });
+	for (const [index, entry] of entries.entries()) {
+		if (entry.type === "custom" && entry.customType === FOUNDATION_DURABLE_CUSTOM_TYPE) {
+			state.applyPersistedRecord(parseFoundationDurableEnvelope(entry.data));
+		} else {
+			state.observeExternalSequence(index + 1);
+		}
+	}
+	return state
+		.findFoundationRecords({ kind: "fact", order: "oldestFirst" })
+		.filter((record): record is FoundationFactRecord => record.kind === "fact");
+}
+
+function requireFactCorrelation(fact: FoundationFactRecord, expected: object): void {
+	const allowed = new Set(["sessionId", "laneId", "revision", "fencingToken"]);
+	const actual = new Map(Object.entries(fact.correlation).map(([key, value]) => [key, value as unknown] as const));
+	for (const [key, value] of Object.entries(expected)) {
+		if (typeof value !== "string") continue;
+		allowed.add(key);
+		if (actual.get(key) !== value) {
+			throw new FoundationError("invalid_correlation", `Canonical ${fact.objectType} fact correlation is invalid`);
+		}
+	}
+	for (const key of Object.keys(fact.correlation)) {
+		if (!allowed.has(key)) {
+			throw new FoundationError(
+				"invalid_correlation",
+				`Canonical ${fact.objectType} fact correlation has an unexpected field`,
+			);
+		}
+	}
 }
 
 /** Reconstruct the exact canonical Run result chain used by automation-run-projection. */
@@ -2811,14 +2862,35 @@ function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRun
 	for (const fact of facts) {
 		if (fact.objectType === "attempt_receipt") {
 			const checked = validateAttemptReceipt(fact.payload);
-			if (checked.ok && checked.value.attemptReceiptId === fact.objectId) attempts.set(fact.objectId, checked.value);
+			if (!checked.ok) throw checked.error;
+			if (checked.value.attemptReceiptId !== fact.objectId) {
+				throw new FoundationError("invalid_correlation", "Canonical AttemptReceipt durable key is invalid");
+			}
+			if (attempts.has(fact.objectId)) {
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"Canonical AttemptReceipt has more than one durable fact",
+				);
+			}
+			requireFactCorrelation(fact, checked.value.provenance.correlation ?? {});
+			attempts.set(fact.objectId, checked.value);
 		} else if (fact.objectType === "task_result") {
 			const checked = validateTaskResult(fact.payload);
-			if (checked.ok && checked.value.taskResultId === fact.objectId) taskResults.set(fact.objectId, checked.value);
+			if (!checked.ok) throw checked.error;
+			if (checked.value.taskResultId !== fact.objectId) {
+				throw new FoundationError("invalid_correlation", "Canonical TaskResult durable key is invalid");
+			}
+			if (taskResults.has(fact.objectId)) {
+				throw new FoundationError("session_ledger_conflict", "Canonical TaskResult has more than one durable fact");
+			}
+			requireFactCorrelation(fact, checked.value.provenance.correlation ?? {});
+			taskResults.set(fact.objectId, checked.value);
 		}
 	}
 
 	const results: CanonicalRunResult[] = [];
+	const runIds = new Set<string>();
+	const runReceiptIds = new Set<string>();
 	for (const fact of facts) {
 		if (fact.objectType !== "run_receipt") continue;
 		const checkedReceipt = validateCanonicalRunReceipt(fact.payload);
@@ -2827,10 +2899,19 @@ function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRun
 		if (receipt.runId !== fact.objectId) {
 			throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt durable key is invalid");
 		}
+		if (runIds.has(receipt.runId) || runReceiptIds.has(receipt.runReceiptId)) {
+			throw new FoundationError(
+				"run_terminal_authority_invalid",
+				"Canonical RunReceipt has more than one durable terminal fact",
+			);
+		}
 		const sourceAttempts = receipt.attemptReceiptIds.map((attemptReceiptId) => {
 			const attempt = attempts.get(attemptReceiptId);
 			if (attempt === undefined) {
-				throw new FoundationError("invalid_correlation", "Canonical RunReceipt references a missing AttemptReceipt");
+				throw new FoundationError(
+					"invalid_correlation",
+					"Canonical RunReceipt references a missing AttemptReceipt",
+				);
 			}
 			return attempt;
 		});
@@ -2842,6 +2923,16 @@ function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRun
 		if (receipt.taskResultId !== undefined && taskResult === undefined) {
 			throw new FoundationError("invalid_correlation", "Canonical RunReceipt references a missing TaskResult");
 		}
+		requireFactCorrelation(fact, {
+			taskId: taskResult?.taskId ?? firstAttempt.taskId,
+			runId: receipt.runId,
+			runReceiptId: receipt.runReceiptId,
+			taskResultId: receipt.taskResultId,
+			attemptId: firstAttempt.attemptId,
+			attemptReceiptId: firstAttempt.attemptReceiptId,
+		});
+		runIds.add(receipt.runId);
+		runReceiptIds.add(receipt.runReceiptId);
 		const writtenEvent = createDurableEvent({
 			category: "run_receipt.written",
 			eventId: fact.id,
@@ -2871,6 +2962,34 @@ function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRun
 	return results;
 }
 
+interface ReconciledSessionRunState {
+	readonly canonicalResults: readonly CanonicalRunResult[];
+	readonly canonicalProjections: readonly CanonicalAutomationRunProjection[];
+	readonly projections: readonly AutomationRunProjection[];
+}
+
+function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLedgerSourceEntryV1[] {
+	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
+	const source: LegacyAutomationRunLedgerSourceEntryV1[] = [];
+	for (const [sequence, entry] of entries.entries()) {
+		if (entry.type !== "custom" || entry.customType !== LEGACY_RUN_LEDGER_CUSTOM_TYPE) continue;
+		source.push({ sequence, entryId: entry.id, data: entry.data });
+	}
+	return source;
+}
+
+/** Reconcile canonical terminal truth with private legacy migration input. */
+function reconciledSessionRunState(session: RunLedgerSession): ReconciledSessionRunState {
+	const canonicalResults = canonicalRunResultsFromSession(session);
+	const canonicalProjections = projectAutomationRuns({ canonicalRuns: canonicalResults });
+	const reconciliation = reconcileLegacyAutomationRunLedgerV1(
+		session.getSessionId(),
+		legacyRunLedgerSource(session),
+		canonicalProjections,
+	);
+	return { canonicalResults, canonicalProjections, projections: reconciliation.runs };
+}
+
 function projectCanonicalRun(result: CanonicalRunResult): CanonicalAutomationRunProjection {
 	const projection = projectAutomationRuns({ canonicalRuns: [result] })[0];
 	if (projection === undefined) {
@@ -2879,9 +2998,7 @@ function projectCanonicalRun(result: CanonicalRunResult): CanonicalAutomationRun
 	return projection;
 }
 
-function canonicalTerminalError(
-	projection: CanonicalAutomationRunProjection,
-): AutomationError | undefined {
+function canonicalTerminalError(projection: CanonicalAutomationRunProjection): AutomationError | undefined {
 	const terminalError = projection.terminalError;
 	if (terminalError === undefined) return undefined;
 	const code = isAutomationErrorCode(terminalError.code) ? terminalError.code : "agent_run_failed";
@@ -2893,9 +3010,7 @@ function canonicalTerminalError(
 }
 
 /** Overlay only canonical terminal fields on the accepted transport metadata. */
-function receiptFromCanonicalProjection(
-	projection: CanonicalAutomationRunProjection,
-): PublicRunReceipt {
+function receiptFromCanonicalProjection(projection: CanonicalAutomationRunProjection): PublicRunReceipt {
 	const receipt: PublicRunReceipt = {
 		runId: projection.id,
 		sessionId: projection.sessionId,
@@ -2913,10 +3028,7 @@ function receiptFromCanonicalProjection(
 	return receipt;
 }
 
-function applyCanonicalProjectionToResult(
-	result: RunResult,
-	projection: CanonicalAutomationRunProjection,
-): void {
+function applyCanonicalProjectionToResult(result: RunResult, projection: CanonicalAutomationRunProjection): void {
 	if (result.record.id !== projection.id || result.record.sessionId !== projection.sessionId) {
 		throw new FoundationError("invalid_correlation", "Canonical Run projection does not match the transport Run");
 	}
@@ -2928,6 +3040,32 @@ function applyCanonicalProjectionToResult(
 	}
 	if (terminalError !== undefined) result.record.terminalError = terminalError;
 	result.receipt = receiptFromCanonicalProjection(projection);
+	delete result.recovery;
+}
+
+function applyLegacyMigrationProjectionToResult(result: RunResult, projection: AutomationRunProjection): void {
+	if (
+		projection.migration?.disposition !== "legacy_migrated" ||
+		projection.canonicalResult !== undefined ||
+		result.record.id !== projection.id ||
+		result.record.sessionId !== projection.sessionId
+	) {
+		throw new FoundationError("run_terminal_authority_invalid", "Legacy Run migration projection is invalid");
+	}
+	result.record.status = projection.status;
+	result.record.endedAt = projection.endedAt;
+	if (projection.startedAt !== undefined) result.record.startedAt = projection.startedAt;
+	if (projection.terminalError !== undefined) {
+		const code = isAutomationErrorCode(projection.terminalError.code)
+			? projection.terminalError.code
+			: "agent_run_failed";
+		result.record.terminalError = redactAutomationError({
+			code,
+			message: projection.terminalError.message ?? "Run failed.",
+			retryable: projection.terminalError.retryable ?? false,
+		});
+	}
+	delete result.receipt;
 	delete result.recovery;
 }
 
@@ -3055,11 +3193,7 @@ class RunHandleImpl implements RunHandle {
 	get terminal(): RunStreamEvent | undefined {
 		for (let i = this._emitted.length - 1; i >= 0; i -= 1) {
 			const event = this._emitted[i];
-			if (
-				event.type === "run.completed" ||
-				event.type === "run.failed" ||
-				event.type === "run.cancelled"
-			) {
+			if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled") {
 				return event;
 			}
 		}
@@ -3208,10 +3342,7 @@ class RunHandleImpl implements RunHandle {
 		return wrapped;
 	}
 
-	private emitCanonicalTerminal(
-		writtenEvent: DurableEventEnvelope,
-		receipt: PublicRunReceipt,
-	): RunStreamEvent {
+	private emitCanonicalTerminal(writtenEvent: DurableEventEnvelope, receipt: PublicRunReceipt): RunStreamEvent {
 		this._sequence = writtenEvent.sequence;
 		const event: RunStreamEvent = {
 			type:
@@ -3269,7 +3400,8 @@ class ReplayedRunHandleImpl implements RunHandle {
 		this._record = cloneRunRecord(result.record);
 		this._receipt = result.receipt === undefined ? undefined : cloneRunReceipt(result.receipt);
 		this._recovery = result.recovery;
-		this._policySummary = result.policySummary === undefined ? undefined : clonePublicPolicySummary(result.policySummary);
+		this._policySummary =
+			result.policySummary === undefined ? undefined : clonePublicPolicySummary(result.policySummary);
 		this.runId = this._record.id;
 		this.sessionId = this._record.sessionId;
 	}
@@ -3669,18 +3801,23 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			}
 		}
 		try {
-			const canonicalProjections = projectAutomationRuns({
-				canonicalRuns: canonicalRunResultsFromSession(this.session),
-			});
-			for (const projection of canonicalProjections) {
+			const reconciled = reconciledSessionRunState(this.session);
+			const canonicalByRunId = new Map(
+				reconciled.canonicalProjections.map((projection) => [projection.id, projection]),
+			);
+			for (const projection of reconciled.projections) {
 				const result = results.get(projection.id);
-				if (result !== undefined) applyCanonicalProjectionToResult(result, projection);
+				if (result === undefined) continue;
+				const canonical = canonicalByRunId.get(projection.id);
+				if (canonical === undefined) applyLegacyMigrationProjectionToResult(result, projection);
+				else applyCanonicalProjectionToResult(result, canonical);
 			}
-		} catch {
+		} catch (error) {
 			if (!this.canonicalDiagnostics.has("*")) {
 				this.canonicalDiagnostics.add("*");
 				this.recordDiagnostic({ kind: "canonical-terminal-invalid" });
 			}
+			throw error;
 		}
 
 		for (const result of results.values()) {
@@ -3694,12 +3831,16 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				if (external === undefined) continue;
 				if (result.record.external === undefined) result.record.external = external;
 			}
-			if (result.receipt === undefined) result.recovery = "interrupted";
+			if (result.receipt === undefined && !isTerminalStatus(result.record.status)) result.recovery = "interrupted";
 			// Interrupted is a recovered-run fact: a Run that is live in this
 			// coordinator (accepted/running handle) is never reported interrupted,
 			// even though its persisted entries lack a terminal fact. The hook
 			// fires at most once per Run per coordinator instance.
-			if (result.receipt === undefined && !this.runs.has(result.record.id)) {
+			if (
+				result.receipt === undefined &&
+				!isTerminalStatus(result.record.status) &&
+				!this.runs.has(result.record.id)
+			) {
 				if (!this.interruptedSignaled.has(result.record.id)) {
 					this.interruptedSignaled.add(result.record.id);
 					this.credentialHooks?.onRunInterrupted?.(result.record.id);
@@ -3908,12 +4049,15 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 			}
 		} catch (error) {
 			if (isAutomationError(error)) throw error;
-			const code = typeof error === "object" && error !== null && isPolicyErrorCode((error as { code?: unknown }).code)
-				? (error as { code: PolicyErrorCode }).code
-				: "policy_ledger_persistence_failed";
+			const code =
+				typeof error === "object" && error !== null && isPolicyErrorCode((error as { code?: unknown }).code)
+					? (error as { code: PolicyErrorCode }).code
+					: "policy_ledger_persistence_failed";
 			throw createAutomationError(
 				code === "policy_binding_failed" ? "policy_binding_failed" : "policy_ledger_persistence_failed",
-				code === "policy_binding_failed" ? "Execution Policy binding could not be created." : "Execution Policy facts could not be recorded safely.",
+				code === "policy_binding_failed"
+					? "Execution Policy binding could not be created."
+					: "Execution Policy facts could not be recorded safely.",
 				false,
 			);
 		}
@@ -3976,7 +4120,10 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		if (identity === undefined) return;
 		const key = createRunRequestKey(identity);
 		const existing = this._requestIndex.get(key);
-		if (existing !== undefined && (existing.runId !== record.id || existing.requestFingerprint !== identity.requestFingerprint)) {
+		if (
+			existing !== undefined &&
+			(existing.runId !== record.id || existing.requestFingerprint !== identity.requestFingerprint)
+		) {
 			this._requestConflicts.add(key);
 			return;
 		}
@@ -4004,13 +4151,15 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 
 	private canonicalResultForRun(runId: RunId): CanonicalRunResult | undefined {
 		try {
-			return canonicalRunResultsFromSession(this.session).find((result) => result.runReceipt.runId === runId);
-		} catch {
+			return reconciledSessionRunState(this.session).canonicalResults.find(
+				(result) => result.runReceipt.runId === runId,
+			);
+		} catch (error) {
 			if (!this.canonicalDiagnostics.has(runId)) {
 				this.canonicalDiagnostics.add(runId);
 				this.recordDiagnostic({ kind: "canonical-terminal-invalid", runId });
 			}
-			return undefined;
+			throw error;
 		}
 	}
 
@@ -4031,15 +4180,27 @@ export function createRunLifecycleCoordinator(
 	const registeredOwner = registeredRunWorkerHooks.get(session.getSessionId());
 	const registeredWorkerHooks = registeredOwner?.session === session ? registeredOwner.hooks : undefined;
 	const registeredSubagentOwner = registeredRunSubagentHooks.get(session.getSessionId());
-	const registeredSubagentHooks = registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
+	const registeredSubagentHooks =
+		registeredSubagentOwner?.session === session ? registeredSubagentOwner.hooks : undefined;
 	const registeredSchedulerOwner = registeredRunSchedulerHooks.get(session.getSessionId());
 	const registeredSchedulerHooks =
 		registeredSchedulerOwner?.session === session ? registeredSchedulerOwner.hooks : undefined;
-	if (registeredOwner !== undefined && options?.workerHooks !== undefined && options.workerHooks !== registeredOwner.hooks) {
+	if (
+		registeredOwner !== undefined &&
+		options?.workerHooks !== undefined &&
+		options.workerHooks !== registeredOwner.hooks
+	) {
 		throw new FoundationError("service_conflict", "Run Worker lifecycle hooks cannot override the registered owner");
 	}
-	if (registeredSubagentOwner !== undefined && options?.subagentHooks !== undefined && options.subagentHooks !== registeredSubagentOwner.hooks) {
-		throw new FoundationError("service_conflict", "Run Subagent lifecycle hooks cannot override the registered owner");
+	if (
+		registeredSubagentOwner !== undefined &&
+		options?.subagentHooks !== undefined &&
+		options.subagentHooks !== registeredSubagentOwner.hooks
+	) {
+		throw new FoundationError(
+			"service_conflict",
+			"Run Subagent lifecycle hooks cannot override the registered owner",
+		);
 	}
 	return new RunLifecycleCoordinatorImpl(session, {
 		...options,

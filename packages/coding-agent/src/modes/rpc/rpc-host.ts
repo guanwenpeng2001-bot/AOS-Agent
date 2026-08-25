@@ -14,54 +14,41 @@
 import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
-	LayeredResultSettlement,
-	Session,
-	type FoundationError,
 	type CanonicalRunResult,
+	type FoundationError,
+	LayeredResultSettlement,
 	type Result as ResultValue,
+	Session,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
-import { CapabilityError } from "../../core/capability-registry.ts";
-import { PolicyError } from "../../core/execution-policy.ts";
-import { MCPAuthError, MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
-import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
-import { MCPError, type MCPServerConfigView } from "../../core/mcp-types.ts";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { createRunBindingAssociation } from "../../core/binding-handles.ts";
+import { CapabilityError } from "../../core/capability-registry.ts";
+import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
+import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
+import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
+import { PolicyError } from "../../core/execution-policy.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import type {
-	ModelResolution as BrokerModelResolution,
-	ModelRoleSelection,
-	ModelRouteSelection,
-} from "../../core/model-broker.ts";
 import {
-	foldModelBrokerLedger,
-	type ModelBindingLedgerRecord,
-} from "../../core/model-broker-ledger.ts";
-import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
-import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
-import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { McpAttachment } from "../../core/mcp-attachment.ts";
-import type {
-	MCPGetPromptResult,
-	MCPNormalizedContentBlock,
-	MCPReadResourceResult,
-} from "../../core/mcp-content.ts";
-import { MCPContentError } from "../../core/mcp-content.ts";
-import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/mcp-error-codes.ts";
-import {
-	externalAgentCapabilityError,
 	EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH,
 	EXTERNAL_AGENT_ERROR_CODES,
 	EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY,
+	type ExternalAgentAdapter,
+	type ExternalAgentCapabilitySnapshot,
 	ExternalAgentError,
+	type ExternalAgentPreparedBinding,
+	type ExternalAgentPrepareRequest,
+	type ExternalAgentRunHandle,
+	type ExternalAgentSelection,
+	type ExternalAgentStartRequest,
+	externalAgentCapabilityError,
 	isExternalAgentCapabilitySnapshot,
 	isExternalAgentPreparedBinding,
 	isExternalAgentSelection,
@@ -69,71 +56,55 @@ import {
 	serializeExternalAgentSelection,
 	toExternalAgentError,
 	verifyExternalAgentPreparedBinding,
-	type ExternalAgentAdapter,
-	type ExternalAgentCapabilitySnapshot,
-	type ExternalAgentPreparedBinding,
-	type ExternalAgentPrepareRequest,
-	type ExternalAgentRunHandle,
-	type ExternalAgentSelection,
-	type ExternalAgentStartRequest,
 } from "../../core/external-agent-adapter.ts";
 import type { ExternalAgentResolvedSelection as ExternalAgentResolved } from "../../core/external-agent-registry.ts";
 import {
+	type ExternalAdapterIdentity,
+	isExternalExecutionRef,
+	serializeExternalExecutionRef,
+} from "../../core/external-session-mapping.ts";
+import type { McpAttachment } from "../../core/mcp-attachment.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
+import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
+import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../../core/mcp-content.ts";
+import { MCPContentError } from "../../core/mcp-content.ts";
+import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/mcp-error-codes.ts";
+import { MCPError, type MCPServerConfigView } from "../../core/mcp-types.ts";
+import type {
+	ModelResolution as BrokerModelResolution,
+	ModelRoleSelection,
+	ModelRouteSelection,
+} from "../../core/model-broker.ts";
+import { foldModelBrokerLedger, type ModelBindingLedgerRecord } from "../../core/model-broker-ledger.ts";
+import {
 	createSessionRemoteOperationLedger,
 	RemoteOperationError,
-	startRemoteOperation,
 	type RemoteOperationHeartbeat,
 	type RemoteOperationInvoker,
 	type RemoteOperationLease,
 	type RemoteOperationRequest,
 	type RemoteOperationResult,
+	startRemoteOperation,
 } from "../../core/remote-operation.ts";
-import { createRunBindingAssociation } from "../../core/binding-handles.ts";
-import { isExternalExecutionRef, serializeExternalExecutionRef, type ExternalAdapterIdentity } from "../../core/external-session-mapping.ts";
-import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
-import {
-	createTaskGraphStore,
-	TaskGraphError,
-	type TaskGraphErrorCode,
-	type TaskGraphNodeView,
-	type TaskGraphRecord,
-	type TaskGraphStore,
-} from "../../core/task-graph.ts";
-import {
-	TASK_CREDENTIAL_MAX_SCOPES,
-	TASK_CREDENTIAL_MAX_TTL_MS,
-	TASK_CREDENTIAL_MIN_TTL_MS,
-	TASK_CREDENTIAL_STATUS,
-	TaskCredentialError,
-	isTaskCredentialScope,
-	serializeTaskCredentialDeliveryReceipt,
-	serializeTaskCredentialGrant,
-	type TaskCredentialScope,
-	type TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
-import type { TaskCredentialService } from "../../core/task-credential-service.ts";
-import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
-import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
-import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
 import type {
 	AutomationError,
+	PublicRunStreamEvent,
 	RunFinalModelReference,
 	RunHandle,
 	RunId,
+	RunLedgerSession,
 	RunLifecycleCoordinator,
 	RunModelReference,
 	RunRequestLookup,
-	RunResult,
 	RunReservation,
-	RunLedgerSession,
+	RunResult,
 	RunStreamEvent,
 	RunUsageSnapshot,
-	PublicRunStreamEvent,
 } from "../../core/run-lifecycle.ts";
 import {
 	createAutomationError,
-	createRunRequestFingerprint,
 	createRunLifecycleCoordinator,
+	createRunRequestFingerprint,
 	foldCapabilityBindingEntries,
 	isAutomationErrorCode,
 	isRunClientRequestId,
@@ -152,29 +123,58 @@ import {
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 } from "../../core/run-lifecycle.ts";
+import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
+import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
+import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
 import {
-	WORKER_LIFECYCLE_STATUSES,
+	isTaskCredentialScope,
+	serializeTaskCredentialDeliveryReceipt,
+	serializeTaskCredentialGrant,
+	TASK_CREDENTIAL_MAX_SCOPES,
+	TASK_CREDENTIAL_MAX_TTL_MS,
+	TASK_CREDENTIAL_MIN_TTL_MS,
+	TASK_CREDENTIAL_STATUS,
+	TaskCredentialError,
+	type TaskCredentialScope,
+	type TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
+import type { TaskCredentialService } from "../../core/task-credential-service.ts";
+import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
+import {
+	createTaskGraphStore,
+	TaskGraphError,
+	type TaskGraphErrorCode,
+	type TaskGraphNodeView,
+	type TaskGraphRecord,
+	type TaskGraphStore,
+} from "../../core/task-graph.ts";
+import {
 	validateWorkerRecordV1,
+	WORKER_LIFECYCLE_STATUSES,
 	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "../../core/worker.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
-import { toJsonEvent, type JsonAgentSessionEvent } from "../json-event.ts";
+import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
+	AuditQuery,
+	AuditQueryData,
+	AuditReplayData,
+	AuditReplayQuery,
+	ExternalExecutionRef,
+	ExternalMapData,
+	ExternalMappingRequest,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
-	AuditQuery,
-	AuditQueryData,
-	AuditReplayQuery,
-	AuditReplayData,
-	ExternalMapData,
-	ExternalExecutionRef,
-	ExternalMappingRequest,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
 	RpcMcpAttachmentReceipt,
 	RpcMcpAuthCommandType,
 	RpcMcpAuthErrorCode,
@@ -182,14 +182,22 @@ import type {
 	RpcMcpAuthResponse,
 	RpcMcpAuthStartData,
 	RpcMcpAuthStatusData,
+	RpcMcpContentBlockSummary,
 	RpcMcpContentCommandType,
 	RpcMcpContentErrorCode,
 	RpcMcpContentResponse,
-	RpcMcpMaskedCredential,
-	RpcMcpContentBlockSummary,
 	RpcMcpGetPromptReceipt,
+	RpcMcpMaskedCredential,
 	RpcMcpReadResourceReceipt,
-	RpcCommand,
+	RpcResponse,
+	RpcSchedulerResponse,
+	RpcSessionState,
+	RpcSessionStats,
+	RpcSlashCommand,
+	RpcSourceInfo,
+	RpcSubagentCommandType,
+	RpcSubagentErrorCode,
+	RpcSubagentResponse,
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,
@@ -197,19 +205,12 @@ import type {
 	RpcWorkerErrorCode,
 	RpcWorkerRecord,
 	RpcWorkerResponse,
-	RpcSubagentCommandType,
-	RpcSubagentErrorCode,
-	RpcSubagentResponse,
-	RpcSchedulerResponse,
-	RpcExtensionUIRequest,
-	RpcExtensionUIResponse,
-	RpcResponse,
-	RpcSessionState,
-	RpcSessionStats,
-	RpcSlashCommand,
-	RpcSourceInfo,
 	RunAcceptedData,
 	RunGetData,
+	SchedulerStatusData,
+	SubagentCancelData,
+	SubagentGetData,
+	SubagentListData,
 	TaskCredentialGetData,
 	TaskCredentialHeartbeatData,
 	TaskCredentialIssueData,
@@ -222,10 +223,6 @@ import type {
 	WorkerGetData,
 	WorkerListData,
 	WorkerReclaimData,
-	SubagentCancelData,
-	SubagentGetData,
-	SubagentListData,
-	SchedulerStatusData,
 } from "./rpc-types.ts";
 
 /** Public records emitted by the transport-neutral RPC controller. */
@@ -282,9 +279,22 @@ export interface RpcWorkerRegistry {
 }
 
 export interface RpcSubagentRegistry {
-	get(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
-	list(runId: string, filter: { readonly parentAgentInstanceId?: string; readonly status?: ChildLifecycleStatusV1; readonly limit: number }): Promise<ResultValue<readonly SafeSubagentLifecycleProjectionV1[], FoundationError>>;
-	cancel(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
+	get(
+		runId: string,
+		childAgentInstanceId: string,
+	): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
+	list(
+		runId: string,
+		filter: {
+			readonly parentAgentInstanceId?: string;
+			readonly status?: ChildLifecycleStatusV1;
+			readonly limit: number;
+		},
+	): Promise<ResultValue<readonly SafeSubagentLifecycleProjectionV1[], FoundationError>>;
+	cancel(
+		runId: string,
+		childAgentInstanceId: string,
+	): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
 }
 
 type RpcOutputSinkLike = RpcHostOutputSink | RpcOutputSink;
@@ -335,21 +345,22 @@ export type {
 	CapabilityBindingView,
 	ExternalExecutionMapping,
 	ExternalExecutionRef,
-	ExternalMappingSummary,
 	ExternalMappingPersistenceResult,
 	ExternalMappingRequest,
+	ExternalMappingSummary,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
-	RpcAutomationCommandType,
-	RpcAutomationResponse,
 	RpcAuditCommandType,
 	RpcAuditQueryCommand,
 	RpcAuditReplayCommand,
+	RpcAutomationCommandType,
+	RpcAutomationResponse,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcExternalMapCommand,
 	RpcMcpAttachmentReceipt,
 	RpcMcpAuthCommandType,
 	RpcMcpAuthError,
@@ -364,7 +375,6 @@ export type {
 	RpcMcpMaskedCredential,
 	RpcMcpReadResourceReceipt,
 	RpcResponse,
-	RpcExternalMapCommand,
 	RpcRunCommandType,
 	RpcSchedulerCommandType,
 	RpcSchedulerResponse,
@@ -387,6 +397,9 @@ export type {
 	RunStreamEvent,
 	RunTerminalStatus,
 	SchedulerStatusData,
+	SubagentCancelData,
+	SubagentGetData,
+	SubagentListData,
 	TaskCredentialGetData,
 	TaskCredentialHeartbeatData,
 	TaskCredentialIssueData,
@@ -399,9 +412,6 @@ export type {
 	WorkerGetData,
 	WorkerListData,
 	WorkerReclaimData,
-	SubagentCancelData,
-	SubagentGetData,
-	SubagentListData,
 } from "./rpc-types.ts";
 
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
@@ -457,20 +467,41 @@ const RPC_SUBAGENT_ERROR_MESSAGES: Readonly<Record<RpcSubagentErrorCode, string>
 	subagent_cancel_failed: "The Subagent cancellation was not confirmed by the Run Supervisor.",
 };
 
-function rpcSubagentError(id: string | undefined, command: RpcSubagentCommandType, code: RpcSubagentErrorCode): RpcSubagentResponse {
-	return { id, type: "response", command, success: false, error: { code, message: RPC_SUBAGENT_ERROR_MESSAGES[code], retryable: code === "subagent_unavailable" || code === "subagent_cancel_failed" } };
+function rpcSubagentError(
+	id: string | undefined,
+	command: RpcSubagentCommandType,
+	code: RpcSubagentErrorCode,
+): RpcSubagentResponse {
+	return {
+		id,
+		type: "response",
+		command,
+		success: false,
+		error: {
+			code,
+			message: RPC_SUBAGENT_ERROR_MESSAGES[code],
+			retryable: code === "subagent_unavailable" || code === "subagent_cancel_failed",
+		},
+	};
 }
 
 function isRpcSubagentCommandShapeValid(command: RpcCommand): boolean {
 	const allowed = RPC_SUBAGENT_COMMAND_KEYS[command.type as RpcSubagentCommandType];
-	return allowed !== undefined && (command.id === undefined || typeof command.id === "string") && Object.keys(command).every((key) => allowed.has(key));
+	return (
+		allowed !== undefined &&
+		(command.id === undefined || typeof command.id === "string") &&
+		Object.keys(command).every((key) => allowed.has(key))
+	);
 }
 
 function isRpcSubagentStatus(value: unknown): value is ChildLifecycleStatusV1 {
 	return typeof value === "string" && (CHILD_LIFECYCLE_STATUSES as readonly string[]).includes(value);
 }
 
-function rpcSchedulerError(id: string | undefined, code: "host_not_initialized" | "scheduler_unavailable"): RpcSchedulerResponse {
+function rpcSchedulerError(
+	id: string | undefined,
+	code: "host_not_initialized" | "scheduler_unavailable",
+): RpcSchedulerResponse {
 	return {
 		id,
 		type: "response",
@@ -478,9 +509,10 @@ function rpcSchedulerError(id: string | undefined, code: "host_not_initialized" 
 		success: false,
 		error: {
 			code,
-			message: code === "host_not_initialized"
-				? "Automation Host is not initialized. Send initialize with protocolVersion 1 first."
-				: "The trusted Scheduler is unavailable in the current Session.",
+			message:
+				code === "host_not_initialized"
+					? "Automation Host is not initialized. Send initialize with protocolVersion 1 first."
+					: "The trusted Scheduler is unavailable in the current Session.",
 			retryable: false,
 		},
 	};
@@ -624,37 +656,33 @@ function toRpcMcpAttachmentReceipt(attachment: McpAttachment): RpcMcpAttachmentR
 function loadReadOnlyRunCoordinator(
 	sessionPath: string,
 ): { sessionId: string; coordinator?: RunLifecycleCoordinator } | undefined {
+	let fileEntries: ReturnType<typeof loadEntriesFromFile>;
 	try {
-		const fileEntries = loadEntriesFromFile(sessionPath);
-		const header = fileEntries[0];
-		if (header === undefined || header.type !== "session" || typeof header.id !== "string") return undefined;
-		const sessionEntries: SessionEntry[] = [];
-		for (const entry of fileEntries) {
-			if (entry.type !== "session") sessionEntries.push(entry);
-		}
-		const readOnlySession: RunLedgerSession = {
-			getSessionId: () => header.id,
-			getSessionFile: () => sessionPath,
-			appendCustomEntry: () => {
-				throw new Error("read-only run ledger");
-			},
-			getEntries: () => sessionEntries,
-		};
-		try {
-			return {
-				sessionId: header.id,
-				coordinator: createRunLifecycleCoordinator(readOnlySession, { diagnostics: () => {} }),
-			};
-		} catch {
-			// The header still provides a stable scope even when unrelated persisted
-			// history cannot be folded safely.
-			return { sessionId: header.id };
-		}
+		fileEntries = loadEntriesFromFile(sessionPath);
 	} catch {
 		// The ordinary resume path remains authoritative for malformed/unavailable
 		// targets. This helper is only a pre-switch idempotency lookup.
 		return undefined;
 	}
+	const header = fileEntries[0];
+	if (header === undefined || header.type !== "session" || typeof header.id !== "string") return undefined;
+	const sessionEntries: SessionEntry[] = [];
+	for (const entry of fileEntries) {
+		if (entry.type !== "session") sessionEntries.push(entry);
+	}
+	const readOnlySession: RunLedgerSession = {
+		getSessionId: () => header.id,
+		getSessionFile: () => sessionPath,
+		appendCustomEntry: () => {
+			throw new Error("read-only run ledger");
+		},
+		getEntries: () => sessionEntries,
+	};
+	const coordinator = createRunLifecycleCoordinator(readOnlySession, { diagnostics: () => {} });
+	// Force the complete canonical/legacy fold before returning a coordinator.
+	// Conflicts propagate to run.resume instead of degrading to path idempotency.
+	coordinator.rebuildIndex();
+	return { sessionId: header.id, coordinator };
 }
 
 function hashResumeTargetPath(sessionPath: string): string {
@@ -731,7 +759,14 @@ export class RpcHostController {
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
+		| RpcResponse
+		| RpcAutomationResponse
+		| RpcMcpAuthResponse
+		| RpcMcpContentResponse
+		| RpcWorkerResponse
+		| RpcSubagentResponse
+		| RpcSchedulerResponse
+		| undefined
 	>;
 	private extensionResponseHandler?: (response: RpcExtensionUIResponse) => void;
 	private shutdownHandler?: () => Promise<void>;
@@ -1102,8 +1137,7 @@ export class RpcHostController {
 			command: RpcMcpContentCommandType,
 			err: unknown,
 			serverId: string,
-		): RpcMcpContentResponse =>
-			mcpContentErrorResponse(id, command, mcpContentFailureCode(err, command), serverId);
+		): RpcMcpContentResponse => mcpContentErrorResponse(id, command, mcpContentFailureCode(err, command), serverId);
 
 		// Pending extension UI requests waiting for response
 		const pendingExtensionRequests = new Map<
@@ -1346,10 +1380,7 @@ export class RpcHostController {
 		 * TaskCredentialErrorCode, so a credential code can never be hidden as a
 		 * generic fallback.
 		 */
-		const taskCredentialCommandError = (
-			err: unknown,
-			fallback: TaskCredentialError["code"],
-		): AutomationError =>
+		const taskCredentialCommandError = (err: unknown, fallback: TaskCredentialError["code"]): AutomationError =>
 			createAutomationError(
 				err instanceof TaskCredentialError ? err.code : fallback,
 				taskCredentialErrorMessage(err instanceof TaskCredentialError ? err.code : fallback),
@@ -1486,12 +1517,7 @@ export class RpcHostController {
 		 * or a node not attached to the Run is `false` (the frozen preflight
 		 * denies with `task_credential_binding_invalid`).
 		 */
-		const resolveNodeAttached = (
-			taskId: string,
-			graphRevision: number,
-			nodeId: string,
-			runId: string,
-		): boolean => {
+		const resolveNodeAttached = (taskId: string, graphRevision: number, nodeId: string, runId: string): boolean => {
 			const graph = taskGraphStore?.get(taskId, graphRevision);
 			const node = graph?.nodes.find((candidate) => candidate.nodeId === nodeId);
 			return node !== undefined && node.runRef?.runId === runId;
@@ -1572,11 +1598,7 @@ export class RpcHostController {
 							nodeId: node.nodeId,
 							runId,
 							status:
-								node.status === "succeeded"
-									? "succeeded"
-									: node.status === "failed"
-										? "failed"
-										: "cancelled",
+								node.status === "succeeded" ? "succeeded" : node.status === "failed" ? "failed" : "cancelled",
 						});
 					},
 				},
@@ -1669,10 +1691,7 @@ export class RpcHostController {
 		const externalAgentMessage = (code: ExternalAgentError["code"]): string => new ExternalAgentError(code).message;
 
 		/** Map an External Agent Adapter failure to the stable Automation Host contract. */
-		const externalAgentAutomationError = (
-			err: unknown,
-			fallback: ExternalAgentError["code"],
-		): AutomationError => {
+		const externalAgentAutomationError = (err: unknown, fallback: ExternalAgentError["code"]): AutomationError => {
 			const agentError = err instanceof ExternalAgentError ? err : toExternalAgentError(err, fallback);
 			return createAutomationError(agentError.code, agentError.message, agentError.retryable);
 		};
@@ -2103,7 +2122,9 @@ export class RpcHostController {
 			try {
 				canonical = await readCanonicalRun(handle.runId);
 			} catch {
-				canonical = undefined;
+				// A read or validation conflict is distinct from an absent receipt. Keep
+				// the active Run lock so another Run cannot proceed on ambiguous truth.
+				return;
 			}
 			if (canonical === undefined) {
 				// Prompt promises, adapter receipts, process state, and agent events are
@@ -2122,14 +2143,8 @@ export class RpcHostController {
 			try {
 				terminal = handle.observeCanonicalResult(canonical);
 			} catch {
-				// A malformed or mismatched result chain fails closed as non-terminal.
+				// A malformed or mismatched projection remains locked and non-terminal.
 				terminalEventRunIds.delete(handle.runId);
-				if (activeHandle === handle) {
-					activeHandle = undefined;
-					coordinator = createRunLifecycleCoordinator(session.sessionManager);
-				}
-				clearRunDeadline(handle.runId);
-				runPromptPromises.delete(handle.runId);
 				return;
 			}
 			if (terminal !== undefined) outputRunEvent(terminal);
@@ -2172,14 +2187,14 @@ export class RpcHostController {
 				void terminal.then(
 					(value) => {
 						signal.removeEventListener("abort", onAbort);
-					resolve(value);
-				},
-				() => {
-					signal.removeEventListener("abort", onAbort);
-					resolve(undefined);
-				},
-			);
-		});
+						resolve(value);
+					},
+					() => {
+						signal.removeEventListener("abort", onAbort);
+						resolve(undefined);
+					},
+				);
+			});
 		};
 
 		/**
@@ -2203,9 +2218,7 @@ export class RpcHostController {
 					? {}
 					: { capabilityBindingId: handle.record.capabilityBindingId }),
 				...(handle.record.modelBindingId === undefined ? {} : { modelBindingId: handle.record.modelBindingId }),
-				...(handle.record.policyBindingId === undefined
-					? {}
-					: { policyBindingId: handle.record.policyBindingId }),
+				...(handle.record.policyBindingId === undefined ? {} : { policyBindingId: handle.record.policyBindingId }),
 				...(handle.record.bindingAssociation === undefined
 					? {}
 					: { bindingAssociation: handle.record.bindingAssociation }),
@@ -2234,7 +2247,10 @@ export class RpcHostController {
 			const tracked = (async (): Promise<void> => {
 				// The Remote Operation receipt is durably recorded as an observation.
 				// The Run deadline still bounds how long this transport waits.
-				const remoteReceipt = await raceWithDeadlineSignal(deadlineSignal ?? new AbortController().signal, remoteHandle.receipt);
+				const remoteReceipt = await raceWithDeadlineSignal(
+					deadlineSignal ?? new AbortController().signal,
+					remoteHandle.receipt,
+				);
 				if (remoteReceipt === undefined) {
 					handle.requestDeadlineExceeded();
 					await observeRunCompletion(handle);
@@ -2547,19 +2563,14 @@ export class RpcHostController {
 				// must not spend 10s in probe. The Run deadline winning maps to
 				// run_deadline_exceeded; the probe deadline winning maps to
 				// external_agent_probe_failed.
-				const runDeadlineMs =
-					deadlineAt === undefined ? undefined : Date.parse(deadlineAt) - Date.now();
+				const runDeadlineMs = deadlineAt === undefined ? undefined : Date.parse(deadlineAt) - Date.now();
 				const probeDeadlineMs = Math.min(
 					EXTERNAL_AGENT_PROBE_DEADLINE_MS,
 					runDeadlineMs === undefined ? EXTERNAL_AGENT_PROBE_DEADLINE_MS : runDeadlineMs,
 				);
 				const probeDeadline = new Date(Date.now() + probeDeadlineMs).toISOString();
 				const probeTimer = setTimeout(() => probeController.abort(), Math.max(0, probeDeadlineMs));
-				if (
-					typeof probeTimer === "object" &&
-					"unref" in probeTimer &&
-					typeof probeTimer.unref === "function"
-				) {
+				if (typeof probeTimer === "object" && "unref" in probeTimer && typeof probeTimer.unref === "function") {
 					probeTimer.unref();
 				}
 				let snapshot: ExternalAgentCapabilitySnapshot | undefined;
@@ -2948,9 +2959,7 @@ export class RpcHostController {
 					);
 				}
 				const code =
-					typeof err === "object" && err !== null && "code" in err
-						? (err as { code?: unknown }).code
-						: undefined;
+					typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
 				if (typeof code === "string" && isAutomationErrorCode(code)) {
 					if (code === "external_mapping_invalid") {
 						return createAutomationError(
@@ -3070,11 +3079,7 @@ export class RpcHostController {
 					(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
 				) {
 					return failExternalStart(
-						createAutomationError(
-							"run_deadline_exceeded",
-							"The Run deadline expired during preflight.",
-							false,
-						),
+						createAutomationError("run_deadline_exceeded", "The Run deadline expired during preflight.", false),
 					);
 				}
 				// Prepare the immutable Binding from the frozen preflight facts. The
@@ -3088,7 +3093,11 @@ export class RpcHostController {
 				if (capabilityBinding !== undefined) {
 					for (const descriptor of capabilityBinding.descriptors) {
 						const name = descriptor.exposedToolName;
-						if (name !== undefined && name.length >= 1 && name.length <= EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH) {
+						if (
+							name !== undefined &&
+							name.length >= 1 &&
+							name.length <= EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH
+						) {
 							capabilitySummary.push(name);
 						}
 						if (capabilitySummary.length >= EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY) break;
@@ -3229,7 +3238,10 @@ export class RpcHostController {
 				// event. The driver's fallback getter is never persisted. The Run
 				// deadline bounds the readiness wait so a hanging adapter.start cannot
 				// keep the run pending past its deadline.
-				const externalRef = await raceWithDeadlineSignal(deadlineController.signal, externalAdapterRun.externalReady);
+				const externalRef = await raceWithDeadlineSignal(
+					deadlineController.signal,
+					externalAdapterRun.externalReady,
+				);
 				if (externalRef === undefined) {
 					// The readiness race resolves undefined when a lifecycle transition
 					// aborted the deadline controller (detach, shutdown, session switch)
@@ -3292,7 +3304,7 @@ export class RpcHostController {
 					external !== undefined &&
 					(external.namespace !== safeExternal.namespace ||
 						external.externalSessionId !== safeExternal.externalSessionId ||
-					(external.externalRunId ?? undefined) !== (safeExternal.externalRunId ?? undefined))
+						(external.externalRunId ?? undefined) !== (safeExternal.externalRunId ?? undefined))
 				) {
 					return failExternalStart(new ExternalAgentError("external_agent_mapping_invalid"));
 				}
@@ -3337,7 +3349,13 @@ export class RpcHostController {
 				for (const event of startEvents) {
 					outputRunEvent(event);
 				}
-				trackExternalRun(handle, externalAdapterRun, startRequest.operationId, deadlineController.signal, probedAdapterIdentity);
+				trackExternalRun(
+					handle,
+					externalAdapterRun,
+					startRequest.operationId,
+					deadlineController.signal,
+					probedAdapterIdentity,
+				);
 				return undefined;
 			};
 			if (externalProbe !== undefined) {
@@ -3942,7 +3960,14 @@ export class RpcHostController {
 		const handleCommand = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
+			| RpcResponse
+			| RpcAutomationResponse
+			| RpcMcpAuthResponse
+			| RpcMcpContentResponse
+			| RpcWorkerResponse
+			| RpcSubagentResponse
+			| RpcSchedulerResponse
+			| undefined
 		> => {
 			const id = typeof command.id === "string" ? command.id : undefined;
 
@@ -4026,8 +4051,12 @@ export class RpcHostController {
 							"task.credential.revoke",
 							"task.credential.settle",
 						],
-						...(workerRegistry === undefined ? {} : { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
-						...(subagentRegistry === undefined ? {} : { subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"] }),
+						...(workerRegistry === undefined
+							? {}
+							: { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
+						...(subagentRegistry === undefined
+							? {}
+							: { subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"] }),
 						...(schedulerStatus === undefined ? {} : { schedulerCommands: ["scheduler.status"] }),
 					};
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
@@ -4049,39 +4078,70 @@ export class RpcHostController {
 
 				case "subagent.get": {
 					if (!hostInitialized) return rpcSubagentError(id, "subagent.get", "host_not_initialized");
-					if (!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) || !isRpcWorkerIdentifier(command.childAgentInstanceId)) {
+					if (
+						!isRpcSubagentCommandShapeValid(command) ||
+						!isRpcWorkerIdentifier(command.runId) ||
+						!isRpcWorkerIdentifier(command.childAgentInstanceId)
+					) {
 						return rpcSubagentError(id, "subagent.get", "subagent_invalid");
 					}
 					const registry = hostController.subagentRegistry?.(session);
 					if (registry === undefined) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
 					const result = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
-					if (result === undefined || !result.ok) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
+					if (result === undefined || !result.ok)
+						return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
 					const subagent = projectSubagentAuditSourceV1(result.value);
-					if (subagent === undefined || subagent.sessionId !== session.sessionId || subagent.runId !== command.runId || subagent.childAgentInstanceId !== command.childAgentInstanceId) {
+					if (
+						subagent === undefined ||
+						subagent.sessionId !== session.sessionId ||
+						subagent.runId !== command.runId ||
+						subagent.childAgentInstanceId !== command.childAgentInstanceId
+					) {
 						return rpcSubagentError(id, "subagent.get", "subagent_not_found");
 					}
-					return { id, type: "response", command: "subagent.get", success: true, data: { subagent } satisfies SubagentGetData };
+					return {
+						id,
+						type: "response",
+						command: "subagent.get",
+						success: true,
+						data: { subagent } satisfies SubagentGetData,
+					};
 				}
 
 				case "subagent.list": {
 					if (!hostInitialized) return rpcSubagentError(id, "subagent.list", "host_not_initialized");
 					const limit = command.limit ?? RPC_SUBAGENT_DEFAULT_LIMIT;
 					if (
-						!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) ||
-						(command.parentAgentInstanceId !== undefined && !isRpcWorkerIdentifier(command.parentAgentInstanceId)) ||
+						!isRpcSubagentCommandShapeValid(command) ||
+						!isRpcWorkerIdentifier(command.runId) ||
+						(command.parentAgentInstanceId !== undefined &&
+							!isRpcWorkerIdentifier(command.parentAgentInstanceId)) ||
 						(command.status !== undefined && !isRpcSubagentStatus(command.status)) ||
-						!Number.isSafeInteger(limit) || limit < 1 || limit > RPC_SUBAGENT_MAX_LIMIT
-					) return rpcSubagentError(id, "subagent.list", "subagent_invalid");
+						!Number.isSafeInteger(limit) ||
+						limit < 1 ||
+						limit > RPC_SUBAGENT_MAX_LIMIT
+					)
+						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
 					const registry = hostController.subagentRegistry?.(session);
 					if (registry === undefined) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
-					const result = await registry.list(command.runId, {
-						...(command.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: command.parentAgentInstanceId }),
-						...(command.status === undefined ? {} : { status: command.status }),
-						limit,
-					}).catch(() => undefined);
-					if (result === undefined || !result.ok) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
+					const result = await registry
+						.list(command.runId, {
+							...(command.parentAgentInstanceId === undefined
+								? {}
+								: { parentAgentInstanceId: command.parentAgentInstanceId }),
+							...(command.status === undefined ? {} : { status: command.status }),
+							limit,
+						})
+						.catch(() => undefined);
+					if (result === undefined || !result.ok)
+						return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
 					const subagents = result.value.map(projectSubagentAuditSourceV1);
-					if (subagents.some((entry) => entry === undefined || entry.sessionId !== session.sessionId || entry.runId !== command.runId)) {
+					if (
+						subagents.some(
+							(entry) =>
+								entry === undefined || entry.sessionId !== session.sessionId || entry.runId !== command.runId,
+						)
+					) {
 						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
 					}
 					return {
@@ -4089,29 +4149,56 @@ export class RpcHostController {
 						type: "response",
 						command: "subagent.list",
 						success: true,
-						data: { subagents: subagents as SafeSubagentLifecycleProjectionV1[], truncated: result.value.length === limit } satisfies SubagentListData,
+						data: {
+							subagents: subagents as SafeSubagentLifecycleProjectionV1[],
+							truncated: result.value.length === limit,
+						} satisfies SubagentListData,
 					};
 				}
 
 				case "subagent.cancel": {
 					if (!hostInitialized) return rpcSubagentError(id, "subagent.cancel", "host_not_initialized");
-					if (!isRpcSubagentCommandShapeValid(command) || !isRpcWorkerIdentifier(command.runId) || !isRpcWorkerIdentifier(command.childAgentInstanceId)) {
+					if (
+						!isRpcSubagentCommandShapeValid(command) ||
+						!isRpcWorkerIdentifier(command.runId) ||
+						!isRpcWorkerIdentifier(command.childAgentInstanceId)
+					) {
 						return rpcSubagentError(id, "subagent.cancel", "subagent_invalid");
 					}
 					const registry = hostController.subagentRegistry?.(session);
 					if (registry === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_unavailable");
 					const before = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
-					if (before === undefined || !before.ok || before.value === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
+					if (before === undefined || !before.ok || before.value === undefined)
+						return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
 					const previous = projectSubagentAuditSourceV1(before.value);
-					if (previous === undefined || previous.sessionId !== session.sessionId || previous.runId !== command.runId) return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
-					const idempotent = previous.status === "cancelling" || ["succeeded", "failed", "cancelled", "lost", "closed"].includes(previous.status);
+					if (
+						previous === undefined ||
+						previous.sessionId !== session.sessionId ||
+						previous.runId !== command.runId
+					)
+						return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
+					const idempotent =
+						previous.status === "cancelling" ||
+						["succeeded", "failed", "cancelled", "lost", "closed"].includes(previous.status);
 					const result = await registry.cancel(command.runId, command.childAgentInstanceId).catch(() => undefined);
-					if (result === undefined || !result.ok || result.value === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
+					if (result === undefined || !result.ok || result.value === undefined)
+						return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
 					const subagent = projectSubagentAuditSourceV1(result.value);
-					if (subagent === undefined || subagent.sessionId !== session.sessionId || subagent.runId !== command.runId || subagent.childAgentInstanceId !== command.childAgentInstanceId) {
+					if (
+						subagent === undefined ||
+						subagent.sessionId !== session.sessionId ||
+						subagent.runId !== command.runId ||
+						subagent.childAgentInstanceId !== command.childAgentInstanceId
+					) {
 						return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
 					}
-					return { id, type: "response", command: "subagent.cancel", success: true, data: { subagent, idempotent } satisfies SubagentCancelData };
+					return {
+						id,
+						type: "response",
+						command: "subagent.cancel",
+						success: true,
+						data: { subagent, idempotent } satisfies SubagentCancelData,
+					};
 				}
 
 				case "scheduler.status": {
@@ -4121,7 +4208,13 @@ export class RpcHostController {
 					}
 					const scheduler = session.getSchedulerStatus?.();
 					if (scheduler === undefined) return rpcSchedulerError(id, "scheduler_unavailable");
-					return { id, type: "response", command: "scheduler.status", success: true, data: { scheduler } satisfies SchedulerStatusData };
+					return {
+						id,
+						type: "response",
+						command: "scheduler.status",
+						success: true,
+						data: { scheduler } satisfies SchedulerStatusData,
+					};
 				}
 
 				case "worker.get": {
@@ -4200,7 +4293,8 @@ export class RpcHostController {
 						.filter((record) => command.runId === undefined || record.runId === command.runId)
 						.filter((record) => command.status === undefined || record.status === command.status);
 					filtered.sort(
-						(left, right) => left.createdAt.localeCompare(right.createdAt) || left.workerId.localeCompare(right.workerId),
+						(left, right) =>
+							left.createdAt.localeCompare(right.createdAt) || left.workerId.localeCompare(right.workerId),
 					);
 					let offset = 0;
 					if (command.cursor !== undefined) {
@@ -4248,7 +4342,8 @@ export class RpcHostController {
 					if (existing.sessionId !== session.sessionId) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
 					}
-					if (existing.workerId !== command.workerId) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
+					if (existing.workerId !== command.workerId)
+						return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
 					if (!RPC_WORKER_RECLAIMABLE_STATUSES.has(existing.status)) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_conflict");
 					}
@@ -4384,7 +4479,11 @@ export class RpcHostController {
 					try {
 						const gate = taskGateStore.get(command.gateId);
 						if (gate === undefined) {
-							return automationError(id, "task.gate.get", taskGateCommandError(undefined, "task_gate_not_found"));
+							return automationError(
+								id,
+								"task.gate.get",
+								taskGateCommandError(undefined, "task_gate_not_found"),
+							);
 						}
 						return { id, type: "response", command: "task.gate.get", success: true, data: { gate } };
 					} catch (err) {
@@ -4464,7 +4563,11 @@ export class RpcHostController {
 						return automationError(id, "task.graph.create", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
-						return automationError(id, "task.graph.create", taskGraphCommandError(undefined, "task_graph_invalid"));
+						return automationError(
+							id,
+							"task.graph.create",
+							taskGraphCommandError(undefined, "task_graph_invalid"),
+						);
 					}
 					try {
 						const result = taskGraphStore.create({
@@ -4489,7 +4592,11 @@ export class RpcHostController {
 					try {
 						const graph = taskGraphStore.get(command.taskId, command.graphRevision);
 						if (graph === undefined) {
-							return automationError(id, "task.graph.get", taskGraphCommandError(undefined, "task_graph_not_found"));
+							return automationError(
+								id,
+								"task.graph.get",
+								taskGraphCommandError(undefined, "task_graph_not_found"),
+							);
 						}
 						return {
 							id,
@@ -4550,7 +4657,11 @@ export class RpcHostController {
 						});
 						return taskGraphMutationResponse(id, "task.graph.node.attach", result);
 					} catch (err) {
-						return automationError(id, "task.graph.node.attach", taskGraphCommandError(err, "task_graph_invalid"));
+						return automationError(
+							id,
+							"task.graph.node.attach",
+							taskGraphCommandError(err, "task_graph_invalid"),
+						);
 					}
 				}
 
@@ -4574,7 +4685,11 @@ export class RpcHostController {
 						});
 						return taskGraphMutationResponse(id, "task.graph.node.settle", result);
 					} catch (err) {
-						return automationError(id, "task.graph.node.settle", taskGraphCommandError(err, "task_graph_invalid"));
+						return automationError(
+							id,
+							"task.graph.node.settle",
+							taskGraphCommandError(err, "task_graph_invalid"),
+						);
 					}
 				}
 
@@ -4651,7 +4766,12 @@ export class RpcHostController {
 							...(command.stageId === undefined || command.stageRevision === undefined
 								? {}
 								: { gate: resolveGateFact(command.taskId, command.stageId, command.stageRevision) }),
-							nodeAttached: resolveNodeAttached(command.taskId, command.graphRevision, command.nodeId, command.runId),
+							nodeAttached: resolveNodeAttached(
+								command.taskId,
+								command.graphRevision,
+								command.nodeId,
+								command.runId,
+							),
 						});
 						if (!result.ok) {
 							return automationError(
@@ -5188,10 +5308,23 @@ export class RpcHostController {
 							if (!hostInitialized || coordinator === undefined) {
 								return automationError(id, "run.resume", hostNotInitializedError());
 							}
-							const targetLedger =
-								command.clientRequestId === undefined
-									? undefined
-									: loadReadOnlyRunCoordinator(command.sessionPath);
+							let targetLedger: ReturnType<typeof loadReadOnlyRunCoordinator>;
+							try {
+								targetLedger =
+									command.clientRequestId === undefined
+										? undefined
+										: loadReadOnlyRunCoordinator(command.sessionPath);
+							} catch {
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError(
+										"source_run_not_resumable",
+										"The source Session contains conflicting Run terminal evidence.",
+										false,
+									),
+								);
+							}
 							const targetSessionId = targetLedger?.sessionId ?? hashResumeTargetPath(command.sessionPath);
 							const resumeIdentity = requestIdentity(command.clientRequestId, "run.resume", targetSessionId, {
 								message: command.message,
@@ -5677,14 +5810,14 @@ export class RpcHostController {
 					try {
 						const result = await session.readMcpResource(
 							command.serverId,
-						command.uri,
-						mcpOperationController.signal,
-					);
-					return success(id, "mcp.resource.read", toRpcMcpReadResourceReceipt(result));
-				} catch (err) {
-					return mcpContentFailure(id, "mcp.resource.read", err, command.serverId);
+							command.uri,
+							mcpOperationController.signal,
+						);
+						return success(id, "mcp.resource.read", toRpcMcpReadResourceReceipt(result));
+					} catch (err) {
+						return mcpContentFailure(id, "mcp.resource.read", err, command.serverId);
+					}
 				}
-			}
 
 				case "mcp.resource.attach": {
 					// Explicit attach: reads the resource and registers the normalized
@@ -5761,24 +5894,14 @@ export class RpcHostController {
 					// bridge the call must fail closed instead of opening a browser
 					// or waiting for input that will never come.
 					if (command.interactive !== true) {
-						return mcpAuthErrorResponse(
-							id,
-							"mcp.auth.start",
-							"mcp_auth_interaction_required",
-							command.serverId,
-						);
+						return mcpAuthErrorResponse(id, "mcp.auth.start", "mcp_auth_interaction_required", command.serverId);
 					}
 					// An interactive start needs a live output sink to deliver the
 					// dialogs and the one-shot authorization URL; without one the
 					// call fails closed immediately instead of creating dialogs
 					// that could only time out.
 					if (this.outputSink === undefined) {
-						return mcpAuthErrorResponse(
-							id,
-							"mcp.auth.start",
-							"mcp_auth_interaction_required",
-							command.serverId,
-						);
+						return mcpAuthErrorResponse(id, "mcp.auth.start", "mcp_auth_interaction_required", command.serverId);
 					}
 					const stdioError = mcpAuthStdioError(id, "mcp.auth.start", command.serverId);
 					if (stdioError !== undefined) return stdioError;
@@ -6108,9 +6231,7 @@ export class RpcHostController {
 				// path, and a fresh controller serves the next attachment.
 				abortMcpOperations();
 				const externalPendingAtDetach = new Set(pendingExternalStarts.values());
-				await Promise.all(
-					[...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)),
-				);
+				await Promise.all([...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)));
 				// Worker detach: the Host connection (worker) that drove the active
 				// Run detached from this Session. Revoke + settle every lease bound
 				// to the run (and its worker) before the transport is unbound;
@@ -6130,7 +6251,14 @@ export class RpcHostController {
 		this.commandHandler = async (
 			command: RpcCommand,
 		): Promise<
-			RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
+			| RpcResponse
+			| RpcAutomationResponse
+			| RpcMcpAuthResponse
+			| RpcMcpContentResponse
+			| RpcWorkerResponse
+			| RpcSubagentResponse
+			| RpcSchedulerResponse
+			| undefined
 		> => {
 			if (detachTransportPromise !== undefined) await detachTransportPromise;
 			try {
@@ -6196,7 +6324,14 @@ export class RpcHostController {
 	async dispatch(
 		command: RpcCommand,
 	): Promise<
-		RpcResponse | RpcAutomationResponse | RpcMcpAuthResponse | RpcMcpContentResponse | RpcWorkerResponse | RpcSubagentResponse | RpcSchedulerResponse | undefined
+		| RpcResponse
+		| RpcAutomationResponse
+		| RpcMcpAuthResponse
+		| RpcMcpContentResponse
+		| RpcWorkerResponse
+		| RpcSubagentResponse
+		| RpcSchedulerResponse
+		| undefined
 	> {
 		if (this.commandHandler === undefined) {
 			throw new Error("RPC host controller has not been started.");
@@ -6214,7 +6349,7 @@ export class RpcHostController {
 		this.extensionResponseHandler?.(response);
 	}
 
-	/** Stop accepting work, settle the active run, and dispose the runtime. */
+	/** Stop accepting work, cancel active observation, and dispose the runtime. */
 	async shutdown(): Promise<void> {
 		if (this.shutdownHandler === undefined) return;
 		await this.shutdownHandler();
@@ -6222,7 +6357,8 @@ export class RpcHostController {
 
 	/**
 	 * Detach a disconnected transport while keeping the host and runtime alive
-	 * for a later connection. Any active run is cancelled and durably settled.
+	 * for a later connection. Any active run is cancelled; only a canonical
+	 * RunReceipt may produce its terminal event.
 	 */
 	async detachTransport(): Promise<void> {
 		if (this.detachTransportHandler === undefined) return;
