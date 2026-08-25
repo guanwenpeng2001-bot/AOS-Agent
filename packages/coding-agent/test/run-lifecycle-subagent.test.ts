@@ -5,11 +5,12 @@ import {
 	type RunSubagentLifecycleHooks,
 } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const MODEL = { provider: "faux", id: "faux-model", thinkingLevel: "high" as const };
 
 describe("Run lifecycle Subagent wiring", () => {
-	it("propagates cancel, deadline, terminal, and interrupted observations without another terminal authority", () => {
+	it("propagates cancel, deadline, terminal, and interrupted observations without another terminal authority", async () => {
 		const session = SessionManager.inMemory("/workspace/subagent-run", { id: "subagent-session" });
 		const observed: string[] = [];
 		const hooks: RunSubagentLifecycleHooks = {
@@ -24,11 +25,14 @@ describe("Run lifecycle Subagent wiring", () => {
 		cancelled.start();
 		cancelled.requestCancel();
 		cancelled.requestCancel();
-		cancelled.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(session, cancelled, { outcome: "cancelled" });
 		const deadline = coordinator.reserve().accept({ runId: "run-deadline", attempt: 1, model: MODEL });
 		deadline.start();
 		deadline.requestDeadlineExceeded();
-		deadline.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(session, deadline, {
+			outcome: "failed",
+			terminalErrorCode: "run_deadline_exceeded",
+		});
 		expect(observed).toEqual([
 			"cancel:run-cancel",
 			"terminal:run-cancel:cancelled",
@@ -40,12 +44,12 @@ describe("Run lifecycle Subagent wiring", () => {
 		unregister();
 	});
 
-	it("is default-off and enforces one registered owner per Session identity", () => {
+	it("is default-off and enforces one registered owner per Session identity", async () => {
 		const session = SessionManager.inMemory("/workspace/subagent-owner", { id: "subagent-owner" });
 		const plain = createRunLifecycleCoordinator(session, { diagnostics: () => {} });
 		const plainRun = plain.reserve().accept({ runId: "plain-run", attempt: 1, model: MODEL });
 		plainRun.start();
-		plainRun.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(session, plainRun, { outcome: "completed" });
 		const unregister = registerRunSubagentLifecycleHooks(session, {});
 		expect(() => registerRunSubagentLifecycleHooks(session, {})).toThrow(expect.objectContaining({ code: "service_conflict" }));
 		expect(() => createRunLifecycleCoordinator(session, { subagentHooks: {}, diagnostics: () => {} })).toThrow(expect.objectContaining({ code: "service_conflict" }));

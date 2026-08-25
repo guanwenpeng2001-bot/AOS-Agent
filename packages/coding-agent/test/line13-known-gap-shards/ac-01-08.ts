@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	InMemorySessionStorage,
+	LayeredResultSettlement,
 	Session,
 	type AgentBinding,
 	type TaskEnvelope,
@@ -39,11 +40,7 @@ import {
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
-import {
-	createRunLifecycleCoordinator,
-	type RunHandle,
-	type RunResult,
-} from "../../src/core/run-lifecycle.ts";
+import { createRunLifecycleCoordinator, type RunHandle, type RunResult } from "../../src/core/run-lifecycle.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { SessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
@@ -57,6 +54,7 @@ import {
 import {
 	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
+	defineLine13ResolvedCase,
 	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
 
@@ -289,6 +287,15 @@ async function waitForRpcTerminal(records: readonly RpcHostOutputRecord[], runId
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	throw new Error("Line 13 RPC fixture did not reach a terminal event");
+}
+
+async function waitForRpcResponse(records: readonly RpcHostOutputRecord[], id: string): Promise<RpcHostOutputRecord> {
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		const response = records.find((record) => record.type === "response" && record.id === id);
+		if (response !== undefined) return response;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	throw new Error(`Line 13 RPC fixture did not publish response ${id}`);
 }
 
 interface ProductCompositionEvidence {
@@ -583,36 +590,26 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-01-08",
 	complete: true,
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-01",
-				fullTestName:
-					"Line 13 canonical RunReceipt is the sole terminal authority for RPC completion and recovery",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T2",
-				mode: "fails",
-				expectedFailure: {
-					reason: "run-receipt.rpc-authority",
-					fingerprint: "sha256:23aa31bfd251a764674d513173771fb99e5c717204aebfa222d3879e2f6f2952",
-				},
-			},
+	resolvedCases: [
+		defineLine13ResolvedCase({
+			ac: "AC-01",
+			fullTestName: "Line 13 canonical RunReceipt is the sole terminal authority for RPC completion and recovery",
 			scenario: {
 				fixture: () => createRpcProductFixture({ withModel: true }),
 				setup: initializeRpc,
 				assertion: async (fixture) => {
-					const started = automationResponseView(
-						await fixture.controller.dispatch({
-							id: "ac01-start",
-							type: "run.start",
-							message: "Complete the canonical receipt authority regression",
-						}),
-					);
+					const startDispatch = fixture.controller.dispatch({
+						id: "ac01-start",
+						type: "run.start",
+						message: "Complete the canonical receipt authority regression",
+					});
+					const started = automationResponseView(await waitForRpcResponse(fixture.records, "ac01-start"));
 					assert.equal(started.success, true, "AC-01 RPC run.start must reach terminal settlement");
 					const runId = started.data?.runId;
 					assert.equal(typeof runId, "string", "AC-01 RPC run.start must return a Run id");
 					if (runId === undefined) return;
 					await waitForRpcTerminal(fixture.records, runId);
+					await startDispatch;
 
 					const reopened = await fixture.reopen();
 					const initialized = automationResponseView(
@@ -642,7 +639,14 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 					const terminalAuthority = replayed as unknown as {
 						replayedHandle(result: RunResult): RunHandle;
 					};
-					const duplicateTerminal = terminalAuthority.replayedHandle(recoveredRun).settle({ outcome: "failed" });
+					const settlement = new LayeredResultSettlement(durableSession, { ownerId: "ac01-replay" });
+					const canonical = await settlement.lookupCanonicalRun(runId);
+					if (!canonical.ok) throw canonical.error;
+					assert.notEqual(canonical.value, undefined, "AC-01 must recover the canonical Foundation result");
+					const duplicateTerminal = terminalAuthority
+						.replayedHandle(recoveredRun)
+						.observeCanonicalResult(canonical.value!);
+					await settlement.release();
 					const canonicalReceiptsAfterDuplicate = await durableSession.findFoundationRecords({
 						kind: "fact",
 						objectType: "run_receipt",
@@ -685,6 +689,8 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
+	],
+	cases: [
 		defineLine13KnownGapCase({
 			entry: {
 				ac: "AC-02",

@@ -48,6 +48,7 @@ import {
 	schedulerWorkflowExternalIds,
 } from "../src/core/scheduler-workflow.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/task-graph.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
@@ -355,6 +356,7 @@ interface WorkflowHarness {
 	readonly targetSessionId: string;
 	readonly sourceSession: Session;
 	readonly targetSession: Session;
+	readonly targetManager: SessionManager;
 	readonly sourceGraph: TaskGraphStore;
 	readonly targetGraph: TaskGraphStore;
 	readonly targetRuns: RunLifecycleCoordinator;
@@ -447,6 +449,7 @@ async function createHarness(
 		targetSessionId,
 		sourceSession,
 		targetSession,
+		targetManager,
 		sourceGraph,
 		targetGraph,
 		targetRuns,
@@ -526,11 +529,12 @@ async function createActiveWorkflow(
 	});
 }
 
-function settleTargetNode(
+async function settleTargetNode(
 	graph: TaskGraphStore,
 	runs: RunLifecycleCoordinator,
+	manager: SessionManager,
 	input: { readonly taskId: string; readonly nodeId: string; readonly runId: string },
-): void {
+): Promise<void> {
 	const run = runs.reserve().accept({
 		runId: input.runId,
 		attempt: 1,
@@ -544,7 +548,7 @@ function settleTargetNode(
 		clientRequestId: `attach-${input.runId}`,
 	});
 	run.start();
-	run.settle({ outcome: "completed" });
+	await observeCanonicalTerminal(manager, run, { outcome: "completed" });
 	graph.settle({
 		taskId: input.taskId,
 		graphRevision: 1,
@@ -617,7 +621,7 @@ async function completeExternal(
 ): Promise<void> {
 	if (step.type !== "agent") throw new Error("expected agent step");
 	const ids = schedulerWorkflowExternalIds(workflowId, step.stepId);
-	settleTargetNode(harness.targetGraph, harness.targetRuns, {
+	await settleTargetNode(harness.targetGraph, harness.targetRuns, harness.targetManager, {
 		taskId: step.taskId,
 		nodeId: step.stepId,
 		runId: `run_${step.stepId}`,

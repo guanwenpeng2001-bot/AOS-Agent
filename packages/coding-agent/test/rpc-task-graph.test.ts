@@ -9,7 +9,7 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { RUN_LEDGER_CUSTOM_TYPE, type RunReceipt, type RunRecord } from "../src/core/run-lifecycle.ts";
+import { RUN_LEDGER_CUSTOM_TYPE, type RunRecord } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
@@ -22,6 +22,7 @@ import type {
 	TaskGraphNodeView,
 	TaskGraphRecord,
 } from "../src/modes/rpc/rpc-types.ts";
+import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
 
 vi.mock("../src/modes/interactive/theme/theme.js", () => ({ theme: {} }));
 
@@ -115,6 +116,7 @@ async function createRuntimeHost(options: {
 	withAuth: boolean;
 	responseDelayMs: number;
 	sessionPath?: string;
+	streamErrorMessage?: string;
 }): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
 	const tempDir = join(tmpdir(), `aos-rpc-task-graph-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
@@ -133,7 +135,19 @@ async function createRuntimeHost(options: {
 				stream.push({ type: "start", partial: createAssistantMessage("") });
 				const finish = () => {
 					streamOptions?.signal?.removeEventListener("abort", abort);
-					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					if (options.streamErrorMessage === undefined) {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+					} else {
+						stream.push({
+							type: "error",
+							reason: "error",
+							error: {
+								...createAssistantMessage(""),
+								stopReason: "error",
+								errorMessage: options.streamErrorMessage,
+							},
+						});
+					}
 				};
 				const timer = setTimeout(finish, options.responseDelayMs);
 				const abort = () => {
@@ -236,6 +250,7 @@ async function startInMemoryController(options: {
 	withAuth: boolean;
 	responseDelayMs: number;
 	sessionPath?: string;
+	streamErrorMessage?: string;
 }): Promise<{
 	controller: RpcHostController;
 	runtimeHost: AgentSessionRuntime;
@@ -345,7 +360,13 @@ async function waitForRecord(
 	predicate: (record: RpcHostOutputRecord) => boolean,
 	timeout = 8000,
 ): Promise<void> {
-	await vi.waitFor(() => expect(records.some(predicate)).toBe(true), { timeout });
+	try {
+		await vi.waitFor(() => expect(records.some(predicate)).toBe(true), { timeout });
+	} catch (error) {
+		throw new Error(`Expected RPC record was not published; observed types: ${records.map((record) => record.type).join(", ")}`, {
+			cause: error,
+		});
+	}
 }
 
 async function startRunAndGetId(
@@ -1072,7 +1093,7 @@ describe("task graph automation host rpc", () => {
 			await completed.cleanup();
 		}
 
-		// failed -> failed (deadline-expired run settles as run.failed)
+		// failed -> failed
 		const failed = await startInMemoryController({ withAuth: true, responseDelayMs: 2000 });
 		try {
 			await dispatchCommand(failed.controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
@@ -1084,12 +1105,10 @@ describe("task graph automation host rpc", () => {
 				nodes: [{ nodeId: "boom", dependsOn: [] }],
 				clientRequestId: "graph-create-001",
 			});
-			const deadlineAt = new Date(Date.now() + 150).toISOString();
 			const failedRunId = await startRunAndGetId(failed.controller, failed.records, {
 				id: "run-2",
 				type: "run.start",
 				message: "boom",
-				deadlineAt,
 			});
 			const attachBoom = await dispatchCommand(failed.controller, {
 				id: "attach-2",
@@ -1101,7 +1120,9 @@ describe("task graph automation host rpc", () => {
 				clientRequestId: "attach-2",
 			});
 			expect(expectGraphMutationResponse(attachBoom, "task.graph.node.attach").node?.status).toBe("running");
-			await waitForRecord(failed.records, (record) => record.type === "run.failed");
+			await writeCanonicalRunResult(failed.runtimeHost.session.sessionManager, failedRunId, {
+				outcome: "failed",
+			});
 			const settleBoom = await dispatchCommand(failed.controller, {
 				id: "settle-2",
 				type: "task.graph.node.settle",
@@ -1152,7 +1173,9 @@ describe("task graph automation host rpc", () => {
 				runId: cancelledRunId,
 			});
 			expect(cancelResponse).toMatchObject({ type: "response", command: "run.cancel", success: true });
-			await waitForRecord(cancelled.records, (record) => record.type === "run.cancelled");
+			await writeCanonicalRunResult(cancelled.runtimeHost.session.sessionManager, cancelledRunId, {
+				outcome: "cancelled",
+			});
 			const settleStop = await dispatchCommand(cancelled.controller, {
 				id: "settle-3",
 				type: "task.graph.node.settle",
@@ -1207,8 +1230,12 @@ describe("task graph automation host rpc", () => {
 				expect(expectGraphMutationResponse(attach, "task.graph.node.attach").node?.status).toBe("running");
 				if (terminalType === "run.cancelled") {
 					await dispatchCommand(mixed.controller, { id: `cancel-${nodeId}`, type: "run.cancel", runId });
+					await writeCanonicalRunResult(mixed.runtimeHost.session.sessionManager, runId, {
+						outcome: "cancelled",
+					});
+				} else {
+					await waitForRecord(mixed.records, (record) => record.type === terminalType);
 				}
-				await waitForRecord(mixed.records, (record) => record.type === terminalType);
 				const settle = await dispatchCommand(mixed.controller, {
 					id: `settle-${nodeId}`,
 					type: "task.graph.node.settle",
@@ -1367,7 +1394,7 @@ describe("task graph automation host rpc", () => {
 		}
 	});
 
-	it("settle rejects inconsistent run record and receipt facts with state_mismatch", async () => {
+	it("settle ignores a malformed later transport claim and consumes the canonical receipt", async () => {
 		const { controller, runtimeHost, cleanup } = await startInMemoryController({ withAuth: true, responseDelayMs: 1 });
 		try {
 			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
@@ -1407,14 +1434,9 @@ describe("task graph automation host rpc", () => {
 			});
 			expect(expectGraphMutationResponse(attach, "task.graph.node.attach").node?.status).toBe("running");
 
-			// A terminal receipt and a later conflicting accepted record make the
-			// record and receipt facts disagree.
-			sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
-				schemaVersion: 1,
-				kind: "terminal",
-				receipt: { runId, sessionId, status: "completed", usage: { input: 0, output: 0, total: 0 } } satisfies RunReceipt,
-				endedAt: "2026-08-16T12:00:05.000Z",
-			});
+			// A canonical Foundation receipt and a later conflicting transport
+			// record make the projected record and receipt facts disagree.
+			await writeCanonicalRunResult(sessionManager, runId, { outcome: "completed" });
 			sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
@@ -1429,17 +1451,18 @@ describe("task graph automation host rpc", () => {
 				nodeId: "mismatch",
 				clientRequestId: "settle-1",
 			});
-			expectAutomationError(settle, "task.graph.node.settle", "task_graph_run_state_mismatch");
+			expect(expectGraphMutationResponse(settle, "task.graph.node.settle").node).toMatchObject({
+				nodeId: "mismatch",
+				status: "succeeded",
+			});
 
-			// Nothing was appended for the rejected settle: the ledger still holds
-			// only the create and the attach transitions.
-			expect(graphEntries(runtimeHost.session)).toHaveLength(2);
+			expect(graphEntries(runtimeHost.session)).toHaveLength(3);
 		} finally {
 			await cleanup();
 		}
 	});
 
-	it("settle rejects a terminal run record that has no persisted receipt", async () => {
+	it("settle treats a malformed terminal transport claim without a canonical receipt as non-terminal", async () => {
 		const { controller, runtimeHost, cleanup } = await startInMemoryController({ withAuth: true, responseDelayMs: 1 });
 		try {
 			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
@@ -1496,7 +1519,7 @@ describe("task graph automation host rpc", () => {
 				nodeId: "no-receipt",
 				clientRequestId: "settle-1",
 			});
-			expectAutomationError(settle, "task.graph.node.settle", "task_graph_run_state_mismatch");
+			expectAutomationError(settle, "task.graph.node.settle", "task_graph_run_not_terminal");
 
 			// The rejected settle appended nothing: only the create and attach.
 			expect(graphEntries(runtimeHost.session)).toHaveLength(2);

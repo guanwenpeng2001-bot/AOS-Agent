@@ -8,6 +8,7 @@ import {
 } from "../src/core/context-engine.ts";
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { createHarness, createHarnessWithExtensions, fauxModel } from "./test-harness.ts";
 import { assistantMsg, createTestResourceLoader, userMsg } from "./utilities.ts";
 
@@ -379,7 +380,7 @@ describe("context-engine runtime persistence", () => {
 		}
 	});
 
-	it("binds only an explicit contextSnapshotId on Automation Host terminal receipts", () => {
+	it("keeps context snapshots out of the minimal canonical Automation receipt", async () => {
 		const session = SessionManager.inMemory();
 		const snapshot = freezeSampleSnapshot(session.getSessionId(), "snap-receipt");
 		session.appendCustomEntry(CONTEXT_SNAPSHOT_CUSTOM_TYPE, snapshot);
@@ -390,23 +391,19 @@ describe("context-engine runtime persistence", () => {
 			model: { provider: "faux", id: "m1", thinkingLevel: "off" },
 		});
 		handle.start();
-		const terminal = handle.settle({ outcome: "completed", finalText: "done" });
+		const { event: terminal } = await observeCanonicalTerminal(session, handle, { outcome: "completed" });
 		expect(terminal?.type).toBe("run.completed");
-		expect(handle.receipt()?.contextSnapshotId).toBeUndefined();
+		expect("contextSnapshotId" in handle.receipt()!).toBe(false);
 
-		// A run is never linked to a concurrent/latest snapshot by inference.
+		// A later Run is likewise never linked to a concurrent/latest snapshot by inference.
 		const handle2 = coordinator.reserve().accept({
 			attempt: 1,
 			model: { provider: "faux", id: "m1", thinkingLevel: "off" },
 			runId: "run-explicit",
 		});
 		handle2.start();
-		handle2.settle({
-			outcome: "failed",
-			finalText: "x",
-			contextSnapshotId: "snap-receipt",
-		});
-		expect(handle2.receipt()?.contextSnapshotId).toBe("snap-receipt");
+		await observeCanonicalTerminal(session, handle2, { outcome: "failed" });
+		expect("contextSnapshotId" in handle2.receipt()!).toBe(false);
 	});
 
 	it("records compaction and branch_summary purposes as distinct snapshots", () => {

@@ -34,6 +34,7 @@ import { SchedulerWorkflowController } from "../src/core/scheduler-workflow.ts";
 import type { RunHandle } from "../src/core/run-lifecycle.ts";
 import { SchedulerHost } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 
 const NOW = "2026-08-22T00:00:00.000Z";
@@ -340,7 +341,9 @@ describe("trusted Scheduler production composition", () => {
 				if (run === undefined) {
 					return Result.err(new FoundationError("scheduler_not_found", "Scheduler Run was not reserved"));
 				}
-				run.settle({ outcome: input.taskResult === undefined ? "failed" : "completed" });
+				await observeCanonicalTerminal(fixture.sourceManager, run, {
+					outcome: input.taskResult === undefined ? "failed" : "completed",
+				});
 				return Result.ok(undefined);
 			},
 			now: () => NOW,

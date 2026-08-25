@@ -308,6 +308,9 @@ describe("RPC capability public boundary", () => {
 		};
 		const terminal = serializePublicRunStreamEvent({
 			type: "run.failed",
+			eventId: "event-terminal-1",
+			streamId: "stream-run-1",
+			correlation: { runId: "run-1", sessionId: "session-1" },
 			runId: "run-1",
 			sessionId: "session-1",
 			sequence: 2,
@@ -315,15 +318,20 @@ describe("RPC capability public boundary", () => {
 			receipt: {
 				runId: "run-1",
 				sessionId: "session-1",
+				runReceiptId: "run-receipt-1",
+				taskResultId: "task-result-1",
+				attemptReceiptIds: ["attempt-receipt-1"],
+				sideEffectState: "none",
 				status: "failed",
 				usage: { input: 1, output: 2, total: 3 },
-				sessionFile: PATH_MARKER_WIN,
-				capabilityBindingId: `binding:${PATH_MARKER_POSIX}`,
 				terminalError: { code: "model_error", message: `${PATH_MARKER_POSIX} ${URL_MARKER}`, retryable: false },
 			},
 		});
 		const runEvent = serializePublicRunStreamEvent({
 			type: "run.event",
+			eventId: "event-run-1",
+			streamId: "stream-run-1",
+			correlation: { runId: "run-1", sessionId: "session-1" },
 			runId: "run-1",
 			sessionId: "session-1",
 			sequence: 1,
@@ -357,7 +365,7 @@ describe("RPC capability public boundary", () => {
 		if (publicEntries[1].type === "custom") expect(publicEntries[1].data).toBeUndefined();
 		if (!("receipt" in terminal)) throw new Error("expected terminal event");
 		expect("sessionFile" in terminal.receipt).toBe(false);
-		expect(terminal.receipt.capabilityBindingId).toBeUndefined();
+		expect("capabilityBindingId" in terminal.receipt).toBe(false);
 		expect(terminal.receipt.terminalError?.message).toBe("Run failed.");
 		if (runEvent.type !== "run.event" || runEvent.event.type !== "entry_appended") {
 			throw new Error("expected serialized run.event entry");
@@ -370,16 +378,21 @@ describe("RPC capability public boundary", () => {
 		expect(publicErrorMessage.errorMessage).toBe("Agent run failed.");
 	});
 
-	it("keeps current opaque receipt identities while omitting the session path", () => {
+	it("keeps the canonical receipt identities while omitting legacy metadata", () => {
 		const receipt = serializePublicRunReceipt({
 			runId: "run-2",
 			sessionId: "session-2",
+			runReceiptId: "run-receipt-2",
+			taskResultId: "task-result-2",
+			attemptReceiptIds: ["attempt-receipt-2"],
+			sideEffectState: "none",
 			status: "completed",
 			usage: { input: 1, output: 1, total: 2 },
-			sessionFile: PATH_MARKER_WIN,
-			capabilityBindingId: OPAQUE_BINDING_ID,
 		});
-		expect(receipt.capabilityBindingId).toBe(OPAQUE_BINDING_ID);
+		expect(receipt.runReceiptId).toBe("run-receipt-2");
+		expect(receipt.taskResultId).toBe("task-result-2");
+		expect(receipt.attemptReceiptIds).toEqual(["attempt-receipt-2"]);
+		expect("capabilityBindingId" in receipt).toBe(false);
 		expect("sessionFile" in receipt).toBe(false);
 		expectNoMarkers(receipt);
 	});

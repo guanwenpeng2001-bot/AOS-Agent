@@ -18,6 +18,7 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 } from "../../../src/core/execution-policy-ledger.ts";
 import { createRunLifecycleCoordinator } from "../../../src/core/run-lifecycle.ts";
+import { SessionManager } from "../../../src/core/session-manager.ts";
 import type { SandboxOperationRequest } from "../../../src/core/sandbox.ts";
 import {
 	FAKE_SANDBOX_PROVIDER_ID,
@@ -26,7 +27,7 @@ import {
 	type FakeSandboxProviderState,
 } from "../../fixtures/fake-sandbox-provider.ts";
 import { createHarness, type Harness } from "../harness.ts";
-import type { SessionEntry } from "../../../src/core/session-manager.ts";
+import { observeCanonicalTerminal } from "../../support/canonical-run-terminal.ts";
 
 const STRICT_PROFILE_ID = "workspace-safe";
 const SECRET_VALUE = "super-secret-token";
@@ -381,7 +382,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 		expect(entries.some((entry) => entry.customType === SANDBOX_LIFECYCLE_CUSTOM_TYPE)).toBe(true);
 	});
 
-	it("binds run start/resume to successor policy bindings and rejects self or mismatched predecessors", () => {
+	it("binds run start/resume to successor policy bindings and rejects self or mismatched predecessors", async () => {
 		const sessionManager = createHarnessSessionForRunLedger();
 		const coordinator = createRunLifecycleCoordinator(sessionManager);
 		const first = resolveExecutionPolicyProfile({
@@ -407,7 +408,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 			policySummary: first.summary,
 		});
 		firstRun.start();
-		firstRun.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(sessionManager, firstRun, { outcome: "completed" });
 
 		const successor = resolveExecutionPolicyProfile({
 			profiles: { [STRICT_PROFILE_ID]: strictProfile() },
@@ -437,8 +438,9 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 			policySummary: successor.summary,
 		});
 		secondRun.start();
-		secondRun.settle({ outcome: "completed" });
-		expect(secondRun.receipt()?.previousPolicyBindingId).toBe(first.binding.id);
+		await observeCanonicalTerminal(sessionManager, secondRun, { outcome: "completed" });
+		expect(secondRun.record.previousPolicyBindingId).toBe(first.binding.id);
+		expect("previousPolicyBindingId" in secondRun.receipt()!).toBe(false);
 
 		let mismatchCode: string | undefined;
 		try {
@@ -516,24 +518,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 });
 
 function createHarnessSessionForRunLedger() {
-	const entries: SessionEntry[] = [];
-	return {
-		getSessionId: () => "session-t7",
-		getSessionFile: () => undefined,
-		appendCustomEntry: (customType: string, data?: unknown) => {
-			const id = `entry-${entries.length + 1}`;
-			entries.push({
-				id,
-				type: "custom",
-				parentId: entries[entries.length - 1]?.id ?? null,
-				timestamp: new Date(0).toISOString(),
-				customType,
-				data,
-			});
-			return id;
-		},
-		getEntries: () => entries,
-	};
+	return SessionManager.inMemory("/workspace/policy-t7", { id: "session-t7" });
 }
 
 describe("T7 execution policy ledger fixture sanity", () => {

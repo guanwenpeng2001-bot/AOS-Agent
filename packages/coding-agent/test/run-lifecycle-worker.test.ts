@@ -27,6 +27,7 @@ import {
 	createWorkerRequestFingerprintV1,
 } from "../src/core/worker-sandbox-provider.ts";
 import { WorkerSupervisorV1 } from "../src/core/worker-supervisor.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const MODEL = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" as const };
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
@@ -150,7 +151,7 @@ function attemptReceipt(worker: WorkerReceipt): AttemptReceipt {
 }
 
 describe("Run lifecycle Operation Worker wiring", () => {
-	it("notifies cancel, deadline, and terminal observers without granting WorkerReceipt terminal authority", () => {
+	it("notifies cancel, deadline, and terminal observers without granting WorkerReceipt terminal authority", async () => {
 		const notifications: string[] = [];
 		const hooks: RunWorkerLifecycleHooks = {
 			onRunCancelRequested: (runId) => notifications.push(`cancel:${runId}`),
@@ -164,13 +165,16 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		cancelled.start();
 		cancelled.requestCancel();
 		cancelled.requestCancel();
-		cancelled.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(session, cancelled, { outcome: "cancelled" });
 		expect(cancelled.record.status).toBe("cancelled");
 
 		const deadline = coordinator.reserve().accept({ runId: "run-deadline", attempt: 1, model: MODEL });
 		deadline.start();
 		deadline.requestDeadlineExceeded();
-		deadline.settle({ outcome: "completed" });
+		await observeCanonicalTerminal(session, deadline, {
+			outcome: "failed",
+			terminalErrorCode: "run_deadline_exceeded",
+		});
 		expect(deadline.record.status).toBe("failed");
 		expect(deadline.receipt()?.terminalError?.code).toBe("run_deadline_exceeded");
 		expect(notifications).toEqual([
@@ -339,7 +343,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		await gateway.dispose();
 	});
 
-	it("notifies interrupted recovery while the default coordinator has no Worker side effects", () => {
+	it("notifies interrupted recovery while the default coordinator has no Worker side effects", async () => {
 		const session = SessionManager.inMemory("/workspace/worker-recovery");
 		const initial = createRunLifecycleCoordinator(session, { diagnostics: () => {} });
 		const run = initial.reserve().accept({ runId: "run-interrupted", attempt: 1, model: MODEL });
@@ -352,13 +356,14 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		expect(recovered.rebuildIndex().get("run-interrupted")?.recovery).toBe("interrupted");
 		expect(interrupted).toEqual(["run-interrupted"]);
 
-		const defaultCoordinator = createRunLifecycleCoordinator(SessionManager.inMemory("/workspace/default-run"), {
+		const defaultSession = SessionManager.inMemory("/workspace/default-run");
+		const defaultCoordinator = createRunLifecycleCoordinator(defaultSession, {
 			diagnostics: () => {},
 		});
 		const defaultRun = defaultCoordinator.reserve().accept({ runId: "run-default", attempt: 1, model: MODEL });
 		defaultRun.start();
 		defaultRun.requestCancel();
-		defaultRun.settle({ outcome: "failed" });
+		await observeCanonicalTerminal(defaultSession, defaultRun, { outcome: "cancelled" });
 		expect(defaultRun.record.status).toBe("cancelled");
 	});
 });
