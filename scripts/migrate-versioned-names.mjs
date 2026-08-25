@@ -656,14 +656,30 @@ function addEdit(fileName, edit) {
 	editsByFile.set(fileName, edits);
 }
 
+function specifierUsesDependencyOwnedKey(node) {
+	let declaration = node.parent;
+	while (!ts.isImportDeclaration(declaration) && !ts.isExportDeclaration(declaration)) {
+		if (ts.isSourceFile(declaration.parent)) return false;
+		declaration = declaration.parent;
+	}
+	if (declaration.moduleSpecifier === undefined || !ts.isStringLiteralLike(declaration.moduleSpecifier)) return false;
+	const moduleSymbol = checker.getSymbolAtLocation(declaration.moduleSpecifier);
+	const declarationFiles = new Set((moduleSymbol?.declarations ?? []).map((moduleDeclaration) => resolve(moduleDeclaration.getSourceFile().fileName)));
+	if (declarationFiles.size === 0) return !declaration.moduleSpecifier.text.startsWith(".");
+	return [...declarationFiles].some((fileName) => {
+		const relativeFileName = relative(workspaceRoot, fileName);
+		return relativeFileName === ".." || relativeFileName.startsWith(`..${sep}`) || relativeFileName.split(sep).includes("node_modules");
+	});
+}
+
 function editSpecifier(sourceFile, node) {
 	const imported = node.propertyName ?? node.name;
-	const importedTarget = reviewedMapping.has(imported.text) ? mappedIdentifier(imported) : undefined;
+	const importedTarget = !specifierUsesDependencyOwnedKey(node) && reviewedMapping.has(imported.text) ? mappedIdentifier(imported) : undefined;
 	const localTarget = mappedIdentifier(node.name);
 	if (importedTarget === undefined && localTarget === undefined) return;
 	const nextImported = importedTarget ?? imported.text;
 	const nextLocal = localTarget ?? node.name.text;
-	if (ts.isImportSpecifier(node) && node.propertyName === undefined && importedTarget === undefined && localTarget !== undefined) {
+	if (node.propertyName === undefined && importedTarget === undefined && localTarget !== undefined) {
 		addEdit(sourceFile.fileName, {
 			start: node.getStart(sourceFile),
 			end: node.end,

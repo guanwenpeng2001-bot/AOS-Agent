@@ -23,6 +23,20 @@ function runMigration(root, check = false) {
 	);
 }
 
+async function writeMockExternalPackage(root) {
+	const packageRoot = join(root, "node_modules/mock-versioned-package");
+	await mkdir(packageRoot, { recursive: true });
+	await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({ name: "mock-versioned-package", version: "1.0.0", types: "index.d.ts" }, null, "\t")}\n`);
+	await writeFile(
+		join(packageRoot, "index.d.ts"),
+		[
+			'export interface WidgetV1 { readonly source: "vendor" }',
+			"export declare function createWidgetV1(): WidgetV1;",
+			"",
+		].join("\n"),
+	);
+}
+
 function typecheckedProgram(root) {
 	const configPath = join(root, "tsconfig.json");
 	const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -381,6 +395,114 @@ test("migrates reviewed symbols once and then passes an idempotent check", async
 	}
 });
 
+test("preserves dependency-owned specifier keys while migrating public and local aliases", async () => {
+	const root = await mkdtemp(join(tmpdir(), "aos-agent-versioned-external-names-"));
+	try {
+		await mkdir(join(root, "src"), { recursive: true });
+		await writeMockExternalPackage(root);
+		await writeFile(
+			join(root, "tsconfig.json"),
+			`${JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true, module: "NodeNext", moduleResolution: "NodeNext", noEmit: true, strict: true }, include: ["src/**/*.ts"] }, null, "\t")}\n`,
+		);
+		await writeFile(join(root, "mapping.json"), `${JSON.stringify({ WidgetV1: "Widget", createWidgetV1: "createWidget" }, null, "\t")}\n`);
+		const publicSource = [
+			'export { createWidgetV1, createWidgetV1 as buildWidget } from "mock-versioned-package";',
+			'export type { WidgetV1 } from "mock-versioned-package";',
+			"",
+		].join("\n");
+		const directSource = [
+			'import { createWidgetV1, type WidgetV1 } from "mock-versioned-package";',
+			'import { createWidgetV1 as buildWidget } from "mock-versioned-package";',
+			'interface Widget { readonly source: "local" }',
+			'function createWidget(): Widget { return { source: "local" }; }',
+			"export const importedWidget = createWidgetV1();",
+			"export const builtWidget = buildWidget();",
+			"export const localWidget = createWidget();",
+			"export type ImportedWidget = WidgetV1;",
+			"export type LocalWidget = Widget;",
+			"",
+		].join("\n");
+		const directTypeSource = [
+			'import type { WidgetV1 } from "mock-versioned-package";',
+			"export type WidgetBox = { readonly value: WidgetV1 };",
+			"",
+		].join("\n");
+		const consumerSource = [
+			'import { buildWidget, createWidgetV1, type WidgetV1 } from "./index.ts";',
+			"export const current = createWidgetV1();",
+			"export const aliased = buildWidget();",
+			"export type CurrentWidget = WidgetV1;",
+			"",
+		].join("\n");
+		await writeFile(join(root, "src/index.ts"), publicSource);
+		await writeFile(join(root, "src/direct.ts"), directSource);
+		await writeFile(join(root, "src/direct-type.ts"), directTypeSource);
+		await writeFile(join(root, "src/consumer.ts"), consumerSource);
+		typecheckedProgram(root);
+
+		const initialCheck = runMigration(root, true);
+		assert.equal(initialCheck.status, 1, initialCheck.stderr || initialCheck.stdout);
+		assert.match(initialCheck.stdout, /changed files \(4\)/u);
+		assert.equal(await readFile(join(root, "src/index.ts"), "utf8"), publicSource);
+		assert.equal(await readFile(join(root, "src/direct.ts"), "utf8"), directSource);
+
+		const first = runMigration(root);
+		assert.equal(first.status, 0, first.stderr || first.stdout);
+		assert.equal(first.stdout, initialCheck.stdout);
+		assert.equal(
+			await readFile(join(root, "src/index.ts"), "utf8"),
+			[
+				'export { createWidgetV1 as createWidget, createWidgetV1 as buildWidget } from "mock-versioned-package";',
+				'export type { WidgetV1 as Widget } from "mock-versioned-package";',
+				"",
+			].join("\n"),
+		);
+		assert.equal(
+			await readFile(join(root, "src/direct.ts"), "utf8"),
+			[
+				'import { createWidgetV1 as createWidget, type WidgetV1 as Widget } from "mock-versioned-package";',
+				'import { createWidgetV1 as buildWidget } from "mock-versioned-package";',
+				'interface WidgetLocal { readonly source: "local" }',
+				'function createWidgetLocal(): WidgetLocal { return { source: "local" }; }',
+				"export const importedWidget = createWidget();",
+				"export const builtWidget = buildWidget();",
+				"export const localWidget = createWidgetLocal();",
+				"export type ImportedWidget = Widget;",
+				"export type LocalWidget = WidgetLocal;",
+				"",
+			].join("\n"),
+		);
+		assert.equal(
+			await readFile(join(root, "src/direct-type.ts"), "utf8"),
+			[
+				'import type { WidgetV1 as Widget } from "mock-versioned-package";',
+				"export type WidgetBox = { readonly value: Widget };",
+				"",
+			].join("\n"),
+		);
+		assert.equal(
+			await readFile(join(root, "src/consumer.ts"), "utf8"),
+			[
+				'import { buildWidget, createWidget, type Widget } from "./index.ts";',
+				"export const current = createWidget();",
+				"export const aliased = buildWidget();",
+				"export type CurrentWidget = Widget;",
+				"",
+			].join("\n"),
+		);
+		typecheckedProgram(root);
+
+		const second = runMigration(root);
+		assert.equal(second.status, 0, second.stderr || second.stdout);
+		assert.match(second.stdout, /changed files \(0\)/u);
+		const checked = runMigration(root, true);
+		assert.equal(checked.status, 0, checked.stderr || checked.stdout);
+		assert.equal(checked.stdout, second.stdout);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("fails closed when a conflicting binding is exported", async () => {
 	const root = await mkdtemp(join(tmpdir(), "aos-agent-versioned-name-conflict-"));
 	try {
@@ -409,6 +531,43 @@ test("fails closed when a conflicting binding is exported", async () => {
 		const second = runMigration(root);
 		assert.equal(second.status, 1, second.stderr || second.stdout);
 		assert.equal(second.stdout, first.stdout);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("fails closed without rewriting dependency-owned specifiers when an exported local binding conflicts", async () => {
+	const root = await mkdtemp(join(tmpdir(), "aos-agent-versioned-external-conflict-"));
+	try {
+		await mkdir(join(root, "src"), { recursive: true });
+		await writeMockExternalPackage(root);
+		await writeFile(
+			join(root, "tsconfig.json"),
+			`${JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true, module: "NodeNext", moduleResolution: "NodeNext", noEmit: true, strict: true }, include: ["src/**/*.ts"] }, null, "\t")}\n`,
+		);
+		await writeFile(join(root, "mapping.json"), `${JSON.stringify({ createWidgetV1: "createWidget" }, null, "\t")}\n`);
+		const publicSource = 'export { createWidgetV1 } from "mock-versioned-package";\n';
+		const unsafeSource = [
+			'import { createWidgetV1 } from "mock-versioned-package";',
+			'export function createWidget(): string { return "existing"; }',
+			"export const result = createWidgetV1().source;",
+			"",
+		].join("\n");
+		await writeFile(join(root, "src/index.ts"), publicSource);
+		await writeFile(join(root, "src/unsafe.ts"), unsafeSource);
+		typecheckedProgram(root);
+
+		const first = runMigration(root);
+		assert.equal(first.status, 1, first.stderr || first.stdout);
+		assert.match(first.stdout, /src\/unsafe\.ts:createWidget post-rename binding collision: createWidget is not a safe local binding/u);
+		assert.equal(await readFile(join(root, "src/index.ts"), "utf8"), publicSource);
+		assert.equal(await readFile(join(root, "src/unsafe.ts"), "utf8"), unsafeSource);
+
+		const checked = runMigration(root, true);
+		assert.equal(checked.status, 1, checked.stderr || checked.stdout);
+		assert.equal(checked.stdout, first.stdout);
+		assert.equal(await readFile(join(root, "src/index.ts"), "utf8"), publicSource);
+		assert.equal(await readFile(join(root, "src/unsafe.ts"), "utf8"), unsafeSource);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
