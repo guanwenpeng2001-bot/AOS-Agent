@@ -15,7 +15,9 @@ import {
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
 	type ModelProfile,
+	type PublicExecutionError,
 	type RoleRevision,
+	type SideEffectState,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
@@ -153,6 +155,8 @@ class PromptTaskProvider implements TaskExecutorProvider {
 	receivedAgentInstance: AgentInstance | undefined;
 	receivedRoleRevision: RoleRevision | undefined;
 	receivedModelProfile: ModelProfile | undefined;
+	receiptError: PublicExecutionError | undefined;
+	sideEffectState: SideEffectState = "none";
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [PROVIDER_CAPABILITY]; }
 
@@ -179,16 +183,17 @@ class PromptTaskProvider implements TaskExecutorProvider {
 			agentInstanceId: attempt.agentInstanceId,
 			bindingId: attempt.bindingId,
 			bindingEpochIds: [...attempt.bindingEpochIds],
-			status: "succeeded",
+			status: this.receiptError === undefined ? "succeeded" : "failed",
 			workerReceiptRefs: [],
 			artifacts: [OUTPUT_ARTIFACT],
+			...(this.receiptError === undefined ? {} : { error: this.receiptError }),
 			provenance: {
 				producerKind: "agent_executor",
 				providerId: this.providerId,
 				producedAt: NOW,
 				correlation: { ...options.correlation, attemptReceiptId },
 			},
-			sideEffectState: "none",
+			sideEffectState: this.sideEffectState,
 		});
 	}
 
@@ -272,6 +277,47 @@ describe("Foundation Prompt Task adapter", () => {
 				expect(facts).toContainEqual(expect.objectContaining({ kind: "fact", objectType: dependencyFactTypes[name], objectId: `${name}-binding-prompt-task` }));
 			}
 			expect(facts.map((fact) => fact.objectType)).toEqual(expect.arrayContaining(["agent_binding", "dispatch", "attempt", "attempt_receipt", "task_result", "run_receipt"]));
+	});
+
+	it.each([
+		["provider failure", "provider_unavailable", "transient", "none"],
+		["deadline", "deadline_exceeded", "deadline", "none"],
+		["unknown side effect", "side_effect_unknown", "side_effect_unknown", "side_effect_unknown"],
+	] as const)("preserves the durable AttemptReceipt category for a child-composed %s", async (_name, code, category, sideEffectState) => {
+		const calls: PromptTaskDependencyName[] = [];
+		const session = new Session(new InMemorySessionStorage({ id: `session-child-${category}`, createdAt: 1 }));
+		const provider = new PromptTaskProvider();
+		provider.receiptError = { code, message: `${category} failure`, category, retryable: category === "transient" };
+		provider.sideEffectState = sideEffectState;
+		const runtime = createModelsWithResponse();
+		const adapter = createPromptTaskAdapter({
+			dependencies: dependencies(calls),
+			provider,
+			subagentRoles: {
+				registry: new InMemoryRoleRegistry({ now: () => NOW }),
+				scope: "project",
+				parentLaneId: "main",
+				spawn: async () => Result.err(new FoundationError("subagent_lost", "spawn is not used by fixed composition")),
+				compose: async () => Result.ok({ attemptReceiptIds: [`child-receipt-${category}`] }),
+			},
+			harness: {
+				session,
+				env: executionEnv(),
+				models: runtime.models,
+				model: runtime.model,
+				tools: [],
+				activeToolNames: [],
+				systemPrompt: "Prompt Task child settlement test",
+			},
+		});
+		const execution = await adapter.execute({ ...promptInput(), runId: `run-child-${category}` });
+		expect(execution.attemptReceipt.error).toEqual(provider.receiptError);
+		expect(execution.taskResult.status).toBe("failed");
+		expect(execution.runReceipt).toMatchObject({
+			terminalStatus: "failed",
+			terminalErrorCode: code,
+			terminalError: { code, category },
+		});
 	});
 
 	it("fails construction when any required dependency is absent", () => {
