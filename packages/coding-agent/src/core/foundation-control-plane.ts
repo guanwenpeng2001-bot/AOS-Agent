@@ -124,6 +124,12 @@ import {
 	type RunLifecycleCoordinator,
 	type RunSchedulerLifecycleHooks,
 } from "./run-lifecycle.ts";
+import {
+	runtimeClockFor,
+	withRuntimeClock,
+	type RuntimeClock,
+	type RuntimeTimerHandle,
+} from "./runtime-clock.ts";
 import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
 import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
@@ -287,13 +293,14 @@ export class TrustedSchedulerCompositionV1 {
 	private readonly sessionId: string;
 	private readonly pollIntervalMs: number;
 	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
+	private readonly clock: RuntimeClock;
 	private readonly unregisterRunHooks: () => void;
 	private readonly sourceSession: Session;
 	private readonly targetSession: Session;
 	private readonly targetSessionId: string;
 	private identityProof: Promise<void> | undefined;
 	private unsubscribe: (() => void) | undefined;
-	private timer: ReturnType<typeof setTimeout> | undefined;
+	private timer: RuntimeTimerHandle | undefined;
 	private currentTick: Promise<void> | undefined;
 	private wakeQueued = false;
 	private started = false;
@@ -308,6 +315,8 @@ export class TrustedSchedulerCompositionV1 {
 		if (options.pollIntervalMs !== undefined && !Number.isFinite(options.pollIntervalMs)) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler poll interval must be finite");
 		}
+		this.clock = runtimeClockFor(options);
+		const now = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.sessionId = options.runLifecycleSession.getSessionId();
 		this.pollIntervalMs = Math.min(
 			SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
@@ -353,53 +362,70 @@ export class TrustedSchedulerCompositionV1 {
 					},
 				},
 				options.gateLookup,
-				{ ...(options.now === undefined ? {} : { now: options.now }), onNodeTerminal: wake },
+				{ now, onNodeTerminal: wake },
 			);
-			workflow = new SchedulerWorkflowController({
-				enabled: true,
-				sourceSession: options.sourceSession,
-				targetSession: options.targetSession,
-				sourceSessionId: this.sessionId,
-				targetSessionId: options.targetSessionId,
-				sourceGraph: this.graph,
-				targetGraph: options.targetGraph,
-				ownerId: options.ownerId,
-				registry: options.registry,
-				task: options.task,
-				binding: options.binding,
-				runLifecycleSession: options.runLifecycleSession,
-				runLifecycleHookOwnership: "host",
-				...(options.now === undefined ? {} : { now: options.now }),
-			});
+			workflow = new SchedulerWorkflowController(
+				withRuntimeClock(
+					{
+						enabled: true,
+						sourceSession: options.sourceSession,
+						targetSession: options.targetSession,
+						sourceSessionId: this.sessionId,
+						targetSessionId: options.targetSessionId,
+						sourceGraph: this.graph,
+						targetGraph: options.targetGraph,
+						ownerId: options.ownerId,
+						registry: options.registry,
+						task: options.task,
+						binding: options.binding,
+						runLifecycleSession: options.runLifecycleSession,
+						runLifecycleHookOwnership: "host" as const,
+						now,
+					},
+					this.clock,
+				),
+			);
 			this.workflow = workflow;
 			dispatchLifecycleHooks = this.workflow.dispatch.runLifecycleHooks();
 			this.messages = this.workflow.messages;
 			this.handoff = this.workflow.handoff;
 			this.fanIn = this.workflow.fanIn;
-			host = new SchedulerHostV1({
-				enabled: true,
-				sessionId: this.sessionId,
-				ownerId: options.ownerId,
-				graph: this.graph,
-				queue: this.workflow.queue,
-				dispatch: this.workflow.dispatch,
-				fanIn: this.fanIn,
-				resolveRunAssociation: options.resolveRunAssociation,
-				...(options.settlementEvidence === undefined ? {} : { settlementEvidence: options.settlementEvidence }),
-				settleRunAtHost: options.settleRunAtHost,
-				...(options.now === undefined ? {} : { now: options.now }),
-			});
+			host = new SchedulerHostV1(
+				withRuntimeClock(
+					{
+						enabled: true,
+						sessionId: this.sessionId,
+						ownerId: options.ownerId,
+						graph: this.graph,
+						queue: this.workflow.queue,
+						dispatch: this.workflow.dispatch,
+						fanIn: this.fanIn,
+						resolveRunAssociation: options.resolveRunAssociation,
+						...(options.settlementEvidence === undefined
+							? {}
+							: { settlementEvidence: options.settlementEvidence }),
+						settleRunAtHost: options.settleRunAtHost,
+						now,
+					},
+					this.clock,
+				),
+			);
 			this.host = host;
-			this.deadlock = new SchedulerDeadlockController({
-				enabled: true,
-				sessionId: this.sessionId,
-				ownerId: options.ownerId,
-				ledger: options.sourceSession,
-				graph: this.graph,
-				queue: this.workflow.queue,
-				handoff: this.handoff,
-				...(options.now === undefined ? {} : { now: options.now }),
-			});
+			this.deadlock = new SchedulerDeadlockController(
+				withRuntimeClock(
+					{
+						enabled: true,
+						sessionId: this.sessionId,
+						ownerId: options.ownerId,
+						ledger: options.sourceSession,
+						graph: this.graph,
+						queue: this.workflow.queue,
+						handoff: this.handoff,
+						now,
+					},
+					this.clock,
+				),
+			);
 			this.start();
 		} catch (error) {
 			this.started = false;
@@ -442,7 +468,7 @@ export class TrustedSchedulerCompositionV1 {
 	wake(): void {
 		if (!this.started || this.wakeQueued) return;
 		this.wakeQueued = true;
-		queueMicrotask(() => {
+		this.clock.queueMicrotask(() => {
 			if (!this.started || !this.wakeQueued) return;
 			this.wakeQueued = false;
 			void this.tick().catch(() => { this.tickFailures += 1; });
@@ -502,11 +528,11 @@ export class TrustedSchedulerCompositionV1 {
 
 	private schedulePoll(): void {
 		if (this.timer !== undefined) return;
-		this.timer = setTimeout(() => {
+		this.timer = this.clock.setTimeout(() => {
 			this.timer = undefined;
 			this.wake();
 		}, this.pollIntervalMs);
-		this.timer.unref();
+		this.clock.unrefTimeout(this.timer);
 	}
 
 	status(): SchedulerSafeStatusV1 {
@@ -536,7 +562,7 @@ export class TrustedSchedulerCompositionV1 {
 		this.wakeQueued = false;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		if (this.timer !== undefined) clearTimeout(this.timer);
+		if (this.timer !== undefined) this.clock.clearTimeout(this.timer);
 		this.timer = undefined;
 		let failure: unknown;
 		try {

@@ -1,5 +1,7 @@
+import { FoundationError, Result } from "@aos-agent/agent-core";
 import { describe, expect, test } from "vitest";
-import { SYSTEM_RUNTIME_CLOCK } from "../src/core/runtime-clock.ts";
+import { SYSTEM_RUNTIME_CLOCK, withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { type SchedulerHostOptionsV1, SchedulerHostV1 } from "../src/core/scheduler.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 describe("runtime clock", () => {
@@ -53,6 +55,88 @@ describe("runtime clock", () => {
 		clock.advanceTo(10);
 		expect(events).toEqual([5, 6]);
 		expect(clock.monotonicNow()).toBe(10);
+	});
+
+	test("drives real Hosts in stable timer order and drains their timers on stop", async () => {
+		const clock = new DeterministicClock({
+			wallTimeMs: Date.parse("2026-08-25T12:00:00.000Z"),
+			monotonicTimeMs: 100,
+		});
+		const recoverOrder: string[] = [];
+		const options = (id: string): SchedulerHostOptionsV1 => ({
+			enabled: true,
+			sessionId: `session_${id}`,
+			ownerId: `owner_${id}`,
+			pollIntervalMs: 50,
+			graph: {
+				list: () => ({ graphs: [], truncated: false }),
+				attach: () => {
+					throw new Error("not reached");
+				},
+				settle: () => {
+					throw new Error("not reached");
+				},
+			},
+			queue: {
+				async recoverExpired() {
+					recoverOrder.push(id);
+					return Result.ok([]);
+				},
+				async snapshot() {
+					return Result.ok({ entries: [], claims: [], dispatches: [] });
+				},
+				async enqueue() {
+					return Result.err(new FoundationError("scheduler_queue_invalid", "not reached"));
+				},
+				async claim() {
+					return Result.err(new FoundationError("scheduler_queue_invalid", "not reached"));
+				},
+				async renew() {
+					return Result.err(new FoundationError("scheduler_claim_expired", "not reached"));
+				},
+				async markTerminal() {
+					return Result.err(new FoundationError("scheduler_queue_invalid", "not reached"));
+				},
+			},
+			dispatch: {
+				async dispatchRunClaimed() {
+					return Result.err(new FoundationError("scheduler_dispatch_invalid", "not reached"));
+				},
+			},
+			fanIn: {
+				async settle() {
+					return Result.err(new FoundationError("scheduler_fanin_invalid", "not reached"));
+				},
+			},
+			async resolveRunAssociation() {
+				return Result.err(new FoundationError("scheduler_not_found", "not reached"));
+			},
+			async settleRunAtHost() {
+				return Result.ok(undefined);
+			},
+		});
+		const first = new SchedulerHostV1(withRuntimeClock(options("first"), clock));
+		const second = new SchedulerHostV1(withRuntimeClock(options("second"), clock));
+
+		expect(first.start()).toBe(true);
+		expect(second.start()).toBe(true);
+		expect(clock.pendingCount()).toBe(2);
+
+		clock.advanceBy(0);
+		await Promise.all([first.tick(), second.tick()]);
+		expect(recoverOrder).toEqual(["first", "second"]);
+		expect(clock.pendingCount()).toBe(2);
+
+		clock.advanceBy(50);
+		await Promise.all([first.tick(), second.tick()]);
+		expect(recoverOrder).toEqual(["first", "second", "first", "second"]);
+		expect(clock.pendingCount()).toBe(2);
+
+		first.stop();
+		second.stop();
+		expect(clock.pendingCount()).toBe(0);
+		clock.flush();
+		expect(recoverOrder).toEqual(["first", "second", "first", "second"]);
 	});
 
 	test("rejects runaway self-scheduling work", () => {

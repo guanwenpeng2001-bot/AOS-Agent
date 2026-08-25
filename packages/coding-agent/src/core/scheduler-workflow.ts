@@ -38,6 +38,7 @@ import {
 } from "./scheduler-messages.ts";
 import { SchedulerQueueStore } from "./scheduler-queue.ts";
 import type { RunLedgerSession } from "./run-lifecycle.ts";
+import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "./runtime-clock.ts";
 import {
 	applySchedulerWakeFire,
 	isSchedulerQueueTerminal,
@@ -329,6 +330,7 @@ export class SchedulerWorkflowController {
 	private readonly binding: AgentBindingV1;
 	private readonly compensationPolicy: SchedulerWorkflowCompensationPolicyV1;
 	private readonly maxAttempts: number;
+	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly ledger: SessionLedgerV1;
 	private wakes = new Map<string, SchedulerWakeV1>();
@@ -336,6 +338,7 @@ export class SchedulerWorkflowController {
 	private eventRevisions = new Map<string, number>();
 
 	constructor(options: SchedulerWorkflowControllerOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sourceSession = options.sourceSession;
 		this.sourceSessionId = options.sourceSessionId;
@@ -346,25 +349,39 @@ export class SchedulerWorkflowController {
 		this.binding = options.binding;
 		this.compensationPolicy = options.compensationPolicy ?? "stop";
 		this.maxAttempts = options.maxAttempts ?? SCHEDULER_DEFAULT_MAX_ATTEMPTS;
-		this.nowFn = options.now ?? (() => new Date().toISOString());
+		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.store = new WorkflowStore(options.sourceSession, { ownerId: options.ownerId });
 		this.ledger = new SessionLedgerV1(options.sourceSession, { ownerId: options.ownerId });
-		this.queue = new SchedulerQueueStore({
-			ledger: options.sourceSession,
-			sessionId: options.sourceSessionId,
-			ownerId: options.ownerId,
-			now: this.nowFn,
-		});
-		this.dispatch = new SchedulerDispatchController({
-			session: options.sourceSession,
-			queue: this.queue,
-			registry: options.registry,
-			sessionId: options.sourceSessionId,
-			ownerId: options.ownerId,
-			...(options.runLifecycleSession === undefined ? {} : { runLifecycleSession: options.runLifecycleSession }),
-			...(options.runLifecycleHookOwnership === undefined ? {} : { runLifecycleHookOwnership: options.runLifecycleHookOwnership }),
-			now: this.nowFn,
-		});
+		this.queue = new SchedulerQueueStore(
+			withRuntimeClock(
+				{
+					ledger: options.sourceSession,
+					sessionId: options.sourceSessionId,
+					ownerId: options.ownerId,
+					now: this.nowFn,
+				},
+				this.clock,
+			),
+		);
+		this.dispatch = new SchedulerDispatchController(
+			withRuntimeClock(
+				{
+					session: options.sourceSession,
+					queue: this.queue,
+					registry: options.registry,
+					sessionId: options.sourceSessionId,
+					ownerId: options.ownerId,
+					...(options.runLifecycleSession === undefined
+						? {}
+						: { runLifecycleSession: options.runLifecycleSession }),
+					...(options.runLifecycleHookOwnership === undefined
+						? {}
+						: { runLifecycleHookOwnership: options.runLifecycleHookOwnership }),
+					now: this.nowFn,
+				},
+				this.clock,
+			),
+		);
 		this.fanIn = new SchedulerFanInController({
 			session: options.sourceSession,
 			sessionId: options.sourceSessionId,
@@ -376,33 +393,43 @@ export class SchedulerWorkflowController {
 			{ session: options.targetSession, taskGraph: options.targetGraph },
 		];
 		this.messages = new SchedulerMessageOrchestratorV1(endpoints, { ownerId: options.ownerId });
-		this.handoff = new SchedulerHandoffController({
-			ledger: options.sourceSession,
-			queue: this.queue,
-			sessionId: options.sourceSessionId,
-			ownerId: options.ownerId,
-			now: this.nowFn,
-			cancelSourceDispatch: (queueEntryId, fencingToken) =>
-				this.dispatch.cancelDispatch(queueEntryId, fencingToken),
-			targetAvailable: async () => true,
-		});
-		this.host = new SchedulerHostV1({
-			enabled: false,
-			sessionId: options.sourceSessionId,
-			ownerId: options.ownerId,
-			graph: options.sourceGraph,
-			queue: this.queue,
-			dispatch: this.dispatch,
-			fanIn: this.fanIn,
-			resolveRunAssociation: async () =>
-				Result.ok({
-					runId: `run_${options.task.taskId}`,
-					task: options.task,
-					binding: options.binding,
-				}),
-			settleRunAtHost: async () => Result.ok(undefined),
-			now: this.nowFn,
-		});
+		this.handoff = new SchedulerHandoffController(
+			withRuntimeClock(
+				{
+					ledger: options.sourceSession,
+					queue: this.queue,
+					sessionId: options.sourceSessionId,
+					ownerId: options.ownerId,
+					now: this.nowFn,
+					cancelSourceDispatch: (queueEntryId, fencingToken) =>
+						this.dispatch.cancelDispatch(queueEntryId, fencingToken),
+					targetAvailable: async () => true,
+				},
+				this.clock,
+			),
+		);
+		this.host = new SchedulerHostV1(
+			withRuntimeClock(
+				{
+					enabled: false,
+					sessionId: options.sourceSessionId,
+					ownerId: options.ownerId,
+					graph: options.sourceGraph,
+					queue: this.queue,
+					dispatch: this.dispatch,
+					fanIn: this.fanIn,
+					resolveRunAssociation: async () =>
+						Result.ok({
+							runId: `run_${options.task.taskId}`,
+							task: options.task,
+							binding: options.binding,
+						}),
+					settleRunAtHost: async () => Result.ok(undefined),
+					now: this.nowFn,
+				},
+				this.clock,
+			),
+		);
 	}
 
 	async dispose(): Promise<void> {

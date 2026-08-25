@@ -44,6 +44,7 @@ import {
 	type Session,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
+import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SchedulerInProcessTaskExecutorProvider,
@@ -377,11 +378,12 @@ function schedulerExecutionSignal(
 	deadlineAt: string | undefined,
 	nowIso: string,
 	parent: AbortSignal | undefined,
+	clock: RuntimeClock,
 ): SchedulerExecutionSignalV1 {
 	if (deadlineAt === undefined) return { signal: parent, dispose() {} };
 	const controller = new AbortController();
 	let remainingMs = Date.parse(deadlineAt) - Date.parse(nowIso);
-	let timeout: ReturnType<typeof setTimeout> | undefined;
+	let timeout: RuntimeTimerHandle | undefined;
 	const abortFromParent = (): void => {
 		controller.abort(parent?.reason);
 	};
@@ -391,11 +393,11 @@ function schedulerExecutionSignal(
 			return;
 		}
 		const delayMs = Math.min(remainingMs, 2_147_483_647);
-		timeout = setTimeout(() => {
+		timeout = clock.setTimeout(() => {
 			remainingMs -= delayMs;
 			schedule();
 		}, delayMs);
-		timeout.unref();
+		clock.unrefTimeout(timeout);
 	};
 	if (parent?.aborted === true) abortFromParent();
 	else parent?.addEventListener("abort", abortFromParent, { once: true });
@@ -403,7 +405,7 @@ function schedulerExecutionSignal(
 	return {
 		signal: controller.signal,
 		dispose() {
-			if (timeout !== undefined) clearTimeout(timeout);
+			if (timeout !== undefined) clock.clearTimeout(timeout);
 			parent?.removeEventListener("abort", abortFromParent);
 		},
 	};
@@ -494,6 +496,7 @@ export class SchedulerDispatchController {
 	private readonly schedulerLifecycleHooks: RunSchedulerLifecycleHooks;
 	private readonly unregisterRunLifecycleHooks: (() => void) | undefined;
 	private readonly laneId: string;
+	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly requiredCapabilities: readonly FoundationProviderCapabilityV1[];
 	private readonly workspaceDigest: FingerprintV1 | undefined;
@@ -504,6 +507,7 @@ export class SchedulerDispatchController {
 	private runLifecycleDisposed = false;
 
 	constructor(options: SchedulerDispatchControllerOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.session = options.session;
 		this.queue = options.queue;
 		this.registry = options.registry;
@@ -528,7 +532,7 @@ export class SchedulerDispatchController {
 			? undefined
 			: registerRunSchedulerLifecycleHooks(options.runLifecycleSession, this.schedulerLifecycleHooks);
 		this.laneId = options.laneId ?? "main";
-		this.nowFn = options.now ?? (() => new Date().toISOString());
+		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.requiredCapabilities = options.requiredCapabilities ?? [inProcessCapability()];
 		this.workspaceDigest = options.workspaceDigest;
 	}
@@ -851,6 +855,7 @@ export class SchedulerDispatchController {
 			prepared.assembly.dispatch.deadlineAt,
 			this.nowIso(),
 			request.signal,
+			this.clock,
 		);
 		let markResolved = false;
 		let resolveMarked: (marked: boolean) => void = () => {};
@@ -933,6 +938,7 @@ export class SchedulerDispatchController {
 			prepared.assembly.dispatch.deadlineAt,
 			this.nowIso(),
 			request.signal,
+			this.clock,
 		);
 		let cancellation: Promise<ResultValue<void, FoundationError>> | undefined;
 		const requestCancellation = (): void => {

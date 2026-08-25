@@ -22,6 +22,7 @@ import {
 	type Result as ResultValue,
 	type SchedulerHandoffEventPayloadV1,
 } from "@aos-agent/agent-core";
+import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import {
 	applySchedulerHandoffTransition,
 	isSchedulerDispatchTerminal,
@@ -323,6 +324,7 @@ export class SchedulerHandoffController {
 	private readonly sessionId: string;
 	private readonly ownerId: string;
 	private readonly lane: string;
+	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly writerLeaseTtlMs: number;
 	private readonly cancelSourceDispatch: SchedulerCancelSourceDispatchV1 | undefined;
@@ -334,12 +336,13 @@ export class SchedulerHandoffController {
 	private mutationTail: Promise<void> = Promise.resolve();
 
 	constructor(options: SchedulerHandoffControllerOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.ledger = options.ledger;
 		this.queue = options.queue;
 		this.sessionId = options.sessionId;
 		this.ownerId = options.ownerId;
 		this.lane = options.lane ?? "main";
-		this.nowFn = options.now ?? (() => new Date().toISOString());
+		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.writerLeaseTtlMs = options.writerLeaseTtlMs ?? 15 * 60 * 1000;
 		this.cancelSourceDispatch = options.cancelSourceDispatch;
 		this.targetAvailable = options.targetAvailable;
@@ -849,7 +852,7 @@ export class SchedulerHandoffController {
 	}
 
 	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
-		const nowMs = Date.now();
+		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (
 			this.writerLease !== undefined &&

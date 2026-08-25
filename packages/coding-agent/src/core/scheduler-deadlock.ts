@@ -25,6 +25,7 @@ import {
 	type SchedulerDispatchEventPayloadV1,
 	type SchedulerQueueEventPayloadV1,
 } from "@aos-agent/agent-core";
+import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import { SCHEDULER_MESSAGE_OBJECT_TYPES_V1, type SchedulerAskWaitFactV1 } from "./scheduler-messages.ts";
 import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
 import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshotV1 } from "./scheduler-queue.ts";
@@ -444,6 +445,7 @@ export class SchedulerDeadlockController {
 	private readonly gates: TaskGateStore | undefined;
 	private readonly handoff: SchedulerHandoffController | undefined;
 	private readonly lane: string;
+	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly writerLeaseTtlMs: number;
 	private readonly maxQueueDepth: number;
@@ -463,6 +465,7 @@ export class SchedulerDeadlockController {
 	private fenceTimedOut = false;
 
 	constructor(options: SchedulerDeadlockControllerOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sessionId = options.sessionId;
 		this.ownerId = options.ownerId;
@@ -475,7 +478,7 @@ export class SchedulerDeadlockController {
 		this.gates = options.gates;
 		this.handoff = options.handoff;
 		this.lane = options.lane ?? "main";
-		this.nowFn = options.now ?? (() => new Date().toISOString());
+		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.writerLeaseTtlMs = options.writerLeaseTtlMs ?? 15 * 60 * 1000;
 		this.maxQueueDepth = Math.max(1, options.maxQueueDepth ?? SCHEDULER_QUEUE_MAX_DEPTH);
 		this.sessionMaxActive = Math.max(1, options.sessionMaxActive ?? SCHEDULER_SESSION_MAX_ACTIVE_ATTEMPTS);
@@ -543,22 +546,22 @@ export class SchedulerDeadlockController {
 	): Promise<SchedulerDeadlockTickResultV1> {
 		return new Promise((resolve) => {
 			let settled = false;
-			const timer = setTimeout(() => {
+			const timer = this.clock.setTimeout(() => {
 				if (settled) return;
 				settled = true;
 				this.fenceTimedOut = true;
 				resolve({ ...emptyTick(true), timedOut: true });
 			}, this.tickTimeoutMs);
-			timer.unref();
+			this.clock.unrefTimeout(timer);
 			work.then(
 				(result) => {
-					clearTimeout(timer);
+					this.clock.clearTimeout(timer);
 					if (settled) return;
 					settled = true;
 					resolve(result);
 				},
 				(error) => {
-					clearTimeout(timer);
+					this.clock.clearTimeout(timer);
 					if (settled) return;
 					settled = true;
 					resolve({
@@ -597,7 +600,7 @@ export class SchedulerDeadlockController {
 			budget.timedOut = true;
 			return true;
 		}
-		if (Date.parse(this.nowIso()) >= deadlineAt) {
+		if (this.clock.monotonicNow() >= deadlineAt) {
 			budget.timedOut = true;
 			return true;
 		}
@@ -612,7 +615,7 @@ export class SchedulerDeadlockController {
 				errors: [{ taskId: "scheduler", code: scanned.error.code }],
 			};
 		}
-		const deadlineAt = Date.parse(this.nowIso()) + this.tickTimeoutMs;
+		const deadlineAt = this.clock.monotonicNow() + this.tickTimeoutMs;
 		const budget = this.createBudget();
 		const errors: SchedulerDeadlockTickErrorV1[] = [];
 		const loaded = await this.reload();
@@ -1375,7 +1378,7 @@ export class SchedulerDeadlockController {
 	}
 
 	private async ensureWriterLease(): Promise<LedgerWriterLeaseV1> {
-		const nowMs = Date.now();
+		const nowMs = this.clock.wallNow();
 		const current = await this.ledger.getWriterLease();
 		if (
 			this.writerLease !== undefined &&

@@ -32,6 +32,7 @@ import {
 	type TaskEnvelopeV1,
 	type TaskResultV1,
 } from "@aos-agent/agent-core";
+import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import type { SchedulerDispatchOutcomeV1, SchedulerRunDispatchRequestV1 } from "./scheduler-dispatch.ts";
 import type { SchedulerFanInSettlementV1, SchedulerFanInSettleRequestV1 } from "./scheduler-fan-in.ts";
 import type {
@@ -1720,14 +1721,16 @@ export class SchedulerHostV1 {
 	private readonly maxNodesPerTick: number;
 	private readonly maxConcurrentAttempts: number;
 	private readonly claimTtlMs: number | undefined;
+	private readonly clock: RuntimeClock;
 	private readonly active = new Set<Promise<SchedulerHostWorkOutcomeV1>>();
 	private unsubscribe: (() => void) | undefined;
-	private pollTimer: ReturnType<typeof setTimeout> | undefined;
+	private pollTimer: RuntimeTimerHandle | undefined;
 	private currentTick: Promise<SchedulerHostTickResultV1> | undefined;
 	private started = false;
 	private wakeQueued = false;
 
 	constructor(options: SchedulerHostOptionsV1) {
+		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sessionId = options.sessionId;
 		this.ownerId = options.ownerId;
@@ -1775,14 +1778,14 @@ export class SchedulerHostV1 {
 		this.wakeQueued = false;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		if (this.pollTimer !== undefined) clearTimeout(this.pollTimer);
+		if (this.pollTimer !== undefined) this.clock.clearTimeout(this.pollTimer);
 		this.pollTimer = undefined;
 	}
 
 	wake(): void {
 		if (!this.enabled || !this.started || this.wakeQueued) return;
 		this.wakeQueued = true;
-		queueMicrotask(() => {
+		this.clock.queueMicrotask(() => {
 			if (!this.started || !this.wakeQueued) return;
 			this.wakeQueued = false;
 			void this.tick();
@@ -1805,11 +1808,11 @@ export class SchedulerHostV1 {
 
 	private schedulePoll(): void {
 		if (!this.started || this.pollTimer !== undefined) return;
-		this.pollTimer = setTimeout(() => {
+		this.pollTimer = this.clock.setTimeout(() => {
 			this.pollTimer = undefined;
 			this.wake();
 		}, this.pollIntervalMs);
-		this.pollTimer.unref();
+		this.clock.unrefTimeout(this.pollTimer);
 	}
 
 	private async tickOnce(): Promise<SchedulerHostTickResultV1> {
@@ -2074,13 +2077,13 @@ export class SchedulerHostV1 {
 	private startClaimRenewal(claim: SchedulerClaimV1): SchedulerHostClaimRenewalV1 {
 		const ttlMs = this.claimTtlMs ?? SCHEDULER_CLAIM_MAX_LEASE_TTL_MS;
 		const intervalMs = Math.max(SCHEDULER_CLAIM_MIN_LEASE_TTL_MS, Math.floor(ttlMs / 2));
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: RuntimeTimerHandle | undefined;
 		let stopped = false;
 		let failure: FoundationError | undefined;
 		let inFlight: Promise<void> = Promise.resolve();
 		const schedule = (): void => {
 			if (stopped || failure !== undefined) return;
-			timer = setTimeout(() => {
+			timer = this.clock.setTimeout(() => {
 				timer = undefined;
 				inFlight = this.queue
 					.renew({
@@ -2093,14 +2096,15 @@ export class SchedulerHostV1 {
 						else schedule();
 					});
 			}, intervalMs);
-			timer.unref();
+			this.clock.unrefTimeout(timer);
 		};
+		const clock = this.clock;
 		schedule();
 		return {
 			failure: () => failure,
 			async stop() {
 				stopped = true;
-				if (timer !== undefined) clearTimeout(timer);
+				if (timer !== undefined) clock.clearTimeout(timer);
 				await inFlight;
 			},
 		};
