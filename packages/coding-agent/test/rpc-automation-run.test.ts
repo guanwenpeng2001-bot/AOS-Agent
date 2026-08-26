@@ -464,6 +464,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 interface RpcExternalConnectorFixture {
 	readonly driver: RpcExternalConnectorDriver;
 	readonly processController: ReturnType<typeof createExternalConnectorTestSupervision>["processController"];
+	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
 	readonly selection: {
 		readonly providerId: string;
 		readonly revision: number;
@@ -571,12 +572,69 @@ async function installRpcExternalConnector(
 	return {
 		driver,
 		processController: supervision.processController,
+		registry,
 		selection: {
 			providerId,
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
 	};
+}
+
+function gateRegistrySelections(
+	registry: ReturnType<typeof createExternalConnectorRegistry>,
+	count: number,
+): {
+	readonly started: readonly Promise<void>[];
+	readonly completed: readonly Promise<void>[];
+	readonly release: (index: number) => void;
+	readonly calls: () => number;
+} {
+	const startedResolvers: Array<() => void> = [];
+	const completedResolvers: Array<() => void> = [];
+	const releaseResolvers: Array<() => void> = [];
+	const started = Array.from({ length: count }, () => new Promise<void>((resolve) => {
+		startedResolvers.push(resolve);
+	}));
+	const gates = Array.from({ length: count }, () => new Promise<void>((resolve) => {
+		releaseResolvers.push(resolve);
+	}));
+	const completed = Array.from({ length: count }, () => new Promise<void>((resolve) => {
+		completedResolvers.push(resolve);
+	}));
+	const select = registry.select.bind(registry);
+	let calls = 0;
+	vi.spyOn(registry, "select").mockImplementation(async (selection) => {
+		const index = calls++;
+		if (index < count) {
+			startedResolvers[index]?.();
+			await gates[index];
+		}
+		const result = await select(selection);
+		completedResolvers[index]?.();
+		return result;
+	});
+	return {
+		started,
+		completed,
+		release: (index) => releaseResolvers[index]?.(),
+		calls: () => calls,
+	};
+}
+
+async function externalFoundationCounts(session: AgentSession): Promise<readonly number[]> {
+	return Promise.all(
+		["goal", "task", "attempt"].map(async (objectType) =>
+			(await getAgentCanonicalSession(session).findFoundationRecords({ objectType })).length,
+		),
+	);
+}
+
+function acceptedRunFactCount(session: AgentSession): number {
+	return session.sessionRead.getEntries().filter((entry) => {
+		if (entry.type !== "custom" || entry.customType !== RUN_LEDGER_CUSTOM_TYPE) return false;
+		return (entry.data as { kind?: unknown }).kind === "accepted";
+	}).length;
 }
 
 function transportRunRecord(sessionManager: AgentSessionLedgerProjection, runId: string): Record<string, unknown> | undefined {
@@ -1446,6 +1504,48 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("cancels a launched External Connector before detach settlement without deadline or worker loss", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				eventNextHangs: true,
+				readHangs: true,
+				cooperativeCancel: true,
+			});
+			await harness.controller.handleCommand({ id: "external-detach-init", type: "initialize", protocolVersion: 1 });
+			await harness.controller.handleCommand({
+				id: "external-detach-start",
+				type: "run.start",
+				message: "cancel through detach",
+				externalConnector: fixture.selection,
+			});
+			const accepted = harness.records.find(
+				(record) => record.type === "response" && record.id === "external-detach-start" && record.success,
+			);
+			const runId = (accepted as { data?: { runId?: string } } | undefined)?.data?.runId;
+			expect(runId).toBeDefined();
+			await vi.waitFor(() => expect(fixture.driver.readCalls).toBe(1));
+
+			const startedAt = Date.now();
+			await harness.controller.detachTransport();
+			expect(Date.now() - startedAt).toBeLessThan(2_000);
+			await vi.waitFor(() => expect(harness.records.filter((record) =>
+				record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
+			)).toHaveLength(1));
+
+			expect(fixture.driver.cancelCalls).toBe(1);
+			expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.cancelled", runId }));
+			expect(harness.records.some((record) => record.type === "run.failed")).toBe(false);
+			const receipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType: "run_receipt" });
+			expect(receipts).toHaveLength(1);
+			expect(receipts[0]).toMatchObject({ payload: { terminalStatus: "cancelled" } });
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
 	it("settles a post-launch External Connector deadline as run_deadline_exceeded", async () => {
 		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
 		try {
@@ -1605,6 +1705,153 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(resumed).toMatchObject({ success: false, error: { code: "external_resume_unsupported" } });
 			expect(fixture.driver.spawnCalls).toBe(0);
 			expect(fixture.driver.connectCalls).toBe(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("fences a detached delayed external preflight and protects the replacement request claim from ABA", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			const gates = gateRegistrySelections(fixture.registry, 2);
+			await harness.controller.handleCommand({ id: "external-aba-init", type: "initialize", protocolVersion: 1 });
+			const session = harness.runtimeHost.session;
+			const foundationBefore = await externalFoundationCounts(session);
+			const acceptedBefore = acceptedRunFactCount(session);
+			const first = harness.controller.dispatch({
+				id: "external-aba-old",
+				type: "run.start",
+				message: "same external request",
+				clientRequestId: "external-preflight-aba",
+				externalConnector: fixture.selection,
+			});
+			await gates.started[0];
+
+			const detachedAt = Date.now();
+			await harness.controller.detachTransport();
+			expect(Date.now() - detachedAt).toBeLessThan(2_000);
+			expect(await first).toBeUndefined();
+
+			const replacement = harness.controller.dispatch({
+				id: "external-aba-replacement",
+				type: "run.start",
+				message: "same external request",
+				clientRequestId: "external-preflight-aba",
+				externalConnector: fixture.selection,
+			});
+			await gates.started[1];
+			gates.release(0);
+			await gates.completed[0];
+			await Promise.resolve();
+			const duplicate = harness.controller.dispatch({
+				id: "external-aba-duplicate",
+				type: "run.start",
+				message: "same external request",
+				clientRequestId: "external-preflight-aba",
+				externalConnector: fixture.selection,
+			});
+			expect(await duplicate).toBeUndefined();
+			expect(gates.calls()).toBe(2);
+			expect(await externalFoundationCounts(session)).toEqual(foundationBefore);
+			expect(acceptedRunFactCount(session)).toBe(acceptedBefore);
+			expect(fixture.driver.spawnCalls).toBe(0);
+
+			gates.release(1);
+			expect(await replacement).toBeUndefined();
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-aba-replacement",
+				success: true,
+				data: expect.objectContaining({ status: "accepted" }),
+			})));
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-aba-duplicate",
+				success: true,
+			})));
+			await vi.waitFor(() => expect(harness.records.some((record) => record.type === "run.completed")).toBe(true));
+			expect(fixture.driver.spawnCalls).toBe(1);
+			expect(acceptedRunFactCount(session)).toBe(acceptedBefore + 1);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("bounds shutdown during a delayed external preflight without acceptance or spawn", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			const gates = gateRegistrySelections(fixture.registry, 1);
+			await harness.controller.handleCommand({ id: "external-shutdown-init", type: "initialize", protocolVersion: 1 });
+			const session = harness.runtimeHost.session;
+			const foundationBefore = await externalFoundationCounts(session);
+			const acceptedBefore = acceptedRunFactCount(session);
+			const pending = harness.controller.dispatch({
+				id: "external-shutdown-pending",
+				type: "run.start",
+				message: "must not survive shutdown",
+				clientRequestId: "external-shutdown-preflight",
+				externalConnector: fixture.selection,
+			});
+			await gates.started[0];
+
+			const startedAt = Date.now();
+			await harness.controller.shutdown();
+			expect(Date.now() - startedAt).toBeLessThan(2_000);
+			expect(await pending).toBeUndefined();
+			gates.release(0);
+			await gates.completed[0];
+			await Promise.resolve();
+
+			expect(await externalFoundationCounts(session)).toEqual(foundationBefore);
+			expect(acceptedRunFactCount(session)).toBe(acceptedBefore);
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(harness.records.some((record) => record.type === "response" && record.id === "external-shutdown-pending")).toBe(false);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("fences a session-switched delayed external preflight before acceptance or spawn", async () => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			const oldSession = harness.runtimeHost.session;
+			await oldSession.prompt("persist session switch fixture");
+			const sessionFile = oldSession.sessionFile;
+			expect(sessionFile).toBeTruthy();
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			const gates = gateRegistrySelections(fixture.registry, 1);
+			await harness.controller.handleCommand({ id: "external-switch-init", type: "initialize", protocolVersion: 1 });
+			const foundationBefore = await externalFoundationCounts(oldSession);
+			const acceptedBefore = acceptedRunFactCount(oldSession);
+			const pending = harness.controller.dispatch({
+				id: "external-switch-pending",
+				type: "run.start",
+				message: "must not survive session switch",
+				clientRequestId: "external-switch-preflight",
+				externalConnector: fixture.selection,
+			});
+			await gates.started[0];
+
+			const startedAt = Date.now();
+			await harness.runtimeHost.switchSession(sessionFile!);
+			expect(Date.now() - startedAt).toBeLessThan(3_000);
+			expect(await pending).toBeUndefined();
+			gates.release(0);
+			await gates.completed[0];
+			await Promise.resolve();
+
+			expect(await externalFoundationCounts(oldSession)).toEqual(foundationBefore);
+			expect(await externalFoundationCounts(harness.runtimeHost.session)).toEqual(foundationBefore);
+			expect(acceptedRunFactCount(oldSession)).toBe(acceptedBefore);
+			expect(acceptedRunFactCount(harness.runtimeHost.session)).toBe(acceptedBefore);
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(harness.records.some((record) => record.type === "response" && record.id === "external-switch-pending")).toBe(false);
 		} finally {
 			await harness.controller.shutdown();
 			await harness.cleanup();

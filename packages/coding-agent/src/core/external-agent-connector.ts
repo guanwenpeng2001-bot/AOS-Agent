@@ -58,6 +58,8 @@ import {
 } from "./external-model-projection.ts";
 import {
 	cloneExternalConnectorTerminalEvidence,
+	isExternalConnectorDriverHandle,
+	isExternalConnectorDriverLookup,
 	type ExternalConnectorTerminalEvidence,
 } from "./vendor-drivers/types.ts";
 
@@ -118,6 +120,10 @@ function isDeadlineAbort(signal: AbortSignal | undefined): boolean {
 		(("code" in reason && reason.code === "deadline_exceeded") ||
 			("name" in reason && reason.name === "AgentDeadlineExceeded"))
 	);
+}
+
+function isAbortedSignal(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true;
 }
 
 function supervisedFailureEvidence(
@@ -438,6 +444,31 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 	}
 
+	#requireAuthoritativeDriverHandle(
+		value: unknown,
+		supervisor: ExternalConnectorBoundedSupervisor,
+		mapping?: CanonicalExternalConnectorMapping,
+	): ResultValue<ExternalConnectorDriverHandle, FoundationError> {
+		if (
+			!isExternalConnectorDriverHandle(value) ||
+			value.supervisorRef !== supervisor.reference.supervisorRef ||
+			value.operationNonce !== supervisor.reference.operationNonce ||
+			(mapping !== undefined &&
+				(value.externalSessionId !== mapping.externalSessionId ||
+					(value.externalTurnId ?? undefined) !== (mapping.externalTurnId ?? undefined) ||
+					value.supervisorRef !== mapping.supervisor.ref ||
+					value.operationNonce !== mapping.supervisor.nonce))
+		) {
+			return Result.err(externalFailure("invalid_correlation", "External connector driver handle conflicts with durable authority"));
+		}
+		return Result.ok(Object.freeze({
+			externalSessionId: value.externalSessionId,
+			...(value.externalTurnId === undefined ? {} : { externalTurnId: value.externalTurnId }),
+			supervisorRef: value.supervisorRef,
+			operationNonce: value.operationNonce,
+		}));
+	}
+
 	async #run(
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
@@ -569,14 +600,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			return Result.err(externalFailure("provider_spawn_failed", "External connector start outcome is unknown", attempt.attemptId));
 		}
 
+		const checkedHandle = this.#requireAuthoritativeDriverHandle(handle, supervisor);
+		if (!checkedHandle.ok) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(checkedHandle.error);
+		}
+		handle = checkedHandle.value;
 		let mapping: CanonicalExternalConnectorMapping;
 		try {
-			if (
-				handle.operationNonce !== operation.operationNonce ||
-				handle.supervisorRef !== supervisor.reference.supervisorRef
-			) {
-				throw externalFailure("invalid_correlation", "External connector driver returned a different operation nonce", attempt.attemptId);
-			}
 			mapping = cloneCanonicalExternalConnectorMapping({
 				schemaVersion: 1,
 				providerId: this.providerId,
@@ -629,6 +661,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (concurrentReceipt.ok && concurrentReceipt.value !== undefined) {
 				return Result.ok(concurrentReceipt.value);
 			}
+			if (options?.signal?.aborted === true && !supervisor.snapshot.cleaned) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
 			const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
 			if (failureEvidence !== undefined) {
 				return this.#settle(attempt, operation, mapping, failureEvidence);
@@ -647,6 +683,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		if (options?.signal?.aborted === true) {
+			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector resume was aborted before recovery", attempt.attemptId));
+		}
 		const durable = await this.#requireDurableAttempt(attempt);
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
@@ -669,22 +708,34 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		let handle: ExternalConnectorDriverHandle | undefined;
 		try {
 			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
-			handle = await supervisor.run(
+			const connected = await supervisor.run(
 				"start",
 				(signal) => this.#driver.connect(mapping.value, { signal }),
 				options?.signal,
 			);
+			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!checkedHandle.ok) {
+				await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+				await this.#markReconcile(operation, "mapping_conflict");
+				return Result.err(checkedHandle.error);
+			}
+			handle = checkedHandle.value;
 			this.#driverHandles.set(attempt.attemptId, handle);
 			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, handle, options?.signal);
 			await this.#releaseSupervisor(attempt.attemptId, supervisor);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
 		} catch (error) {
+			const cleanupUnknown = isAbortedSignal(options?.signal) && supervisor?.snapshot.cleaned !== true;
 			if (supervisor?.snapshot.cleaned === true) {
 				this.#supervisors.delete(attempt.attemptId);
 				await this.#supervision.privateStateStore.delete(attempt.attemptId);
 			}
 			this.#driverHandles.delete(attempt.attemptId);
 			this.#observationControllers.delete(attempt.attemptId);
+			if (cleanupUnknown) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
 			if (handle !== undefined) {
 				const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
 				if (failureEvidence !== undefined) {
@@ -705,6 +756,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		if (options?.signal?.aborted === true) {
+			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector reconciliation was aborted before recovery", attempt.attemptId));
+		}
 		const durable = await this.#requireDurableAttempt(attempt);
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
@@ -729,12 +783,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!mapping.ok) return mapping;
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
-			supervisor = await this.#reattachOrLaunchSupervisor(operation);
+			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("side_effect_unknown", "External connector process identity requires reconciliation", attempt.attemptId));
 		}
-		let lookup: Awaited<ReturnType<ExternalConnectorVendorDriver["lookup"]>>;
+		let lookup: unknown;
 		try {
 			lookup = await supervisor.run(
 				"receipt",
@@ -748,6 +802,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("worker_lost", "External connector reconciliation lookup failed", attempt.attemptId));
+		}
+		if (!isExternalConnectorDriverLookup(lookup)) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(externalFailure("invalid_correlation", "External connector lookup result is invalid", attempt.attemptId));
 		}
 		if (lookup.status === "missing" || lookup.status === "ambiguous") {
 			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
@@ -797,19 +856,31 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 			);
 		}
-		this.#driverHandles.set(attempt.attemptId, lookup.handle);
+		const checkedHandle = this.#requireAuthoritativeDriverHandle(lookup.handle, supervisor, mapping.value);
+		if (!checkedHandle.ok) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(checkedHandle.error);
+		}
+		const handle = checkedHandle.value;
+		this.#driverHandles.set(attempt.attemptId, handle);
 		try {
-			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, lookup.handle, options?.signal);
+			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, handle, options?.signal);
 			await this.#releaseSupervisor(attempt.attemptId, supervisor);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
 		} catch (error) {
+			const cleanupUnknown = isAbortedSignal(options?.signal) && !supervisor.snapshot.cleaned;
 			if (supervisor.snapshot.cleaned) {
 				this.#supervisors.delete(attempt.attemptId);
 				await this.#supervision.privateStateStore.delete(attempt.attemptId);
 			}
 			this.#driverHandles.delete(attempt.attemptId);
 			this.#observationControllers.delete(attempt.attemptId);
-			const failureEvidence = supervisedFailureEvidence(error, lookup.handle, this.#now, options?.signal);
+			if (cleanupUnknown) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
+			const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
 			if (failureEvidence !== undefined) {
 				return this.#settle(attempt, operation, mapping.value, failureEvidence);
 			}
@@ -865,10 +936,17 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		try {
 			supervisor = await this.#reattachOrLaunchSupervisor(operation);
 			const activeHandle = this.#driverHandles.get(attemptId);
-			const handle = activeHandle ?? await supervisor.run(
+			const connected = activeHandle ?? await supervisor.run(
 				"start",
 				(signal) => this.#driver.connect(mapping.value, { signal }),
 			);
+			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!checkedHandle.ok) {
+				await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
+				await this.#markReconcile(operation, "mapping_conflict");
+				return Result.err(checkedHandle.error);
+			}
+			const handle = checkedHandle.value;
 			const evidence = await supervisor.run(
 				"cancel",
 				(signal) => this.#driver.cancel(handle, { signal }),
@@ -905,11 +983,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		sourceSignal?: AbortSignal,
 	): Promise<ExternalConnectorTerminalEvidence> {
 		if (sourceSignal?.aborted === true) {
-			await supervisor.consumeEvents(
-				(signal) => this.#driver.events(handle, { signal }),
-				handle,
-				sourceSignal,
-			);
+			await this.#releaseSupervisor(attemptId, supervisor);
 			throw sourceSignal.reason;
 		}
 		const controller = new AbortController();

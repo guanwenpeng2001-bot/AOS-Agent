@@ -36,6 +36,13 @@ export interface ExternalConnectorDriverHandle {
 	readonly operationNonce: string;
 }
 
+const EXTERNAL_CONNECTOR_DRIVER_HANDLE_KEYS = new Set([
+	"externalSessionId",
+	"externalTurnId",
+	"supervisorRef",
+	"operationNonce",
+]);
+
 export interface ExternalConnectorDriverSpawnRequest {
 	readonly attempt: Attempt;
 	readonly input: CanonicalExternalAgentInput;
@@ -126,6 +133,20 @@ function isTerminalEvidenceRecord(value: unknown): value is Record<string, unkno
 	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
+/** Exact runtime shape for an untrusted driver authority handle. */
+export function isExternalConnectorDriverHandle(value: unknown): value is ExternalConnectorDriverHandle {
+	return (
+		isTerminalEvidenceRecord(value) &&
+		Reflect.ownKeys(value).every(
+			(key) => typeof key === "string" && EXTERNAL_CONNECTOR_DRIVER_HANDLE_KEYS.has(key),
+		) &&
+		isExternalMappingIdentifier(value.externalSessionId) &&
+		(value.externalTurnId === undefined || isExternalMappingIdentifier(value.externalTurnId)) &&
+		isExternalMappingIdentifier(value.supervisorRef) &&
+		isExternalMappingIdentifier(value.operationNonce)
+	);
+}
+
 /** Reject unknown fields and malformed identity, ordering, or artifact facts before observation. */
 export function isExternalConnectorDriverEvent(value: unknown): value is ExternalConnectorDriverEvent {
 	if (
@@ -213,6 +234,31 @@ export type ExternalConnectorDriverLookup =
 	| { readonly status: "terminal"; readonly evidence: ExternalConnectorTerminalEvidence }
 	| { readonly status: "missing" }
 	| { readonly status: "ambiguous" };
+
+const EXTERNAL_CONNECTOR_DRIVER_LOOKUP_RUNNING_KEYS = new Set(["status", "handle"]);
+const EXTERNAL_CONNECTOR_DRIVER_LOOKUP_TERMINAL_KEYS = new Set(["status", "evidence"]);
+const EXTERNAL_CONNECTOR_DRIVER_LOOKUP_EMPTY_KEYS = new Set(["status"]);
+
+/** Exact runtime shape for every lookup branch returned by an untrusted driver. */
+export function isExternalConnectorDriverLookup(value: unknown): value is ExternalConnectorDriverLookup {
+	if (!isTerminalEvidenceRecord(value) || typeof value.status !== "string") return false;
+	const allowedKeys = value.status === "running"
+		? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_RUNNING_KEYS
+		: value.status === "terminal"
+			? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_TERMINAL_KEYS
+			: value.status === "missing" || value.status === "ambiguous"
+				? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_EMPTY_KEYS
+				: undefined;
+	if (
+		allowedKeys === undefined ||
+		Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowedKeys.has(key))
+	) {
+		return false;
+	}
+	if (value.status === "running") return isExternalConnectorDriverHandle(value.handle);
+	if (value.status === "terminal") return isExternalConnectorTerminalEvidence(value.evidence);
+	return true;
+}
 
 export interface ExternalConnectorVendorDriver {
 	/** Host-private exact model translation contract. Read only for aos_gateway. */

@@ -294,8 +294,15 @@ async function probeConnector(
 /** Open, instance-only connector registry with pinned capability identity. */
 class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	readonly #connectors = new Map<string, RegisteredConnector>();
-	readonly #pendingProviderIds = new Set<string>();
+	readonly #pendingRegistrations = new Map<string, ExternalAgentConnector>();
+	readonly #disposedConnectors = new Set<ExternalAgentConnector>();
 	#disposed = false;
+
+	async #disposeConnectorOnce(connector: ExternalAgentConnector): Promise<void> {
+		if (this.#disposedConnectors.has(connector)) return;
+		this.#disposedConnectors.add(connector);
+		await connector.dispose();
+	}
 
 	async register(
 		registration: ExternalConnectorRegistration,
@@ -306,20 +313,27 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const descriptor = registration.descriptor;
 		const connector = registration.connector;
-		if (this.#connectors.has(descriptor.providerId) || this.#pendingProviderIds.has(descriptor.providerId)) {
+		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.has(descriptor.providerId)) {
 			return Result.err(connectorRegistryError("External connector provider identity is already registered."));
 		}
 		if (descriptor.providerId !== connector.providerId || descriptor.providerClass !== connector.providerClass) {
 			return Result.err(connectorRegistryError("External connector descriptor identity does not match its constructed instance."));
 		}
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 
-		this.#pendingProviderIds.add(descriptor.providerId);
+		this.#pendingRegistrations.set(descriptor.providerId, connector);
 		try {
 			const snapshotResult = await probeConnector(connector);
 			if (!snapshotResult.ok) return snapshotResult;
-			return this.#registerPrepared(registration, snapshotResult.value, true);
+			if (this.#disposed) {
+				await Promise.resolve().then(() => this.#disposeConnectorOnce(connector));
+				return Result.err(connectorRegistryError("External connector registry is disposed."));
+			}
+			return this.#registerPrepared(registration, snapshotResult.value);
 		} finally {
-			this.#pendingProviderIds.delete(descriptor.providerId);
+			if (this.#pendingRegistrations.get(descriptor.providerId) === connector) {
+				this.#pendingRegistrations.delete(descriptor.providerId);
+			}
 		}
 	}
 
@@ -328,20 +342,36 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		capabilitySnapshot: ConnectorCapabilitySnapshot,
 	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
-		return this.#registerPrepared(registration, capabilitySnapshot, false);
-	}
-
-	#registerPrepared(
-		registration: ExternalConnectorRegistration,
-		capabilitySnapshot: ConnectorCapabilitySnapshot,
-		reserved: boolean,
-	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
 		if (!isExternalConnectorRegistration(registration)) {
 			return Result.err(connectorRegistryError("External connector registration must contain one trusted constructed instance and an exact descriptor."));
 		}
 		const descriptor = registration.descriptor;
 		const connector = registration.connector;
-		if ((!reserved && (this.#connectors.has(descriptor.providerId) || this.#pendingProviderIds.has(descriptor.providerId))) ||
+		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.has(descriptor.providerId)) {
+			return Result.err(connectorRegistryError("External connector provider identity is already registered."));
+		}
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
+		this.#pendingRegistrations.set(descriptor.providerId, connector);
+		try {
+			return this.#registerPrepared(registration, capabilitySnapshot);
+		} finally {
+			if (this.#pendingRegistrations.get(descriptor.providerId) === connector) {
+				this.#pendingRegistrations.delete(descriptor.providerId);
+			}
+		}
+	}
+
+	#registerPrepared(
+		registration: ExternalConnectorRegistration,
+		capabilitySnapshot: ConnectorCapabilitySnapshot,
+	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
+		if (!isExternalConnectorRegistration(registration)) {
+			return Result.err(connectorRegistryError("External connector registration must contain one trusted constructed instance and an exact descriptor."));
+		}
+		const descriptor = registration.descriptor;
+		const connector = registration.connector;
+		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.get(descriptor.providerId) !== connector ||
 			descriptor.providerId !== connector.providerId || descriptor.providerClass !== connector.providerClass) {
 			return Result.err(connectorRegistryError("External connector provider identity is already registered or does not match its constructed instance."));
 		}
@@ -355,6 +385,9 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!truthResult.ok) return truthResult;
 		const evidence = cloneCapabilityEvidence(registration.capabilityEvidence);
 		const storedDescriptor = cloneConnectorDescriptor(descriptor);
+		if (this.#disposed || this.#pendingRegistrations.get(descriptor.providerId) !== connector) {
+			return Result.err(connectorRegistryError("External connector registry is disposed."));
+		}
 		this.#connectors.set(descriptor.providerId, {
 			descriptor: storedDescriptor,
 			connector,
@@ -386,9 +419,15 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		) {
 			return Result.err(connectorRegistryError("External connector constructed instance identity changed after registration."));
 		}
+		if (this.#disposed || this.#connectors.get(selection.providerId) !== registered) {
+			return Result.err(connectorRegistryError("External connector registry changed while resolving the selection."));
+		}
 
 		const snapshotResult = await probeConnector(registered.connector);
 		if (!snapshotResult.ok) return snapshotResult;
+		if (this.#disposed || this.#connectors.get(selection.providerId) !== registered) {
+			return Result.err(connectorRegistryError("External connector registry changed while resolving the selection."));
+		}
 		const snapshot = snapshotResult.value;
 		if (
 			snapshot.revision !== registered.descriptor.revision ||
@@ -401,6 +440,9 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!truthResult.ok) return truthResult;
 		if (!sameFingerprint(truthResult.value.snapshotDigest, registered.capabilityTruth.snapshotDigest)) {
 			return Result.err(connectorRegistryError("External connector capability evidence drifted after registration."));
+		}
+		if (this.#disposed || this.#connectors.get(selection.providerId) !== registered) {
+			return Result.err(connectorRegistryError("External connector registry changed while resolving the selection."));
 		}
 		return Result.ok(Object.freeze({
 			descriptor: registered.descriptor,
@@ -418,13 +460,20 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	async dispose(): Promise<void> {
 		if (this.#disposed) return;
 		this.#disposed = true;
-		const connectors = [...this.#connectors.values()].map(({ connector }) => connector);
+		const connectors = [
+			...Array.from(this.#connectors.values(), ({ connector }) => connector),
+			...this.#pendingRegistrations.values(),
+		];
 		this.#connectors.clear();
-		this.#pendingProviderIds.clear();
+		this.#pendingRegistrations.clear();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
-				Promise.allSettled(connectors.map((connector) => connector.dispose())),
+				Promise.allSettled(
+					connectors.map((connector) =>
+						Promise.resolve().then(() => this.#disposeConnectorOnce(connector)),
+					),
+				),
 				new Promise<void>((resolve) => {
 					timer = setTimeout(resolve, 5_000);
 				}),

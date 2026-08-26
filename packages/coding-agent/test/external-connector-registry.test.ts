@@ -99,20 +99,25 @@ function binding(): AgentBinding {
 
 class ZetaConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
-	readonly providerId = PROVIDER_ID;
+	readonly providerId: string;
 	readonly providerClass = "external_connector" as const;
-	#snapshot = createConnectorCapabilitySnapshot({
-		schemaVersion: 1,
-		providerId: PROVIDER_ID,
-		revision: 17,
-		protocol: { name: "murmur.mesh", version: "17" },
-		modelAccess: "aos_gateway",
-		resume: false,
-		toolGateway: true,
-		artifacts: false,
-		images: false,
-	});
+	#snapshot: ConnectorCapabilitySnapshot;
 	disposeCalls = 0;
+
+	constructor(providerId: string = PROVIDER_ID) {
+		this.providerId = providerId;
+		this.#snapshot = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 17,
+			protocol: { name: "murmur.mesh", version: "17" },
+			modelAccess: "aos_gateway",
+			resume: false,
+			toolGateway: true,
+			artifacts: false,
+			images: false,
+		});
+	}
 
 	get snapshot(): ConnectorCapabilitySnapshot {
 		return this.#snapshot;
@@ -463,5 +468,110 @@ describe("ExternalConnectorRegistry open SPI", () => {
 		).toMatchObject({ ok: false });
 		connector.drift();
 		expect(await registry.select(selection)).toMatchObject({ ok: false });
+	});
+
+	it("disposes a pending registration exactly once when shutdown wins its delayed probe", async () => {
+		const connector = new ZetaConnector();
+		let markProbeStarted: (() => void) | undefined;
+		let releaseProbe: (() => void) | undefined;
+		const probeStarted = new Promise<void>((resolve) => {
+			markProbeStarted = resolve;
+		});
+		const probeGate = new Promise<void>((resolve) => {
+			releaseProbe = resolve;
+		});
+		Object.defineProperty(connector, "probeCapabilities", {
+			value: async () => {
+				markProbeStarted?.();
+				await probeGate;
+				return Result.ok(connector.snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry();
+		const pendingRegistration = registry.register(registration(connector));
+		await probeStarted;
+
+		await registry.dispose();
+		releaseProbe?.();
+		const registered = await pendingRegistration;
+
+		expect(registered.ok).toBe(false);
+		expect(registry.list()).toEqual([]);
+		expect(connector.disposeCalls).toBe(1);
+	});
+
+	it("fails a delayed selection closed when shutdown disposes its registered connector", async () => {
+		const connector = new ZetaConnector();
+		const registry = createExternalConnectorRegistry();
+		expect(registry.registerPrepared(registration(connector), connector.snapshot).ok).toBe(true);
+		let markProbeStarted: (() => void) | undefined;
+		let releaseProbe: (() => void) | undefined;
+		const probeStarted = new Promise<void>((resolve) => {
+			markProbeStarted = resolve;
+		});
+		const probeGate = new Promise<void>((resolve) => {
+			releaseProbe = resolve;
+		});
+		Object.defineProperty(connector, "probeCapabilities", {
+			value: async () => {
+				markProbeStarted?.();
+				await probeGate;
+				return Result.ok(connector.snapshot);
+			},
+		});
+		const pendingSelection = registry.select({
+			providerId: connector.providerId,
+			revision: connector.snapshot.revision,
+			capabilitySnapshotDigest: connector.snapshot.digest,
+		});
+		await probeStarted;
+
+		await registry.dispose();
+		releaseProbe?.();
+		const selected = await pendingSelection;
+
+		expect(selected.ok).toBe(false);
+		expect(connector.disposeCalls).toBe(1);
+	});
+
+	it("attempts every owned connector disposal when the first throws synchronously", async () => {
+		const first = new ZetaConnector("arbitrary.first-connector");
+		const second = new ZetaConnector("arbitrary.second-connector");
+		let firstDisposeCalls = 0;
+		Object.defineProperty(first, "dispose", {
+			value: () => {
+				firstDisposeCalls += 1;
+				throw new Error("synchronous connector dispose failure");
+			},
+		});
+		const registry = createExternalConnectorRegistry();
+		expect(registry.registerPrepared(registration(first), first.snapshot).ok).toBe(true);
+		expect(registry.registerPrepared(registration(second), second.snapshot).ok).toBe(true);
+
+		await registry.dispose();
+
+		expect(firstDisposeCalls).toBe(1);
+		expect(second.disposeCalls).toBe(1);
+	});
+
+	it("cannot install a prepared connector after reentrant registry disposal", async () => {
+		const connector = new ZetaConnector();
+		const prepared = registration(connector);
+		const registry = createExternalConnectorRegistry();
+		let armed = false;
+		Object.defineProperty(connector, "providerId", {
+			get: () => {
+				if (armed) void registry.dispose();
+				return PROVIDER_ID;
+			},
+		});
+		armed = true;
+
+		const registered = registry.registerPrepared(prepared, connector.snapshot);
+
+		expect(registered.ok).toBe(false);
+		expect(registry.list()).toEqual([]);
+		// Disposal won before the connector entered pending ownership, so the caller retains it.
+		expect(connector.disposeCalls).toBe(0);
 	});
 });

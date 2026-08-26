@@ -110,6 +110,7 @@ import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manag
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import {
 	isTaskCredentialScope,
 	serializeTaskCredentialDeliveryReceipt,
@@ -795,9 +796,11 @@ export class RpcHostController {
 			clientRequestId: string;
 			fingerprint: string;
 			key: string;
+			claimToken?: object;
 		};
 		type PendingRunRequest = {
 			fingerprint: string;
+			claimToken: object;
 			waiters: Array<{ id: string | undefined; command: "run.start" | "run.resume" }>;
 		};
 		type RunRequestGate =
@@ -805,6 +808,13 @@ export class RpcHostController {
 			| { kind: "new"; identity: RunRequestIdentity }
 			| { kind: "pending" }
 			| { kind: "response"; response: RpcAutomationResponse };
+		interface ExternalPendingStartControl {
+			runId?: RunId;
+			requestClaim?: RunRequestIdentity;
+			deadlineController?: AbortController;
+			lifecycleController?: AbortController;
+			accepted?: boolean;
+		}
 		interface RpcSessionBinding {
 			session: AgentSession;
 			coordinator?: RunLifecycleCoordinator;
@@ -852,17 +862,8 @@ export class RpcHostController {
 		 * Active external agent executions keyed by runId. Cancel is forwarded to
 		 * the current Connector's same-Attempt cancel path.
 		 */
-		/**
-		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
-		 * them for external runs only, so a pending start readiness race or a
-		 * started observation race resolves even when the driver never returns.
-		 */
-		/**
-		 * Deadline controllers of pending external starts, registered when the
-		 * external path commits (before preflight and before the currentBinding.externalRuns
-		 * entry exists) so lifecycle transitions abort preflight-phase starts
-		 * too; preflight is signal-aware and fails closed on the abort.
-		 */
+		/** Host deadline controllers keyed by runId; ordinary lifecycle cancellation never aborts them. */
+		/** Lifecycle-only controllers registered before current Connector admission begins. */
 		/**
 		 * Pending external start promises keyed by runId. Lifecycle transitions
 		 * must never await them: a driver or preflight that ignores the abort
@@ -2079,14 +2080,24 @@ export class RpcHostController {
 				pending.waiters.push({ id, command });
 				return { kind: "pending" };
 			}
-			pendingRunRequests.set(identity.key, { fingerprint: identity.fingerprint, waiters: [] });
-			return { kind: "new", identity };
+			const claimedIdentity = { ...identity, claimToken: {} };
+			pendingRunRequests.set(identity.key, {
+				fingerprint: identity.fingerprint,
+				claimToken: claimedIdentity.claimToken,
+				waiters: [],
+			});
+			return { kind: "new", identity: claimedIdentity };
 		};
 
 		const finishRunRequest = (identity: RunRequestIdentity | undefined, response: RpcAutomationResponse): void => {
 			if (identity === undefined) return;
 			const pending = pendingRunRequests.get(identity.key);
-			if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+			if (
+				pending === undefined ||
+				pending.fingerprint !== identity.fingerprint ||
+				identity.claimToken === undefined ||
+				pending.claimToken !== identity.claimToken
+			) return;
 			pendingRunRequests.delete(identity.key);
 			for (const waiter of pending.waiters) {
 				output({ ...response, id: waiter.id, command: waiter.command } as RpcAutomationResponse);
@@ -2104,7 +2115,12 @@ export class RpcHostController {
 		const discardRunRequest = (identity: RunRequestIdentity | undefined): void => {
 			if (identity === undefined) return;
 			const pending = pendingRunRequests.get(identity.key);
-			if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+			if (
+				pending === undefined ||
+				pending.fingerprint !== identity.fingerprint ||
+				identity.claimToken === undefined ||
+				pending.claimToken !== identity.claimToken
+			) return;
 			pendingRunRequests.delete(identity.key);
 		};
 
@@ -2179,43 +2195,76 @@ export class RpcHostController {
 			})();
 			binding.runPromptPromises.set(handle.runId, tracked);
 		};
-
-
-		/**
-		 * Forward the existing Run cancellation intent to the Connector's idempotent
-		 * same-Attempt cancel path during a host lifecycle transition (transport detach, host
-		 * shutdown, session switch). The run's deadline controller is aborted
-		 * first so a pending start readiness race or started observation race
-		 * resolves even when the driver never returns: driver cancel alone
-		 * awaits startGate and cannot unblock a start that never resolves. Started
-		 * observations are awaited before canonical lookup; a pending start fails closed
-		 * through its own continuation, which forwards the same idempotent cancel.
-		 * Local runs are untouched and keep the Session abort path. Returns true
-		 * when the run was an external execution.
-		 */
+		/** Forward lifecycle cancellation through the Connector before observing settlement. */
 		const forwardExternalRunLifecycleCancel = async (binding: RpcSessionBinding, runId: RunId): Promise<boolean> => {
 			const externalRun = binding.externalRuns.get(runId);
 			if (externalRun === undefined) return false;
-			binding.runAbortControllers.get(runId)?.abort();
-			const settlement = binding.externalRunSettlements.get(runId);
-			if (settlement !== undefined) {
-				await settlement;
+			try {
+				await externalRun.cancel();
+			} catch {
+				// Connector cancellation owns its bounded reconciliation result.
 			}
-			void externalRun.cancel().catch(() => {
-				// The driver retries idempotently; the tracked settlement owns the terminal.
-			});
 			return true;
 		};
 
 		const trackPendingStart = (
 			pending: Promise<RpcAutomationResponse | undefined>,
+			binding?: RpcSessionBinding,
+			control?: ExternalPendingStartControl,
+			id?: string,
+			command: "run.start" | "run.resume" = "run.start",
 		): Promise<RpcAutomationResponse | undefined> => {
-			pendingStartPromises.add(pending);
-			void pending.then(
-				() => pendingStartPromises.delete(pending),
-				() => pendingStartPromises.delete(pending),
+			const tracked = control?.runId === undefined || control.lifecycleController === undefined || control.deadlineController === undefined
+				? pending
+				: raceWithAbortSignal(
+					raceWithAbortSignal(pending, control.lifecycleController.signal),
+					control.deadlineController.signal,
+				).catch((error: unknown) => {
+					if (control.deadlineController?.signal.aborted === true) {
+						const response = automationError(
+							id,
+							command,
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							),
+						);
+						finishRunRequest(control.requestClaim, response);
+						return response;
+					}
+					if (control.lifecycleController?.signal.aborted === true) {
+						discardRunRequest(control.requestClaim);
+						return undefined;
+					}
+					discardRunRequest(control.requestClaim);
+					throw error;
+				});
+			pendingStartPromises.add(tracked);
+			if (binding !== undefined && control?.runId !== undefined) {
+				binding.pendingExternalStarts.set(control.runId, tracked);
+			}
+			void tracked.then(
+				() => {
+					pendingStartPromises.delete(tracked);
+					if (binding !== undefined && control?.runId !== undefined) {
+						if (binding.pendingExternalStarts.get(control.runId) === tracked) {
+							binding.pendingExternalStarts.delete(control.runId);
+						}
+						if (!control.accepted) clearRunDeadline(binding, control.runId);
+					}
+				},
+				() => {
+					pendingStartPromises.delete(tracked);
+					if (binding !== undefined && control?.runId !== undefined) {
+						if (binding.pendingExternalStarts.get(control.runId) === tracked) {
+							binding.pendingExternalStarts.delete(control.runId);
+						}
+						if (!control.accepted) clearRunDeadline(binding, control.runId);
+					}
+				},
 			);
-			return pending;
+			return tracked;
 		};
 
 		const startRun = async (
@@ -2241,6 +2290,7 @@ export class RpcHostController {
 			precomputedRequestIdentity: RunRequestIdentity | undefined,
 			requestAlreadyClaimed: boolean,
 			expectedTransportEpoch?: number,
+			externalStartControl?: ExternalPendingStartControl,
 		): Promise<RpcAutomationResponse | undefined> => {
 			const runBinding = commandBinding;
 			const requestEpoch = expectedTransportEpoch ?? transportEpoch;
@@ -2323,7 +2373,11 @@ export class RpcHostController {
 					deadlineAt,
 				});
 			let requestClaim: RunRequestIdentity | undefined;
+			let proposedRunId: RunId | undefined;
 			const startFailure = (response: RpcAutomationResponse): RpcAutomationResponse => {
+				if (proposedRunId !== undefined && externalStartControl === undefined) {
+					clearRunDeadline(runBinding, proposedRunId);
+				}
 				finishRunRequest(requestClaim, response);
 				return response;
 			};
@@ -2350,6 +2404,7 @@ export class RpcHostController {
 				if (gate.kind === "pending") return undefined;
 				if (gate.kind === "new") requestClaim = gate.identity;
 			}
+			if (externalStartControl !== undefined) externalStartControl.requestClaim = requestClaim;
 			if (requestEpoch !== transportEpoch) {
 				return startFailure(
 					automationError(
@@ -2376,6 +2431,51 @@ export class RpcHostController {
 					),
 				);
 			}
+			proposedRunId = crypto.randomUUID();
+			const deadlineController = new AbortController();
+			runBinding.runAbortControllers.set(proposedRunId, deadlineController);
+			if (externalStartControl !== undefined) {
+				const lifecycleController = new AbortController();
+				externalStartControl.runId = proposedRunId;
+				externalStartControl.deadlineController = deadlineController;
+				externalStartControl.lifecycleController = lifecycleController;
+				runBinding.externalPendingControllers.set(proposedRunId, lifecycleController);
+			}
+			if (deadlineAt !== undefined) {
+				const deadlineTimer = setTimeout(
+					() => {
+						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
+						if (runBinding.activeHandle?.runId === proposedRunId) {
+							runBinding.activeHandle.requestDeadlineExceeded();
+							if (externalConnector === undefined) {
+								void runBinding.session.abort().catch(() => {
+									// Foundation remains the only terminal authority.
+								});
+							}
+						}
+					},
+					Math.max(0, Date.parse(deadlineAt) - Date.now()),
+				);
+				if (
+					typeof deadlineTimer === "object" &&
+					"unref" in deadlineTimer &&
+					typeof deadlineTimer.unref === "function"
+				) {
+					deadlineTimer.unref();
+				}
+				runBinding.runDeadlineTimers.set(proposedRunId, deadlineTimer);
+			}
+			const externalStartWasTornDown = (): boolean =>
+				externalStartControl !== undefined &&
+				(shuttingDown ||
+					runBinding !== captureCurrentBinding() ||
+					requestEpoch !== transportEpoch ||
+					externalStartControl.lifecycleController?.signal.aborted === true);
+			const abandonExternalStart = (): undefined => {
+				if (proposedRunId !== undefined) clearRunDeadline(runBinding, proposedRunId);
+				discardRunRequest(requestClaim);
+				return undefined;
+			};
 			let externalConnectorResolved: ExternalConnectorResolvedSelection | undefined;
 			let externalCanonicalInput: CanonicalExternalAgentInput | undefined;
 			if (externalConnector !== undefined) {
@@ -2421,6 +2521,7 @@ export class RpcHostController {
 					);
 				}
 				const selected = await registry.select(safeSelection);
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				if (!selected.ok) {
 					const providerExists = registry.list().some(
 						(descriptor) => descriptor.providerId === safeSelection.providerId,
@@ -2453,6 +2554,7 @@ export class RpcHostController {
 						throw new Error("RPC has no trusted artifact reference authority");
 					},
 				});
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				if (!admitted.ok) {
 					return startFailure(
 						automationError(
@@ -2465,7 +2567,6 @@ export class RpcHostController {
 				externalConnectorResolved = selected.value;
 				externalCanonicalInput = admitted.input;
 			}
-			const proposedRunId = crypto.randomUUID();
 			// Capability profile preflight: materialize the requested capability profile
 			// into the frozen binding before any reservation or prompt. The public API
 			// owns the undefined => configured default semantics and waits for capability
@@ -2477,9 +2578,12 @@ export class RpcHostController {
 				// discovery. MCP startup is a policy operation and its binding must be
 				// the same binding that reservation.accept validates below.
 				await runBinding.session.setExecutionPolicyProfile(policyProfile);
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				runBinding.session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
 				await runBinding.session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
+				if (externalStartWasTornDown()) return abandonExternalStart();
 			} catch (err) {
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
 			// The materialized profile (requested, or the configured default when omitted)
@@ -2492,24 +2596,27 @@ export class RpcHostController {
 				return startFailure(automationError(id, commandType, asAutomationError(err)));
 			}
 			runBinding.activeReservation = reservation;
+			const releaseOwnReservation = (): void => {
+				if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
+				try {
+					reservation.release();
+				} catch {
+					// Reservation may already be consumed or released by lifecycle teardown.
+				}
+			};
 			try {
 				await runBinding.session.whenCapabilitiesReady(proposedRunId);
 			} catch (err) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
+			if (externalStartWasTornDown()) {
+				releaseOwnReservation();
+				return abandonExternalStart();
+			}
 			if (requestEpoch !== transportEpoch) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2532,12 +2639,7 @@ export class RpcHostController {
 				// accepted/terminal ledger write occurs.
 				const knownBindings = foldCapabilityBindingEntries(runBinding.session.sessionRead.getEntries());
 				if (knownBindings.get(previousBindingId) === undefined) {
-					runBinding.activeReservation = undefined;
-					try {
-						reservation.release();
-					} catch {
-						// reservation may already be consumed
-					}
+					releaseOwnReservation();
 					return startFailure(
 						automationError(
 							id,
@@ -2551,12 +2653,7 @@ export class RpcHostController {
 					);
 				}
 				if (preflightBinding === undefined || preflightBinding.id !== previousBindingId) {
-					runBinding.activeReservation = undefined;
-					try {
-						reservation.release();
-					} catch {
-						// reservation may already be consumed
-					}
+					releaseOwnReservation();
 					return startFailure(
 						automationError(
 							id,
@@ -2573,12 +2670,7 @@ export class RpcHostController {
 			// The requested profile is already materialized into the frozen binding by
 			// setCapabilityProfile above, so no profile-mismatch rejection applies.
 			if (preflightBinding !== undefined && preflightBinding.decisionSummary.awaitingApproval > 0) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2604,13 +2696,12 @@ export class RpcHostController {
 						inheritedModelBinding,
 						externalConnectorResolved?.capabilitySnapshot.modelAccess !== "aos_gateway",
 					);
+			if (externalStartWasTornDown()) {
+				releaseOwnReservation();
+				return abandonExternalStart();
+			}
 			if (runBinding !== captureCurrentBinding()) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2624,12 +2715,7 @@ export class RpcHostController {
 				);
 			}
 			if (requestEpoch !== transportEpoch) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2643,12 +2729,7 @@ export class RpcHostController {
 				);
 			}
 			if (modelSelection.error !== undefined) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(automationError(id, commandType, modelSelection.error));
 			}
 			let externalProductAdmission: ExternalConnectorProductAdmission | undefined;
@@ -2668,12 +2749,7 @@ export class RpcHostController {
 						serviceTier === undefined ||
 						(resolution.candidateIndex !== undefined && resolution.candidateIndex > 0)
 					) {
-						runBinding.activeReservation = undefined;
-						try {
-							reservation.release();
-						} catch {
-							// reservation may already be consumed
-						}
+						releaseOwnReservation();
 						return startFailure(
 							automationError(
 								id,
@@ -2698,6 +2774,9 @@ export class RpcHostController {
 					};
 				}
 				try {
+					// The first selection chooses the model-access branch. This late selection
+					// intentionally re-probes the pinned capability after intervening awaits so
+					// capability drift cannot cross the acceptance boundary.
 					externalProductAdmission = await prepareExternalConnectorProductRun({
 						session: getAgentCanonicalSession(runBinding.session),
 						writer: runBinding.session.agentRuntimeComposition.harness.t5.writer,
@@ -2715,22 +2794,17 @@ export class RpcHostController {
 						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					});
 				} catch (err) {
-					runBinding.activeReservation = undefined;
-					try {
-						reservation.release();
-					} catch {
-						// reservation may already be consumed
-					}
+					releaseOwnReservation();
+					if (externalStartWasTornDown()) return abandonExternalStart();
 					return startFailure(automationError(id, commandType, asAutomationError(err)));
+				}
+				if (externalStartWasTornDown()) {
+					releaseOwnReservation();
+					return abandonExternalStart();
 				}
 			}
 			if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2738,34 +2812,6 @@ export class RpcHostController {
 						createAutomationError("run_deadline_exceeded", "The Run deadline expired during preflight.", false),
 					),
 				);
-			}
-			// Reserve before the prompt's preflight so the session is busy while the run
-			// is pending. Only a preflight that succeeds persists the accepted fact and
-			// starts the run; otherwise the reservation is released and the caller gets
-			// start_rejected with no run id and no ledger entry.
-			const deadlineController = new AbortController();
-			runBinding.runAbortControllers.set(proposedRunId, deadlineController);
-			if (deadlineAt !== undefined) {
-				const deadlineTimer = setTimeout(
-					() => {
-						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
-						if (runBinding.activeHandle?.runId === proposedRunId) {
-							runBinding.activeHandle.requestDeadlineExceeded();
-							void runBinding.session.abort().catch(() => {
-								// Foundation remains the only terminal authority.
-							});
-						}
-					},
-					Math.max(0, Date.parse(deadlineAt) - Date.now()),
-				);
-				if (
-					typeof deadlineTimer === "object" &&
-					"unref" in deadlineTimer &&
-					typeof deadlineTimer.unref === "function"
-				) {
-					deadlineTimer.unref();
-				}
-				runBinding.runDeadlineTimers.set(proposedRunId, deadlineTimer);
 			}
 			let promptPromise: Promise<unknown>;
 			let startSettled = false;
@@ -2808,6 +2854,45 @@ export class RpcHostController {
 				externalCanonicalInput !== undefined &&
 				externalProductAdmission !== undefined
 			) {
+				if (
+					shuttingDown ||
+					runBinding !== captureCurrentBinding() ||
+					requestEpoch !== transportEpoch ||
+					runBinding.activeReservation !== reservation ||
+					externalStartControl?.lifecycleController?.signal.aborted === true
+				) {
+					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// Lifecycle teardown may already have released this reservation.
+					}
+					clearRunDeadline(runBinding, proposedRunId);
+					discardRunRequest(requestClaim);
+					return undefined;
+				}
+				if (
+					deadlineController.signal.aborted ||
+					(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
+				) {
+					runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// Deadline teardown may already have released this reservation.
+					}
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							),
+						),
+					);
+				}
 				let handle: RunHandle;
 				try {
 					handle = reservation.accept({
@@ -2834,6 +2919,8 @@ export class RpcHostController {
 				}
 				runBinding.activeReservation = undefined;
 				runBinding.activeHandle = handle;
+				if (externalStartControl !== undefined) externalStartControl.accepted = true;
+				runBinding.externalPendingControllers.delete(proposedRunId);
 				startSettled = true;
 				const startEvents = handle.start();
 				const acceptedResponse: RpcAutomationResponse = {
@@ -2860,10 +2947,23 @@ export class RpcHostController {
 					...externalProductAdmission,
 					input: { ...externalProductAdmission.input, signal: deadlineController.signal },
 				})
-					.then(executePreparedExternalConnectorProductRun)
-					.finally(() => {
-					runBinding.externalRuns.delete(proposedRunId);
-					});
+					.then(executePreparedExternalConnectorProductRun);
+				const settlement = execution.then(() => undefined);
+				runBinding.externalRunSettlements.set(proposedRunId, settlement);
+				void settlement.then(
+					() => {
+						runBinding.externalRuns.delete(proposedRunId);
+						if (runBinding.externalRunSettlements.get(proposedRunId) === settlement) {
+							runBinding.externalRunSettlements.delete(proposedRunId);
+						}
+					},
+					() => {
+						runBinding.externalRuns.delete(proposedRunId);
+						if (runBinding.externalRunSettlements.get(proposedRunId) === settlement) {
+							runBinding.externalRunSettlements.delete(proposedRunId);
+						}
+					},
+				);
 				trackRunPrompt(runBinding, handle, execution);
 				return undefined;
 			}
@@ -3402,7 +3502,11 @@ export class RpcHostController {
 			binding.activeReservation = undefined;
 			attempt(() => binding.activeHandle?.requestCancel());
 			for (const timer of binding.runDeadlineTimers.values()) clearTimeout(timer);
-			for (const controller of binding.runAbortControllers.values()) controller.abort();
+			for (const [runId, controller] of binding.runAbortControllers) {
+				if (!binding.externalRuns.has(runId) && !binding.externalPendingControllers.has(runId)) {
+					controller.abort();
+				}
+			}
 			for (const controller of binding.externalPendingControllers.values()) controller.abort();
 			const settleWithinDeadline = async (work: Promise<unknown>[]): Promise<void> => {
 				const settledWork = Promise.allSettled(work);
@@ -3424,12 +3528,12 @@ export class RpcHostController {
 					if (result.status === "rejected") cleanupFailures.push(result.reason);
 				}
 			};
-			await settleWithinDeadline([
-				Promise.resolve().then(() => binding.session.abort()),
-				...Array.from(binding.externalRuns.values(), (externalRun) =>
+			await settleWithinDeadline(
+				Array.from(binding.externalRuns.values(), (externalRun) =>
 					Promise.resolve().then(() => externalRun.cancel()),
 				),
-			]);
+			);
+			await settleWithinDeadline([Promise.resolve().then(() => binding.session.abort())]);
 			await settleWithinDeadline([
 				...binding.runPromptPromises.values(),
 				...binding.externalRunSettlements.values(),
@@ -4688,6 +4792,9 @@ export class RpcHostController {
 							),
 						);
 					}
+					const externalStartControl = command.externalConnector === undefined
+						? undefined
+						: {} satisfies ExternalPendingStartControl;
 					return trackPendingStart(
 						startRun(
 							currentBinding,
@@ -4711,7 +4818,13 @@ export class RpcHostController {
 							command.clientRequestId,
 							undefined,
 							false,
+							undefined,
+							externalStartControl,
 						),
+						currentBinding,
+						externalStartControl,
+						id,
+						"run.start",
 					);
 				}
 
@@ -4840,17 +4953,23 @@ export class RpcHostController {
 										),
 									);
 								}
-								const selected = await registry.select(command.externalConnector);
-								if (!selected.ok) {
-									const providerExists = registry.list().some(
-										(descriptor) => descriptor.providerId === command.externalConnector?.providerId,
-									);
+								const descriptor = registry.list().find(
+									(candidate) => candidate.providerId === command.externalConnector?.providerId,
+								);
+								if (
+									descriptor === undefined ||
+									descriptor.revision !== command.externalConnector.revision ||
+									descriptor.capabilitySnapshotDigest.algorithm !==
+										command.externalConnector.capabilitySnapshotDigest.algorithm ||
+									descriptor.capabilitySnapshotDigest.value !==
+										command.externalConnector.capabilitySnapshotDigest.value
+								) {
 									return automationError(
 										id,
 										"run.resume",
 										createAutomationError(
-											providerExists ? "external_capability_mismatch" : "external_connector_unavailable",
-											providerExists
+											descriptor === undefined ? "external_connector_unavailable" : "external_capability_mismatch",
+											descriptor !== undefined
 												? "External Connector capability snapshot is unavailable or drifted."
 												: "The selected External Connector is not registered in this Host.",
 											false,
