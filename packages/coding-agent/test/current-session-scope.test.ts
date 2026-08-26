@@ -84,6 +84,25 @@ describe("CurrentSessionScope", () => {
 		expect(candidate.disposed).toBe(true);
 	});
 
+	it("treats a throwing prepared commit as a rollback-safe pre-commit failure", async () => {
+		const old = createScope("old");
+		const candidate = createScope("candidate");
+		const current = new CurrentSessionScope(old);
+
+		await expect(current.replace({
+			...transitionOptions(candidate),
+			prepareRebind: () => ({
+				commit: () => {
+					throw new Error("prepared commit fault");
+				},
+			}),
+		})).rejects.toThrow("prepared commit fault");
+
+		expect(current.current).toBe(old);
+		expect(old.disposed).toBe(false);
+		expect(candidate.disposed).toBe(true);
+	});
+
 	it("reports candidate cleanup faults without publishing the candidate", async () => {
 		const old = createScope("old");
 		const candidate = createScope("candidate");
@@ -197,7 +216,7 @@ describe("CurrentSessionScope", () => {
 		});
 
 		expect(cleanupOrder).toEqual(["host", "Session"]);
-		expect(hostSignal).toBe(sessionSignal);
+		expect(hostSignal).not.toBe(sessionSignal);
 		expect(current.current).toBe(candidate);
 		expect(result.postCommitFailures).toEqual([
 			{
@@ -269,8 +288,36 @@ describe("CurrentSessionScope", () => {
 		expect(current.current).toBe(candidate);
 		expect(result.postCommitFailures[0]?.phase).toBe("old_scope_cleanup");
 		expect(result.postCommitFailures[0]?.error).toEqual(
-			expect.objectContaining({ message: "Old session scope cleanup exceeded 1ms" }),
+			expect.objectContaining({ message: "Old Session disposal exceeded 1ms" }),
 		);
+	});
+
+	it("attempts bounded Session disposal after host cleanup ignores cancellation", async () => {
+		const old = createScope("old");
+		const candidate = createScope("candidate");
+		const current = new CurrentSessionScope(old);
+		let sessionDisposeCalls = 0;
+
+		const result = await current.replace({
+			...transitionOptions(candidate),
+			prepareRebind: () => ({
+				commit: () => undefined,
+				disposePrevious: () => new Promise<void>(() => undefined),
+			}),
+			disposePrevious: () => {
+				sessionDisposeCalls += 1;
+				old.disposed = true;
+			},
+			oldCleanupTimeoutMs: 1,
+		});
+
+		expect(sessionDisposeCalls).toBe(1);
+		expect(old.disposed).toBe(true);
+		expect(current.current).toBe(candidate);
+		expect(result.postCommitFailures).toContainEqual({
+			phase: "old_scope_cleanup",
+			error: expect.objectContaining({ message: "Old host cleanup exceeded 1ms" }),
+		});
 	});
 
 	it("reports candidate activation faults without rolling back the committed candidate", async () => {
@@ -337,7 +384,7 @@ describe("CurrentSessionScope", () => {
 		await replacement;
 		observations.push(current.current);
 
-		expect(observations).toEqual([old, old, old, old, old, candidate, candidate]);
+		expect(observations).toEqual([old, old, old, old, old, old, candidate]);
 		expect(new Set(observations)).toEqual(new Set([old, candidate]));
 	});
 });

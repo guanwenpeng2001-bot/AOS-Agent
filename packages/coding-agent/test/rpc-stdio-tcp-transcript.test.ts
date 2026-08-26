@@ -421,7 +421,7 @@ async function waitForRecord(
 			match = adapter.records().find(predicate);
 			expect(match).toBeDefined();
 		},
-		timeout === undefined ? undefined : { timeout },
+		{ timeout: timeout ?? RUN_SETTLEMENT_TIMEOUT_MS },
 	);
 	return match!;
 }

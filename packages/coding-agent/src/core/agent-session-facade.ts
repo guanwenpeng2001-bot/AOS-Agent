@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -571,6 +572,8 @@ function mcpAuditReasonCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+const extensionCommandTransitionOrigin = new AsyncLocalStorage<AgentSession>();
+
 /**
  * Stateless compatibility surface over one canonical AgentHarness.
  *
@@ -614,6 +617,7 @@ export class CanonicalAgentSessionServices {
 	private pendingActiveToolNames: string[] | undefined;
 	private readonly pendingExternalMessages: AgentMessage[] = [];
 	private readonly activePromptTasks = new Set<Promise<void>>();
+	private admissionPaused = false;
 	private promptPreflightPending = false;
 	private manualCompactionPending = false;
 	private disposed = false;
@@ -2104,6 +2108,11 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async prompt(text: string, options: PromptOptions = {}): Promise<void> {
+		if (this.admissionPaused) throw new Error("Session scope transition is in progress");
+		return this.promptAccepted(text, options);
+	}
+
+	private async promptAccepted(text: string, options: PromptOptions): Promise<void> {
 		if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Operation aborted", "AbortError");
 		if ((options.expandPromptTemplates ?? true) && text.startsWith("/")) {
 			const handled = await this.tryExecuteExtensionCommand(text);
@@ -2126,6 +2135,11 @@ export class CanonicalAgentSessionServices {
 			options.preflightResult?.(true);
 			return;
 		}
+		// transformInput and extension-command lookup are asynchronous admission
+		// preflight. Recheck the fence after their final await, then track the
+		// accepted task without yielding so a scope transition cannot pass its
+		// drain while this prompt is still untracked.
+		if (this.admissionPaused) throw new Error("Session scope transition is in progress");
 		await this.trackPromptTask(
 			this.promptPrepared(this.expandPromptText(input.text, options.expandPromptTemplates ?? true), input.images, options),
 		);
@@ -2142,6 +2156,56 @@ export class CanonicalAgentSessionServices {
 		})();
 		this.activePromptTasks.add(tracked);
 		return tracked;
+	}
+
+	private trackPromptOperation(
+		operation: (tracking: { pause(): void; resume(): void }) => Promise<void>,
+	): Promise<void> {
+		let start!: () => void;
+		let task!: Promise<void>;
+		let activeGate: Promise<void> | undefined;
+		let pauseActiveGate: (() => void) | undefined;
+		let settled = false;
+		const tracking = {
+			pause: (): void => {
+				if (activeGate === undefined) return;
+				const gate = activeGate;
+				activeGate = undefined;
+				pauseActiveGate?.();
+				pauseActiveGate = undefined;
+				this.activePromptTasks.delete(gate);
+			},
+			resume: (): void => {
+				if (settled || activeGate !== undefined) return;
+				const paused = new Promise<void>((resolve) => {
+					pauseActiveGate = resolve;
+				});
+				const gate = Promise.race([task, paused]);
+				void gate.catch(() => undefined);
+				activeGate = gate;
+				this.activePromptTasks.add(gate);
+			},
+		};
+		const operationTask = new Promise<void>((resolve, reject) => {
+			start = () => {
+				try {
+					operation(tracking).then(resolve, reject);
+				} catch (error) {
+					reject(error);
+				}
+			};
+		});
+		task = (async () => {
+			try {
+				await operationTask;
+			} finally {
+				settled = true;
+				tracking.pause();
+			}
+		})();
+		tracking.resume();
+		start();
+		return task;
 	}
 
 	private async syncHarnessRetryPolicy(): Promise<void> {
@@ -2334,7 +2398,9 @@ export class CanonicalAgentSessionServices {
 		} catch (error) {
 			failure ??= error;
 		}
-		await Promise.all([...this.activePromptTasks].map((task) => task.catch(() => undefined)));
+		while (this.activePromptTasks.size > 0) {
+			await Promise.allSettled([...this.activePromptTasks]);
+		}
 		if (failure !== undefined) throw failure;
 	}
 
@@ -2342,6 +2408,22 @@ export class CanonicalAgentSessionServices {
 		await this.harness.waitForIdle();
 		this.flushPendingExternalMessages();
 		await this.refreshCompatibilityMessages();
+	}
+
+	/** @internal Stop new prompt admission synchronously. */
+	pauseAdmission(): void {
+		this.admissionPaused = true;
+	}
+
+	/** @internal Drain canonical agent and storage work without awaiting the caller that initiated a transition. */
+	async drainAcceptedWrites(): Promise<void> {
+		await this.waitForIdle();
+		await this.canonicalStorage.drain();
+	}
+
+	/** @internal Re-open a scope whose replacement failed before publication. */
+	resumeAdmission(): void {
+		this.admissionPaused = false;
 	}
 
 	async waitForDispose(): Promise<void> {
@@ -2397,15 +2479,38 @@ export class CanonicalAgentSessionServices {
 		const command = this._extensionRunner.getCommand(name);
 		if (command === undefined) return false;
 		const args = separator < 0 ? "" : text.slice(separator + 1);
-		try {
-			await command.handler(args, this._extensionRunner.createCommandContext());
-		} catch (error) {
-			this._extensionRunner.emitError({
-				extensionPath: `command:${name}`,
-				event: "command",
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		await this.trackPromptOperation(async (tracking) => {
+			const context = this._extensionRunner.createCommandContext();
+			const originSession = this.compatibilityFacade;
+			if (originSession === undefined) throw new Error("Extension command Session facade is unavailable");
+			const runReplacingAction = async <TResult>(
+				action: () => Promise<TResult>,
+			): Promise<TResult> => {
+				tracking.pause();
+				try {
+					return await extensionCommandTransitionOrigin.run(originSession, action);
+				} finally {
+					tracking.resume();
+				}
+			};
+			const newSession = context.newSession;
+			const fork = context.fork;
+			const switchSession = context.switchSession;
+			const reload = context.reload;
+			context.newSession = (options) => runReplacingAction(() => newSession(options));
+			context.fork = (entryId, options) => runReplacingAction(() => fork(entryId, options));
+			context.switchSession = (sessionPath, options) => runReplacingAction(() => switchSession(sessionPath, options));
+			context.reload = () => runReplacingAction(reload);
+			try {
+				await command.handler(args, context);
+			} catch (error) {
+				this._extensionRunner.emitError({
+					extensionPath: `command:${name}`,
+					event: "command",
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		});
 		return true;
 	}
 
@@ -3699,7 +3804,6 @@ const COMPATIBILITY_FORWARDERS = [
 	"detachMcpAttachment",
 	"clearMcpAttachments",
 	"cancelMcpContentOperations",
-	"reload",
 	"exportToHtml",
 	"exportToJsonl",
 	"dispose",
@@ -3777,6 +3881,15 @@ function installCompatibilityForwarders(
 }
 
 const agentSessionDelegates = new WeakMap<AgentSession, CanonicalAgentSessionServices>();
+const agentSessionRuntimeReloads = new WeakMap<
+	AgentSession,
+	(options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>
+>();
+
+/** @internal Return the Session whose extension command initiated the current async call chain. */
+export function getAgentSessionTransitionOrigin(): AgentSession | undefined {
+	return extensionCommandTransitionOrigin.getStore();
+}
 
 export class AgentSession {
 	private readonly delegate: CanonicalAgentSessionServices;
@@ -3916,7 +4029,6 @@ export class AgentSession {
 	declare readonly detachMcpAttachment: CanonicalAgentSessionServices["detachMcpAttachment"];
 	declare readonly clearMcpAttachments: CanonicalAgentSessionServices["clearMcpAttachments"];
 	declare readonly cancelMcpContentOperations: CanonicalAgentSessionServices["cancelMcpContentOperations"];
-	declare readonly reload: CanonicalAgentSessionServices["reload"];
 	declare readonly exportToHtml: CanonicalAgentSessionServices["exportToHtml"];
 	declare readonly exportToJsonl: CanonicalAgentSessionServices["exportToJsonl"];
 	declare readonly dispose: CanonicalAgentSessionServices["dispose"];
@@ -3944,6 +4056,41 @@ export class AgentSession {
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		return this.delegate._runAutoCompaction(reason, willRetry);
 	}
+
+	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		const runtimeReload = agentSessionRuntimeReloads.get(this);
+		if (runtimeReload !== undefined) return runtimeReload(options);
+		return this.delegate.reload(options);
+	}
+}
+
+/** @internal Route public reload through the owning runtime transaction. */
+export function bindAgentSessionRuntimeReload(
+	session: AgentSession,
+	reload: (options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>,
+): void {
+	agentSessionRuntimeReloads.set(session, reload);
+}
+
+/** @internal Stop new prompt admission before the one-pointer commit. */
+export function pauseAgentSessionAdmission(session: AgentSession): void {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	delegate.pauseAdmission();
+}
+
+/** @internal Drain work already accepted by the canonical agent and storage pipeline. */
+export async function drainAgentSessionWrites(session: AgentSession): Promise<void> {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	await delegate.drainAcceptedWrites();
+}
+
+/** @internal Restore admission when a candidate fails before publication. */
+export function resumeAgentSessionAdmission(session: AgentSession): void {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	delegate.resumeAdmission();
 }
 
 /** @internal Materialize a canonical fork without exposing its physical runtime target. */

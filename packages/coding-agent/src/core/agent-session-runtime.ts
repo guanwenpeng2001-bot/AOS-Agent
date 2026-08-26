@@ -12,7 +12,15 @@ import {
 	type PreparedSessionScopeRebind,
 	type SessionScopePostCommitFailure,
 } from "./current-session-scope.ts";
-import { createAgentSessionForkTarget, useAgentSessionForkTarget } from "./agent-session-facade.ts";
+import {
+	bindAgentSessionRuntimeReload,
+	createAgentSessionForkTarget,
+	drainAgentSessionWrites,
+	getAgentSessionTransitionOrigin,
+	pauseAgentSessionAdmission,
+	resumeAgentSessionAdmission,
+	useAgentSessionForkTarget,
+} from "./agent-session-facade.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ProjectTrustContext,
@@ -172,6 +180,7 @@ export class AgentSessionRuntime {
 			diagnostics: _diagnostics,
 			...(_modelFallbackMessage === undefined ? {} : { modelFallbackMessage: _modelFallbackMessage }),
 		});
+		this.bindPublicReload(_session);
 	}
 
 	get services(): AgentSessionServices {
@@ -298,7 +307,7 @@ export class AgentSessionRuntime {
 		result: CreateAgentSessionRuntimeResult,
 		sessionManager: SessionManager,
 	): AgentSessionScope {
-		return {
+		const scope = {
 			session: result.session,
 			services: result.services,
 			sessionManager,
@@ -306,6 +315,28 @@ export class AgentSessionRuntime {
 			diagnostics: result.diagnostics,
 			...(result.modelFallbackMessage === undefined ? {} : { modelFallbackMessage: result.modelFallbackMessage }),
 		};
+		this.bindPublicReload(scope.session);
+		return scope;
+	}
+
+	private bindPublicReload(session: AgentSession): void {
+		bindAgentSessionRuntimeReload(session, (options) => {
+			if (this.session !== session) throw new Error("AgentSession is no longer the current runtime scope");
+			return this.reload(options);
+		});
+	}
+
+	private openSessionCandidate(
+		sessionPath: string,
+		sessionDir: string | undefined,
+		cwdOverride: string | undefined,
+		previousManager: SessionManager,
+	): SessionManager {
+		const previousSessionFile = previousManager.getSessionFile();
+		if (previousSessionFile === undefined || resolve(previousSessionFile) !== resolve(sessionPath)) {
+			return SessionManager.open(sessionPath, sessionDir, cwdOverride);
+		}
+		return previousManager.createDetachedSnapshot(cwdOverride);
 	}
 
 	private validateCandidateScope(candidate: AgentSessionScope): void {
@@ -329,7 +360,14 @@ export class AgentSessionRuntime {
 	}
 
 	private runTransition<TResult>(transition: () => Promise<TResult>): Promise<TResult> {
-		const result = this.transitionTail.then(transition, transition);
+		const originatingSession = getAgentSessionTransitionOrigin();
+		const execute = (): Promise<TResult> => {
+			if (originatingSession !== undefined && this.session !== originatingSession) {
+				throw new Error("Extension command Session transition origin is no longer current");
+			}
+			return transition();
+		};
+		const result = this.transitionTail.then(execute, execute);
 		this.transitionTail = result.then(
 			() => undefined,
 			() => undefined,
@@ -339,6 +377,11 @@ export class AgentSessionRuntime {
 
 	private async replaceCurrentScope(options: ReplaceSessionScopeOptions): Promise<void> {
 		let transition: Awaited<ReturnType<CurrentSessionScope<AgentSessionScope>["replace"]>>;
+		let previousAdmissionPaused = false;
+		let candidateAdmissionPaused = false;
+		let previousWritesPaused = false;
+		let candidateWritesPaused = false;
+		let sameFileTransition = false;
 		try {
 			transition = await this.currentScope.replace({
 				construct: async (previous) => {
@@ -362,6 +405,50 @@ export class AgentSessionRuntime {
 					candidate.session,
 					previous.session,
 				) ?? { commit: () => undefined },
+				beforeCommit: async (candidate, previous) => {
+					pauseAgentSessionAdmission(previous.session);
+					previousAdmissionPaused = true;
+					await previous.session.abort();
+					await drainAgentSessionWrites(previous.session);
+					previous.sessionManager.pauseWrites();
+					previousWritesPaused = true;
+					pauseAgentSessionAdmission(candidate.session);
+					candidateAdmissionPaused = true;
+					await drainAgentSessionWrites(candidate.session);
+					candidate.sessionManager.pauseWrites();
+					candidateWritesPaused = true;
+				},
+				commit: (candidate, previous) => {
+					sameFileTransition = candidate.sessionManager.isDetachedSnapshotOf(previous.sessionManager);
+					if (sameFileTransition) {
+						candidate.sessionManager.commitDetachedSnapshot(previous.sessionManager);
+					}
+					options.candidateArtifact?.commit();
+				},
+				rollbackPreCommit: (candidate, previous) => {
+					if (candidateWritesPaused) {
+						candidate.sessionManager.resumeWrites();
+						candidateWritesPaused = false;
+					}
+					if (previousWritesPaused) {
+						previous.sessionManager.resumeWrites();
+						previousWritesPaused = false;
+					}
+					if (!previousAdmissionPaused) return;
+					resumeAgentSessionAdmission(previous.session);
+					previousAdmissionPaused = false;
+				},
+				stopPreviousAdmission: (candidate, previous) => {
+					previous.sessionManager.retireWrites();
+					previous.sessionManager.resumeWrites();
+					previousWritesPaused = false;
+					candidate.sessionManager.resumeWrites();
+					candidateWritesPaused = false;
+					if (candidateAdmissionPaused) {
+						resumeAgentSessionAdmission(candidate.session);
+						candidateAdmissionPaused = false;
+					}
+				},
 				disposeCandidate: async (candidate) => candidate.session.dispose(),
 				disposePrevious: (previous, signal) => this.disposeReplacedScope(
 					previous,
@@ -369,9 +456,11 @@ export class AgentSessionRuntime {
 					signal,
 					options.targetSessionFile,
 				),
+				afterPreviousDisposed: (_candidate, previous) => {
+					previous.sessionManager.pauseWrites();
+				},
 				beforeActivate: options.beforeSessionStart,
 			});
-			options.candidateArtifact?.commit();
 		} catch (error) {
 			const cleanupFailures: unknown[] = [];
 			try {
@@ -415,7 +504,12 @@ export class AgentSessionRuntime {
 					: undefined,
 			);
 			try {
-				const sessionManager = SessionManager.open(resolvedSessionPath, undefined, options?.cwdOverride);
+				const sessionManager = this.openSessionCandidate(
+					resolvedSessionPath,
+					undefined,
+					options?.cwdOverride,
+					previousManager,
+				);
 				assertSessionCwdExists(sessionManager, this.cwd);
 				await this.replaceCurrentScope({
 					cwd: sessionManager.getCwd(),
@@ -543,7 +637,12 @@ export class AgentSessionRuntime {
 			try {
 				if (resolve(destinationPath) !== resolvedPath) copyFileSync(resolvedPath, destinationPath);
 
-				const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+				const sessionManager = this.openSessionCandidate(
+					destinationPath,
+					sessionDir,
+					cwdOverride,
+					previousManager,
+				);
 				assertSessionCwdExists(sessionManager, this.cwd);
 				await this.replaceCurrentScope({
 					cwd: sessionManager.getCwd(),

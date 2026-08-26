@@ -1064,6 +1064,15 @@ export class SessionManager {
 	private leafId: string | null = null;
 	private entriesReadProjection: (() => SessionEntry[]) | undefined;
 	private leafIdReadProjection: (() => string | null) | undefined;
+	private canonicalLeafIdReadProjection: (() => string | null) | undefined;
+	private canonicalLanesReadProjection: (() => ReadonlyMap<string, string | null>) | undefined;
+	private writesPaused = false;
+	private writesRetired = false;
+	private detachedSource: SessionManager | undefined;
+	private detachedBaseEntryCount = 0;
+	private detachedBaseLeafId: string | null = null;
+	private detachedBaseCanonicalLeafIds = new Map<string, string | null>();
+	private detachedFlushRequested = false;
 
 	private constructor(
 		cwd: string,
@@ -1181,6 +1190,10 @@ export class SessionManager {
 		return new SessionWriteCoordinator(this.sessionFile, this.sessionDir).withWriteLock(operation);
 	}
 
+	private assertWritesAllowed(): void {
+		if (this.writesPaused) throw new Error("Session scope no longer accepts writes");
+	}
+
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
 		this._withWriteLock(() => this._rewriteFileUnlocked());
@@ -1199,6 +1212,13 @@ export class SessionManager {
 
 	/** Persist the complete pending log after a canonical assistant response settles. */
 	flushPendingSession(): void {
+		this.assertWritesAllowed();
+		if (this.writesRetired) return;
+		if (this.detachedSource !== undefined) {
+			this.detachedFlushRequested = true;
+			this.flushed = true;
+			return;
+		}
 		if (!this.persist || !this.sessionFile || this.flushed) return;
 		this._rewriteFile();
 		this.flushed = true;
@@ -1229,6 +1249,9 @@ export class SessionManager {
 	}
 
 	_persist(entry: SessionEntry, entries: FileEntry[] = this.fileEntries): void {
+		this.assertWritesAllowed();
+		if (this.writesRetired) return;
+		if (this.detachedSource !== undefined) return;
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = entries.some((e) => e.type === "message" && e.message.role === "assistant");
@@ -1453,6 +1476,15 @@ export class SessionManager {
 		return this.leafIdReadProjection?.() ?? this.leafId;
 	}
 
+	/** Return the canonical main-lane leaf, including compatibility-hidden entries. */
+	getCanonicalMainLaneLeafId(): string | null {
+		return this.canonicalLeafIdReadProjection?.() ?? this.leafId;
+	}
+
+	private getCanonicalLaneLeafIds(): Map<string, string | null> {
+		return new Map(this.canonicalLanesReadProjection?.() ?? [["main", this.leafId]]);
+	}
+
 	getLeafEntry(): SessionEntry | undefined {
 		const leafId = this.getLeafId();
 		return leafId ? this.getEntry(leafId) : undefined;
@@ -1580,9 +1612,13 @@ export class SessionManager {
 	setEntriesReadProjection(
 		projection: (() => SessionEntry[]) | undefined,
 		leafIdProjection?: () => string | null,
+		canonicalLeafIdProjection?: () => string | null,
+		canonicalLanesProjection?: () => ReadonlyMap<string, string | null>,
 	): void {
 		this.entriesReadProjection = projection;
 		this.leafIdReadProjection = leafIdProjection;
+		this.canonicalLeafIdReadProjection = canonicalLeafIdProjection;
+		this.canonicalLanesReadProjection = canonicalLanesProjection;
 	}
 
 	/**
@@ -1641,6 +1677,7 @@ export class SessionManager {
 	 * are not modified or deleted.
 	 */
 	branch(branchFromId: string): void {
+		this.assertWritesAllowed();
 		if (!this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
@@ -1653,6 +1690,7 @@ export class SessionManager {
 	 * Use this when navigating to re-edit the first user message.
 	 */
 	resetLeaf(): void {
+		this.assertWritesAllowed();
 		this.leafId = null;
 	}
 
@@ -1870,8 +1908,8 @@ export class SessionManager {
 	 * Persisted snapshots retain the same target file; the transition owner must
 	 * stage and restore that artifact if the candidate fails before commit.
 	 */
-	createDetachedSnapshot(): SessionManager {
-		const snapshot = new SessionManager(this.cwd, "", undefined, false);
+	createDetachedSnapshot(cwdOverride?: string): SessionManager {
+		const snapshot = new SessionManager(cwdOverride ?? this.cwd, "", undefined, false);
 		snapshot.sessionId = this.sessionId;
 		snapshot.sessionFile = this.sessionFile;
 		snapshot.sessionDir = this.sessionDir;
@@ -1880,7 +1918,197 @@ export class SessionManager {
 		snapshot.fileEntries = structuredClone(this.fileEntries);
 		snapshot._buildIndex();
 		snapshot.leafId = this.leafId;
+		snapshot.detachedSource = this;
+		snapshot.detachedBaseEntryCount = snapshot.fileEntries.length;
+		snapshot.detachedBaseLeafId = snapshot.leafId;
+		snapshot.detachedBaseCanonicalLeafIds = this.getCanonicalLaneLeafIds();
 		return initializeSessionReadProjection(snapshot);
+	}
+
+	/** @internal Whether this manager is a staged snapshot of the supplied writer. */
+	isDetachedSnapshotOf(source: SessionManager): boolean {
+		return this.detachedSource === source;
+	}
+
+	/**
+	 * Publish a detached reload snapshot through its original physical writer.
+	 * Candidate writes remain memory-only until this synchronous commit, while
+	 * accepted source writes are merged before the candidate becomes current.
+	 */
+	commitDetachedSnapshot(source: SessionManager): void {
+		if (this.detachedSource !== source) {
+			throw new TypeError("Detached Session snapshot does not belong to the current writer");
+		}
+		if (this.sessionFile !== source.sessionFile || this.persist !== source.persist) {
+			throw new TypeError("Detached Session snapshot storage does not match its current writer");
+		}
+		const candidateDelta = structuredClone(this.fileEntries.slice(this.detachedBaseEntryCount));
+		const sourceEntries = structuredClone(source.fileEntries);
+		const sourceIds = new Set(this.collectDurableIds(sourceEntries));
+		const candidateIds = new Set<string>();
+		for (const id of this.collectDurableIds(candidateDelta)) {
+			if (sourceIds.has(id) || candidateIds.has(id)) {
+				throw new Error(`Detached Session snapshot durable id collides with source entry ${id}`);
+			}
+			candidateIds.add(id);
+		}
+		const firstCandidateEntry = candidateDelta.find((entry): entry is SessionEntry => entry.type !== "session");
+		if (firstCandidateEntry?.parentId === this.detachedBaseLeafId) {
+			firstCandidateEntry.parentId = source.leafId;
+		}
+		const sourceCanonicalLeafIds = source.getCanonicalLaneLeafIds();
+		const candidateTouchedLanes = new Set<string>();
+		for (let index = 0; index < candidateDelta.length; index += 1) {
+			const entry = candidateDelta[index]!;
+			if (entry.type !== "custom" || !isRecord(entry.data)) continue;
+			if (
+				entry.customType === "__aos.foundation.lane.v1" &&
+				entry.data.kind === "lane" &&
+				typeof entry.data.lane === "string"
+			) {
+				if (
+					this.detachedBaseCanonicalLeafIds.has(entry.data.lane) &&
+					sourceCanonicalLeafIds.has(entry.data.lane) &&
+					entry.data.leafId === this.detachedBaseCanonicalLeafIds.get(entry.data.lane)
+				) {
+					entry.data.leafId = sourceCanonicalLeafIds.get(entry.data.lane) ?? null;
+					continue;
+				}
+				candidateTouchedLanes.add(entry.data.lane);
+				continue;
+			}
+			if (
+				entry.customType !== "__aos.foundation.entry.v1" ||
+				entry.data.kind !== "entry" ||
+				!isRecord(entry.data.entry)
+			) continue;
+			let advancedLane = "main";
+			for (const following of candidateDelta.slice(index + 1)) {
+				if (
+					following.type === "custom" &&
+					following.customType === "__aos.foundation.entry.v1" &&
+					isRecord(following.data) &&
+					following.data.kind === "entry"
+				) break;
+				if (
+					following.type === "custom" &&
+					following.customType === "__aos.foundation.lane.v1" &&
+					isRecord(following.data) &&
+					following.data.kind === "lane" &&
+					typeof following.data.lane === "string" &&
+					following.data.leafId === entry.data.entry.id
+				) {
+					advancedLane = following.data.lane;
+					break;
+				}
+			}
+			if (candidateTouchedLanes.has(advancedLane)) continue;
+			candidateTouchedLanes.add(advancedLane);
+			if (
+				this.detachedBaseCanonicalLeafIds.has(advancedLane) &&
+				sourceCanonicalLeafIds.has(advancedLane) &&
+				entry.data.entry.parentId === this.detachedBaseCanonicalLeafIds.get(advancedLane)
+			) {
+				entry.data.entry.parentId = sourceCanonicalLeafIds.get(advancedLane) ?? null;
+			}
+		}
+		const merged = [...sourceEntries, ...candidateDelta];
+		this.normalizeFoundationSequences(merged);
+		const hasAssistant = merged.some((entry) => entry.type === "message" && entry.message.role === "assistant");
+		const shouldWrite = source.flushed || this.detachedFlushRequested || hasAssistant;
+
+		source._withWriteLock(() => {
+			if (!source.persist || !source.sessionFile || !shouldWrite) return;
+			if (source.flushed && existsSync(source.sessionFile)) {
+				if (candidateDelta.length > 0) {
+					appendFileSync(source.sessionFile, candidateDelta.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+				}
+				return;
+			}
+			const fd = openSync(source.sessionFile, "w");
+			try {
+				for (const entry of merged) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+			} finally {
+				closeSync(fd);
+			}
+		});
+
+		this.fileEntries = merged;
+		this.flushed = source.persist ? shouldWrite : source.flushed;
+		this._buildIndex();
+		this.detachedSource = undefined;
+		this.detachedBaseEntryCount = 0;
+		this.detachedBaseLeafId = null;
+		this.detachedBaseCanonicalLeafIds.clear();
+		this.detachedFlushRequested = false;
+	}
+
+	private collectDurableIds(entries: readonly FileEntry[]): string[] {
+		const ids: string[] = [];
+		for (const entry of entries) {
+			if (entry.type === "session") continue;
+			ids.push(entry.id);
+			if (entry.type !== "custom" || !isRecord(entry.data)) continue;
+			if (
+				entry.customType === "__aos.foundation.entry.v1" &&
+				entry.data.kind === "entry" &&
+				isRecord(entry.data.entry) &&
+				typeof entry.data.entry.id === "string"
+			) ids.push(entry.data.entry.id);
+			if (
+				(entry.customType === "__aos.foundation.record.v1" ||
+					entry.customType === "__aos.foundation.durable.v1") &&
+				(entry.data.kind === "record" || entry.data.kind === "durable") &&
+				isRecord(entry.data.record) &&
+				typeof entry.data.record.id === "string"
+			) ids.push(entry.data.record.id);
+		}
+		return ids;
+	}
+
+	private normalizeFoundationSequences(entries: FileEntry[]): void {
+		let sequence = 0;
+		for (const entry of entries) {
+			if (entry.type === "session") continue;
+			sequence += 1;
+			if (entry.type !== "custom" || !isRecord(entry.data)) continue;
+			if (
+				entry.customType === "__aos.foundation.entry.v1" &&
+				entry.data.kind === "entry" &&
+				isRecord(entry.data.entry)
+			) {
+				entry.data.entry.seq = sequence;
+			}
+			if (
+				entry.customType === "__aos.foundation.record.v1" &&
+				entry.data.kind === "record" &&
+				isRecord(entry.data.record)
+			) {
+				entry.data.record.seq = sequence;
+			}
+			if (
+				entry.customType === "__aos.foundation.durable.v1" &&
+				entry.data.kind === "durable" &&
+				isRecord(entry.data.record)
+			) {
+				entry.data.record.seq = sequence;
+			}
+		}
+	}
+
+	/** @internal Keep disposal-local facts in memory after a same-file swap. */
+	retireWrites(): void {
+		this.writesRetired = true;
+	}
+
+	/** @internal Fence a replaced physical writer after its scope is unpublished. */
+	pauseWrites(): void {
+		this.writesPaused = true;
+	}
+
+	/** @internal Restore the old writer after a failed pre-commit transition. */
+	resumeWrites(): void {
+		this.writesPaused = false;
 	}
 
 	/**

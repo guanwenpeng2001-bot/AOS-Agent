@@ -77,11 +77,11 @@ type LoadedResourcesContext = {
 };
 
 type RebindContext = {
-	unsubscribe?: () => void;
+	sessionSubscriptions: Map<AgentSession, () => void>;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
-	subscribeToAgent: () => void;
+	subscribeToAgent: (session: AgentSession) => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
 	updateTerminalTitle: () => void;
@@ -140,9 +140,17 @@ type InteractiveModePrototype = {
 	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
 	prepareSessionRebind(
 		this: {
-			currentSessionBinding: { session: AgentSession; unsubscribe?: () => void };
+			session: AgentSession;
 			createCurrentSessionExtensionBindings: (session: AgentSession) => ExtensionBindings;
-			subscribeToAgent: (binding: { session: AgentSession; unsubscribe?: () => void }) => void;
+			subscribeToAgent: (session: AgentSession) => void;
+			unsubscribeFromAgent: (session: AgentSession) => void;
+			applyRuntimeSettings: () => void;
+			renderCurrentSessionState: () => void;
+			finishCurrentSessionExtensionBinding: (session: AgentSession) => void;
+			updateAvailableProviderCount: () => Promise<void>;
+			updateEditorBorderColor: () => void;
+			updateTerminalTitle: () => void;
+			resetExtensionUI: () => void;
 		},
 		nextSession: AgentSession,
 		previousSession: AgentSession,
@@ -310,6 +318,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				sessionSubscriptions: new Map(),
 				applyRuntimeSettings: () => events.push("apply"),
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -341,37 +350,48 @@ describe("regression #5943: session_start transient UI", () => {
 				throw new Error("candidate binding fault");
 			}),
 		} as unknown as AgentSession;
-		const currentSessionBinding = { session: oldSession, unsubscribe: vi.fn() };
 		const context = {
-			currentSessionBinding,
+			session: oldSession,
 			createCurrentSessionExtensionBindings: () => ({}),
 			subscribeToAgent: vi.fn(),
+			unsubscribeFromAgent: vi.fn(),
+			applyRuntimeSettings: vi.fn(),
+			renderCurrentSessionState: vi.fn(),
+			finishCurrentSessionExtensionBinding: vi.fn(),
+			updateAvailableProviderCount: vi.fn(async () => {}),
+			updateEditorBorderColor: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			resetExtensionUI: vi.fn(),
 		};
 
 		await expect(
 			interactiveModePrototype.prepareSessionRebind.call(context, candidateSession, oldSession),
 		).rejects.toThrow("candidate binding fault");
-		await context.currentSessionBinding.session.prompt("old binding still works");
+		await context.session.prompt("old binding still works");
 
-		expect(context.currentSessionBinding).toBe(currentSessionBinding);
 		expect(oldPrompt).toHaveBeenCalledWith("old binding still works");
-		expect(currentSessionBinding.unsubscribe).not.toHaveBeenCalled();
+		expect(context.unsubscribeFromAgent).toHaveBeenCalledWith(candidateSession);
 		expect(context.subscribeToAgent).not.toHaveBeenCalled();
 	});
 
-	it("commits a fully prepared interactive binding with one synchronous reference swap", async () => {
+	it("prepares interactive subscriptions without publishing a surface-owned pointer", async () => {
 		const oldSession = {} as AgentSession;
 		const candidateSession = {
 			prepareExtensionBindings: vi.fn(async () => {}),
 			activateExtensionBindings: vi.fn(async () => {}),
 		} as unknown as AgentSession;
-		const oldBinding = { session: oldSession, unsubscribe: vi.fn() };
 		const context = {
-			currentSessionBinding: oldBinding,
+			session: oldSession,
 			createCurrentSessionExtensionBindings: vi.fn(() => ({})),
-			subscribeToAgent: vi.fn((binding: { session: AgentSession; unsubscribe?: () => void }) => {
-				binding.unsubscribe = vi.fn();
-			}),
+			subscribeToAgent: vi.fn(),
+			unsubscribeFromAgent: vi.fn(),
+			applyRuntimeSettings: vi.fn(),
+			renderCurrentSessionState: vi.fn(),
+			finishCurrentSessionExtensionBinding: vi.fn(),
+			updateAvailableProviderCount: vi.fn(async () => {}),
+			updateEditorBorderColor: vi.fn(),
+			updateTerminalTitle: vi.fn(),
+			resetExtensionUI: vi.fn(),
 		};
 
 		const prepared = await interactiveModePrototype.prepareSessionRebind.call(
@@ -385,11 +405,11 @@ describe("regression #5943: session_start transient UI", () => {
 
 		expect(() => prepared.commit()).not.toThrow();
 
-		expect(context.currentSessionBinding.session).toBe(candidateSession);
+		expect(context.session).toBe(oldSession);
 		expect(candidateSession.prepareExtensionBindings).toHaveBeenCalledTimes(1);
 		expect(context.subscribeToAgent).toHaveBeenCalledTimes(1);
 		expect(candidateSession.activateExtensionBindings).not.toHaveBeenCalled();
-		expect(oldBinding.unsubscribe).not.toHaveBeenCalled();
+		expect(context.unsubscribeFromAgent).not.toHaveBeenCalled();
 	});
 
 	it("subscribes before replacement session_start handlers send messages", async () => {
@@ -410,6 +430,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				sessionSubscriptions: new Map(),
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {
@@ -462,6 +483,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		try {
 			const context: RebindContext = {
+				sessionSubscriptions: new Map(),
 				applyRuntimeSettings: () => {},
 				renderCurrentSessionState: () => events.push("render"),
 				bindCurrentSessionExtensions: async () => {

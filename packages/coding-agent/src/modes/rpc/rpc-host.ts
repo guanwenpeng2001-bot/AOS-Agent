@@ -909,8 +909,15 @@ export class RpcHostController {
 			externalPendingControllers: new Map(),
 			pendingExternalStarts: new Map(),
 		});
-		let currentBinding = createSessionBinding(runtimeHost.session);
-		const captureCurrentBinding = (): RpcSessionBinding => currentBinding;
+		const sessionBindings = new Map<AgentSession, RpcSessionBinding>();
+		const initialBinding = createSessionBinding(runtimeHost.session);
+		sessionBindings.set(runtimeHost.session, initialBinding);
+		const captureCurrentBinding = (): RpcSessionBinding => {
+			const session = runtimeHost.session;
+			const binding = sessionBindings.get(session);
+			if (binding === undefined) throw new Error("RPC host has no binding for the current runtime scope");
+			return binding;
+		};
 		const pendingRunRequests = new Map<string, PendingRunRequest>();
 
 		// Automation Host state
@@ -2834,7 +2841,7 @@ export class RpcHostController {
 				);
 			}
 			const modelSelection = await resolveRequestedModel(runBinding, modelRoute, modelRole, inheritedModelBinding);
-			if (runBinding !== currentBinding) {
+			if (runBinding !== captureCurrentBinding()) {
 				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
@@ -3094,7 +3101,7 @@ export class RpcHostController {
 						"The Host switched sessions before the external agent started.",
 						true,
 					);
-				if (runBinding !== currentBinding) {
+				if (runBinding !== captureCurrentBinding()) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (shuttingDown) {
@@ -3112,7 +3119,7 @@ export class RpcHostController {
 					// The abort of a lifecycle transition (detach, shutdown, session
 					// switch) surfaces through the signal-aware preflight; report the
 					// actual cause instead of a provider or deadline failure.
-					if (runBinding !== currentBinding) {
+					if (runBinding !== captureCurrentBinding()) {
 						return failExternalStart(sessionSwitchedStartError());
 					}
 					if (requestEpoch !== transportEpoch) {
@@ -3135,7 +3142,7 @@ export class RpcHostController {
 					}
 					return failExternalStart(err);
 				}
-				if (runBinding !== currentBinding) {
+				if (runBinding !== captureCurrentBinding()) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3231,7 +3238,7 @@ export class RpcHostController {
 				// external start whose preflight or prepare ignored the abort
 				// signal must still fail closed here instead of accepting after a
 				// detach, shutdown, or session switch.
-				if (runBinding !== currentBinding) {
+				if (runBinding !== captureCurrentBinding()) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3325,7 +3332,7 @@ export class RpcHostController {
 					// or when the run deadline fired. Report the actual cause: a replaced
 					// session or a disconnected transport is a retryable start_rejection,
 					// never a deadline that never existed.
-					if (runBinding !== currentBinding) {
+					if (runBinding !== captureCurrentBinding()) {
 						return failExternalStart(sessionSwitchedStartError());
 					}
 					if (requestEpoch !== transportEpoch) {
@@ -3357,7 +3364,7 @@ export class RpcHostController {
 					}
 					return failExternalStart(new ExternalAgentError("external_agent_start_failed"));
 				}
-				if (runBinding !== currentBinding) {
+				if (runBinding !== captureCurrentBinding()) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3945,7 +3952,7 @@ export class RpcHostController {
 
 		const subscribeBinding = (binding: RpcSessionBinding): void => {
 			binding.unsubscribe = binding.session.subscribe((event) => {
-				if (currentBinding !== binding) return;
+				if (captureCurrentBinding() !== binding) return;
 				if (binding.activeHandle !== undefined) {
 					const emitted = binding.activeHandle.captureSessionEvent(event);
 					if (emitted !== undefined) outputRunEvent(emitted);
@@ -3963,7 +3970,7 @@ export class RpcHostController {
 				}
 			});
 			binding.unsubscribeBackpressure = binding.session.agent.subscribe(async () => {
-				if (currentBinding !== binding) return;
+				if (captureCurrentBinding() !== binding) return;
 				await waitForOutput();
 			});
 		};
@@ -4025,36 +4032,43 @@ export class RpcHostController {
 			nextSession: AgentSession,
 			previousSession: AgentSession,
 		): Promise<PreparedSessionScopeRebind> => {
-			if (currentBinding.session !== previousSession) {
+			if (runtimeHost.session !== previousSession || captureCurrentBinding().session !== previousSession) {
 				throw new Error("RPC host session binding does not match the current runtime scope");
 			}
-			const previousBinding = currentBinding;
+			const previousBinding = captureCurrentBinding();
 			const candidateBinding = createSessionBinding(nextSession);
 			try {
 				await nextSession.prepareExtensionBindings(extensionBindings(candidateBinding));
 				if (hostInitialized) prepareAutomationStores(candidateBinding);
+				sessionBindings.set(nextSession, candidateBinding);
 				subscribeBinding(candidateBinding);
 			} catch (error) {
 				candidateBinding.unsubscribe?.();
 				candidateBinding.unsubscribeBackpressure?.();
+				sessionBindings.delete(nextSession);
 				throw error;
 			}
 			return {
-				commit: () => {
-					currentBinding = candidateBinding;
-				},
+				commit: () => undefined,
 				activate: () => nextSession.activateExtensionBindings(),
 				disposeCandidate: () => {
 					candidateBinding.unsubscribe?.();
 					candidateBinding.unsubscribeBackpressure?.();
+					sessionBindings.delete(nextSession);
 				},
-				disposePrevious: (signal) => disposeBinding(previousBinding, signal),
+				disposePrevious: async (signal) => {
+					try {
+						await disposeBinding(previousBinding, signal);
+					} finally {
+						sessionBindings.delete(previousSession);
+					}
+				},
 			};
 		};
 
 		runtimeHost.setPrepareSessionRebind(prepareRebindSession);
-		await currentBinding.session.bindExtensions(extensionBindings(currentBinding));
-		subscribeBinding(currentBinding);
+		await initialBinding.session.bindExtensions(extensionBindings(initialBinding));
+		subscribeBinding(initialBinding);
 
 		// Handle a single command
 		const handleCommand = async (
@@ -6259,7 +6273,7 @@ export class RpcHostController {
 			}
 			shuttingDown = true;
 			hostController.shuttingDown = true;
-			const bindingAtShutdown = currentBinding;
+			const bindingAtShutdown = captureCurrentBinding();
 			shutdownPromise = (async () => {
 				// Stop accepting new runs and abort the active run. Session completion is
 				// only an observation; the last canonical Foundation state is authoritative.
@@ -6311,7 +6325,7 @@ export class RpcHostController {
 				await detachTransportPromise;
 				return;
 			}
-			const bindingAtDetach = currentBinding;
+			const bindingAtDetach = captureCurrentBinding();
 			const handleAtDetach = bindingAtDetach.activeHandle;
 			const pendingStartsAtDetach = [...pendingStartPromises];
 			detachTransportPromise = (async () => {

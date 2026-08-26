@@ -36,19 +36,21 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	const { mode, messages = [], initialMessage, initialImages } = options;
 	let exitCode = 0;
 	interface PrintSessionBinding {
-		session: AgentSession;
 		unsubscribe?: () => void;
 		unsubscribeBackpressure?: () => void;
 	}
-	let currentBinding: PrintSessionBinding = { session: runtimeHost.session };
+	const sessionBindings = new Map<AgentSession, PrintSessionBinding>();
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
 	const disposeRuntime = async (): Promise<void> => {
 		if (disposed) return;
 		disposed = true;
-		currentBinding.unsubscribe?.();
-		currentBinding.unsubscribeBackpressure?.();
+		for (const binding of sessionBindings.values()) {
+			binding.unsubscribe?.();
+			binding.unsubscribeBackpressure?.();
+		}
+		sessionBindings.clear();
 		await runtimeHost.dispose();
 	};
 
@@ -102,73 +104,77 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			},
 	});
 
-	const subscribeBinding = (binding: PrintSessionBinding): void => {
-		binding.unsubscribe = binding.session.subscribe((event) => {
-			if (currentBinding !== binding) return;
+	const subscribeSession = (session: AgentSession): PrintSessionBinding => {
+		const binding: PrintSessionBinding = {};
+		binding.unsubscribe = session.subscribe((event) => {
+			if (runtimeHost.session !== session) return;
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
 		});
 		binding.unsubscribeBackpressure =
 			mode === "json"
-				? binding.session.agent.subscribe(async () => {
-						if (currentBinding !== binding) return;
+				? session.agent.subscribe(async () => {
+						if (runtimeHost.session !== session) return;
 						await waitForRawStdoutBackpressure();
 					})
 				: undefined;
+		sessionBindings.set(session, binding);
+		return binding;
 	};
 
 	runtimeHost.setPrepareSessionRebind(async (nextSession, previousSession): Promise<PreparedSessionScopeRebind> => {
-		if (currentBinding.session !== previousSession) {
+		if (runtimeHost.session !== previousSession) {
 			throw new Error("Print host session binding does not match the current runtime scope");
 		}
-		const previousBinding = currentBinding;
-		const candidateBinding: PrintSessionBinding = { session: nextSession };
+		const previousBinding = sessionBindings.get(previousSession);
+		let candidateBinding: PrintSessionBinding | undefined;
 		try {
 			await nextSession.prepareExtensionBindings(extensionBindings(nextSession));
-			subscribeBinding(candidateBinding);
+			candidateBinding = subscribeSession(nextSession);
 		} catch (error) {
-			candidateBinding.unsubscribe?.();
-			candidateBinding.unsubscribeBackpressure?.();
+			candidateBinding?.unsubscribe?.();
+			candidateBinding?.unsubscribeBackpressure?.();
+			sessionBindings.delete(nextSession);
 			throw error;
 		}
 		return {
-			commit: () => {
-				currentBinding = candidateBinding;
-			},
+			commit: () => undefined,
 			activate: () => nextSession.activateExtensionBindings(),
 			disposeCandidate: () => {
-				candidateBinding.unsubscribe?.();
-				candidateBinding.unsubscribeBackpressure?.();
+				candidateBinding?.unsubscribe?.();
+				candidateBinding?.unsubscribeBackpressure?.();
+				sessionBindings.delete(nextSession);
 			},
 			disposePrevious: () => {
-				previousBinding.unsubscribe?.();
-				previousBinding.unsubscribeBackpressure?.();
+				previousBinding?.unsubscribe?.();
+				previousBinding?.unsubscribeBackpressure?.();
+				sessionBindings.delete(previousSession);
 			},
 		};
 	});
 
 	try {
 		if (mode === "json") {
-			const header = currentBinding.session.sessionRead.getHeader();
+			const header = runtimeHost.session.sessionRead.getHeader();
 			if (header) {
 				writeRawStdout(`${JSON.stringify(header)}\n`);
 			}
 		}
 
-		await currentBinding.session.bindExtensions(extensionBindings(currentBinding.session));
-		subscribeBinding(currentBinding);
+		await runtimeHost.session.bindExtensions(extensionBindings(runtimeHost.session));
+		subscribeSession(runtimeHost.session);
 
 		if (initialMessage) {
-			await currentBinding.session.prompt(initialMessage, { images: initialImages });
+			await runtimeHost.session.prompt(initialMessage, { images: initialImages });
 		}
 
 		for (const message of messages) {
-			await currentBinding.session.prompt(message);
+			await runtimeHost.session.prompt(message);
 		}
 
 		if (mode === "text") {
-			const state = currentBinding.session.state;
+			const state = runtimeHost.session.state;
 			const lastMessage = state.messages[state.messages.length - 1];
 
 			if (lastMessage?.role === "assistant") {

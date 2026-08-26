@@ -492,6 +492,8 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		this.manager.setEntriesReadProjection(
 			() => this.legacyEntriesSnapshot(),
 			() => this.legacyLeafIdSnapshot(),
+			() => this.snapshot().lanes.find((lane) => lane.lane === "main")?.leafId ?? null,
+			() => new Map(this.snapshot().lanes.map((lane) => [lane.lane, lane.leafId])),
 		);
 	}
 
@@ -855,13 +857,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		customType: string,
 		data: FoundationEnvelope,
 		id: string,
-		preserveLeafId?: string | null,
 	): void {
 		assertJsonSerializable(data);
 		if (snapshot.ids.has(id)) throw new SessionError("already_exists", `Durable id already exists: ${id}`);
 		this.manager.appendCustomEntry(customType, data);
 		if (customType === FOUNDATION_DURABLE_CUSTOM_TYPE) this.manager.flushPendingSession();
-		void preserveLeafId;
 	}
 
 	private appendCanonicalEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): TEntry {
@@ -876,6 +876,13 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			timestamp: Date.now(),
 		} as unknown as TEntry;
 		this.appendWrapper(snapshot, FOUNDATION_ENTRY_CUSTOM_TYPE, { schemaVersion: 1, kind: "entry", entry: assigned }, assigned.id);
+		const laneSnapshot = this.snapshot();
+		this.appendWrapper(
+			laneSnapshot,
+			FOUNDATION_LANE_CUSTOM_TYPE,
+			{ schemaVersion: 1, kind: "lane", lane, leafId: assigned.id },
+			this.nextId(laneSnapshot),
+		);
 		if (assigned.type === "message" && assigned.message.role === "assistant") {
 			this.manager.flushPendingSession();
 		}

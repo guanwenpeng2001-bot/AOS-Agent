@@ -602,6 +602,50 @@ describe("AgentRuntimeComposition", () => {
 		}
 	});
 
+	it("keeps direct SDK and services composition surfaces in parity from package-root exports", async () => {
+		const captures = emptyCaptures();
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-parity-"));
+		directories.push(cwd);
+		const factory = createCompositionFactory(cwd, captures);
+		const fixture = await createRuntimeFixture(factory);
+		const direct = await createAgentSession({
+			cwd,
+			agentDir: cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(cwd, { id: "composition-direct-parity" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		const fromServices = await createAgentSessionFromServices({
+			services: fixture.services,
+			sessionManager: SessionManager.inMemory(cwd, { id: "composition-services-parity" }),
+			noTools: "all",
+		});
+		try {
+			for (const composition of [direct.runtimeComposition, fromServices.runtimeComposition]) {
+				expect(composition.factory).toBe(factory);
+				expect(composition.session).toBeDefined();
+				expect(composition.harness).toBeDefined();
+				expect(composition.toolGateway).toBeDefined();
+				expect(composition.workerSandboxProvider).toBeDefined();
+				expect(composition.subagents).toBeDefined();
+				expect(composition.scheduler).toBeDefined();
+				expect(composition.externalAgentRegistry).toBeDefined();
+				expect(composition.taskCredentialProvider).toBeDefined();
+				expect(composition.subagents?.session).toBe(composition.session);
+				expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
+				expect(composition.scheduler?.sourceSession).toBe(composition.session);
+			}
+		} finally {
+			await direct.session.dispose();
+			await fromServices.session.dispose();
+		}
+	});
+
 	it("disposes the allocated Session when initial runtime composition validation fails", async () => {
 		const hostFactory = createAgentRuntimeCompositionFactory({});
 		const candidateFactory = createAgentRuntimeCompositionFactory({

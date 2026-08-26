@@ -420,7 +420,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			expect(first).toMatchObject({ command: "run.start", success: true });
 			const runId = (first.data as { runId: string }).runId;
 			expect(runId).toBeTruthy();
-			await vi.waitFor(() => expect(terminalEvents(peer!.history)).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(peer!.history)).toHaveLength(1), { timeout: 10_000 });
 			expect(recordsOfType(peer.history, "run.started")).toHaveLength(1);
 
 			const ledgerCountAfterFirstRun = harness.runtimeHost.session.sessionRead

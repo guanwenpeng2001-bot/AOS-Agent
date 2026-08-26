@@ -790,7 +790,7 @@ describe("AgentSession H2 session capability control", () => {
 		const settingsManager = SettingsManager.inMemory({
 			mcp: {
 				servers: {
-					docs: { transport: "stdio", command: "node" },
+					docs: { transport: "stdio", command: "redaction-command-canary" },
 				},
 			},
 		});
@@ -814,8 +814,9 @@ describe("AgentSession H2 session capability control", () => {
 			expect(session.inspectCapabilityCatalog().version).toBe(1);
 			// Server config details (command/args/url/env names) never surface.
 			const serialized = JSON.stringify(view);
-			expect(serialized).not.toContain("node");
-			expect(serialized).not.toContain("stdio");
+			expect(serialized).not.toContain("redaction-command-canary");
+			expect(docs).not.toHaveProperty("command");
+			expect(docs).not.toHaveProperty("transport");
 		} finally {
 			if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 		}
