@@ -39,8 +39,8 @@ export const EXTERNAL_AGENT_SUPERVISOR_SEGMENTS = ["start", "event", "receipt", 
 export type ExternalAgentSupervisorSegment = (typeof EXTERNAL_AGENT_SUPERVISOR_SEGMENTS)[number];
 
 export const EXTERNAL_AGENT_SUPERVISOR_ERROR_CODES = [
-	"resource_limit_exceeded",
-	"event_invalid",
+	"external_resource_limit_exceeded",
+	"external_event_invalid",
 	"side_effect_unknown",
 	"reconcile_required",
 ] as const;
@@ -772,7 +772,7 @@ export class ExternalAgentSupervisor implements ExternalAgentSupervisedOperation
 		this.observeBytes(value, "receipt", "side_effect_unknown");
 		if (isRecord(value) && Array.isArray(value.artifactRefs)) {
 			if (value.artifactRefs.length + this.artifactCount > this.limits.maxArtifactRefs) {
-				throw new SupervisorViolationError("resource_limit_exceeded", "receipt");
+				throw new SupervisorViolationError("external_resource_limit_exceeded", "receipt");
 			}
 		}
 		if (!isExternalAgentReceipt(value) || !sameExternalRef(value.external, handle.external)) {
@@ -790,54 +790,54 @@ export class ExternalAgentSupervisor implements ExternalAgentSupervisedOperation
 	private acceptEvent(value: unknown, external: ExternalExecutionRef): void {
 		this.observedEventCount += 1;
 		if (this.observedEventCount > this.limits.maxEvents) {
-			throw new SupervisorViolationError("resource_limit_exceeded", "event");
+			throw new SupervisorViolationError("external_resource_limit_exceeded", "event");
 		}
 		const now = this.clock.monotonicNow();
 		const earliest = now - this.limits.eventRateWindowMs;
 		this.eventTimes = this.eventTimes.filter((timestamp) => timestamp > earliest);
 		this.eventTimes.push(now);
 		if (this.eventTimes.length > this.limits.maxEventsPerWindow) {
-			throw new SupervisorViolationError("resource_limit_exceeded", "event");
+			throw new SupervisorViolationError("external_resource_limit_exceeded", "event");
 		}
-		this.observeBytes(value, "event", "event_invalid");
+		this.observeBytes(value, "event", "external_event_invalid");
 		if (!isExternalAgentEvent(value) || !sameExternalRef(value.external, external)) {
-			throw new SupervisorViolationError("event_invalid", "event");
+			throw new SupervisorViolationError("external_event_invalid", "event");
 		}
-		if (this.eventMode === "none") throw new SupervisorViolationError("event_invalid", "event");
+		if (this.eventMode === "none") throw new SupervisorViolationError("external_event_invalid", "event");
 		if (this.adapterHandle?.external !== undefined && !sameExternalRef(value.external, this.adapterHandle.external)) {
-			throw new SupervisorViolationError("event_invalid", "event");
+			throw new SupervisorViolationError("external_event_invalid", "event");
 		}
 		if (value.type === "started") {
-			if (this.startedEventSeen) throw new SupervisorViolationError("event_invalid", "event");
+			if (this.startedEventSeen) throw new SupervisorViolationError("external_event_invalid", "event");
 			this.startedEventSeen = true;
 		}
 		if (value.type === "progress") {
 			if (value.sequence <= this.lastProgressSequence) {
-				throw new SupervisorViolationError("event_invalid", "event");
+				throw new SupervisorViolationError("external_event_invalid", "event");
 			}
 			this.lastProgressSequence = value.sequence;
 		}
 		if (value.type === "artifact") {
-			if (!this.artifactsAllowed) throw new SupervisorViolationError("event_invalid", "event");
+			if (!this.artifactsAllowed) throw new SupervisorViolationError("external_event_invalid", "event");
 			this.artifactCount += 1;
 			if (this.artifactCount > this.limits.maxArtifactRefs) {
-				throw new SupervisorViolationError("resource_limit_exceeded", "event");
+				throw new SupervisorViolationError("external_resource_limit_exceeded", "event");
 			}
 		}
 		const event = serializeExternalAgentEvent(value);
-		if (event === undefined) throw new SupervisorViolationError("event_invalid", "event");
+		if (event === undefined) throw new SupervisorViolationError("external_event_invalid", "event");
 		this.acceptedEvents.push(event);
 	}
 
 	private observeBytes(
 		value: unknown,
 		segment: "event" | "receipt",
-		invalidCode: "event_invalid" | "side_effect_unknown",
+		invalidCode: "external_event_invalid" | "side_effect_unknown",
 	): void {
 		const bytes = byteLength(value);
 		if (bytes === undefined) throw new SupervisorViolationError(invalidCode, segment);
 		if (bytes > this.limits.maxItemBytes || this.totalByteCount + bytes > this.limits.maxTotalBytes) {
-			throw new SupervisorViolationError("resource_limit_exceeded", segment);
+			throw new SupervisorViolationError("external_resource_limit_exceeded", segment);
 		}
 		this.totalByteCount += bytes;
 	}
