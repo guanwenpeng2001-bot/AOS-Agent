@@ -2470,6 +2470,7 @@ export class RpcHostController {
 				(shuttingDown ||
 					runBinding !== captureCurrentBinding() ||
 					requestEpoch !== transportEpoch ||
+					externalStartControl.deadlineController?.signal.aborted === true ||
 					externalStartControl.lifecycleController?.signal.aborted === true);
 			const abandonExternalStart = (): undefined => {
 				if (proposedRunId !== undefined) clearRunDeadline(runBinding, proposedRunId);
@@ -2854,10 +2855,34 @@ export class RpcHostController {
 				externalCanonicalInput !== undefined &&
 				externalProductAdmission !== undefined
 			) {
+				const authoritativeSelection = externalProductAdmission.selected;
 				if (
-					shuttingDown ||
-					runBinding !== captureCurrentBinding() ||
-					requestEpoch !== transportEpoch ||
+					authoritativeSelection.connector !== externalConnectorResolved.connector ||
+					authoritativeSelection.descriptor.schemaVersion !== externalConnectorResolved.descriptor.schemaVersion ||
+					authoritativeSelection.descriptor.providerId !== externalConnectorResolved.descriptor.providerId ||
+					authoritativeSelection.descriptor.providerClass !== externalConnectorResolved.descriptor.providerClass ||
+					authoritativeSelection.descriptor.revision !== externalConnectorResolved.descriptor.revision ||
+					authoritativeSelection.descriptor.capabilitySnapshotDigest.algorithm !==
+						externalConnectorResolved.descriptor.capabilitySnapshotDigest.algorithm ||
+					authoritativeSelection.descriptor.capabilitySnapshotDigest.value !==
+						externalConnectorResolved.descriptor.capabilitySnapshotDigest.value
+				) {
+					releaseOwnReservation();
+					clearRunDeadline(runBinding, proposedRunId);
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_capability_mismatch",
+								"External Connector authority changed during preflight.",
+								false,
+							),
+						),
+					);
+				}
+				if (
+					externalStartWasTornDown() ||
 					runBinding.activeReservation !== reservation ||
 					externalStartControl?.lifecycleController?.signal.aborted === true
 				) {
@@ -2909,12 +2934,14 @@ export class RpcHostController {
 						previousModelBindingId,
 						model: {
 							provider: "external_connector",
-							id: externalConnectorResolved.descriptor.providerId,
+							id: authoritativeSelection.descriptor.providerId,
 							thinkingLevel: "off",
 						},
 					});
 					handle.setUsageBaseline(usageSnapshot(runBinding));
 				} catch (err) {
+					releaseOwnReservation();
+					clearRunDeadline(runBinding, proposedRunId);
 					return startFailure(automationError(id, commandType, asAutomationError(err)));
 				}
 				runBinding.activeReservation = undefined;
@@ -2935,11 +2962,11 @@ export class RpcHostController {
 				for (const event of startEvents) outputRunEvent(event);
 				const productIdentity = externalConnectorProductIdentity(
 					proposedRunId,
-					externalConnectorResolved.descriptor.providerId,
+					authoritativeSelection.descriptor.providerId,
 				);
 				runBinding.externalRuns.set(proposedRunId, {
 					cancel: async () => {
-						const cancelled = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
+						const cancelled = await authoritativeSelection.connector.cancelAttempt(productIdentity.attemptId);
 						if (!cancelled.ok) throw cancelled.error;
 					},
 				});

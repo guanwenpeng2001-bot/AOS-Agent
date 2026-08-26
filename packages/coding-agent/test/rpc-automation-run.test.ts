@@ -462,6 +462,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 }
 
 interface RpcExternalConnectorFixture {
+	readonly connector: ReturnType<typeof createDurableExternalAgentConnector>;
 	readonly driver: RpcExternalConnectorDriver;
 	readonly processController: ReturnType<typeof createExternalConnectorTestSupervision>["processController"];
 	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
@@ -570,6 +571,7 @@ async function installRpcExternalConnector(
 	if (!registered.ok) throw registered.error;
 	vi.spyOn(runtimeHost.session, "getExternalConnectorRegistry").mockReturnValue(registry);
 	return {
+		connector,
 		driver,
 		processController: supervision.processController,
 		registry,
@@ -1705,6 +1707,175 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(resumed).toMatchObject({ success: false, error: { code: "external_resume_unsupported" } });
 			expect(fixture.driver.spawnCalls).toBe(0);
 			expect(fixture.driver.connectCalls).toBe(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("fences a deadline-abandoned external selection before retry acceptance", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			const gates = gateRegistrySelections(fixture.registry, 1);
+			await harness.controller.handleCommand({ id: "external-deadline-fence-init", type: "initialize", protocolVersion: 1 });
+			const session = harness.runtimeHost.session;
+			const policySpy = vi.spyOn(session, "setExecutionPolicyProfile");
+			const capabilitySpy = vi.spyOn(session, "setCapabilityProfile");
+			const acceptedBefore = acceptedRunFactCount(session);
+			const first = harness.controller.handleCommand({
+				id: "external-deadline-fence-old",
+				type: "run.start",
+				message: "same deadline request",
+				clientRequestId: "external-deadline-fence",
+				externalConnector: fixture.selection,
+				deadlineAt: new Date(Date.now() + 50).toISOString(),
+			});
+			await gates.started[0];
+			await first;
+			expect(harness.records.filter((record) =>
+				record.type === "response" && record.id === "external-deadline-fence-old"
+			)).toEqual([
+				expect.objectContaining({ success: false, error: expect.objectContaining({ code: "run_deadline_exceeded" }) }),
+			]);
+
+			await harness.controller.handleCommand({
+				id: "external-deadline-fence-retry",
+				type: "run.start",
+				message: "same deadline request",
+				clientRequestId: "external-deadline-fence",
+				externalConnector: fixture.selection,
+			});
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-deadline-fence-retry",
+				success: true,
+				data: expect.objectContaining({ status: "accepted" }),
+			})));
+			await vi.waitFor(() => expect(fixture.driver.spawnCalls).toBe(1));
+			expect(gates.calls()).toBe(3);
+			expect(policySpy).toHaveBeenCalledTimes(1);
+			expect(capabilitySpy).toHaveBeenCalledTimes(1);
+
+			gates.release(0);
+			await gates.completed[0];
+			await Promise.resolve();
+			expect(gates.calls()).toBe(3);
+			expect(policySpy).toHaveBeenCalledTimes(1);
+			expect(capabilitySpy).toHaveBeenCalledTimes(1);
+			expect(acceptedRunFactCount(session)).toBe(acceptedBefore + 1);
+			expect(fixture.driver.spawnCalls).toBe(1);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("releases external reservation ownership when accepted persistence fails", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			await harness.controller.handleCommand({ id: "external-accept-failure-init", type: "initialize", protocolVersion: 1 });
+			const originalSetTimeout = globalThis.setTimeout;
+			let failedDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+			const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+				const timer = originalSetTimeout(handler, timeout, ...args);
+				if (typeof timeout === "number" && timeout > 4_000 && timeout < 6_000) failedDeadlineTimer = timer;
+				return timer;
+			});
+			const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+			const sessionManager = sessionLedger(harness.runtimeHost.session);
+			const appendCustomEntry = sessionManager.appendCustomEntry.bind(sessionManager);
+			const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
+				if (
+					customType === RUN_LEDGER_CUSTOM_TYPE &&
+					typeof data === "object" &&
+					data !== null &&
+					"kind" in data &&
+					data.kind === "accepted"
+				) {
+					throw new Error("external accepted ledger unavailable");
+				}
+				return appendCustomEntry(customType, data);
+			});
+
+			await harness.controller.handleCommand({
+				id: "external-accept-failure",
+				type: "run.start",
+				message: "fail accepted persistence",
+				externalConnector: fixture.selection,
+				deadlineAt: new Date(Date.now() + 5_000).toISOString(),
+			});
+			expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-accept-failure",
+				success: false,
+				error: expect.objectContaining({ code: "ledger_persistence_failed" }),
+			}));
+			expect(acceptedRunFactCount(harness.runtimeHost.session)).toBe(0);
+			expect(await externalFoundationCounts(harness.runtimeHost.session)).toEqual([0, 0, 0]);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(failedDeadlineTimer).toBeDefined();
+			expect(clearTimeoutSpy.mock.calls.some(([timer]) => timer === failedDeadlineTimer)).toBe(true);
+
+			appendSpy.mockRestore();
+			setTimeoutSpy.mockRestore();
+			clearTimeoutSpy.mockRestore();
+			await harness.controller.handleCommand({
+				id: "external-accept-failure-retry",
+				type: "run.start",
+				message: "retry after accepted persistence",
+				externalConnector: fixture.selection,
+			});
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-accept-failure-retry",
+				success: true,
+				data: expect.objectContaining({ status: "accepted" }),
+			})));
+			await vi.waitFor(() => expect(fixture.driver.spawnCalls).toBe(1));
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("rejects Connector instance drift between early and authoritative selection", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			await harness.controller.handleCommand({ id: "external-authority-init", type: "initialize", protocolVersion: 1 });
+			const select = fixture.registry.select.bind(fixture.registry);
+			const alternateConnector = new Proxy(fixture.connector, {
+				get: (target, property) => {
+					const value = Reflect.get(target, property, target) as unknown;
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			let selectCalls = 0;
+			vi.spyOn(fixture.registry, "select").mockImplementation(async (selection) => {
+				const selected = await select(selection);
+				selectCalls += 1;
+				if (selectCalls !== 2 || !selected.ok) return selected;
+				return { ok: true as const, value: { ...selected.value, connector: alternateConnector } };
+			});
+			const acceptedBefore = acceptedRunFactCount(harness.runtimeHost.session);
+
+			const response = await harness.controller.dispatch({
+				id: "external-authority-drift",
+				type: "run.start",
+				message: "reject alternating Connector authority",
+				externalConnector: fixture.selection,
+			});
+			expect(response).toMatchObject({
+				success: false,
+				error: { code: "external_capability_mismatch" },
+			});
+			expect(selectCalls).toBe(2);
+			expect(acceptedRunFactCount(harness.runtimeHost.session)).toBe(acceptedBefore);
+			expect(await externalFoundationCounts(harness.runtimeHost.session)).toEqual([0, 0, 0]);
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
 		} finally {
 			await harness.controller.shutdown();
 			await harness.cleanup();
