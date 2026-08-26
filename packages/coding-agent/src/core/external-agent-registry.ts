@@ -24,9 +24,9 @@
  * protocol names, or raw probe data: `list()` returns safe descriptors and
  * `resolve()` returns the adapter instance plus the opaque target id.
  *
- * The registry is write-once from Host composition and read-only after
- * that: `list()` returns a fresh array of frozen descriptors in
- * registration order, returned values are frozen, and there is no
+ * The registry is write-once from Host composition and sealed before it is
+ * published to a Session. `list()` returns a fresh array of frozen descriptors
+ * in registration order, returned values are frozen, and there is no
  * unregister, clear, or in-place mutation API.
  *
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
@@ -76,13 +76,18 @@ export interface ExternalAgentResolvedSelection {
  * instance-only and fail-closed; lookups never expose endpoints, commands,
  * credentials, protocol names, or raw probe data.
  */
-export interface ExternalAgentAdapterRegistry {
-	register(adapter: ExternalAgentAdapter, options?: ExternalAgentAdapterRegistrationOptions): void;
+export interface ExternalAgentAdapterRegistryView {
 	get(adapterId: string): ExternalAgentAdapter | undefined;
 	has(adapterId: string): boolean;
 	list(): ReadonlyArray<ExternalAgentAdapterDescriptor>;
 	lookupTarget(adapterId: string, targetId: string): ExternalAgentTarget | undefined;
 	resolve(selection: ExternalAgentSelection): ExternalAgentResolvedSelection;
+}
+
+/** Mutable Host construction surface. A materialized runtime publishes only its sealed view. */
+export interface ExternalAgentAdapterRegistry extends ExternalAgentAdapterRegistryView {
+	register(adapter: ExternalAgentAdapter, options?: ExternalAgentAdapterRegistrationOptions): void;
+	seal(): ExternalAgentAdapterRegistryView;
 }
 
 interface RegisteredAdapter {
@@ -177,8 +182,10 @@ function isSafeDescriptor(value: unknown): value is ExternalAgentAdapterDescript
 
 export class ExternalAgentAdapterRegistryImpl implements ExternalAgentAdapterRegistry {
 	readonly #adapters = new Map<string, RegisteredAdapter>();
+	#sealed = false;
 
 	register(adapter: ExternalAgentAdapter, options: ExternalAgentAdapterRegistrationOptions = {}): void {
+		if (this.#sealed) throw new ExternalAgentError("external_agent_adapter_invalid");
 		if (!isAdapterInstance(adapter) || !isRegistrationOptions(options)) {
 			throw new ExternalAgentError("external_agent_adapter_invalid");
 		}
@@ -202,6 +209,11 @@ export class ExternalAgentAdapterRegistryImpl implements ExternalAgentAdapterReg
 			targets.add(targetId);
 		}
 		this.#adapters.set(adapterId, { adapter, descriptor, targets });
+	}
+
+	seal(): ExternalAgentAdapterRegistryView {
+		this.#sealed = true;
+		return Object.freeze(this);
 	}
 
 	get(adapterId: string): ExternalAgentAdapter | undefined {
@@ -261,6 +273,7 @@ export function isExternalAgentAdapterRegistry(value: unknown): value is Externa
 	const candidate = value as Partial<ExternalAgentAdapterRegistry>;
 	return (
 		typeof candidate.register === "function" &&
+		typeof candidate.seal === "function" &&
 		typeof candidate.get === "function" &&
 		typeof candidate.has === "function" &&
 		typeof candidate.list === "function" &&

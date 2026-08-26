@@ -8,8 +8,6 @@ import { CapabilityRegistry } from "./capability-registry.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionFactory,
-	type TrustedTaskCredentialProviderFactory,
-	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import {
@@ -79,12 +77,6 @@ export interface CreateAgentSessionServicesOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Per-session Task Credential provider factory composing the credential service. */
-	taskCredentialProviderFactory?: TrustedTaskCredentialProviderFactory;
-	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
-	taskCredentialPolicyMaxTtlMs?: number;
-	/** Trusted composition factory invoked once for each Session created from these services. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -107,8 +99,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
-	/** If supplied, must be the exact factory already owned by services. */
-	runtimeComposition?: AgentRuntimeCompositionFactory;
 	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
 }
 
@@ -269,25 +259,7 @@ export async function createAgentSessionServices(
 
 	const mcpAuthManagerOptions =
 		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
-	if (
-		options.runtimeComposition !== undefined &&
-		(options.taskCredentialProviderFactory !== undefined ||
-			options.taskCredentialPolicyMaxTtlMs !== undefined ||
-			options.trustedWorkerSandboxFactory !== undefined)
-	) {
-		throw new TypeError("AgentSession services accept optional providers through one runtime composition");
-	}
-	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory({
-		...(options.taskCredentialProviderFactory === undefined
-			? {}
-			: { taskCredentialProvider: options.taskCredentialProviderFactory }),
-		...(options.taskCredentialPolicyMaxTtlMs === undefined
-			? {}
-			: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
-		...(options.trustedWorkerSandboxFactory === undefined
-			? {}
-			: { trustedWorkerSandboxFactory: options.trustedWorkerSandboxFactory }),
-	});
+	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 
 	return {
 		cwd,
@@ -318,9 +290,6 @@ export async function createAgentSessionServices(
 export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
-	if (options.runtimeComposition !== undefined && options.runtimeComposition !== options.services.runtimeComposition) {
-		throw new TypeError("Session candidates must reuse the services runtime composition");
-	}
 	return createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,

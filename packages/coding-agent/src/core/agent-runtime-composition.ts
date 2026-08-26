@@ -5,7 +5,10 @@ import type {
 } from "@aos-agent/agent-core";
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "./capability-registry.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
+import type {
+	ExternalAgentAdapterRegistry,
+	ExternalAgentAdapterRegistryView,
+} from "./external-agent-registry.ts";
 import type { TrustedSchedulerCompositionOptions } from "./foundation-control-plane.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
@@ -106,7 +109,7 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagents?: TrustedSubagentCompositionOptionsV1;
 	readonly scheduler?: TrustedSchedulerRuntimeOptions;
-	readonly externalAgentRegistry?: ExternalAgentAdapterRegistry;
+	readonly externalAgentRegistry?: ExternalAgentAdapterRegistryView;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -211,10 +214,11 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
 			const toolGateway = explicitToolGateway ?? subagents?.toolGateway;
 			requireFresh(toolGateway, "Trusted Tool Gateway");
-			const externalAgentRegistry = requireFresh(
+			const mutableExternalAgentRegistry = requireFresh(
 				snapshot.externalAgentRegistry?.(publicContext) ?? snapshot.externalAgentRegistryInstance,
 				"Trusted External Agent registry",
 			);
+			const externalAgentRegistry = mutableExternalAgentRegistry?.seal();
 			const taskCredentialProvider = requireFresh(
 				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
 				"Trusted Task Credential provider",

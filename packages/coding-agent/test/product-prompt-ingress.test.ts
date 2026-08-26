@@ -32,7 +32,7 @@ import { describe, expect, it } from "vitest";
 import { deriveProductPromptModelProfileIdV1 } from "../src/core/product-prompt-binding-authority.ts";
 import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
 import { TrustedSubagentCompositionV1 } from "../src/core/subagent-composition.ts";
-import { createCodingAgentHarness } from "../src/server/create-harness.ts";
+import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
 
@@ -497,7 +497,7 @@ describe("ProductPromptIngressV1", () => {
 			return stream;
 		};
 		const env = new NodeExecutionEnv({ cwd: process.cwd() });
-		const created = await createCodingAgentHarness({
+		const created = await createCodingAgentHarnessFromTrustedProvidersForTest({
 			session,
 			models,
 			model: MODEL,

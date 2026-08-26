@@ -570,7 +570,11 @@ describe("AgentRuntimeComposition", () => {
 			expect(composition.taskCredentialProvider).toBe(captures.credentialProviders[0]);
 			expect(created.session.getExternalAgentRegistry()).toBe(composition.externalAgentRegistry);
 			expect(created.session.getWorkerRegistry()?.listWorkerRecords()).toEqual([]);
+			expect(created.session.getSubagentRegistry()).toBeDefined();
 			expect(created.session.getSchedulerStatus()).toBeDefined();
+			expect(() => captures.externalRegistries[0]?.register(createFakeExternalAdapter("late"))).toThrowError(
+				expect.objectContaining({ code: "external_agent_adapter_invalid" }),
+			);
 			expect(composition.subagents?.session).toBe(composition.session);
 			expect(composition.subagents?.toolGateway).toBe(composition.toolGateway);
 			expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
@@ -611,15 +615,23 @@ describe("AgentRuntimeComposition", () => {
 		const replacement = runtime.runtimeComposition;
 		expect(replacement.factory).toBe(factory);
 		expectFreshComposition(initial, replacement);
-		expect(captures.workers).toHaveLength(2);
-		expect(captures.externalRegistries).toHaveLength(2);
-		expect(captures.credentialProviders).toHaveLength(2);
-		expect(replacement.subagents?.writer).toBe(replacement.harness.t5.writer);
-		expect(replacement.subagents?.session).toBe(replacement.session);
-		expect(replacement.subagents?.toolGateway).toBe(replacement.toolGateway);
-		expect(replacement.scheduler?.sourceSession).toBe(replacement.session);
-		expect(replacement.externalAgentRegistry?.list()).toHaveLength(1);
-		expect(replacement.taskCredentialProvider).toBeDefined();
+		await runtime.newSession();
+		const secondReplacement = runtime.runtimeComposition;
+		expectFreshComposition(replacement, secondReplacement);
+		expect(captures.workers).toHaveLength(3);
+		expect(captures.externalRegistries).toHaveLength(3);
+		expect(captures.credentialProviders).toHaveLength(3);
+		for (const [index, registry] of captures.externalRegistries.entries()) {
+			expect(() => registry.register(createFakeExternalAdapter(`late-${index}`))).toThrowError(
+				expect.objectContaining({ code: "external_agent_adapter_invalid" }),
+			);
+		}
+		expect(secondReplacement.subagents?.writer).toBe(secondReplacement.harness.t5.writer);
+		expect(secondReplacement.subagents?.session).toBe(secondReplacement.session);
+		expect(secondReplacement.subagents?.toolGateway).toBe(secondReplacement.toolGateway);
+		expect(secondReplacement.scheduler?.sourceSession).toBe(secondReplacement.session);
+		expect(secondReplacement.externalAgentRegistry?.list()).toHaveLength(1);
+		expect(secondReplacement.taskCredentialProvider).toBeDefined();
 		expect(runtime.session.getWorkerRegistry()?.listWorkerRecords()).toEqual([]);
 		await runtime.dispose();
 	});
@@ -713,12 +725,23 @@ describe("AgentRuntimeComposition", () => {
 		directories.push(cwd);
 		const result = await runMainRpcInitialize(cwd);
 		expect(result.code).toBe(0);
-		expect(result.response).toMatchObject({
+			expect(result.response).toMatchObject({
 			id: "main-rpc-initialize",
 			type: "response",
 			command: "initialize",
 			success: true,
 			data: {
+				workerCommands: ["worker.get", "worker.list", "worker.reclaim"],
+				subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"],
+				schedulerCommands: ["scheduler.status"],
+				taskCredentialCommands: [
+					"task.credential.issue",
+					"task.credential.get",
+					"task.credential.list",
+					"task.credential.heartbeat",
+					"task.credential.revoke",
+					"task.credential.settle",
+				],
 				externalAgentAdapters: [
 					{
 						adapterId: "main-rpc-trusted-adapter",
@@ -757,6 +780,9 @@ describe("AgentRuntimeComposition", () => {
 			}
 			expect(initialized.data).not.toHaveProperty("externalAgentAdapters");
 			expect(initialized.data).not.toHaveProperty("workerCommands");
+			expect(initialized.data).not.toHaveProperty("subagentCommands");
+			expect(initialized.data).not.toHaveProperty("schedulerCommands");
+			expect(initialized.data).not.toHaveProperty("taskCredentialCommands");
 		} finally {
 			await controller.shutdown();
 		}

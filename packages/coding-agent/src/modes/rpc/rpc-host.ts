@@ -264,10 +264,6 @@ export interface RpcHostControllerOptions {
 	output?: RpcHostOutputSink | RpcOutputSink;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
-	/** Resolve the authoritative Worker registry for the current Session. */
-	workerRegistry?: (session: AgentSessionRuntime["session"]) => RpcWorkerRegistry | undefined;
-	/** Resolve the active Run-owned Child Agent authority for the current Session. */
-	subagentRegistry?: (session: AgentSessionRuntime["session"]) => RpcSubagentRegistry | undefined;
 }
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
@@ -796,8 +792,6 @@ export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHan
  */
 export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
-	private readonly workerRegistry?: RpcHostControllerOptions["workerRegistry"];
-	private readonly subagentRegistry?: RpcHostControllerOptions["subagentRegistry"];
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
 	private commandHandler?: (
@@ -822,8 +816,6 @@ export class RpcHostController {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: RpcHostControllerOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		this.workerRegistry = options.workerRegistry;
-		this.subagentRegistry = options.subagentRegistry;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
 	}
@@ -4043,19 +4035,22 @@ export class RpcHostController {
 					}
 					const workerRegistry = (() => {
 						try {
-							return hostController.workerRegistry?.(session);
+							return session.getWorkerRegistry();
 						} catch {
 							return undefined;
 						}
 					})();
 					const subagentRegistry = (() => {
 						try {
-							return hostController.subagentRegistry?.(session);
+							return session.getSubagentRegistry();
 						} catch {
 							return undefined;
 						}
 					})();
 					const schedulerStatus = session.getSchedulerStatus?.();
+					const taskCredentialsEnabled =
+						session.agentRuntimeComposition.taskCredentialProvider !== undefined &&
+						(session.agentRuntimeComposition.taskCredentialPolicyMaxTtlMs ?? 0) > 0;
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
@@ -4077,14 +4072,18 @@ export class RpcHostController {
 							"task.graph.node.attach",
 							"task.graph.node.settle",
 						],
-						taskCredentialCommands: [
-							"task.credential.issue",
-							"task.credential.get",
-							"task.credential.list",
-							"task.credential.heartbeat",
-							"task.credential.revoke",
-							"task.credential.settle",
-						],
+						...(taskCredentialsEnabled
+							? {
+								taskCredentialCommands: [
+									"task.credential.issue",
+									"task.credential.get",
+									"task.credential.list",
+									"task.credential.heartbeat",
+									"task.credential.revoke",
+									"task.credential.settle",
+								],
+							}
+							: {}),
 						...(workerRegistry === undefined
 							? {}
 							: { workerCommands: ["worker.get", "worker.list", "worker.reclaim"] }),
@@ -4119,7 +4118,7 @@ export class RpcHostController {
 					) {
 						return rpcSubagentError(id, "subagent.get", "subagent_invalid");
 					}
-					const registry = hostController.subagentRegistry?.(session);
+					const registry = session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
 					const result = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (result === undefined || !result.ok)
@@ -4156,7 +4155,7 @@ export class RpcHostController {
 						limit > RPC_SUBAGENT_MAX_LIMIT
 					)
 						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
-					const registry = hostController.subagentRegistry?.(session);
+					const registry = session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
 					const result = await registry
 						.list(command.runId, {
@@ -4199,7 +4198,7 @@ export class RpcHostController {
 					) {
 						return rpcSubagentError(id, "subagent.cancel", "subagent_invalid");
 					}
-					const registry = hostController.subagentRegistry?.(session);
+					const registry = session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_unavailable");
 					const before = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (before === undefined || !before.ok || before.value === undefined)
@@ -4258,7 +4257,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = hostController.workerRegistry?.(session);
+						registry = session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					}
@@ -4302,7 +4301,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = hostController.workerRegistry?.(session);
+						registry = session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
@@ -4358,7 +4357,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = hostController.workerRegistry?.(session);
+						registry = session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
 					}

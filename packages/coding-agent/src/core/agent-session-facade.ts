@@ -22,7 +22,6 @@ import {
 	type ProvisionedEntry,
 	type PrepareNextTurnContext,
 	type QueueMode,
-	type SessionLedgerWriter,
 	type StreamFn,
 	type ThinkingLevel,
 	createCompactionSummaryMessage,
@@ -53,12 +52,9 @@ import type {
 import {
 	bindAgentRuntimeSchedulerComposition,
 	createAgentRuntimeCompositionFactory,
-	createAgentRuntimeCompositionFactoryFromTrustedProviders,
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-	type TrustedSchedulerRuntimeOptions,
-	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import type { CapabilityBinding, CapabilityCatalogView } from "./capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "./extensions/index.ts";
@@ -76,7 +72,7 @@ import {
 import { classifyProviderFailure } from "./execution-error.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
+import type { ExternalAgentAdapterRegistryView } from "./external-agent-registry.ts";
 import {
 	getLatestCompactionEntry,
 	SessionManager,
@@ -159,7 +155,6 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
-	type TrustedSchedulerCompositionOptions,
 } from "./foundation-control-plane.ts";
 import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
@@ -172,7 +167,9 @@ import {
 } from "./product-prompt-ingress.ts";
 import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
+import type {
+	TrustedSubagentCompositionV1,
+} from "./subagent-composition.ts";
 import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,
@@ -209,27 +206,10 @@ export interface CanonicalAgentSessionOptions {
 	mcpAuthManagerOptions?: AgentSessionConfig["mcpAuthManagerOptions"];
 	sandboxProviders?: AgentSessionConfig["sandboxProviders"];
 	policyProfile?: string;
-	externalAgentRegistry?: AgentSessionConfig["externalAgentRegistry"];
-	taskCredentialProvider?: AgentSessionConfig["taskCredentialProvider"];
-	taskCredentialPolicyMaxTtlMs?: number;
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	noTools?: "all" | "builtin";
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
-	/** Explicit trusted Host-only opt-in; omission preserves the original runtime path. */
-	subagents?: TrustedSubagentCompositionOptionsV1;
-	/** Explicit trusted Host-only opt-in; omission keeps scheduling disabled. */
-	scheduler?: TrustedSchedulerCompositionOptions;
-}
-
-const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
-
-interface InternalAgentSessionConfig extends AgentSessionConfig {
-	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
-}
-
-interface InternalCanonicalAgentSessionOptions extends CanonicalAgentSessionOptions {
-	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
 }
 
 interface CanonicalAgentCompatibility extends Omit<Agent, "state"> {
@@ -315,7 +295,7 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 	};
 }
 
-function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): InternalCanonicalAgentSessionOptions {
+function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
 	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
 	const canonicalSession = new Session(canonicalStorage);
 	const legacyAgent = options.agent;
@@ -439,13 +419,7 @@ function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): 
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions: options.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
-		...(options[internalWorkerSandboxProvider] === undefined
-			? {}
-			: { [internalWorkerSandboxProvider]: options[internalWorkerSandboxProvider] }),
 		policyProfile: options.policyProfile,
-		externalAgentRegistry: options.externalAgentRegistry,
-		taskCredentialProvider: options.taskCredentialProvider,
-		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		taskCredentialProviderAvailability: options.taskCredentialProviderAvailability,
 		noTools: options.noTools,
 		allowedToolNames: options.allowedToolNames,
@@ -650,7 +624,7 @@ export class CanonicalAgentSessionServices {
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
 	constructor(options: AgentSessionConfig);
 	constructor(options: CanonicalAgentSessionOptions | AgentSessionConfig) {
-		const canonical: InternalCanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
+		const canonical: CanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
 			? options
 			: createCanonicalOptionsFromLegacy(options);
 		const canonicalStorage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
@@ -693,23 +667,7 @@ export class CanonicalAgentSessionServices {
 			this.sessionRead,
 			new ModelRegistry(canonical.modelRuntime),
 		);
-		const runtimeCompositionFactory = canonical.runtimeComposition ??
-			createAgentRuntimeCompositionFactoryFromTrustedProviders({
-				...(canonical[internalWorkerSandboxProvider] === undefined
-					? {}
-					: { workerSandboxProvider: canonical[internalWorkerSandboxProvider] }),
-				...(canonical.subagents === undefined ? {} : { subagentOptions: canonical.subagents }),
-				...(canonical.scheduler === undefined ? {} : { schedulerOptions: canonical.scheduler }),
-				...(canonical.externalAgentRegistry === undefined
-					? {}
-					: { externalAgentRegistryInstance: canonical.externalAgentRegistry }),
-				...(canonical.taskCredentialProvider === undefined
-					? {}
-					: { taskCredentialProviderInstance: canonical.taskCredentialProvider }),
-				...(canonical.taskCredentialPolicyMaxTtlMs === undefined
-					? {}
-					: { taskCredentialPolicyMaxTtlMs: canonical.taskCredentialPolicyMaxTtlMs }),
-			});
+		const runtimeCompositionFactory = canonical.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 		this.runtimeComposition = materializeAgentRuntimeComposition(runtimeCompositionFactory, {
 			session: this.canonicalSession,
 			harness: this.harness,
@@ -3220,7 +3178,7 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getActiveBindingHandles();
 	}
 
-	getExternalAgentRegistry(): ExternalAgentAdapterRegistry | undefined {
+	getExternalAgentRegistry(): ExternalAgentAdapterRegistryView | undefined {
 		return this.controlPlane.getExternalAgentRegistry();
 	}
 
@@ -3237,6 +3195,16 @@ export class CanonicalAgentSessionServices {
 				if (result === undefined) throw new Error("Worker registry became unavailable");
 				return result;
 			},
+		};
+	}
+
+	getSubagentRegistry(): Pick<TrustedSubagentCompositionV1, "get" | "list" | "cancel"> | undefined {
+		const subagents = this.controlPlane.getSubagentComposition();
+		if (subagents === undefined) return undefined;
+		return {
+			get: (runId, childAgentInstanceId) => subagents.get(runId, childAgentInstanceId),
+			list: (runId, filter) => subagents.list(runId, filter),
+			cancel: (runId, childAgentInstanceId) => subagents.cancel(runId, childAgentInstanceId),
 		};
 	}
 
@@ -3640,6 +3608,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getActiveBindingHandles",
 	"getExternalAgentRegistry",
 	"getWorkerRegistry",
+	"getSubagentRegistry",
 	"getTaskCredentialService",
 	"getSchedulerStatus",
 	"getActiveSandboxSessionForCompatibility",
@@ -3854,6 +3823,7 @@ export class AgentSession {
 	declare readonly getActiveBindingHandles: CanonicalAgentSessionServices["getActiveBindingHandles"];
 	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
 	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
+	declare readonly getSubagentRegistry: CanonicalAgentSessionServices["getSubagentRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];
 	declare readonly getSchedulerStatus: CanonicalAgentSessionServices["getSchedulerStatus"];
 	declare readonly getActiveSandboxSessionForCompatibility: CanonicalAgentSessionServices["getActiveSandboxSessionForCompatibility"];
@@ -3977,29 +3947,6 @@ export function createLegacyAgentSession(options: AgentSessionConfig): AgentSess
 	return new AgentSession(options);
 }
 
-/** @internal SDK-only bridge for the branded Worker composition. */
-export function createAgentSessionWithTrustedWorkerSandboxProvider(
-	options: AgentSessionConfig,
-	createWorkerSandbox: TrustedWorkerSandboxFactory | undefined,
-): AgentSession {
-	if (createWorkerSandbox === undefined) return new AgentSession(options);
-	return createAgentSessionWithRuntimeComposition(
-		options,
-		createAgentRuntimeCompositionFactoryFromTrustedProviders({
-			trustedWorkerSandboxFactory: createWorkerSandbox,
-			...(options.externalAgentRegistry === undefined
-				? {}
-				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
-			...(options.taskCredentialProvider === undefined
-				? {}
-				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
-			...(options.taskCredentialPolicyMaxTtlMs === undefined
-				? {}
-				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
-		}),
-	);
-}
-
 /** Create one Session from the unified trusted runtime composition root. */
 export function createAgentSessionWithRuntimeComposition(
 	options: AgentSessionConfig,
@@ -4009,55 +3956,4 @@ export function createAgentSessionWithRuntimeComposition(
 		throw new TypeError("AgentSession accepts one runtime composition factory");
 	}
 	return new AgentSession({ ...options, runtimeComposition });
-}
-
-/** Trusted Host composition root for default-off Child Agent product wiring. */
-export function createAgentSessionWithTrustedSubagents(
-	options: AgentSessionConfig,
-	createSubagents: (session: Session, sessionId: string, writer: SessionLedgerWriter) => TrustedSubagentCompositionOptionsV1,
-): AgentSession {
-	return createAgentSessionWithRuntimeComposition(
-		options,
-		createAgentRuntimeCompositionFactory({
-			subagents: (context) => createSubagents(
-				context.session,
-				context.sessionId,
-				context.harness.t5.writer,
-			),
-			...(options.externalAgentRegistry === undefined
-				? {}
-				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
-			...(options.taskCredentialProvider === undefined
-				? {}
-				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
-			...(options.taskCredentialPolicyMaxTtlMs === undefined
-				? {}
-				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
-		}),
-	);
-}
-
-/** Trusted Host composition root for the explicitly default-off Scheduler. */
-export function createAgentSessionWithTrustedScheduler(
-	options: AgentSessionConfig,
-	createScheduler: (
-		session: Session,
-		sessionId: string,
-	) => TrustedSchedulerRuntimeOptions,
-): AgentSession {
-	return createAgentSessionWithRuntimeComposition(
-		options,
-		createAgentRuntimeCompositionFactory({
-			scheduler: (context) => createScheduler(context.session, context.sessionId),
-			...(options.externalAgentRegistry === undefined
-				? {}
-				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
-			...(options.taskCredentialProvider === undefined
-				? {}
-				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
-			...(options.taskCredentialPolicyMaxTtlMs === undefined
-				? {}
-				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
-		}),
-	);
 }

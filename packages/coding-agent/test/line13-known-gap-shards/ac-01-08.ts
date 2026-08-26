@@ -15,7 +15,6 @@ import {
 	createAgentSession,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-	type createAgentSessionWithTrustedScheduler,
 	createExternalAgentAdapterRegistry,
 	createExternalAgentPreparedBinding,
 	SchedulerExecutorRegistry,
@@ -35,6 +34,7 @@ import {
 	type ExternalAgentProbeContext,
 	type ExternalAgentStartRequest,
 	type ExternalAgentTarget,
+	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { createAgentSessionRuntimeFromManager } from "../../src/core/agent-session-runtime.ts";
@@ -466,7 +466,10 @@ function schedulerTask(): TaskEnvelope {
 	};
 }
 
-type TrustedSchedulerFactory = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
+type TrustedSchedulerFactory = (
+	sourceSession: Session,
+	sessionId: string,
+) => TrustedSchedulerRuntimeOptions;
 
 interface SchedulerReopenFixture {
 	readonly factoryCalls: number;

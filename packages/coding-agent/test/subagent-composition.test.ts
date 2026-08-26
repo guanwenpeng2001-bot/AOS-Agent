@@ -38,7 +38,7 @@ import {
 	TrustedSubagentCompositionV1,
 	type TrustedSubagentCompositionOptionsV1,
 } from "../src/core/subagent-composition.ts";
-import { createCodingAgentHarness } from "../src/server/create-harness.ts";
+import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
 import type {
@@ -500,7 +500,7 @@ async function correctionHarness(options: {
 		const models = createModels();
 		models.setProvider(googleProvider());
 		productionEnv = new NodeExecutionEnv({ cwd: process.cwd() });
-		const created = await createCodingAgentHarness({
+		const created = await createCodingAgentHarnessFromTrustedProvidersForTest({
 			session,
 			models,
 			model: getModel("google", "gemini-2.5-flash"),

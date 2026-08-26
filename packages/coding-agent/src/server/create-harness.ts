@@ -31,13 +31,11 @@ import {
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
-import type { AgentSessionConfig } from "../core/agent-session.ts";
 import {
 	createAgentRuntimeCompositionFactoryFromTrustedProviders,
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
 } from "../core/agent-runtime-composition.ts";
-import { createAgentSessionWithTrustedScheduler } from "../core/agent-session-facade.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
@@ -51,16 +49,6 @@ import {
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
 	promptGuidelines?: readonly string[];
-}
-
-export type CreateCodingAgentTrustedScheduler = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
-
-/** Trusted Host-only Scheduler bridge. The ordinary Harness path remains Scheduler-off. */
-export function createCodingAgentSessionWithTrustedScheduler(
-	options: AgentSessionConfig,
-	createScheduler: CreateCodingAgentTrustedScheduler,
-): ReturnType<typeof createAgentSessionWithTrustedScheduler> {
-	return createAgentSessionWithTrustedScheduler(options, createScheduler);
 }
 
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
@@ -221,16 +209,19 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 	sessionFile?: string;
 	tools?: CodingAgentHarnessTool[];
 	systemPromptOptions?: Omit<BuildSystemPromptOptions, "cwd" | "promptGuidelines" | "selectedTools" | "toolSnippets">;
+	/** The only supported optional-authority input for the server Harness. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
+}
+
+interface InternalCreateCodingAgentHarnessOptions extends CreateCodingAgentHarnessOptions {
 	/** Explicit opt-in for the Foundation sandbox ToolGateway route. */
 	workerSandbox?: {
 		readonly provider: SandboxOperationProvider;
 		readonly routes: readonly ToolGatewayRoute[];
 		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
 	};
-	/** Trusted Host-only opt-in; omitted by every default product path. */
+	/** Package-private test bridge; product paths use runtimeComposition. */
 	subagents?: TrustedSubagentCompositionOptionsV1;
-	/** Unified trusted composition root. Legacy peer provider options cannot be combined with it. */
-	runtimeComposition?: AgentRuntimeCompositionFactory;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -265,6 +256,17 @@ export function buildCodingAgentHarnessSystemPrompt(options: BuildCodingAgentHar
 }
 
 export async function createCodingAgentHarness(options: CreateCodingAgentHarnessOptions) {
+	return createCodingAgentHarnessInternal(options);
+}
+
+/** @internal Test-only bridge for the pre-composition sandbox fixture. */
+export async function createCodingAgentHarnessFromTrustedProvidersForTest(
+	options: InternalCreateCodingAgentHarnessOptions,
+) {
+	return createCodingAgentHarnessInternal(options);
+}
+
+async function createCodingAgentHarnessInternal(options: InternalCreateCodingAgentHarnessOptions) {
 	const {
 		env,
 		bashCommandPrefix,

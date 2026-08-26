@@ -90,7 +90,7 @@ import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
+import type { ExternalAgentAdapterRegistryView } from "./external-agent-registry.ts";
 import type { SandboxHandle, SandboxProvider, SandboxSession } from "./sandbox.ts";
 import { SandboxSession as ConcreteSandboxSession } from "./sandbox.ts";
 import type { ToolDefinition, ExtensionRunner } from "./extensions/index.ts";
@@ -202,7 +202,7 @@ export interface FoundationControlPlaneOptions {
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
 	workerFactCacheLimit?: number;
 	policyProfile?: string;
-	externalAgentRegistry?: ExternalAgentAdapterRegistry;
+	externalAgentRegistry?: ExternalAgentAdapterRegistryView;
 	taskCredentialProvider?: TaskCredentialProvider;
 	taskCredentialPolicyMaxTtlMs?: number;
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
@@ -657,7 +657,7 @@ export class FoundationControlPlane {
 	private readonly customTools: ToolDefinition[];
 	private readonly capabilityRegistry: CapabilityRegistry;
 	private readonly mcpTransportFactory: MCPTransportFactory | undefined;
-	private readonly externalAgentRegistry: ExternalAgentAdapterRegistry | undefined;
+	private readonly externalAgentRegistry: ExternalAgentAdapterRegistryView | undefined;
 	private readonly taskCredentialProvider: TaskCredentialProvider | undefined;
 	private readonly taskCredentialPolicyMaxTtlMs: number | undefined;
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
@@ -1882,7 +1882,7 @@ export class FoundationControlPlane {
 	setPreviousExecutionPolicyBindingIdForNextRun(bindingId?: string): void {
 		this.previousPolicyBindingIdForNextRun = bindingId;
 	}
-	getExternalAgentRegistry(): ExternalAgentAdapterRegistry | undefined { return this.externalAgentRegistry; }
+	getExternalAgentRegistry(): ExternalAgentAdapterRegistryView | undefined { return this.externalAgentRegistry; }
 
 	resolveTaskCredentialPreflight(input: TaskCredentialPreflightFactsInput): TaskCredentialPreflightResult {
 		if (!Array.isArray(input.scopes) || input.scopes.length === 0 || !isTaskExecutionBinding(input.binding)) {

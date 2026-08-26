@@ -130,6 +130,16 @@ const FOUNDATION_CORRELATED_CUSTOM_TYPES = new Set([
 	"worker.operation_recorded",
 	"worker_receipt.written",
 ]);
+const PROJECTED_AUDIT_CUSTOM_TYPES = new Set([
+	"external.mapping",
+	"remote.operation",
+	"task.gate",
+	"task.graph",
+	"task.credential",
+	"worker.lifecycle_transitioned",
+	"worker.operation_recorded",
+	"worker_receipt.written",
+]);
 const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
 
@@ -431,26 +441,27 @@ export class ExecutionAuditQuery {
 			const physicalIds = new Set(entries.map((entry) => entry.id));
 			const projectedEntries = this.source.getEntries().filter(
 				(entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom" &&
-					!FOUNDATION_CORRELATED_CUSTOM_TYPES.has(entry.customType) &&
 					!physicalIds.has(entry.id),
 			);
 			if (projectedEntries.length === 0) return { sessionId, adapter, fold: physicalFold };
-			const externalEntries = projectedEntries.filter(
-				(entry) => entry.customType === "external.mapping" || entry.customType === "remote.operation",
+			const projectedAuditEntries = projectedEntries.filter(
+				(entry) => PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
 			);
 			const unsupportedWarnings: AuditWarning[] = projectedEntries.filter(
-				(entry) => entry.customType !== "external.mapping" && entry.customType !== "remote.operation",
+				(entry) =>
+					!FOUNDATION_CORRELATED_CUSTOM_TYPES.has(entry.customType) &&
+					!PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
 			).map((entry) => ({
 				code: "unknown_source",
 				sessionId,
 				sourceEntryId: entry.id,
 				schemaVersion: 1,
 			}));
-			const projectedFold = externalEntries.length === 0
+			const projectedFold = projectedAuditEntries.length === 0
 				? { events: [], warnings: [], runSummaries: new Map() } satisfies AuditFoldResult
 				: new ExecutionAuditAdapter({
 						getSessionId: () => sessionId,
-						getEntries: () => externalEntries,
+						getEntries: () => projectedAuditEntries,
 					}).fold();
 			return {
 				sessionId,

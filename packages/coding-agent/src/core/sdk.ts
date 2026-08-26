@@ -9,9 +9,6 @@ import {
 	createTrustedWorkerSandboxComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-	type TrustedExternalAgentRegistryFactory,
-	type TrustedTaskCredentialProviderFactory,
-	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import {
 	createAgentSessionWithRuntimeComposition,
@@ -167,19 +164,6 @@ export interface CreateAgentSessionOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Per-session trusted Operation Worker factory; never read from config or RPC. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
-	/** Per-session trusted External Agent Adapter registry factory composed by the Host. */
-	externalAgentRegistryFactory?: TrustedExternalAgentRegistryFactory;
-	/**
-	 * Optional per-session Task Credential provider factory composing the Task
-	 * Credential lifecycle service. Absent (or without a policy TTL ceiling)
-	 * means the session has no credential service: every lifecycle signal
-	 * fails closed and no lease is ever issued.
-	 */
-	taskCredentialProviderFactory?: TrustedTaskCredentialProviderFactory;
-	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
-	taskCredentialPolicyMaxTtlMs?: number;
 }
 
 /** Result from createAgentSession */
@@ -315,29 +299,7 @@ export function listAllSessions(sessionDirectory?: string) {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
-	if (
-		options.runtimeComposition !== undefined &&
-		(options.trustedWorkerSandboxFactory !== undefined ||
-			options.externalAgentRegistryFactory !== undefined ||
-			options.taskCredentialProviderFactory !== undefined ||
-			options.taskCredentialPolicyMaxTtlMs !== undefined)
-	) {
-		throw new TypeError("AgentSession accepts optional providers through one runtime composition");
-	}
-	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory({
-		...(options.trustedWorkerSandboxFactory === undefined
-			? {}
-			: { trustedWorkerSandboxFactory: options.trustedWorkerSandboxFactory }),
-		...(options.externalAgentRegistryFactory === undefined
-			? {}
-			: { externalAgentRegistry: options.externalAgentRegistryFactory }),
-		...(options.taskCredentialProviderFactory === undefined
-			? {}
-			: { taskCredentialProvider: options.taskCredentialProviderFactory }),
-		...(options.taskCredentialPolicyMaxTtlMs === undefined
-			? {}
-			: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
-	});
+	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	const sessionManager = options.sessionManager ??
 		createSessionManagerForOptions({ cwd: options.cwd, agentDir, session: options.session }).sessionManager;

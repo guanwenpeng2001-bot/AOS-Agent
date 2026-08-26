@@ -19,7 +19,8 @@ import {
 import { createAssistantMessageEventStream, type Context, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
-import { createAgentSessionWithTrustedSubagents } from "../src/core/agent-session-facade.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
+import { createAgentSessionWithRuntimeComposition } from "../src/core/agent-session-facade.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
@@ -129,14 +130,16 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 		mkdirSync(directory, { recursive: true });
 		const contexts: Context[] = [];
 		let composition: TrustedSubagentCompositionV1 | undefined;
-		const enabled = createAgentSessionWithTrustedSubagents({
+		const enabled = createAgentSessionWithRuntimeComposition({
 			agent: createAgent(contexts),
 			sessionManager: SessionManager.create(directory),
 			settingsManager: SettingsManager.create(directory, directory),
 			cwd: directory,
 			modelRuntime: modelRuntime(),
 			resourceLoader: resources(),
-		}, (session, sessionId, writer) => {
+		}, createAgentRuntimeCompositionFactory({
+			subagents: ({ session, sessionId, harness }) => {
+			const writer = harness.t5.writer;
 			const ledgers = new Map<string, SessionLedger>();
 			const ledgerForLane = (laneId: string): SessionLedger => {
 				let ledger = ledgers.get(laneId);
@@ -218,7 +221,8 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 				limits: { maxDepth: 4, maxConcurrent: 2, maxTurns: 4, queueCapacity: 2, maximumQueueWaitMs: 100 },
 				onReady: (value) => { composition = value; },
 			};
-		});
+			},
+		}));
 		cleanup.push(async () => {
 			await enabled.dispose();
 			if (existsSync(directory)) rmSync(directory, { recursive: true, force: true });

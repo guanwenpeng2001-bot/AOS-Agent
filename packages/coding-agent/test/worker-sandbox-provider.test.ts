@@ -77,7 +77,10 @@ import {
 } from "../src/core/worker-supervisor.ts";
 import type { WorkerBindingV1, WorkerRecordV1 } from "../src/core/worker.ts";
 import { runWorkerEntryV1 } from "../src/worker-entry.ts";
-import { createCodingAgentHarness } from "../src/server/create-harness.ts";
+import {
+	createCodingAgentHarness,
+	createCodingAgentHarnessFromTrustedProvidersForTest,
+} from "../src/server/create-harness.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
 const REAL_CHILD_ENTRY = fileURLToPath(new URL("./fixtures/real-sandbox-worker-launcher.mjs", import.meta.url));
@@ -3532,7 +3535,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const storage = createSessionManagerStorage(sessionManager);
 		const session = new Session(storage);
 		const env = new NodeExecutionEnv({ cwd: process.cwd() });
-		const created = await createCodingAgentHarness({
+		const created = await createCodingAgentHarnessFromTrustedProvidersForTest({
 			session,
 			models,
 			model: getModel("google", "gemini-2.5-flash"),

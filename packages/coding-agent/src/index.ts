@@ -40,7 +40,6 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
-export { createAgentSessionWithTrustedScheduler } from "./core/agent-session-facade.ts";
 export {
 	TrustedSchedulerComposition,
 	type SchedulerSafeStatus,
@@ -696,6 +695,7 @@ export {
 	type ExternalAgentAdapterDescriptor,
 	type ExternalAgentAdapterRegistrationOptions,
 	type ExternalAgentAdapterRegistry,
+	type ExternalAgentAdapterRegistryView,
 	type ExternalAgentResolvedSelection,
 } from "./core/external-agent-registry.ts";
 export {

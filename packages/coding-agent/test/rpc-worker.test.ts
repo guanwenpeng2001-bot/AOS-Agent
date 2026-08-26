@@ -17,6 +17,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { WorkerLifecycleStatus, WorkerRecordV1 } from "../src/core/worker.ts";
 import {
+	createAgentRuntimeCompositionFactory,
 	createAgentSession,
 	createTrustedWorkerSandboxComposition,
 } from "../src/index.ts";
@@ -179,9 +180,10 @@ async function createHarness(
 		dispose: vi.fn(async () => {}),
 		setRebindSession: vi.fn(),
 	} as unknown as AgentSessionRuntime;
-	const controller = new RpcHostController(runtimeHost, {
-		...(workerRegistry === undefined ? {} : { workerRegistry }),
-	});
+	if (workerRegistry !== undefined) {
+		vi.spyOn(session, "getWorkerRegistry").mockImplementation(() => workerRegistry(session));
+	}
+	const controller = new RpcHostController(runtimeHost);
 	await controller.start();
 	return {
 		controller,
@@ -302,7 +304,9 @@ async function createCanonicalWorkerSession(
 		settingsManager: SettingsManager.create(tempDir, tempDir),
 		resourceLoader: testResourceLoader(),
 		noTools: "all",
-		trustedWorkerSandboxFactory: () => composition,
+		runtimeComposition: createAgentRuntimeCompositionFactory({
+			trustedWorkerSandboxFactory: () => composition,
+		}),
 	});
 	return { session: created.session, provider: composition.provider };
 }
