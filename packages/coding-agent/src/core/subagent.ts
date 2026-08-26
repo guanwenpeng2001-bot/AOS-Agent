@@ -19,8 +19,6 @@ export const SUBAGENT_PROVIDER_KINDS = [
 	"in_process",
 	"fork",
 	"agent_runtime_host",
-	"acp",
-	"sdk",
 ] as const;
 export type SubagentProviderKindV1 = (typeof SUBAGENT_PROVIDER_KINDS)[number];
 

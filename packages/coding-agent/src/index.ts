@@ -689,9 +689,18 @@ export {
 } from "./core/external-agent-adapter.ts";
 // Trusted External Agent Adapter registry: instance-only registration and
 // explicit adapterId + targetId selection; safe descriptors only.
+export type { ExternalAgentConnector } from "@aos-agent/agent-core";
 export {
+	EXTERNAL_CONNECTOR_PROVIDER_CLASSES,
+	createExternalConnectorRegistry,
 	createExternalAgentAdapterRegistry,
 	isExternalAgentAdapterRegistry,
+	type ExternalConnectorDescriptor,
+	type ExternalConnectorProviderClass,
+	type ExternalConnectorRegistration,
+	type ExternalConnectorRegistry,
+	type ExternalConnectorResolvedSelection,
+	type ExternalConnectorSelection,
 	type ExternalAgentAdapterDescriptor,
 	type ExternalAgentAdapterRegistrationOptions,
 	type ExternalAgentAdapterRegistry,

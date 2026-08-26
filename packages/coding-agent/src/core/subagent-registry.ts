@@ -1,7 +1,8 @@
 import { FoundationError } from "../../../agent/src/harness/foundation/errors.ts";
 import type { ExecutionProviderDescriptor } from "../../../agent/src/harness/foundation/providers.ts";
+import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKindV1 } from "./subagent.ts";
 
-export type SubagentProviderKindV1 = "in_process" | "fork" | "agent_runtime_host" | "acp" | "sdk";
+export type { SubagentProviderKindV1 } from "./subagent.ts";
 
 export interface SubagentProviderDescriptorV1 {
 	readonly schemaVersion: 1;
@@ -36,7 +37,7 @@ export class SubagentProviderRegistryV1 {
 			!descriptor ||
 			typeof descriptor !== "object" ||
 			descriptor.schemaVersion !== 1 ||
-			!["in_process", "fork", "agent_runtime_host", "acp", "sdk"].includes(descriptor.providerKind) ||
+			!SUBAGENT_PROVIDER_KINDS.includes(descriptor.providerKind) ||
 			typeof descriptor.revision !== "number" ||
 			!Number.isSafeInteger(descriptor.revision) ||
 			descriptor.revision <= 0 ||
@@ -202,7 +203,7 @@ export class SubagentProviderRegistryV1 {
 
 		if (
 			requirements.providerKind !== undefined &&
-			!["in_process", "fork", "agent_runtime_host", "acp", "sdk"].includes(requirements.providerKind)
+			!SUBAGENT_PROVIDER_KINDS.includes(requirements.providerKind)
 		) {
 			throw new FoundationError("subagent_spawn_invalid", `Invalid providerKind: ${requirements.providerKind}`);
 		}
@@ -335,44 +336,6 @@ export const AGENT_RUNTIME_HOST_PROVIDER: SubagentProviderDescriptorV1 = Object.
 		backgroundSupported: true,
 		worktreeSupported: true,
 		maxDepth: 10,
-	}),
-	implementedInThisLine: false,
-});
-
-export const ACP_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
-	schemaVersion: 1 as const,
-	providerKind: "acp" as const,
-	descriptor: Object.freeze({
-		schemaVersion: 1 as const,
-		providerId: "connector.acp",
-		providerClass: "agent" as const,
-	}),
-	revision: 1,
-	capabilities: Object.freeze({
-		resumeSupported: false,
-		mailboxSupported: false,
-		backgroundSupported: false,
-		worktreeSupported: false,
-		maxDepth: 1,
-	}),
-	implementedInThisLine: false,
-});
-
-export const SDK_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
-	schemaVersion: 1 as const,
-	providerKind: "sdk" as const,
-	descriptor: Object.freeze({
-		schemaVersion: 1 as const,
-		providerId: "connector.sdk",
-		providerClass: "agent" as const,
-	}),
-	revision: 1,
-	capabilities: Object.freeze({
-		resumeSupported: false,
-		mailboxSupported: false,
-		backgroundSupported: false,
-		worktreeSupported: false,
-		maxDepth: 1,
 	}),
 	implementedInThisLine: false,
 });

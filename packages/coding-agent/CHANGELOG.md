@@ -12,6 +12,7 @@
 
 ### Added
 
+- Open External Connector registry with trusted constructed-instance admission, pinned descriptor revisions and capability digests, required handler evidence, and provider-neutral selection/conformance.
 - Public RuntimeSession surface adapters for TUI, print, headless JSON, RPC, SDK, and Automation Host. Each adapter delegates to the same canonical AgentSession and records its surface on the durable ProductPrompt ingress fact before the existing Task, Binding, Dispatch, AttemptReceipt, TaskResult, and RunReceipt chain.
 - Foundation Prompt Task composition root: the single coding-agent adapter now persists the Task before resolving exact Context/Model/Capability/MCP/Policy/Sandbox/Audit/Run/Gate/Graph/Credential/External-Agent binding facts, then delegates the correlated Dispatch, Attempt, Harness run, and three-layer receipt chain to AgentHarness. Missing, mismatched, or unfingerprinted dependencies fail closed before provider execution.
 - Optional `gondolin-local` Isolated Runner: an explicitly registered Gondolin micro-VM `SandboxProvider` that consumes the existing Policy Binding / `prepare` / `execute` / `dispose` contract. Built-in filesystem and process tools stay on the guest `/workspace` mount, capabilities report `network: false` with no MCP transport, and cancel/deadline unknown side effects stay fail-closed. The adapter is an example package; default `legacy` installs do not gain a Gondolin or QEMU dependency.
@@ -32,6 +33,7 @@
 
 ### Changed
 
+- Restricted the current Native Subagent taxonomy, descriptors, and lifecycle validation to in-process, fork, and Agent Runtime Host providers; historical ACP/SDK placeholders remain private migration input only.
 - Updated public architecture and contract documentation to use current product names without maturity-style version labels while retaining schema, persistence, and protocol revision information.
 - AgentSession now acts as a compatibility facade over one long-lived canonical Session and AgentHarness; product prompts, retry/compaction continuations, queues, extensions, MCP content, and Foundation settlement share that authority instead of maintaining a second loop or transcript.
 - Strict sandbox reads no longer resolve host-only filename variants before `SandboxHandle.execute`. Policy error `Error.message` now uses the stable code-derived text so provider diagnostics cannot escape through legacy RPC or tool-result channels. AgentSession serializes policy-boundary teardown against sandbox prepare and records `sandbox.lifecycle: disposed`.

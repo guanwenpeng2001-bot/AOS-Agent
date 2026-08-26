@@ -28,15 +28,15 @@ only Run terminal writer.
 
 ## Providers and registration
 
-The immutable registry recognizes five provider kinds:
+The immutable Native Agent registry recognizes three provider kinds:
 
 | Provider kind | Line 12A status |
 | --- | --- |
 | `in_process` | implemented; independent child lane, Context, Binding, model gateway, and tool gateway in the Host process |
 | `fork` | implemented; trusted local child process over a private bounded JSONL protocol |
 | `agent_runtime_host` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
-| `acp` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
-| `sdk` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
+
+External protocols and SDKs are not Native Agent provider kinds. They use the separate `ExternalAgentConnector` contract and cannot be deserialized into a current Native Agent record.
 
 Only trusted Host composition registers provider instances. Prompts, project
 configuration, RPC payloads, models, and extensions cannot select an
