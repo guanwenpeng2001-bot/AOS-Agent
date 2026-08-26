@@ -91,6 +91,49 @@ describe("FileModelsStore", () => {
 		expect(lockSpy).toHaveBeenCalledTimes(3);
 	});
 
+	it("shares read state for every normalized path, not only the first constructed path", async () => {
+		const firstPath = join(sharedTempDir, "models-first-path.json");
+		const secondPath = join(sharedTempDir, "models-second-path.json");
+		writeFileSync(firstPath, "{}");
+		writeFileSync(secondPath, JSON.stringify({ two: { models: [model("two", "shared")] } }));
+		new FileModelsStore(firstPath);
+		const first = new FileModelsStore(secondPath);
+		const second = new FileModelsStore(secondPath);
+		const lockSpy = vi.spyOn(lockfile, "lock");
+
+		const [left, right] = await Promise.all([first.read("two"), second.read("two")]);
+
+		expect(left).toMatchObject({ models: [{ id: "shared" }] });
+		expect(right).toMatchObject({ models: [{ id: "shared" }] });
+		expect(lockSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["missing models", { provider: { checkedAt: 1 } }],
+		["non-array models", { provider: { models: {} } }],
+		["malformed model", { provider: { models: [{ id: "only-an-id" }] } }],
+		["malformed compatibility", { provider: { models: [{ ...model("provider", "model"), compat: [] }] } }],
+		["invalid nested compatibility boolean", {
+			provider: { models: [{ ...model("provider", "model"), compat: { supportsStore: "yes" } }] },
+		}],
+		["invalid nested compatibility enum", {
+			provider: { models: [{ ...model("provider", "model"), compat: { maxTokensField: "bogus" } }] },
+		}],
+		["invalid nested compatibility routing", {
+			provider: { models: [{ ...model("provider", "model"), compat: { openRouterRouting: { order: [1] } } }] },
+		}],
+		["unknown thinking level", {
+			provider: { models: [{ ...model("provider", "model"), thinkingLevelMap: { extreme: "extreme" } }] },
+		}],
+		["invalid metadata", { provider: { models: [model("provider", "model")], checkedAt: "today" } }],
+	])("rejects a %s shape instead of caching unchecked data", async (_name, value) => {
+		const path = join(sharedTempDir, `invalid-${_name.replaceAll(" ", "-")}.json`);
+		writeFileSync(path, JSON.stringify(value));
+		const store = new FileModelsStore(path);
+
+		await expect(store.read("provider")).rejects.toMatchObject({ code: "control_state_corrupt" });
+	});
+
 	it("keeps a coalesced reload alive while another reader is still waiting", async () => {
 		writeFileSync(sharedModelsPath, JSON.stringify({ one: { models: [model("one", "stored")] } }));
 		const store = new FileModelsStore(sharedModelsPath);

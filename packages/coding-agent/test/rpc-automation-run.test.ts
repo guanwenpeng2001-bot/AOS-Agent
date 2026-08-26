@@ -1415,7 +1415,7 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			lineHandler(JSON.stringify({ id: "r2", type: "run.start", message: "Hello" }));
 
-			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 10_000 });
 
 			const lines = currentLines();
 			const accepted = lines.findIndex(

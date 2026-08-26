@@ -180,7 +180,7 @@ describe("runPrintMode", () => {
 		expect(candidateSession.subscribe).not.toHaveBeenCalled();
 	});
 
-	it("commits a fully prepared print binding with one synchronous reference swap", async () => {
+	it("resolves print input through the runtime pointer after a prepared rebind", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const oldSession = runtimeHost.session;
 		const candidateSession: FakeSession = {
@@ -199,6 +199,8 @@ describe("runPrintMode", () => {
 			expect(candidateSession.prepareExtensionBindings).toHaveBeenCalledTimes(1);
 			expect(candidateSession.subscribe).toHaveBeenCalledTimes(1);
 			expect(candidateSession.activateExtensionBindings).not.toHaveBeenCalled();
+			runtimeHost.session = candidateSession;
+			await prepared.activate?.();
 		});
 
 		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {

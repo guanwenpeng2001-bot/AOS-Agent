@@ -154,8 +154,16 @@ function ready(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): vo
 		]);
 		return;
 	}
+	if (profile === "heartbeat_stall") {
+		heartbeatSequence += 1;
+		emitBatch([
+			readyFrame,
+			{ type: "heartbeat", workerId: frame.binding.workerId, sequence: heartbeatSequence, at: now() },
+		]);
+		return;
+	}
 	emit(readyFrame);
-	startHeartbeat(profile === "heartbeat_stall");
+	startHeartbeat();
 }
 
 function handleInitialize(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): void {

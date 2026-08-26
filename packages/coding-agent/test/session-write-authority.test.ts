@@ -16,6 +16,7 @@ import {
 	createSessionManagerStorage,
 	FOUNDATION_ENTRY_CUSTOM_TYPE,
 	FOUNDATION_FACT_CUSTOM_TYPE,
+	FOUNDATION_LANE_CUSTOM_TYPE,
 } from "../src/core/session-manager-storage.ts";
 
 const userMessage: AgentMessage = { role: "user", content: "canonical user", timestamp: 1 };
@@ -71,9 +72,40 @@ describe("canonical Session write authority", () => {
 		expect(await session.findEntry({ customType: "extension.fixture" })).toBeDefined();
 		expect(manager.getPhysicalEntries().every(
 			(entry) => entry.type === "custom" && (
-				entry.customType === FOUNDATION_ENTRY_CUSTOM_TYPE || entry.customType === FOUNDATION_FACT_CUSTOM_TYPE
+				entry.customType === FOUNDATION_ENTRY_CUSTOM_TYPE ||
+				entry.customType === FOUNDATION_FACT_CUSTOM_TYPE ||
+				entry.customType === FOUNDATION_LANE_CUSTOM_TYPE
 			),
 		)).toBe(true);
+	});
+
+	it("persists independent main and thread lane advancement across reopen", async () => {
+		const directory = join(tmpdir(), `aos-session-lanes-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		temporaryDirectories.push(directory);
+		mkdirSync(directory, { recursive: true });
+		const manager = SessionManager.create(directory, join(directory, "sessions"));
+		const storage = createSessionManagerStorage(manager);
+		const root = await storage.appendEntry({ type: "message", id: "lane-root", message: userMessage }, "main");
+		await storage.createLane("thread", root.id);
+		const threadOne = await storage.appendEntry({ type: "custom", id: "thread-one", customType: "fixture.thread" }, "thread");
+		const threadTwo = await storage.appendEntry({ type: "custom", id: "thread-two", customType: "fixture.thread" }, "thread");
+		const mainOne = await storage.appendEntry({ type: "custom", id: "main-one", customType: "fixture.main" }, "main");
+		const mainTwo = await storage.appendEntry({ type: "custom", id: "main-two", customType: "fixture.main" }, "main");
+		manager.flushPendingSession();
+
+		expect(threadOne.parentId).toBe(root.id);
+		expect(threadTwo.parentId).toBe(threadOne.id);
+		expect(mainOne.parentId).toBe(root.id);
+		expect(mainTwo.parentId).toBe(mainOne.id);
+		const sessionFile = manager.getSessionFile();
+		if (sessionFile === undefined) throw new Error("Expected a persisted lane Session");
+		const reopened = createSessionManagerStorage(SessionManager.open(sessionFile));
+		expect(await reopened.getLanes()).toEqual(expect.arrayContaining([
+			{ lane: "main", leafId: mainTwo.id },
+			{ lane: "thread", leafId: threadTwo.id },
+		]));
+		expect(await reopened.getEntry(threadTwo.id)).toMatchObject({ parentId: threadOne.id });
+		expect(await reopened.getEntry(mainTwo.id)).toMatchObject({ parentId: mainOne.id });
 	});
 
 	it("migrates mixed legacy and canonical physical entries deterministically as a read-only projection", async () => {
@@ -117,8 +149,9 @@ describe("canonical Session write authority", () => {
 		expect(manager.getPhysicalEntries()).toEqual(physical.slice(1));
 		await replay.appendCustomEntry("fixture.new", { value: 3 });
 		await replay.drain();
-		const lastPhysical = manager.getPhysicalEntries().at(-1);
-		expect(lastPhysical).toMatchObject({ type: "custom", customType: FOUNDATION_ENTRY_CUSTOM_TYPE });
+		const lastPhysicalEntries = manager.getPhysicalEntries().slice(-2);
+		expect(lastPhysicalEntries[0]).toMatchObject({ type: "custom", customType: FOUNDATION_ENTRY_CUSTOM_TYPE });
+		expect(lastPhysicalEntries[1]).toMatchObject({ type: "custom", customType: FOUNDATION_LANE_CUSTOM_TYPE });
 	});
 
 	for (const persisted of [false, true]) {

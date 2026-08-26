@@ -55,7 +55,9 @@ function config(
 		profileRevision: 1,
 		capabilities: ["filesystem.read", "process.spawn"],
 		environment: { AOS_SAFE_TEST_MARKER: "1" },
-		readyTimeoutMs: 2_000,
+		// Process startup can be delayed by the full suite's parallel child-process tests.
+		// The dedicated ready_timeout profile below keeps the readiness deadline assertion strict.
+		readyTimeoutMs: 10_000,
 		heartbeatTimeoutMs: 250,
 		cancelTimeoutMs: 100,
 		terminateTimeoutMs: 500,
@@ -374,6 +376,7 @@ describe("Operation Worker supervisor", () => {
 	it("uses heartbeat only for liveness and loses a stalled child without changing its deadline", async () => {
 		const current = create("heartbeat_stall", { config: { heartbeatTimeoutMs: 60 } });
 		await activate(current.supervisor, current.workerBinding);
+		expect(current.supervisor.lifecycleState?.heartbeatSequence).toBe(1);
 		const deadlineAt = current.supervisor.lifecycleState?.binding.deadlineAt;
 		await waitForStatus(current.supervisor, "lost");
 		expect(current.supervisor.lifecycleState?.binding.deadlineAt).toBe(deadlineAt);

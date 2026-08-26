@@ -496,7 +496,7 @@ export class InteractiveMode {
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
 
-	private currentSessionBinding: { session: AgentSession; unsubscribe?: () => void };
+	private readonly sessionSubscriptions = new Map<AgentSession, () => void>();
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -570,7 +570,6 @@ export class InteractiveMode {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
-		this.currentSessionBinding = { session: runtimeHost.session };
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
@@ -2111,16 +2110,16 @@ export class InteractiveMode {
 
 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
 		const session = this.session;
-		this.currentSessionBinding?.unsubscribe?.();
-		if (this.currentSessionBinding !== undefined) this.currentSessionBinding.unsubscribe = undefined;
+		for (const unsubscribe of this.sessionSubscriptions.values()) unsubscribe();
+		this.sessionSubscriptions.clear();
 		this.applyRuntimeSettings();
 		if (options.renderBeforeBind) {
 			this.renderCurrentSessionState();
-			this.subscribeToAgent(this.currentSessionBinding);
+			this.subscribeToAgent(session);
 		}
 		await this.bindCurrentSessionExtensions();
 		if (this.session !== session) return;
-		if (!options.renderBeforeBind) this.subscribeToAgent(this.currentSessionBinding);
+		if (!options.renderBeforeBind) this.subscribeToAgent(session);
 
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
@@ -2131,40 +2130,33 @@ export class InteractiveMode {
 		nextSession: AgentSession,
 		previousSession: AgentSession,
 	): Promise<PreparedSessionScopeRebind> {
-		if (this.currentSessionBinding.session !== previousSession) {
+		if (this.session !== previousSession) {
 			throw new Error("Interactive host session binding does not match the current runtime scope");
 		}
-		const previousBinding = this.currentSessionBinding;
-		const candidateBinding = { session: nextSession } as {
-			session: AgentSession;
-			unsubscribe?: () => void;
-		};
 		try {
 			await nextSession.prepareExtensionBindings(this.createCurrentSessionExtensionBindings(nextSession));
-			this.subscribeToAgent(candidateBinding);
+			this.subscribeToAgent(nextSession);
 		} catch (error) {
-			candidateBinding.unsubscribe?.();
+			this.unsubscribeFromAgent(nextSession);
 			throw error;
 		}
 		return {
-			commit: () => {
-				this.currentSessionBinding = candidateBinding;
-			},
+			commit: () => undefined,
 			prepareActivation: () => {
 				this.applyRuntimeSettings();
 				this.renderCurrentSessionState();
 			},
 			activate: async () => {
 				await nextSession.activateExtensionBindings();
-				if (this.currentSessionBinding !== candidateBinding) return;
+				if (this.session !== nextSession) return;
 				this.finishCurrentSessionExtensionBinding(nextSession);
 				await this.updateAvailableProviderCount();
 				this.updateEditorBorderColor();
 				this.updateTerminalTitle();
 			},
-			disposeCandidate: () => candidateBinding.unsubscribe?.(),
+			disposeCandidate: () => this.unsubscribeFromAgent(nextSession),
 			disposePrevious: () => {
-				previousBinding.unsubscribe?.();
+				this.unsubscribeFromAgent(previousSession);
 				this.resetExtensionUI();
 			},
 		};
@@ -3322,11 +3314,18 @@ export class InteractiveMode {
 		};
 	}
 
-	private subscribeToAgent(binding: { session: AgentSession; unsubscribe?: () => void }): void {
-		binding.unsubscribe = binding.session.subscribe(async (event) => {
-			if (this.currentSessionBinding !== binding) return;
+	private subscribeToAgent(session: AgentSession): void {
+		this.unsubscribeFromAgent(session);
+		const unsubscribe = session.subscribe(async (event) => {
+			if (this.session !== session) return;
 			await this.handleEvent(event);
 		});
+		this.sessionSubscriptions.set(session, unsubscribe);
+	}
+
+	private unsubscribeFromAgent(session: AgentSession): void {
+		this.sessionSubscriptions.get(session)?.();
+		this.sessionSubscriptions.delete(session);
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -7200,7 +7199,8 @@ export class InteractiveMode {
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
-		this.currentSessionBinding.unsubscribe?.();
+		for (const unsubscribe of this.sessionSubscriptions.values()) unsubscribe();
+		this.sessionSubscriptions.clear();
 		if (this.isInitialized) {
 			this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;

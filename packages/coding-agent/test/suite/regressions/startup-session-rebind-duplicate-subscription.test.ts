@@ -3,11 +3,11 @@ import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode
 
 type RebindContext = {
 	session: object;
-	unsubscribe?: () => void;
+	sessionSubscriptions: Map<object, () => void>;
 	applyRuntimeSettings: () => void;
 	renderCurrentSessionState: () => void;
 	bindCurrentSessionExtensions: () => Promise<void>;
-	subscribeToAgent: () => void;
+	subscribeToAgent: (session: object) => void;
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
 	updateTerminalTitle: () => void;
@@ -39,6 +39,7 @@ describe("overlapping startup and replacement session rebinds", () => {
 
 		const context: RebindContext = {
 			session: startupSession,
+			sessionSubscriptions: new Map(),
 			applyRuntimeSettings: () => {},
 			renderCurrentSessionState: () => {},
 			bindCurrentSessionExtensions: () => {
