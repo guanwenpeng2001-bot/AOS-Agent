@@ -819,9 +819,14 @@ async function prepareAtomicControlStateFixture(fixture: AtomicControlStateFixtu
 	const trust = new ProjectTrustStore(agentDir);
 	trust.set(fixture.projectDir, true);
 	const identityAgentDir = join(fixture.tempDir, "identity-agent");
-	const identity = CapabilityPublicIdentity.loadSync(identityAgentDir);
-	if (identity.derive("line13", "control-state").length !== 43) {
-		throw new Error("Capability identity fixture did not create a valid durable identity");
+	let rejectedCorruptIdentity = false;
+	try {
+		CapabilityPublicIdentity.loadSync(identityAgentDir);
+	} catch {
+		rejectedCorruptIdentity = true;
+	}
+	if (!rejectedCorruptIdentity) {
+		throw new Error("Capability identity fixture minted a new identity over corrupt state");
 	}
 
 	if (JSON.parse(readFileSync(settingsPath, "utf8")).defaultProvider !== "new-provider") {
@@ -1064,33 +1069,6 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-16",
-				fullTestName: "Line 13 AC-16 exposes only old-or-new settings auth trust and identity state",
-				baseSha: BASE_SHA,
-				ownerStage: "T3b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "control_state.write_not_atomic",
-					fingerprint: "sha256:7c3091907617951330a5f266c12154373752093396a02ddd9490dbadc6db3f98",
-				},
-			},
-			scenario: {
-				fixture: atomicControlStateFixture,
-				setup: prepareAtomicControlStateFixture,
-				assertion: ({ mutatedCommittedFiles }) => {
-					assert.equal(
-						mutatedCommittedFiles.length,
-						0,
-						"expected control-state writes to replace committed files atomically",
-					);
-				},
-				cleanup: ({ tempDir }) => {
-					rmSync(tempDir, { recursive: true, force: true });
-				},
-			},
-		}),
 	],
 	resolvedCases: [
 		defineLine13ResolvedCase({
@@ -1104,6 +1082,24 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 						0,
 						`expected public roots to expose no version-suffixed business declarations or aliases: ${versionedExports.join(", ")}`,
 					);
+				},
+			},
+		}),
+		defineLine13ResolvedCase({
+			ac: "AC-16",
+			fullTestName: "Line 13 AC-16 exposes only old-or-new settings auth trust and identity state",
+			scenario: {
+				fixture: atomicControlStateFixture,
+				setup: prepareAtomicControlStateFixture,
+				assertion: ({ mutatedCommittedFiles }) => {
+					assert.equal(
+						mutatedCommittedFiles.length,
+						0,
+						"expected control-state writes to replace committed files atomically",
+					);
+				},
+				cleanup: ({ tempDir }) => {
+					rmSync(tempDir, { recursive: true, force: true });
 				},
 			},
 		}),

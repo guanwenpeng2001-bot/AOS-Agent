@@ -1,8 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { resolvePath } from "../utils/paths.ts";
+import { readControlPlaneState, writeControlPlaneState } from "./control-plane-atomic-storage.ts";
 
 /**
  * Installation-scoped public identity for capabilities.
@@ -24,7 +25,6 @@ const SECRET_BASE64URL_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const DERIVATION_VERSION = 1;
 /** Single byte between the domain and the input in the HMAC message. */
 const DERIVATION_DOMAIN_SEPARATOR = 0;
-const STATE_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
 const LOCK_RETRIES = { retries: 20, factor: 1.2, minTimeout: 10, maxTimeout: 100 };
 
 interface CapabilityPublicIdentityStateFile {
@@ -43,14 +43,7 @@ function decodeCanonicalSecret(secret: string): Buffer | undefined {
 	return decoded;
 }
 
-function readStateFile(statePath: string): CapabilityPublicIdentityStateFile {
-	let raw: string;
-	try {
-		raw = readFileSync(statePath, "utf-8");
-	} catch {
-		throw new Error("Failed to read capability identity state");
-	}
-
+function parseStateFile(raw: string): CapabilityPublicIdentityStateFile {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -72,11 +65,23 @@ function readStateFile(statePath: string): CapabilityPublicIdentityStateFile {
 	return { version: STATE_FILE_VERSION, secret };
 }
 
+const IDENTITY_STORAGE_OPTIONS = {
+	validate: (content: string) => {
+		parseStateFile(content);
+	},
+	mode: 0o600,
+	directoryMode: 0o700,
+} as const;
+
+function readStateFile(statePath: string): CapabilityPublicIdentityStateFile | undefined {
+	const raw = readControlPlaneState(statePath, IDENTITY_STORAGE_OPTIONS);
+	return raw === undefined ? undefined : parseStateFile(raw);
+}
+
 function writeStateFile(statePath: string, secret: Buffer): void {
 	mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
 	const data = `${JSON.stringify({ version: STATE_FILE_VERSION, secret: secret.toString("base64url") }, null, 2)}\n`;
-	writeFileSync(statePath, data, STATE_FILE_WRITE_OPTIONS);
-	chmodSync(statePath, 0o600);
+	writeControlPlaneState(statePath, data, IDENTITY_STORAGE_OPTIONS);
 }
 
 async function acquireStateLock(statePath: string): Promise<() => Promise<void>> {
@@ -126,8 +131,8 @@ export class CapabilityPublicIdentity {
 		const statePath = getCapabilityPublicIdentityPath(agentDir);
 		const release = await acquireStateLock(statePath);
 		try {
-			if (existsSync(statePath)) {
-				const state = readStateFile(statePath);
+			const state = readStateFile(statePath);
+			if (state !== undefined) {
 				return new CapabilityPublicIdentity(Buffer.from(state.secret, "base64url"));
 			}
 			const secret = randomBytes(SECRET_BYTE_LENGTH);
@@ -147,8 +152,8 @@ export class CapabilityPublicIdentity {
 		const statePath = getCapabilityPublicIdentityPath(agentDir);
 		const release = acquireStateLockSync(statePath);
 		try {
-			if (existsSync(statePath)) {
-				const state = readStateFile(statePath);
+			const state = readStateFile(statePath);
+			if (state !== undefined) {
 				return new CapabilityPublicIdentity(Buffer.from(state.secret, "base64url"));
 			}
 			const secret = randomBytes(SECRET_BYTE_LENGTH);

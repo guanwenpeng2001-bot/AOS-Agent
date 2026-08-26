@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CredentialStore, createModels, type Provider } from "@aos-agent/ai";
@@ -525,11 +525,30 @@ describe("AuthStorage", () => {
 		await expect(models.getAuth(providerId)).resolves.toMatchObject({ auth: { apiKey: "refreshed-access" } });
 	});
 
-	test("does not overwrite malformed auth files", async () => {
+	test("quarantines malformed auth files and repairs from the last-known-good copy", async () => {
 		writeAuthJson({ anthropic: { type: "api_key", key: "stored" } });
 		const storage = AuthStorage.create(authJsonPath);
 		writeFileSync(authJsonPath, "{invalid-json", "utf8");
-		await expect(storage.modify("openai", async () => ({ type: "api_key", key: "new" }))).rejects.toThrow();
-		expect(readFileSync(authJsonPath, "utf8")).toBe("{invalid-json");
+		await expect(storage.modify("openai", async () => ({ type: "api_key", key: "new" }))).resolves.toEqual({
+			type: "api_key",
+			key: "new",
+		});
+		expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({
+			anthropic: { type: "api_key", key: "stored" },
+			openai: { type: "api_key", key: "new" },
+		});
+		expect(readdirSync(tempDir).filter((entry) => entry.startsWith(".auth.json.corrupt."))).toHaveLength(1);
+	});
+
+	test("does not silently treat initially corrupt auth state as empty", async () => {
+		const corruptPath = join(tempDir, "initially-corrupt-auth.json");
+		writeFileSync(corruptPath, "{invalid-json", "utf8");
+		const storage = AuthStorage.create(corruptPath);
+
+		await expect(storage.read("anthropic")).rejects.toMatchObject({ code: "control_state_corrupt" });
+		expect(existsSync(corruptPath)).toBe(false);
+		expect(
+			readdirSync(tempDir).filter((entry) => entry.startsWith(".initially-corrupt-auth.json.corrupt.")),
+		).toHaveLength(1);
 	});
 });

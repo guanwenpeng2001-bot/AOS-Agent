@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { Transport } from "@aos-agent/ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@aos-agent/tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
@@ -14,6 +14,11 @@ import {
 	type CapabilitySettingsInput,
 	type McpSettingsConfig,
 } from "./capability-settings.ts";
+import {
+	hasControlPlaneStateArtifacts,
+	readControlPlaneState,
+	writeControlPlaneState,
+} from "./control-plane-atomic-storage.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import {
 	buildModelBrokerSettings,
@@ -234,6 +239,15 @@ export interface SettingsError {
 	error: Error;
 }
 
+function validateSettingsState(content: string): void {
+	const parsed: unknown = JSON.parse(content);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Invalid settings state: expected an object");
+	}
+}
+
+const SETTINGS_STORAGE_OPTIONS = { validate: validateSettingsState } as const;
+
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
@@ -274,26 +288,23 @@ export class FileSettingsStorage implements SettingsStorage {
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
-		const dir = dirname(path);
 
 		let release: (() => void) | undefined;
 		try {
-			// Only create directory and lock if file exists or we need to write
-			const fileExists = existsSync(path);
-			if (fileExists) {
+			const hasExistingState = hasControlPlaneStateArtifacts(path);
+			if (hasExistingState) {
 				release = this.acquireLockSyncWithRetry(path);
 			}
-			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
-			const next = fn(current);
+			let current = hasExistingState ? readControlPlaneState(path, SETTINGS_STORAGE_OPTIONS) : undefined;
+			let next = fn(current);
 			if (next !== undefined) {
-				// Only create directory when we actually need to write
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
-				}
 				if (!release) {
+					mkdirSync(dirname(path), { recursive: true });
 					release = this.acquireLockSyncWithRetry(path);
+					current = readControlPlaneState(path, SETTINGS_STORAGE_OPTIONS);
+					next = fn(current);
 				}
-				writeFileSync(path, next, "utf-8");
+				if (next !== undefined) writeControlPlaneState(path, next, SETTINGS_STORAGE_OPTIONS);
 			}
 		} finally {
 			if (release) {
