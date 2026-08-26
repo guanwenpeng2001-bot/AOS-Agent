@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { readControlPlaneState, writeControlPlaneState } from "./control-plane-atomic-storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -100,31 +101,38 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return trustOptions;
 }
 
-function readTrustFile(path: string): TrustFile {
-	if (!existsSync(path)) {
-		return {};
-	}
-
+function parseTrustFile(content: string): TrustFile {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf-8"));
+		parsed = JSON.parse(content);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to read trust store ${path}: ${message}`);
+		throw new Error(`Failed to read trust store: ${message}`);
 	}
 
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		throw new Error(`Invalid trust store ${path}: expected an object`);
+		throw new Error("Invalid trust store: expected an object");
 	}
 
 	const data: TrustFile = {};
 	for (const [key, value] of Object.entries(parsed)) {
 		if (value !== true && value !== false && value !== null) {
-			throw new Error(`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`);
+			throw new Error(`Invalid trust store: value for ${JSON.stringify(key)} must be true, false, or null`);
 		}
 		data[key] = value;
 	}
 	return data;
+}
+
+const TRUST_STORAGE_OPTIONS = {
+	validate: (content: string) => {
+		parseTrustFile(content);
+	},
+} as const;
+
+function readTrustFile(path: string): TrustFile {
+	const content = readControlPlaneState(path, TRUST_STORAGE_OPTIONS);
+	return content === undefined ? {} : parseTrustFile(content);
 }
 
 function writeTrustFile(path: string, data: TrustFile): void {
@@ -136,7 +144,7 @@ function writeTrustFile(path: string, data: TrustFile): void {
 		}
 	}
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
+	writeControlPlaneState(path, `${JSON.stringify(sorted, null, 2)}\n`, TRUST_STORAGE_OPTIONS);
 }
 
 function acquireTrustLockSync(path: string): () => void {

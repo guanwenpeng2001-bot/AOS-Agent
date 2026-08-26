@@ -4,13 +4,18 @@
  */
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { setTimeout as sleep } from "timers/promises";
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import {
+	hasControlPlaneStateArtifacts,
+	readControlPlaneState,
+	writeControlPlaneState,
+} from "./control-plane-atomic-storage.ts";
 import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
 
 type AuthStorageData = Record<string, Credential>;
@@ -20,8 +25,6 @@ type LockResult<T> = {
 	next?: string;
 };
 
-const AUTH_FILE_WRITE_OPTIONS = { encoding: "utf-8", mode: 0o600 } as const;
-
 type AuthFileReload = {
 	controller: AbortController;
 	promise: Promise<AuthStorageData>;
@@ -30,11 +33,53 @@ type AuthFileReload = {
 
 type AuthFileReadState = {
 	data: AuthStorageData;
+	valid: boolean;
 	revision?: string;
 	reload?: AuthFileReload;
 };
 
 let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
+
+function parseAuthStorageData(content: string): AuthStorageData {
+	const parsed: unknown = JSON.parse(content);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Invalid auth.json: expected an object");
+	}
+	for (const [providerId, credential] of Object.entries(parsed)) {
+		if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
+			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+		}
+		const value = credential as Record<string, unknown>;
+		if (value.type === "api_key") {
+			const validKey = value.key === undefined || typeof value.key === "string";
+			const validEnv =
+				value.env === undefined ||
+				(typeof value.env === "object" &&
+					value.env !== null &&
+					!Array.isArray(value.env) &&
+					Object.values(value.env).every((entry) => typeof entry === "string"));
+			if (validKey && validEnv) continue;
+		} else if (
+			value.type === "oauth" &&
+			typeof value.access === "string" &&
+			typeof value.refresh === "string" &&
+			typeof value.expires === "number" &&
+			Number.isFinite(value.expires)
+		) {
+			continue;
+		}
+		throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+	}
+	return parsed as AuthStorageData;
+}
+
+const AUTH_STORAGE_OPTIONS = {
+	validate: (content: string) => {
+		parseAuthStorageData(content);
+	},
+	mode: 0o600,
+	directoryMode: 0o700,
+} as const;
 
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
@@ -59,9 +104,8 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	private ensureFileExists(): void {
-		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(this.authPath, 0o600);
+		if (!hasControlPlaneStateArtifacts(this.authPath)) {
+			writeControlPlaneState(this.authPath, "{}", AUTH_STORAGE_OPTIONS);
 		}
 	}
 
@@ -99,11 +143,10 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		let release: (() => void) | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry(this.authPath);
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			const current = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				writeControlPlaneState(this.authPath, next, AUTH_STORAGE_OPTIONS);
 			}
 			return result;
 		} finally {
@@ -179,13 +222,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 			throwIfCompromised();
 			options?.signal?.throwIfAborted();
-			const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+			const current = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
 			const { result, next } = await fn(current);
 			throwIfCompromised();
 			options?.signal?.throwIfAborted();
 			if (next !== undefined) {
-				writeFileSync(this.authPath, next, AUTH_FILE_WRITE_OPTIONS);
-				chmodSync(this.authPath, 0o600);
+				writeControlPlaneState(this.authPath, next, AUTH_STORAGE_OPTIONS);
 			}
 			throwIfCompromised();
 			return result;
@@ -212,47 +254,8 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 	private load(): AuthStorageData {
 		if (this.data) return this.data;
 
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(readFileSync(this.authPath, "utf-8"));
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				this.data = {};
-				return this.data;
-			}
-			throw new Error(`Failed to read auth.json: ${error instanceof Error ? error.message : String(error)}`);
-		}
-
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-			throw new Error("Invalid auth.json: expected an object");
-		}
-		for (const [providerId, credential] of Object.entries(parsed)) {
-			if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
-				throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
-			}
-			const value = credential as Record<string, unknown>;
-			if (value.type === "api_key") {
-				const validKey = value.key === undefined || typeof value.key === "string";
-				const validEnv =
-					value.env === undefined ||
-					(typeof value.env === "object" &&
-						value.env !== null &&
-						!Array.isArray(value.env) &&
-						Object.values(value.env).every((entry) => typeof entry === "string"));
-				if (validKey && validEnv) continue;
-			} else if (
-				value.type === "oauth" &&
-				typeof value.access === "string" &&
-				typeof value.refresh === "string" &&
-				typeof value.expires === "number" &&
-				Number.isFinite(value.expires)
-			) {
-				continue;
-			}
-			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
-		}
-
-		this.data = parsed as AuthStorageData;
+		const content = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
+		this.data = content === undefined ? {} : parseAuthStorageData(content);
 		return this.data;
 	}
 
@@ -334,13 +337,15 @@ export class AuthStorage implements CredentialStore {
 		this.storage = storage;
 		this.authPath = authPath;
 		this.readState =
-			authPath && sharedAuthFileReadState?.authPath === authPath ? sharedAuthFileReadState.readState : { data: {} };
+			authPath && sharedAuthFileReadState?.authPath === authPath
+				? sharedAuthFileReadState.readState
+				: { data: {}, valid: false };
 		if (authPath && !sharedAuthFileReadState) {
 			sharedAuthFileReadState = { authPath, readState: this.readState };
 		}
 		if (authPath) {
 			const revision = getFileRevision(authPath);
-			if (revision !== undefined && revision === this.readState.revision) return;
+			if (this.readState.valid && revision !== undefined && revision === this.readState.revision) return;
 		}
 		this.reload();
 	}
@@ -364,11 +369,12 @@ export class AuthStorage implements CredentialStore {
 		if (!content) {
 			return {};
 		}
-		return JSON.parse(content) as AuthStorageData;
+		return parseAuthStorageData(content);
 	}
 
 	private updateReadState(data: AuthStorageData, revision?: string): void {
 		this.readState.data = data;
+		this.readState.valid = true;
 		this.readState.revision = revision;
 	}
 
@@ -403,7 +409,12 @@ export class AuthStorage implements CredentialStore {
 		options?.signal?.throwIfAborted();
 		if (!this.authPath) {
 			const reload = this.reloadFromStorageAsync(options);
-			return options?.signal ? reload : reload.catch(() => this.readState.data);
+			return options?.signal
+				? reload
+				: reload.catch((error: unknown) => {
+						if (this.readState.valid) return this.readState.data;
+						throw error;
+					});
 		}
 		const revision = getFileRevision(this.authPath);
 		if (revision !== undefined && revision === this.readState.revision) return this.readState.data;
@@ -429,7 +440,12 @@ export class AuthStorage implements CredentialStore {
 		reload.readers++;
 		try {
 			const result = raceWithAbortSignal(reload.promise, options?.signal);
-			return options?.signal ? await result : await result.catch(() => this.readState.data);
+			return options?.signal
+				? await result
+				: await result.catch((error: unknown) => {
+						if (this.readState.valid) return this.readState.data;
+						throw error;
+					});
 		} finally {
 			reload.readers--;
 			if (reload.readers === 0 && this.readState.reload === reload) {
@@ -498,10 +514,6 @@ export function readStoredCredential(
 	providerId: string,
 	authPath: string = join(getAgentDir(), "auth.json"),
 ): Credential | undefined {
-	try {
-		const data = JSON.parse(readFileSync(normalizePath(authPath), "utf-8")) as AuthStorageData;
-		return data[providerId];
-	} catch {
-		return undefined;
-	}
+	const content = readControlPlaneState(normalizePath(authPath), AUTH_STORAGE_OPTIONS);
+	return content === undefined ? undefined : parseAuthStorageData(content)[providerId];
 }
