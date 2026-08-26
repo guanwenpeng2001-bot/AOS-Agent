@@ -179,6 +179,15 @@ class FakeStore implements ExternalConnectorDurableStore {
 		return this.bindings.get(bindingId);
 	}
 
+	async readExecutionInput(taskId: string) {
+		return {
+			schemaVersion: 1 as const,
+			taskId,
+			requestFingerprint: `sha256:${"1".repeat(64)}` as const,
+			input: { schemaVersion: 1 as const, text: "fixture", artifacts: [] },
+		};
+	}
+
 	async readOperation(attemptId: string): Promise<ExternalConnectorOperation | undefined> {
 		this.reads++;
 		return this.operations.get(attemptId);
@@ -243,7 +252,7 @@ class OperationLedger {
 }
 
 class FakeDriver implements ExternalConnectorVendorDriver {
-	readonly calls = { spawn: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 };
+	readonly calls = { spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 };
 	readonly spawnStates: Array<ExternalConnectorOperationStatus | undefined> = [];
 	store: FakeStore | undefined;
 	spawnFailure = false;
@@ -265,6 +274,13 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		this.spawnStates.push(this.store?.operations.get(request.attempt.attemptId)?.status);
 		if (this.spawnFailure) throw new Error("injected spawn failure");
 		return { ...this.handle, operationNonce: request.operationNonce };
+	}
+
+	events(): AsyncIterable<never> {
+		this.calls.events++;
+		return {
+			[Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+		};
 	}
 
 	async connect(): Promise<ExternalConnectorDriverHandle> {
@@ -435,7 +451,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const value = await fixture();
 		expect(value.store.reads).toBe(0);
 		expect(value.store.operationHistory).toEqual([]);
-		expect(value.driver.calls).toEqual({ spawn: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(value.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
 
 		const rejected = await value.connector.runAttempt(value.attempt, { correlation });
 		expect(rejected.ok).toBe(false);
@@ -445,6 +461,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const completed = await value.connector.runAttempt(value.attempt, { correlation });
 		expect(completed.ok).toBe(true);
 		expect(value.driver.spawnStates).toEqual(["start_intent"]);
+		expect(value.driver.calls.events).toBe(1);
 		expect(value.store.operationHistory).toEqual(["prepared", "start_intent", "running", "terminal"]);
 	});
 
@@ -471,6 +488,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(true);
 		expect(value.driver.calls.connect).toBe(1);
+		expect(value.driver.calls.events).toBe(1);
 		expect(value.driver.calls.read).toBe(1);
 		expect(value.driver.calls.spawn).toBe(0);
 	});

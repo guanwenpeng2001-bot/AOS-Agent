@@ -21,8 +21,10 @@ import type {
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
-import type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
-import type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
+import type {
+	ExternalConnectorDescriptor,
+	ExternalConnectorSelection,
+} from "../../core/external-agent-registry.ts";
 import type {
 	ExternalExecutionRef,
 	ExternalMappingPersistenceResult,
@@ -199,8 +201,8 @@ export type RpcCommand =
 			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
-			/** Explicit trusted External Agent Adapter selection for this Run. */
-			externalAgent?: ExternalAgentSelection;
+			/** Explicit trusted External Connector selection for this Run. */
+			externalConnector?: ExternalConnectorSelection;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -220,8 +222,8 @@ export type RpcCommand =
 			deadlineAt?: string;
 			images?: ImageContent[];
 			external?: ExternalExecutionRef;
-			/** Explicit trusted External Agent Adapter selection for the resumed Run. */
-			externalAgent?: ExternalAgentSelection;
+			/** Explicit trusted External Connector selection for the resumed Run. */
+			externalConnector?: ExternalConnectorSelection;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -1012,8 +1014,8 @@ export interface InitializeData {
 	subagentCommands?: RpcSubagentCommandType[];
 	/** Advertised only when trusted Scheduler composition is active. */
 	schedulerCommands?: RpcSchedulerCommandType[];
-	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
-	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
+	/** Safe External Connector descriptors registered by the trusted Host. */
+	externalConnectors?: ReadonlyArray<ExternalConnectorDescriptor>;
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -1332,9 +1334,11 @@ export type {
 	ExternalMappingPersistenceResult,
 	ExternalMappingRequest,
 } from "../../core/external-session-mapping.ts";
-// Re-export the public External Agent Adapter selection surface (safe identifiers only).
-export type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
-export type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
+// Re-export the only current External Connector selection surface.
+export type {
+	ExternalConnectorDescriptor,
+	ExternalConnectorSelection,
+} from "../../core/external-agent-registry.ts";
 // Re-export public Task Gate types.
 export type {
 	TaskGateErrorCode,

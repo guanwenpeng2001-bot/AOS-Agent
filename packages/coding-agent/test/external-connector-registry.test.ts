@@ -112,6 +112,7 @@ class ZetaConnector implements ExternalAgentConnector {
 		artifacts: false,
 		images: false,
 	});
+	disposeCalls = 0;
 
 	get snapshot(): ConnectorCapabilitySnapshot {
 		return this.#snapshot;
@@ -176,7 +177,9 @@ class ZetaConnector implements ExternalAgentConnector {
 		return Result.ok(undefined);
 	}
 
-	async dispose(): Promise<void> {}
+	async dispose(): Promise<void> {
+		this.disposeCalls += 1;
+	}
 
 	private receipt(attempt: Attempt, options?: FoundationProviderExecutionOptions): AttemptReceipt {
 		const bindingEpochId = attempt.bindingEpochIds[0];
@@ -217,7 +220,7 @@ function evidence() {
 	return {
 		toolGateway: {
 			declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
-			handler: { id: "zeta.tool-gateway-handler", invoke: () => undefined },
+			handler: { id: "zeta.tool-gateway-handler", invoke: () => "tool-gateway-reached" },
 		},
 		aosGateway: {
 			declaration: { id: "zeta.model-gateway", revision: 5, reachable: true as const },
@@ -287,6 +290,7 @@ describe("ExternalConnectorRegistry open SPI", () => {
 			toolGateway: { handlerId: "zeta.tool-gateway-handler" },
 			aosGateway: { handlerId: "zeta.model-gateway-handler" },
 		});
+		expect(selected.value.capabilityHandlers.toolGateway?.()).toBe("tool-gateway-reached");
 
 		const scheduler = new SchedulerExecutorRegistry();
 		const entry: SchedulerExecutorEntryV1 = {
@@ -360,6 +364,9 @@ describe("ExternalConnectorRegistry open SPI", () => {
 				provenance: { producerKind: "external_connector" },
 			});
 		}
+		await registry.dispose();
+		expect(connector.disposeCalls).toBe(1);
+		expect(registry.list()).toEqual([]);
 	});
 
 	it("normalizes thrown and returned probe failures without exposing connector error data", async () => {

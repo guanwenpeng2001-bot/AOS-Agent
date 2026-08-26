@@ -76,7 +76,10 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
 } from "./execution-policy-ledger.ts";
-import { type ExternalAgentSelection, serializeExternalAgentSelection } from "./external-agent-adapter.ts";
+import {
+	type ExternalConnectorSelection,
+	serializeExternalConnectorSelection,
+} from "./external-agent-registry.ts";
 import {
 	type ExternalExecutionMapping,
 	type ExternalExecutionRef,
@@ -146,8 +149,8 @@ export interface RunRequestFingerprintInput {
 	readonly modelRoute?: ModelRouteSelection;
 	readonly modelRole?: ModelRoleSelection;
 	readonly external?: ExternalExecutionRef;
-	/** Optional explicit External Agent Adapter selection for this Run. */
-	readonly externalAgent?: ExternalAgentSelection;
+	/** Optional explicit trusted External Connector selection for this Run. */
+	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -166,8 +169,8 @@ export interface CanonicalRunRequest {
 	readonly modelRouteDigest?: string;
 	readonly modelRoleDigest?: string;
 	readonly external?: ExternalExecutionRef;
-	/** Optional explicit External Agent Adapter selection; safe identifiers only. */
-	readonly externalAgent?: ExternalAgentSelection;
+	/** Optional explicit External Connector selection; immutable identity only. */
+	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -257,8 +260,9 @@ function stableRequestSerialization(value: unknown): string {
  */
 export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
 	const external = input.external === undefined ? undefined : serializeExternalExecutionRef(input.external);
-	const externalAgent =
-		input.externalAgent === undefined ? undefined : serializeExternalAgentSelection(input.externalAgent);
+	const externalConnector = input.externalConnector === undefined
+		? undefined
+		: serializeExternalConnectorSelection(input.externalConnector);
 	const scope = input.scope ?? (input.command === "run.start" ? "start" : "resume");
 	return {
 		schemaVersion: 1,
@@ -276,7 +280,7 @@ export function canonicalizeRunRequest(input: RunRequestFingerprintInput): Canon
 		...(input.modelRoute === undefined ? {} : { modelRouteDigest: digestRequestValue(input.modelRoute) }),
 		...(input.modelRole === undefined ? {} : { modelRoleDigest: digestRequestValue(input.modelRole) }),
 		...(external === undefined ? {} : { external }),
-		...(externalAgent === undefined ? {} : { externalAgent }),
+		...(externalConnector === undefined ? {} : { externalConnector }),
 		...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
 	};
 }

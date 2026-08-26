@@ -6,8 +6,7 @@ import type {
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "./capability-registry.ts";
 import type {
-	ExternalAgentAdapterRegistry,
-	ExternalAgentAdapterRegistryView,
+	ExternalConnectorRegistry,
 } from "./external-agent-registry.ts";
 import type { TrustedSchedulerCompositionOptions } from "./foundation-control-plane.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
@@ -79,9 +78,9 @@ export type TrustedSchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
 ) => TrustedSchedulerRuntimeOptions;
 export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
-export type TrustedExternalAgentRegistryFactory = (
+export type TrustedExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
-) => ExternalAgentAdapterRegistry;
+) => ExternalConnectorRegistry;
 export type TrustedTaskCredentialProviderFactory = (
 	context: AgentRuntimeCompositionContext,
 ) => TaskCredentialProvider;
@@ -92,7 +91,7 @@ export interface AgentRuntimeCompositionOptions {
 	readonly trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	readonly subagents?: TrustedSubagentCompositionFactory;
 	readonly scheduler?: TrustedSchedulerCompositionFactory;
-	readonly externalAgentRegistry?: TrustedExternalAgentRegistryFactory;
+	readonly externalConnectorRegistry?: TrustedExternalConnectorRegistryFactory;
 	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -109,7 +108,7 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagents?: TrustedSubagentCompositionOptionsV1;
 	readonly scheduler?: TrustedSchedulerRuntimeOptions;
-	readonly externalAgentRegistry?: ExternalAgentAdapterRegistryView;
+	readonly externalConnectorRegistry?: ExternalConnectorRegistry;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -126,7 +125,7 @@ interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeComposition
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagentOptions?: TrustedSubagentCompositionOptionsV1;
 	readonly schedulerOptions?: TrustedSchedulerCompositionOptions;
-	readonly externalAgentRegistryInstance?: ExternalAgentAdapterRegistry;
+	readonly externalConnectorRegistryInstance?: ExternalConnectorRegistry;
 	readonly taskCredentialProviderInstance?: TaskCredentialProvider;
 }
 
@@ -214,11 +213,10 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
 			const toolGateway = explicitToolGateway ?? subagents?.toolGateway;
 			requireFresh(toolGateway, "Trusted Tool Gateway");
-			const mutableExternalAgentRegistry = requireFresh(
-				snapshot.externalAgentRegistry?.(publicContext) ?? snapshot.externalAgentRegistryInstance,
-				"Trusted External Agent registry",
+			const externalConnectorRegistry = requireFresh(
+				snapshot.externalConnectorRegistry?.(publicContext) ?? snapshot.externalConnectorRegistryInstance,
+				"Trusted External Connector registry",
 			);
-			const externalAgentRegistry = mutableExternalAgentRegistry?.seal();
 			const taskCredentialProvider = requireFresh(
 				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
 				"Trusted Task Credential provider",
@@ -231,9 +229,9 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				...(workerSandboxProvider === undefined ? {} : { workerSandboxProvider }),
 				...(subagents === undefined ? {} : { subagents }),
 				...(scheduler === undefined ? {} : { scheduler }),
-				...(externalAgentRegistry === undefined
+				...(externalConnectorRegistry === undefined
 					? {}
-					: { externalAgentRegistry }),
+					: { externalConnectorRegistry }),
 				...(taskCredentialProvider === undefined
 					? {}
 					: { taskCredentialProvider }),
@@ -257,7 +255,7 @@ export function createAgentRuntimeCompositionFactory(
 		options.trustedWorkerSandboxFactory === undefined &&
 		options.subagents === undefined &&
 		options.scheduler === undefined &&
-		options.externalAgentRegistry === undefined &&
+		options.externalConnectorRegistry === undefined &&
 		options.taskCredentialProvider === undefined &&
 		options.taskCredentialPolicyMaxTtlMs === undefined
 	) {

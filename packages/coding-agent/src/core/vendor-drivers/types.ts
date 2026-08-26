@@ -22,6 +22,8 @@ import {
 	isExternalMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
 } from "../external-session-mapping.ts";
+import type { CanonicalExternalAgentInput } from "../external-agent-input.ts";
+import type { ExternalResolvedModelProjection } from "../external-model-projection.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;
@@ -32,6 +34,8 @@ export interface ExternalConnectorDriverHandle {
 
 export interface ExternalConnectorDriverSpawnRequest {
 	readonly attempt: Attempt;
+	readonly input: CanonicalExternalAgentInput;
+	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly capability: ConnectorCapabilitySnapshot;
 	readonly bindingDigest: string;
 	readonly bindingRevision: number;
@@ -128,6 +132,10 @@ export type ExternalConnectorDriverLookup =
 
 export interface ExternalConnectorVendorDriver {
 	spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle>;
+	events(
+		handle: ExternalConnectorDriverHandle,
+		options?: { readonly signal?: AbortSignal },
+	): AsyncIterable<FoundationJsonValue>;
 	connect(
 		mapping: CanonicalExternalConnectorMapping,
 		options?: { readonly signal?: AbortSignal },

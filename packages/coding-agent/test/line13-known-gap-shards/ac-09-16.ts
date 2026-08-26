@@ -45,9 +45,7 @@ import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } fro
 import ts from "typescript";
 import {
 	createAgentSession,
-	createExternalAgentAdapterRegistry,
 	DefaultResourceLoader,
-	externalAgentCapabilityError,
 	ModelRuntime,
 	ProjectTrustStore,
 	SchedulerDispatchController,
@@ -56,9 +54,13 @@ import {
 	SchedulerQueueStore,
 	SettingsManager,
 	type CreateAgentSessionResult,
+} from "../../src/index.ts";
+import {
+	externalAgentCapabilityError,
 	type ExternalAgentAdapter,
 	type ExternalAgentCapabilitySnapshot,
-} from "../../src/index.ts";
+} from "../../src/core/external-agent-adapter.ts";
+import { createExternalAgentAdapterRegistry } from "../../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { getAgentCanonicalSession } from "../../src/core/agent-session-facade.ts";
 import {

@@ -1,36 +1,4 @@
-/**
- * Trusted External Agent Adapter registry.
- *
- * The registry is the only place an External Agent Adapter can be
- * registered, and it accepts already-constructed adapter instances only.
- * Adapters are never loaded from project configuration, URLs, commands,
- * module paths, model provider names, or target self-reports; this module
- * exposes no API that would accept any of those as a registration source.
- * Registration fails closed with the stable `external_agent_adapter_invalid`
- * code on non-instance values, duplicate adapter ids, unsafe adapter ids,
- * unsafe descriptor fields, unsafe target ids, and malformed registration
- * options (non-object options, unknown keys, or non-array targets).
- *
- * Selection is explicit: a Run chooses `adapterId + targetId` as a bounded
- * `ExternalAgentSelection`. A selection with unsafe identifiers fails with
- * `external_agent_adapter_invalid`; a well-formed selection that names an
- * unregistered adapter or a target the adapter does not own fails with
- * `external_agent_target_not_found`. Model provider names and model ids
- * never select an adapter.
- *
- * The registry stores only the trusted adapter instance, its safe
- * descriptor (adapterId / displayName / version), and its bounded target
- * ids. It never stores or exposes target endpoints, commands, credentials,
- * protocol names, or raw probe data: `list()` returns safe descriptors and
- * `resolve()` returns the adapter instance plus the opaque target id.
- *
- * The registry is write-once from Host composition and sealed before it is
- * published to a Session. `list()` returns a fresh array of frozen descriptors
- * in registration order, returned values are frozen, and there is no
- * unregister, clear, or in-place mutation API.
- *
- * Erasable TypeScript only (no enums, namespaces, or parameter properties).
- */
+/** Trusted, instance-only External Connector registry. */
 
 import {
 	FoundationError,
@@ -46,6 +14,7 @@ import {
 	createExternalCapabilityTruthSnapshot,
 	type ExternalCapabilityBehavior,
 	type ExternalCapabilityEvidenceInput,
+	type ExternalCapabilityHandlerEvidence,
 	type ExternalCapabilityTruthSnapshot,
 } from "./external-model-projection.ts";
 
@@ -94,12 +63,21 @@ export interface ExternalConnectorResolvedSelection {
 	readonly connector: ExternalAgentConnector;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
+	readonly capabilityHandlers: Readonly<
+		Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>
+	>;
 }
 
 export interface ExternalConnectorRegistry {
 	register(registration: ExternalConnectorRegistration): Promise<ResultValue<ExternalConnectorDescriptor, FoundationError>>;
+	/** Trusted composition bootstrap when the exact probed snapshot is already pinned. */
+	registerPrepared(
+		registration: ExternalConnectorRegistration,
+		capabilitySnapshot: ConnectorCapabilitySnapshot,
+	): ResultValue<ExternalConnectorDescriptor, FoundationError>;
 	select(selection: ExternalConnectorSelection): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>>;
 	list(): readonly ExternalConnectorDescriptor[];
+	dispose(): Promise<void>;
 }
 
 interface RegisteredConnector {
@@ -212,7 +190,7 @@ function isExternalConnectorRegistration(value: unknown): value is ExternalConne
 	);
 }
 
-function isExternalConnectorSelection(value: unknown): value is ExternalConnectorSelection {
+export function isExternalConnectorSelection(value: unknown): value is ExternalConnectorSelection {
 	return (
 		isConnectorRecord(value) &&
 		hasExactConnectorKeys(value, EXTERNAL_CONNECTOR_SELECTION_KEYS) &&
@@ -221,6 +199,15 @@ function isExternalConnectorSelection(value: unknown): value is ExternalConnecto
 		(value.revision as number) > 0 &&
 		isExternalConnectorFingerprint(value.capabilitySnapshotDigest)
 	);
+}
+
+export function serializeExternalConnectorSelection(value: unknown): ExternalConnectorSelection | undefined {
+	if (!isExternalConnectorSelection(value)) return undefined;
+	return Object.freeze({
+		providerId: value.providerId,
+		revision: value.revision,
+		capabilitySnapshotDigest: Object.freeze({ ...value.capabilitySnapshotDigest }),
+	});
 }
 
 function cloneConnectorDescriptor(value: ExternalConnectorDescriptor): ExternalConnectorDescriptor {
@@ -245,6 +232,17 @@ function cloneCapabilityEvidence(value: ExternalCapabilityEvidenceInput | undefi
 		});
 	}
 	return Object.freeze(cloned);
+}
+
+function capabilityHandlers(
+	value: ExternalCapabilityEvidenceInput | undefined,
+): Readonly<Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>> {
+	const handlers: Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>> = {};
+	for (const behavior of EXTERNAL_CAPABILITY_BEHAVIORS) {
+		const item = value?.[behavior];
+		if (item !== undefined) handlers[behavior] = item.handler.invoke;
+	}
+	return Object.freeze(handlers);
 }
 
 function capabilityTruth(
@@ -297,10 +295,12 @@ async function probeConnector(
 class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	readonly #connectors = new Map<string, RegisteredConnector>();
 	readonly #pendingProviderIds = new Set<string>();
+	#disposed = false;
 
 	async register(
 		registration: ExternalConnectorRegistration,
 	): Promise<ResultValue<ExternalConnectorDescriptor, FoundationError>> {
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		if (!isExternalConnectorRegistration(registration)) {
 			return Result.err(connectorRegistryError("External connector registration must contain one trusted constructed instance and an exact descriptor."));
 		}
@@ -317,33 +317,58 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		try {
 			const snapshotResult = await probeConnector(connector);
 			if (!snapshotResult.ok) return snapshotResult;
-			const snapshot = snapshotResult.value;
-			if (
-				descriptor.revision !== snapshot.revision ||
-				!sameFingerprint(descriptor.capabilitySnapshotDigest, snapshot.digest)
-			) {
-				return Result.err(connectorRegistryError("External connector descriptor revision or capability snapshot digest does not match its probe."));
-			}
-			const truthResult = capabilityTruth(connector, snapshot, registration.capabilityEvidence);
-			if (!truthResult.ok) return truthResult;
-			const evidence = cloneCapabilityEvidence(registration.capabilityEvidence);
-			const storedDescriptor = cloneConnectorDescriptor(descriptor);
-			this.#connectors.set(descriptor.providerId, {
-				descriptor: storedDescriptor,
-				connector,
-				capabilitySnapshot: snapshot,
-				capabilityTruth: truthResult.value,
-				...(evidence === undefined ? {} : { capabilityEvidence: evidence }),
-			});
-			return Result.ok(storedDescriptor);
+			return this.#registerPrepared(registration, snapshotResult.value, true);
 		} finally {
 			this.#pendingProviderIds.delete(descriptor.providerId);
 		}
 	}
 
+	registerPrepared(
+		registration: ExternalConnectorRegistration,
+		capabilitySnapshot: ConnectorCapabilitySnapshot,
+	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
+		return this.#registerPrepared(registration, capabilitySnapshot, false);
+	}
+
+	#registerPrepared(
+		registration: ExternalConnectorRegistration,
+		capabilitySnapshot: ConnectorCapabilitySnapshot,
+		reserved: boolean,
+	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
+		if (!isExternalConnectorRegistration(registration)) {
+			return Result.err(connectorRegistryError("External connector registration must contain one trusted constructed instance and an exact descriptor."));
+		}
+		const descriptor = registration.descriptor;
+		const connector = registration.connector;
+		if ((!reserved && (this.#connectors.has(descriptor.providerId) || this.#pendingProviderIds.has(descriptor.providerId))) ||
+			descriptor.providerId !== connector.providerId || descriptor.providerClass !== connector.providerClass) {
+			return Result.err(connectorRegistryError("External connector provider identity is already registered or does not match its constructed instance."));
+		}
+		const checkedSnapshot = validateConnectorCapabilitySnapshotForProvider(capabilitySnapshot, connector);
+		if (!checkedSnapshot.ok) return checkedSnapshot;
+		const snapshot = checkedSnapshot.value;
+		if (descriptor.revision !== snapshot.revision || !sameFingerprint(descriptor.capabilitySnapshotDigest, snapshot.digest)) {
+			return Result.err(connectorRegistryError("External connector descriptor revision or capability snapshot digest does not match its probe."));
+		}
+		const truthResult = capabilityTruth(connector, snapshot, registration.capabilityEvidence);
+		if (!truthResult.ok) return truthResult;
+		const evidence = cloneCapabilityEvidence(registration.capabilityEvidence);
+		const storedDescriptor = cloneConnectorDescriptor(descriptor);
+		this.#connectors.set(descriptor.providerId, {
+			descriptor: storedDescriptor,
+			connector,
+			capabilitySnapshot: snapshot,
+			capabilityTruth: truthResult.value,
+			...(evidence === undefined ? {} : { capabilityEvidence: evidence }),
+		});
+		return Result.ok(storedDescriptor);
+	}
+
 	async select(
 		selection: ExternalConnectorSelection,
 	): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>> {
+		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		if (!isExternalConnectorSelection(selection)) {
 			return Result.err(connectorRegistryError("External connector selection must pin an exact provider id, revision, and capability snapshot digest."));
 		}
@@ -382,11 +407,31 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			connector: registered.connector,
 			capabilitySnapshot: snapshot,
 			capabilityTruth: truthResult.value,
+			capabilityHandlers: capabilityHandlers(registered.capabilityEvidence),
 		}));
 	}
 
 	list(): readonly ExternalConnectorDescriptor[] {
 		return Object.freeze([...this.#connectors.values()].map(({ descriptor }) => descriptor));
+	}
+
+	async dispose(): Promise<void> {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		const connectors = [...this.#connectors.values()].map(({ connector }) => connector);
+		this.#connectors.clear();
+		this.#pendingProviderIds.clear();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.allSettled(connectors.map((connector) => connector.dispose())),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, 5_000);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 	}
 }
 

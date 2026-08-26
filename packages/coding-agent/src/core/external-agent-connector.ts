@@ -40,6 +40,10 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "./vendor-drivers/types.ts";
 import {
+	ExternalConnectorBoundedSupervisor,
+	type ExternalConnectorSupervisorSegment,
+} from "./external-agent-supervisor.ts";
+import {
 	cloneExternalConnectorTerminalEvidence,
 	type ExternalConnectorTerminalEvidence,
 } from "./vendor-drivers/types.ts";
@@ -52,6 +56,7 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	readonly now?: () => string;
 	readonly operationNonce?: () => string;
 	readonly disposeTimeoutMs?: number;
+	readonly supervisorDeadlines?: Partial<Record<ExternalConnectorSupervisorSegment, number>>;
 }
 
 const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
@@ -100,7 +105,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #driver: ExternalConnectorVendorDriver;
 	readonly #now: () => string;
 	readonly #operationNonce: () => string;
-	readonly #disposeTimeoutMs: number;
+	readonly #supervisor: ExternalConnectorBoundedSupervisor;
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
 
@@ -119,7 +124,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#driver = options.driver;
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
-		this.#disposeTimeoutMs = options.disposeTimeoutMs ?? 1_000;
+		this.#supervisor = new ExternalConnectorBoundedSupervisor({
+			forceTerminate: () => this.#driver.dispose(),
+			deadlines: {
+				...options.supervisorDeadlines,
+				dispose: Math.max(1, options.disposeTimeoutMs ?? options.supervisorDeadlines?.dispose ?? 1_000),
+			},
+		});
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
@@ -189,17 +200,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	async dispose(): Promise<void> {
-		await new Promise<void>((resolve) => {
-			let settled = false;
-			const finish = (): void => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				resolve();
-			};
-			const timer = setTimeout(finish, this.#disposeTimeoutMs);
-			void this.#driver.dispose().then(finish, finish);
-		});
+		await this.#supervisor.forceTerminate();
 	}
 
 	#exclusive(
@@ -256,6 +257,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const correlation = this.#requireCorrelation(attempt, options?.correlation);
 		if (!correlation.ok) return correlation;
+		const executionInput = await this.#store.readExecutionInput(attempt.taskId);
+		if (executionInput === undefined) {
+			return Result.err(externalFailure("binding_required_fact", "External connector requires durable canonical input", attempt.attemptId));
+		}
+		if (
+			(this.#capability.modelAccess === "aos_gateway") !== (executionInput.modelProjection !== undefined)
+		) {
+			return Result.err(externalFailure("binding_required_fact", "External connector model projection does not match its capability", attempt.attemptId));
+		}
 
 		let operation = await this.#store.readOperation(attempt.attemptId);
 		if (operation === undefined) {
@@ -288,16 +298,19 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		operation = await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "start_intent", { now: this.#now() }),
 		);
+		const operationNonce = operation.operationNonce;
 		let handle: ExternalConnectorDriverHandle;
 		try {
-			handle = await this.#driver.spawn({
+			handle = await this.#supervisor.run("start", (signal) => this.#driver.spawn({
 				attempt,
+				input: executionInput.input,
+				...(executionInput.modelProjection === undefined ? {} : { modelProjection: executionInput.modelProjection }),
 				capability: this.#capability,
 				bindingDigest: binding.value.fingerprint.value,
 				bindingRevision: binding.value.contextRevision.revision,
-				operationNonce: operation.operationNonce,
-				...(options?.signal === undefined ? {} : { signal: options.signal }),
-			});
+				operationNonce,
+				signal,
+			}), options?.signal);
 		} catch {
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(externalFailure("provider_spawn_failed", "External connector start outcome is unknown", attempt.attemptId));
@@ -331,7 +344,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 		);
 		try {
-			const evidence = await this.#driver.read(handle, options?.signal === undefined ? undefined : { signal: options.signal });
+			const evidence = await this.#observeToReceipt(handle, options?.signal);
 			return await this.#settle(attempt, operation, mapping, evidence);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
@@ -362,11 +375,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
 		try {
-			const handle = await this.#driver.connect(
-				mapping.value,
-				options?.signal === undefined ? undefined : { signal: options.signal },
+			const handle = await this.#supervisor.run(
+				"start",
+				(signal) => this.#driver.connect(mapping.value, { signal }),
+				options?.signal,
 			);
-			const evidence = await this.#driver.read(handle, options?.signal === undefined ? undefined : { signal: options.signal });
+			const evidence = await this.#observeToReceipt(handle, options?.signal);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
@@ -398,9 +412,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!mapping.ok) return mapping;
 		let lookup: Awaited<ReturnType<ExternalConnectorVendorDriver["lookup"]>>;
 		try {
-			lookup = await this.#driver.lookup(
-				mapping.value,
-				options?.signal === undefined ? undefined : { signal: options.signal },
+			lookup = await this.#supervisor.run(
+				"receipt",
+				(signal) => this.#driver.lookup(mapping.value, { signal }),
+				options?.signal,
 			);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
@@ -427,10 +442,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		try {
-			const evidence = await this.#driver.read(
-				lookup.handle,
-				options?.signal === undefined ? undefined : { signal: options.signal },
-			);
+			const evidence = await this.#observeToReceipt(lookup.handle, options?.signal);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
@@ -471,8 +483,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		try {
-			const handle = await this.#driver.connect(mapping.value);
-			const evidence = await this.#driver.cancel(handle);
+			const handle = await this.#supervisor.run("start", (signal) => this.#driver.connect(mapping.value, { signal }));
+			const evidence = await this.#supervisor.run("cancel", (signal) => this.#driver.cancel(handle, { signal }));
 			if (evidence !== undefined) {
 				const settled = await this.#settle(attempt, operation, mapping.value, evidence);
 				if (!settled.ok) return Result.err(settled.error);
@@ -481,6 +493,35 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("worker_cancel_failed", "External connector cancellation outcome is unknown", attemptId));
+		}
+	}
+
+	async #observeToReceipt(
+		handle: ExternalConnectorDriverHandle,
+		sourceSignal?: AbortSignal,
+	): Promise<ExternalConnectorTerminalEvidence> {
+		const controller = new AbortController();
+		const abort = (): void => controller.abort(sourceSignal?.reason);
+		sourceSignal?.addEventListener("abort", abort, { once: true });
+		if (sourceSignal?.aborted === true) abort();
+		const events = this.#supervisor.consumeEvents(
+			this.#driver.events(handle, { signal: controller.signal }),
+			controller.signal,
+		);
+		const receipt = this.#supervisor.run(
+			"receipt",
+			(signal) => this.#driver.read(handle, { signal }),
+			controller.signal,
+		);
+		try {
+			const [, evidence] = await Promise.all([events, receipt]);
+			return evidence;
+		} catch (error) {
+			if (!controller.signal.aborted) controller.abort();
+			await Promise.allSettled([events, receipt]);
+			throw error;
+		} finally {
+			sourceSignal?.removeEventListener("abort", abort);
 		}
 	}
 
