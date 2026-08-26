@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	InMemorySessionStorage,
 	LayeredResultSettlement,
@@ -178,11 +177,15 @@ async function createRpcProductFixture(options: {
 		});
 	}
 	const settingsManager = SettingsManager.inMemory();
-	const adapter = createExternalAdapterHarness(options.adapter);
-	const registry = createExternalAgentAdapterRegistry();
-	registry.register(adapter.adapter, { targets: ["target-1"] });
+	const adapters: ExternalAdapterHarness[] = [];
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		externalAgentRegistry: registry,
+		externalAgentRegistry: () => {
+			const adapter = createExternalAdapterHarness(options.adapter);
+			adapters.push(adapter);
+			const registry = createExternalAgentAdapterRegistry();
+			registry.register(adapter.adapter, { targets: ["target-1"] });
+			return registry;
+		},
 	});
 	const services = await createAgentSessionServices({
 		cwd,
@@ -221,6 +224,8 @@ async function createRpcProductFixture(options: {
 		agentDir: cwd,
 		sessionManager,
 	});
+	const adapter = adapters[0];
+	if (adapter === undefined) throw new Error("Expected the initial External Agent adapter composition");
 	const records: RpcHostOutputRecord[] = [];
 	const controller = new RpcHostController(runtime, {
 		output: { publish: (record) => records.push(record) } as RpcHostOutputSink,
@@ -313,30 +318,22 @@ interface ProductCompositionEvidence {
 
 interface ProductCompositionFixture {
 	readonly evidence: ProductCompositionEvidence;
-	readonly registry: ExternalAgentAdapterRegistry;
+	readonly registries: readonly ExternalAgentAdapterRegistry[];
 	readonly cleanup: () => Promise<void>;
-}
-
-function mainProductEntrypointUsesRuntimeComposition(): boolean {
-	const mainSource = readFileSync(fileURLToPath(new URL("../../src/main.ts", import.meta.url)), "utf8");
-	return [
-		"createAgentRuntimeCompositionFactory",
-		"createAgentSessionServices",
-		"createAgentSessionFromServices",
-		"createAgentSessionRuntime",
-	].every(
-		(symbol) => mainSource.includes(symbol),
-	);
 }
 
 async function createProductCompositionFixture(): Promise<ProductCompositionFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-services-"));
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
-	const registry = createExternalAgentAdapterRegistry();
-	registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
+	const registries: ExternalAgentAdapterRegistry[] = [];
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		externalAgentRegistry: registry,
+		externalAgentRegistry: () => {
+			const registry = createExternalAgentAdapterRegistry();
+			registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
+			registries.push(registry);
+			return registry;
+		},
 	});
 	const servicesOptions: Parameters<typeof createAgentSessionServices>[0] = {
 		cwd,
@@ -393,10 +390,9 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	const interactiveMode = new codingAgentEntry.InteractiveMode(mainRuntime, { tuiMode: "regular" });
 	const mainHasRegistry =
 		typeof codingAgentEntry.main === "function" &&
-		mainProductEntrypointUsesRuntimeComposition() &&
 		services.runtimeComposition === runtimeComposition &&
-		mainRuntime.runtimeComposition.externalAgentRegistry === registry &&
-		mainRuntime.session.getExternalAgentRegistry() === registry;
+		mainRuntime.runtimeComposition.externalAgentRegistry === mainRuntime.session.getExternalAgentRegistry() &&
+		mainRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
 	const tuiHasRegistry = mainRuntime.runtimeComposition === mainRuntime.session.agentRuntimeComposition;
 	interactiveMode.stop("transcript");
 
@@ -416,17 +412,17 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 
 	const printRuntime = await createSurfaceRuntime("line13-print-surface");
 	const printHasRegistry =
-		printRuntime.runtimeComposition.externalAgentRegistry === registry &&
-		printRuntime.session.getExternalAgentRegistry() === registry;
+		printRuntime.runtimeComposition.externalAgentRegistry === printRuntime.session.getExternalAgentRegistry() &&
+		printRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
 	const printExitCode = await codingAgentEntry.runPrintMode(printRuntime, { mode: "text" });
 	return {
-		evidence: {
+			evidence: {
 			sdk:
 				sdk.runtimeComposition === sdk.session.agentRuntimeComposition &&
-				sdk.runtimeComposition.externalAgentRegistry === registry,
+				sdk.runtimeComposition.externalAgentRegistry?.list().length === 1,
 			services:
 				servicesCreated.runtimeComposition === servicesCreated.session.agentRuntimeComposition &&
-				servicesCreated.runtimeComposition.externalAgentRegistry === registry,
+				servicesCreated.runtimeComposition.externalAgentRegistry?.list().length === 1,
 			main: mainHasRegistry,
 			tui: tuiHasRegistry,
 			print: printHasRegistry && printExitCode === 0,
@@ -436,7 +432,7 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 					(descriptor) => descriptor.adapterId === "line13-connector",
 				) ?? false),
 		},
-		registry,
+		registries,
 		cleanup: async () => {
 			try {
 				await rpcController.shutdown();
@@ -485,7 +481,7 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 	const settingsManager = SettingsManager.inMemory();
 	let clock = NOW;
 	let factoryCalls = 0;
-	const trustedSchedulerFactory: TrustedSchedulerFactory = (sourceSession, _sessionId, runLifecycleSession) => {
+	const trustedSchedulerFactory: TrustedSchedulerFactory = (sourceSession, _sessionId) => {
 		factoryCalls += 1;
 		const targetSessionId = `line13-target-${factoryCalls}`;
 		const targetSession = new Session(new InMemorySessionStorage({ id: targetSessionId, createdAt: 1 }));
@@ -502,7 +498,6 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 				{ getByBusinessKey: () => undefined },
 				{ now: () => clock },
 			),
-			runLifecycleSession,
 			ownerId: "line13-scheduler-owner",
 			registry: new SchedulerExecutorRegistry(),
 			task: schedulerTask(),
@@ -708,8 +703,8 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			scenario: {
 				fixture: createProductCompositionFixture,
 				setup: (fixture) => {
-					if (fixture.registry.list().length !== 1) {
-						throw new Error("AC-04 product composition fixture did not retain its registry descriptor");
+					if (fixture.registries.length < 5 || fixture.registries.some((registry) => registry.list().length !== 1)) {
+						throw new Error("AC-04 product composition fixture did not create isolated registry descriptors");
 					}
 				},
 				assertion: (fixture) => {

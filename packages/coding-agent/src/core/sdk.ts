@@ -9,7 +9,9 @@ import {
 	createTrustedWorkerSandboxComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-	type TrustedWorkerSandboxComposition,
+	type TrustedExternalAgentRegistryFactory,
+	type TrustedTaskCredentialProviderFactory,
+	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import {
 	createAgentSessionWithRuntimeComposition,
@@ -37,10 +39,8 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "./session-creation.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
@@ -75,8 +75,11 @@ export type {
 	AgentRuntimeCompositionContext,
 	AgentRuntimeCompositionFactory,
 	AgentRuntimeCompositionOptions,
+	TrustedExternalAgentRegistryFactory,
 	TrustedSchedulerCompositionFactory,
+	TrustedSchedulerRuntimeOptions,
 	TrustedSubagentCompositionFactory,
+	TrustedTaskCredentialProviderFactory,
 	TrustedToolGatewayFactory,
 	TrustedWorkerSandboxComposition,
 	TrustedWorkerSandboxFactory,
@@ -164,17 +167,17 @@ export interface CreateAgentSessionOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Branded trusted programmatic Operation Worker composition; never read from config or RPC. */
-	trustedWorkerSandbox?: TrustedWorkerSandboxComposition;
-	/** Trusted External Agent Adapter registry composed by the Host. */
-	externalAgentRegistry?: ExternalAgentAdapterRegistry;
+	/** Per-session trusted Operation Worker factory; never read from config or RPC. */
+	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
+	/** Per-session trusted External Agent Adapter registry factory composed by the Host. */
+	externalAgentRegistryFactory?: TrustedExternalAgentRegistryFactory;
 	/**
-	 * Optional Task Credential provider composing the session-scoped Task
+	 * Optional per-session Task Credential provider factory composing the Task
 	 * Credential lifecycle service. Absent (or without a policy TTL ceiling)
 	 * means the session has no credential service: every lifecycle signal
 	 * fails closed and no lease is ever issued.
 	 */
-	taskCredentialProvider?: TaskCredentialProvider;
+	taskCredentialProviderFactory?: TrustedTaskCredentialProviderFactory;
 	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
 	taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -314,23 +317,23 @@ export function listAllSessions(sessionDirectory?: string) {
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
 	if (
 		options.runtimeComposition !== undefined &&
-		(options.trustedWorkerSandbox !== undefined ||
-			options.externalAgentRegistry !== undefined ||
-			options.taskCredentialProvider !== undefined ||
+		(options.trustedWorkerSandboxFactory !== undefined ||
+			options.externalAgentRegistryFactory !== undefined ||
+			options.taskCredentialProviderFactory !== undefined ||
 			options.taskCredentialPolicyMaxTtlMs !== undefined)
 	) {
 		throw new TypeError("AgentSession accepts optional providers through one runtime composition");
 	}
 	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory({
-		...(options.trustedWorkerSandbox === undefined
+		...(options.trustedWorkerSandboxFactory === undefined
 			? {}
-			: { trustedWorkerSandbox: options.trustedWorkerSandbox }),
-		...(options.externalAgentRegistry === undefined
+			: { trustedWorkerSandboxFactory: options.trustedWorkerSandboxFactory }),
+		...(options.externalAgentRegistryFactory === undefined
 			? {}
-			: { externalAgentRegistry: options.externalAgentRegistry }),
-		...(options.taskCredentialProvider === undefined
+			: { externalAgentRegistry: options.externalAgentRegistryFactory }),
+		...(options.taskCredentialProviderFactory === undefined
 			? {}
-			: { taskCredentialProvider: options.taskCredentialProvider }),
+			: { taskCredentialProvider: options.taskCredentialProviderFactory }),
 		...(options.taskCredentialPolicyMaxTtlMs === undefined
 			? {}
 			: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),

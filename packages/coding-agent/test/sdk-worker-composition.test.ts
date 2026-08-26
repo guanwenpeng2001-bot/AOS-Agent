@@ -24,7 +24,7 @@ const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", imp
 type SessionCleanup = () => Promise<void>;
 
 async function createSdkSession(
-	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"],
+	trustedWorkerSandboxFactory?: CreateAgentSessionOptions["trustedWorkerSandboxFactory"],
 ): Promise<{ session: Awaited<ReturnType<typeof createAgentSession>>["session"]; cleanup: SessionCleanup }> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-sdk-worker-composition-"));
 	const faux = registerFauxProvider();
@@ -58,7 +58,7 @@ async function createSdkSession(
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
 		noTools: "all",
-		...(trustedWorkerSandbox === undefined ? {} : { trustedWorkerSandbox }),
+		...(trustedWorkerSandboxFactory === undefined ? {} : { trustedWorkerSandboxFactory }),
 	});
 	return {
 		session: created.session,
@@ -145,13 +145,15 @@ describe("SDK Worker composition", () => {
 
 	it("rejects an unbranded Worker composition before session setup", async () => {
 		const trusted = createTestWorkerSandboxComposition();
-		const unbranded = { provider: trusted.provider } as unknown as CreateAgentSessionOptions["trustedWorkerSandbox"];
-		await expect(createAgentSession({ trustedWorkerSandbox: unbranded })).rejects.toThrow("Trusted Worker composition is invalid");
+		const unbrandedFactory = (() => ({ provider: trusted.provider })) as unknown as NonNullable<
+			CreateAgentSessionOptions["trustedWorkerSandboxFactory"]
+		>;
+		await expect(createAgentSession({ trustedWorkerSandboxFactory: unbrandedFactory })).rejects.toThrow("Trusted Worker composition is invalid");
 	});
 
 	it("injects the factory provider into the real SDK session and exposes it through RPC", async () => {
 		const trusted = createTestWorkerSandboxComposition();
-		const created = await createSdkSession(trusted);
+		const created = await createSdkSession(() => trusted);
 		cleanups.push(created.cleanup);
 		const registry = created.session.getWorkerRegistry();
 		expect(registry).toBeDefined();

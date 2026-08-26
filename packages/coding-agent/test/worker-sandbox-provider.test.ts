@@ -37,7 +37,10 @@ import {
 } from "../src/core/sandbox-host.ts";
 import { resolveWorkerSandboxOperationV1, type SandboxHandle } from "../src/core/sandbox.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
-import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import {
+	createHarnessCompatibilityWriter,
+	createSessionManagerStorage,
+} from "../src/core/session-manager-storage.ts";
 import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,
@@ -366,6 +369,7 @@ function createWorkerControlPlane(
 		toolsSnapshot: [],
 		activeToolNamesSnapshot: [],
 		setTools: async () => undefined,
+		recordCustomEntry: (customType: string, data: unknown) => sessionManager.appendCustomEntry(customType, data),
 	} as unknown as AgentHarness);
 	return new FoundationControlPlane({
 		harness,
@@ -3525,13 +3529,15 @@ describe("WorkerSandboxProviderV1", () => {
 		const workerProvider = replayableProvider();
 		const models = createModels();
 		models.setProvider(googleProvider());
-		const session = new Session(createSessionManagerStorage(sessionManager));
+		const storage = createSessionManagerStorage(sessionManager);
+		const session = new Session(storage);
 		const env = new NodeExecutionEnv({ cwd: process.cwd() });
 		const created = await createCodingAgentHarness({
 			session,
 			models,
 			model: getModel("google", "gemini-2.5-flash"),
 			env,
+			compatibilityWriter: createHarnessCompatibilityWriter(session, storage),
 			workerSandbox: {
 				provider: workerProvider,
 				routes: [{ kind: "sandbox", toolName: "worker-read", providerId: workerProvider.providerId, revision: 1 }],
@@ -3569,7 +3575,7 @@ describe("WorkerSandboxProviderV1", () => {
 			expect(workerProvider.listWorkerRecords()).toEqual([
 				expect.objectContaining({ sessionId: "session-1", status: "reclaimed" }),
 			]);
-			const durableWorkerEvents = sessionManager.getPhysicalEntries().filter((entry) =>
+			const durableWorkerEvents = (await session.findEntries({ type: "custom", order: "oldestFirst" })).filter((entry) =>
 				entry.type === "custom" && entry.customType.startsWith("worker"));
 			expect(durableWorkerEvents.length).toBeGreaterThan(0);
 			for (const entry of durableWorkerEvents) {

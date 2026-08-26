@@ -302,7 +302,7 @@ async function createCanonicalWorkerSession(
 		settingsManager: SettingsManager.create(tempDir, tempDir),
 		resourceLoader: testResourceLoader(),
 		noTools: "all",
-		trustedWorkerSandbox: composition,
+		trustedWorkerSandboxFactory: () => composition,
 	});
 	return { session: created.session, provider: composition.provider };
 }

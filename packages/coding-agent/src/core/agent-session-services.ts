@@ -8,6 +8,7 @@ import { CapabilityRegistry } from "./capability-registry.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionFactory,
+	type TrustedTaskCredentialProviderFactory,
 	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -25,7 +26,6 @@ import {
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -79,8 +79,8 @@ export interface CreateAgentSessionServicesOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Optional Task Credential provider composing the session-scoped credential service. */
-	taskCredentialProvider?: TaskCredentialProvider;
+	/** Per-session Task Credential provider factory composing the credential service. */
+	taskCredentialProviderFactory?: TrustedTaskCredentialProviderFactory;
 	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
 	taskCredentialPolicyMaxTtlMs?: number;
 	/** Trusted composition factory invoked once for each Session created from these services. */
@@ -110,11 +110,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	/** If supplied, must be the exact factory already owned by services. */
 	runtimeComposition?: AgentRuntimeCompositionFactory;
 	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
-	taskCredentialProvider?: CreateAgentSessionOptions["taskCredentialProvider"];
-	taskCredentialPolicyMaxTtlMs?: CreateAgentSessionOptions["taskCredentialPolicyMaxTtlMs"];
-	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"];
-	/** Per-call trusted composition factory; invoked once for this created Session. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -276,16 +271,16 @@ export async function createAgentSessionServices(
 		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
 	if (
 		options.runtimeComposition !== undefined &&
-		(options.taskCredentialProvider !== undefined ||
+		(options.taskCredentialProviderFactory !== undefined ||
 			options.taskCredentialPolicyMaxTtlMs !== undefined ||
 			options.trustedWorkerSandboxFactory !== undefined)
 	) {
 		throw new TypeError("AgentSession services accept optional providers through one runtime composition");
 	}
 	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory({
-		...(options.taskCredentialProvider === undefined
+		...(options.taskCredentialProviderFactory === undefined
 			? {}
-			: { taskCredentialProvider: options.taskCredentialProvider }),
+			: { taskCredentialProvider: options.taskCredentialProviderFactory }),
 		...(options.taskCredentialPolicyMaxTtlMs === undefined
 			? {}
 			: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
@@ -325,14 +320,6 @@ export async function createAgentSessionFromServices(
 ): Promise<CreateAgentSessionResult> {
 	if (options.runtimeComposition !== undefined && options.runtimeComposition !== options.services.runtimeComposition) {
 		throw new TypeError("Session candidates must reuse the services runtime composition");
-	}
-	if (
-		options.taskCredentialProvider !== undefined ||
-		options.taskCredentialPolicyMaxTtlMs !== undefined ||
-		options.trustedWorkerSandbox !== undefined ||
-		options.trustedWorkerSandboxFactory !== undefined
-	) {
-		throw new TypeError("Session candidates accept optional providers through services runtime composition");
 	}
 	return createAgentSession({
 		cwd: options.services.cwd,

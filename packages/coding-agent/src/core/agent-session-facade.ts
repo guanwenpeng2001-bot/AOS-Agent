@@ -51,11 +51,14 @@ import type {
 	SessionStats,
 } from "./agent-session.ts";
 import {
+	bindAgentRuntimeSchedulerComposition,
 	createAgentRuntimeCompositionFactory,
 	createAgentRuntimeCompositionFactoryFromTrustedProviders,
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
+	type TrustedSchedulerRuntimeOptions,
+	type TrustedWorkerSandboxFactory,
 } from "./agent-runtime-composition.ts";
 import type { CapabilityBinding, CapabilityCatalogView } from "./capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "./extensions/index.ts";
@@ -699,10 +702,10 @@ export class CanonicalAgentSessionServices {
 				...(canonical.scheduler === undefined ? {} : { schedulerOptions: canonical.scheduler }),
 				...(canonical.externalAgentRegistry === undefined
 					? {}
-					: { externalAgentRegistry: canonical.externalAgentRegistry }),
+					: { externalAgentRegistryInstance: canonical.externalAgentRegistry }),
 				...(canonical.taskCredentialProvider === undefined
 					? {}
-					: { taskCredentialProvider: canonical.taskCredentialProvider }),
+					: { taskCredentialProviderInstance: canonical.taskCredentialProvider }),
 				...(canonical.taskCredentialPolicyMaxTtlMs === undefined
 					? {}
 					: { taskCredentialPolicyMaxTtlMs: canonical.taskCredentialPolicyMaxTtlMs }),
@@ -710,7 +713,7 @@ export class CanonicalAgentSessionServices {
 		this.runtimeComposition = materializeAgentRuntimeComposition(runtimeCompositionFactory, {
 			session: this.canonicalSession,
 			harness: this.harness,
-			sessionManager: this.sessionManager,
+			sessionId: this.sessionManager.getSessionId(),
 			models: this._modelRuntime,
 			modelBroker: this._modelBroker,
 			capabilityRegistry: canonical.capabilityRegistry,
@@ -737,7 +740,7 @@ export class CanonicalAgentSessionServices {
 			sandboxProviders: this.runtimeComposition.sandboxProviders,
 			workerSandboxProvider: this.runtimeComposition.workerSandboxProvider,
 			subagents: this.runtimeComposition.subagents,
-			scheduler: this.runtimeComposition.scheduler,
+			scheduler: bindAgentRuntimeSchedulerComposition(this.runtimeComposition, this.sessionManager),
 			policyProfile: canonical.policyProfile,
 			externalAgentRegistry: this.runtimeComposition.externalAgentRegistry,
 			taskCredentialProvider: this.runtimeComposition.taskCredentialProvider,
@@ -3977,19 +3980,19 @@ export function createLegacyAgentSession(options: AgentSessionConfig): AgentSess
 /** @internal SDK-only bridge for the branded Worker composition. */
 export function createAgentSessionWithTrustedWorkerSandboxProvider(
 	options: AgentSessionConfig,
-	workerSandboxProvider: WorkerSandboxProviderV1 | undefined,
+	createWorkerSandbox: TrustedWorkerSandboxFactory | undefined,
 ): AgentSession {
-	if (workerSandboxProvider === undefined) return new AgentSession(options);
+	if (createWorkerSandbox === undefined) return new AgentSession(options);
 	return createAgentSessionWithRuntimeComposition(
 		options,
 		createAgentRuntimeCompositionFactoryFromTrustedProviders({
-			workerSandboxProvider,
+			trustedWorkerSandboxFactory: createWorkerSandbox,
 			...(options.externalAgentRegistry === undefined
 				? {}
-				: { externalAgentRegistry: options.externalAgentRegistry }),
+				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
 			...(options.taskCredentialProvider === undefined
 				? {}
-				: { taskCredentialProvider: options.taskCredentialProvider }),
+				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
 			...(options.taskCredentialPolicyMaxTtlMs === undefined
 				? {}
 				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
@@ -4018,15 +4021,15 @@ export function createAgentSessionWithTrustedSubagents(
 		createAgentRuntimeCompositionFactory({
 			subagents: (context) => createSubagents(
 				context.session,
-				context.sessionManager?.getSessionId() ?? "",
+				context.sessionId,
 				context.harness.t5.writer,
 			),
 			...(options.externalAgentRegistry === undefined
 				? {}
-				: { externalAgentRegistry: options.externalAgentRegistry }),
+				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
 			...(options.taskCredentialProvider === undefined
 				? {}
-				: { taskCredentialProvider: options.taskCredentialProvider }),
+				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
 			...(options.taskCredentialPolicyMaxTtlMs === undefined
 				? {}
 				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),
@@ -4040,28 +4043,18 @@ export function createAgentSessionWithTrustedScheduler(
 	createScheduler: (
 		session: Session,
 		sessionId: string,
-		runLifecycleSession: SessionManager,
-	) => TrustedSchedulerCompositionOptions,
+	) => TrustedSchedulerRuntimeOptions,
 ): AgentSession {
 	return createAgentSessionWithRuntimeComposition(
 		options,
 		createAgentRuntimeCompositionFactory({
-			scheduler: (context) => {
-				if (context.sessionManager === undefined) {
-					throw new TypeError("Trusted Scheduler composition requires a SessionManager");
-				}
-				return createScheduler(
-					context.session,
-					context.sessionManager.getSessionId(),
-					context.sessionManager,
-				);
-			},
+			scheduler: (context) => createScheduler(context.session, context.sessionId),
 			...(options.externalAgentRegistry === undefined
 				? {}
-				: { externalAgentRegistry: options.externalAgentRegistry }),
+				: { externalAgentRegistry: () => options.externalAgentRegistry! }),
 			...(options.taskCredentialProvider === undefined
 				? {}
-				: { taskCredentialProvider: options.taskCredentialProvider }),
+				: { taskCredentialProvider: () => options.taskCredentialProvider! }),
 			...(options.taskCredentialPolicyMaxTtlMs === undefined
 				? {}
 				: { taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs }),

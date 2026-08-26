@@ -350,11 +350,13 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
+	const runtimeSessionId = (await options.session.getMetadata()).id;
 	const materializeRuntimeComposition = (
 		factory: AgentRuntimeCompositionFactory,
 	) => materializeAgentRuntimeComposition(factory, {
 		session: options.session,
 		harness: created.harness,
+		sessionId: runtimeSessionId,
 		models: options.models,
 	});
 	if (runtimeCompositionFactory !== undefined) {

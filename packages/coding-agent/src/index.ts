@@ -790,8 +790,11 @@ export {
 	type TrustedWorkerSandboxComposition,
 	type TrustedWorkerSandboxFactory,
 	type TrustedWorkerSandboxProviderOptions,
+	type TrustedExternalAgentRegistryFactory,
 	type TrustedSchedulerCompositionFactory,
+	type TrustedSchedulerRuntimeOptions,
 	type TrustedSubagentCompositionFactory,
+	type TrustedTaskCredentialProviderFactory,
 	type TrustedToolGatewayFactory,
 	createBashTool,
 	// Tool factories (for custom cwd)

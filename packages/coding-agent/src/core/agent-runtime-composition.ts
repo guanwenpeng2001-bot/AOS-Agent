@@ -31,7 +31,9 @@ export interface TrustedWorkerSandboxComposition {
 	readonly [trustedWorkerSandboxBrand]: true;
 }
 
-export type TrustedWorkerSandboxFactory = () => TrustedWorkerSandboxComposition;
+export type TrustedWorkerSandboxFactory = (
+	context: AgentRuntimeCompositionContext,
+) => TrustedWorkerSandboxComposition;
 
 /** Construct a Worker provider only from trusted programmatic composition. */
 export function createTrustedWorkerSandboxComposition(
@@ -56,7 +58,7 @@ function requireTrustedWorkerSandboxProvider(
 export interface AgentRuntimeCompositionContext {
 	readonly session: Session;
 	readonly harness: AgentHarness;
-	readonly sessionManager?: SessionManager;
+	readonly sessionId: string;
 	readonly models: Models;
 	readonly modelBroker?: ModelBroker;
 	readonly capabilityRegistry?: CapabilityRegistry;
@@ -72,17 +74,23 @@ export type TrustedSubagentCompositionFactory = (
 ) => TrustedSubagentCompositionOptionsV1;
 export type TrustedSchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
-) => TrustedSchedulerCompositionOptions;
+) => TrustedSchedulerRuntimeOptions;
+export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
+export type TrustedExternalAgentRegistryFactory = (
+	context: AgentRuntimeCompositionContext,
+) => ExternalAgentAdapterRegistry;
+export type TrustedTaskCredentialProviderFactory = (
+	context: AgentRuntimeCompositionContext,
+) => TaskCredentialProvider;
 
 /** Trusted optional providers accepted by the public composition root. */
 export interface AgentRuntimeCompositionOptions {
 	readonly toolGateway?: TrustedToolGatewayFactory;
-	readonly trustedWorkerSandbox?: TrustedWorkerSandboxComposition;
 	readonly trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	readonly subagents?: TrustedSubagentCompositionFactory;
 	readonly scheduler?: TrustedSchedulerCompositionFactory;
-	readonly externalAgentRegistry?: ExternalAgentAdapterRegistry;
-	readonly taskCredentialProvider?: TaskCredentialProvider;
+	readonly externalAgentRegistry?: TrustedExternalAgentRegistryFactory;
+	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
 
@@ -97,7 +105,7 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly toolGateway?: ToolGateway;
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagents?: TrustedSubagentCompositionOptionsV1;
-	readonly scheduler?: TrustedSchedulerCompositionOptions;
+	readonly scheduler?: TrustedSchedulerRuntimeOptions;
 	readonly externalAgentRegistry?: ExternalAgentAdapterRegistry;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
@@ -115,13 +123,15 @@ interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeComposition
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagentOptions?: TrustedSubagentCompositionOptionsV1;
 	readonly schedulerOptions?: TrustedSchedulerCompositionOptions;
+	readonly externalAgentRegistryInstance?: ExternalAgentAdapterRegistry;
+	readonly taskCredentialProviderInstance?: TaskCredentialProvider;
 }
 
 function assertCanonicalProviders(
 	context: AgentRuntimeCompositionContext,
 	toolGateway: ToolGateway | undefined,
 	subagents: TrustedSubagentCompositionOptionsV1 | undefined,
-	scheduler: TrustedSchedulerCompositionOptions | undefined,
+	scheduler: TrustedSchedulerRuntimeOptions | undefined,
 ): void {
 	if (subagents !== undefined) {
 		if (subagents.session !== context.session) {
@@ -135,55 +145,94 @@ function assertCanonicalProviders(
 		if (scheduler.sourceSession !== context.session) {
 			throw new TypeError("Trusted Scheduler composition must use the canonical source Session");
 		}
-		if (context.sessionManager !== undefined && scheduler.runLifecycleSession !== context.sessionManager) {
-			throw new TypeError("Trusted Scheduler composition must use the canonical SessionManager");
-		}
 	}
 }
 
+function withoutPhysicalScheduler(
+	options: TrustedSchedulerCompositionOptions | TrustedSchedulerRuntimeOptions,
+): TrustedSchedulerRuntimeOptions {
+	if (!("runLifecycleSession" in options)) return Object.freeze({ ...options });
+	const { runLifecycleSession: _runLifecycleSession, ...runtimeOptions } = options;
+	return Object.freeze(runtimeOptions);
+}
+
+function createPublicContext(context: AgentRuntimeCompositionContext): AgentRuntimeCompositionContext {
+	return Object.freeze({
+		session: context.session,
+		harness: context.harness,
+		sessionId: context.sessionId,
+		models: context.models,
+		...(context.modelBroker === undefined ? {} : { modelBroker: context.modelBroker }),
+		...(context.capabilityRegistry === undefined ? {} : { capabilityRegistry: context.capabilityRegistry }),
+		...(context.mcpTransportFactory === undefined ? {} : { mcpTransportFactory: context.mcpTransportFactory }),
+		...(context.mcpAuthProvider === undefined ? {} : { mcpAuthProvider: context.mcpAuthProvider }),
+		...(context.mcpAuthManagerOptions === undefined ? {} : { mcpAuthManagerOptions: context.mcpAuthManagerOptions }),
+		...(context.sandboxProviders === undefined ? {} : { sandboxProviders: context.sandboxProviders }),
+	});
+}
+
 function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRuntimeCompositionFactory {
-	if (options.trustedWorkerSandbox !== undefined && options.trustedWorkerSandboxFactory !== undefined) {
-		throw new TypeError("Trusted Worker composition and factory are mutually exclusive");
-	}
-	if (
-		options.workerSandboxProvider !== undefined &&
-		(options.trustedWorkerSandbox !== undefined || options.trustedWorkerSandboxFactory !== undefined)
-	) {
+	if (options.workerSandboxProvider !== undefined && options.trustedWorkerSandboxFactory !== undefined) {
 		throw new TypeError("Trusted Worker providers must have one composition source");
 	}
-	if (options.trustedWorkerSandbox !== undefined) {
-		requireTrustedWorkerSandboxProvider(options.trustedWorkerSandbox);
-	}
 	const snapshot = Object.freeze({ ...options });
+	const materializedAuthorities = new WeakSet<object>();
+	const requireFresh = <T extends object>(authority: T | undefined, name: string): T | undefined => {
+		if (authority === undefined) return undefined;
+		if (materializedAuthorities.has(authority)) {
+			throw new TypeError(`${name} must be created fresh for each Session`);
+		}
+		materializedAuthorities.add(authority);
+		return authority;
+	};
 	let factory: AgentRuntimeCompositionFactory;
 	factory = Object.freeze({
 		[agentRuntimeCompositionFactoryBrand]: true as const,
 		create(context: AgentRuntimeCompositionContext): AgentRuntimeComposition {
-			const workerSandboxProvider = snapshot.workerSandboxProvider ?? (
-				snapshot.trustedWorkerSandboxFactory === undefined
-					? snapshot.trustedWorkerSandbox === undefined
+			const publicContext = createPublicContext(context);
+			const workerComposition = snapshot.trustedWorkerSandboxFactory?.(publicContext);
+			const workerSandboxProvider = requireFresh(
+				snapshot.workerSandboxProvider ?? (
+					workerComposition === undefined
 						? undefined
-						: requireTrustedWorkerSandboxProvider(snapshot.trustedWorkerSandbox)
-					: requireTrustedWorkerSandboxProvider(snapshot.trustedWorkerSandboxFactory())
+						: requireTrustedWorkerSandboxProvider(workerComposition)
+				),
+				"Trusted Worker provider",
 			);
-			const explicitToolGateway = snapshot.toolGateway?.(context);
-			const subagents = snapshot.subagents?.(context) ?? snapshot.subagentOptions;
-			const scheduler = snapshot.scheduler?.(context) ?? snapshot.schedulerOptions;
+			const explicitToolGateway = snapshot.toolGateway?.(publicContext);
+			const subagents = requireFresh(
+				snapshot.subagents?.(publicContext) ?? snapshot.subagentOptions,
+				"Trusted Subagent composition",
+			);
+			const schedulerSource = requireFresh(
+				snapshot.scheduler?.(publicContext) ?? snapshot.schedulerOptions,
+				"Trusted Scheduler composition",
+			);
+			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
 			const toolGateway = explicitToolGateway ?? subagents?.toolGateway;
-			assertCanonicalProviders(context, toolGateway, subagents, scheduler);
+			requireFresh(toolGateway, "Trusted Tool Gateway");
+			const externalAgentRegistry = requireFresh(
+				snapshot.externalAgentRegistry?.(publicContext) ?? snapshot.externalAgentRegistryInstance,
+				"Trusted External Agent registry",
+			);
+			const taskCredentialProvider = requireFresh(
+				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
+				"Trusted Task Credential provider",
+			);
+			assertCanonicalProviders(publicContext, toolGateway, subagents, scheduler);
 			return Object.freeze({
-				...context,
+				...publicContext,
 				factory,
 				...(toolGateway === undefined ? {} : { toolGateway }),
 				...(workerSandboxProvider === undefined ? {} : { workerSandboxProvider }),
 				...(subagents === undefined ? {} : { subagents }),
 				...(scheduler === undefined ? {} : { scheduler }),
-				...(snapshot.externalAgentRegistry === undefined
+				...(externalAgentRegistry === undefined
 					? {}
-					: { externalAgentRegistry: snapshot.externalAgentRegistry }),
-				...(snapshot.taskCredentialProvider === undefined
+					: { externalAgentRegistry }),
+				...(taskCredentialProvider === undefined
 					? {}
-					: { taskCredentialProvider: snapshot.taskCredentialProvider }),
+					: { taskCredentialProvider }),
 				...(snapshot.taskCredentialPolicyMaxTtlMs === undefined
 					? {}
 					: { taskCredentialPolicyMaxTtlMs: snapshot.taskCredentialPolicyMaxTtlMs }),
@@ -201,7 +250,6 @@ export function createAgentRuntimeCompositionFactory(
 ): AgentRuntimeCompositionFactory {
 	if (
 		options.toolGateway === undefined &&
-		options.trustedWorkerSandbox === undefined &&
 		options.trustedWorkerSandboxFactory === undefined &&
 		options.subagents === undefined &&
 		options.scheduler === undefined &&
@@ -212,6 +260,18 @@ export function createAgentRuntimeCompositionFactory(
 		return defaultAgentRuntimeCompositionFactory;
 	}
 	return createFactory(options);
+}
+
+/** @internal Bind the physical Session store only at the package-private control-plane boundary. */
+export function bindAgentRuntimeSchedulerComposition(
+	composition: AgentRuntimeComposition,
+	runLifecycleSession: SessionManager,
+): TrustedSchedulerCompositionOptions | undefined {
+	if (composition.scheduler === undefined) return undefined;
+	return Object.freeze({
+		...composition.scheduler,
+		runLifecycleSession,
+	});
 }
 
 /** @internal Compatibility adapter; production roots use the branded public options. */
@@ -234,6 +294,7 @@ export function materializeAgentRuntimeComposition(
 		!Object.isFrozen(composition) ||
 		composition.session !== context.session ||
 		composition.harness !== context.harness ||
+		composition.sessionId !== context.sessionId ||
 		composition.models !== context.models ||
 		composition.factory !== factory
 	) {
