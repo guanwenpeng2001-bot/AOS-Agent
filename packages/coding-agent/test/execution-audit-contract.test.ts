@@ -35,6 +35,7 @@ import {
 	EXTERNAL_MAP_COMMAND,
 	EXTERNAL_MAPPING_KEYS,
 } from "./fixtures/execution-audit-contract.ts";
+import { canonicalAuditRunEntries } from "./support/canonical-audit-run.ts";
 
 describe("execution audit T0 contract", () => {
 	it("projects and replays only digest-bound safe child lifecycle fields", () => {
@@ -75,7 +76,6 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_REPLAY_COMMAND).toBe("audit.replay");
 		expect(EXTERNAL_MAP_COMMAND).toBe("external.map");
 		expect(AUDIT_SOURCE_CUSTOM_TYPES).toEqual([
-			"automation.run",
 			"model.binding",
 			"model.attempt",
 			"context.snapshot",
@@ -340,30 +340,13 @@ function graphNode(
 }
 
 function graphRunEntries(): SessionEntry[] {
-	return [
-		graphCustomEntry("run-accepted", GRAPH_TIMES.accepted, "automation.run", {
-			schemaVersion: 1,
-			kind: "accepted",
-			record: {
-				id: GRAPH_RUN_ID,
-				sessionId: GRAPH_SESSION_ID,
-				attempt: 1,
-				status: "accepted",
-				model: { provider: "provider", id: "model", thinkingLevel: "high" },
-			},
-		}),
-		graphCustomEntry("run-terminal", GRAPH_TIMES.terminal, "automation.run", {
-			schemaVersion: 1,
-			kind: "terminal",
-			endedAt: GRAPH_TIMES.terminal,
-			receipt: {
-				runId: GRAPH_RUN_ID,
-				sessionId: GRAPH_SESSION_ID,
-				status: "completed",
-				usage: { input: 1, output: 1, total: 2 },
-			},
-		}),
-	];
+	return canonicalAuditRunEntries({
+		sessionId: GRAPH_SESSION_ID,
+		runId: GRAPH_RUN_ID,
+		acceptedAt: GRAPH_TIMES.accepted,
+		completedAt: GRAPH_TIMES.terminal,
+		fixtureId: "graph",
+	});
 }
 
 function graphCreatedEntry(
@@ -1074,30 +1057,13 @@ function credentialSettledEntry(
 }
 
 function credentialRunEntries(): SessionEntry[] {
-	return [
-		customEntry("run-accepted", CREDENTIAL_TIMES.accepted, "automation.run", {
-			schemaVersion: 1,
-			kind: "accepted",
-			record: {
-				id: CREDENTIAL_RUN_ID,
-				sessionId: CREDENTIAL_SESSION_ID,
-				attempt: 1,
-				status: "accepted",
-				model: { provider: "provider", id: "model", thinkingLevel: "high" },
-			},
-		}),
-		customEntry("run-terminal", CREDENTIAL_TIMES.terminal, "automation.run", {
-			schemaVersion: 1,
-			kind: "terminal",
-			endedAt: CREDENTIAL_TIMES.terminal,
-			receipt: {
-				runId: CREDENTIAL_RUN_ID,
-				sessionId: CREDENTIAL_SESSION_ID,
-				status: "completed",
-				usage: { input: 1, output: 1, total: 2 },
-			},
-		}),
-	];
+	return canonicalAuditRunEntries({
+		sessionId: CREDENTIAL_SESSION_ID,
+		runId: CREDENTIAL_RUN_ID,
+		acceptedAt: CREDENTIAL_TIMES.accepted,
+		completedAt: CREDENTIAL_TIMES.terminal,
+		fixtureId: "credential",
+	});
 }
 
 function credentialLifecycleEntries(): SessionEntry[] {
@@ -1423,31 +1389,18 @@ function workerEntry(
 	return customEntry(id, timestamp, customType, data);
 }
 
-function workerRunEntries(): Extract<SessionEntry, { type: "custom" }>[] {
-	return [
-		customEntry("worker-run-accepted", WORKER_TIMES.starting, "automation.run", {
-			schemaVersion: 1,
-			kind: "accepted",
-			record: {
-				id: WORKER_RUN_ID,
-				sessionId: WORKER_SESSION_ID,
-				attempt: 1,
-				status: "accepted",
-				model: { provider: "provider", id: "model", thinkingLevel: "high" },
-			},
-		}),
-		customEntry("worker-run-terminal", WORKER_TIMES.completed, "automation.run", {
-			schemaVersion: 1,
-			kind: "terminal",
-			endedAt: WORKER_TIMES.completed,
-			receipt: {
-				runId: WORKER_RUN_ID,
-				sessionId: WORKER_SESSION_ID,
-				status: "completed",
-				usage: { input: 1, output: 1, total: 2 },
-			},
-		}),
-	];
+function workerRunEntries(
+	outcome: "completed" | "failed" | "cancelled" = "completed",
+): Extract<SessionEntry, { type: "custom" }>[] {
+	return canonicalAuditRunEntries({
+		sessionId: WORKER_SESSION_ID,
+		runId: WORKER_RUN_ID,
+		acceptedAt: WORKER_TIMES.starting,
+		completedAt: WORKER_TIMES.completed,
+		fixtureId: "worker",
+		outcome,
+		...(outcome === "failed" ? { sideEffectState: "side_effect_unknown" } : {}),
+	});
 }
 
 function workerLifecycleEntry(
@@ -1605,6 +1558,17 @@ function validWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 	];
 }
 
+function validWorkerPrefix(
+	sourceEntryCount: number,
+	outcome: "completed" | "failed" | "cancelled" = "completed",
+): Extract<SessionEntry, { type: "custom" }>[] {
+	const runEntryCount = workerRunEntries().length;
+	return [
+		...workerRunEntries(outcome),
+		...validWorkerEntries().slice(runEntryCount, runEntryCount + sourceEntryCount),
+	];
+}
+
 function reclaimedWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 	return [
 		...validWorkerEntries(),
@@ -1615,7 +1579,7 @@ function reclaimedWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 
 function reclaimUnknownWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 	return [
-		...workerRunEntries(),
+		...workerRunEntries("failed"),
 		workerLifecycleEntry("worker-starting", WORKER_TIMES.starting, "starting", 1),
 		workerLifecycleEntry("worker-ready", WORKER_TIMES.ready, "ready", 2),
 		workerOperationEntry("worker-claimed", WORKER_TIMES.ready, "claimed", 2),
@@ -1732,7 +1696,7 @@ describe("execution audit Worker source contract", () => {
 
 	it("rejects heartbeat rollback or disappearance from later lifecycle snapshots", () => {
 		const prefix = [
-			...validWorkerEntries().slice(0, 5),
+			...validWorkerPrefix(3),
 			workerLifecycleEntry("worker-running-heartbeat", WORKER_TIMES.running, "running", 3, {
 				operationId: "operation-1",
 				lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
@@ -1762,9 +1726,9 @@ describe("execution audit Worker source contract", () => {
 
 	it("rejects newly introduced or advanced heartbeats before the prior lifecycle transition", () => {
 		const prefixes = [
-			validWorkerEntries().slice(0, 5),
+			validWorkerPrefix(3),
 			[
-				...validWorkerEntries().slice(0, 5),
+				...validWorkerPrefix(3),
 				workerLifecycleEntry("worker-running-heartbeat-advanced", WORKER_TIMES.running, "running", 3, {
 					operationId: "operation-1",
 					lastHeartbeatAt: "2026-08-16T00:00:01.500Z",
@@ -1825,7 +1789,7 @@ describe("execution audit Worker source contract", () => {
 
 	it("binds lifecycle operation correlation to running, cancelling, and execution-terminal transitions", () => {
 		const cancellingEntries = [
-			...validWorkerEntries().slice(0, 7),
+			...validWorkerPrefix(5, "cancelled"),
 			workerLifecycleEntry("worker-cancelling", WORKER_TIMES.cancelling, "cancelling", 4, {
 				operationId: "operation-1",
 			}),
@@ -1850,7 +1814,7 @@ describe("execution audit Worker source contract", () => {
 				receiptId: "receipt-1",
 			}),
 		];
-		const prefixes = [validWorkerEntries().slice(0, 5), validWorkerEntries().slice(0, 7)];
+		const prefixes = [validWorkerPrefix(3), validWorkerPrefix(5)];
 		for (let index = 0; index < invalidTransitions.length; index++) {
 			const transition = invalidTransitions[index]!;
 			const folded = new ExecutionAuditAdapter(workerSession([...prefixes[index]!, transition])).fold();
@@ -1866,7 +1830,7 @@ describe("execution audit Worker source contract", () => {
 		const scenarios = [
 			{
 				entries: [
-					...workerRunEntries(),
+					...workerRunEntries("failed"),
 					workerLifecycleEntry("worker-starting-failed", WORKER_TIMES.starting, "starting", 1),
 					workerLifecycleEntry("worker-failed-without-operation", WORKER_TIMES.completed, "failed", 2, {
 						recordReceiptId: null,
@@ -1877,7 +1841,7 @@ describe("execution audit Worker source contract", () => {
 			},
 			{
 				entries: [
-					...workerRunEntries(),
+					...workerRunEntries("failed"),
 					workerLifecycleEntry("worker-starting-lost", WORKER_TIMES.starting, "starting", 1),
 					workerLifecycleEntry("worker-ready-for-lost", WORKER_TIMES.ready, "ready", 2),
 					workerLifecycleEntry("worker-lost-without-operation", WORKER_TIMES.completed, "lost", 3, { recordReceiptId: null }),
@@ -1886,7 +1850,7 @@ describe("execution audit Worker source contract", () => {
 			},
 			{
 				entries: [
-					...workerRunEntries(),
+					...workerRunEntries("cancelled"),
 					workerLifecycleEntry("worker-starting-for-cancel", WORKER_TIMES.starting, "starting", 1),
 					workerLifecycleEntry("worker-ready-for-cancel", WORKER_TIMES.ready, "ready", 2),
 					workerLifecycleEntry("worker-cancelling-without-operation", WORKER_TIMES.cancelling, "cancelling", 3, {
@@ -1982,10 +1946,10 @@ describe("execution audit Worker source contract", () => {
 		);
 		delete workerEnvelopeParts(completedMissingState).payload.sideEffectState;
 		const scenarios = [
-			{ entry: claimedWithFacts, prefix: validWorkerEntries().slice(0, 4) },
-			{ entry: startedWithFacts, prefix: validWorkerEntries().slice(0, 6) },
-			{ entry: completedWrongReceipt, prefix: validWorkerEntries().slice(0, 8) },
-			{ entry: completedMissingState, prefix: validWorkerEntries().slice(0, 8) },
+			{ entry: claimedWithFacts, prefix: validWorkerPrefix(2) },
+			{ entry: startedWithFacts, prefix: validWorkerPrefix(4) },
+			{ entry: completedWrongReceipt, prefix: validWorkerPrefix(6) },
+			{ entry: completedMissingState, prefix: validWorkerPrefix(6) },
 		];
 		for (const { entry, prefix } of scenarios) {
 			const folded = new ExecutionAuditAdapter(workerSession([...prefix, entry])).fold();
@@ -1997,7 +1961,7 @@ describe("execution audit Worker source contract", () => {
 		}
 
 		const failedEntries = [
-			...validWorkerEntries().slice(0, 7),
+			...validWorkerPrefix(5, "failed"),
 			workerLifecycleEntry("worker-failed", WORKER_TIMES.completed, "failed", 4, {
 				operationId: "operation-1",
 				recordReceiptId: null,

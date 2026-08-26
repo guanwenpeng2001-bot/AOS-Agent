@@ -41,6 +41,7 @@ import type {
 	RpcMcpContentResponse,
 	RpcResponse,
 } from "../src/modes/rpc/rpc-types.ts";
+import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
 
 type RpcDispatchResponse =
 	| RpcResponse
@@ -527,12 +528,10 @@ function seedRun(session: AgentSession, runId: string): void {
 	});
 }
 
-function seedRunTerminal(session: AgentSession, runId: string): void {
-	session.sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
-		schemaVersion: 1,
-		kind: "terminal",
-		receipt: { runId, sessionId: session.sessionId, status: "completed", usage: { input: 0, output: 0, total: 0 } },
-		endedAt: "2026-08-16T12:00:05.000Z",
+async function seedRunTerminal(session: AgentSession, runId: string): Promise<void> {
+	await writeCanonicalRunResult(session.sessionManager, runId, {
+		outcome: "completed",
+		completedAt: "2026-08-16T12:00:05.000Z",
 	});
 }
 
@@ -1365,7 +1364,7 @@ describe("task credential automation host rpc", () => {
 
 			// The run reaches terminal, then the node settles: the graph store
 			// fires onNodeTerminal and the service revokes + settles the lease.
-			seedRunTerminal(runtimeHost.session, "run_001");
+			await seedRunTerminal(runtimeHost.session, "run_001");
 			const settledNode = await dispatchCommand(controller, {
 				id: "node-settle",
 				type: "task.graph.node.settle",

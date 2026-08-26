@@ -50,11 +50,13 @@ import {
 } from "../src/core/remote-operation.ts";
 import type { ExternalExecutionRef } from "../src/core/external-session-mapping.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import { createExternalAgentRemoteInvoker } from "../src/modes/rpc/rpc-host.ts";
 import type { ExternalAgentAdapterDescriptor } from "../src/core/external-agent-registry.ts";
+import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
 
 // agent-session.ts statically imports values from @aos-agent/ai/compat, whose
 // entrypoint pulls in a gitignored generated catalog that is absent under
@@ -355,6 +357,15 @@ function parseOutputLines(records: RpcHostOutputRecord[]): ParsedOutputLine[] {
 
 function responsesFor(records: RpcHostOutputRecord[], id: string): ParsedOutputLine[] {
 	return parseOutputLines(records).filter((record) => record.id === id && record.type === "response");
+}
+
+function responseRunId(records: RpcHostOutputRecord[], id: string): string {
+	const response = responsesFor(records, id)[0];
+	const data = response?.data;
+	if (typeof data !== "object" || data === null || typeof (data as { runId?: unknown }).runId !== "string") {
+		throw new Error(`Response ${id} did not include a runId`);
+	}
+	return (data as { runId: string }).runId;
 }
 
 function runEventsOfType(records: RpcHostOutputRecord[], type: string): ParsedOutputLine[] {
@@ -835,11 +846,11 @@ describe("Automation Host external agent integration", () => {
 		const registry = createExternalAgentAdapterRegistry();
 		const adapter = new FakeExternalAgentAdapter();
 		adapter.probeSnapshot = readySnapshot("test-adapter", "target-1", { artifacts: true });
-		adapter.handle = new FakeExternalAgentHandle({
+		const handle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [startedEvent(), progressEvent(1, "planning"), artifactEvent()],
-			receipt: completedReceipt(),
 		});
+		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
 		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
@@ -855,6 +866,11 @@ describe("Automation Host external agent integration", () => {
 				message: "hello",
 				externalAgent: { adapterId: "test-adapter", targetId: "target-1" },
 			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r3"), {
+				outcome: "completed",
+				completedAt: new Date().toISOString(),
+			});
+			handle.resolveReceipt(completedReceipt());
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -885,7 +901,7 @@ describe("Automation Host external agent integration", () => {
 			const startedIndex = entries.findIndex(
 				(entry) =>
 					entry.type === "custom" &&
-					entry.customType === "automation.run" &&
+					entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
 					(entry.data as { kind?: string }).kind === "started",
 			);
 			expect(mappingIndex).toBeGreaterThanOrEqual(0);
@@ -940,10 +956,11 @@ describe("Automation Host external agent integration", () => {
 			await controller.handleCommand({ id: "r3-get", type: "run.get", runId: acceptedData.runId });
 			const getData = (responsesFor(records, "r3-get")[0].data as {
 				run: { external?: ExternalExecutionRef };
-				receipt?: { external?: ExternalExecutionRef };
+				receipt?: { runReceiptId?: string; status?: string; external?: ExternalExecutionRef };
 			});
 			expect(getData.run.external).toEqual(externalRef());
-			expect(getData.receipt?.external).toEqual(externalRef());
+			expect(getData.receipt).toMatchObject({ runReceiptId: expect.any(String), status: "completed" });
+			expect(getData.receipt).not.toHaveProperty("external");
 			expect(adapter.probeCalls).toBe(1);
 			expect(adapter.startCalls).toBe(1);
 			expect(adapter.lastStartRequest?.input).toEqual({ message: "hello" });
@@ -959,7 +976,6 @@ describe("Automation Host external agent integration", () => {
 		const handle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [],
-			receiptOnCancel: cancelledReceipt("none"),
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
@@ -986,7 +1002,14 @@ describe("Automation Host external agent integration", () => {
 			const accepted = responsesFor(records, "r4")[0];
 			const runId = (accepted.data as { runId: string }).runId;
 
-			await controller.handleCommand({ id: "c4", type: "run.cancel", runId });
+			const cancelCommand = controller.handleCommand({ id: "c4", type: "run.cancel", runId });
+			await vi.waitFor(() => expect(handle.cancelCalls).toBeGreaterThanOrEqual(1));
+			await writeCanonicalRunResult(sessionManager, runId, {
+				outcome: "cancelled",
+				completedAt: new Date().toISOString(),
+			});
+			handle.resolveReceipt(cancelledReceipt("none"));
+			await cancelCommand;
 			const cancelResponse = responsesFor(records, "c4")[0];
 			expect(cancelResponse).toMatchObject({ command: "run.cancel", success: true });
 
@@ -1059,7 +1082,7 @@ describe("Automation Host external agent integration", () => {
 						.find(
 							(entry) =>
 								entry.type === "custom" &&
-								entry.customType === "automation.run" &&
+								entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
 								(entry.data as { kind?: string }).kind === "accepted",
 						);
 					expect(accepted).toBeDefined();
@@ -1072,7 +1095,7 @@ describe("Automation Host external agent integration", () => {
 				.find(
 					(entry) =>
 						entry.type === "custom" &&
-						entry.customType === "automation.run" &&
+						entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
 						(entry.data as { kind?: string }).kind === "accepted",
 				)!;
 			const runId = (
@@ -1082,6 +1105,10 @@ describe("Automation Host external agent integration", () => {
 			await controller.handleCommand({ id: "c10", type: "run.cancel", runId });
 			const cancelResponse = responsesFor(records, "c10")[0];
 			expect(cancelResponse).toMatchObject({ command: "run.cancel", success: true });
+			await writeCanonicalRunResult(sessionManager, runId, {
+				outcome: "cancelled",
+				completedAt: new Date().toISOString(),
+			});
 
 			releaseStart?.();
 			await vi.waitFor(
@@ -1102,14 +1129,14 @@ describe("Automation Host external agent integration", () => {
 		}
 	});
 
-	it("settles cancelled receipts with associated side effects as failed external_agent_side_effect_unknown", async () => {
+	it("settles cancelled receipts with associated side effects as canonical failed side_effect_unknown", async () => {
 		const registry = createExternalAgentAdapterRegistry();
 		const adapter = new FakeExternalAgentAdapter();
-		adapter.handle = new FakeExternalAgentHandle({
+		const handle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [startedEvent()],
-			receipt: cancelledReceipt("associated"),
 		});
+		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
 		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
@@ -1125,6 +1152,13 @@ describe("Automation Host external agent integration", () => {
 				message: "hello",
 				externalAgent: { adapterId: "test-adapter", targetId: "target-1" },
 			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r5"), {
+				outcome: "failed",
+				terminalErrorCode: "external_agent_side_effect_unknown",
+				sideEffectState: "side_effect_unknown",
+				completedAt: new Date().toISOString(),
+			});
+			handle.resolveReceipt(cancelledReceipt("associated"));
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -1135,7 +1169,7 @@ describe("Automation Host external agent integration", () => {
 			expect(terminal.type).toBe("run.failed");
 			expect(runEventsOfType(records, "run.cancelled")).toHaveLength(0);
 			const receipt = (terminal.receipt as { terminalError?: { code: string } });
-			expect(receipt.terminalError?.code).toBe("external_agent_side_effect_unknown");
+			expect(receipt.terminalError?.code).toBe("side_effect_unknown");
 			const remoteReceipt = (
 				customEntries(sessionManager, "remote.operation")[0].data as {
 					receipt: { status: string; sideEffects: string; error?: { category: string; retryable: boolean } };
@@ -1143,7 +1177,7 @@ describe("Automation Host external agent integration", () => {
 			).receipt;
 			expect(remoteReceipt).toMatchObject({ status: "failed", sideEffects: "associated" });
 			// The Remote Operation vocabulary keeps the small invalid category and
-			// never retries; the Run terminal carries the external_agent_* code.
+			// never retries; the canonical Run terminal carries side_effect_unknown.
 			expect(remoteReceipt.error).toMatchObject({ category: "invalid", retryable: false });
 		} finally {
 			await controller.shutdown();
@@ -1161,7 +1195,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1190,6 +1224,11 @@ describe("Automation Host external agent integration", () => {
 				},
 				{ timeout: 5000, interval: 20 },
 			);
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r6"), {
+				outcome: "failed",
+				terminalErrorCode: "run_deadline_exceeded",
+				completedAt: deadlineAt,
+			});
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -1367,13 +1406,13 @@ describe("Automation Host external agent integration", () => {
 		const registry = createExternalAgentAdapterRegistry();
 		const adapter = new FakeExternalAgentAdapter();
 		adapter.probeSnapshot = readySnapshot("test-adapter", "target-1", { toolGateway: true });
-		adapter.handle = new FakeExternalAgentHandle({
+		const handle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [],
-			receipt: completedReceipt(),
 		});
+		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1387,6 +1426,11 @@ describe("Automation Host external agent integration", () => {
 				message: "hello",
 				externalAgent: { adapterId: "test-adapter", targetId: "target-1" },
 			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-gw"), {
+				outcome: "completed",
+				completedAt: new Date().toISOString(),
+			});
+			handle.resolveReceipt(completedReceipt());
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -1475,11 +1519,11 @@ describe("Automation Host external agent integration", () => {
 	it("accepts a caller-provided external ref that matches the adapter identity", async () => {
 		const registry = createExternalAgentAdapterRegistry();
 		const adapter = new FakeExternalAgentAdapter();
-		adapter.handle = new FakeExternalAgentHandle({
+		const handle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [],
-			receipt: completedReceipt(),
 		});
+		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
 		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
@@ -1496,6 +1540,11 @@ describe("Automation Host external agent integration", () => {
 				external: externalRef(),
 				externalAgent: { adapterId: "test-adapter", targetId: "target-1" },
 			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-ref-match"), {
+				outcome: "completed",
+				completedAt: new Date().toISOString(),
+			});
+			handle.resolveReceipt(completedReceipt());
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -1520,13 +1569,13 @@ describe("Automation Host external agent integration", () => {
 	it("fails closed with external_agent_mapping_conflict when the adapter identity conflicts with append-only mapping history", async () => {
 		const registry = createExternalAgentAdapterRegistry();
 		const adapter = new FakeExternalAgentAdapter();
-		adapter.handle = new FakeExternalAgentHandle({
+		const firstHandle = new FakeExternalAgentHandle({
 			external: externalRef(),
 			events: [],
-			receipt: completedReceipt(),
 		});
+		adapter.handle = firstHandle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1540,6 +1589,11 @@ describe("Automation Host external agent integration", () => {
 				message: "hello",
 				externalAgent: { adapterId: "test-adapter", targetId: "target-1" },
 			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-first"), {
+				outcome: "completed",
+				completedAt: new Date().toISOString(),
+			});
+			firstHandle.resolveReceipt(completedReceipt());
 			await vi.waitFor(
 				() => {
 					expect(terminalEvents(records).length).toBeGreaterThan(0);
@@ -1607,26 +1661,43 @@ describe("Automation Host external agent integration", () => {
 			// other append (run facts, cancellation intents) still succeeds, and it
 			// is restored by the suite's afterEach restoreAllMocks.
 			const originalAppend = sessionManager.appendCustomEntry.bind(sessionManager);
-			vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
+			const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
 				if (customType === "remote.operation") throw new Error("disk failure");
 				return originalAppend(customType, data);
+			});
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-ledger"), {
+				outcome: "failed",
+				terminalErrorCode: "external_agent_persistence_failed",
+				completedAt: new Date().toISOString(),
 			});
 			// Settle the adapter with a plain failed receipt (no run.cancel intent)
 			// so the ledger failure is the only failure path under test.
 			handle.resolveReceipt(failedReceipt("external_agent_start_failed", "unknown"));
 			await vi.waitFor(
 				() => {
-					expect(terminalEvents(records).length).toBeGreaterThan(0);
+					expect(appendSpy).toHaveBeenCalledWith("remote.operation", expect.anything());
 				},
 				{ timeout: 5000, interval: 20 },
 			);
 			const terminal = terminalEvents(records)[0];
-			expect(terminal.type).toBe("run.failed");
-			expect((terminal.receipt as { terminalError?: { code: string } }).terminalError?.code).toBe(
-				"external_agent_persistence_failed",
-			);
+			expect(terminal).toMatchObject({
+				type: "run.failed",
+				receipt: {
+					runReceiptId: expect.any(String),
+					terminalError: { code: "external_agent_persistence_failed" },
+				},
+			});
 			expect(runEventsOfType(records, "run.cancelled")).toHaveLength(0);
 			expect(customEntries(sessionManager, "remote.operation")).toHaveLength(0);
+			await controller.handleCommand({ id: "r-ledger-get", type: "run.get", runId: responseRunId(records, "r-ledger") });
+			const getResponse = responsesFor(records, "r-ledger-get")[0];
+			expect(getResponse).toMatchObject({
+				success: true,
+				data: {
+					run: { status: "failed" },
+					receipt: { status: "failed", terminalError: { code: "external_agent_persistence_failed" } },
+				},
+			});
 		} finally {
 			await controller.shutdown();
 			await cleanup();
@@ -1725,6 +1796,10 @@ describe("Automation Host external agent integration", () => {
 				},
 				{ timeout: 5000, interval: 20 },
 			);
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-detach"), {
+				outcome: "cancelled",
+				completedAt: new Date().toISOString(),
+			});
 
 			// Detach forwards the Run cancellation intent to the adapter's
 			// idempotent cancel path and awaits the tracked settlement, so the
@@ -1803,7 +1878,7 @@ describe("Automation Host external agent integration", () => {
 							.some(
 								(entry) =>
 									entry.type === "custom" &&
-									entry.customType === "automation.run" &&
+									entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
 									(entry.data as { kind?: string }).kind === "accepted",
 							),
 					).toBe(true);
@@ -1849,7 +1924,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, runtimeHost, records, cleanup } = await startInMemoryController({
+		const { controller, runtimeHost, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1869,6 +1944,10 @@ describe("Automation Host external agent integration", () => {
 				},
 				{ timeout: 5000, interval: 20 },
 			);
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-shutdown"), {
+				outcome: "cancelled",
+				completedAt: new Date().toISOString(),
+			});
 
 			await controller.shutdown();
 			await vi.waitFor(
@@ -1937,7 +2016,7 @@ describe("Automation Host external agent integration", () => {
 			expect((startResponse.error as { code: string }).code).toBe("start_rejected");
 			// No accept, no started event, no terminal, and the adapter was never
 			// started: the preflight-phase start cannot continue after shutdown.
-			expect(customEntries(sessionManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(sessionManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(runEventsOfType(records, "run.started")).toHaveLength(0);
 			expect(terminalEvents(records)).toHaveLength(0);
 			expect(adapter.startCalls).toBe(0);
@@ -1990,7 +2069,7 @@ describe("Automation Host external agent integration", () => {
 			expect(terminalEvents(records)).toHaveLength(0);
 			// The ignored abort means the run was never accepted: nothing to
 			// recover, nothing written.
-			expect(customEntries(sessionManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(sessionManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(sessionManager, "external.mapping")).toHaveLength(0);
 			expect(adapter.startCalls).toBe(0);
 		} finally {
@@ -2039,10 +2118,10 @@ describe("Automation Host external agent integration", () => {
 			const switchPath = SessionManager.create(targetDir).getSessionFile()!;
 			await runtimeHost.switchSession(switchPath);
 			const incomingManager = getSession().sessionManager;
-			expect(customEntries(incomingManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);
-			expect(customEntries(sessionManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(sessionManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(runEventsOfType(records, "run.started")).toHaveLength(0);
 			expect(terminalEvents(records)).toHaveLength(0);
 		} finally {
@@ -2081,6 +2160,10 @@ describe("Automation Host external agent integration", () => {
 				},
 				{ timeout: 5000, interval: 20 },
 			);
+			await writeCanonicalRunResult(sessionManager, responseRunId(records, "r-switch"), {
+				outcome: "cancelled",
+				completedAt: new Date().toISOString(),
+			});
 
 			const targetDir = join(tmpdir(), `aos-external-agent-switch-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 			const switchPath = SessionManager.create(targetDir).getSessionFile()!;
@@ -2116,7 +2199,7 @@ describe("Automation Host external agent integration", () => {
 			// The incoming session's ledger must stay clean: no Run records, no
 			// Remote Operation receipt, and no external mapping.
 			const incomingManager = getSession().sessionManager;
-			expect(customEntries(incomingManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);
 		} finally {
@@ -2169,7 +2252,7 @@ describe("Automation Host external agent integration", () => {
 							.some(
 								(entry) =>
 									entry.type === "custom" &&
-									entry.customType === "automation.run" &&
+									entry.customType === RUN_LEDGER_CUSTOM_TYPE &&
 									(entry.data as { kind?: string }).kind === "accepted",
 							),
 					).toBe(true);
@@ -2197,7 +2280,7 @@ describe("Automation Host external agent integration", () => {
 			expect(runEventsOfType(records, "run.started")).toHaveLength(0);
 			expect(terminalEvents(records)).toHaveLength(0);
 			const incomingManager = getSession().sessionManager;
-			expect(customEntries(incomingManager, "automation.run")).toHaveLength(0);
+			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);
 
@@ -2223,7 +2306,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -2275,6 +2358,10 @@ describe("Automation Host external agent integration", () => {
 			// The Adapter does not auto-start the dependent node.
 			expect(adapter.startCalls).toBe(1);
 
+			await writeCanonicalRunResult(sessionManager, runId, {
+				outcome: "completed",
+				completedAt: new Date().toISOString(),
+			});
 			handle.resolveReceipt(completedReceipt());
 			await vi.waitFor(
 				() => {

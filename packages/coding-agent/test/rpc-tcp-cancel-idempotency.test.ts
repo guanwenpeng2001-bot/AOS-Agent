@@ -11,6 +11,8 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
@@ -381,15 +383,23 @@ describe("TCP Automation Host cancel and idempotency", () => {
 				.getEntries()
 				.filter(
 					(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
-						entry.type === "custom" && entry.customType === "automation.run",
+						entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE,
 				);
-			expect(ledgerEntries).toHaveLength(3);
+			expect(ledgerEntries).toHaveLength(2);
 			expect(ledgerEntries.map((entry) => (entry.data as { kind?: string }).kind)).toEqual([
 				"accepted",
 				"started",
-				"terminal",
 			]);
-			expect(ledgerEntries.some((entry) => (entry.data as { kind?: string }).kind === "cancelled")).toBe(false);
+			const runReceiptFact = harness.runtimeHost.session.sessionManager.getPhysicalEntries().find((entry) => {
+				if (entry.type !== "custom" || entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) return false;
+				const data = entry.data;
+				return typeof data === "object" && data !== null && "record" in data &&
+					typeof data.record === "object" && data.record !== null &&
+					(data.record as { objectType?: unknown }).objectType === "run_receipt";
+			});
+			expect(runReceiptFact).toMatchObject({
+				data: { record: { payload: { runId, terminalStatus: "cancelled" } } },
+			});
 		} finally {
 			peer?.socket.destroy();
 			await harness.cleanup();
@@ -415,7 +425,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 
 			const ledgerCountAfterFirstRun = harness.runtimeHost.session.sessionManager
 				.getEntries()
-				.filter((entry) => entry.type === "custom" && entry.customType === "automation.run").length;
+				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE).length;
 			await writeTcpRecord(peer.socket, { id: "tcp-duplicate", ...request });
 			const duplicate = await nextResponse(peer, "tcp-duplicate");
 			expect(duplicate).toMatchObject({ command: "run.start", success: true });
@@ -429,7 +439,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			expect(
 				harness.runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCountAfterFirstRun);
 
 			await writeTcpRecord(peer.socket, {
@@ -449,7 +459,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			expect(
 				harness.runtimeHost.session.sessionManager
 					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCountAfterFirstRun);
 		} finally {
 			peer?.socket.destroy();

@@ -1096,10 +1096,10 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 		type: "run.failed",
 		receipt: {
 			status: "failed",
-			deadlineAt,
 			terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
 		},
 	});
+	expect(terminals[0]?.receipt).not.toHaveProperty("deadlineAt");
 	expect(records.some((record) => record.type === "run.cancelled")).toBe(false);
 
 	const startResponseIndex = records.findIndex(
@@ -1124,11 +1124,12 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 			run: { status: "failed", deadlineAt },
 			receipt: {
 				status: "failed",
-				deadlineAt,
 				terminalError: { code: "run_deadline_exceeded" },
 			},
 		},
 	});
+	const runGetData = isRecord(runGet?.data) ? runGet.data : {};
+	expect(runGetData.receipt).not.toHaveProperty("deadlineAt");
 
 	const auditQuery = records.find((record) => record.type === "response" && record.command === "audit.query");
 	expect(auditQuery).toMatchObject({
@@ -1139,11 +1140,12 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 	expect(auditReplay).toMatchObject({
 		success: true,
 		data: {
-			run: { status: "failed", deadlineAt },
+			run: { status: "failed" },
 			events: expect.arrayContaining([expect.objectContaining({ type: "run.failed" })]),
 		},
 	});
 	const replayData = isRecord(auditReplay?.data) ? auditReplay.data : {};
+	expect(replayData.run).not.toHaveProperty("deadlineAt");
 	expect(["complete", "incomplete"]).toContain(replayData.status);
 }
 
@@ -1368,11 +1370,16 @@ function automationResponseSignatures(records: ParsedRecord[]): unknown[] {
 
 const DYNAMIC_ID_KEYS = new Set([
 	"attemptId",
+	"attemptReceiptId",
+	"attemptReceiptIds",
 	"bindingId",
+	"bindingEpochId",
 	"capabilityBindingId",
 	"contextSnapshotId",
+	"dispatchId",
 	"eventId",
 	"gateId",
+	"goalId",
 	"modelBindingId",
 	"policyBindingId",
 	"previousBindingId",
@@ -1382,6 +1389,9 @@ const DYNAMIC_ID_KEYS = new Set([
 	"sessionId",
 	"sourceEntryId",
 	"sourceRunId",
+	"streamId",
+	"taskResultId",
+	"runReceiptId",
 ]);
 
 function isTimestampKey(key: string): boolean {
@@ -1417,6 +1427,7 @@ function normalizePublicTranscript(records: ParsedRecord[]): unknown[] {
 function isDynamicIdentityKey(key: string, value: string): boolean {
 	return (
 		DYNAMIC_ID_KEYS.has(key) ||
+		(key === "taskId" && (value.startsWith("task-") || value.startsWith("task_coding_agent_"))) ||
 		((key === "revision" || key === "profileRevision") && (value.startsWith("rev:") || value.startsWith("digest:")))
 	);
 }
@@ -1434,12 +1445,16 @@ function normalizePublicValue(
 		state.ids.set(value, replacement);
 		return replacement;
 	}
-	if (Array.isArray(value)) return value.map((item, index) => normalizePublicValue(item, [...path, String(index)], undefined, state));
+	if (Array.isArray(value)) return value.map((item, index) => normalizePublicValue(item, [...path, String(index)], key, state));
 	if (!isRecord(value)) return value;
 
 	const normalized: Record<string, unknown> = {};
 	for (const [childKey, childValue] of Object.entries(value)) {
 		if (isTimestampKey(childKey)) continue;
+		if (childKey === "sourceEntryId" && path.includes("warnings") && typeof childValue === "string") {
+			normalized[childKey] = "<warning-source>";
+			continue;
+		}
 		const isRunRecordId =
 			childKey === "id" &&
 			(path[path.length - 1] === "run" || path.includes("bindingAssociation") || path.includes("contextSnapshot"));
@@ -1454,7 +1469,10 @@ function normalizePublicValue(
 			normalized[childKey] = replacement;
 			continue;
 		}
-		normalized[childKey] = normalizePublicValue(childValue, [...path, childKey], childKey, state);
+		const normalizedChild = normalizePublicValue(childValue, [...path, childKey], childKey, state);
+		normalized[childKey] = childKey === "warnings" && Array.isArray(normalizedChild)
+			? [...normalizedChild].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+			: normalizedChild;
 	}
 	return normalized;
 }

@@ -31,6 +31,7 @@ import { ExecutionAuditAdapter, ExecutionAuditError } from "../src/core/executio
 import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type { FileEntry, SessionEntry } from "../src/core/session-manager.ts";
+import { canonicalAuditRunEntries } from "./support/canonical-audit-run.ts";
 
 const NOW = "2026-08-16T00:00:00.000Z";
 const SESSION_ID = "session-facts-1";
@@ -72,30 +73,13 @@ function customEntry(id: string, timestamp: string, customType: string, data: un
 }
 
 function runEntries(sessionId = SESSION_ID): SessionEntry[] {
-	return [
-		customEntry("run-accepted", NOW, "automation.run", {
-			schemaVersion: 1,
-			kind: "accepted",
-			record: {
-				id: RUN_ID,
-				sessionId,
-				attempt: 1,
-				status: "accepted",
-				model: { provider: "provider", id: "model", thinkingLevel: "high" },
-			},
-		}),
-		customEntry("run-terminal", "2026-08-16T00:00:01.000Z", "automation.run", {
-			schemaVersion: 1,
-			kind: "terminal",
-			endedAt: "2026-08-16T00:00:01.000Z",
-			receipt: {
-				runId: RUN_ID,
-				sessionId,
-				status: "completed",
-				usage: { input: 1, output: 1, total: 2 },
-			},
-		}),
-	];
+	return canonicalAuditRunEntries({
+		sessionId,
+		runId: RUN_ID,
+		acceptedAt: NOW,
+		completedAt: "2026-08-16T00:00:01.000Z",
+		fixtureId: `external-facts-${sessionId}`,
+	});
 }
 
 function mappingEntry(sessionId: string, adapter?: ExternalAdapterIdentity): SessionEntry {
