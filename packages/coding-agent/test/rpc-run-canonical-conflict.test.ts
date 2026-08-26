@@ -236,7 +236,8 @@ describe("RPC canonical conflict boundaries", () => {
 								ok: true,
 								value: {
 									...result.value,
-									writtenEvent: { ...result.value.writtenEvent, sequence: 1 },
+									// The canonical read succeeds, then projection rejects this invalid durable sequence.
+									writtenEvent: { ...result.value.writtenEvent, sequence: -1 },
 								},
 							};
 						});
