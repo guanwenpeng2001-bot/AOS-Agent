@@ -4,6 +4,7 @@ import {
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
+	fingerprintFoundationValue,
 	validateAttempt,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
@@ -24,6 +25,11 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
+import type {
+	ExternalModelProjectionField,
+	ExternalModelSupportMatrix,
+} from "../src/core/external-model-projection.ts";
+import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "fixture.external-connector";
@@ -46,12 +52,46 @@ function capability(options: {
 	});
 }
 
+function exactModelSupportMatrix(
+	unsupportedField?: ExternalModelProjectionField,
+): ExternalModelSupportMatrix {
+	const exact = (targetField: string, field: ExternalModelProjectionField) =>
+		unsupportedField === field
+			? { supported: false as const }
+			: {
+					supported: true as const,
+					targetField,
+					accepts: (value: string) => value.length > 0,
+					translate: (value: string) => ({ kind: "exact" as const, value }),
+				};
+	return {
+		provider: exact("vendorProvider", "provider"),
+		model: exact("vendorModel", "model"),
+		effort: exact("vendorEffort", "effort"),
+		serviceTier: exact("vendorServiceTier", "serviceTier"),
+		fallbackDecision: exact("vendorFallbackDecision", "fallbackDecision"),
+		bindingDigest: exact("vendorBindingDigest", "bindingDigest"),
+	};
+}
+
 class FixtureDriver implements ExternalConnectorVendorDriver {
 	spawnedAttempt: Attempt | undefined;
 	spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 	cancelCalls = 0;
 	disposeCalls = 0;
 	lookupCalls = 0;
+	readonly #matrix: ExternalModelSupportMatrix | undefined;
+	readonly #throwOnMatrixRead: boolean;
+
+	constructor(matrix?: ExternalModelSupportMatrix, throwOnMatrixRead = false) {
+		this.#matrix = matrix;
+		this.#throwOnMatrixRead = throwOnMatrixRead;
+	}
+
+	get modelSupportMatrix(): ExternalModelSupportMatrix | undefined {
+		if (this.#throwOnMatrixRead) throw new Error("model matrix must not be inspected");
+		return this.#matrix;
+	}
 
 	readonly handle: ExternalConnectorDriverHandle = {
 		externalSessionId: "external-session",
@@ -63,7 +103,11 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		this.spawnedAttempt = request.attempt;
 		this.spawnedRequest = request;
-		return { ...this.handle, operationNonce: request.operationNonce };
+		return {
+			...this.handle,
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
 	}
 
 	events(): AsyncIterable<never> {
@@ -118,17 +162,24 @@ async function fixture(options: {
 	readonly artifacts?: boolean;
 	readonly images?: boolean;
 	readonly modelAccess?: "agent_owned" | "aos_gateway";
+	readonly unsupportedModelField?: ExternalModelProjectionField;
+	readonly throwOnModelMatrixRead?: boolean;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "external-product-session", createdAt: 1 }));
 	const t5 = new SessionT5Ledger(session, { ownerId: "external-product-test" });
 	const store = new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer }));
-	const driver = new FixtureDriver();
+	const driver = new FixtureDriver(
+		options.modelAccess === "aos_gateway" ? exactModelSupportMatrix(options.unsupportedModelField) : undefined,
+		options.throwOnModelMatrixRead,
+	);
 	const snapshot = capability(options);
+	const supervision = createExternalConnectorTestSupervision();
 	const connector = createDurableExternalAgentConnector({
 		providerId: PROVIDER_ID,
 		capability: snapshot,
 		store,
 		driver,
+		supervision: supervision.options,
 		now: () => NOW,
 		operationNonce: () => "operation-nonce",
 	});
@@ -168,7 +219,7 @@ async function fixture(options: {
 		}),
 	});
 	if (!registered.ok) throw registered.error;
-	return { session, t5, driver, connector, registry, descriptor };
+	return { session, t5, driver, connector, registry, descriptor, supervision };
 }
 
 describe("External Connector product integration", () => {
@@ -254,11 +305,13 @@ describe("External Connector product integration", () => {
 		const checkedAttempt = validateAttempt(durableAttempt.payload);
 		if (!checkedAttempt.ok) throw checkedAttempt.error;
 		const restartedDriver = new FixtureDriver();
+		const restartedSupervision = createExternalConnectorTestSupervision();
 		const restarted = createDurableExternalAgentConnector({
 			providerId: PROVIDER_ID,
 			capability: capability(),
 			store: new SessionExternalConnectorDurableStore(new SessionLedger(current.session, { writer: current.t5.writer })),
 			driver: restartedDriver,
+			supervision: restartedSupervision.options,
 			now: () => NOW,
 			operationNonce: () => "new-operation-nonce-must-not-be-used",
 		});
@@ -344,6 +397,113 @@ describe("External Connector product integration", () => {
 		expect(current.driver.spawnedRequest?.input).toEqual(canonicalInput);
 	});
 
+	it("rejects unsafe product resources before Goal, Task, Attempt, process, or driver side effects", async () => {
+		const artifactId = "2".repeat(64);
+		const validArtifact = {
+			schemaVersion: 1 as const,
+			artifactId,
+			kind: "image" as const,
+			digest: `sha256:${artifactId}` as const,
+			mediaType: "image/png",
+			sizeBytes: 3,
+			provenance: { source: "artifact_store" as const, producer: "fixture", trust: "trusted" as const },
+			readHandle: { kind: "artifact_store" as const, ref: artifactId },
+		};
+		const cases: Array<{
+			readonly name: string;
+			readonly input: unknown;
+			readonly code: string;
+			readonly capabilities?: { readonly artifacts?: boolean; readonly images?: boolean };
+		}> = [
+			{
+				name: "raw URL",
+				input: { schemaVersion: 1, text: "raw", artifacts: [{ ...validArtifact, url: "https://invalid.example" }] },
+				code: "external_binding_invalid",
+			},
+			{
+				name: "unsupported image",
+				input: { schemaVersion: 1, text: "unsupported", artifacts: [validArtifact] },
+				code: "external_capability_mismatch",
+			},
+			{
+				name: "oversize image",
+				input: {
+					schemaVersion: 1,
+					text: "oversize",
+					artifacts: [{ ...validArtifact, sizeBytes: 32 * 1024 * 1024 + 1 }],
+				},
+				code: "external_resource_limit_exceeded",
+				capabilities: { artifacts: true, images: true },
+			},
+			{
+				name: "untrusted image",
+				input: {
+					schemaVersion: 1,
+					text: "untrusted",
+					artifacts: [{ ...validArtifact, provenance: { ...validArtifact.provenance, trust: "untrusted" } }],
+				},
+				code: "external_binding_invalid",
+				capabilities: { artifacts: true, images: true },
+			},
+			{
+				name: "workspace escape",
+				input: {
+					schemaVersion: 1,
+					text: "escape",
+					artifacts: [{
+						...validArtifact,
+						kind: "file",
+						mediaType: "text/plain",
+						provenance: { source: "workspace", producer: "fixture", trust: "trusted" },
+						readHandle: {
+							kind: "workspace_relative",
+							workspaceId: "workspace-main",
+							relativePath: "../escape",
+							ref: "workspace-ref",
+						},
+					}],
+				},
+				code: "external_path_outside_workspace",
+				capabilities: { artifacts: true, images: false },
+			},
+		];
+		for (const testCase of cases) {
+			const current = await fixture(testCase.capabilities);
+			const canonicalInput = testCase.input as CanonicalExternalAgentInput;
+			await expect(executeExternalConnectorProductRun({
+				session: current.session,
+				writer: current.t5.writer,
+				registry: current.registry,
+				selection: {
+					providerId: current.descriptor.providerId,
+					revision: current.descriptor.revision,
+					capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				},
+				runId: `run-reject-${testCase.name.replaceAll(" ", "-")}`,
+				message: canonicalInput.text,
+				canonicalInput,
+				inputAdmission: {
+					inspectArtifact: (reference) => ({
+						artifactId: reference.artifactId,
+						ref: reference.readHandle.ref,
+						digest: reference.digest,
+						mediaType: reference.mediaType,
+						sizeBytes: reference.sizeBytes,
+						trusted: true,
+						workspaceContained: true,
+					}),
+				},
+				workspace: "workspace-ref",
+				now: () => NOW,
+			})).rejects.toMatchObject({ code: testCase.code });
+			for (const objectType of ["goal", "task", "attempt"]) {
+				expect(await current.session.findFoundationRecords({ objectType })).toEqual([]);
+			}
+			expect(current.supervision.processController.launchCalls).toBe(0);
+			expect(current.driver.spawnedAttempt).toBeUndefined();
+		}
+	});
+
 	it("passes the exact AOS gateway model projection to the current driver", async () => {
 		const current = await fixture({ modelAccess: "aos_gateway" });
 		const canonicalInput: CanonicalExternalAgentInput = {
@@ -351,7 +511,8 @@ describe("External Connector product integration", () => {
 			text: "use the projected gateway route",
 			artifacts: [],
 		};
-		const execution = await executeExternalConnectorProductRun({
+		const bindingDigest = fingerprintFoundationValue({ bindingId: "rpc-local-model-binding" });
+		await executeExternalConnectorProductRun({
 			session: current.session,
 			writer: current.t5.writer,
 			registry: current.registry,
@@ -371,6 +532,7 @@ describe("External Connector product integration", () => {
 				effort: "medium",
 				serviceTier: "priority",
 				fallbackDecision: { kind: "disabled", reason: "fallback_disabled" },
+				bindingDigest,
 			},
 			now: () => NOW,
 		});
@@ -381,7 +543,89 @@ describe("External Connector product integration", () => {
 			effort: "medium",
 			serviceTier: "priority",
 			fallbackDecision: { kind: "disabled", reason: "fallback_disabled" },
-			bindingDigest: execution.binding.fingerprint,
+			bindingDigest,
 		});
+		expect(current.driver.spawnedRequest?.modelTranslation).toEqual({
+			schemaVersion: 1,
+			sourceBindingDigest: bindingDigest,
+			fields: {
+				provider: { targetField: "vendorProvider", value: "gateway-provider" },
+				model: { targetField: "vendorModel", value: "gateway-model" },
+				effort: { targetField: "vendorEffort", value: "medium" },
+				serviceTier: { targetField: "vendorServiceTier", value: "priority" },
+				fallbackDecision: {
+					targetField: "vendorFallbackDecision",
+					value: '{"kind":"disabled","reason":"fallback_disabled"}',
+				},
+				bindingDigest: {
+					targetField: "vendorBindingDigest",
+					value: JSON.stringify(bindingDigest),
+				},
+			},
+		});
+	});
+
+	it("rejects an unsupported gateway field before Goal, Task, Attempt, process, or driver side effects", async () => {
+		const current = await fixture({ modelAccess: "aos_gateway", unsupportedModelField: "serviceTier" });
+		const canonicalInput: CanonicalExternalAgentInput = {
+			schemaVersion: 1,
+			text: "reject unsupported translation",
+			artifacts: [],
+		};
+		await expect(executeExternalConnectorProductRun({
+			session: current.session,
+			writer: current.t5.writer,
+			registry: current.registry,
+			selection: {
+				providerId: current.descriptor.providerId,
+				revision: current.descriptor.revision,
+				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+			},
+			runId: "run-external-model-unsupported",
+			message: canonicalInput.text,
+			canonicalInput,
+			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+			workspace: "workspace-ref",
+			gatewayModelRoute: {
+				provider: "gateway-provider",
+				model: "gateway-model",
+				effort: "medium",
+				serviceTier: "priority",
+				fallbackDecision: { kind: "disabled", reason: "fallback_disabled" },
+				bindingDigest: fingerprintFoundationValue({ bindingId: "unsupported" }),
+			},
+			now: () => NOW,
+		})).rejects.toMatchObject({ code: "external_binding_invalid" });
+		for (const objectType of ["goal", "task", "attempt"]) {
+			expect(await current.session.findFoundationRecords({ objectType })).toEqual([]);
+		}
+		expect(current.supervision.processController.launchCalls).toBe(0);
+		expect(current.driver.spawnedAttempt).toBeUndefined();
+	});
+
+	it("does not inspect a local model support matrix for agent-owned execution", async () => {
+		const current = await fixture({ throwOnModelMatrixRead: true });
+		const canonicalInput: CanonicalExternalAgentInput = {
+			schemaVersion: 1,
+			text: "agent chooses model",
+			artifacts: [],
+		};
+		const execution = await executeExternalConnectorProductRun({
+			session: current.session,
+			writer: current.t5.writer,
+			registry: current.registry,
+			selection: {
+				providerId: current.descriptor.providerId,
+				revision: current.descriptor.revision,
+				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+			},
+			runId: "run-external-agent-owned-no-matrix",
+			message: canonicalInput.text,
+			canonicalInput,
+			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+			workspace: "workspace-ref",
+			now: () => NOW,
+		});
+		expect(execution.runReceipt.terminalStatus).toBe("completed");
 	});
 });

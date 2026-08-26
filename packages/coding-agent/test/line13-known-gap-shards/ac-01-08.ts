@@ -29,12 +29,10 @@ import {
 	createAgentSessionServices,
 	createExternalConnectorRegistry,
 	createDurableExternalAgentConnector,
-	gateCanonicalExternalAgentInputBeforeAcceptance,
-	projectExternalModelForExecution,
+	executeExternalConnectorProductRun,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
 	type CreateAgentSessionRuntimeFactory,
-	type CanonicalExternalAgentInput,
 	type ExternalConnectorRegistry,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
@@ -67,6 +65,7 @@ import {
 	defineLine13ResolvedCase,
 	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
+import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
 
 const NOW = "2026-08-25T00:00:00.000Z";
 const LATER = "2026-08-25T00:06:00.000Z";
@@ -77,7 +76,7 @@ class Line13CurrentDriver implements ExternalConnectorVendorDriver {
 		return {
 			externalSessionId: "line13-current-session",
 			externalTurnId: "line13-current-turn",
-			supervisorRef: "line13-current-supervisor",
+			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
 		};
 	}
@@ -132,6 +131,7 @@ interface RpcProductFixture {
 
 async function createRpcProductFixture(options: {
 	readonly withModel: boolean;
+	readonly modelAccess?: "none" | "agent_owned";
 }): Promise<RpcProductFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-rpc-"));
 	const faux = options.withModel ? registerFauxProvider() : undefined;
@@ -155,20 +155,21 @@ async function createRpcProductFixture(options: {
 		providerId: "line13-current-connector",
 		revision: 1,
 		protocol: { name: "line13-current", version: "1" },
-		modelAccess: "agent_owned",
+		modelAccess: options.modelAccess ?? "agent_owned",
 		resume: false,
 		toolGateway: false,
 		artifacts: false,
 		images: false,
 	});
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		externalConnectorRegistry: (context) => {
+			externalConnectorRegistry: (context) => {
 			const registry = createExternalConnectorRegistry();
 			const connector = createDurableExternalAgentConnector({
 				providerId: currentSnapshot.providerId,
 				capability: currentSnapshot,
 				store: new SessionExternalConnectorDurableStore(new SessionLedger(context.session, { writer: context.harness.t5.writer })),
 				driver: new Line13CurrentDriver(),
+				supervision: createExternalConnectorTestSupervision().options,
 				now: () => NOW,
 				operationNonce: () => "line13-operation-nonce",
 			});
@@ -921,83 +922,104 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 		}),
 		defineLine13ResolvedCase({
 			ac: "AC-05",
-			fullTestName: "Line 13 current External Connector input accepts only canonical text and verified safe artifact references",
+			fullTestName: "Line 13 RPC rejects non-canonical External Connector resources before product persistence",
 			scenario: {
-				fixture: () => {
-					const artifactId = "1".repeat(64);
-					const input: CanonicalExternalAgentInput = {
-						schemaVersion: 1,
-						text: "Preserve safe references",
-						artifacts: [{
-							schemaVersion: 1,
-							artifactId,
-							kind: "image",
-							digest: `sha256:${artifactId}`,
-							mediaType: "image/png",
-							sizeBytes: 3,
-							provenance: { source: "artifact_store", producer: "line13", trust: "trusted" },
-							readHandle: { kind: "artifact_store", ref: artifactId },
-						}],
-					};
-					return input;
+				fixture: () => createRpcProductFixture({ withModel: false }),
+				setup: initializeRpc,
+				assertion: async (fixture) => {
+					const response = automationResponseView(await fixture.controller.dispatch({
+						id: "ac05-raw-image",
+						type: "run.start",
+						message: "Reject raw image bytes",
+						images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+						externalConnector: fixture.externalConnectorSelection,
+					}));
+					assert.equal(response.success, false);
+					assert.equal(response.error?.code, "external_binding_invalid");
+					const durableSession = new Session(new SessionManagerStorage(fixture.sessionManager));
+					const records = await durableSession.findFoundationRecords({ includePruned: true });
+					const productWrites = records.filter((record) =>
+						record.kind !== "retention" && ["foundation.goal", "task", "attempt"].includes(record.objectType)
+					);
+					assert.equal(productWrites.length, 0);
 				},
-				assertion: async (input) => {
-					const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(input, {
-						capabilities: { artifacts: true, images: true },
-						inspectArtifact: (reference) => ({
-							artifactId: reference.artifactId,
-							ref: reference.readHandle.ref,
-							digest: reference.digest,
-							mediaType: reference.mediaType,
-							sizeBytes: reference.sizeBytes,
-							trusted: true,
-							workspaceContained: true,
-						}),
-					});
-					assert.equal(admitted.ok, true);
-					const unsafe = await gateCanonicalExternalAgentInputBeforeAcceptance({ ...input, url: "https://invalid.example" }, {
-						capabilities: { artifacts: true, images: true },
-						inspectArtifact: () => { throw new Error("must reject before inspection"); },
-					});
-					assert.equal(unsafe.ok, false);
-				},
+				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
 		defineLine13ResolvedCase({
 			ac: "AC-06",
-			fullTestName: "Line 13 none and agent-owned model access bypass local ModelBroker resolution",
+			fullTestName: "Line 13 RPC none and agent-owned External Connectors run without a local model",
 			scenario: {
-				fixture: () => ({ bindingReads: 0 }),
+				fixture: async () => ({
+					fixtures: await Promise.all([
+						createRpcProductFixture({ withModel: false, modelAccess: "none" }),
+						createRpcProductFixture({ withModel: false, modelAccess: "agent_owned" }),
+					]),
+				}),
 				assertion: async (fixture) => {
-					for (const modelAccess of ["none", "agent_owned"] as const) {
-						const projected = await projectExternalModelForExecution({
-							modelAccess,
-							bindingSource: { resolve: () => { fixture.bindingReads += 1; throw new Error("local binding must not be read"); } },
+					for (const [index, current] of fixture.fixtures.entries()) {
+						await initializeRpc(current);
+						const dispatched = await current.controller.dispatch({
+							id: `ac06-start-${index}`,
+							type: "run.start",
+							message: "Run without a local model",
+							externalConnector: current.externalConnectorSelection,
 						});
-						assert.equal(projected.ok, true);
+						const response = automationResponseView(
+							dispatched ?? await waitForRpcResponse(current.records, `ac06-start-${index}`),
+						);
+						assert.equal(response.success, true);
+						const runId = response.data?.runId;
+						assert.equal(typeof runId, "string");
+						if (runId !== undefined) await waitForRpcTerminal(current.records, runId);
 					}
-					assert.equal(fixture.bindingReads, 0);
 				},
-			},
-		}),
-		defineLine13ResolvedCase({
-			ac: "AC-07",
-			fullTestName: "Line 13 advertised current External Connector capabilities have reachable registered handlers",
-			scenario: {
-				fixture: () => createCurrentConnectorFixture(true),
-				assertion: async (fixture) => {
-					const selected = await fixture.registry.select(fixture.selection);
-					assert.equal(selected.ok, true);
-					if (!selected.ok) return;
-					const handler = selected.value.capabilityHandlers.toolGateway;
-					assert.notEqual(handler, undefined, "advertised tool gateway must retain its real handler");
-					handler?.();
-					assert.equal(fixture.toolGatewayCalls(), 1);
+				cleanup: async (fixture) => {
+					for (const current of fixture.fixtures) await current.cleanup();
 				},
 			},
 		}),
 	],
 	cases: [
+		defineLine13KnownGapCase({
+			entry: {
+				ac: "AC-07",
+				fullTestName: "Line 13 advertised External Connector tool-gateway capability reaches real product execution",
+				baseSha: LINE13_T0_BASE_SHA,
+				ownerStage: "T5",
+				mode: "fails",
+				expectedFailure: {
+					reason: "external-connector.tool-gateway-product",
+					fingerprint: "sha256:aa26ba49c1d52a139c675bfaaa82280e5dfee58c1ae7269b4bc8acc06bca17f8",
+				},
+			},
+			scenario: {
+				fixture: () => createCurrentConnectorFixture(true),
+				assertion: async (fixture) => {
+					await executeExternalConnectorProductRun({
+						session: fixture.session,
+						writer: fixture.t5.writer,
+						registry: fixture.registry,
+						selection: fixture.selection,
+						runId: "line13-ac07-tool-gateway",
+						message: "Reach the bound tool gateway during real execution",
+						canonicalInput: {
+							schemaVersion: 1,
+							text: "Reach the bound tool gateway during real execution",
+							artifacts: [],
+						},
+						inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+						workspace: "workspace-ref",
+						now: () => NOW,
+					});
+					assert.equal(
+						fixture.toolGatewayCalls(),
+						1,
+						"advertised tool gateway must be invoked by real product execution",
+					);
+				},
+			},
+		}),
 		defineLine13KnownGapCase({
 			entry: {
 				ac: "AC-08",

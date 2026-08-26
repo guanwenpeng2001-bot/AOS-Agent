@@ -23,7 +23,11 @@ import {
 	type CanonicalExternalConnectorMapping,
 } from "../external-session-mapping.ts";
 import type { CanonicalExternalAgentInput } from "../external-agent-input.ts";
-import type { ExternalResolvedModelProjection } from "../external-model-projection.ts";
+import type {
+	ExternalModelSupportMatrix,
+	ExternalResolvedModelProjection,
+	ExternalTranslatedModelProjection,
+} from "../external-model-projection.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;
@@ -36,9 +40,11 @@ export interface ExternalConnectorDriverSpawnRequest {
 	readonly attempt: Attempt;
 	readonly input: CanonicalExternalAgentInput;
 	readonly modelProjection?: ExternalResolvedModelProjection;
+	readonly modelTranslation?: ExternalTranslatedModelProjection;
 	readonly capability: ConnectorCapabilitySnapshot;
 	readonly bindingDigest: string;
 	readonly bindingRevision: number;
+	readonly supervisorRef: string;
 	readonly operationNonce: string;
 	readonly signal?: AbortSignal;
 }
@@ -131,6 +137,8 @@ export type ExternalConnectorDriverLookup =
 	| { readonly status: "ambiguous" };
 
 export interface ExternalConnectorVendorDriver {
+	/** Host-private exact model translation contract. Read only for aos_gateway. */
+	readonly modelSupportMatrix?: ExternalModelSupportMatrix;
 	spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle>;
 	events(
 		handle: ExternalConnectorDriverHandle,

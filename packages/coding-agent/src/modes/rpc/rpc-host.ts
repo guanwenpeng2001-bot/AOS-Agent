@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
+	fingerprintFoundationValue,
 	type CanonicalRunResult,
 	type FoundationError,
 	LayeredResultSettlement,
@@ -47,8 +48,11 @@ import {
 	serializeExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
 import {
-	executeExternalConnectorProductRun,
+	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
+	persistExternalConnectorProductRunAfterAcceptance,
+	prepareExternalConnectorProductRun,
+	type ExternalConnectorProductAdmission,
 } from "../../core/external-connector-product.ts";
 import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
@@ -1649,6 +1653,20 @@ export class RpcHostController {
 			return Object.keys(command).every((key) => allowed.has(key));
 		};
 
+		const EXTERNAL_RUN_START_KEYS = new Set([
+			"id",
+			"type",
+			"message",
+			"clientRequestId",
+			"deadlineAt",
+			"images",
+			"externalConnector",
+			"capabilityProfile",
+			"policyProfile",
+			"modelRoute",
+			"modelRole",
+		]);
+
 		const slashRunInputError = (
 			id: string | undefined,
 			command: "run.start" | "run.resume",
@@ -1671,6 +1689,9 @@ export class RpcHostController {
 		const asAutomationError = (err: unknown): AutomationError => {
 			if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
 				const candidate = err as AutomationError;
+				if (!isAutomationErrorCode(candidate.code)) {
+					return createAutomationError("start_rejected", errorMessage(err), false);
+				}
 				if (isAuditAutomationCode(candidate.code)) {
 					return createAutomationError(candidate.code, auditErrorMessage(candidate.code), false);
 				}
@@ -1774,6 +1795,7 @@ export class RpcHostController {
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
 			inheritedBinding?: ModelBindingLedgerRecord,
+			commitResolution = true,
 		): Promise<{ resolution?: BrokerModelResolution; error?: AutomationError }> => {
 			if (modelRoute !== undefined && modelRole !== undefined) {
 				return {
@@ -1844,16 +1866,20 @@ export class RpcHostController {
 					) {
 						return { error: unavailableModelError() };
 					}
+					if (commitResolution) {
+						try {
+							await binding.session.setModel(model);
+						} catch {
+							return { error: unavailableModelError() };
+						}
+					}
+				}
+				if (commitResolution) {
 					try {
-						await binding.session.setModel(model);
+						binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
 					} catch {
 						return { error: unavailableModelError() };
 					}
-				}
-				try {
-					binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
-				} catch {
-					return { error: unavailableModelError() };
 				}
 				return { resolution: result.resolution };
 			}
@@ -1876,17 +1902,19 @@ export class RpcHostController {
 				return { error: unavailableModelError() };
 			}
 			if (model === undefined) return { error: unavailableModelError() };
-			try {
-				await binding.session.setModel(model);
-				binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
-				if (
-					result.resolution.reference.thinkingLevel !== undefined &&
-					isThinkingLevel(result.resolution.reference.thinkingLevel)
-				) {
-					binding.session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+			if (commitResolution) {
+				try {
+					await binding.session.setModel(model);
+					binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+					if (
+						result.resolution.reference.thinkingLevel !== undefined &&
+						isThinkingLevel(result.resolution.reference.thinkingLevel)
+					) {
+						binding.session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+					}
+				} catch {
+					return { error: unavailableModelError() };
 				}
-			} catch {
-				return { error: unavailableModelError() };
 			}
 			return { resolution: result.resolution };
 		};
@@ -2230,7 +2258,7 @@ export class RpcHostController {
 				return automationError(
 					id,
 					commandType,
-					createAutomationError("start_rejected", "The External Connector selection is invalid.", false),
+					createAutomationError("external_binding_invalid", "The External Connector selection is invalid.", false),
 				);
 			}
 			// The adapter contract has start() only; there is no same-ref resume
@@ -2357,7 +2385,7 @@ export class RpcHostController {
 							id,
 							commandType,
 							createAutomationError(
-								"start_rejected",
+								"external_binding_invalid",
 								"External Connector input rejects raw image payloads; use canonical trusted artifact references.",
 								false,
 							),
@@ -2372,7 +2400,7 @@ export class RpcHostController {
 							id,
 							commandType,
 							createAutomationError(
-								"start_rejected",
+								"external_binding_invalid",
 								"No matching trusted External Connector is composed into this Host.",
 								false,
 							),
@@ -2386,7 +2414,7 @@ export class RpcHostController {
 							id,
 							commandType,
 							createAutomationError(
-								"start_rejected",
+								"external_capability_mismatch",
 								"External Connector selection or capability snapshot is unavailable.",
 								false,
 							),
@@ -2412,7 +2440,7 @@ export class RpcHostController {
 						automationError(
 							id,
 							commandType,
-							createAutomationError("start_rejected", admitted.error.message, false),
+							createAutomationError(admitted.error.code, admitted.error.message, false),
 						),
 					);
 				}
@@ -2551,7 +2579,13 @@ export class RpcHostController {
 				externalConnectorResolved !== undefined &&
 				externalConnectorResolved.capabilitySnapshot.modelAccess !== "aos_gateway"
 					? { resolution: undefined, error: undefined }
-					: await resolveRequestedModel(runBinding, modelRoute, modelRole, inheritedModelBinding);
+					: await resolveRequestedModel(
+						runBinding,
+						modelRoute,
+						modelRole,
+						inheritedModelBinding,
+						externalConnectorResolved?.capabilitySnapshot.modelAccess !== "aos_gateway",
+					);
 			if (runBinding !== captureCurrentBinding()) {
 				runBinding.activeReservation = undefined;
 				try {
@@ -2598,6 +2632,79 @@ export class RpcHostController {
 					// reservation may already be consumed
 				}
 				return startFailure(automationError(id, commandType, modelSelection.error));
+			}
+			let externalProductAdmission: ExternalConnectorProductAdmission | undefined;
+			if (
+				externalConnectorResolved !== undefined &&
+				externalConnector !== undefined &&
+				externalCanonicalInput !== undefined
+			) {
+				let gatewayModelRoute: ExternalConnectorProductAdmission["input"]["gatewayModelRoute"];
+				if (externalConnectorResolved.capabilitySnapshot.modelAccess === "aos_gateway") {
+					const resolution = modelSelection.resolution;
+					const effort = resolution?.reference.thinkingLevel;
+					const serviceTier = resolution?.reference.serviceTier;
+					if (
+						resolution === undefined ||
+						effort === undefined ||
+						serviceTier === undefined ||
+						(resolution.candidateIndex !== undefined && resolution.candidateIndex > 0)
+					) {
+						runBinding.activeReservation = undefined;
+						try {
+							reservation.release();
+						} catch {
+							// reservation may already be consumed
+						}
+						return startFailure(
+							automationError(
+								id,
+								commandType,
+								createAutomationError(
+									"external_binding_invalid",
+									"The resolved AOS gateway model lacks an exact translatable route.",
+									false,
+								),
+							),
+						);
+					}
+					gatewayModelRoute = {
+						provider: resolution.reference.provider,
+						model: resolution.reference.id,
+						effort,
+						serviceTier,
+						fallbackDecision: resolution.fallbackAllowed
+							? { kind: "primary", reason: "fallback_not_used" }
+							: { kind: "disabled", reason: "fallback_disabled" },
+						bindingDigest: fingerprintFoundationValue(resolution.binding),
+					};
+				}
+				try {
+					externalProductAdmission = await prepareExternalConnectorProductRun({
+						session: getAgentCanonicalSession(runBinding.session),
+						writer: runBinding.session.agentRuntimeComposition.harness.t5.writer,
+						registry: runBinding.session.getExternalConnectorRegistry()!,
+						selection: externalConnector,
+						runId: proposedRunId,
+						message,
+						canonicalInput: externalCanonicalInput,
+						inputAdmission: {
+							inspectArtifact: () => {
+								throw new Error("RPC has no trusted artifact reference authority");
+							},
+						},
+						workspace: runBinding.session.cwd,
+						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
+					});
+				} catch (err) {
+					runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// reservation may already be consumed
+					}
+					return startFailure(automationError(id, commandType, asAutomationError(err)));
+				}
 			}
 			if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
 				runBinding.activeReservation = undefined;
@@ -2680,21 +2787,9 @@ export class RpcHostController {
 			if (
 				externalConnectorResolved !== undefined &&
 				externalConnector !== undefined &&
-				externalCanonicalInput !== undefined
+				externalCanonicalInput !== undefined &&
+				externalProductAdmission !== undefined
 			) {
-				if (externalConnectorResolved.capabilitySnapshot.modelAccess === "aos_gateway") {
-					return startFailure(
-						automationError(
-							id,
-							commandType,
-							createAutomationError(
-								"start_rejected",
-								"AOS gateway execution requires an exact provider, model, effort, service tier, fallback decision, and binding digest.",
-								false,
-							),
-						),
-					);
-				}
 				let handle: RunHandle;
 				try {
 					handle = reservation.accept({
@@ -2737,30 +2832,25 @@ export class RpcHostController {
 					proposedRunId,
 					externalConnectorResolved.descriptor.providerId,
 				);
+				let execution: Promise<unknown>;
 				runBinding.externalRuns.set(proposedRunId, {
 					cancel: async () => {
 						if (!deadlineController.signal.aborted) deadlineController.abort();
-						await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
+						const first = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
+						if (first.ok) return;
+						await execution.catch(() => undefined);
+						const retried = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
+						if (!retried.ok) throw retried.error;
 					},
 				});
-				const execution = executeExternalConnectorProductRun({
-					session: getAgentCanonicalSession(runBinding.session),
-					writer: runBinding.session.agentRuntimeComposition.harness.t5.writer,
-					registry: runBinding.session.getExternalConnectorRegistry()!,
-					selection: externalConnector,
-					runId: proposedRunId,
-					message,
-					canonicalInput: externalCanonicalInput,
-					inputAdmission: {
-						inspectArtifact: () => {
-							throw new Error("RPC has no trusted artifact reference authority");
-						},
-					},
-					workspace: runBinding.session.cwd,
-					signal: deadlineController.signal,
-				}).finally(() => {
+				execution = persistExternalConnectorProductRunAfterAcceptance({
+					...externalProductAdmission,
+					input: { ...externalProductAdmission.input, signal: deadlineController.signal },
+				})
+					.then(executePreparedExternalConnectorProductRun)
+					.finally(() => {
 					runBinding.externalRuns.delete(proposedRunId);
-				});
+					});
 				trackRunPrompt(runBinding, handle, execution);
 				return undefined;
 			}
@@ -4571,6 +4661,20 @@ export class RpcHostController {
 				}
 
 				case "run.start": {
+					if (
+						command.externalConnector !== undefined &&
+						!Object.keys(command).every((key) => EXTERNAL_RUN_START_KEYS.has(key))
+					) {
+						return automationError(
+							id,
+							"run.start",
+							createAutomationError(
+								"external_binding_invalid",
+								"RPC External Connector input supports canonical text only; artifact and image references are unavailable.",
+								false,
+							),
+						);
+					}
 					return trackPendingStart(
 						startRun(
 							currentBinding,
@@ -4665,7 +4769,9 @@ export class RpcHostController {
 					// state. A terminal event is emitted only after canonical lookup.
 					const externalRun = currentBinding.externalRuns.get(command.runId);
 					if (externalRun !== undefined) {
-						void externalRun.cancel();
+						void externalRun.cancel().catch(() => {
+							// The tracked product execution owns canonical terminal or reconciliation output.
+						});
 					} else {
 						void currentBinding.session.abort().catch(() => {
 							// Foundation remains the only terminal authority.

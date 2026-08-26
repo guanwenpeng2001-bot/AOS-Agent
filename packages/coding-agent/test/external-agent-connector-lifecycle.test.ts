@@ -45,6 +45,7 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
+import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const now = "2026-08-27T00:00:00.000Z";
 const providerId = "third-party-connector";
@@ -273,7 +274,11 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		this.calls.spawn++;
 		this.spawnStates.push(this.store?.operations.get(request.attempt.attemptId)?.status);
 		if (this.spawnFailure) throw new Error("injected spawn failure");
-		return { ...this.handle, operationNonce: request.operationNonce };
+		return {
+			...this.handle,
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
 	}
 
 	events(): AsyncIterable<never> {
@@ -283,9 +288,13 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	async connect(): Promise<ExternalConnectorDriverHandle> {
+	async connect(mapping: CanonicalExternalConnectorMapping): Promise<ExternalConnectorDriverHandle> {
 		this.calls.connect++;
-		return this.handle;
+		return {
+			...this.handle,
+			supervisorRef: mapping.supervisor.ref,
+			operationNonce: mapping.supervisor.nonce,
+		};
 	}
 
 	async lookup(): Promise<ExternalConnectorDriverLookup> {
@@ -334,14 +343,15 @@ async function fixture(options: { resume?: boolean; capabilityRevision?: number 
 	store.bindings.set(resolvedBinding.bindingId, resolvedBinding);
 	const driver = new FakeDriver();
 	driver.store = store;
+	const supervision = createExternalConnectorTestSupervision();
 	const connector = new DurableExternalAgentConnector({
 		providerId,
 		capability: snapshot,
 		store,
 		driver,
+		supervision: supervision.options,
 		now: () => now,
 		operationNonce: () => "operation-nonce-1",
-		disposeTimeoutMs: 10,
 	});
 	const attemptId = externalConnectorAttemptId(providerId, dispatch.dispatchId);
 	const epoch = createBindingEpoch({

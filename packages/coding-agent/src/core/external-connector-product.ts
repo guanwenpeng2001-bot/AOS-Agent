@@ -18,6 +18,7 @@ import {
 	type BindingEpoch,
 	type Dispatch,
 	type ExecutionCorrelation,
+	type Fingerprint,
 	type FoundationJsonValue,
 	type RevisionReference,
 	type RunReceipt,
@@ -29,11 +30,15 @@ import {
 import {
 	gateCanonicalExternalAgentInputBeforeAcceptance,
 	type CanonicalExternalAgentInput,
+	type CanonicalExternalAgentRequestFingerprint,
 	type ExternalAgentInputAdmissionOptions,
 } from "./external-agent-input.ts";
 import {
-	projectExternalModelForExecution,
+	isExternalResolvedModelProjection,
 	type ExternalModelFallbackDecision,
+	type ExternalModelTranslationResult,
+	type ExternalResolvedModelProjection,
+	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
 import type {
 	ExternalConnectorRegistry,
@@ -61,6 +66,7 @@ export interface ExternalConnectorProductExecutionInput {
 		readonly effort: string;
 		readonly serviceTier: string;
 		readonly fallbackDecision: ExternalModelFallbackDecision;
+		readonly bindingDigest: Fingerprint;
 	};
 	readonly now?: () => string;
 }
@@ -73,6 +79,61 @@ export interface ExternalConnectorProductExecution {
 	readonly attemptReceipt: AttemptReceipt;
 	readonly taskResult: TaskResult;
 	readonly runReceipt: RunReceipt;
+}
+
+export type ExternalConnectorProductErrorCode = "external_binding_invalid" | "external_capability_mismatch";
+
+export class ExternalConnectorProductError extends Error {
+	readonly code: ExternalConnectorProductErrorCode;
+	readonly retryable = false;
+
+	constructor(code: ExternalConnectorProductErrorCode, message: string) {
+		super(message);
+		this.name = "ExternalConnectorProductError";
+		this.code = code;
+	}
+}
+
+export interface PreparedExternalConnectorProductRun {
+	readonly input: ExternalConnectorProductExecutionInput;
+	readonly selected: ExternalConnectorResolvedSelection;
+	readonly timestamp: string;
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
+	readonly dispatch: Dispatch;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
+}
+
+/** Read-only admission result. No Foundation fact exists until this value is persisted after acceptance. */
+export interface ExternalConnectorProductAdmission {
+	readonly input: ExternalConnectorProductExecutionInput;
+	readonly selected: ExternalConnectorResolvedSelection;
+	readonly admittedInput: CanonicalExternalAgentInput;
+	readonly requestFingerprint: CanonicalExternalAgentRequestFingerprint;
+	readonly route: {
+		readonly provider: string;
+		readonly model: string;
+		readonly effort: string;
+		readonly serviceTier: string;
+		readonly fallbackDecision: ExternalModelFallbackDecision;
+	};
+	readonly modelProjection?: ExternalResolvedModelProjection;
+	readonly modelTranslation?: ExternalTranslatedModelProjection;
+}
+
+interface ExternalConnectorModelProjectionPreflight {
+	preflightModelProjection(projection: ExternalResolvedModelProjection): ExternalModelTranslationResult;
+}
+
+function modelProjectionPreflight(value: unknown): ExternalConnectorModelProjectionPreflight | undefined {
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		!("preflightModelProjection" in value) ||
+		typeof value.preflightModelProjection !== "function"
+	) return undefined;
+	return value as ExternalConnectorModelProjectionPreflight;
 }
 
 function requireValue<T>(result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: FoundationError }): T {
@@ -142,10 +203,10 @@ function modelRouteFor(selection: ExternalConnectorResolvedSelection, input: Ext
 	};
 }
 
-/** Execute one current External Connector run through the canonical Foundation terminal chain. */
-export async function executeExternalConnectorProductRun(
+/** Read-only pre-accept input, model-route, and driver-translation admission. */
+export async function prepareExternalConnectorProductRun(
 	input: ExternalConnectorProductExecutionInput,
-): Promise<ExternalConnectorProductExecution> {
+): Promise<ExternalConnectorProductAdmission> {
 	if (input.message.length === 0 || input.runId.length === 0 || input.workspace.length === 0) {
 		throw new FoundationError("foundation_schema_invalid_shape", "External connector run identity and text are required");
 	}
@@ -162,11 +223,56 @@ export async function executeExternalConnectorProductRun(
 		inspectArtifact: input.inputAdmission.inspectArtifact,
 	});
 	if (!admitted.ok) throw admitted.error;
-
-	const timestamp = (input.now ?? (() => new Date().toISOString()))();
-	const identityToken = token(input.runId, selected.value.descriptor.providerId);
-	const identity = externalConnectorProductIdentity(input.runId, selected.value.descriptor.providerId);
 	const route = modelRouteFor(selected.value, input);
+	let modelProjection: ExternalResolvedModelProjection | undefined;
+	let modelTranslation: ExternalTranslatedModelProjection | undefined;
+	if (selected.value.capabilitySnapshot.modelAccess === "aos_gateway") {
+		const gatewayRoute = input.gatewayModelRoute;
+		if (gatewayRoute === undefined) {
+			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model binding is missing");
+		}
+		const exactProjection = {
+			schemaVersion: 1 as const,
+			provider: gatewayRoute.provider,
+			model: gatewayRoute.model,
+			effort: gatewayRoute.effort,
+			serviceTier: gatewayRoute.serviceTier,
+			fallbackDecision: gatewayRoute.fallbackDecision,
+			bindingDigest: gatewayRoute.bindingDigest,
+		};
+		if (!isExternalResolvedModelProjection(exactProjection)) {
+			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model projection is invalid");
+		}
+		const preflight = modelProjectionPreflight(selected.value.connector);
+		if (preflight === undefined) {
+			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model translation is unavailable");
+		}
+		const translated = preflight.preflightModelProjection(exactProjection);
+		if (!translated.ok) {
+			throw new ExternalConnectorProductError(translated.error.code, `External gateway model translation failed: ${translated.error.reasonCode}`);
+		}
+		modelProjection = exactProjection;
+		modelTranslation = translated.translation;
+	}
+	return {
+		input,
+		selected: selected.value,
+		admittedInput: admitted.input,
+		requestFingerprint: admitted.requestFingerprint,
+		route,
+		...(modelProjection === undefined ? {} : { modelProjection }),
+		...(modelTranslation === undefined ? {} : { modelTranslation }),
+	};
+}
+
+/** Persist an already accepted admission before starting its pure Attempt. */
+export async function persistExternalConnectorProductRunAfterAcceptance(
+	admission: ExternalConnectorProductAdmission,
+): Promise<PreparedExternalConnectorProductRun> {
+	const { input, selected, admittedInput, requestFingerprint, route, modelProjection, modelTranslation } = admission;
+	const timestamp = (input.now ?? (() => new Date().toISOString()))();
+	const identityToken = token(input.runId, selected.descriptor.providerId);
+	const identity = externalConnectorProductIdentity(input.runId, selected.descriptor.providerId);
 	const modelProfile = createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: `model_profile_external_${identityToken}`,
@@ -182,7 +288,7 @@ export async function executeExternalConnectorProductRun(
 	const roleRevision = createRoleRevision({
 		definition: {
 			schemaVersion: 1,
-			roleId: `external.${selected.value.descriptor.providerId}`,
+			roleId: `external.${selected.descriptor.providerId}`,
 			scope: "global",
 			slug: "external-connector",
 			name: "External Connector",
@@ -208,10 +314,10 @@ export async function executeExternalConnectorProductRun(
 		title: "External Connector run",
 		description: "Canonical product execution through an External Connector",
 	}, {
-		clientRequestId: `external-connector:goal:${metadata.id}`,
+		clientRequestId: `external-connector:goal:${metadata.id}:${input.runId}`,
 		expectedRevision: 0,
 	});
-	const artifacts = admitted.input.artifacts.map((artifact) => ({
+	const artifacts = admittedInput.artifacts.map((artifact) => ({
 		schemaVersion: 1 as const,
 		artifactId: artifact.artifactId,
 		mediaType: artifact.mediaType,
@@ -221,10 +327,10 @@ export async function executeExternalConnectorProductRun(
 		schemaVersion: 1,
 		taskId: identity.taskId,
 		goalId: goal.goalId,
-		goal: admitted.input.text,
+		goal: admittedInput.text,
 		kind: "task",
 		title: "External Connector task",
-		description: `Canonical input ${admitted.requestFingerprint}`,
+		description: `Canonical input ${requestFingerprint}`,
 		workspace: input.workspace,
 		capabilityRefs: [],
 		inputs: artifacts,
@@ -247,25 +353,26 @@ export async function executeExternalConnectorProductRun(
 			type: "external_agent_binding",
 			id: `external_binding_${identityToken}`,
 			revision: 1 as const,
-			providerId: selected.value.descriptor.providerId,
-			capabilitySnapshotDigest: selected.value.capabilitySnapshot.digest.value,
-			capabilityRevision: selected.value.capabilitySnapshot.revision,
-			inputFingerprint: admitted.requestFingerprint,
+			providerId: selected.descriptor.providerId,
+			capabilitySnapshotDigest: selected.capabilitySnapshot.digest.value,
+			capabilityRevision: selected.capabilitySnapshot.revision,
+			inputFingerprint: requestFingerprint,
 		},
 		capability: {
 			schemaVersion: 1 as const,
 			type: "capability_binding",
 			id: `capability_binding_${identityToken}`,
 			revision: 1 as const,
-			snapshotDigest: selected.value.capabilityTruth.snapshotDigest.value,
+			snapshotDigest: selected.capabilityTruth.snapshotDigest.value,
 		},
 		model: {
 			schemaVersion: 1 as const,
 			type: "model_broker_binding",
 			id: `model_binding_${identityToken}`,
 			revision: 1 as const,
-			modelAccess: selected.value.capabilitySnapshot.modelAccess,
+			modelAccess: selected.capabilitySnapshot.modelAccess,
 			route: { provider: route.provider, model: route.model, effort: route.effort, serviceTier: route.serviceTier },
+			...(input.gatewayModelRoute === undefined ? {} : { bindingDigest: input.gatewayModelRoute.bindingDigest.value }),
 		},
 		policy: {
 			schemaVersion: 1 as const,
@@ -276,7 +383,7 @@ export async function executeExternalConnectorProductRun(
 		},
 	};
 	const refs = {
-		external: revisionReference("external_agent_binding", sourcePayloads.external.id, sourcePayloads.external, selected.value.descriptor.providerId),
+		external: revisionReference("external_agent_binding", sourcePayloads.external.id, sourcePayloads.external, selected.descriptor.providerId),
 		capability: revisionReference("capability_binding", sourcePayloads.capability.id, sourcePayloads.capability),
 		model: revisionReference("model_broker_binding", sourcePayloads.model.id, sourcePayloads.model),
 		policy: revisionReference("policy_binding", sourcePayloads.policy.id, sourcePayloads.policy),
@@ -292,14 +399,6 @@ export async function executeExternalConnectorProductRun(
 		newBindingId: identity.bindingId,
 		now: () => timestamp,
 	}));
-	const modelGate = await projectExternalModelForExecution({
-		modelAccess: selected.value.capabilitySnapshot.modelAccess,
-		...(selected.value.capabilitySnapshot.modelAccess === "aos_gateway"
-			? { bindingSource: { resolve: () => binding }, fallbackDecision: route.fallbackDecision }
-			: {}),
-	});
-	if (!modelGate.ok) throw new FoundationError("binding_required_fact", `External model projection failed: ${modelGate.error.reasonCode}`);
-
 	const ledger = new SessionLedger(input.session, {
 		ownerId: `external-connector:${binding.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
@@ -315,9 +414,10 @@ export async function executeExternalConnectorProductRun(
 		const durableExecutionInput = {
 			schemaVersion: 1,
 			taskId: persistedTask.value.taskId,
-			requestFingerprint: admitted.requestFingerprint,
-			input: admitted.input,
-			...(modelGate.status === "projected" ? { modelProjection: modelGate.projection } : {}),
+			requestFingerprint,
+			input: admittedInput,
+			...(modelProjection === undefined ? {} : { modelProjection }),
+			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		};
 		await persistImmutable(
 			ledger,
@@ -335,7 +435,7 @@ export async function executeExternalConnectorProductRun(
 		dispatchId: identity.dispatchId,
 		taskId: persistedTask.value.taskId,
 		bindingId: binding.bindingId,
-		taskExecutorProviderId: selected.value.connector.providerId,
+		taskExecutorProviderId: selected.connector.providerId,
 		status: "pending",
 		createdAt: timestamp,
 	}));
@@ -359,16 +459,33 @@ export async function executeExternalConnectorProductRun(
 		attemptId,
 		bindingId: binding.bindingId,
 		bindingEpochId: epoch.bindingEpochId,
-		providerId: selected.value.connector.providerId,
+		providerId: selected.connector.providerId,
 		revision: 0,
 	};
+	return {
+		input,
+		selected,
+		timestamp,
+		task: persistedTask.value,
+		binding,
+		dispatch,
+		initialBindingEpoch: epoch,
+		correlation,
+	};
+}
+
+/** Execute a pre-accepted current Connector run through the canonical terminal chain. */
+export async function executePreparedExternalConnectorProductRun(
+	prepared: PreparedExternalConnectorProductRun,
+): Promise<ExternalConnectorProductExecution> {
+	const { input, selected, timestamp, task, binding, dispatch, initialBindingEpoch: epoch, correlation } = prepared;
 	const settlement = new LayeredResultSettlement(input.session, {
 		ownerId: `external-connector:${binding.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
 	try {
 		const executed = await settlement.executeDispatch({
-			provider: selected.value.connector,
+			provider: selected.connector,
 			dispatch,
 			binding,
 			initialBindingEpoch: epoch,
@@ -379,7 +496,7 @@ export async function executeExternalConnectorProductRun(
 		const taskResultId = `task_result_${input.runId}`;
 		const settled = await settlement.settle({
 			taskResultId,
-			task: persistedTask.value,
+			task,
 			sourceAttemptReceiptIds: [executed.value.receipt.attemptReceiptId],
 			summary: executed.value.receipt.status === "succeeded" ? "External connector run completed" : "External connector run did not complete",
 			artifacts: executed.value.receipt.artifacts,
@@ -404,11 +521,20 @@ export async function executeExternalConnectorProductRun(
 			attemptReceiptIds: [executed.value.receipt.attemptReceiptId],
 			taskResultId: settled.value.taskResultId,
 			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+			...(terminalStatus === "cancelled" ? {
+				terminalErrorCode: "run_cancelled",
+				terminalError: {
+					code: "run_cancelled",
+					message: "External connector run was cancelled",
+					category: "cancelled" as const,
+					retryable: false,
+				},
+			} : {}),
 			completedAt: timestamp,
 		});
 		if (!finalized.ok) throw finalized.error;
 		return {
-			task: persistedTask.value,
+			task,
 			binding,
 			dispatch,
 			initialBindingEpoch: epoch,
@@ -419,4 +545,12 @@ export async function executeExternalConnectorProductRun(
 	} finally {
 		await settlement.release();
 	}
+}
+
+/** Prepare and execute one current External Connector run. */
+export async function executeExternalConnectorProductRun(
+	input: ExternalConnectorProductExecutionInput,
+): Promise<ExternalConnectorProductExecution> {
+	const admission = await prepareExternalConnectorProductRun(input);
+	return executePreparedExternalConnectorProductRun(await persistExternalConnectorProductRunAfterAcceptance(admission));
 }

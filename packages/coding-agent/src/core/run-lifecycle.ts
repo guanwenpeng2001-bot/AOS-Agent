@@ -674,6 +674,10 @@ export type AutomationErrorCode =
 	| "audit_replay_incomplete"
 	| "external_mapping_invalid"
 	| "external_mapping_conflict"
+	| "external_binding_invalid"
+	| "external_capability_mismatch"
+	| "external_resource_limit_exceeded"
+	| "external_path_outside_workspace"
 	| "audit_persistence_failed"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
@@ -814,6 +818,10 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_replay_incomplete" ||
 		value === "external_mapping_invalid" ||
 		value === "external_mapping_conflict" ||
+		value === "external_binding_invalid" ||
+		value === "external_capability_mismatch" ||
+		value === "external_resource_limit_exceeded" ||
+		value === "external_path_outside_workspace" ||
 		value === "audit_persistence_failed" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||

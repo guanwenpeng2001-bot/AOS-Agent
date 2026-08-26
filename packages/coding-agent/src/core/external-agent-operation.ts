@@ -28,7 +28,9 @@ import {
 } from "./external-agent-input.ts";
 import {
 	isExternalResolvedModelProjection,
+	isExternalTranslatedModelProjection,
 	type ExternalResolvedModelProjection,
+	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
 
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
@@ -80,6 +82,7 @@ export interface ExternalConnectorExecutionInput {
 	readonly requestFingerprint: CanonicalExternalAgentRequestFingerprint;
 	readonly input: CanonicalExternalAgentInput;
 	readonly modelProjection?: ExternalResolvedModelProjection;
+	readonly modelTranslation?: ExternalTranslatedModelProjection;
 }
 
 export interface ExternalConnectorDurableStore {
@@ -245,8 +248,8 @@ export function cloneExternalConnectorOperation(value: unknown): ExternalConnect
 }
 
 const OPERATION_TRANSITIONS: Readonly<Record<ExternalConnectorOperationStatus, ReadonlySet<ExternalConnectorOperationStatus>>> = {
-	prepared: new Set(["start_intent", "reconcile_required"]),
-	start_intent: new Set(["running", "reconcile_required"]),
+	prepared: new Set(["start_intent", "terminal", "reconcile_required"]),
+	start_intent: new Set(["running", "terminal", "reconcile_required"]),
 	running: new Set(["cancelling", "terminal", "reconcile_required"]),
 	cancelling: new Set(["terminal", "reconcile_required"]),
 	terminal: new Set(),
@@ -395,11 +398,18 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const modelProjection = record.modelProjection === undefined
 			? undefined
 			: isExternalResolvedModelProjection(record.modelProjection) ? record.modelProjection : null;
+		const modelTranslation = record.modelTranslation === undefined
+			? undefined
+			: isExternalTranslatedModelProjection(record.modelTranslation) ? record.modelTranslation : null;
 		if (
 			!checked.ok ||
 			modelProjection === null ||
+			modelTranslation === null ||
+			(modelProjection === undefined) !== (modelTranslation === undefined) ||
+			(modelProjection !== undefined && modelTranslation !== undefined &&
+				modelProjection.bindingDigest.value !== modelTranslation.sourceBindingDigest.value) ||
 			Reflect.ownKeys(record).some(
-				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "modelProjection"].includes(key),
+				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "modelProjection", "modelTranslation"].includes(key),
 			) ||
 			record.schemaVersion !== 1 ||
 			record.taskId !== taskId ||
@@ -416,6 +426,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			requestFingerprint: record.requestFingerprint as CanonicalExternalAgentRequestFingerprint,
 			input: checked.value,
 			...(modelProjection === undefined ? {} : { modelProjection }),
+			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		});
 	}
 

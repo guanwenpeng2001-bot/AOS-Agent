@@ -4,7 +4,12 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
-import { Agent } from "@aos-agent/agent-core";
+import {
+	Agent,
+	SessionLedger,
+	createConnectorCapabilitySnapshot,
+	type ConnectorCapabilitySnapshot,
+} from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
@@ -18,6 +23,15 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
+import {
+	createDurableExternalAgentConnector,
+	createExternalConnectorRegistry,
+} from "../src/index.ts";
+import {
+	SessionExternalConnectorDurableStore,
+	type ExternalConnectorDurableStore,
+} from "../src/core/external-agent-operation.ts";
+import type { ExternalModelSupportMatrix } from "../src/core/external-model-projection.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
@@ -38,6 +52,15 @@ import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorDriverSpawnRequest,
+	ExternalConnectorDriverWriteRequest,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../src/core/vendor-drivers/types.ts";
+import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -317,6 +340,178 @@ function businessTerminalView(terminal: BusinessTerminal) {
 
 function sessionLedger(session: AgentSession): AgentSessionLedgerProjection {
 	return getAgentSessionLedger(session);
+}
+
+function rpcExactModelSupportMatrix(unsupportedServiceTier = false): ExternalModelSupportMatrix {
+	const exact = (targetField: string) => ({
+		supported: true as const,
+		targetField,
+		accepts: (value: string) => value.length > 0,
+		translate: (value: string) => ({ kind: "exact" as const, value }),
+	});
+	return {
+		provider: exact("spawnProvider"),
+		model: exact("spawnModel"),
+		effort: exact("spawnEffort"),
+		serviceTier: unsupportedServiceTier ? { supported: false } : exact("spawnServiceTier"),
+		fallbackDecision: exact("spawnFallbackDecision"),
+		bindingDigest: exact("spawnBindingDigest"),
+	};
+}
+
+class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
+	spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
+	spawnCalls = 0;
+	matrixReads = 0;
+	readonly #matrix: ExternalModelSupportMatrix | undefined;
+
+	constructor(matrix?: ExternalModelSupportMatrix) {
+		this.#matrix = matrix;
+	}
+
+	get modelSupportMatrix(): ExternalModelSupportMatrix | undefined {
+		this.matrixReads += 1;
+		return this.#matrix;
+	}
+
+	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
+		this.spawnCalls += 1;
+		this.spawnedRequest = request;
+		return {
+			externalSessionId: "rpc-external-session",
+			externalTurnId: "rpc-external-turn",
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
+	}
+
+	events(): AsyncIterable<never> {
+		return {
+			[Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+		};
+	}
+
+	async connect(): Promise<ExternalConnectorDriverHandle> {
+		throw new Error("resume is unavailable");
+	}
+
+	async lookup(): Promise<ExternalConnectorDriverLookup> {
+		return { status: "missing" };
+	}
+
+	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		return {
+			externalSessionId: handle.externalSessionId,
+			externalTurnId: handle.externalTurnId,
+			operationNonce: handle.operationNonce,
+			status: "succeeded",
+			artifacts: [],
+			sideEffectState: "none",
+			producedAt: "2026-08-27T00:00:00.000Z",
+		};
+	}
+
+	async write(_handle: ExternalConnectorDriverHandle, _request: ExternalConnectorDriverWriteRequest): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<ExternalConnectorTerminalEvidence | undefined> { return undefined; }
+	async dispose(): Promise<void> {}
+}
+
+interface RpcExternalConnectorFixture {
+	readonly driver: RpcExternalConnectorDriver;
+	readonly processController: ReturnType<typeof createExternalConnectorTestSupervision>["processController"];
+	readonly selection: {
+		readonly providerId: string;
+		readonly revision: number;
+		readonly capabilitySnapshotDigest: ConnectorCapabilitySnapshot["digest"];
+	};
+}
+
+async function installRpcExternalConnector(
+	runtimeHost: AgentSessionRuntime,
+	options: {
+		readonly modelAccess: "none" | "agent_owned" | "aos_gateway";
+		readonly unsupportedServiceTier?: boolean;
+		readonly executionInputDelayMs?: number;
+	},
+): Promise<RpcExternalConnectorFixture> {
+	const providerId = `rpc.current.${options.modelAccess.replace("_", "-")}`;
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId,
+		revision: 1,
+		protocol: { name: "rpc-current-fixture", version: "1" },
+		modelAccess: options.modelAccess,
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
+	});
+	const canonicalStore = new SessionExternalConnectorDurableStore(new SessionLedger(
+		getAgentCanonicalSession(runtimeHost.session),
+		{ writer: runtimeHost.session.agentRuntimeComposition.harness.t5.writer },
+	));
+	const store: ExternalConnectorDurableStore = {
+		readAttempt: (attemptId) => canonicalStore.readAttempt(attemptId),
+		readBinding: (bindingId) => canonicalStore.readBinding(bindingId),
+		readExecutionInput: async (taskId) => {
+			if (options.executionInputDelayMs !== undefined) await sleep(options.executionInputDelayMs);
+			return canonicalStore.readExecutionInput(taskId);
+		},
+		readOperation: (attemptId) => canonicalStore.readOperation(attemptId),
+		writeOperation: (operation) => canonicalStore.writeOperation(operation),
+		readMapping: (attemptId) => canonicalStore.readMapping(attemptId),
+		writeMapping: (mapping, correlation) => canonicalStore.writeMapping(mapping, correlation),
+		readReceipt: (attemptId) => canonicalStore.readReceipt(attemptId),
+		writeReceipt: (receipt) => canonicalStore.writeReceipt(receipt),
+	};
+	const driver = new RpcExternalConnectorDriver(
+		options.modelAccess === "aos_gateway"
+			? rpcExactModelSupportMatrix(options.unsupportedServiceTier)
+			: undefined,
+	);
+	const supervision = createExternalConnectorTestSupervision();
+	const connector = createDurableExternalAgentConnector({
+		providerId,
+		capability: snapshot,
+		store,
+		driver,
+		supervision: supervision.options,
+		now: () => "2026-08-27T00:00:00.000Z",
+		operationNonce: () => "rpc-operation-nonce",
+	});
+	const registry = createExternalConnectorRegistry();
+	const descriptor = {
+		schemaVersion: 1 as const,
+		providerId,
+		providerClass: "external_connector" as const,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+	const registered = await registry.register({
+		descriptor,
+		connector,
+		trusted: true,
+		...(options.modelAccess === "aos_gateway" ? {
+			capabilityEvidence: {
+				aosGateway: {
+					declaration: { id: "rpc.aos-gateway", revision: 1, reachable: true as const },
+					handler: { id: "rpc.aos-gateway.handler", invoke: () => undefined },
+				},
+			},
+		} : {}),
+	});
+	if (!registered.ok) throw registered.error;
+	vi.spyOn(runtimeHost.session, "getExternalConnectorRegistry").mockReturnValue(registry);
+	return {
+		driver,
+		processController: supervision.processController,
+		selection: {
+			providerId,
+			revision: snapshot.revision,
+			capabilitySnapshotDigest: snapshot.digest,
+		},
+	};
 }
 
 function transportRunRecord(sessionManager: AgentSessionLedgerProjection, runId: string): Record<string, unknown> | undefined {
@@ -912,6 +1107,231 @@ describe("RPC Automation Host run lifecycle", () => {
 		} finally {
 			await controller.shutdown();
 			await cleanup();
+		}
+	});
+
+	it("runs none and agent-owned External Connectors through RPC without a local model preflight", async () => {
+		for (const modelAccess of ["none", "agent_owned"] as const) {
+			const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+			try {
+				const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess });
+				vi.spyOn(harness.runtimeHost.session, "model", "get").mockReturnValue(undefined);
+				await harness.controller.handleCommand({
+					id: `external-${modelAccess}-init`,
+					type: "initialize",
+					protocolVersion: 1,
+				});
+				await harness.controller.handleCommand({
+					id: `external-${modelAccess}-start`,
+					type: "run.start",
+					message: `execute with ${modelAccess}`,
+					externalConnector: fixture.selection,
+				});
+				await vi.waitFor(() => {
+					expect(harness.records.filter((record) =>
+						record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
+					)).toHaveLength(1);
+				});
+				expect(fixture.driver.spawnCalls).toBe(1);
+				expect(fixture.driver.matrixReads).toBe(0);
+				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" }));
+			} finally {
+				await harness.controller.shutdown();
+				await harness.cleanup();
+			}
+		}
+	});
+
+	it("projects and translates the exact resolved AOS gateway binding through RPC", async () => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "aos_gateway" });
+			await harness.controller.handleCommand({ id: "external-gateway-init", type: "initialize", protocolVersion: 1 });
+			await harness.controller.handleCommand({
+				id: "external-gateway-start",
+				type: "run.start",
+				message: "execute with exact gateway route",
+				externalConnector: fixture.selection,
+				modelRoute: {
+					candidates: [{
+						provider: DEFAULT_MODEL.provider,
+						id: DEFAULT_MODEL.id,
+						thinkingLevel: "medium",
+						serviceTier: "priority",
+					}],
+				},
+			});
+			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined());
+			const request = fixture.driver.spawnedRequest!;
+			expect(request.modelProjection).toMatchObject({
+				provider: DEFAULT_MODEL.provider,
+				model: DEFAULT_MODEL.id,
+				effort: "medium",
+				serviceTier: "priority",
+				fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+			});
+			expect(request.modelTranslation).toMatchObject({
+				sourceBindingDigest: request.modelProjection?.bindingDigest,
+				fields: {
+					provider: { targetField: "spawnProvider", value: DEFAULT_MODEL.provider },
+					model: { targetField: "spawnModel", value: DEFAULT_MODEL.id },
+					effort: { targetField: "spawnEffort", value: "medium" },
+					serviceTier: { targetField: "spawnServiceTier", value: "priority" },
+				},
+			});
+			expect(fixture.driver.matrixReads).toBeGreaterThanOrEqual(2);
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })));
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("rejects an unsupported gateway translation through RPC before acceptance or Foundation side effects", async () => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "aos_gateway",
+				unsupportedServiceTier: true,
+			});
+			await harness.controller.handleCommand({ id: "external-gateway-reject-init", type: "initialize", protocolVersion: 1 });
+			const response = await harness.controller.dispatch({
+				id: "external-gateway-reject",
+				type: "run.start",
+				message: "reject unsupported gateway route",
+				externalConnector: fixture.selection,
+				modelRoute: {
+					candidates: [{
+						provider: DEFAULT_MODEL.provider,
+						id: DEFAULT_MODEL.id,
+						thinkingLevel: "medium",
+						serviceTier: "priority",
+					}],
+				},
+			});
+			expect(response).toMatchObject({ success: false, error: { code: "external_binding_invalid" } });
+			const missingField = await harness.controller.dispatch({
+				id: "external-gateway-missing-tier",
+				type: "run.start",
+				message: "reject incomplete gateway route",
+				externalConnector: fixture.selection,
+				modelRoute: {
+					candidates: [{
+						provider: DEFAULT_MODEL.provider,
+						id: DEFAULT_MODEL.id,
+						thinkingLevel: "medium",
+					}],
+				},
+			});
+			expect(missingField).toMatchObject({ success: false, error: { code: "external_binding_invalid" } });
+			for (const objectType of ["goal", "task", "attempt"]) {
+				expect(await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType })).toEqual([]);
+			}
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("rejects raw and unavailable canonical RPC resources before acceptance or connector side effects", async () => {
+		const rejectedCommands: Array<{ readonly id: string; readonly extra: Record<string, unknown> }> = [
+			{ id: "external-raw-image", extra: { images: [{ type: "image", data: "AA==", mimeType: "image/png" }] } },
+			{ id: "external-unsupported-ref", extra: { artifactRefs: [{ artifactId: "1".repeat(64) }] } },
+			{ id: "external-oversize-ref", extra: { canonicalInput: { sizeBytes: 33 * 1024 * 1024 } } },
+			{ id: "external-untrusted-ref", extra: { canonicalInput: { trust: "untrusted" } } },
+			{ id: "external-workspace-escape", extra: { canonicalInput: { relativePath: "../escape" } } },
+		];
+		for (const rejected of rejectedCommands) {
+			const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+			try {
+				const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+				await harness.controller.handleCommand({ id: `${rejected.id}-init`, type: "initialize", protocolVersion: 1 });
+				const response = await harness.controller.dispatch({
+					id: rejected.id,
+					type: "run.start",
+					message: "reject unsafe resource",
+					externalConnector: fixture.selection,
+					...rejected.extra,
+				} as RpcCommand);
+				expect(response).toMatchObject({ success: false, error: { code: "external_binding_invalid" } });
+				for (const objectType of ["goal", "task", "attempt"]) {
+					expect(await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType })).toEqual([]);
+				}
+				expect(fixture.processController.launchCalls).toBe(0);
+				expect(fixture.driver.spawnCalls).toBe(0);
+			} finally {
+				await harness.controller.shutdown();
+				await harness.cleanup();
+			}
+		}
+	});
+
+	it("settles immediate External Connector cancellation canonically without a process or driver launch", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				executionInputDelayMs: 100,
+			});
+			await harness.controller.handleCommand({ id: "external-cancel-init", type: "initialize", protocolVersion: 1 });
+			await harness.controller.handleCommand({
+				id: "external-cancel-start",
+				type: "run.start",
+				message: "cancel before Attempt execution",
+				externalConnector: fixture.selection,
+			});
+			const accepted = harness.records.find(
+				(record) => record.type === "response" && record.id === "external-cancel-start" && record.success,
+			);
+			const runId = (accepted as { data?: { runId?: string } } | undefined)?.data?.runId;
+			expect(runId).toBeDefined();
+			await harness.controller.handleCommand({ id: "external-cancel", type: "run.cancel", runId: runId! });
+			await vi.waitFor(() => {
+				expect(harness.records.filter((record) =>
+					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
+				)).toHaveLength(1);
+			});
+			expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.cancelled" }));
+			const receipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType: "run_receipt" });
+			expect(receipts).toHaveLength(1);
+			expect(receipts[0]).toMatchObject({ kind: "fact", payload: { terminalStatus: "cancelled" } });
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("settles an External Connector deadline once without launching after the signal wins", async () => {
+		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				executionInputDelayMs: 100,
+			});
+			await harness.controller.handleCommand({ id: "external-deadline-init", type: "initialize", protocolVersion: 1 });
+			await harness.controller.handleCommand({
+				id: "external-deadline-start",
+				type: "run.start",
+				message: "deadline before Attempt execution",
+				externalConnector: fixture.selection,
+				deadlineAt: new Date(Date.now() + 25).toISOString(),
+			});
+			await vi.waitFor(() => {
+				expect(harness.records.filter((record) =>
+					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
+				)).toHaveLength(1);
+			}, { timeout: 5_000 });
+			const receipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType: "run_receipt" });
+			expect(receipts).toHaveLength(1);
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
 		}
 	});
 

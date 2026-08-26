@@ -30,6 +30,7 @@ export interface ModelReference {
 	modelId?: string;
 	api?: string;
 	thinkingLevel?: string;
+	serviceTier?: string;
 }
 
 export type ModelReferenceInput = ModelReference | string;
@@ -40,6 +41,7 @@ export interface NormalizedModelReference {
 	readonly id: string;
 	readonly api?: string;
 	readonly thinkingLevel?: string;
+	readonly serviceTier?: string;
 }
 
 /**
@@ -55,6 +57,7 @@ export interface ModelRouteCandidate {
 	modelId?: string;
 	api?: string;
 	thinkingLevel?: string;
+	serviceTier?: string;
 	priority?: number;
 	weight?: number;
 	enabled?: boolean;
@@ -333,12 +336,18 @@ export function parseModelReference(input: unknown): ModelReferenceParseResult {
 	if (input.thinkingLevel !== undefined && !thinkingLevel) {
 		return invalidReference("Model reference contains an unsafe thinking level");
 	}
+	const serviceTier =
+		input.serviceTier === undefined ? undefined : validIdentityPart(input.serviceTier, "service tier");
+	if (input.serviceTier !== undefined && !serviceTier) {
+		return invalidReference("Model reference contains an unsafe service tier");
+	}
 
 	const reference: NormalizedModelReference = {
 		provider,
 		id,
 		...(api !== undefined ? { api } : {}),
 		...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+		...(serviceTier !== undefined ? { serviceTier } : {}),
 	};
 	return deepFreeze({ ok: true, reference: deepFreeze(reference) });
 }
@@ -355,7 +364,7 @@ export function isSafeModelReference(input: unknown): input is ModelReferenceInp
 }
 
 function referencesEqual(a: NormalizedModelReference, b: NormalizedModelReference): boolean {
-	return a.provider === b.provider && a.id === b.id && a.api === b.api && a.thinkingLevel === b.thinkingLevel;
+	return a.provider === b.provider && a.id === b.id && a.api === b.api && a.thinkingLevel === b.thinkingLevel && a.serviceTier === b.serviceTier;
 }
 
 interface NormalizedRouteCandidate {
@@ -403,6 +412,7 @@ function parseCandidate(input: unknown): CandidateParseResult {
 		modelId: input.modelId,
 		api: input.api,
 		thinkingLevel: input.thinkingLevel,
+		serviceTier: input.serviceTier,
 	};
 	const hasDirectReference = Object.values(directReference).some((value) => value !== undefined);
 	if (referenceInput === undefined && hasDirectReference) referenceInput = directReference;
