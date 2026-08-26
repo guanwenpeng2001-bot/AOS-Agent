@@ -58,9 +58,11 @@ import {
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionReadProjection,
+	type ExtensionBindings,
 	parseSkillBlock,
 } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -494,8 +496,7 @@ export class InteractiveMode {
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
 
-	// Agent subscription unsubscribe function
-	private unsubscribe?: () => void;
+	private currentSessionBinding: { session: AgentSession; unsubscribe?: () => void };
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -569,15 +570,12 @@ export class InteractiveMode {
 
 	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
+		this.currentSessionBinding = { session: runtimeHost.session };
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
-		this.runtimeHost.setBeforeSessionInvalidate(() => {
-			this.resetExtensionUI();
-		});
-		this.runtimeHost.setRebindSession(async () => {
-			await this.rebindCurrentSession({ renderBeforeBind: true });
-		});
+		this.runtimeHost.setPrepareSessionRebind((nextSession, previousSession) =>
+			this.prepareSessionRebind(nextSession, previousSession));
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
 			tuiMode,
@@ -1997,16 +1995,16 @@ export class InteractiveMode {
 	/**
 	 * Initialize the extension system with TUI-based UI context.
 	 */
-	private async bindCurrentSessionExtensions(): Promise<void> {
+	private createCurrentSessionExtensionBindings(session: AgentSession): ExtensionBindings {
 		const uiContext = this.createExtensionUIContext();
-		await this.session.bindExtensions({
+		return {
 			uiContext,
 			mode: "tui",
 			abortHandler: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			commandContextActions: {
-				waitForIdle: () => this.session.waitForIdle(),
+				waitForIdle: () => session.waitForIdle(),
 				newSession: async (options) => {
 					this.clearStatusIndicator();
 					try {
@@ -2028,7 +2026,7 @@ export class InteractiveMode {
 					}
 				},
 				navigateTree: async (targetId, options) => {
-					const result = await this.session.navigateTree(targetId, {
+					const result = await session.navigateTree(targetId, {
 						summarize: options?.summarize,
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
@@ -2056,22 +2054,31 @@ export class InteractiveMode {
 			},
 			shutdownHandler: () => {
 				this.shutdownRequested = true;
-				if (this.session.isIdle) {
+				if (session.isIdle) {
 					void this.shutdown();
 				}
 			},
 			onError: (error) => {
 				this.showExtensionError(error.extensionPath, error.error, error.stack);
 			},
-		});
+		};
+	}
 
-		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+	private finishCurrentSessionExtensionBinding(session: AgentSession): void {
+
+		setRegisteredThemes(session.resourceLoader.getThemes().themes);
 		this.setupAutocompleteProvider();
 
-		const extensionRunner = this.session.extensionRunner;
+		const extensionRunner = session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
 		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		this.showStartupNoticesIfNeeded();
+	}
+
+	private async bindCurrentSessionExtensions(): Promise<void> {
+		const session = this.session;
+		await session.bindExtensions(this.createCurrentSessionExtensionBindings(session));
+		this.finishCurrentSessionExtensionBinding(session);
 	}
 
 	private applyFullscreenScrollbarSetting(): void {
@@ -2104,29 +2111,63 @@ export class InteractiveMode {
 
 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
 		const session = this.session;
-
-		this.unsubscribe?.();
-		this.unsubscribe = undefined;
+		this.currentSessionBinding?.unsubscribe?.();
+		if (this.currentSessionBinding !== undefined) this.currentSessionBinding.unsubscribe = undefined;
 		this.applyRuntimeSettings();
-
 		if (options.renderBeforeBind) {
 			this.renderCurrentSessionState();
-			this.subscribeToAgent();
+			this.subscribeToAgent(this.currentSessionBinding);
 		}
-
 		await this.bindCurrentSessionExtensions();
-
-		if (this.session !== session) {
-			return;
-		}
-
-		if (!options.renderBeforeBind) {
-			this.subscribeToAgent();
-		}
+		if (this.session !== session) return;
+		if (!options.renderBeforeBind) this.subscribeToAgent(this.currentSessionBinding);
 
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
+	}
+
+	private async prepareSessionRebind(
+		nextSession: AgentSession,
+		previousSession: AgentSession,
+	): Promise<PreparedSessionScopeRebind> {
+		if (this.currentSessionBinding.session !== previousSession) {
+			throw new Error("Interactive host session binding does not match the current runtime scope");
+		}
+		const previousBinding = this.currentSessionBinding;
+		const candidateBinding = { session: nextSession } as {
+			session: AgentSession;
+			unsubscribe?: () => void;
+		};
+		try {
+			await nextSession.prepareExtensionBindings(this.createCurrentSessionExtensionBindings(nextSession));
+			this.subscribeToAgent(candidateBinding);
+		} catch (error) {
+			candidateBinding.unsubscribe?.();
+			throw error;
+		}
+		return {
+			commit: () => {
+				this.currentSessionBinding = candidateBinding;
+			},
+			prepareActivation: () => {
+				this.applyRuntimeSettings();
+				this.renderCurrentSessionState();
+			},
+			activate: async () => {
+				await nextSession.activateExtensionBindings();
+				if (this.currentSessionBinding !== candidateBinding) return;
+				this.finishCurrentSessionExtensionBinding(nextSession);
+				await this.updateAvailableProviderCount();
+				this.updateEditorBorderColor();
+				this.updateTerminalTitle();
+			},
+			disposeCandidate: () => candidateBinding.unsubscribe?.(),
+			disposePrevious: () => {
+				previousBinding.unsubscribe?.();
+				this.resetExtensionUI();
+			},
+		};
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -3281,8 +3322,9 @@ export class InteractiveMode {
 		};
 	}
 
-	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
+	private subscribeToAgent(binding: { session: AgentSession; unsubscribe?: () => void }): void {
+		binding.unsubscribe = binding.session.subscribe(async (event) => {
+			if (this.currentSessionBinding !== binding) return;
 			await this.handleEvent(event);
 		});
 	}
@@ -6072,7 +6114,7 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			await this.runtimeHost.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
 			restoreChatBeforeSessionStart();
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
@@ -7158,9 +7200,7 @@ export class InteractiveMode {
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
-		}
+		this.currentSessionBinding.unsubscribe?.();
 		if (this.isInitialized) {
 			this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;

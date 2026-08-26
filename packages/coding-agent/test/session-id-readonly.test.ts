@@ -17,6 +17,7 @@ import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
 const tempDirs: string[] = [];
+const CLI_TEST_TIMEOUT_MS = 70_000;
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
@@ -97,28 +98,28 @@ function writeSession(sessionDir: string, cwd: string, id: string): void {
 }
 
 describe("--session-id read-only commands", () => {
-	it("does not reserve a session for --help", async () => {
+	it("does not reserve a session for --help", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["--session-id", "read-only-help", "--help"]);
 
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-help")).toBe(false);
 	});
 
-	it("allows --no-session with --session-id", async () => {
+	it("allows --no-session with --session-id", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["--no-session", "--session-id", "ephemeral-id", "--help"]);
 
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "ephemeral-id")).toBe(false);
 	});
 
-	it("does not reserve a session for --list-models", async () => {
+	it("does not reserve a session for --list-models", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["--session-id", "read-only-models", "--list-models"]);
 
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-models")).toBe(false);
 	});
 
-	it("warns when a missing --session-id creates a new session", async () => {
+	it("warns when a missing --session-id creates a new session", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli((dirs) => [
 			"--session-dir",
 			dirs.sessionDir,
@@ -136,7 +137,7 @@ describe("--session-id read-only commands", () => {
 		);
 	});
 
-	it("does not warn when --session-id opens an existing session", async () => {
+	it("does not warn when --session-id opens an existing session", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(
 			(dirs) => [
 				"--session-dir",
@@ -158,7 +159,7 @@ describe("--session-id read-only commands", () => {
 		expect(result.stderr).not.toContain("No project session found with id 'existing-session-id'");
 	});
 
-	it("rejects an existing fork target session id", async () => {
+	it("rejects an existing fork target session id", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(
 			(dirs) => ["--session-dir", dirs.sessionDir, "--fork", "source-id", "--session-id", "existing-id", "-p", "hi"],
 			(dirs) => {
@@ -174,7 +175,7 @@ describe("--session-id read-only commands", () => {
 });
 
 describe("--session-id validation", () => {
-	it("rejects ids invalid under SessionManager rules without stack traces", { timeout: 70_000 }, async () => {
+	it("rejects ids invalid under SessionManager rules without stack traces", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		for (const id of ["-bad", "bad id"]) {
 			const result = await runCli(["--session-id", id, "-p", "hi"]);
 

@@ -38,7 +38,12 @@ describe("issue #2753 reload stale resource settings", () => {
 			modelsPath: join(agentDir, "models.json"),
 		});
 
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir,
@@ -67,13 +72,15 @@ describe("issue #2753 reload stale resource settings", () => {
 					noThemes: true,
 				},
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: faux.getModel(),
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: faux.getModel(),
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};

@@ -751,6 +751,7 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 		initialSessionName = name;
 	}
+	if (initialSessionName !== undefined) sessionManager.appendSessionInfo(initialSessionName);
 	time("createSessionManager");
 
 	const trustStore = new ProjectTrustStore(agentDir);
@@ -772,6 +773,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
+		registerCandidateSession,
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -886,6 +888,7 @@ export async function main(args: string[], options?: MainOptions) {
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
 		});
+		registerCandidateSession(created.session);
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);

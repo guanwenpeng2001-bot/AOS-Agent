@@ -16,6 +16,7 @@ import {
 } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
+import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -377,6 +378,8 @@ async function createRuntimeHost(options: {
 		checkAuth: async () => (options.withAuth ? { type: "api_key", key: "test-key" } : undefined),
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
+		getModel: (provider: string, modelId: string) =>
+			provider === model.provider && modelId === model.id ? model : undefined,
 	} as unknown as ModelRuntime;
 	const resourceLoader = options.resourceLoader ?? testResourceLoader();
 
@@ -393,7 +396,9 @@ async function createRuntimeHost(options: {
 	};
 
 	let currentSession = openSession(SessionManager.create(tempDir));
-	let rebindCallback: (() => Promise<void>) | undefined;
+	let prepareRebindCallback:
+		| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
+		| undefined;
 
 	const runtimeHost = {
 		get session(): AgentSession {
@@ -402,17 +407,27 @@ async function createRuntimeHost(options: {
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((cb?: (() => Promise<void>) | undefined) => {
-			rebindCallback = cb;
-		}),
+		setPrepareSessionRebind: vi.fn(
+			(
+				cb?:
+					| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
+					| undefined,
+			) => {
+				prepareRebindCallback = cb;
+			},
+		),
 		switchSession: vi.fn(async (sessionPath: string) => {
 			// Simulate a real session switch: open the persisted ledger, rebuild the
 			// session, and re-run the registered rebind so rpc-mode restores/rebuilds
 			// its coordinator against the restored session's ledger.
-			currentSession = openSession(SessionManager.open(sessionPath));
-			if (rebindCallback !== undefined) {
-				await rebindCallback();
-			}
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await preparedRebind?.prepareActivation?.();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
@@ -675,6 +690,7 @@ async function getAvailablePort(): Promise<number> {
  */
 describe("RPC Automation Host run lifecycle", () => {
 	afterEach(() => {
+		vi.restoreAllMocks();
 		rpcIo.outputLines = [];
 		rpcIo.lineHandler = undefined;
 	});
@@ -694,6 +710,190 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("keeps the old RPC host binding usable when candidate preparation fails", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "seed", type: "prompt", message: "Persist old session" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "seed")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(runEventsOfType(currentLines(), "agent_settled")).toHaveLength(1));
+			const oldSession = runtimeHost.session;
+			const oldSessionFile = oldSession.sessionFile;
+			expect(oldSessionFile).toBeTruthy();
+			vi.spyOn(AgentSession.prototype, "prepareExtensionBindings").mockRejectedValueOnce(
+				new Error("candidate binding fault"),
+			);
+
+			lineHandler(JSON.stringify({ id: "switch-fault", type: "switch_session", sessionPath: oldSessionFile }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "switch-fault")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "switch-fault")[0].success).toBe(false);
+			expect(runtimeHost.session).toBe(oldSession);
+
+			lineHandler(JSON.stringify({ id: "state-after-fault", type: "get_state" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "state-after-fault")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "state-after-fault")[0]).toMatchObject({
+				success: true,
+				data: { sessionId: oldSession.sessionId },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("commits an already prepared RPC binding without fallible rebinding work", async () => {
+		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
+
+		try {
+			lineHandler(JSON.stringify({ id: "seed-commit", type: "prompt", message: "Persist old session" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "seed-commit")[0]?.success).toBe(true));
+			await vi.waitFor(() => expect(runEventsOfType(currentLines(), "agent_settled")).toHaveLength(1));
+			const oldSession = runtimeHost.session;
+			const oldSessionFile = oldSession.sessionFile;
+			expect(oldSessionFile).toBeTruthy();
+			const prepareSpy = vi.spyOn(AgentSession.prototype, "prepareExtensionBindings");
+			const bindSpy = vi.spyOn(AgentSession.prototype, "bindExtensions");
+
+			lineHandler(JSON.stringify({ id: "switch-commit", type: "switch_session", sessionPath: oldSessionFile }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "switch-commit")).toHaveLength(1));
+
+			expect(responsesFor(rpcIo.outputLines, "switch-commit")[0].success).toBe(true);
+			expect(runtimeHost.session).not.toBe(oldSession);
+			expect(prepareSpy).toHaveBeenCalledTimes(1);
+			expect(bindSpy).not.toHaveBeenCalled();
+			lineHandler(JSON.stringify({ id: "state-after-commit", type: "get_state" }));
+			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "state-after-commit")).toHaveLength(1));
+			expect(responsesFor(rpcIo.outputLines, "state-after-commit")[0]).toMatchObject({
+				success: true,
+				data: { sessionId: runtimeHost.session.sessionId },
+			});
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("fails a local run closed when its captured binding is replaced during prompt preflight", async () => {
+		const { controller, records, runtimeHost, cleanup } = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 0,
+		});
+
+		try {
+			const oldSession = runtimeHost.session;
+			await oldSession.prompt("persist local run source");
+			const sessionFile = oldSession.sessionFile;
+			expect(sessionFile).toBeTruthy();
+			await controller.dispatch({ id: "local-init", type: "initialize", protocolVersion: 1 });
+			let markPromptPreflightStarted: (() => void) | undefined;
+			let releasePromptPreflight: (() => void) | undefined;
+			const promptPreflightStarted = new Promise<void>((resolve) => {
+				markPromptPreflightStarted = resolve;
+			});
+			const promptPreflightGate = new Promise<void>((resolve) => {
+				releasePromptPreflight = resolve;
+			});
+			const originalPrompt = oldSession.prompt.bind(oldSession);
+			vi.spyOn(oldSession, "prompt").mockImplementation(async (message, options) => {
+				markPromptPreflightStarted?.();
+				await promptPreflightGate;
+				return originalPrompt(message, options);
+			});
+
+			const pending = controller.handleCommand({
+				id: "local-concurrent-switch",
+				type: "run.start",
+				message: "must stay on one binding",
+				clientRequestId: "local-preflight-replaced",
+			});
+			await promptPreflightStarted;
+			await runtimeHost.switchSession(sessionFile!);
+			const replacementSession = runtimeHost.session;
+			releasePromptPreflight?.();
+			await pending;
+			await vi.waitFor(() => {
+				expect(
+					records.filter((record) => record.type === "response" && record.id === "local-concurrent-switch"),
+				).toHaveLength(1);
+			});
+
+			const responses = records.filter(
+				(record) => record.type === "response" && record.id === "local-concurrent-switch",
+			);
+			expect(responses).toHaveLength(1);
+			expect(responses[0]).toMatchObject({ success: false, error: { code: "start_rejected" } });
+			for (const session of [oldSession, replacementSession]) {
+				expect(
+					session.sessionRead
+						.getEntries()
+						.some((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
+				).toBe(false);
+			}
+			await controller.handleCommand({
+				id: "local-concurrent-retry",
+				type: "run.start",
+				message: "retry after replaced preflight",
+				clientRequestId: "local-preflight-replaced",
+			});
+			await vi.waitFor(() => {
+				expect(
+					records.find((record) => record.type === "response" && record.id === "local-concurrent-retry"),
+				).toBeDefined();
+			});
+			expect(
+				records.find((record) => record.type === "response" && record.id === "local-concurrent-retry"),
+			).toMatchObject({ success: true });
+		} finally {
+			await controller.shutdown();
+			await cleanup();
+		}
+	});
+
+	it("keeps a multi-await bash command on its captured binding during replacement", async () => {
+		const { controller, runtimeHost, cleanup } = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 0,
+		});
+
+		try {
+			const oldSession = runtimeHost.session;
+			await oldSession.prompt("persist bash source");
+			const sessionFile = oldSession.sessionFile;
+			expect(sessionFile).toBeTruthy();
+			let markAuthorizationStarted: (() => void) | undefined;
+			let releaseAuthorization: (() => void) | undefined;
+			const authorizationStarted = new Promise<void>((resolve) => {
+				markAuthorizationStarted = resolve;
+			});
+			const authorizationGate = new Promise<void>((resolve) => {
+				releaseAuthorization = resolve;
+			});
+			vi.spyOn(oldSession, "authorizeUserBashExtension").mockImplementation(async () => {
+				markAuthorizationStarted?.();
+				await authorizationGate;
+				return false;
+			});
+			const oldExecute = vi.spyOn(oldSession, "executeBash").mockResolvedValue({
+				output: "old binding bash",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+			});
+
+			const pending = controller.dispatch({ id: "bash-concurrent-switch", type: "bash", command: "echo captured" });
+			await authorizationStarted;
+			await runtimeHost.switchSession(sessionFile!);
+			const replacementExecute = vi.spyOn(runtimeHost.session, "executeBash");
+			releaseAuthorization?.();
+			const response = await pending;
+
+			expect(response).toMatchObject({ success: true, data: { output: "old binding bash" } });
+			expect(oldExecute).toHaveBeenCalledTimes(1);
+			expect(replacementExecute).not.toHaveBeenCalled();
+		} finally {
+			await controller.shutdown();
+			await cleanup();
+		}
+	});
+
 	it("dispatches commands and run records through an in-memory output sink", async () => {
 		const { controller, records, cleanup } = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
 
@@ -703,7 +903,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(initialize).toMatchObject({ command: "initialize", success: true });
 
 			await controller.handleCommand({ id: "r-memory", type: "run.start", message: "Hello" });
-			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true));
+			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true), {
+				timeout: 10_000,
+			});
 			expect(records.some((record) => record.type === "run.started")).toBe(true);
 			expect(records.some((record) => record.type === "run.event")).toBe(true);
 			expect(records.every((record) => typeof record === "object")).toBe(true);

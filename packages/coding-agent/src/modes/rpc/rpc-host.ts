@@ -21,9 +21,10 @@ import {
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/agent-session.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
 import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
@@ -862,74 +863,7 @@ export class RpcHostController {
 	async start(): Promise<void> {
 		const hostController = this;
 		const runtimeHost = this.runtimeHost;
-		let session = runtimeHost.session;
-		let unsubscribe: (() => void) | undefined;
-		let unsubscribeBackpressure: (() => void) | undefined;
-
-		// Automation Host state
 		let hostInitialized = false;
-		let coordinator: RunLifecycleCoordinator | undefined;
-		let taskGateStore: TaskGateStore | undefined;
-		let taskGraphStore: TaskGraphStore | undefined;
-		let taskCredentialService: TaskCredentialService | undefined;
-		let activeHandle: RunHandle | undefined;
-		/** Reservation held while the run's preflight is in flight; cleared on accept or release. */
-		let activeReservation: RunReservation | undefined;
-		const runPromptPromises = new Map<RunId, Promise<void>>();
-		/** Run ids whose one canonical terminal event was emitted by this controller. */
-		const terminalEventRunIds = new Set<RunId>();
-		const runDeadlineTimers = new Map<RunId, ReturnType<typeof setTimeout>>();
-		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
-		/**
-		 * Active external agent executions keyed by runId. Cancel is forwarded to
-		 * the adapter handle, which the driver makes idempotent.
-		 */
-		const externalRuns = new Map<RunId, { cancel: () => Promise<void> }>();
-		/** Tracked external settlement promises keyed by runId (set by trackExternalRun). */
-		const externalRunSettlements = new Map<RunId, Promise<void>>();
-		/**
-		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
-		 * them for external runs only, so a pending start readiness race or a
-		 * started observation race resolves even when the adapter never returns.
-		 */
-		const runAbortControllers = new Map<RunId, AbortController>();
-		/**
-		 * Deadline controllers of pending external starts, registered when the
-		 * external path commits (before preflight and before the externalRuns
-		 * entry exists) so lifecycle transitions abort preflight-phase starts
-		 * too; preflight is signal-aware and fails closed on the abort.
-		 */
-		const externalPendingControllers = new Map<RunId, AbortController>();
-		/**
-		 * Pending external start promises keyed by runId. Lifecycle transitions
-		 * must never await them: an adapter or preflight that ignores the abort
-		 * signal would block detach/rebind forever. They are aborted best-effort
-		 * and their continuation fails closed on the generation/epoch guards.
-		 */
-		const pendingExternalStarts = new Map<RunId, Promise<RpcAutomationResponse | undefined>>();
-		/**
-		 * Bumped whenever the Host replaces the Session. A pending external start
-		 * captures it at startRun entry and fails closed (start_rejected) if it
-		 * changed, so an in-flight start can never resume against the incoming
-		 * Session or write a mapping or ledger entry into it.
-		 */
-		let sessionGeneration = 0;
-		let transportEpoch = 0;
-		/**
-		 * Host-side signal bound to the lifetime of the current transport
-		 * attachment. MCP content commands pass it into the session operations so
-		 * a detach/shutdown aborts the in-flight server/session MCP operation
-		 * (the lifecycle signal contract rejects on abort without degrading the
-		 * server). Cancellation is bounded: aborting is synchronous and in-flight
-		 * commands are never awaited; each fails closed on its own abort path.
-		 */
-		let mcpOperationController = new AbortController();
-		const abortMcpOperations = (): void => {
-			mcpOperationController.abort();
-			mcpOperationController = new AbortController();
-		};
-		let detachTransportPromise: Promise<void> | undefined;
-
 		type RunRequestIdentity = {
 			scopeSessionId: string;
 			clientRequestId: string;
@@ -945,7 +879,78 @@ export class RpcHostController {
 			| { kind: "new"; identity: RunRequestIdentity }
 			| { kind: "pending" }
 			| { kind: "response"; response: RpcAutomationResponse };
+		interface RpcSessionBinding {
+			session: AgentSession;
+			coordinator?: RunLifecycleCoordinator;
+			taskGateStore?: TaskGateStore;
+			taskGraphStore?: TaskGraphStore;
+			taskCredentialService?: TaskCredentialService;
+			activeHandle?: RunHandle;
+			activeReservation?: RunReservation;
+			runPromptPromises: Map<RunId, Promise<void>>;
+			terminalEventRunIds: Set<RunId>;
+			runDeadlineTimers: Map<RunId, ReturnType<typeof setTimeout>>;
+			externalRuns: Map<RunId, { cancel: () => Promise<void> }>;
+			externalRunSettlements: Map<RunId, Promise<void>>;
+			runAbortControllers: Map<RunId, AbortController>;
+			externalPendingControllers: Map<RunId, AbortController>;
+			pendingExternalStarts: Map<RunId, Promise<RpcAutomationResponse | undefined>>;
+			unsubscribe?: () => void;
+			unsubscribeBackpressure?: () => void;
+		}
+		const createSessionBinding = (session: AgentSession): RpcSessionBinding => ({
+			session,
+			runPromptPromises: new Map(),
+			terminalEventRunIds: new Set(),
+			runDeadlineTimers: new Map(),
+			externalRuns: new Map(),
+			externalRunSettlements: new Map(),
+			runAbortControllers: new Map(),
+			externalPendingControllers: new Map(),
+			pendingExternalStarts: new Map(),
+		});
+		let currentBinding = createSessionBinding(runtimeHost.session);
+		const captureCurrentBinding = (): RpcSessionBinding => currentBinding;
 		const pendingRunRequests = new Map<string, PendingRunRequest>();
+
+		// Automation Host state
+		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
+		/**
+		 * Active external agent executions keyed by runId. Cancel is forwarded to
+		 * the adapter handle, which the driver makes idempotent.
+		 */
+		/**
+		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
+		 * them for external runs only, so a pending start readiness race or a
+		 * started observation race resolves even when the adapter never returns.
+		 */
+		/**
+		 * Deadline controllers of pending external starts, registered when the
+		 * external path commits (before preflight and before the currentBinding.externalRuns
+		 * entry exists) so lifecycle transitions abort preflight-phase starts
+		 * too; preflight is signal-aware and fails closed on the abort.
+		 */
+		/**
+		 * Pending external start promises keyed by runId. Lifecycle transitions
+		 * must never await them: an adapter or preflight that ignores the abort
+		 * signal would block detach/rebind forever. They are aborted best-effort
+		 * and their continuation fails closed on the generation/epoch guards.
+		 */
+		let transportEpoch = 0;
+		/**
+		 * Host-side signal bound to the lifetime of the current transport
+		 * attachment. MCP content commands pass it into the session operations so
+		 * a detach/shutdown aborts the in-flight server/session MCP operation
+		 * (the lifecycle signal contract rejects on abort without degrading the
+		 * server). Cancellation is bounded: aborting is synchronous and in-flight
+		 * commands are never awaited; each fails closed on its own abort path.
+		 */
+		let mcpOperationController = new AbortController();
+		const abortMcpOperations = (): void => {
+			mcpOperationController.abort();
+			mcpOperationController = new AbortController();
+		};
+		let detachTransportPromise: Promise<void> | undefined;
 
 		const waitForOutput = async (): Promise<void> => {
 			await this.outputSink?.waitForBackpressure?.();
@@ -1070,11 +1075,12 @@ export class RpcHostController {
 		 * bound to the canonical URL, not to registration).
 		 */
 		const mcpAuthStdioError = (
+			binding: RpcSessionBinding,
 			id: string | undefined,
 			command: RpcMcpAuthCommandType,
 			serverId: string,
 		): RpcMcpAuthResponse | undefined => {
-			const view: MCPServerConfigView | undefined = session.getMcpServerConfigView(serverId);
+			const view: MCPServerConfigView | undefined = binding.session.getMcpServerConfigView(serverId);
 			if (view !== undefined && view.transport === "stdio") {
 				return mcpAuthErrorResponse(id, command, "mcp_auth_stdio_not_applicable", serverId);
 			}
@@ -1485,7 +1491,7 @@ export class RpcHostController {
 		 * never fabricates them. Returns the stable failure code or undefined
 		 * when the preflight passes.
 		 */
-		const taskCredentialIssuePreflight = (input: {
+		const taskCredentialIssuePreflight = (binding: RpcSessionBinding, input: {
 			readonly taskId: string;
 			readonly graphRevision: number;
 			readonly nodeId: string;
@@ -1503,14 +1509,14 @@ export class RpcHostController {
 			// revision; pending, rejected, cancelled, missing, or stale gates
 			// never pass.
 			if (input.stageId !== undefined && input.stageRevision !== undefined) {
-				const gate = resolveGateFact(input.taskId, input.stageId, input.stageRevision);
+				const gate = resolveGateFact(binding, input.taskId, input.stageId, input.stageRevision);
 				if (gate === undefined || gate.status !== "approved" || gate.stageRevision !== input.stageRevision) {
 					return "task_credential_gate_required";
 				}
 			}
 			// Node attach (preflight step 4): the graph node must be attached to
 			// the Run.
-			if (!resolveNodeAttached(input.taskId, input.graphRevision, input.nodeId, input.runId)) {
+			if (!resolveNodeAttached(binding, input.taskId, input.graphRevision, input.nodeId, input.runId)) {
 				return "task_credential_binding_invalid";
 			}
 			// TTL bounds (preflight step 5 floor/ceiling): the frozen lease
@@ -1538,11 +1544,12 @@ export class RpcHostController {
 		 * resolved (the frozen preflight denies with `task_credential_gate_required`).
 		 */
 		const resolveGateFact = (
+			binding: RpcSessionBinding,
 			taskId: string,
 			stageId: string,
 			stageRevision: number,
 		): TaskCredentialGatePreflight | undefined => {
-			const gate = taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision);
+			const gate = binding.taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision);
 			if (gate === undefined) return undefined;
 			return { status: gate.status, stageRevision: gate.stageRevision };
 		};
@@ -1553,8 +1560,14 @@ export class RpcHostController {
 		 * or a node not attached to the Run is `false` (the frozen preflight
 		 * denies with `task_credential_binding_invalid`).
 		 */
-		const resolveNodeAttached = (taskId: string, graphRevision: number, nodeId: string, runId: string): boolean => {
-			const graph = taskGraphStore?.get(taskId, graphRevision);
+		const resolveNodeAttached = (
+			binding: RpcSessionBinding,
+			taskId: string,
+			graphRevision: number,
+			nodeId: string,
+			runId: string,
+		): boolean => {
+			const graph = binding.taskGraphStore?.get(taskId, graphRevision);
 			const node = graph?.nodes.find((candidate) => candidate.nodeId === nodeId);
 			return node !== undefined && node.runRef?.runId === runId;
 		};
@@ -1570,7 +1583,7 @@ export class RpcHostController {
 		/**
 		 * Rebuild the Automation Host state stores for the current Session. The Run
 		 * lookup and Task Gate lookup are read-only adapters over the live
-		 * coordinator/gate store, so attach only sees current-Session accepted or
+			 * coordinator/gate store, so attach only sees current-Session accepted or
 		 * running Runs and terminal lookup sees only canonical receipt projections; the Task
 		 * Graph store never starts, cancels, or rewrites a Run and never creates,
 		 * approves, rejects, or cancels a Gate. The Task Credential service is
@@ -1578,30 +1591,30 @@ export class RpcHostController {
 		 * provider; without a provider every credential command fails closed with
 		 * task_credential_unavailable.
 		 */
-		const rebuildAutomationStores = (): void => {
-			taskCredentialService = session.getTaskCredentialService?.();
-			coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session), {
+		const prepareAutomationStores = (binding: RpcSessionBinding): void => {
+			binding.taskCredentialService = binding.session.getTaskCredentialService?.();
+			binding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(binding.session), {
 				credentialHooks: {
 					onRunTerminal: (runId, receipt) => {
-						taskCredentialService?.onRunTerminal({
+						binding.taskCredentialService?.onRunTerminal({
 							runId,
 							status: receipt.status,
 							...(receipt.terminalError === undefined ? {} : { terminalErrorCode: receipt.terminalError.code }),
 						});
 					},
 					onRunInterrupted: (runId) => {
-						taskCredentialService?.onRunInterrupted(runId);
+						binding.taskCredentialService?.onRunInterrupted(runId);
 					},
 					onRunCancelRequested: (runId) => {
 						// The first cancel request revokes the run's live leases
 						// before the terminal transition; the terminal event settles.
-						taskCredentialService?.onRunCancelRequested(runId);
+						binding.taskCredentialService?.onRunCancelRequested(runId);
 					},
 				},
 			});
-			taskGateStore = createTaskGateStore(getAgentSessionLedger(session), {
+			binding.taskGateStore = createTaskGateStore(getAgentSessionLedger(binding.session), {
 				onGateInvalidated: (gate) => {
-					taskCredentialService?.onGateInvalidated({
+					binding.taskCredentialService?.onGateInvalidated({
 						taskId: gate.taskId,
 						stageId: gate.stageId,
 						stageRevision: gate.stageRevision,
@@ -1609,11 +1622,11 @@ export class RpcHostController {
 					});
 				},
 			});
-			taskGraphStore = createTaskGraphStore(
-				getAgentSessionLedger(session),
+			binding.taskGraphStore = createTaskGraphStore(
+				getAgentSessionLedger(binding.session),
 				{
 					get: (runId) => {
-						const result = coordinator?.getRun(runId);
+						const result = binding.coordinator?.getRun(runId);
 						if (result === undefined) return undefined;
 						return {
 							sessionId: result.record.sessionId,
@@ -1625,11 +1638,11 @@ export class RpcHostController {
 				},
 				{
 					getByBusinessKey: (taskId, stageId, stageRevision) =>
-						taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision),
+						binding.taskGateStore?.getByBusinessKey(taskId, stageId, stageRevision),
 				},
 				{
 					onNodeTerminal: (node, taskId, runId) => {
-						taskCredentialService?.onGraphNodeTerminal({
+						binding.taskCredentialService?.onGraphNodeTerminal({
 							taskId,
 							nodeId: node.nodeId,
 							runId,
@@ -1758,12 +1771,12 @@ export class RpcHostController {
 			return createAutomationError("start_rejected", errorMessage(err), false);
 		};
 
-		const currentRunModel = (): RunModelReference => {
-			const model = session.model;
+		const currentRunModel = (binding: RpcSessionBinding): RunModelReference => {
+			const model = binding.session.model;
 			return {
 				provider: model?.provider ?? "unknown",
 				id: model?.id ?? "unknown",
-				thinkingLevel: session.thinkingLevel,
+				thinkingLevel: binding.session.thinkingLevel,
 			};
 		};
 
@@ -1834,6 +1847,7 @@ export class RpcHostController {
 			createAutomationError("model_route_unavailable", "The selected model route is unavailable.", true);
 
 		const resolveRequestedModel = async (
+			binding: RpcSessionBinding,
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
 			inheritedBinding?: ModelBindingLedgerRecord,
@@ -1872,18 +1886,18 @@ export class RpcHostController {
 				}
 			}
 			if (requestedRoute === undefined && requestedRole === undefined) {
-				const currentModel = session.model;
+				const currentModel = binding.session.model;
 				if (currentModel === undefined) return { error: unavailableModelError() };
 				const result =
 					inheritedDirect !== undefined
-						? session.modelBroker.resolveResult({ direct: inheritedDirect })
-						: session.modelBroker.hasDefaultSelection()
-							? session.modelBroker.resolveResult({})
-							: session.modelBroker.resolveResult({
+						? binding.session.modelBroker.resolveResult({ direct: inheritedDirect })
+						: binding.session.modelBroker.hasDefaultSelection()
+							? binding.session.modelBroker.resolveResult({})
+							: binding.session.modelBroker.resolveResult({
 									direct: {
 										provider: currentModel.provider,
 										id: currentModel.id,
-										thinkingLevel: session.thinkingLevel,
+									thinkingLevel: binding.session.thinkingLevel,
 									},
 								});
 				if (!result.ok) return { error: modelSelectionError(result.error) };
@@ -1894,7 +1908,7 @@ export class RpcHostController {
 				) {
 					try {
 						model =
-							session.modelRuntime.getModel(
+							binding.session.modelRuntime.getModel(
 								result.resolution.reference.provider,
 								result.resolution.reference.id,
 							) ?? model;
@@ -1908,20 +1922,20 @@ export class RpcHostController {
 						return { error: unavailableModelError() };
 					}
 					try {
-						await session.setModel(model);
+						await binding.session.setModel(model);
 					} catch {
 						return { error: unavailableModelError() };
 					}
 				}
 				try {
-					session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+					binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
 				} catch {
 					return { error: unavailableModelError() };
 				}
 				return { resolution: result.resolution };
 			}
 
-			const result = session.modelBroker.resolveResult({
+			const result = binding.session.modelBroker.resolveResult({
 				...(requestedRoute === undefined ? {} : { modelRoute: requestedRoute }),
 				...(requestedRole === undefined ? {} : { modelRole: requestedRole }),
 			});
@@ -1929,21 +1943,21 @@ export class RpcHostController {
 				return { error: modelSelectionError(result.error, requestedRole === undefined ? "route" : "role") };
 			}
 
-			let model: ReturnType<typeof session.modelRuntime.getModel>;
+			let model: ReturnType<typeof binding.session.modelRuntime.getModel>;
 			try {
-				model = session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id);
+				model = binding.session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id);
 			} catch {
 				return { error: unavailableModelError() };
 			}
 			if (model === undefined) return { error: unavailableModelError() };
 			try {
-				await session.setModel(model);
-				session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+				await binding.session.setModel(model);
+				binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
 				if (
 					result.resolution.reference.thinkingLevel !== undefined &&
 					isThinkingLevel(result.resolution.reference.thinkingLevel)
 				) {
-					session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+					binding.session.setThinkingLevel(result.resolution.reference.thinkingLevel);
 				}
 			} catch {
 				return { error: unavailableModelError() };
@@ -1951,8 +1965,8 @@ export class RpcHostController {
 			return { resolution: result.resolution };
 		};
 
-		const usageSnapshot = (): RunUsageSnapshot => {
-			const stats = session.getSessionStats();
+		const usageSnapshot = (binding: RpcSessionBinding): RunUsageSnapshot => {
+			const stats = binding.session.getSessionStats();
 			return {
 				input: stats.tokens.input,
 				output: stats.tokens.output,
@@ -2125,12 +2139,12 @@ export class RpcHostController {
 			}
 		};
 
-		const clearRunDeadline = (runId: RunId): void => {
-			const timer = runDeadlineTimers.get(runId);
+		const clearRunDeadline = (binding: RpcSessionBinding, runId: RunId): void => {
+			const timer = binding.runDeadlineTimers.get(runId);
 			if (timer !== undefined) clearTimeout(timer);
-			runDeadlineTimers.delete(runId);
-			runAbortControllers.delete(runId);
-			externalPendingControllers.delete(runId);
+			binding.runDeadlineTimers.delete(runId);
+			binding.runAbortControllers.delete(runId);
+			binding.externalPendingControllers.delete(runId);
 		};
 
 		const discardRunRequest = (identity: RunRequestIdentity | undefined): void => {
@@ -2140,8 +2154,11 @@ export class RpcHostController {
 			pendingRunRequests.delete(identity.key);
 		};
 
-		const readCanonicalRun = async (runId: RunId): Promise<CanonicalRunResult | undefined> => {
-			const settlement = new LayeredResultSettlement(getAgentCanonicalSession(session));
+		const readCanonicalRun = async (
+			binding: RpcSessionBinding,
+			runId: RunId,
+		): Promise<CanonicalRunResult | undefined> => {
+			const settlement = new LayeredResultSettlement(getAgentCanonicalSession(binding.session));
 			try {
 				const lookup = await settlement.lookupCanonicalRun(runId);
 				if (!lookup.ok) throw lookup.error;
@@ -2151,11 +2168,11 @@ export class RpcHostController {
 			}
 		};
 
-		const observeRunCompletion = async (handle: RunHandle): Promise<void> => {
-			if (activeHandle !== handle || terminalEventRunIds.has(handle.runId)) return;
+		const observeRunCompletion = async (binding: RpcSessionBinding, handle: RunHandle): Promise<void> => {
+			if (binding.activeHandle !== handle || binding.terminalEventRunIds.has(handle.runId)) return;
 			let canonical: CanonicalRunResult | undefined;
 			try {
-				canonical = await readCanonicalRun(handle.runId);
+				canonical = await readCanonicalRun(binding, handle.runId);
 			} catch {
 				// A read or validation conflict is distinct from an absent receipt. Keep
 				// the active Run lock so another Run cannot proceed on ambiguous truth.
@@ -2165,48 +2182,48 @@ export class RpcHostController {
 				// Prompt promises, adapter receipts, process state, and agent events are
 				// observations only. Without the durable RunReceipt chain the Run stays
 				// non-terminal and recovery reports it interrupted.
-				if (activeHandle === handle) {
-					activeHandle = undefined;
-					coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
+				if (binding.activeHandle === handle) {
+					binding.activeHandle = undefined;
+					binding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(binding.session));
 				}
-				clearRunDeadline(handle.runId);
-				runPromptPromises.delete(handle.runId);
+				clearRunDeadline(binding, handle.runId);
+				binding.runPromptPromises.delete(handle.runId);
 				return;
 			}
-			terminalEventRunIds.add(handle.runId);
+			binding.terminalEventRunIds.add(handle.runId);
 			let terminal: RunStreamEvent | undefined;
 			try {
 				terminal = handle.observeCanonicalResult(canonical);
 			} catch {
 				// A malformed or mismatched projection remains locked and non-terminal.
-				terminalEventRunIds.delete(handle.runId);
+				binding.terminalEventRunIds.delete(handle.runId);
 				return;
 			}
 			if (terminal !== undefined) outputRunEvent(terminal);
-			clearRunDeadline(handle.runId);
-			activeHandle = undefined;
-			runPromptPromises.delete(handle.runId);
+			clearRunDeadline(binding, handle.runId);
+			binding.activeHandle = undefined;
+			binding.runPromptPromises.delete(handle.runId);
 			await waitForOutput();
 		};
 
-		const observeActiveRunCompletion = async (handle: RunHandle): Promise<void> => {
-			if (activeHandle !== handle || terminalEventRunIds.has(handle.runId)) return;
+		const observeActiveRunCompletion = async (binding: RpcSessionBinding, handle: RunHandle): Promise<void> => {
+			if (binding.activeHandle !== handle || binding.terminalEventRunIds.has(handle.runId)) return;
 			// Await the tracked prompt, then look up the canonical Foundation result.
-			await runPromptPromises.get(handle.runId);
-			await observeRunCompletion(handle);
+			await binding.runPromptPromises.get(handle.runId);
+			await observeRunCompletion(binding, handle);
 		};
 
 		/** Track a started prompt as an observation before canonical result lookup. */
-		const trackRunPrompt = (handle: RunHandle, prompt: Promise<unknown>): void => {
+		const trackRunPrompt = (binding: RpcSessionBinding, handle: RunHandle, prompt: Promise<unknown>): void => {
 			const tracked = (async () => {
 				try {
 					await prompt;
-					await observeRunCompletion(handle);
+					await observeRunCompletion(binding, handle);
 				} catch {
-					await observeRunCompletion(handle);
+					await observeRunCompletion(binding, handle);
 				}
 			})();
-			runPromptPromises.set(handle.runId, tracked);
+			binding.runPromptPromises.set(handle.runId, tracked);
 		};
 
 		/**
@@ -2239,6 +2256,7 @@ export class RpcHostController {
 		 * Foundation result chain.
 		 */
 		const trackExternalRun = (
+			binding: RpcSessionBinding,
 			handle: RunHandle,
 			adapterRun: ExternalAgentRunHandle,
 			operationId: string,
@@ -2248,7 +2266,7 @@ export class RpcHostController {
 			const remoteRequest: RemoteOperationRequest = {
 				operationId,
 				runId: handle.runId,
-				sessionId: session.sessionId,
+				sessionId: binding.session.sessionId,
 				...(handle.record.capabilityBindingId === undefined
 					? {}
 					: { capabilityBindingId: handle.record.capabilityBindingId }),
@@ -2262,13 +2280,13 @@ export class RpcHostController {
 			let operationLedgerFailed = false;
 			const remoteHandle = startRemoteOperation(createExternalAgentRemoteInvoker(adapterRun), remoteRequest, {
 				signal: deadlineSignal,
-				ledger: createSessionRemoteOperationLedger(getAgentSessionLedger(session)),
+				ledger: createSessionRemoteOperationLedger(getAgentSessionLedger(binding.session)),
 				now: () => new Date().toISOString(),
 				onLedgerError: () => {
 					operationLedgerFailed = true;
 				},
 			});
-			externalRuns.set(handle.runId, {
+			binding.externalRuns.set(handle.runId, {
 				cancel: async () => {
 					// The operation cancels the provider and the driver cancel is
 					// idempotent; both paths reach the adapter handle exactly once.
@@ -2285,7 +2303,7 @@ export class RpcHostController {
 				);
 				if (remoteReceipt === undefined) {
 					handle.requestDeadlineExceeded();
-					await observeRunCompletion(handle);
+					await observeRunCompletion(binding, handle);
 					return;
 				}
 				// The Remote Operation maps the same Run deadline into its own
@@ -2294,12 +2312,12 @@ export class RpcHostController {
 				// the observation itself cannot decide failed versus cancelled.
 				if (remoteReceipt.error?.category === "deadline") {
 					handle.requestDeadlineExceeded();
-					await observeRunCompletion(handle);
+					await observeRunCompletion(binding, handle);
 					return;
 				}
 				// A failed observation append cannot complete or cancel the Run.
 				if (operationLedgerFailed) {
-					await observeRunCompletion(handle);
+					await observeRunCompletion(binding, handle);
 					return;
 				}
 				// Map bounded events only: validated started/progress/artifact
@@ -2314,17 +2332,17 @@ export class RpcHostController {
 				// outcome (including side-effect-unknown) remains non-terminal.
 				const adapterReceipt = await adapterRun.receipt;
 				if (adapterReceipt.status === "cancelled") handle.requestCancel();
-				await observeRunCompletion(handle);
+				await observeRunCompletion(binding, handle);
 			})();
-			externalRunSettlements.set(handle.runId, tracked);
+			binding.externalRunSettlements.set(handle.runId, tracked);
 			void tracked.then(
 				() => {
-					externalRuns.delete(handle.runId);
-					externalRunSettlements.delete(handle.runId);
+					binding.externalRuns.delete(handle.runId);
+					binding.externalRunSettlements.delete(handle.runId);
 				},
 				() => {
-					externalRuns.delete(handle.runId);
-					externalRunSettlements.delete(handle.runId);
+					binding.externalRuns.delete(handle.runId);
+					binding.externalRunSettlements.delete(handle.runId);
 				},
 			);
 		};
@@ -2338,14 +2356,14 @@ export class RpcHostController {
 		 * awaits startGate and cannot unblock a start that never resolves. Started
 		 * observations are awaited before canonical lookup; a pending start fails closed
 		 * through its own continuation, which forwards the same idempotent cancel.
-		 * Local runs are untouched and keep the session.abort() path. Returns true
+		 * Local runs are untouched and keep the Session abort path. Returns true
 		 * when the run was an external execution.
 		 */
-		const forwardExternalRunLifecycleCancel = async (runId: RunId): Promise<boolean> => {
-			const externalRun = externalRuns.get(runId);
+		const forwardExternalRunLifecycleCancel = async (binding: RpcSessionBinding, runId: RunId): Promise<boolean> => {
+			const externalRun = binding.externalRuns.get(runId);
 			if (externalRun === undefined) return false;
-			runAbortControllers.get(runId)?.abort();
-			const settlement = externalRunSettlements.get(runId);
+			binding.runAbortControllers.get(runId)?.abort();
+			const settlement = binding.externalRunSettlements.get(runId);
 			if (settlement !== undefined) {
 				await settlement;
 			}
@@ -2367,6 +2385,7 @@ export class RpcHostController {
 		};
 
 		const startRun = async (
+			commandBinding: RpcSessionBinding,
 			id: string | undefined,
 			commandType: "run.start" | "run.resume",
 			message: string,
@@ -2389,8 +2408,8 @@ export class RpcHostController {
 			requestAlreadyClaimed: boolean,
 			expectedTransportEpoch?: number,
 		): Promise<RpcAutomationResponse | undefined> => {
+			const runBinding = commandBinding;
 			const requestEpoch = expectedTransportEpoch ?? transportEpoch;
-			const startGeneration = sessionGeneration;
 			const inputError = slashRunInputError(id, commandType, message);
 			if (inputError !== undefined) {
 				discardRunRequest(precomputedRequestIdentity);
@@ -2467,13 +2486,13 @@ export class RpcHostController {
 					),
 				);
 			}
-			if (!hostInitialized || coordinator === undefined) {
+			if (!hostInitialized || runBinding.coordinator === undefined) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(id, commandType, hostNotInitializedError());
 			}
 			const identity =
 				precomputedRequestIdentity ??
-				requestIdentity(clientRequestId, commandType, session.sessionId, {
+				requestIdentity(clientRequestId, commandType, runBinding.session.sessionId, {
 					message,
 					images,
 					sourceRunId,
@@ -2504,7 +2523,7 @@ export class RpcHostController {
 				requestClaim = identity;
 			} else {
 				const gate = beginRunRequest(id, commandType, identity, () =>
-					coordinator!.getRunByClientRequestId(
+					runBinding.coordinator!.getRunByClientRequestId(
 						identity!.clientRequestId,
 						commandType === "run.start" ? "start" : "resume",
 					),
@@ -2526,7 +2545,7 @@ export class RpcHostController {
 					),
 				);
 			}
-			if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
+			if (runBinding.coordinator.activeRun !== undefined || runBinding.activeReservation !== undefined) {
 				return startFailure(
 					automationError(
 						id,
@@ -2553,7 +2572,7 @@ export class RpcHostController {
 				  }
 				| undefined;
 			if (externalAgent !== undefined) {
-				const registry = session.getExternalAgentRegistry?.();
+				const registry = runBinding.session.getExternalAgentRegistry?.();
 				if (registry === undefined) {
 					return startFailure(
 						automationError(
@@ -2699,26 +2718,26 @@ export class RpcHostController {
 				// Policy selection and the Run ID must be established before capability
 				// discovery. MCP startup is a policy operation and its binding must be
 				// the same binding that reservation.accept validates below.
-				await session.setExecutionPolicyProfile(policyProfile);
-				session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
-				await session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
+				await runBinding.session.setExecutionPolicyProfile(policyProfile);
+				runBinding.session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
+				await runBinding.session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
 			} catch (err) {
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
 			// The materialized profile (requested, or the configured default when omitted)
 			// names the effective profile for the approval-required message below.
-			const effectiveProfile = session.getActiveCapabilityProfile();
+			const effectiveProfile = runBinding.session.getActiveCapabilityProfile();
 			let reservation: RunReservation;
 			try {
-				reservation = coordinator.reserve();
+				reservation = runBinding.coordinator.reserve();
 			} catch (err) {
 				return startFailure(automationError(id, commandType, asAutomationError(err)));
 			}
-			activeReservation = reservation;
+			runBinding.activeReservation = reservation;
 			try {
-				await session.whenCapabilitiesReady(proposedRunId);
+				await runBinding.session.whenCapabilitiesReady(proposedRunId);
 			} catch (err) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2727,7 +2746,7 @@ export class RpcHostController {
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
 			if (requestEpoch !== transportEpoch) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2745,17 +2764,17 @@ export class RpcHostController {
 					),
 				);
 			}
-			const preflightBinding = session.getActiveCapabilityBinding();
+			const preflightBinding = runBinding.session.getActiveCapabilityBinding();
 			if (previousBindingId !== undefined) {
 				// Resume binding-drift guard. This runs only after capability discovery has
 				// settled (whenCapabilitiesReady above) so a restored MCP binding that
 				// initially differs until discovery completes cannot false-fail. The binding
 				// id is derived from descriptor id + revision + profile, so id equality is
-				// the drift check. Rejection happens before session.prompt/accept, so no
+				// the drift check. Rejection happens before the Session accepts a prompt, so no
 				// accepted/terminal ledger write occurs.
-				const knownBindings = foldCapabilityBindingEntries(session.sessionRead.getEntries());
+				const knownBindings = foldCapabilityBindingEntries(runBinding.session.sessionRead.getEntries());
 				if (knownBindings.get(previousBindingId) === undefined) {
-					activeReservation = undefined;
+					runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
 					} catch {
@@ -2774,7 +2793,7 @@ export class RpcHostController {
 					);
 				}
 				if (preflightBinding === undefined || preflightBinding.id !== previousBindingId) {
-					activeReservation = undefined;
+					runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
 					} catch {
@@ -2796,7 +2815,7 @@ export class RpcHostController {
 			// The requested profile is already materialized into the frozen binding by
 			// setCapabilityProfile above, so no profile-mismatch rejection applies.
 			if (preflightBinding !== undefined && preflightBinding.decisionSummary.awaitingApproval > 0) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2814,9 +2833,28 @@ export class RpcHostController {
 					),
 				);
 			}
-			const modelSelection = await resolveRequestedModel(modelRoute, modelRole, inheritedModelBinding);
+			const modelSelection = await resolveRequestedModel(runBinding, modelRoute, modelRole, inheritedModelBinding);
+			if (runBinding !== currentBinding) {
+				runBinding.activeReservation = undefined;
+				try {
+					reservation.release();
+				} catch {
+					// reservation may already be consumed
+				}
+				return startFailure(
+					automationError(
+						id,
+						commandType,
+						createAutomationError(
+							"start_rejected",
+							"The Host switched sessions before the Run was accepted.",
+							true,
+						),
+					),
+				);
+			}
 			if (requestEpoch !== transportEpoch) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2835,7 +2873,7 @@ export class RpcHostController {
 				);
 			}
 			if (modelSelection.error !== undefined) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2844,7 +2882,7 @@ export class RpcHostController {
 				return startFailure(automationError(id, commandType, modelSelection.error));
 			}
 			if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
-				activeReservation = undefined;
+				runBinding.activeReservation = undefined;
 				try {
 					reservation.release();
 				} catch {
@@ -2863,14 +2901,14 @@ export class RpcHostController {
 			// starts the run; otherwise the reservation is released and the caller gets
 			// start_rejected with no run id and no ledger entry.
 			const deadlineController = new AbortController();
-			runAbortControllers.set(proposedRunId, deadlineController);
+			runBinding.runAbortControllers.set(proposedRunId, deadlineController);
 			if (deadlineAt !== undefined) {
 				const deadlineTimer = setTimeout(
 					() => {
 						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
-						if (activeHandle?.runId === proposedRunId) {
-							activeHandle.requestDeadlineExceeded();
-							void session.abort().catch(() => {
+						if (runBinding.activeHandle?.runId === proposedRunId) {
+							runBinding.activeHandle.requestDeadlineExceeded();
+							void runBinding.session.abort().catch(() => {
 								// Foundation remains the only terminal authority.
 							});
 						}
@@ -2884,19 +2922,31 @@ export class RpcHostController {
 				) {
 					deadlineTimer.unref();
 				}
-				runDeadlineTimers.set(proposedRunId, deadlineTimer);
+				runBinding.runDeadlineTimers.set(proposedRunId, deadlineTimer);
 			}
 			let promptPromise: Promise<unknown>;
+			let startSettled = false;
 			const rejectStart = (err: unknown): void => {
-				if (activeReservation !== reservation) return;
-				activeReservation = undefined;
-				clearRunDeadline(proposedRunId);
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
+				if (startSettled) return;
+				const bindingReplaced = runBinding !== captureCurrentBinding();
+				if (runBinding.activeReservation !== reservation && !bindingReplaced) return;
+				startSettled = true;
+				if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
+				clearRunDeadline(runBinding, proposedRunId);
+				if (runBinding.activeReservation === undefined) {
+					try {
+						reservation.release();
+					} catch {
+						// reservation may already be consumed or released by old-binding cleanup
+					}
 				}
-				const startError = deadlineController.signal.aborted
+				const startError = bindingReplaced
+					? createAutomationError(
+							"start_rejected",
+							"The Host switched sessions before the Run was accepted.",
+							true,
+						)
+					: deadlineController.signal.aborted
 					? createAutomationError(
 							"run_deadline_exceeded",
 							"The Run deadline was exceeded before acceptance.",
@@ -2923,26 +2973,26 @@ export class RpcHostController {
 			): RpcAutomationResponse | undefined => {
 				if (externalAccepted) {
 					// The accepted fact is durable but the run never started: discard
-					// the live coordinator so this failed start cannot retain Session
+					// the live runBinding.coordinator so this failed start cannot retain Session
 					// ownership; its ledger record is replayed as interrupted if
 					// recovered. No external.mapping was persisted and no started
 					// event carries a placeholder external ref.
-					activeReservation = undefined;
-					activeHandle = undefined;
-					coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
-					externalRuns.delete(proposedRunId);
+					runBinding.activeReservation = undefined;
+					runBinding.activeHandle = undefined;
+					runBinding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(runBinding.session));
+					runBinding.externalRuns.delete(proposedRunId);
 					void externalAdapterRun?.cancel().catch(() => {
 						// The driver retries idempotently.
 					});
-				} else if (activeReservation === reservation) {
-					activeReservation = undefined;
+				} else if (runBinding.activeReservation === reservation) {
+					runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
 					} catch {
 						// reservation may already be consumed
 					}
 				}
-				clearRunDeadline(proposedRunId);
+				clearRunDeadline(runBinding, proposedRunId);
 				const startError = mapExternalStartError(err, fallback);
 				const response = automationError(id, commandType, startError);
 				output(response);
@@ -3037,14 +3087,14 @@ export class RpcHostController {
 				// prepared it. If the Host switched sessions while the start was
 				// pending, the run must fail closed instead of continuing against the
 				// incoming Session; its accepted record replays as interrupted in the
-				// outgoing session. The client can retry on the new session.
+				// outgoing Session. The client can retry on the new Session.
 				const sessionSwitchedStartError = (): AutomationError =>
 					createAutomationError(
 						"start_rejected",
 						"The Host switched sessions before the external agent started.",
 						true,
 					);
-				if (startGeneration !== sessionGeneration) {
+				if (runBinding !== currentBinding) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (shuttingDown) {
@@ -3057,12 +3107,12 @@ export class RpcHostController {
 					);
 				}
 				try {
-					await session.runExternalAgentPreflight(proposedRunId, deadlineController.signal);
+					await runBinding.session.runExternalAgentPreflight(proposedRunId, deadlineController.signal);
 				} catch (err) {
 					// The abort of a lifecycle transition (detach, shutdown, session
 					// switch) surfaces through the signal-aware preflight; report the
 					// actual cause instead of a provider or deadline failure.
-					if (startGeneration !== sessionGeneration) {
+					if (runBinding !== currentBinding) {
 						return failExternalStart(sessionSwitchedStartError());
 					}
 					if (requestEpoch !== transportEpoch) {
@@ -3085,7 +3135,7 @@ export class RpcHostController {
 					}
 					return failExternalStart(err);
 				}
-				if (startGeneration !== sessionGeneration) {
+				if (runBinding !== currentBinding) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3118,8 +3168,8 @@ export class RpcHostController {
 				// binding is reference-only unless the probed target proves the
 				// tool-gateway capability; the prepared binding is verified against
 				// the prepare request and the probe before any start.
-				const capabilityBinding = session.getActiveCapabilityBinding();
-				const policyBinding = session.getActiveExecutionPolicyBinding();
+				const capabilityBinding = runBinding.session.getActiveCapabilityBinding();
+				const policyBinding = runBinding.session.getActiveExecutionPolicyBinding();
 				const capabilitySummary: string[] = [];
 				if (capabilityBinding !== undefined) {
 					for (const descriptor of capabilityBinding.descriptors) {
@@ -3136,7 +3186,7 @@ export class RpcHostController {
 				}
 				const prepareRequest: ExternalAgentPrepareRequest = {
 					runId: proposedRunId,
-					sessionId: session.sessionId,
+					sessionId: runBinding.session.sessionId,
 					selection: probe.selection,
 					...(modelSelection.resolution === undefined
 						? {}
@@ -3144,7 +3194,7 @@ export class RpcHostController {
 					...(capabilityBinding === undefined ? {} : { capabilityBindingId: capabilityBinding.id }),
 					...(policyBinding === undefined ? {} : { policyBindingId: policyBinding.id }),
 					capabilitySummary,
-					policyProfile: session.getActiveExecutionPolicyProfile(),
+					policyProfile: runBinding.session.getActiveExecutionPolicyProfile(),
 					...(policyBinding?.sandboxProviderId === undefined
 						? {}
 						: { sandboxProfile: policyBinding.sandboxProviderId }),
@@ -3181,7 +3231,7 @@ export class RpcHostController {
 				// external start whose preflight or prepare ignored the abort
 				// signal must still fail closed here instead of accepting after a
 				// detach, shutdown, or session switch.
-				if (startGeneration !== sessionGeneration) {
+				if (runBinding !== currentBinding) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3215,23 +3265,23 @@ export class RpcHostController {
 						previousBindingId,
 						previousPolicyBindingId,
 						previousModelBindingId,
-						model: currentRunModel(),
+						model: currentRunModel(runBinding),
 						...(modelSelection.resolution === undefined
 							? {}
 							: {
 									modelBindingId: modelSelection.resolution.bindingId,
 									finalModel: finalModelForResolution(modelSelection.resolution),
 								}),
-						capabilityBinding: session.getActiveCapabilityBinding(),
-						policyBinding: session.getActiveExecutionPolicyBinding(),
-						policySummary: session.getActiveExecutionPolicySummary(),
+						capabilityBinding: runBinding.session.getActiveCapabilityBinding(),
+						policyBinding: runBinding.session.getActiveExecutionPolicyBinding(),
+						policySummary: runBinding.session.getActiveExecutionPolicySummary(),
 					});
-					handle.setUsageBaseline(usageSnapshot());
+					handle.setUsageBaseline(usageSnapshot(runBinding));
 				} catch (err) {
 					return failExternalStart(asAutomationError(err));
 				}
-				activeReservation = undefined;
-				activeHandle = handle;
+				runBinding.activeReservation = undefined;
+				runBinding.activeHandle = handle;
 				externalAccepted = true;
 				// Start with the bounded in-memory input. Images are never forwarded:
 				// the adapter contract carries image references only, never bytes.
@@ -3251,7 +3301,7 @@ export class RpcHostController {
 				}
 				// Register the idempotent adapter cancel immediately so run.cancel
 				// reaches the adapter even while start readiness is pending.
-				externalRuns.set(proposedRunId, {
+				runBinding.externalRuns.set(proposedRunId, {
 					cancel: async () => {
 						try {
 							await externalAdapterRun!.cancel();
@@ -3275,7 +3325,7 @@ export class RpcHostController {
 					// or when the run deadline fired. Report the actual cause: a replaced
 					// session or a disconnected transport is a retryable start_rejection,
 					// never a deadline that never existed.
-					if (startGeneration !== sessionGeneration) {
+					if (runBinding !== currentBinding) {
 						return failExternalStart(sessionSwitchedStartError());
 					}
 					if (requestEpoch !== transportEpoch) {
@@ -3307,7 +3357,7 @@ export class RpcHostController {
 					}
 					return failExternalStart(new ExternalAgentError("external_agent_start_failed"));
 				}
-				if (startGeneration !== sessionGeneration) {
+				if (runBinding !== currentBinding) {
 					return failExternalStart(sessionSwitchedStartError());
 				}
 				if (requestEpoch !== transportEpoch) {
@@ -3346,9 +3396,9 @@ export class RpcHostController {
 					protocol: probe.snapshot.protocol,
 				};
 				try {
-					coordinator!.persistExternalMapping({
+					runBinding.coordinator!.persistExternalMapping({
 						external: safeExternal,
-						aosSessionId: session.sessionId,
+						aosSessionId: runBinding.session.sessionId,
 						aosRunId: handle.runId,
 						source: "external-agent",
 						adapter: probedAdapterIdentity,
@@ -3377,6 +3427,7 @@ export class RpcHostController {
 					outputRunEvent(event);
 				}
 				trackExternalRun(
+					runBinding,
 					handle,
 					externalAdapterRun,
 					startRequest.operationId,
@@ -3388,25 +3439,30 @@ export class RpcHostController {
 			if (externalProbe !== undefined) {
 				// Register the deadline controller and promise of the pending
 				// external start BEFORE preflight so a lifecycle transition (detach,
-				// shutdown, session switch) can abort it even though externalRuns
+				// shutdown, session switch) can abort it even though runBinding.externalRuns
 				// does not exist yet, and so it is never awaited by the transition.
-				externalPendingControllers.set(proposedRunId, deadlineController);
+				runBinding.externalPendingControllers.set(proposedRunId, deadlineController);
 				const pendingExternal = runExternalStart();
-				pendingExternalStarts.set(proposedRunId, pendingExternal);
+				runBinding.pendingExternalStarts.set(proposedRunId, pendingExternal);
 				void pendingExternal.then(
-					() => pendingExternalStarts.delete(proposedRunId),
-					() => pendingExternalStarts.delete(proposedRunId),
+					() => runBinding.pendingExternalStarts.delete(proposedRunId),
+					() => runBinding.pendingExternalStarts.delete(proposedRunId),
 				);
 				return trackPendingStart(pendingExternal);
 			}
 			try {
-				promptPromise = session.prompt(message, {
+				promptPromise = runBinding.session.prompt(message, {
 					images,
 					source: "rpc",
 					surface: "automation_host",
 					runId: proposedRunId,
 					signal: deadlineController.signal,
 					preflightResult: (didSucceed) => {
+						if (runBinding !== captureCurrentBinding()) {
+							const replacedError = new Error("The Host switched sessions before the Run was accepted.");
+							rejectStart(replacedError);
+							throw replacedError;
+						}
 						if (requestEpoch !== transportEpoch) {
 							rejectStart(new Error("RPC connection closed before the Run was accepted"));
 							throw new Error("RPC connection closed before the Run was accepted");
@@ -3424,7 +3480,7 @@ export class RpcHostController {
 							rejectStart(deadlineError);
 							throw deadlineError;
 						}
-						if (activeReservation !== reservation) return;
+						if (runBinding.activeReservation !== reservation) return;
 						let handle: RunHandle | undefined;
 						let startEvents: RunStreamEvent[];
 						try {
@@ -3441,7 +3497,7 @@ export class RpcHostController {
 								previousBindingId,
 								previousPolicyBindingId,
 								previousModelBindingId,
-								model: currentRunModel(),
+								model: currentRunModel(runBinding),
 								...(modelSelection.resolution === undefined
 									? {}
 									: {
@@ -3449,18 +3505,18 @@ export class RpcHostController {
 											finalModel: finalModelForResolution(modelSelection.resolution),
 										}),
 								// Persist the frozen binding on the accepted transport record.
-								capabilityBinding: session.getActiveCapabilityBinding(),
-								policyBinding: session.getActiveExecutionPolicyBinding(),
-								policySummary: session.getActiveExecutionPolicySummary(),
+								capabilityBinding: runBinding.session.getActiveCapabilityBinding(),
+								policyBinding: runBinding.session.getActiveExecutionPolicyBinding(),
+								policySummary: runBinding.session.getActiveExecutionPolicySummary(),
 							});
-							handle.setUsageBaseline(usageSnapshot());
+							handle.setUsageBaseline(usageSnapshot(runBinding));
 							// Persist the started fact before publishing accepted. The returned events
 							// remain buffered locally so the external contract is still accepted ->
 							// run.started -> run.event* -> terminal.
 							startEvents = handle.start();
 						} catch (err) {
-							activeReservation = undefined;
-							clearRunDeadline(proposedRunId);
+							runBinding.activeReservation = undefined;
+							clearRunDeadline(runBinding, proposedRunId);
 							if (handle === undefined) {
 								try {
 									reservation.release();
@@ -3469,11 +3525,12 @@ export class RpcHostController {
 								}
 							} else {
 								// The accepted fact was durable but the started fact was not. Discard
-								// the live coordinator so this failed start cannot retain Session
+								// the live runBinding.coordinator so this failed start cannot retain Session
 								// ownership; its ledger record is replayed as interrupted if recovered.
-								coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
+								runBinding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(runBinding.session));
 							}
 							const response = automationError(id, commandType, asAutomationError(err));
+							startSettled = true;
 							output(response);
 							finishRunRequest(requestClaim, response);
 							// preflightResult has no rejection return value. Throwing prevents
@@ -3482,8 +3539,9 @@ export class RpcHostController {
 							// failure but does not output a duplicate because the reservation cleared.
 							throw err;
 						}
-						activeReservation = undefined;
-						activeHandle = handle;
+						runBinding.activeReservation = undefined;
+						runBinding.activeHandle = handle;
+						startSettled = true;
 						// Emit the accepted response before run.started and the buffered events so
 						// records appear in the contract order: response -> run.started -> run.event* -> terminal.
 						const acceptedResponse: RpcAutomationResponse = {
@@ -3498,7 +3556,7 @@ export class RpcHostController {
 						for (const event of startEvents) {
 							outputRunEvent(event);
 						}
-						trackRunPrompt(handle, promptPromise);
+						trackRunPrompt(runBinding, handle, promptPromise);
 					},
 				});
 			} catch (err) {
@@ -3851,89 +3909,18 @@ export class RpcHostController {
 			},
 		});
 
-		runtimeHost.setRebindSession(async () => {
-			await rebindSession();
-		});
-
-		const rebindSession = async (): Promise<void> => {
-			// A session replacement invalidates every run of the outgoing session.
-			// The Run cancellation intent of every tracked external execution is
-			// forwarded to the adapter's idempotent cancel path; started
-			// settlements are awaited so their terminal is recorded in the
-			// OUTGOING session's ledger, and every pending start is awaited so its
-			// session-generation guard fails it closed (start_rejected) BEFORE the
-			// incoming session is assigned and its stores are rebuilt. An in-flight
-			// external start can therefore never resume against the incoming
-			// Session or write a mapping or ledger entry into it.
-			if (hostInitialized) {
-				sessionGeneration += 1;
-				for (const runId of [...externalRuns.keys()]) {
-					const externalRun = externalRuns.get(runId);
-					if (externalRun === undefined) continue;
-					if (activeHandle?.runId === runId) {
-						activeHandle.requestCancel();
-					}
-					runAbortControllers.get(runId)?.abort();
-					const settlement = externalRunSettlements.get(runId);
-					if (settlement !== undefined) {
-						await settlement;
-					}
-					void externalRun.cancel().catch(() => {
-						// The driver retries idempotently; the tracked settlement owns the terminal.
-					});
-				}
-				// Abort every pending external start controller, including phases
-				// before the externalRuns registration (preflight), so the
-				// generation guard fails each one closed before the incoming
-				// session is assigned. Pending external starts are never awaited: a
-				// preflight or adapter start that ignores the abort signal must not
-				// block the switch (a run.resume in flight is itself a pending
-				// start blocked on this switch and would deadlock), and their
-				// continuation fails closed on the generation guard and can never
-				// accept or write into the incoming session.
-				for (const controller of externalPendingControllers.values()) {
-					controller.abort();
-				}
-			}
-			// Session-switch teardown of the outgoing Task Credential service:
-			// every outstanding lease of the outgoing Session is revoked and
-			// settled before the incoming Session is assigned. Idempotent and
-			// best-effort; the runtime fires the same signal when it disposes the
-			// outgoing Session, and the incoming Session binds a fresh service.
-			taskCredentialService?.onSessionShutdown();
-			if (activeReservation !== undefined) {
-				try {
-					activeReservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
-				activeReservation = undefined;
-			}
-			session = runtimeHost.session;
-			// Rebuild the run coordinator for the current Session. Transport facts
-			// restore accepted/started state and Foundation facts project terminal state.
-			if (hostInitialized) {
-				rebuildAutomationStores();
-				activeHandle = undefined;
-				terminalEventRunIds.clear();
-				runPromptPromises.clear();
-				externalRuns.clear();
-				externalRunSettlements.clear();
-				runAbortControllers.clear();
-				externalPendingControllers.clear();
-			}
-			await session.bindExtensions({
+		const extensionBindings = (binding: RpcSessionBinding): ExtensionBindings => ({
 				uiContext: createExtensionUIContext(),
-				mode: "rpc",
+				mode: "rpc" as const,
 				commandContextActions: {
-					waitForIdle: () => session.waitForIdle(),
+					waitForIdle: () => binding.session.waitForIdle(),
 					newSession: async (options) => runtimeHost.newSession(options),
 					fork: async (entryId, forkOptions) => {
 						const result = await runtimeHost.fork(entryId, forkOptions);
 						return { cancelled: result.cancelled };
 					},
 					navigateTree: async (targetId, options) => {
-						const result = await session.navigateTree(targetId, {
+						const result = await binding.session.navigateTree(targetId, {
 							summarize: options?.summarize,
 							customInstructions: options?.customInstructions,
 							replaceInstructions: options?.replaceInstructions,
@@ -3945,7 +3932,7 @@ export class RpcHostController {
 						return runtimeHost.switchSession(sessionPath, options);
 					},
 					reload: async () => {
-						await session.reload();
+						await runtimeHost.reload();
 					},
 				},
 				shutdownHandler: () => {
@@ -3956,35 +3943,125 @@ export class RpcHostController {
 				},
 			});
 
-			unsubscribe?.();
-			unsubscribeBackpressure?.();
-			unsubscribe = session.subscribe((event) => {
-				if (activeHandle !== undefined) {
-					const emitted = activeHandle.captureSessionEvent(event);
+		const subscribeBinding = (binding: RpcSessionBinding): void => {
+			binding.unsubscribe = binding.session.subscribe((event) => {
+				if (currentBinding !== binding) return;
+				if (binding.activeHandle !== undefined) {
+					const emitted = binding.activeHandle.captureSessionEvent(event);
 					if (emitted !== undefined) outputRunEvent(emitted);
-				} else if (activeReservation !== undefined) {
+				} else if (binding.activeReservation !== undefined) {
 					// Buffer session events observed during preflight; start() flushes them.
-					activeReservation.captureSessionEvent(event);
+					binding.activeReservation.captureSessionEvent(event);
 				} else {
 					output(toJsonEvent(serializePublicSessionEvent(event)));
 				}
 				if (event.type === "agent_settled") {
-					if (activeHandle !== undefined) {
-						void observeActiveRunCompletion(activeHandle);
+					if (binding.activeHandle !== undefined) {
+						void observeActiveRunCompletion(binding, binding.activeHandle);
 					}
 					void checkShutdownRequested();
 				}
 			});
-			unsubscribeBackpressure = session.agent.subscribe(async () => {
+			binding.unsubscribeBackpressure = binding.session.agent.subscribe(async () => {
+				if (currentBinding !== binding) return;
 				await waitForOutput();
 			});
 		};
 
-		await rebindSession();
+		const disposeBinding = async (binding: RpcSessionBinding, signal?: AbortSignal): Promise<void> => {
+			const cleanupFailures: unknown[] = [];
+			const attempt = (cleanup: () => void): void => {
+				try {
+					cleanup();
+				} catch (error) {
+					cleanupFailures.push(error);
+				}
+			};
+			attempt(() => binding.unsubscribe?.());
+			attempt(() => binding.unsubscribeBackpressure?.());
+			attempt(() => binding.activeReservation?.release());
+			binding.activeReservation = undefined;
+			attempt(() => binding.activeHandle?.requestCancel());
+			for (const timer of binding.runDeadlineTimers.values()) clearTimeout(timer);
+			for (const controller of binding.runAbortControllers.values()) controller.abort();
+			for (const controller of binding.externalPendingControllers.values()) controller.abort();
+			const settleWithinDeadline = async (work: Promise<unknown>[]): Promise<void> => {
+				const settledWork = Promise.allSettled(work);
+				const settled = signal === undefined
+					? await settledWork
+					: await new Promise<Awaited<typeof settledWork> | undefined>((resolve) => {
+					if (signal.aborted) {
+						resolve(undefined);
+						return;
+					}
+					const onAbort = (): void => resolve(undefined);
+					signal.addEventListener("abort", onAbort, { once: true });
+					void settledWork.then((results) => {
+						signal.removeEventListener("abort", onAbort);
+						resolve(results);
+					});
+				});
+				for (const result of settled ?? []) {
+					if (result.status === "rejected") cleanupFailures.push(result.reason);
+				}
+			};
+			await settleWithinDeadline([
+				Promise.resolve().then(() => binding.session.abort()),
+				...Array.from(binding.externalRuns.values(), (externalRun) =>
+					Promise.resolve().then(() => externalRun.cancel())),
+			]);
+			await settleWithinDeadline([
+				...binding.runPromptPromises.values(),
+				...binding.externalRunSettlements.values(),
+			]);
+			attempt(() => binding.taskCredentialService?.onSessionShutdown());
+			if (cleanupFailures.length === 1) throw cleanupFailures[0];
+			if (cleanupFailures.length > 1) {
+				throw new AggregateError(cleanupFailures, "RPC session binding cleanup failed");
+			}
+		};
+
+		const prepareRebindSession = async (
+			nextSession: AgentSession,
+			previousSession: AgentSession,
+		): Promise<PreparedSessionScopeRebind> => {
+			if (currentBinding.session !== previousSession) {
+				throw new Error("RPC host session binding does not match the current runtime scope");
+			}
+			const previousBinding = currentBinding;
+			const candidateBinding = createSessionBinding(nextSession);
+			try {
+				await nextSession.prepareExtensionBindings(extensionBindings(candidateBinding));
+				if (hostInitialized) prepareAutomationStores(candidateBinding);
+				subscribeBinding(candidateBinding);
+			} catch (error) {
+				candidateBinding.unsubscribe?.();
+				candidateBinding.unsubscribeBackpressure?.();
+				throw error;
+			}
+			return {
+				commit: () => {
+					currentBinding = candidateBinding;
+				},
+				activate: () => nextSession.activateExtensionBindings(),
+				disposeCandidate: () => {
+					candidateBinding.unsubscribe?.();
+					candidateBinding.unsubscribeBackpressure?.();
+				},
+				disposePrevious: (signal) => disposeBinding(previousBinding, signal),
+			};
+		};
+
+		runtimeHost.setPrepareSessionRebind(prepareRebindSession);
+		await currentBinding.session.bindExtensions(extensionBindings(currentBinding));
+		subscribeBinding(currentBinding);
 
 		// Handle a single command
 		const handleCommand = async (
 			command: RpcCommand,
+			// Capture one binding before the first await. Session-transition cases
+			// explicitly replace this local reference after their committed switch.
+			currentBinding: RpcSessionBinding = captureCurrentBinding(),
 		): Promise<
 			| RpcResponse
 			| RpcAutomationResponse
@@ -4031,30 +4108,30 @@ export class RpcHostController {
 					// reservation/run is never lost.
 					if (!hostInitialized) {
 						hostInitialized = true;
-						rebuildAutomationStores();
+						prepareAutomationStores(currentBinding);
 					}
 					const workerRegistry = (() => {
 						try {
-							return session.getWorkerRegistry();
+							return currentBinding.session.getWorkerRegistry();
 						} catch {
 							return undefined;
 						}
 					})();
 					const subagentRegistry = (() => {
 						try {
-							return session.getSubagentRegistry();
+							return currentBinding.session.getSubagentRegistry();
 						} catch {
 							return undefined;
 						}
 					})();
-					const schedulerStatus = session.getSchedulerStatus?.();
+					const schedulerStatus = currentBinding.session.getSchedulerStatus?.();
 					const taskCredentialsEnabled =
-						session.agentRuntimeComposition.taskCredentialProvider !== undefined &&
-						(session.agentRuntimeComposition.taskCredentialPolicyMaxTtlMs ?? 0) > 0;
+						currentBinding.session.agentRuntimeComposition.taskCredentialProvider !== undefined &&
+						(currentBinding.session.agentRuntimeComposition.taskCredentialPolicyMaxTtlMs ?? 0) > 0;
 					const initializeData: InitializeData = {
 						host: "automation-host",
 						protocolVersion: 1,
-						sessionId: session.sessionId,
+						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
 						auditCommands: ["audit.query", "audit.replay", "external.map"],
 						taskGateCommands: [
@@ -4095,7 +4172,7 @@ export class RpcHostController {
 					// Safe adapter summary: descriptors only (adapterId/displayName/version).
 					// Endpoints, commands, credentials, protocol names, and raw probe data
 					// are never advertised by initialize.
-					const externalAgentRegistry = session.getExternalAgentRegistry?.();
+					const externalAgentRegistry = currentBinding.session.getExternalAgentRegistry?.();
 					if (externalAgentRegistry !== undefined) {
 						initializeData.externalAgentAdapters = externalAgentRegistry.list();
 					}
@@ -4118,7 +4195,7 @@ export class RpcHostController {
 					) {
 						return rpcSubagentError(id, "subagent.get", "subagent_invalid");
 					}
-					const registry = session.getSubagentRegistry();
+					const registry = currentBinding.session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
 					const result = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (result === undefined || !result.ok)
@@ -4126,7 +4203,7 @@ export class RpcHostController {
 					const subagent = projectSubagentAuditSourceV1(result.value);
 					if (
 						subagent === undefined ||
-						subagent.sessionId !== session.sessionId ||
+						subagent.sessionId !== currentBinding.session.sessionId ||
 						subagent.runId !== command.runId ||
 						subagent.childAgentInstanceId !== command.childAgentInstanceId
 					) {
@@ -4155,7 +4232,7 @@ export class RpcHostController {
 						limit > RPC_SUBAGENT_MAX_LIMIT
 					)
 						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
-					const registry = session.getSubagentRegistry();
+					const registry = currentBinding.session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
 					const result = await registry
 						.list(command.runId, {
@@ -4172,7 +4249,7 @@ export class RpcHostController {
 					if (
 						subagents.some(
 							(entry) =>
-								entry === undefined || entry.sessionId !== session.sessionId || entry.runId !== command.runId,
+								entry === undefined || entry.sessionId !== currentBinding.session.sessionId || entry.runId !== command.runId,
 						)
 					) {
 						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
@@ -4198,7 +4275,7 @@ export class RpcHostController {
 					) {
 						return rpcSubagentError(id, "subagent.cancel", "subagent_invalid");
 					}
-					const registry = session.getSubagentRegistry();
+					const registry = currentBinding.session.getSubagentRegistry();
 					if (registry === undefined) return rpcSubagentError(id, "subagent.cancel", "subagent_unavailable");
 					const before = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (before === undefined || !before.ok || before.value === undefined)
@@ -4206,7 +4283,7 @@ export class RpcHostController {
 					const previous = projectSubagentAuditSourceV1(before.value);
 					if (
 						previous === undefined ||
-						previous.sessionId !== session.sessionId ||
+						previous.sessionId !== currentBinding.session.sessionId ||
 						previous.runId !== command.runId
 					)
 						return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
@@ -4219,7 +4296,7 @@ export class RpcHostController {
 					const subagent = projectSubagentAuditSourceV1(result.value);
 					if (
 						subagent === undefined ||
-						subagent.sessionId !== session.sessionId ||
+						subagent.sessionId !== currentBinding.session.sessionId ||
 						subagent.runId !== command.runId ||
 						subagent.childAgentInstanceId !== command.childAgentInstanceId
 					) {
@@ -4239,7 +4316,7 @@ export class RpcHostController {
 					if (Object.keys(command).some((key) => key !== "id" && key !== "type")) {
 						return rpcSchedulerError(id, "scheduler_unavailable");
 					}
-					const scheduler = session.getSchedulerStatus?.();
+					const scheduler = currentBinding.session.getSchedulerStatus?.();
 					if (scheduler === undefined) return rpcSchedulerError(id, "scheduler_unavailable");
 					return {
 						id,
@@ -4257,7 +4334,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = session.getWorkerRegistry();
+						registry = currentBinding.session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					}
@@ -4272,7 +4349,7 @@ export class RpcHostController {
 						return rpcWorkerError(id, "worker.get", "worker_not_found");
 					}
 					if (!isRpcWorkerRecord(record)) return rpcWorkerError(id, "worker.get", "worker_invalid");
-					if (record.sessionId !== session.sessionId) {
+					if (record.sessionId !== currentBinding.session.sessionId) {
 						return rpcWorkerError(id, "worker.get", "worker_not_found");
 					}
 					if (record.workerId !== command.workerId) return rpcWorkerError(id, "worker.get", "worker_invalid");
@@ -4301,7 +4378,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = session.getWorkerRegistry();
+						registry = currentBinding.session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
@@ -4317,7 +4394,7 @@ export class RpcHostController {
 					if (!isRpcWorkerRecordList(records)) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
 					}
-					const currentSessionRecords = records.filter((record) => record.sessionId === session.sessionId);
+					const currentSessionRecords = records.filter((record) => record.sessionId === currentBinding.session.sessionId);
 					const workerIds = new Set(currentSessionRecords.map((record) => record.workerId));
 					if (workerIds.size !== currentSessionRecords.length) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
@@ -4357,7 +4434,7 @@ export class RpcHostController {
 					}
 					let registry: RpcWorkerRegistry | undefined;
 					try {
-						registry = session.getWorkerRegistry();
+						registry = currentBinding.session.getWorkerRegistry();
 					} catch {
 						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
 					}
@@ -4372,7 +4449,7 @@ export class RpcHostController {
 						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
 					}
 					if (!isRpcWorkerRecord(existing)) return rpcWorkerError(id, "worker.reclaim", "worker_invalid");
-					if (existing.sessionId !== session.sessionId) {
+					if (existing.sessionId !== currentBinding.session.sessionId) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_not_found");
 					}
 					if (existing.workerId !== command.workerId)
@@ -4393,7 +4470,7 @@ export class RpcHostController {
 					if (
 						!isRpcWorkerRecord(result.value) ||
 						result.value.workerId !== command.workerId ||
-						result.value.sessionId !== session.sessionId ||
+						result.value.sessionId !== currentBinding.session.sessionId ||
 						!RPC_WORKER_RECLAIM_TERMINAL_STATUSES.has(result.value.status)
 					) {
 						return rpcWorkerError(id, "worker.reclaim", "worker_reclaim_failed");
@@ -4408,7 +4485,7 @@ export class RpcHostController {
 				}
 
 				case "audit.query": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "audit.query", hostNotInitializedError());
 					}
 					const query: AuditQuery = {
@@ -4423,7 +4500,7 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(session)).query(query) satisfies AuditQueryData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).query(query) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.query", auditCommandError(err, "audit_query_invalid"));
@@ -4431,7 +4508,7 @@ export class RpcHostController {
 				}
 
 				case "audit.replay": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "audit.replay", hostNotInitializedError());
 					}
 					const query: AuditReplayQuery = {
@@ -4446,7 +4523,7 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(session)).replay(query) satisfies AuditReplayData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).replay(query) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
@@ -4454,10 +4531,10 @@ export class RpcHostController {
 				}
 
 				case "external.map": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "external.map", hostNotInitializedError());
 					}
-					if (command.aosSessionId !== session.sessionId || !isExternalExecutionRef(command.external)) {
+					if (command.aosSessionId !== currentBinding.session.sessionId || !isExternalExecutionRef(command.external)) {
 						return automationError(id, "external.map", auditCommandError(undefined, "external_mapping_invalid"));
 					}
 					const request: ExternalMappingRequest = {
@@ -4468,7 +4545,7 @@ export class RpcHostController {
 						...(command.correlationId === undefined ? {} : { correlationId: command.correlationId }),
 					};
 					try {
-						const data = coordinator.persistExternalMapping(request) satisfies ExternalMapData;
+						const data = currentBinding.coordinator.persistExternalMapping(request) satisfies ExternalMapData;
 						return { id, type: "response", command: "external.map", success: true, data };
 					} catch (err) {
 						return automationError(id, "external.map", auditCommandError(err, "audit_persistence_failed"));
@@ -4476,14 +4553,14 @@ export class RpcHostController {
 				}
 
 				case "task.gate.request": {
-					if (!hostInitialized || taskGateStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGateStore === undefined) {
 						return automationError(id, "task.gate.request", hostNotInitializedError());
 					}
 					if (!isTaskGateCommandShapeValid(command)) {
 						return automationError(id, "task.gate.request", taskGateCommandError(undefined, "task_gate_invalid"));
 					}
 					try {
-						const result = taskGateStore.request({
+						const result = currentBinding.taskGateStore.request({
 							taskId: command.taskId,
 							stageId: command.stageId,
 							stageRevision: command.stageRevision,
@@ -4503,14 +4580,14 @@ export class RpcHostController {
 				}
 
 				case "task.gate.get": {
-					if (!hostInitialized || taskGateStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGateStore === undefined) {
 						return automationError(id, "task.gate.get", hostNotInitializedError());
 					}
 					if (!isTaskGateCommandShapeValid(command)) {
 						return automationError(id, "task.gate.get", taskGateCommandError(undefined, "task_gate_invalid"));
 					}
 					try {
-						const gate = taskGateStore.get(command.gateId);
+						const gate = currentBinding.taskGateStore.get(command.gateId);
 						if (gate === undefined) {
 							return automationError(
 								id,
@@ -4525,14 +4602,14 @@ export class RpcHostController {
 				}
 
 				case "task.gate.list": {
-					if (!hostInitialized || taskGateStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGateStore === undefined) {
 						return automationError(id, "task.gate.list", hostNotInitializedError());
 					}
 					if (!isTaskGateCommandShapeValid(command)) {
 						return automationError(id, "task.gate.list", taskGateCommandError(undefined, "task_gate_invalid"));
 					}
 					try {
-						const result = taskGateStore.list({
+						const result = currentBinding.taskGateStore.list({
 							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
 							...(command.stageId === undefined ? {} : { stageId: command.stageId }),
 							...(command.status === undefined ? {} : { status: command.status }),
@@ -4553,7 +4630,7 @@ export class RpcHostController {
 				case "task.gate.approve":
 				case "task.gate.reject":
 				case "task.gate.cancel": {
-					if (!hostInitialized || taskGateStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGateStore === undefined) {
 						return automationError(id, command.type, hostNotInitializedError());
 					}
 					if (!isTaskGateCommandShapeValid(command)) {
@@ -4575,10 +4652,10 @@ export class RpcHostController {
 						};
 						const result =
 							command.type === "task.gate.approve"
-								? taskGateStore.approve(decision)
+								? currentBinding.taskGateStore.approve(decision)
 								: command.type === "task.gate.reject"
-									? taskGateStore.reject(decision)
-									: taskGateStore.cancel(decision);
+									? currentBinding.taskGateStore.reject(decision)
+									: currentBinding.taskGateStore.cancel(decision);
 						return {
 							id,
 							type: "response",
@@ -4592,7 +4669,7 @@ export class RpcHostController {
 				}
 
 				case "task.graph.create": {
-					if (!hostInitialized || taskGraphStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGraphStore === undefined) {
 						return automationError(id, "task.graph.create", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
@@ -4603,7 +4680,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const result = taskGraphStore.create({
+						const result = currentBinding.taskGraphStore.create({
 							taskId: command.taskId,
 							graphRevision: command.graphRevision,
 							nodes: command.nodes,
@@ -4616,14 +4693,14 @@ export class RpcHostController {
 				}
 
 				case "task.graph.get": {
-					if (!hostInitialized || taskGraphStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGraphStore === undefined) {
 						return automationError(id, "task.graph.get", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
 						return automationError(id, "task.graph.get", taskGraphCommandError(undefined, "task_graph_invalid"));
 					}
 					try {
-						const graph = taskGraphStore.get(command.taskId, command.graphRevision);
+						const graph = currentBinding.taskGraphStore.get(command.taskId, command.graphRevision);
 						if (graph === undefined) {
 							return automationError(
 								id,
@@ -4644,14 +4721,14 @@ export class RpcHostController {
 				}
 
 				case "task.graph.list": {
-					if (!hostInitialized || taskGraphStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGraphStore === undefined) {
 						return automationError(id, "task.graph.list", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
 						return automationError(id, "task.graph.list", taskGraphCommandError(undefined, "task_graph_invalid"));
 					}
 					try {
-						const result = taskGraphStore.list({
+						const result = currentBinding.taskGraphStore.list({
 							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
 							...(command.graphRevision === undefined ? {} : { graphRevision: command.graphRevision }),
 							...(command.status === undefined ? {} : { status: command.status }),
@@ -4670,7 +4747,7 @@ export class RpcHostController {
 				}
 
 				case "task.graph.node.attach": {
-					if (!hostInitialized || taskGraphStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGraphStore === undefined) {
 						return automationError(id, "task.graph.node.attach", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
@@ -4681,7 +4758,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const result = taskGraphStore.attach({
+						const result = currentBinding.taskGraphStore.attach({
 							taskId: command.taskId,
 							graphRevision: command.graphRevision,
 							nodeId: command.nodeId,
@@ -4699,7 +4776,7 @@ export class RpcHostController {
 				}
 
 				case "task.graph.node.settle": {
-					if (!hostInitialized || taskGraphStore === undefined) {
+					if (!hostInitialized || currentBinding.taskGraphStore === undefined) {
 						return automationError(id, "task.graph.node.settle", hostNotInitializedError());
 					}
 					if (!isTaskGraphCommandShapeValid(command)) {
@@ -4710,7 +4787,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const result = taskGraphStore.settle({
+						const result = currentBinding.taskGraphStore.settle({
 							taskId: command.taskId,
 							graphRevision: command.graphRevision,
 							nodeId: command.nodeId,
@@ -4727,10 +4804,10 @@ export class RpcHostController {
 				}
 
 				case "task.credential.issue": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "task.credential.issue", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.issue",
@@ -4752,8 +4829,8 @@ export class RpcHostController {
 						// Current-Session ownership: the grant is bound to a Run of this
 						// Session's ledger, so a lease can never be issued for another
 						// Session or a phantom Run. The service itself is session-scoped.
-						const boundRun = coordinator.getRun(command.runId);
-						if (boundRun === undefined || boundRun.record.sessionId !== session.sessionId) {
+						const boundRun = currentBinding.coordinator.getRun(command.runId);
+						if (boundRun === undefined || boundRun.record.sessionId !== currentBinding.session.sessionId) {
 							return automationError(
 								id,
 								"task.credential.issue",
@@ -4763,7 +4840,7 @@ export class RpcHostController {
 						// T3 preflight: the host-resolvable read-only facts (gate
 						// approval, node attach, TTL bounds, scope structure) must pass
 						// before the service is touched.
-						const preflightDenied = taskCredentialIssuePreflight({
+						const preflightDenied = taskCredentialIssuePreflight(currentBinding, {
 							taskId: command.taskId,
 							graphRevision: command.graphRevision,
 							nodeId: command.nodeId,
@@ -4780,7 +4857,7 @@ export class RpcHostController {
 								taskCredentialCommandError(undefined, preflightDenied),
 							);
 						}
-						const result = taskCredentialService.issueForTaskRun({
+						const result = currentBinding.taskCredentialService.issueForTaskRun({
 							taskId: command.taskId,
 							graphRevision: command.graphRevision,
 							nodeId: command.nodeId,
@@ -4798,8 +4875,9 @@ export class RpcHostController {
 							clientRequestId: command.clientRequestId,
 							...(command.stageId === undefined || command.stageRevision === undefined
 								? {}
-								: { gate: resolveGateFact(command.taskId, command.stageId, command.stageRevision) }),
+								: { gate: resolveGateFact(currentBinding, command.taskId, command.stageId, command.stageRevision) }),
 							nodeAttached: resolveNodeAttached(
+								currentBinding,
 								command.taskId,
 								command.graphRevision,
 								command.nodeId,
@@ -4841,7 +4919,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						return automationError(id, "task.credential.get", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.get",
@@ -4860,7 +4938,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const grant = taskCredentialService.get(command.leaseId);
+						const grant = currentBinding.taskCredentialService.get(command.leaseId);
 						if (grant === undefined) {
 							return automationError(
 								id,
@@ -4888,7 +4966,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						return automationError(id, "task.credential.list", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.list",
@@ -4925,7 +5003,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const grants = taskCredentialService.list({
+						const grants = currentBinding.taskCredentialService.list({
 							...(command.taskId === undefined ? {} : { taskId: command.taskId }),
 							...(command.nodeId === undefined ? {} : { nodeId: command.nodeId }),
 							...(command.runId === undefined ? {} : { runId: command.runId }),
@@ -4956,7 +5034,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						return automationError(id, "task.credential.heartbeat", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.heartbeat",
@@ -4978,16 +5056,16 @@ export class RpcHostController {
 						// The renew preflight facts are host-resolvable from the
 						// lease's own grant and stores: the stage pair's Gate and the
 						// graph node attach of the lease's run context.
-						const grant = taskCredentialService.get(command.leaseId);
+						const grant = currentBinding.taskCredentialService.get(command.leaseId);
 						let gate: TaskCredentialGatePreflight | undefined;
 						let nodeAttached = false;
 						if (grant !== undefined) {
 							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
-								gate = resolveGateFact(grant.taskId, grant.stageId, grant.stageRevision);
+								gate = resolveGateFact(currentBinding, grant.taskId, grant.stageId, grant.stageRevision);
 							}
-							nodeAttached = resolveNodeAttached(grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+							nodeAttached = resolveNodeAttached(currentBinding, grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
 						}
-						const result = taskCredentialService.renew({
+						const result = currentBinding.taskCredentialService.renew({
 							leaseId: command.leaseId,
 							grantId: command.grantId,
 							bindingId: command.bindingId,
@@ -5029,7 +5107,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						return automationError(id, "task.credential.revoke", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.revoke",
@@ -5050,16 +5128,16 @@ export class RpcHostController {
 					try {
 						// The revoke preflight facts are host-resolvable from the
 						// lease's own grant and stores (same resolution as renew).
-						const grant = taskCredentialService.get(command.leaseId);
+						const grant = currentBinding.taskCredentialService.get(command.leaseId);
 						let gate: TaskCredentialGatePreflight | undefined;
 						let nodeAttached = false;
 						if (grant !== undefined) {
 							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
-								gate = resolveGateFact(grant.taskId, grant.stageId, grant.stageRevision);
+								gate = resolveGateFact(currentBinding, grant.taskId, grant.stageId, grant.stageRevision);
 							}
-							nodeAttached = resolveNodeAttached(grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+							nodeAttached = resolveNodeAttached(currentBinding, grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
 						}
-						const result = taskCredentialService.revoke({
+						const result = currentBinding.taskCredentialService.revoke({
 							leaseId: command.leaseId,
 							...(command.reasonCode === undefined ? {} : { reasonCode: command.reasonCode }),
 							clientRequestId: command.clientRequestId,
@@ -5096,7 +5174,7 @@ export class RpcHostController {
 					if (!hostInitialized) {
 						return automationError(id, "task.credential.settle", hostNotInitializedError());
 					}
-					if (taskCredentialService === undefined) {
+					if (currentBinding.taskCredentialService === undefined) {
 						return automationError(
 							id,
 							"task.credential.settle",
@@ -5115,7 +5193,7 @@ export class RpcHostController {
 						);
 					}
 					try {
-						const result = taskCredentialService.settle({
+						const result = currentBinding.taskCredentialService.settle({
 							leaseId: command.leaseId,
 							...(command.reasonCode === undefined ? {} : { reasonCode: command.reasonCode }),
 							clientRequestId: command.clientRequestId,
@@ -5149,6 +5227,7 @@ export class RpcHostController {
 				case "run.start": {
 					return trackPendingStart(
 						startRun(
+							currentBinding,
 							id,
 							"run.start",
 							command.message,
@@ -5174,10 +5253,10 @@ export class RpcHostController {
 				}
 
 				case "run.get": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "run.get", hostNotInitializedError());
 					}
-					const result = coordinator.getRun(command.runId);
+					const result = currentBinding.coordinator.getRun(command.runId);
 					if (result === undefined) {
 						return automationError(
 							id,
@@ -5199,10 +5278,10 @@ export class RpcHostController {
 				}
 
 				case "run.cancel": {
-					if (!hostInitialized || coordinator === undefined) {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "run.cancel", hostNotInitializedError());
 					}
-					const result = coordinator.getRun(command.runId);
+					const result = currentBinding.coordinator.getRun(command.runId);
 					if (result === undefined) {
 						return automationError(
 							id,
@@ -5220,7 +5299,7 @@ export class RpcHostController {
 						};
 						return cancelResponse;
 					}
-					if (activeHandle === undefined || activeHandle.runId !== command.runId) {
+					if (currentBinding.activeHandle === undefined || currentBinding.activeHandle.runId !== command.runId) {
 						return automationError(
 							id,
 							"run.cancel",
@@ -5231,18 +5310,18 @@ export class RpcHostController {
 							),
 						);
 					}
-					activeHandle.requestCancel();
+					currentBinding.activeHandle.requestCancel();
 					// Cancellation is a request, not the terminal transition. An external
 					// agent run forwards to the idempotent adapter cancel (the deadline
 					// signal reaches the adapter through the same driver); a local run
 					// triggers the existing abort path without waiting for its idle
 					// promise so the command response describes the current running
 					// state. A terminal event is emitted only after canonical lookup.
-					const externalRun = externalRuns.get(command.runId);
+					const externalRun = currentBinding.externalRuns.get(command.runId);
 					if (externalRun !== undefined) {
 						void externalRun.cancel();
 					} else {
-						void session.abort().catch(() => {
+						void currentBinding.session.abort().catch(() => {
 							// Foundation remains the only terminal authority.
 						});
 					}
@@ -5338,7 +5417,7 @@ export class RpcHostController {
 									),
 								);
 							}
-							if (!hostInitialized || coordinator === undefined) {
+							if (!hostInitialized || currentBinding.coordinator === undefined) {
 								return automationError(id, "run.resume", hostNotInitializedError());
 							}
 							let targetLedger: ReturnType<typeof loadReadOnlyRunCoordinator>;
@@ -5375,8 +5454,8 @@ export class RpcHostController {
 							let resumeClaim: RunRequestIdentity | undefined;
 							if (resumeIdentity !== undefined) {
 								const gate = beginRunRequest(id, "run.resume", resumeIdentity, () =>
-										targetSessionId === session.sessionId
-											? coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume") ??
+										targetSessionId === currentBinding.session.sessionId
+											? currentBinding.coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume") ??
 												targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume")
 											: targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
 								);
@@ -5399,7 +5478,7 @@ export class RpcHostController {
 									),
 								);
 							if (requestEpoch !== transportEpoch) return resumeFailure(connectionClosedResponse());
-							if (coordinator.activeRun !== undefined || activeReservation !== undefined) {
+							if (currentBinding.coordinator.activeRun !== undefined || currentBinding.activeReservation !== undefined) {
 								return resumeFailure(
 									automationError(
 										id,
@@ -5412,7 +5491,7 @@ export class RpcHostController {
 									),
 								);
 							}
-							if (session.sessionFile === undefined) {
+							if (currentBinding.session.sessionFile === undefined) {
 								return resumeFailure(
 									automationError(
 										id,
@@ -5445,9 +5524,12 @@ export class RpcHostController {
 								);
 							}
 							if (requestEpoch !== transportEpoch) return resumeFailure(connectionClosedResponse());
-							// switchSession() re-runs rebindSession(), which rebuilt `coordinator`
-							// for the restored session's ledger.
-							const sourceRun = coordinator!.getRun(command.sourceRunId);
+							currentBinding = captureCurrentBinding();
+							if (currentBinding.coordinator === undefined) {
+								return resumeFailure(automationError(id, "run.resume", hostNotInitializedError()));
+							}
+							// The prepared binding already owns the restored session's coordinator.
+							const sourceRun = currentBinding.coordinator.getRun(command.sourceRunId);
 							if (sourceRun === undefined) {
 								return resumeFailure(
 									automationError(
@@ -5500,10 +5582,24 @@ export class RpcHostController {
 							const inheritedModelBinding =
 								previousModelBindingId === undefined
 									? undefined
-									: foldModelBrokerLedger(session.sessionRead.getEntries()).bindings.get(
+									: foldModelBrokerLedger(currentBinding.session.sessionRead.getEntries()).bindings.get(
 											previousModelBindingId,
 										);
+							if (currentBinding !== captureCurrentBinding()) {
+								return resumeFailure(
+									automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											"start_rejected",
+											"The Host switched sessions again before the resumed Run was accepted.",
+											true,
+										),
+									),
+								);
+							}
 							return startRun(
+								currentBinding,
 								id,
 								"run.resume",
 								command.message,
@@ -5538,7 +5634,7 @@ export class RpcHostController {
 					// Start prompt handling immediately, but emit the authoritative response only after
 					// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 					let preflightSucceeded = false;
-					void session
+					void currentBinding.session
 						.prompt(command.message, {
 							images: command.images,
 							streamingBehavior: command.streamingBehavior,
@@ -5560,26 +5656,23 @@ export class RpcHostController {
 				}
 
 				case "steer": {
-					await session.steer(command.message, command.images);
+					await currentBinding.session.steer(command.message, command.images);
 					return success(id, "steer");
 				}
 
 				case "follow_up": {
-					await session.followUp(command.message, command.images);
+					await currentBinding.session.followUp(command.message, command.images);
 					return success(id, "follow_up");
 				}
 
 				case "abort": {
-					await session.abort();
+					await currentBinding.session.abort();
 					return success(id, "abort");
 				}
 
 				case "new_session": {
 					const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 					const result = await runtimeHost.newSession(options);
-					if (!result.cancelled) {
-						await rebindSession();
-					}
 					return success(id, "new_session", result);
 				}
 
@@ -5589,17 +5682,17 @@ export class RpcHostController {
 
 				case "get_state": {
 					const state: RpcSessionState = {
-						model: session.model,
-						thinkingLevel: session.thinkingLevel,
-						isStreaming: session.isStreaming,
-						isCompacting: session.isCompacting,
-						steeringMode: session.steeringMode,
-						followUpMode: session.followUpMode,
-						sessionId: session.sessionId,
-						sessionName: session.sessionName,
-						autoCompactionEnabled: session.autoCompactionEnabled,
-						messageCount: session.messages.length,
-						pendingMessageCount: session.pendingMessageCount,
+						model: currentBinding.session.model,
+						thinkingLevel: currentBinding.session.thinkingLevel,
+						isStreaming: currentBinding.session.isStreaming,
+						isCompacting: currentBinding.session.isCompacting,
+						steeringMode: currentBinding.session.steeringMode,
+						followUpMode: currentBinding.session.followUpMode,
+						sessionId: currentBinding.session.sessionId,
+						sessionName: currentBinding.session.sessionName,
+						autoCompactionEnabled: currentBinding.session.autoCompactionEnabled,
+						messageCount: currentBinding.session.messages.length,
+						pendingMessageCount: currentBinding.session.pendingMessageCount,
 					};
 					return success(id, "get_state", state);
 				}
@@ -5609,17 +5702,17 @@ export class RpcHostController {
 				// =================================================================
 
 				case "set_model": {
-					const models = session.modelRuntime.getAvailableSnapshot();
+					const models = currentBinding.session.modelRuntime.getAvailableSnapshot();
 					const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);
 					if (!model) {
 						return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 					}
-					await session.setModel(model);
+					await currentBinding.session.setModel(model);
 					return success(id, "set_model", model);
 				}
 
 				case "cycle_model": {
-					const result = await session.cycleModel();
+					const result = await currentBinding.session.cycleModel();
 					if (!result) {
 						return success(id, "cycle_model", null);
 					}
@@ -5627,7 +5720,7 @@ export class RpcHostController {
 				}
 
 				case "get_available_models": {
-					const models = session.modelRuntime.getAvailableSnapshot();
+					const models = currentBinding.session.modelRuntime.getAvailableSnapshot();
 					return success(id, "get_available_models", { models });
 				}
 
@@ -5636,12 +5729,12 @@ export class RpcHostController {
 				// =================================================================
 
 				case "set_thinking_level": {
-					session.setThinkingLevel(command.level);
+					currentBinding.session.setThinkingLevel(command.level);
 					return success(id, "set_thinking_level");
 				}
 
 				case "cycle_thinking_level": {
-					const level = session.cycleThinkingLevel();
+					const level = currentBinding.session.cycleThinkingLevel();
 					if (!level) {
 						return success(id, "cycle_thinking_level", null);
 					}
@@ -5649,7 +5742,7 @@ export class RpcHostController {
 				}
 
 				case "get_available_thinking_levels": {
-					const levels = session.getAvailableThinkingLevels();
+					const levels = currentBinding.session.getAvailableThinkingLevels();
 					return success(id, "get_available_thinking_levels", { levels });
 				}
 
@@ -5658,12 +5751,12 @@ export class RpcHostController {
 				// =================================================================
 
 				case "set_steering_mode": {
-					session.setSteeringMode(command.mode);
+					currentBinding.session.setSteeringMode(command.mode);
 					return success(id, "set_steering_mode");
 				}
 
 				case "set_follow_up_mode": {
-					session.setFollowUpMode(command.mode);
+					currentBinding.session.setFollowUpMode(command.mode);
 					return success(id, "set_follow_up_mode");
 				}
 
@@ -5672,12 +5765,12 @@ export class RpcHostController {
 				// =================================================================
 
 				case "compact": {
-					const result = await session.compact(command.customInstructions);
+					const result = await currentBinding.session.compact(command.customInstructions);
 					return success(id, "compact", result);
 				}
 
 				case "set_auto_compaction": {
-					session.setAutoCompactionEnabled(command.enabled);
+					currentBinding.session.setAutoCompactionEnabled(command.enabled);
 					return success(id, "set_auto_compaction");
 				}
 
@@ -5686,12 +5779,12 @@ export class RpcHostController {
 				// =================================================================
 
 				case "set_auto_retry": {
-					session.setAutoRetryEnabled(command.enabled);
+					currentBinding.session.setAutoRetryEnabled(command.enabled);
 					return success(id, "set_auto_retry");
 				}
 
 				case "abort_retry": {
-					session.abortRetry();
+					currentBinding.session.abortRetry();
 					return success(id, "abort_retry");
 				}
 
@@ -5700,24 +5793,24 @@ export class RpcHostController {
 				// =================================================================
 
 				case "bash": {
-					const allowExtensionBash = await session.authorizeUserBashExtension(command.command, { id });
+					const allowExtensionBash = await currentBinding.session.authorizeUserBashExtension(command.command, { id });
 					const eventResult = allowExtensionBash
-						? await session.extensionRunner.emitUserBash({
+						? await currentBinding.session.extensionRunner.emitUserBash({
 								type: "user_bash",
 								command: command.command,
 								excludeFromContext: command.excludeFromContext ?? false,
-								cwd: session.sessionRead.getCwd(),
+								cwd: currentBinding.session.sessionRead.getCwd(),
 							})
 						: undefined;
 
 					if (eventResult?.result) {
-						session.recordBashResult(command.command, eventResult.result, {
+						currentBinding.session.recordBashResult(command.command, eventResult.result, {
 							excludeFromContext: command.excludeFromContext,
 						});
 						return success(id, "bash", eventResult.result);
 					}
 
-					const result = await session.executeBash(command.command, undefined, {
+					const result = await currentBinding.session.executeBash(command.command, undefined, {
 						excludeFromContext: command.excludeFromContext,
 						id,
 						operations: eventResult?.operations,
@@ -5726,7 +5819,7 @@ export class RpcHostController {
 				}
 
 				case "abort_bash": {
-					session.abortBash();
+					currentBinding.session.abortBash();
 					return success(id, "abort_bash");
 				}
 
@@ -5735,12 +5828,12 @@ export class RpcHostController {
 				// =================================================================
 
 				case "get_session_stats": {
-					const stats = session.getSessionStats();
+					const stats = currentBinding.session.getSessionStats();
 					return success(id, "get_session_stats", serializePublicSessionStats(stats));
 				}
 
 				case "get_context": {
-					const inspection = await session.inspectContext({
+					const inspection = await currentBinding.session.inspectContext({
 						snapshotId: command.snapshotId,
 					});
 					return success(id, "get_context", {
@@ -5753,8 +5846,8 @@ export class RpcHostController {
 				case "get_capabilities": {
 					// Ordinary read-only inspection: no Automation Host initialize is
 					// required, and only public-safe metadata is ever returned.
-					const history = foldCapabilityBindingEntries(session.sessionRead.getEntries());
-					const current = session.getActiveCapabilityBinding();
+					const history = foldCapabilityBindingEntries(currentBinding.session.sessionRead.getEntries());
+					const current = currentBinding.session.getActiveCapabilityBinding();
 					if (command.bindingId !== undefined) {
 						const found = history.get(command.bindingId);
 						if (found === undefined) {
@@ -5762,13 +5855,13 @@ export class RpcHostController {
 						}
 						const binding = serializePublicCapabilityBinding(found);
 						return success(id, "get_capabilities", {
-							catalog: session.inspectCapabilityCatalog(),
+							catalog: currentBinding.session.inspectCapabilityCatalog(),
 							binding: binding ?? null,
 							bindings: [],
 						} satisfies GetCapabilitiesData);
 					}
 					return success(id, "get_capabilities", {
-						catalog: session.inspectCapabilityCatalog(),
+						catalog: currentBinding.session.inspectCapabilityCatalog(),
 						binding: current === undefined ? null : (serializePublicCapabilityBinding(current) ?? null),
 						bindings: [...history.values()]
 							.map((binding) => serializePublicCapabilityBinding(binding))
@@ -5778,18 +5871,18 @@ export class RpcHostController {
 
 				case "get_execution_policy": {
 					return success(id, "get_execution_policy", {
-						summary: session.getActiveExecutionPolicySummary(),
-						pendingApprovals: session.getPendingExecutionPolicyApprovals(),
+						summary: currentBinding.session.getActiveExecutionPolicySummary(),
+						pendingApprovals: currentBinding.session.getPendingExecutionPolicyApprovals(),
 					} satisfies GetExecutionPolicyData);
 				}
 
 				case "policy.approve": {
-					session.approveExecutionPolicyRequest(command.requestId, "rpc");
+					currentBinding.session.approveExecutionPolicyRequest(command.requestId, "rpc");
 					return success(id, "policy.approve");
 				}
 
 				case "policy.reject": {
-					session.rejectExecutionPolicyRequest(command.requestId, "rpc");
+					currentBinding.session.rejectExecutionPolicyRequest(command.requestId, "rpc");
 					return success(id, "policy.reject");
 				}
 
@@ -5800,7 +5893,7 @@ export class RpcHostController {
 					return success(
 						id,
 						"get_model_routes",
-						session.modelBroker.publicSummary(session.modelBrokerBindingId) satisfies GetModelRoutesData,
+						currentBinding.session.modelBroker.publicSummary(currentBinding.session.modelBrokerBindingId) satisfies GetModelRoutesData,
 					);
 				}
 
@@ -5815,7 +5908,7 @@ export class RpcHostController {
 					// starts a Run or a model. The host signal cancels the in-flight
 					// server/session operation on detach/shutdown (bounded).
 					try {
-						const data = await session.listMcpResources(
+						const data = await currentBinding.session.listMcpResources(
 							command.serverId,
 							command.cursor === undefined ? undefined : { cursor: command.cursor },
 							mcpOperationController.signal,
@@ -5831,7 +5924,7 @@ export class RpcHostController {
 					// carries digest ids and a sanitized display pattern only, never
 					// the raw URI template.
 					try {
-						const data = await session.listMcpResourceTemplates(
+						const data = await currentBinding.session.listMcpResourceTemplates(
 							command.serverId,
 							command.cursor === undefined ? undefined : { cursor: command.cursor },
 							mcpOperationController.signal,
@@ -5844,7 +5937,7 @@ export class RpcHostController {
 
 				case "mcp.resource.read": {
 					try {
-						const result = await session.readMcpResource(
+						const result = await currentBinding.session.readMcpResource(
 							command.serverId,
 							command.uri,
 							mcpOperationController.signal,
@@ -5860,7 +5953,7 @@ export class RpcHostController {
 					// result as a session attachment. Rejected while the Automation
 					// Host is initialized (mutates session state).
 					try {
-						const attachment = await session.attachMcpResource({
+						const attachment = await currentBinding.session.attachMcpResource({
 							serverId: command.serverId,
 							uri: command.uri,
 							signal: mcpOperationController.signal,
@@ -5873,7 +5966,7 @@ export class RpcHostController {
 
 				case "mcp.prompt.list": {
 					try {
-						const data = await session.listMcpPrompts(
+						const data = await currentBinding.session.listMcpPrompts(
 							command.serverId,
 							command.cursor === undefined ? undefined : { cursor: command.cursor },
 							mcpOperationController.signal,
@@ -5886,7 +5979,7 @@ export class RpcHostController {
 
 				case "mcp.prompt.get": {
 					try {
-						const result = await session.getMcpPrompt(
+						const result = await currentBinding.session.getMcpPrompt(
 							command.serverId,
 							command.name,
 							command.args,
@@ -5900,7 +5993,7 @@ export class RpcHostController {
 
 				case "mcp.prompt.attach": {
 					try {
-						const attachment = await session.attachMcpPrompt({
+						const attachment = await currentBinding.session.attachMcpPrompt({
 							serverId: command.serverId,
 							name: command.name,
 							args: command.args,
@@ -5939,9 +6032,9 @@ export class RpcHostController {
 					if (this.outputSink === undefined) {
 						return mcpAuthErrorResponse(id, "mcp.auth.start", "mcp_auth_interaction_required", command.serverId);
 					}
-					const stdioError = mcpAuthStdioError(id, "mcp.auth.start", command.serverId);
+					const stdioError = mcpAuthStdioError(currentBinding, id, "mcp.auth.start", command.serverId);
 					if (stdioError !== undefined) return stdioError;
-					if (session.getMcpAuthManager() === undefined) {
+					if (currentBinding.session.getMcpAuthManager() === undefined) {
 						return mcpAuthErrorResponse(id, "mcp.auth.start", "mcp_auth_not_configured", command.serverId);
 					}
 					const interaction = createMcpAuthInteraction(
@@ -5949,7 +6042,7 @@ export class RpcHostController {
 						command.timeoutMs ?? MCP_OAUTH_DEFAULT_TIMEOUT_MS,
 					);
 					try {
-						const result = await session.startMcpAuth(command.serverId, command.serverUrl, {
+						const result = await currentBinding.session.startMcpAuth(command.serverId, command.serverUrl, {
 							interaction,
 							callbackMode: command.callbackMode,
 							httpsCallbackUrl: command.httpsCallbackUrl,
@@ -5969,13 +6062,13 @@ export class RpcHostController {
 				}
 
 				case "mcp.auth.status": {
-					const stdioError = mcpAuthStdioError(id, "mcp.auth.status", command.serverId);
+					const stdioError = mcpAuthStdioError(currentBinding, id, "mcp.auth.status", command.serverId);
 					if (stdioError !== undefined) return stdioError;
-					if (session.getMcpAuthManager() === undefined) {
+					if (currentBinding.session.getMcpAuthManager() === undefined) {
 						return mcpAuthErrorResponse(id, "mcp.auth.status", "mcp_auth_not_configured", command.serverId);
 					}
 					try {
-						const credential = await session.getMcpAuthStatus(command.serverId, command.serverUrl);
+						const credential = await currentBinding.session.getMcpAuthStatus(command.serverId, command.serverUrl);
 						if (credential === undefined) {
 							return {
 								id,
@@ -6001,11 +6094,11 @@ export class RpcHostController {
 				}
 
 				case "mcp.auth.list": {
-					if (session.getMcpAuthManager() === undefined) {
+					if (currentBinding.session.getMcpAuthManager() === undefined) {
 						return mcpAuthErrorResponse(id, "mcp.auth.list", "mcp_auth_not_configured", "");
 					}
 					try {
-						const credentials = await session.listMcpCredentialStatuses();
+						const credentials = await currentBinding.session.listMcpCredentialStatuses();
 						return {
 							id,
 							type: "response",
@@ -6021,13 +6114,13 @@ export class RpcHostController {
 				}
 
 				case "mcp.auth.logout": {
-					const stdioError = mcpAuthStdioError(id, "mcp.auth.logout", command.serverId);
+					const stdioError = mcpAuthStdioError(currentBinding, id, "mcp.auth.logout", command.serverId);
 					if (stdioError !== undefined) return stdioError;
-					if (session.getMcpAuthManager() === undefined) {
+					if (currentBinding.session.getMcpAuthManager() === undefined) {
 						return mcpAuthErrorResponse(id, "mcp.auth.logout", "mcp_auth_not_configured", command.serverId);
 					}
 					try {
-						await session.logoutMcpAuth(command.serverId, command.serverUrl);
+						await currentBinding.session.logoutMcpAuth(command.serverId, command.serverUrl);
 						return { id, type: "response", command: "mcp.auth.logout", success: true };
 					} catch (err) {
 						return mcpAuthFailure(id, "mcp.auth.logout", err, command.serverId);
@@ -6035,45 +6128,36 @@ export class RpcHostController {
 				}
 
 				case "export_html": {
-					const path = await session.exportToHtml(command.outputPath);
+					const path = await currentBinding.session.exportToHtml(command.outputPath);
 					return success(id, "export_html", { path });
 				}
 
 				case "switch_session": {
 					const result = await runtimeHost.switchSession(command.sessionPath);
-					if (!result.cancelled) {
-						await rebindSession();
-					}
 					return success(id, "switch_session", result);
 				}
 
 				case "fork": {
 					const result = await runtimeHost.fork(command.entryId);
-					if (!result.cancelled) {
-						await rebindSession();
-					}
 					return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
 				}
 
 				case "clone": {
-					const leafId = session.sessionRead.getLeafId();
+					const leafId = currentBinding.session.sessionRead.getLeafId();
 					if (!leafId) {
 						return error(id, "clone", "Cannot clone session: no current entry selected");
 					}
 					const result = await runtimeHost.fork(leafId, { position: "at" });
-					if (!result.cancelled) {
-						await rebindSession();
-					}
 					return success(id, "clone", { cancelled: result.cancelled });
 				}
 
 				case "get_fork_messages": {
-					const messages = session.getUserMessagesForForking();
+					const messages = currentBinding.session.getUserMessagesForForking();
 					return success(id, "get_fork_messages", { messages });
 				}
 
 				case "get_entries": {
-					const sessionRead = session.sessionRead;
+					const sessionRead = currentBinding.session.sessionRead;
 					let entries = sessionRead.getEntries();
 					if (command.since !== undefined) {
 						const sinceIndex = entries.findIndex((e) => e.id === command.since);
@@ -6089,7 +6173,7 @@ export class RpcHostController {
 				}
 
 				case "get_tree": {
-					const sessionRead = session.sessionRead;
+					const sessionRead = currentBinding.session.sessionRead;
 					return success(id, "get_tree", {
 						tree: sessionRead.getTree().map((node) => serializePublicSessionTreeNode(node)),
 						leafId: sessionRead.getLeafId(),
@@ -6097,7 +6181,7 @@ export class RpcHostController {
 				}
 
 				case "get_last_assistant_text": {
-					const text = session.getLastAssistantText();
+					const text = currentBinding.session.getLastAssistantText();
 					return success(id, "get_last_assistant_text", { text });
 				}
 
@@ -6106,7 +6190,7 @@ export class RpcHostController {
 					if (!name) {
 						return error(id, "set_session_name", "Session name cannot be empty");
 					}
-					session.setSessionName(name);
+					currentBinding.session.setSessionName(name);
 					return success(id, "set_session_name");
 				}
 
@@ -6115,7 +6199,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "get_messages": {
-					return success(id, "get_messages", { messages: session.messages });
+					return success(id, "get_messages", { messages: currentBinding.session.messages });
 				}
 
 				// =================================================================
@@ -6125,7 +6209,7 @@ export class RpcHostController {
 				case "get_commands": {
 					const commands: RpcSlashCommand[] = [];
 
-					for (const command of session.extensionRunner.getRegisteredCommands()) {
+					for (const command of currentBinding.session.extensionRunner.getRegisteredCommands()) {
 						commands.push({
 							name: command.invocationName,
 							description: command.description,
@@ -6134,7 +6218,7 @@ export class RpcHostController {
 						});
 					}
 
-					for (const template of session.promptTemplates) {
+					for (const template of currentBinding.session.promptTemplates) {
 						commands.push({
 							name: template.name,
 							description: template.description,
@@ -6143,7 +6227,7 @@ export class RpcHostController {
 						});
 					}
 
-					for (const skill of session.resourceLoader.getSkills().skills) {
+					for (const skill of currentBinding.session.resourceLoader.getSkills().skills) {
 						commands.push({
 							name: `skill:${skill.name}`,
 							description: skill.description,
@@ -6175,33 +6259,37 @@ export class RpcHostController {
 			}
 			shuttingDown = true;
 			hostController.shuttingDown = true;
+			const bindingAtShutdown = currentBinding;
 			shutdownPromise = (async () => {
 				// Stop accepting new runs and abort the active run. Session completion is
 				// only an observation; the last canonical Foundation state is authoritative.
-				if (activeReservation !== undefined) {
+				if (bindingAtShutdown.activeReservation !== undefined) {
 					try {
-						activeReservation.release();
+						bindingAtShutdown.activeReservation.release();
 					} catch {
 						// reservation may already be consumed
 					}
-					activeReservation = undefined;
+					bindingAtShutdown.activeReservation = undefined;
 				}
-				if (activeHandle !== undefined) {
-					activeHandle.requestCancel();
-					const forwarded = await forwardExternalRunLifecycleCancel(activeHandle.runId);
+				if (bindingAtShutdown.activeHandle !== undefined) {
+					bindingAtShutdown.activeHandle.requestCancel();
+					const forwarded = await forwardExternalRunLifecycleCancel(
+						bindingAtShutdown,
+						bindingAtShutdown.activeHandle.runId,
+					);
 					if (!forwarded) {
 						try {
-							await session.abort();
+							await bindingAtShutdown.session.abort();
 						} catch {
 							// Canonical lookup proceeds independently of abort errors.
 						}
 					}
 				}
 				// Abort every pending external start, including phases before the
-				// externalRuns registration (preflight), so none of them accepts or
+				// external-runs registration (preflight), so none of them accepts or
 				// starts after the host is gone; each fails closed on the
 				// shuttingDown guard.
-				for (const controller of externalPendingControllers.values()) {
+				for (const controller of bindingAtShutdown.externalPendingControllers.values()) {
 					controller.abort();
 				}
 				// Abort in-flight MCP content operations bound to this host; each
@@ -6209,8 +6297,8 @@ export class RpcHostController {
 				// blocking the shutdown (bounded cancellation).
 				abortMcpOperations();
 				rejectPendingExtensionRequests();
-				unsubscribe?.();
-				unsubscribeBackpressure?.();
+				bindingAtShutdown.unsubscribe?.();
+				bindingAtShutdown.unsubscribeBackpressure?.();
 				await runtimeHost.dispose();
 				hostController.onShutdown?.();
 			})();
@@ -6223,42 +6311,43 @@ export class RpcHostController {
 				await detachTransportPromise;
 				return;
 			}
-			const handleAtDetach = activeHandle;
+			const bindingAtDetach = currentBinding;
+			const handleAtDetach = bindingAtDetach.activeHandle;
 			const pendingStartsAtDetach = [...pendingStartPromises];
 			detachTransportPromise = (async () => {
 				rejectPendingExtensionRequests();
-				if (activeReservation !== undefined) {
+				if (bindingAtDetach.activeReservation !== undefined) {
 					try {
-						activeReservation.release();
+						bindingAtDetach.activeReservation.release();
 					} catch {
 						// reservation may already be consumed
 					}
-					activeReservation = undefined;
+					bindingAtDetach.activeReservation = undefined;
 				}
 				if (handleAtDetach !== undefined) {
 					// The Run cancellation intent is forwarded to the adapter's
 					// idempotent cancel path for external executions: the Session
-					// agent loop does not drive them, so session.abort() alone would
+					// agent loop does not drive them, so Session abort alone would
 					// leave the external execution running. Local runs keep the existing
 					// abort plus tracked-prompt observation.
 					handleAtDetach.requestCancel();
-					const forwarded = await forwardExternalRunLifecycleCancel(handleAtDetach.runId);
+					const forwarded = await forwardExternalRunLifecycleCancel(bindingAtDetach, handleAtDetach.runId);
 					if (!forwarded) {
 						try {
-							await session.abort();
+							await bindingAtDetach.session.abort();
 						} catch {
 							// Canonical lookup remains independent of the abort observation.
 						}
-						await runPromptPromises.get(handleAtDetach.runId);
+						await bindingAtDetach.runPromptPromises.get(handleAtDetach.runId);
 					}
 				}
 				// Abort every pending external start controller (including phases
-				// before the externalRuns registration) so the preflight or
+				// before external-runs registration) so the preflight or
 				// readiness race resolves where the signal is honored; each fails
 				// closed on the epoch guard. Pending external starts are never
 				// awaited: an adapter start or preflight that ignores the abort
 				// signal must not block the detach.
-				for (const controller of externalPendingControllers.values()) {
+				for (const controller of bindingAtDetach.externalPendingControllers.values()) {
 					controller.abort();
 				}
 				// Abort in-flight MCP content operations bound to the detaching
@@ -6266,13 +6355,13 @@ export class RpcHostController {
 				// commands are never awaited; each fails closed on its own abort
 				// path, and a fresh controller serves the next attachment.
 				abortMcpOperations();
-				const externalPendingAtDetach = new Set(pendingExternalStarts.values());
+				const externalPendingAtDetach = new Set(bindingAtDetach.pendingExternalStarts.values());
 				await Promise.all([...pendingStartsAtDetach].filter((pending) => !externalPendingAtDetach.has(pending)));
 				// Worker detach: the Host connection (worker) that drove the active
 				// Run detached from this Session. Revoke + settle every lease bound
 				// to the run (and its worker) before the transport is unbound;
 				// best-effort and idempotent with the run's own terminal signal.
-				taskCredentialService?.onWorkerDetach({ runId: handleAtDetach?.runId });
+				bindingAtDetach.taskCredentialService?.onWorkerDetach({ runId: handleAtDetach?.runId });
 			})().finally(() => {
 				detachTransportPromise = undefined;
 			});

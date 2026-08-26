@@ -79,7 +79,7 @@ function createRpcController(session: Awaited<ReturnType<typeof createAgentSessi
 		switchSession: async () => ({ cancelled: true }),
 		fork: async () => ({ cancelled: true, selectedText: "" }),
 		dispose: async () => {},
-		setRebindSession: () => {},
+		setPrepareSessionRebind: () => {},
 	} as unknown as AgentSessionRuntime;
 	return new RpcHostController(runtimeHost);
 }

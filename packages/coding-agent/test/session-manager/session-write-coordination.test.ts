@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -150,6 +150,32 @@ describe("SessionWriteCoordinator", () => {
 		}
 
 		expect(loadEntriesFromFile(sessionFile)).toHaveLength(3);
+	});
+
+	it("locks candidate artifact rollback and leaves it retryable after lock contention", () => {
+		const sessionFile = createPersistedSession(tempDir);
+		const originalContents = readFileSync(sessionFile);
+		const artifact = SessionManager.stageArtifactRollback(sessionFile);
+		if (artifact === undefined) throw new Error("Expected a staged Session artifact");
+		writeFileSync(sessionFile, "candidate mutation\n");
+
+		const release = lockfile.lockSync(sessionFile, { realpath: false, stale: 30_000 });
+		let failure: unknown;
+		try {
+			try {
+				artifact.rollback();
+			} catch (error) {
+				failure = error;
+			}
+			expect(failure).toBeInstanceOf(SessionWriteCoordinationError);
+			expect(failure).toMatchObject({ code: "session_write_lock_timeout" });
+			expect(readFileSync(sessionFile, "utf8")).toBe("candidate mutation\n");
+		} finally {
+			release();
+		}
+
+		artifact.rollback();
+		expect(readFileSync(sessionFile)).toEqual(originalContents);
 	});
 
 	it("rejects a session path outside its configured root", () => {

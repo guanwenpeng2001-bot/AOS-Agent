@@ -3,7 +3,7 @@ import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from 
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
-import { type AuthStorageBackend, FileAuthStorageBackend } from "./auth-storage.ts";
+import { LockedAtomicFileStorage } from "./control-plane-atomic-storage.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
 
@@ -18,6 +18,22 @@ type ModelsFileReadState = {
 	revision?: string;
 	reload?: ModelsFileReload;
 };
+
+function parseStoredModels(content: string): StoredModels {
+	const parsed: unknown = JSON.parse(content);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Invalid models store: expected an object");
+	}
+	return parsed as StoredModels;
+}
+
+const MODELS_STORAGE_OPTIONS = {
+	validate: (content: string) => {
+		parseStoredModels(content);
+	},
+	mode: 0o600,
+	directoryMode: 0o700,
+} as const;
 
 // Optimize the common path without retaining an unbounded set of custom paths.
 let sharedModelsFileReadState: { path: string; readState: ModelsFileReadState } | undefined;
@@ -44,13 +60,13 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */
 export class FileModelsStore implements ModelsStore {
-	private readonly storage: AuthStorageBackend;
+	private readonly storage: LockedAtomicFileStorage;
 	private readonly path: string;
 	private readonly readState: ModelsFileReadState;
 
 	constructor(path: string = join(getAgentDir(), "models-store.json")) {
 		this.path = normalizePath(path);
-		this.storage = new FileAuthStorageBackend(this.path);
+		this.storage = new LockedAtomicFileStorage(this.path, "{}", MODELS_STORAGE_OPTIONS);
 		this.readState =
 			sharedModelsFileReadState?.path === this.path ? sharedModelsFileReadState.readState : { data: {} };
 		if (!sharedModelsFileReadState) {
@@ -59,7 +75,7 @@ export class FileModelsStore implements ModelsStore {
 	}
 
 	private parse(content: string | undefined): StoredModels {
-		return content ? (JSON.parse(content) as StoredModels) : {};
+		return content ? parseStoredModels(content) : {};
 	}
 
 	private updateReadState(readState: ModelsFileReadState, data: StoredModels, revision?: string): void {

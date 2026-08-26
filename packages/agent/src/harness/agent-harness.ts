@@ -1452,7 +1452,8 @@ export class AgentHarness implements AgentLane {
 		);
 	}
 
-	private async drainCompatibilityTasks(): Promise<void> {
+	/** Wait until every compatibility write and its corresponding event publication has settled. */
+	async waitForCompatibilityTasks(): Promise<void> {
 		while (this.compatibilityTasks.size > 0) {
 			await Promise.allSettled([...this.compatibilityTasks]);
 		}
@@ -5225,7 +5226,7 @@ export class AgentHarness implements AgentLane {
 			try {
 				for (const operation of this.activeOperations.values()) operation.controller.abort();
 				await Promise.all([...this.activeOperations.values()].map((operation) => operation.promise.catch((error) => { failure ??= error; })));
-				await this.drainCompatibilityTasks();
+				await this.waitForCompatibilityTasks();
 				await this.drainMutations();
 				if (failure === undefined) {
 					await this.refreshSnapshots();

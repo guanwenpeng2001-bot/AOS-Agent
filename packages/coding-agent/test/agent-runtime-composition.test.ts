@@ -30,7 +30,7 @@ import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { googleProvider } from "@aos-agent/ai/providers/google";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
@@ -53,6 +53,7 @@ import {
 	type TrustedSchedulerRuntimeOptions,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -109,16 +110,20 @@ async function createRuntimeFixture(runtimeComposition?: AgentRuntimeComposition
 }
 
 function runtimeFactory(fixture: RuntimeFixture): CreateAgentSessionRuntimeFactory {
-	return async (options) => ({
-		...(await createAgentSessionFromServices({
+	return async (options) => {
+		const created = await createAgentSessionFromServices({
 			services: fixture.services,
 			sessionManager: options.sessionManager,
 			sessionStartEvent: options.sessionStartEvent,
 			noTools: "all",
-		})),
-		services: fixture.services,
-		diagnostics: fixture.services.diagnostics,
-	});
+		});
+		options.registerCandidateSession(created.session);
+		return {
+			...created,
+			services: fixture.services,
+			diagnostics: fixture.services.diagnostics,
+		};
+	};
 }
 
 function createGateway(sessionId: string): ToolGateway {
@@ -535,6 +540,7 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 
 describe("AgentRuntimeComposition", () => {
 	afterEach(() => {
+		vi.restoreAllMocks();
 		for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 	});
 
@@ -594,6 +600,131 @@ describe("AgentRuntimeComposition", () => {
 			await created.session.dispose();
 			await created.session.waitForDispose();
 		}
+	});
+
+	it("disposes the allocated Session when initial runtime composition validation fails", async () => {
+		const hostFactory = createAgentRuntimeCompositionFactory({});
+		const candidateFactory = createAgentRuntimeCompositionFactory({
+			externalAgentRegistry: () => createExternalAgentAdapterRegistry(),
+		});
+		const hostFixture = await createRuntimeFixture(hostFactory);
+		const candidateFixture = await createRuntimeFixture(candidateFactory);
+		let candidateSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
+		const mismatchedFactory: CreateAgentSessionRuntimeFactory = async (options) => {
+			const created = await createAgentSessionFromServices({
+				services: candidateFixture.services,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+				noTools: "all",
+			});
+			candidateSession = created.session;
+			vi.spyOn(created.session, "dispose");
+			options.registerCandidateSession(created.session);
+			return {
+				...created,
+				services: hostFixture.services,
+				diagnostics: hostFixture.services.diagnostics,
+			};
+		};
+
+		await expect(createAgentSessionRuntime(mismatchedFactory, {
+			cwd: candidateFixture.cwd,
+			agentDir: candidateFixture.cwd,
+			session: { mode: "memory", id: "invalid-initial-composition" },
+		})).rejects.toThrow("Initial runtime must derive from the services runtime composition");
+
+		expect(candidateSession).toBeDefined();
+		expect(candidateSession?.dispose).toHaveBeenCalledTimes(1);
+		await candidateSession?.waitForDispose();
+	});
+
+	it("rejects and disposes a factory result that was not registered", async () => {
+		const fixture = await createRuntimeFixture();
+		let candidateSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
+		const missingRegistration: CreateAgentSessionRuntimeFactory = async (options) => {
+			const created = await createAgentSessionFromServices({
+				services: fixture.services,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+				noTools: "all",
+			});
+			candidateSession = created.session;
+			vi.spyOn(created.session, "dispose");
+			return {
+				...created,
+				services: fixture.services,
+				diagnostics: fixture.services.diagnostics,
+			};
+		};
+
+		await expect(createAgentSessionRuntime(missingRegistration, {
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			session: { mode: "memory", id: "missing-registration" },
+		})).rejects.toThrow("must register its candidate Session before returning");
+
+		expect(candidateSession?.dispose).toHaveBeenCalledTimes(1);
+		await candidateSession?.waitForDispose();
+	});
+
+	it("rejects and disposes both registered and returned Sessions when they differ", async () => {
+		const fixture = await createRuntimeFixture();
+		const candidates: Array<Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]> = [];
+		const mismatchedRegistration: CreateAgentSessionRuntimeFactory = async (options) => {
+			const registered = await createAgentSessionFromServices({
+				services: fixture.services,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: options.sessionStartEvent,
+				noTools: "all",
+			});
+			const returned = await createAgentSessionFromServices({
+				services: fixture.services,
+				sessionManager: SessionManager.inMemory(fixture.cwd, { id: "mismatched-return" }),
+				noTools: "all",
+			});
+			for (const candidate of [registered.session, returned.session]) {
+				candidates.push(candidate);
+				vi.spyOn(candidate, "dispose");
+			}
+			options.registerCandidateSession(registered.session);
+			return {
+				...returned,
+				services: fixture.services,
+				diagnostics: fixture.services.diagnostics,
+			};
+		};
+
+		await expect(createAgentSessionRuntime(mismatchedRegistration, {
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			session: { mode: "memory", id: "mismatched-registration" },
+		})).rejects.toThrow("returned a different Session than its registered candidate");
+
+		expect(candidates).toHaveLength(2);
+		for (const candidate of candidates) {
+			expect(candidate.dispose).toHaveBeenCalledTimes(1);
+			await candidate.waitForDispose();
+		}
+	});
+
+	it("disposes a Session when model route selection fails after allocation", async () => {
+		const fixture = await createRuntimeFixture();
+		const disposeSpy = vi.spyOn(AgentSession.prototype, "dispose");
+
+		await expect(createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "post-allocation-model-route-fault" }),
+			modelRoute: "missing-route",
+			noTools: "all",
+		})).rejects.toMatchObject({ code: "model_route_not_found" });
+
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("recomposes fresh session-scoped authorities for replacement Sessions", async () => {

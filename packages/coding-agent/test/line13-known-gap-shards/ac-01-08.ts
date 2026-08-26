@@ -217,6 +217,7 @@ async function createRpcProductFixture(options: {
 			runtimeComposition,
 			noTools: "all",
 		});
+		runtimeOptions.registerCandidateSession(created.session);
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
 	const runtime = await createAgentSessionRuntimeFromManager(createRuntime, {
@@ -377,6 +378,7 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 			noTools: "all",
 		};
 		const created = await codingAgentEntry.createAgentSessionFromServices(runtimeSessionOptions);
+		runtimeOptions.registerCandidateSession(created.session);
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
 	const createSurfaceRuntime = (id: string) =>

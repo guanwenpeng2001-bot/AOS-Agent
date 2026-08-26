@@ -626,42 +626,54 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		policyProfile: options.policyProfile,
 		noTools: options.noTools,
 	}, runtimeComposition);
-	sessionForToolEnvironment = session;
-	if (!hasExistingSession || !hasThinkingEntry) {
-		await recordInitialAgentSessionConfiguration(session, model, thinkingLevel, !hasExistingSession);
-	}
-	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
-		const selection = modelBroker.resolveResult({
-			...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),
-			...(options.modelRole === undefined ? {} : { modelRole: options.modelRole }),
-		});
-		if (!selection.ok) throw new ModelBrokerError(selection.error);
-		const selectedModel = modelRuntime.getModel(
-			selection.resolution.reference.provider,
-			selection.resolution.reference.id,
-		);
-		if (selectedModel === undefined) {
-			throw new ModelBrokerError("model_binding_unavailable", "The selected model binding is unavailable", true);
+	try {
+		sessionForToolEnvironment = session;
+		if (!hasExistingSession || !hasThinkingEntry) {
+			await recordInitialAgentSessionConfiguration(session, model, thinkingLevel, !hasExistingSession);
 		}
-		await session.setModel(selectedModel);
-		session.setModelBrokerResolution(selection.resolution);
-		const routeThinkingLevel = selection.resolution.reference.thinkingLevel;
-		if (
-			routeThinkingLevel === "off" ||
-			routeThinkingLevel === "minimal" ||
-			routeThinkingLevel === "low" ||
-			routeThinkingLevel === "medium" ||
-			routeThinkingLevel === "high" ||
-			routeThinkingLevel === "xhigh" ||
-			routeThinkingLevel === "max"
-		) {
-			session.setThinkingLevel(routeThinkingLevel);
+		if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
+			const selection = modelBroker.resolveResult({
+				...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),
+				...(options.modelRole === undefined ? {} : { modelRole: options.modelRole }),
+			});
+			if (!selection.ok) throw new ModelBrokerError(selection.error);
+			const selectedModel = modelRuntime.getModel(
+				selection.resolution.reference.provider,
+				selection.resolution.reference.id,
+			);
+			if (selectedModel === undefined) {
+				throw new ModelBrokerError("model_binding_unavailable", "The selected model binding is unavailable", true);
+			}
+			await session.setModel(selectedModel);
+			session.setModelBrokerResolution(selection.resolution);
+			const routeThinkingLevel = selection.resolution.reference.thinkingLevel;
+			if (
+				routeThinkingLevel === "off" ||
+				routeThinkingLevel === "minimal" ||
+				routeThinkingLevel === "low" ||
+				routeThinkingLevel === "medium" ||
+				routeThinkingLevel === "high" ||
+				routeThinkingLevel === "xhigh" ||
+				routeThinkingLevel === "max"
+			) {
+				session.setThinkingLevel(routeThinkingLevel);
+			}
 		}
+		return {
+			session,
+			runtimeComposition: session.agentRuntimeComposition,
+			extensionsResult,
+			modelFallbackMessage,
+		};
+	} catch (error) {
+		try {
+			await session.dispose();
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[error, cleanupError],
+				"AgentSession construction failed and its partial Session could not be disposed",
+			);
+		}
+		throw error;
 	}
-	return {
-		session,
-		runtimeComposition: session.agentRuntimeComposition,
-		extensionsResult,
-		modelFallbackMessage,
-	};
 }

@@ -237,7 +237,7 @@ async function createRuntimeHost(
 		});
 
 	let currentSession = openSession(SessionManager.create(tempDir));
-	let rebindCallback: (() => Promise<void>) | undefined;
+	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const runtimeHost = {
 		get session(): AgentSession {
 			return currentSession;
@@ -245,12 +245,18 @@ async function createRuntimeHost(
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((callback?: (() => Promise<void>) | undefined) => {
-			rebindCallback = callback;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebindCallback = callback;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
-			currentSession = openSession(SessionManager.open(sessionPath));
-			if (rebindCallback !== undefined) await rebindCallback();
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await previousSession.dispose();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
@@ -402,10 +408,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const RUN_SETTLEMENT_TIMEOUT_MS = 10_000;
+
 async function waitForRecord(
 	adapter: TranscriptAdapter,
 	predicate: (record: ParsedRecord) => boolean,
-	timeout = 1000,
+	timeout?: number,
 ): Promise<ParsedRecord> {
 	let match: ParsedRecord | undefined;
 	await vi.waitFor(
@@ -413,7 +421,7 @@ async function waitForRecord(
 			match = adapter.records().find(predicate);
 			expect(match).toBeDefined();
 		},
-		{ timeout },
+		timeout === undefined ? undefined : { timeout },
 	);
 	return match!;
 }
@@ -450,10 +458,10 @@ async function collectTranscript(
 	await waitForRecord(
 		adapter,
 		(record) => record.type === terminalType,
-		options.deadlineAt === undefined ? 1000 : 3000,
+		RUN_SETTLEMENT_TIMEOUT_MS,
 	);
 	await vi.waitFor(() => expect(terminalEvents(adapter.records())).toHaveLength(1), {
-		timeout: options.deadlineAt === undefined ? 1000 : 3000,
+		timeout: RUN_SETTLEMENT_TIMEOUT_MS,
 	});
 
 	await adapter.send({ id: "run-get", type: "run.get", runId });

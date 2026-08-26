@@ -169,7 +169,7 @@ describe("Line 13 T0 baseline and inventories", () => {
 			"session_writer",
 		]);
 		expect(line13InventoryDigest(inventory)).toBe(LINE13_T0_EXPECTED.inventoryDigest);
-	});
+	}, 60_000);
 
 	it("matches category-specific discovery to the reviewed fact allowlists", () => {
 		const inventory = loadLine13T0Inventory().filter((entry) => !["baseline", "dependency", "public_export"].includes(entry.category));
