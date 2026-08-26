@@ -3,6 +3,7 @@ import {
 	Result,
 	createAttempt,
 	createBindingEpoch,
+	createConnectorCapabilitySnapshot,
 	createDurableEvent,
 	createExecutionCorrelation,
 	createRoleRevision,
@@ -351,14 +352,17 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 	}
 
 	connectorSnapshot(): ConnectorCapabilitySnapshot {
-		return {
+		return createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
 			providerId: this.providerId,
-			protocol: this.kind === "acp_sdk" ? "acp" : "external",
-			capabilityVersion: 1,
-			resumeSupported: this.mode !== "resume_false",
+			revision: 1,
+			protocol: { name: this.kind === "acp_sdk" ? "acp" : "external", version: "1" },
 			modelAccess: "none",
-		};
+			resume: this.mode !== "resume_false",
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
 	}
 
 	async probe() {
@@ -452,7 +456,7 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 	}
 
 	async resume(_attemptId: string): Promise<ResultValue<AttemptReceipt, FoundationError>> {
-		if (this.mode === "resume_false" || this.connectorSnapshot().resumeSupported === false) {
+		if (this.mode === "resume_false" || this.connectorSnapshot().resume === false) {
 			return Result.err(new FoundationError("foundation_schema_unknown_record", "resume is not supported"));
 		}
 		return Result.err(new FoundationError("foundation_schema_unknown_record", "resume is not implemented"));
@@ -950,7 +954,7 @@ describe("scheduler executor public-contract fake matrix", () => {
 				expect(fake.providerClass).toBe("task_executor");
 				expect((fake as SchedulerTaskExecutorProvider).providerClass).not.toBe("agent");
 			}
-			if (kind === "acp_sdk") expect(fake.connectorSnapshot()).toMatchObject({ protocol: "acp", resumeSupported: mode !== "resume_false" });
+			if (kind === "acp_sdk") expect(fake.connectorSnapshot()).toMatchObject({ protocol: { name: "acp", version: "1" }, resume: mode !== "resume_false" });
 			if (mode === "resume_false") {
 				expectCode(await fake.resume("attempt_1"), "foundation_schema_unknown_record");
 			}

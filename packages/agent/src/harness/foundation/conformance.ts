@@ -1,11 +1,22 @@
 import { Result, type Result as ResultValue } from "../result.ts";
 import { FoundationError } from "./errors.ts";
+import { validateConnectorCapabilitySnapshot, type ConnectorCapabilitySnapshot } from "./providers.ts";
 import { validateAttemptReceipt, validateWorkerReceipt, type AttemptReceipt, type WorkerReceipt } from "./results.ts";
 import type { AttemptProviderClass } from "./task.ts";
 
 export interface ProviderReceiptConformance {
 	providerId: string;
 	providerClass: "operation_worker" | AttemptProviderClass;
+}
+
+/** Capability snapshots are accepted only from the selected external-connector identity. */
+export function validateConnectorCapabilitySnapshotForProvider(value: unknown, provider: ProviderReceiptConformance): ResultValue<ConnectorCapabilitySnapshot, FoundationError> {
+	if (provider.providerClass !== "external_connector") return Result.err(new FoundationError("task_executor_invalid_provider_class", "Only external connectors may publish ConnectorCapabilitySnapshot", { details: { providerId: provider.providerId } }));
+	const checked = validateConnectorCapabilitySnapshot(value);
+	if (!checked.ok) return checked;
+	return checked.value.providerId === provider.providerId
+		? checked
+		: Result.err(new FoundationError("task_executor_invalid_provider_class", "ConnectorCapabilitySnapshot provider identity does not match its producer", { details: { providerId: provider.providerId } }));
 }
 
 /** Operation workers may emit only WorkerReceipt; executors emit AttemptReceipt. */

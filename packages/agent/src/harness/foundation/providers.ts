@@ -2,14 +2,15 @@ import { Result, type Result as ResultValue } from "../result.ts";
 import { Type } from "typebox";
 import { BudgetUsageSchema, BudgetSchema, type BudgetUsage, type Budget } from "./budget.ts";
 import { FoundationError, type PublicExecutionError } from "./errors.ts";
+import { fingerprintFoundationValue, canonicalFoundationJson, type ExecutionCorrelation, type Fingerprint } from "./identity.ts";
+import { cloneDeepFrozen } from "./immutability.ts";
 import { ArtifactRefSchema, type ArtifactDescriptor, type ArtifactRef, RevisionReferenceSchema, type RevisionReference } from "./reference.ts";
 import type { SideEffectState } from "./side-effect.ts";
-import { AgentBindingSchema, AgentInstanceSchema, BindingEpochSchema, ModelProfileSchema, RoleRevisionSchema, type AgentBinding, type AgentInstance, type BindingEpoch, type ModelProfile, type RoleRevision } from "./role.ts";
+import { AgentInstanceSchema, BindingEpochSchema, ModelProfileSchema, RoleRevisionSchema, type AgentBinding, type AgentInstance, type BindingEpoch, type ModelProfile, type RoleRevision } from "./role.ts";
 import { AttemptSchema, type Attempt, type Dispatch, SpawnAgentIntentSchema, type SpawnAgentIntent, TaskEnvelopeSchema, type TaskEnvelope } from "./task.ts";
 import { PublicExecutionErrorSchema, type AttemptReceipt, type WorkerReceipt } from "./results.ts";
 import type { FoundationEventEnvelope, FoundationJsonValue } from "./event-catalog.ts";
-import { canonicalFoundationJson, type ExecutionCorrelation } from "./identity.ts";
-import { FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
+import { FingerprintSchema, FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 export type FoundationProviderClass = "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector" | "gateway" | "store" | "quota" | "transport" | "observer";
 export const PROVIDER_KINDS = ["model", "tool", "sandbox", "operation", "external"] as const;
@@ -46,9 +47,30 @@ export interface TaskExecutorAttemptContext { readonly initialBindingEpoch: Bind
 export interface TaskExecutorProvider extends FoundationProvider { readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector"; createAttempt(dispatch: Dispatch, binding: AgentBinding, context?: TaskExecutorAttemptContext): Promise<Result<Attempt, FoundationError>>; runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions): Promise<Result<AttemptReceipt, FoundationError>>; cancelAttempt(attemptId: string): Promise<Result<void, FoundationError>>; }
 /** Explicit line-12B non-agent scheduler surface. It cannot carry an AgentInstance. */
 export interface SchedulerTaskExecutorProvider extends TaskExecutorProvider { readonly providerClass: "scheduler" | "task_executor"; }
-export interface ConnectorCapabilitySnapshot { schemaVersion: 1; providerId: string; protocol: string; capabilityVersion: number; resumeSupported: boolean; modelAccess: "none" | "agent_owned" | "aos_gateway"; toolAccess?: readonly string[]; }
-export interface ExternalAgentStartRequest { schemaVersion: 1; requestId: string; task: TaskEnvelope; binding: AgentBinding; translatedConfig?: FoundationJsonValue; deadlineAt?: number; }
-export interface ExternalAgentConnector extends FoundationProvider { readonly providerClass: "external_connector"; probe(): Promise<Result<ConnectorCapabilitySnapshot, FoundationError>>; start(request: ExternalAgentStartRequest, options?: { signal?: AbortSignal }): Promise<Result<Attempt, FoundationError>>; resume(attemptId: string): Promise<Result<AttemptReceipt, FoundationError>>; cancel(attemptId: string): Promise<Result<void, FoundationError>>; }
+/** Host-verified executable facts frozen before an external Attempt is created. */
+export interface ConnectorCapabilitySnapshot {
+	readonly schemaVersion: 1;
+	readonly providerId: string;
+	readonly revision: number;
+	readonly protocol: { readonly name: string; readonly version: string };
+	readonly modelAccess: "none" | "agent_owned" | "aos_gateway";
+	readonly resume: boolean;
+	readonly toolGateway: boolean;
+	readonly artifacts: boolean;
+	readonly images: boolean;
+	readonly digest: Fingerprint;
+}
+export type ConnectorCapabilitySnapshotInput = Omit<ConnectorCapabilitySnapshot, "digest">;
+/**
+ * The sole current external execution contract. Vendor-specific lifecycle surfaces remain private
+ * implementation details; every public execution consumes canonical Foundation records.
+ */
+export interface ExternalAgentConnector extends TaskExecutorProvider {
+	readonly providerClass: "external_connector";
+	probeCapabilities(options?: FoundationProviderExecutionOptions): Promise<Result<ConnectorCapabilitySnapshot, FoundationError>>;
+	resumeAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions): Promise<Result<AttemptReceipt, FoundationError>>;
+	reconcileAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions): Promise<Result<AttemptReceipt, FoundationError>>;
+}
 export interface ToolGatewayContext { schemaVersion: 1; bindingId: string; bindingEpochId: string; taskId: string; dispatchId?: string; providerId?: string; attemptId?: string; agentInstanceId?: string; operationId?: string; }
 export interface ToolGatewayRequest { schemaVersion: 1; toolCallId: string; toolName: string; namespace?: string; originalArguments: FoundationJsonValue; context: ToolGatewayContext; idempotencyKey?: string; deadlineAt?: number; }
 export interface ToolExecutionResult { schemaVersion: 1; toolCallId: string; toolName: string; ok: boolean; sideEffectState: SideEffectState; artifacts?: readonly ArtifactRef[]; error?: PublicExecutionError; toolReceiptRef?: string; }
@@ -76,9 +98,8 @@ export function validateProviderJson(value: unknown): value is FoundationJsonVal
 
 export const SandboxOperationRequestSchema = Type.Object({ schemaVersion: Type.Literal(1), operationId: Type.String({ minLength: 1 }), providerId: Type.Optional(Type.String({ minLength: 1 })), bindingId: Type.Optional(Type.String({ minLength: 1 })), bindingEpochId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), toolCallId: Type.Optional(Type.String({ minLength: 1 })), toolName: Type.Optional(Type.String({ minLength: 1 })), namespace: Type.Optional(Type.String({ minLength: 1 })), payload: Type.Optional(FoundationJsonValueSchema), taskId: Type.Optional(Type.String({ minLength: 1 })), dispatchId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), credentialTargets: Type.Optional(Type.Array(Type.String({ minLength: 1 }))), workspace: Type.Optional(Type.String({ minLength: 1 })), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
 export const FoundationProviderCapabilitySchema = Type.Object({ schemaVersion: Type.Literal(1), id: Type.String({ minLength: 1 }), version: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
-export const ConnectorCapabilitySnapshotSchema = Type.Object({ schemaVersion: Type.Literal(1), providerId: Type.String({ minLength: 1 }), protocol: Type.String({ minLength: 1 }), capabilityVersion: Type.Integer({ minimum: 1 }), resumeSupported: Type.Boolean(), modelAccess: Type.Union([Type.Literal("none"), Type.Literal("agent_owned"), Type.Literal("aos_gateway")]), toolAccess: Type.Optional(Type.Array(Type.String({ minLength: 1 }))) }, { additionalProperties: false });
+export const ConnectorCapabilitySnapshotSchema = Type.Object({ schemaVersion: Type.Literal(1), providerId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 1 }), protocol: Type.Object({ name: Type.String({ minLength: 1 }), version: Type.String({ minLength: 1 }) }, { additionalProperties: false }), modelAccess: Type.Union([Type.Literal("none"), Type.Literal("agent_owned"), Type.Literal("aos_gateway")]), resume: Type.Boolean(), toolGateway: Type.Boolean(), artifacts: Type.Boolean(), images: Type.Boolean(), digest: FingerprintSchema }, { additionalProperties: false });
 export const ChildSpawnRequestSchema = Type.Object({ schemaVersion: Type.Literal(1), spawnId: Type.String({ minLength: 1 }), parentSpawn: Type.Optional(SpawnAgentIntentSchema), taskEnvelope: TaskEnvelopeSchema, roleRevision: RoleRevisionSchema, modelProfile: ModelProfileSchema, parentAttemptId: Type.Optional(Type.String({ minLength: 1 })), parentAgentInstanceId: Type.Optional(Type.String({ minLength: 1 })), forkScope: Type.Union([Type.Literal("none"), Type.Literal("all"), Type.Literal("recent_n"), Type.Literal("task_package")]), recentN: Type.Optional(Type.Integer({ minimum: 1 })), taskPackageRef: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
-export const ExternalAgentStartRequestSchema = Type.Object({ schemaVersion: Type.Literal(1), requestId: Type.String({ minLength: 1 }), task: TaskEnvelopeSchema, binding: AgentBindingSchema, translatedConfig: Type.Optional(FoundationJsonValueSchema), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
 export const ToolGatewayContextSchema = Type.Object({ schemaVersion: Type.Literal(1), bindingId: Type.String({ minLength: 1 }), bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), dispatchId: Type.Optional(Type.String({ minLength: 1 })), providerId: Type.Optional(Type.String({ minLength: 1 })), attemptId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), operationId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ToolGatewayRequestSchema = Type.Object({ schemaVersion: Type.Literal(1), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), namespace: Type.Optional(Type.String({ minLength: 1 })), originalArguments: FoundationJsonValueSchema, context: ToolGatewayContextSchema, idempotencyKey: Type.Optional(Type.String({ minLength: 1 })), deadlineAt: Type.Optional(Type.Number({ minimum: 0 })) }, { additionalProperties: false });
 export const ScopedModelRequestSchema = Type.Object({ schemaVersion: Type.Literal(1), requestId: Type.String({ minLength: 1 }), modelProfileRevision: RevisionReferenceSchema, bindingEpochId: Type.String({ minLength: 1 }), taskId: Type.String({ minLength: 1 }), attemptId: Type.Optional(Type.String({ minLength: 1 })), agentInstanceId: Type.Optional(Type.String({ minLength: 1 })), input: FoundationJsonValueSchema }, { additionalProperties: false });
@@ -104,9 +125,19 @@ export function validateFoundationProviderCapability(value: unknown): ResultValu
 export function validateExecutionProviderDescriptor(value: unknown): ResultValue<ExecutionProviderDescriptor, FoundationError> { return validateProviderBoundary<ExecutionProviderDescriptor>(ExecutionProviderDescriptorSchema, value, "execution_provider_descriptor"); }
 export function serializeSandboxOperationRequest(value: SandboxOperationRequest): string { return serializeExactShape(SandboxOperationRequestSchema, value, "sandbox_operation_request"); }
 export function parseSandboxOperationRequest(text: string): ResultValue<SandboxOperationRequest, FoundationError> { return parseExactShape(SandboxOperationRequestSchema, text, "sandbox_operation_request"); }
-export function validateConnectorCapabilitySnapshot(value: unknown): ResultValue<ConnectorCapabilitySnapshot, FoundationError> { return validateProviderBoundary<ConnectorCapabilitySnapshot>(ConnectorCapabilitySnapshotSchema, value, "connector_capability_snapshot"); }
+export function createConnectorCapabilitySnapshot(input: ConnectorCapabilitySnapshotInput): ConnectorCapabilitySnapshot {
+	const checked = validateConnectorCapabilitySnapshot({ ...input, digest: fingerprintFoundationValue(input) });
+	if (!checked.ok) throw checked.error;
+	return checked.value;
+}
+export function validateConnectorCapabilitySnapshot(value: unknown): ResultValue<ConnectorCapabilitySnapshot, FoundationError> {
+	const checked = validateProviderBoundary<ConnectorCapabilitySnapshot>(ConnectorCapabilitySnapshotSchema, value, "connector_capability_snapshot");
+	if (!checked.ok) return checked;
+	const { digest, ...snapshot } = checked.value;
+	if (fingerprintFoundationValue(snapshot).value !== digest.value) return Result.err(new FoundationError("foundation_schema_invalid_shape", "connector_capability_snapshot digest does not match its immutable fields", { details: { providerId: checked.value.providerId, revision: checked.value.revision } }));
+	return Result.ok(cloneDeepFrozen(checked.value));
+}
 export function validateChildSpawnRequest(value: unknown): ResultValue<ChildSpawnRequest, FoundationError> { return validateProviderBoundary<ChildSpawnRequest>(ChildSpawnRequestSchema, value, "child_spawn_request"); }
-export function validateExternalAgentStartRequest(value: unknown): ResultValue<ExternalAgentStartRequest, FoundationError> { return validateProviderBoundary<ExternalAgentStartRequest>(ExternalAgentStartRequestSchema, value, "external_agent_start_request", ["task", "binding", "translatedConfig"]); }
 export function validateToolGatewayRequest(value: unknown): ResultValue<ToolGatewayRequest, FoundationError> { return validateProviderBoundary<ToolGatewayRequest>(ToolGatewayRequestSchema, value, "tool_gateway_request", ["originalArguments"]); }
 export function validateScopedModelRequest(value: unknown): ResultValue<ScopedModelRequest, FoundationError> { return validateProviderBoundary<ScopedModelRequest>(ScopedModelRequestSchema, value, "scoped_model_request", ["modelProfileRevision", "input"]); }
 export function validateChildSpawnResult(value: unknown): ResultValue<ChildSpawnResult, FoundationError> { return validateProviderBoundary<ChildSpawnResult>(ChildSpawnResultSchema, value, "child_spawn_result"); }
@@ -118,12 +149,17 @@ export function validateQuotaAttribution(value: unknown): ResultValue<QuotaAttri
 export function validateQuotaReservation(value: unknown): ResultValue<QuotaReservation, FoundationError> { return validateProviderBoundary<QuotaReservation>(QuotaReservationSchema, value, "quota_reservation"); }
 export function validateProductTimelineEntry(value: unknown): ResultValue<ProductTimelineEntry, FoundationError> { return validateProviderBoundary<ProductTimelineEntry>(ProductTimelineEntrySchema, value, "product_timeline_entry"); }
 export function validateProductAcceptanceFact(value: unknown): ResultValue<ProductAcceptanceFact, FoundationError> { return validateProviderBoundary<ProductAcceptanceFact>(ProductAcceptanceFactSchema, value, "product_acceptance_fact"); }
-export function serializeConnectorCapabilitySnapshot(value: ConnectorCapabilitySnapshot): string { return serializeExactShape(ConnectorCapabilitySnapshotSchema, value, "connector_capability_snapshot"); }
-export function parseConnectorCapabilitySnapshot(text: string): ResultValue<ConnectorCapabilitySnapshot, FoundationError> { return parseExactShape(ConnectorCapabilitySnapshotSchema, text, "connector_capability_snapshot"); }
+export function serializeConnectorCapabilitySnapshot(value: ConnectorCapabilitySnapshot): string {
+	const checked = validateConnectorCapabilitySnapshot(value);
+	if (!checked.ok) throw checked.error;
+	return serializeExactShape(ConnectorCapabilitySnapshotSchema, checked.value, "connector_capability_snapshot");
+}
+export function parseConnectorCapabilitySnapshot(text: string): ResultValue<ConnectorCapabilitySnapshot, FoundationError> {
+	const parsed = parseExactShape<ConnectorCapabilitySnapshot>(ConnectorCapabilitySnapshotSchema, text, "connector_capability_snapshot");
+	return parsed.ok ? validateConnectorCapabilitySnapshot(parsed.value) : parsed;
+}
 export function serializeChildSpawnRequest(value: ChildSpawnRequest): string { return serializeExactShape(ChildSpawnRequestSchema, value, "child_spawn_request"); }
 export function parseChildSpawnRequest(text: string): ResultValue<ChildSpawnRequest, FoundationError> { return parseExactShape(ChildSpawnRequestSchema, text, "child_spawn_request"); }
-export function serializeExternalAgentStartRequest(value: ExternalAgentStartRequest): string { return serializeExactShape(ExternalAgentStartRequestSchema, value, "external_agent_start_request"); }
-export function parseExternalAgentStartRequest(text: string): ResultValue<ExternalAgentStartRequest, FoundationError> { return parseExactShape(ExternalAgentStartRequestSchema, text, "external_agent_start_request"); }
 export function serializeToolGatewayRequest(value: ToolGatewayRequest): string { return serializeExactShape(ToolGatewayRequestSchema, value, "tool_gateway_request"); }
 export function parseToolGatewayRequest(text: string): ResultValue<ToolGatewayRequest, FoundationError> { return parseExactShape(ToolGatewayRequestSchema, text, "tool_gateway_request"); }
 export function serializeScopedModelRequest(value: ScopedModelRequest): string { return serializeExactShape(ScopedModelRequestSchema, value, "scoped_model_request"); }
