@@ -6,6 +6,7 @@ import {
 	type SessionLedger,
 	validateAttempt,
 	validateAttemptReceiptForProvider,
+	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
 	type AgentBinding,
 	type Attempt,
@@ -15,6 +16,8 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	cloneCanonicalExternalConnectorMapping,
+	isCanonicalExternalMappingTimestamp,
+	isExternalMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
 } from "./external-session-mapping.ts";
 
@@ -74,13 +77,160 @@ export interface ExternalConnectorDurableStore {
 	writeReceipt(receipt: AttemptReceipt): Promise<AttemptReceipt>;
 }
 
+const EXTERNAL_CONNECTOR_OPERATION_KEYS = new Set([
+	"schemaVersion",
+	"providerId",
+	"attemptId",
+	"bindingId",
+	"bindingEpochId",
+	"bindingDigest",
+	"bindingRevision",
+	"capabilityDigest",
+	"capabilityRevision",
+	"operationNonce",
+	"correlation",
+	"status",
+	"revision",
+	"updatedAt",
+	"receiptId",
+	"reconcileReason",
+]);
+const EXTERNAL_CONNECTOR_FINGERPRINT_KEYS = new Set(["algorithm", "value"]);
+const EXTERNAL_CONNECTOR_SHA256_DIGEST = /^[a-f0-9]{64}$/;
+const EXTERNAL_CONNECTOR_RECONCILE_REASONS: ReadonlySet<ExternalConnectorReconcileReason> = new Set([
+	"start_outcome_unknown",
+	"mapping_persistence_unknown",
+	"mapping_missing",
+	"mapping_conflict",
+	"capability_drift",
+	"binding_drift",
+	"driver_state_missing",
+	"driver_state_ambiguous",
+	"driver_failure",
+]);
+
+function operationRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function operationExactKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+	return Reflect.ownKeys(value).every((key) => typeof key === "string" && keys.has(key));
+}
+
+function operationFingerprint(value: unknown): value is Fingerprint {
+	return (
+		operationRecord(value) &&
+		operationExactKeys(value, EXTERNAL_CONNECTOR_FINGERPRINT_KEYS) &&
+		value.algorithm === "sha256" &&
+		typeof value.value === "string" &&
+		EXTERNAL_CONNECTOR_SHA256_DIGEST.test(value.value)
+	);
+}
+
+function cloneOperationCorrelation(value: unknown): ExecutionCorrelation | undefined {
+	const checked = validateExecutionCorrelation(value);
+	if (
+		!checked.ok ||
+		!Number.isSafeInteger(checked.value.revision) ||
+		checked.value.agentInstanceId !== undefined
+	) {
+		return undefined;
+	}
+	for (const [key, candidate] of Object.entries(checked.value)) {
+		if (key === "revision") continue;
+		if (key === "ancestorIds") {
+			if (!Array.isArray(candidate) || candidate.some((id) => !isExternalMappingIdentifier(id))) return undefined;
+			continue;
+		}
+		if (!isExternalMappingIdentifier(candidate)) return undefined;
+	}
+	return Object.freeze({
+		...checked.value,
+		...(checked.value.ancestorIds === undefined
+			? {}
+			: { ancestorIds: Object.freeze([...checked.value.ancestorIds]) }),
+	});
+}
+
+/** Strict guard for the only durable operation shape accepted by the connector store. */
+export function isExternalConnectorOperation(value: unknown): value is ExternalConnectorOperation {
+	if (!operationRecord(value) || !operationExactKeys(value, EXTERNAL_CONNECTOR_OPERATION_KEYS)) return false;
+	const correlation = cloneOperationCorrelation(value.correlation);
+	const hasReceiptId = Object.hasOwn(value, "receiptId");
+	const hasReconcileReason = Object.hasOwn(value, "reconcileReason");
+	if (
+		value.schemaVersion !== 1 ||
+		!isExternalMappingIdentifier(value.providerId) ||
+		!isExternalMappingIdentifier(value.attemptId) ||
+		!isExternalMappingIdentifier(value.bindingId) ||
+		!isExternalMappingIdentifier(value.bindingEpochId) ||
+		!operationFingerprint(value.bindingDigest) ||
+		!Number.isSafeInteger(value.bindingRevision) ||
+		(value.bindingRevision as number) < 1 ||
+		!operationFingerprint(value.capabilityDigest) ||
+		!Number.isSafeInteger(value.capabilityRevision) ||
+		(value.capabilityRevision as number) < 1 ||
+		!isExternalMappingIdentifier(value.operationNonce) ||
+		correlation === undefined ||
+		typeof value.status !== "string" ||
+		!EXTERNAL_CONNECTOR_OPERATION_STATUSES.includes(value.status as ExternalConnectorOperationStatus) ||
+		!Number.isSafeInteger(value.revision) ||
+		(value.revision as number) < 1 ||
+		!isCanonicalExternalMappingTimestamp(value.updatedAt) ||
+		(hasReceiptId && !isExternalMappingIdentifier(value.receiptId)) ||
+		(hasReconcileReason &&
+			(typeof value.reconcileReason !== "string" ||
+				!EXTERNAL_CONNECTOR_RECONCILE_REASONS.has(value.reconcileReason as ExternalConnectorReconcileReason))) ||
+		correlation.taskId === undefined ||
+		correlation.dispatchId === undefined ||
+		correlation.attemptId !== value.attemptId ||
+		correlation.bindingId !== value.bindingId ||
+		correlation.bindingEpochId !== value.bindingEpochId ||
+		correlation.providerId !== value.providerId
+	) {
+		return false;
+	}
+	if (value.status === "terminal") return hasReceiptId;
+	if (value.status === "reconcile_required") return hasReconcileReason && !hasReceiptId;
+	return !hasReceiptId && !hasReconcileReason;
+}
+
+/** Validate and deeply freeze a canonical durable operation clone. */
+export function cloneExternalConnectorOperation(value: unknown): ExternalConnectorOperation {
+	if (!isExternalConnectorOperation(value)) {
+		throw new FoundationError("session_ledger_corrupt", "Durable external connector operation is invalid");
+	}
+	const correlation = cloneOperationCorrelation(value.correlation);
+	if (correlation === undefined) {
+		throw new FoundationError("session_ledger_corrupt", "Durable external connector operation correlation is invalid");
+	}
+	return Object.freeze({
+		schemaVersion: 1,
+		providerId: value.providerId,
+		attemptId: value.attemptId,
+		bindingId: value.bindingId,
+		bindingEpochId: value.bindingEpochId,
+		bindingDigest: Object.freeze({ ...value.bindingDigest }),
+		bindingRevision: value.bindingRevision,
+		capabilityDigest: Object.freeze({ ...value.capabilityDigest }),
+		capabilityRevision: value.capabilityRevision,
+		operationNonce: value.operationNonce,
+		correlation,
+		status: value.status,
+		revision: value.revision,
+		updatedAt: value.updatedAt,
+		...(value.receiptId === undefined ? {} : { receiptId: value.receiptId }),
+		...(value.reconcileReason === undefined ? {} : { reconcileReason: value.reconcileReason }),
+	});
+}
+
 const OPERATION_TRANSITIONS: Readonly<Record<ExternalConnectorOperationStatus, ReadonlySet<ExternalConnectorOperationStatus>>> = {
 	prepared: new Set(["start_intent", "reconcile_required"]),
 	start_intent: new Set(["running", "reconcile_required"]),
 	running: new Set(["cancelling", "terminal", "reconcile_required"]),
 	cancelling: new Set(["terminal", "reconcile_required"]),
 	terminal: new Set(),
-	reconcile_required: new Set(["terminal"]),
+	reconcile_required: new Set(["reconcile_required", "terminal"]),
 };
 
 export function transitionExternalConnectorOperation(
@@ -92,33 +242,80 @@ export function transitionExternalConnectorOperation(
 		readonly reconcileReason?: ExternalConnectorReconcileReason;
 	},
 ): ExternalConnectorOperation {
-	if (!OPERATION_TRANSITIONS[current.status].has(status)) {
+	const canonicalCurrent = cloneExternalConnectorOperation(current);
+	if (!EXTERNAL_CONNECTOR_OPERATION_STATUSES.includes(status)) {
+		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector operation status is invalid", {
+			details: { attemptId: canonicalCurrent.attemptId },
+		});
+	}
+	if (!OPERATION_TRANSITIONS[canonicalCurrent.status].has(status)) {
 		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector operation transition is invalid", {
-			details: { attemptId: current.attemptId, from: current.status, to: status },
+			details: { attemptId: canonicalCurrent.attemptId, from: canonicalCurrent.status, to: status },
 		});
 	}
 	if (status === "terminal" && options.receiptId === undefined) {
 		throw new FoundationError("scheduler_attempt_recovery_failed", "Terminal external connector operation requires a receipt", {
-			details: { attemptId: current.attemptId },
+			details: { attemptId: canonicalCurrent.attemptId },
 		});
 	}
 	if (status === "reconcile_required" && options.reconcileReason === undefined) {
 		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector reconciliation requires a reason", {
-			details: { attemptId: current.attemptId },
+			details: { attemptId: canonicalCurrent.attemptId },
 		});
 	}
-	return Object.freeze({
-		...current,
+	if (
+		(status !== "terminal" && options.receiptId !== undefined) ||
+		(status !== "reconcile_required" && options.reconcileReason !== undefined)
+	) {
+		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector transition metadata is invalid", {
+			details: { attemptId: canonicalCurrent.attemptId, status },
+		});
+	}
+	return cloneExternalConnectorOperation({
+		schemaVersion: canonicalCurrent.schemaVersion,
+		providerId: canonicalCurrent.providerId,
+		attemptId: canonicalCurrent.attemptId,
+		bindingId: canonicalCurrent.bindingId,
+		bindingEpochId: canonicalCurrent.bindingEpochId,
+		bindingDigest: canonicalCurrent.bindingDigest,
+		bindingRevision: canonicalCurrent.bindingRevision,
+		capabilityDigest: canonicalCurrent.capabilityDigest,
+		capabilityRevision: canonicalCurrent.capabilityRevision,
+		operationNonce: canonicalCurrent.operationNonce,
+		correlation: canonicalCurrent.correlation,
 		status,
-		revision: current.revision + 1,
+		revision: canonicalCurrent.revision + 1,
 		updatedAt: options.now,
-		...(options.receiptId === undefined ? {} : { receiptId: options.receiptId }),
-		...(options.reconcileReason === undefined ? {} : { reconcileReason: options.reconcileReason }),
+		...(status === "terminal" && options.receiptId !== undefined ? { receiptId: options.receiptId } : {}),
+		...(status === "reconcile_required" && options.reconcileReason !== undefined
+			? { reconcileReason: options.reconcileReason }
+			: status === "terminal" && canonicalCurrent.reconcileReason !== undefined
+				? { reconcileReason: canonicalCurrent.reconcileReason }
+				: {}),
 	});
 }
 
 function operationMatches(left: ExternalConnectorOperation, right: ExternalConnectorOperation): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
+}
+
+function operationImmutableFactsMatch(
+	left: ExternalConnectorOperation,
+	right: ExternalConnectorOperation,
+): boolean {
+	return (
+		left.schemaVersion === right.schemaVersion &&
+		left.providerId === right.providerId &&
+		left.attemptId === right.attemptId &&
+		left.bindingId === right.bindingId &&
+		left.bindingEpochId === right.bindingEpochId &&
+		canonicalFoundationJson(left.bindingDigest) === canonicalFoundationJson(right.bindingDigest) &&
+		left.bindingRevision === right.bindingRevision &&
+		canonicalFoundationJson(left.capabilityDigest) === canonicalFoundationJson(right.capabilityDigest) &&
+		left.capabilityRevision === right.capabilityRevision &&
+		left.operationNonce === right.operationNonce &&
+		canonicalFoundationJson(left.correlation) === canonicalFoundationJson(right.correlation)
+	);
 }
 
 function mappingMatches(left: CanonicalExternalConnectorMapping, right: CanonicalExternalConnectorMapping): boolean {
@@ -173,14 +370,15 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE,
 		);
 		if (payload === undefined) return undefined;
-		const operation = payload as ExternalConnectorOperation;
-		if (
-			operation.schemaVersion !== 1 ||
-			operation.attemptId !== attemptId ||
-			!EXTERNAL_CONNECTOR_OPERATION_STATUSES.includes(operation.status) ||
-			!Number.isSafeInteger(operation.revision) ||
-			operation.revision < 1
-		) {
+		let operation: ExternalConnectorOperation;
+		try {
+			operation = cloneExternalConnectorOperation(payload);
+		} catch {
+			throw new FoundationError("session_ledger_corrupt", "Durable external connector operation is invalid", {
+				details: { attemptId },
+			});
+		}
+		if (operation.attemptId !== attemptId) {
 			throw new FoundationError("session_ledger_corrupt", "Durable external connector operation is invalid", {
 				details: { attemptId },
 			});
@@ -189,38 +387,43 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 	}
 
 	async writeOperation(operation: ExternalConnectorOperation): Promise<ExternalConnectorOperation> {
-		const current = await this.readOperation(operation.attemptId);
+		const proposed = cloneExternalConnectorOperation(operation);
+		const current = await this.readOperation(proposed.attemptId);
 		if (current === undefined) {
-			if (operation.status !== "prepared" || operation.revision !== 1) {
+			if (proposed.status !== "prepared" || proposed.revision !== 1) {
 				throw new FoundationError("session_ledger_missing_intent", "External connector operation must begin as prepared", {
-					details: { attemptId: operation.attemptId },
+					details: { attemptId: proposed.attemptId },
 				});
 			}
 		} else {
-			if (operationMatches(current, operation)) return current;
+			if (operationMatches(current, proposed)) return current;
 			if (
-				operation.revision !== current.revision + 1 ||
-				operation.providerId !== current.providerId ||
-				operation.bindingId !== current.bindingId ||
-				operation.operationNonce !== current.operationNonce ||
-				!OPERATION_TRANSITIONS[current.status].has(operation.status)
+				proposed.revision !== current.revision + 1 ||
+				!operationImmutableFactsMatch(current, proposed) ||
+				!OPERATION_TRANSITIONS[current.status].has(proposed.status)
 			) {
 				throw new FoundationError("session_ledger_conflict", "External connector operation conflicts with durable history", {
-					details: { attemptId: operation.attemptId },
+					details: { attemptId: proposed.attemptId },
 				});
 			}
 		}
 		const persisted = await this.#ledger.appendFact(
 			EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE,
-			operation.attemptId,
-			operation,
+			proposed.attemptId,
+			proposed,
 			{
-				clientRequestId: `external-connector-operation:${operation.attemptId}:${operation.revision}`,
+				clientRequestId: `external-connector-operation:${proposed.attemptId}:${proposed.revision}`,
 				expectedRevision: current?.revision ?? 0,
-				correlation: operation.correlation,
+				correlation: proposed.correlation,
 			},
 		);
-		return persisted.payload;
+		const checkedPersisted = cloneExternalConnectorOperation(persisted.payload);
+		if (!operationMatches(checkedPersisted, proposed)) {
+			throw new FoundationError("session_ledger_corrupt", "Persisted external connector operation changed shape", {
+				details: { attemptId: proposed.attemptId },
+			});
+		}
+		return checkedPersisted;
 	}
 
 	async readMapping(attemptId: string): Promise<CanonicalExternalConnectorMapping | undefined> {

@@ -101,8 +101,7 @@ export function isCanonicalExternalConnectorMapping(value: unknown): value is Ca
 		!canonicalConnectorIdentifier(value.attemptId) ||
 		!canonicalConnectorIdentifier(value.externalSessionId) ||
 		(value.externalTurnId !== undefined && !canonicalConnectorIdentifier(value.externalTurnId)) ||
-		typeof value.createdAt !== "string" ||
-		Number.isNaN(Date.parse(value.createdAt))
+		!isCanonicalExternalMappingTimestamp(value.createdAt)
 	) {
 		return false;
 	}
