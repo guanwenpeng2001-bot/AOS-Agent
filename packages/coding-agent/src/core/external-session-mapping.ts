@@ -14,10 +14,133 @@
  * is never a path, URL, command, header, prompt, or credential.
  */
 
+import type { Fingerprint } from "@aos-agent/agent-core";
 import type { SessionEntry } from "./session-manager.ts";
 
 export const EXTERNAL_MAPPING_SCHEMA_VERSION = 1 as const;
 export const EXTERNAL_MAPPING_CUSTOM_TYPE = "external.mapping" as const;
+
+/** Canonical durable mapping used by the Foundation ExternalAgentConnector runtime. */
+export const EXTERNAL_CONNECTOR_MAPPING_SCHEMA_VERSION = 1 as const;
+
+export interface CanonicalExternalConnectorMapping {
+	readonly schemaVersion: typeof EXTERNAL_CONNECTOR_MAPPING_SCHEMA_VERSION;
+	readonly providerId: string;
+	readonly attemptId: string;
+	readonly externalSessionId: string;
+	readonly externalTurnId?: string;
+	readonly binding: {
+		readonly digest: Fingerprint;
+		readonly revision: number;
+	};
+	readonly capability: {
+		readonly digest: Fingerprint;
+		readonly revision: number;
+	};
+	/** Opaque supervisor identity only. Process ids and local process metadata are private. */
+	readonly supervisor: {
+		readonly ref: string;
+		readonly nonce: string;
+	};
+	readonly createdAt: string;
+}
+
+const CANONICAL_CONNECTOR_MAPPING_KEYS = new Set([
+	"schemaVersion",
+	"providerId",
+	"attemptId",
+	"externalSessionId",
+	"externalTurnId",
+	"binding",
+	"capability",
+	"supervisor",
+	"createdAt",
+]);
+const CANONICAL_CONNECTOR_BINDING_KEYS = new Set(["digest", "revision"]);
+const CANONICAL_CONNECTOR_CAPABILITY_KEYS = new Set(["digest", "revision"]);
+const CANONICAL_CONNECTOR_SUPERVISOR_KEYS = new Set(["ref", "nonce"]);
+const CANONICAL_CONNECTOR_FINGERPRINT_KEYS = new Set(["algorithm", "value"]);
+const CANONICAL_CONNECTOR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const CANONICAL_CONNECTOR_DIGEST = /^[a-f0-9]{64}$/;
+
+function canonicalConnectorRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function canonicalConnectorExactKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+	return Object.keys(value).every((key) => keys.has(key));
+}
+
+function canonicalConnectorIdentifier(value: unknown): value is string {
+	return typeof value === "string" && CANONICAL_CONNECTOR_IDENTIFIER.test(value);
+}
+
+function canonicalConnectorFingerprint(value: unknown): value is Fingerprint {
+	if (!canonicalConnectorRecord(value) || !canonicalConnectorExactKeys(value, CANONICAL_CONNECTOR_FINGERPRINT_KEYS)) {
+		return false;
+	}
+	return value.algorithm === "sha256" && typeof value.value === "string" && CANONICAL_CONNECTOR_DIGEST.test(value.value);
+}
+
+function canonicalConnectorRevision(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) >= 1;
+}
+
+/**
+ * Exact, secret-free mapping guard. Identifier syntax rejects URLs and paths;
+ * exact keys prevent raw config, prompts, transcripts, credentials, or local
+ * process details from becoming durable mapping fields.
+ */
+export function isCanonicalExternalConnectorMapping(value: unknown): value is CanonicalExternalConnectorMapping {
+	if (!canonicalConnectorRecord(value) || !canonicalConnectorExactKeys(value, CANONICAL_CONNECTOR_MAPPING_KEYS)) {
+		return false;
+	}
+	if (
+		value.schemaVersion !== EXTERNAL_CONNECTOR_MAPPING_SCHEMA_VERSION ||
+		!canonicalConnectorIdentifier(value.providerId) ||
+		!canonicalConnectorIdentifier(value.attemptId) ||
+		!canonicalConnectorIdentifier(value.externalSessionId) ||
+		(value.externalTurnId !== undefined && !canonicalConnectorIdentifier(value.externalTurnId)) ||
+		typeof value.createdAt !== "string" ||
+		Number.isNaN(Date.parse(value.createdAt))
+	) {
+		return false;
+	}
+	if (
+		!canonicalConnectorRecord(value.binding) ||
+		!canonicalConnectorExactKeys(value.binding, CANONICAL_CONNECTOR_BINDING_KEYS) ||
+		!canonicalConnectorFingerprint(value.binding.digest) ||
+		!canonicalConnectorRevision(value.binding.revision)
+	) {
+		return false;
+	}
+	if (
+		!canonicalConnectorRecord(value.capability) ||
+		!canonicalConnectorExactKeys(value.capability, CANONICAL_CONNECTOR_CAPABILITY_KEYS) ||
+		!canonicalConnectorFingerprint(value.capability.digest) ||
+		!canonicalConnectorRevision(value.capability.revision)
+	) {
+		return false;
+	}
+	return (
+		canonicalConnectorRecord(value.supervisor) &&
+		canonicalConnectorExactKeys(value.supervisor, CANONICAL_CONNECTOR_SUPERVISOR_KEYS) &&
+		canonicalConnectorIdentifier(value.supervisor.ref) &&
+		canonicalConnectorIdentifier(value.supervisor.nonce)
+	);
+}
+
+export function cloneCanonicalExternalConnectorMapping(value: unknown): CanonicalExternalConnectorMapping {
+	if (!isCanonicalExternalConnectorMapping(value)) {
+		throw new ExternalMappingError("external_mapping_invalid", "Canonical external connector mapping is invalid.");
+	}
+	return Object.freeze({
+		...value,
+		binding: Object.freeze({ ...value.binding, digest: Object.freeze({ ...value.binding.digest }) }),
+		capability: Object.freeze({ ...value.capability, digest: Object.freeze({ ...value.capability.digest }) }),
+		supervisor: Object.freeze({ ...value.supervisor }),
+	});
+}
 
 export type ExternalMappingErrorCode =
 	| "external_mapping_invalid"
