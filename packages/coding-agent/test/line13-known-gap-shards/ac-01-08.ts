@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	InMemorySessionStorage,
 	LayeredResultSettlement,
@@ -16,7 +15,6 @@ import {
 	createAgentSession,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-	type createAgentSessionWithTrustedScheduler,
 	createExternalAgentAdapterRegistry,
 	createExternalAgentPreparedBinding,
 	SchedulerExecutorRegistry,
@@ -36,6 +34,7 @@ import {
 	type ExternalAgentProbeContext,
 	type ExternalAgentStartRequest,
 	type ExternalAgentTarget,
+	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { createAgentSessionRuntimeFromManager } from "../../src/core/agent-session-runtime.ts";
@@ -178,11 +177,22 @@ async function createRpcProductFixture(options: {
 		});
 	}
 	const settingsManager = SettingsManager.inMemory();
+	const adapters: ExternalAdapterHarness[] = [];
+	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
+		externalAgentRegistry: () => {
+			const adapter = createExternalAdapterHarness(options.adapter);
+			adapters.push(adapter);
+			const registry = createExternalAgentAdapterRegistry();
+			registry.register(adapter.adapter, { targets: ["target-1"] });
+			return registry;
+		},
+	});
 	const services = await createAgentSessionServices({
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
 		settingsManager,
+		runtimeComposition,
 		resourceLoaderOptions: {
 			noExtensions: true,
 			noSkills: true,
@@ -191,9 +201,6 @@ async function createRpcProductFixture(options: {
 			noContextFiles: true,
 		},
 	});
-	const adapter = createExternalAdapterHarness(options.adapter);
-	const registry = createExternalAgentAdapterRegistry();
-	registry.register(adapter.adapter, { targets: ["target-1"] });
 	const sessionManager = SessionManager.inMemory(cwd);
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
 		const created = await createAgentSession({
@@ -207,7 +214,7 @@ async function createRpcProductFixture(options: {
 			resourceLoader: services.resourceLoader,
 			capabilityRegistry: services.capabilityRegistry,
 			sessionManager: runtimeOptions.sessionManager,
-			externalAgentRegistry: registry,
+			runtimeComposition,
 			noTools: "all",
 		});
 		return { ...created, services, diagnostics: services.diagnostics };
@@ -217,6 +224,8 @@ async function createRpcProductFixture(options: {
 		agentDir: cwd,
 		sessionManager,
 	});
+	const adapter = adapters[0];
+	if (adapter === undefined) throw new Error("Expected the initial External Agent adapter composition");
 	const records: RpcHostOutputRecord[] = [];
 	const controller = new RpcHostController(runtime, {
 		output: { publish: (record) => records.push(record) } as RpcHostOutputSink,
@@ -309,31 +318,29 @@ interface ProductCompositionEvidence {
 
 interface ProductCompositionFixture {
 	readonly evidence: ProductCompositionEvidence;
-	readonly registry: ExternalAgentAdapterRegistry;
+	readonly registries: readonly ExternalAgentAdapterRegistry[];
 	readonly cleanup: () => Promise<void>;
-}
-
-function mainProductEntrypointUsesRuntimeComposition(): boolean {
-	const mainSource = readFileSync(fileURLToPath(new URL("../../src/main.ts", import.meta.url)), "utf8");
-	return ["createAgentSessionServices", "createAgentSessionFromServices", "createAgentSessionRuntime"].every(
-		(symbol) => mainSource.includes(symbol),
-	);
 }
 
 async function createProductCompositionFixture(): Promise<ProductCompositionFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-services-"));
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
-	const registry = createExternalAgentAdapterRegistry();
-	registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
-	const servicesOptions: Parameters<typeof createAgentSessionServices>[0] & {
-		readonly externalAgentRegistry: ExternalAgentAdapterRegistry;
-	} = {
+	const registries: ExternalAgentAdapterRegistry[] = [];
+	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
+		externalAgentRegistry: () => {
+			const registry = createExternalAgentAdapterRegistry();
+			registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
+			registries.push(registry);
+			return registry;
+		},
+	});
+	const servicesOptions: Parameters<typeof createAgentSessionServices>[0] = {
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
 		settingsManager,
-		externalAgentRegistry: registry,
+		runtimeComposition,
 		resourceLoaderOptions: {
 			noExtensions: true,
 			noSkills: true,
@@ -353,26 +360,20 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 		resourceLoader: services.resourceLoader,
 		capabilityRegistry: services.capabilityRegistry,
 		sessionManager: SessionManager.inMemory(cwd, { id: "line13-sdk-surface" }),
-		externalAgentRegistry: registry,
+		runtimeComposition,
 		noTools: "all",
 	});
-	const sessionOptions: Parameters<typeof createAgentSessionFromServices>[0] & {
-		readonly externalAgentRegistry: ExternalAgentAdapterRegistry;
-	} = {
+	const sessionOptions: Parameters<typeof createAgentSessionFromServices>[0] = {
 		services,
 		sessionManager: SessionManager.inMemory(cwd, { id: "line13-services-surface" }),
-		externalAgentRegistry: registry,
 		noTools: "all",
 	};
 	const servicesCreated = await codingAgentEntry.createAgentSessionFromServices(sessionOptions);
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
-		const runtimeSessionOptions: Parameters<typeof codingAgentEntry.createAgentSessionFromServices>[0] & {
-			readonly externalAgentRegistry: ExternalAgentAdapterRegistry;
-		} = {
+		const runtimeSessionOptions: Parameters<typeof codingAgentEntry.createAgentSessionFromServices>[0] = {
 			services,
 			sessionManager: runtimeOptions.sessionManager,
 			sessionStartEvent: runtimeOptions.sessionStartEvent,
-			externalAgentRegistry: registry,
 			noTools: "all",
 		};
 		const created = await codingAgentEntry.createAgentSessionFromServices(runtimeSessionOptions);
@@ -389,9 +390,10 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	const interactiveMode = new codingAgentEntry.InteractiveMode(mainRuntime, { tuiMode: "regular" });
 	const mainHasRegistry =
 		typeof codingAgentEntry.main === "function" &&
-		mainProductEntrypointUsesRuntimeComposition() &&
-		mainRuntime.session.getExternalAgentRegistry() === registry;
-	const tuiHasRegistry = mainRuntime.session.getExternalAgentRegistry() === registry;
+		services.runtimeComposition === runtimeComposition &&
+		mainRuntime.runtimeComposition.externalAgentRegistry === mainRuntime.session.getExternalAgentRegistry() &&
+		mainRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
+	const tuiHasRegistry = mainRuntime.runtimeComposition === mainRuntime.session.agentRuntimeComposition;
 	interactiveMode.stop("transcript");
 
 	const rpcRuntime = await createSurfaceRuntime("line13-rpc-surface");
@@ -409,12 +411,18 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	};
 
 	const printRuntime = await createSurfaceRuntime("line13-print-surface");
-	const printHasRegistry = printRuntime.session.getExternalAgentRegistry() === registry;
+	const printHasRegistry =
+		printRuntime.runtimeComposition.externalAgentRegistry === printRuntime.session.getExternalAgentRegistry() &&
+		printRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
 	const printExitCode = await codingAgentEntry.runPrintMode(printRuntime, { mode: "text" });
 	return {
-		evidence: {
-			sdk: sdk.session.getExternalAgentRegistry() === registry,
-			services: servicesCreated.session.getExternalAgentRegistry() === registry,
+			evidence: {
+			sdk:
+				sdk.runtimeComposition === sdk.session.agentRuntimeComposition &&
+				sdk.runtimeComposition.externalAgentRegistry?.list().length === 1,
+			services:
+				servicesCreated.runtimeComposition === servicesCreated.session.agentRuntimeComposition &&
+				servicesCreated.runtimeComposition.externalAgentRegistry?.list().length === 1,
 			main: mainHasRegistry,
 			tui: tuiHasRegistry,
 			print: printHasRegistry && printExitCode === 0,
@@ -424,7 +432,7 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 					(descriptor) => descriptor.adapterId === "line13-connector",
 				) ?? false),
 		},
-		registry,
+		registries,
 		cleanup: async () => {
 			try {
 				await rpcController.shutdown();
@@ -458,7 +466,10 @@ function schedulerTask(): TaskEnvelope {
 	};
 }
 
-type TrustedSchedulerFactory = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
+type TrustedSchedulerFactory = (
+	sourceSession: Session,
+	sessionId: string,
+) => TrustedSchedulerRuntimeOptions;
 
 interface SchedulerReopenFixture {
 	readonly factoryCalls: number;
@@ -473,7 +484,7 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 	const settingsManager = SettingsManager.inMemory();
 	let clock = NOW;
 	let factoryCalls = 0;
-	const trustedSchedulerFactory: TrustedSchedulerFactory = (sourceSession, _sessionId, runLifecycleSession) => {
+	const trustedSchedulerFactory: TrustedSchedulerFactory = (sourceSession, _sessionId) => {
 		factoryCalls += 1;
 		const targetSessionId = `line13-target-${factoryCalls}`;
 		const targetSession = new Session(new InMemorySessionStorage({ id: targetSessionId, createdAt: 1 }));
@@ -490,7 +501,6 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 				{ getByBusinessKey: () => undefined },
 				{ now: () => clock },
 			),
-			runLifecycleSession,
 			ownerId: "line13-scheduler-owner",
 			registry: new SchedulerExecutorRegistry(),
 			task: schedulerTask(),
@@ -689,6 +699,27 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
+		defineLine13ResolvedCase({
+			ac: "AC-04",
+			fullTestName:
+				"Line 13 public services composition carries trusted External Connector authority into SDK, TUI, print, and RPC sessions",
+			scenario: {
+				fixture: createProductCompositionFixture,
+				setup: (fixture) => {
+					if (fixture.registries.length < 5 || fixture.registries.some((registry) => registry.list().length !== 1)) {
+						throw new Error("AC-04 product composition fixture did not create isolated registry descriptors");
+					}
+				},
+				assertion: (fixture) => {
+					assert.deepStrictEqual(
+						fixture.evidence,
+						{ sdk: true, services: true, main: true, tui: true, print: true, rpc: true },
+						"public product construction must carry one trusted External Connector through SDK, services, main, TUI, print, and RPC",
+					);
+				},
+				cleanup: (fixture) => fixture.cleanup(),
+			},
+		}),
 	],
 	cases: [
 		defineLine13KnownGapCase({
@@ -779,36 +810,6 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 						},
 						{ task: true, attempt: true, attemptReceipt: true, taskResult: true, runReceipt: true },
 						"external RPC work must persist the Foundation Task-to-RunReceipt chain",
-					);
-				},
-				cleanup: (fixture) => fixture.cleanup(),
-			},
-		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-04",
-				fullTestName:
-					"Line 13 public services composition carries trusted External Connector authority into SDK, TUI, print, and RPC sessions",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T3b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "product-composition.external-connector",
-					fingerprint: "sha256:56d62102a7e9f856703685ace1b21fb867b290044f27abac526cdc72743e6eb6",
-				},
-			},
-			scenario: {
-				fixture: createProductCompositionFixture,
-				setup: (fixture) => {
-					if (fixture.registry.list().length !== 1) {
-						throw new Error("AC-04 product composition fixture did not retain its registry descriptor");
-					}
-				},
-				assertion: (fixture) => {
-					assert.deepStrictEqual(
-						fixture.evidence,
-						{ sdk: true, services: true, main: true, tui: true, print: true, rpc: true },
-						"public product construction must carry one trusted External Connector through SDK, services, main, TUI, print, and RPC",
 					);
 				},
 				cleanup: (fixture) => fixture.cleanup(),

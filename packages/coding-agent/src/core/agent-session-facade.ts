@@ -22,7 +22,6 @@ import {
 	type ProvisionedEntry,
 	type PrepareNextTurnContext,
 	type QueueMode,
-	type SessionLedgerWriter,
 	type StreamFn,
 	type ThinkingLevel,
 	createCompactionSummaryMessage,
@@ -50,6 +49,13 @@ import type {
 	PromptOptions,
 	SessionStats,
 } from "./agent-session.ts";
+import {
+	bindAgentRuntimeSchedulerComposition,
+	createAgentRuntimeCompositionFactory,
+	materializeAgentRuntimeComposition,
+	type AgentRuntimeComposition,
+	type AgentRuntimeCompositionFactory,
+} from "./agent-runtime-composition.ts";
 import type { CapabilityBinding, CapabilityCatalogView } from "./capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
@@ -66,7 +72,7 @@ import {
 import { classifyProviderFailure } from "./execution-error.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
+import type { ExternalAgentAdapterRegistryView } from "./external-agent-registry.ts";
 import {
 	getLatestCompactionEntry,
 	SessionManager,
@@ -149,7 +155,6 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
-	type TrustedSchedulerCompositionOptions,
 } from "./foundation-control-plane.ts";
 import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
@@ -162,7 +167,9 @@ import {
 } from "./product-prompt-ingress.ts";
 import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
+import type {
+	TrustedSubagentCompositionV1,
+} from "./subagent-composition.ts";
 import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,
@@ -186,6 +193,7 @@ export interface CanonicalAgentSessionOptions {
 	modelRuntime: ModelRuntime;
 	modelBroker?: ModelBroker;
 	modelBrokerConfigRevision?: string;
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	customTools?: ToolDefinition[];
 	extensionRunner?: ExtensionRunner;
@@ -198,27 +206,10 @@ export interface CanonicalAgentSessionOptions {
 	mcpAuthManagerOptions?: AgentSessionConfig["mcpAuthManagerOptions"];
 	sandboxProviders?: AgentSessionConfig["sandboxProviders"];
 	policyProfile?: string;
-	externalAgentRegistry?: AgentSessionConfig["externalAgentRegistry"];
-	taskCredentialProvider?: AgentSessionConfig["taskCredentialProvider"];
-	taskCredentialPolicyMaxTtlMs?: number;
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	noTools?: "all" | "builtin";
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
-	/** Explicit trusted Host-only opt-in; omission preserves the original runtime path. */
-	subagents?: TrustedSubagentCompositionOptionsV1;
-	/** Explicit trusted Host-only opt-in; omission keeps scheduling disabled. */
-	scheduler?: TrustedSchedulerCompositionOptions;
-}
-
-const internalWorkerSandboxProvider = Symbol("internalWorkerSandboxProvider");
-
-interface InternalAgentSessionConfig extends AgentSessionConfig {
-	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
-}
-
-interface InternalCanonicalAgentSessionOptions extends CanonicalAgentSessionOptions {
-	readonly [internalWorkerSandboxProvider]?: WorkerSandboxProviderV1;
 }
 
 interface CanonicalAgentCompatibility extends Omit<Agent, "state"> {
@@ -304,7 +295,7 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 	};
 }
 
-function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): InternalCanonicalAgentSessionOptions {
+function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
 	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
 	const canonicalSession = new Session(canonicalStorage);
 	const legacyAgent = options.agent;
@@ -417,6 +408,7 @@ function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): 
 		modelRuntime: options.modelRuntime,
 		modelBroker: options.modelBroker,
 		modelBrokerConfigRevision: options.modelBrokerConfigRevision,
+		runtimeComposition: options.runtimeComposition,
 		scopedModels: options.scopedModels,
 		customTools: options.customTools,
 		initialActiveToolNames: options.initialActiveToolNames,
@@ -427,13 +419,7 @@ function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): 
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions: options.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
-		...(options[internalWorkerSandboxProvider] === undefined
-			? {}
-			: { [internalWorkerSandboxProvider]: options[internalWorkerSandboxProvider] }),
 		policyProfile: options.policyProfile,
-		externalAgentRegistry: options.externalAgentRegistry,
-		taskCredentialProvider: options.taskCredentialProvider,
-		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		taskCredentialProviderAvailability: options.taskCredentialProviderAvailability,
 		noTools: options.noTools,
 		allowedToolNames: options.allowedToolNames,
@@ -598,6 +584,7 @@ export class CanonicalAgentSessionServices {
 	private readonly harness: AgentHarness;
 	private readonly sessionReadProjection: AgentSessionReadProjection;
 	readonly canonicalSession: Session<CodingAgentSessionMetadata>;
+	readonly runtimeComposition: AgentRuntimeComposition;
 	private readonly canonicalStorage: SessionManagerStorage;
 	private readonly _resourceLoader: ResourceLoader;
 	private readonly _modelRuntime: ModelRuntime;
@@ -637,7 +624,7 @@ export class CanonicalAgentSessionServices {
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
 	constructor(options: AgentSessionConfig);
 	constructor(options: CanonicalAgentSessionOptions | AgentSessionConfig) {
-		const canonical: InternalCanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
+		const canonical: CanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
 			? options
 			: createCanonicalOptionsFromLegacy(options);
 		const canonicalStorage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
@@ -680,6 +667,19 @@ export class CanonicalAgentSessionServices {
 			this.sessionRead,
 			new ModelRegistry(canonical.modelRuntime),
 		);
+		const runtimeCompositionFactory = canonical.runtimeComposition ?? createAgentRuntimeCompositionFactory();
+		this.runtimeComposition = materializeAgentRuntimeComposition(runtimeCompositionFactory, {
+			session: this.canonicalSession,
+			harness: this.harness,
+			sessionId: this.sessionManager.getSessionId(),
+			models: this._modelRuntime,
+			modelBroker: this._modelBroker,
+			capabilityRegistry: canonical.capabilityRegistry,
+			mcpTransportFactory: canonical.mcpTransportFactory,
+			mcpAuthProvider: canonical.mcpAuthProvider,
+			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
+			sandboxProviders: canonical.sandboxProviders,
+		});
 		this.controlPlane = new FoundationControlPlane({
 			harness: this.harness,
 			sessionManager: this.sessionManager,
@@ -691,18 +691,18 @@ export class CanonicalAgentSessionServices {
 			cwd: this._cwd,
 			agentDir: canonical.agentDir ?? this._cwd,
 			customTools: this._customTools,
-			capabilityRegistry: canonical.capabilityRegistry,
-			mcpTransportFactory: canonical.mcpTransportFactory,
-			mcpAuthProvider: canonical.mcpAuthProvider,
-			mcpAuthManagerOptions: canonical.mcpAuthManagerOptions,
-			sandboxProviders: canonical.sandboxProviders,
-			workerSandboxProvider: canonical[internalWorkerSandboxProvider],
-			subagents: canonical.subagents,
-			scheduler: canonical.scheduler,
+			capabilityRegistry: this.runtimeComposition.capabilityRegistry,
+			mcpTransportFactory: this.runtimeComposition.mcpTransportFactory,
+			mcpAuthProvider: this.runtimeComposition.mcpAuthProvider,
+			mcpAuthManagerOptions: this.runtimeComposition.mcpAuthManagerOptions,
+			sandboxProviders: this.runtimeComposition.sandboxProviders,
+			workerSandboxProvider: this.runtimeComposition.workerSandboxProvider,
+			subagents: this.runtimeComposition.subagents,
+			scheduler: bindAgentRuntimeSchedulerComposition(this.runtimeComposition, this.sessionManager),
 			policyProfile: canonical.policyProfile,
-			externalAgentRegistry: canonical.externalAgentRegistry,
-			taskCredentialProvider: canonical.taskCredentialProvider,
-			taskCredentialPolicyMaxTtlMs: canonical.taskCredentialPolicyMaxTtlMs,
+			externalAgentRegistry: this.runtimeComposition.externalAgentRegistry,
+			taskCredentialProvider: this.runtimeComposition.taskCredentialProvider,
+			taskCredentialPolicyMaxTtlMs: this.runtimeComposition.taskCredentialPolicyMaxTtlMs,
 			taskCredentialProviderAvailability: canonical.taskCredentialProviderAvailability,
 			noTools: canonical.noTools,
 			allowedToolNames: canonical.allowedToolNames,
@@ -1721,6 +1721,10 @@ export class CanonicalAgentSessionServices {
 
 	get modelRuntime(): ModelRuntime {
 		return this._modelRuntime;
+	}
+
+	get agentRuntimeComposition(): AgentRuntimeComposition {
+		return this.runtimeComposition;
 	}
 
 	get modelBroker(): ModelBroker {
@@ -3174,7 +3178,7 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getActiveBindingHandles();
 	}
 
-	getExternalAgentRegistry(): ExternalAgentAdapterRegistry | undefined {
+	getExternalAgentRegistry(): ExternalAgentAdapterRegistryView | undefined {
 		return this.controlPlane.getExternalAgentRegistry();
 	}
 
@@ -3191,6 +3195,16 @@ export class CanonicalAgentSessionServices {
 				if (result === undefined) throw new Error("Worker registry became unavailable");
 				return result;
 			},
+		};
+	}
+
+	getSubagentRegistry(): Pick<TrustedSubagentCompositionV1, "get" | "list" | "cancel"> | undefined {
+		const subagents = this.controlPlane.getSubagentComposition();
+		if (subagents === undefined) return undefined;
+		return {
+			get: (runId, childAgentInstanceId) => subagents.get(runId, childAgentInstanceId),
+			list: (runId, filter) => subagents.list(runId, filter),
+			cancel: (runId, childAgentInstanceId) => subagents.cancel(runId, childAgentInstanceId),
 		};
 	}
 
@@ -3491,6 +3505,7 @@ export class CanonicalAgentSessionServices {
 
 const COMPATIBILITY_FORWARDERS = [
 	"agent",
+	"agentRuntimeComposition",
 	"sessionRead",
 	"modelRuntime",
 	"modelBroker",
@@ -3593,6 +3608,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getActiveBindingHandles",
 	"getExternalAgentRegistry",
 	"getWorkerRegistry",
+	"getSubagentRegistry",
 	"getTaskCredentialService",
 	"getSchedulerStatus",
 	"getActiveSandboxSessionForCompatibility",
@@ -3702,6 +3718,7 @@ export class AgentSession {
 	private readonly delegate: CanonicalAgentSessionServices;
 	declare readonly settingsManager: CanonicalAgentSessionServices["settingsManager"];
 	declare readonly agent: CanonicalAgentSessionServices["agent"];
+	declare readonly agentRuntimeComposition: CanonicalAgentSessionServices["agentRuntimeComposition"];
 	declare readonly sessionRead: CanonicalAgentSessionServices["sessionRead"];
 	declare readonly modelRuntime: CanonicalAgentSessionServices["modelRuntime"];
 	declare readonly modelBroker: CanonicalAgentSessionServices["modelBroker"];
@@ -3806,6 +3823,7 @@ export class AgentSession {
 	declare readonly getActiveBindingHandles: CanonicalAgentSessionServices["getActiveBindingHandles"];
 	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
 	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
+	declare readonly getSubagentRegistry: CanonicalAgentSessionServices["getSubagentRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];
 	declare readonly getSchedulerStatus: CanonicalAgentSessionServices["getSchedulerStatus"];
 	declare readonly getActiveSandboxSessionForCompatibility: CanonicalAgentSessionServices["getActiveSandboxSessionForCompatibility"];
@@ -3929,43 +3947,13 @@ export function createLegacyAgentSession(options: AgentSessionConfig): AgentSess
 	return new AgentSession(options);
 }
 
-/** @internal SDK-only bridge for the branded Worker composition. */
-export function createAgentSessionWithTrustedWorkerSandboxProvider(
+/** Create one Session from the unified trusted runtime composition root. */
+export function createAgentSessionWithRuntimeComposition(
 	options: AgentSessionConfig,
-	workerSandboxProvider: WorkerSandboxProviderV1 | undefined,
+	runtimeComposition: AgentRuntimeCompositionFactory,
 ): AgentSession {
-	if (workerSandboxProvider === undefined) return new AgentSession(options);
-	const internalOptions: InternalAgentSessionConfig = {
-		...options,
-		[internalWorkerSandboxProvider]: workerSandboxProvider,
-	};
-	return new AgentSession(internalOptions);
-}
-
-/** Trusted Host composition root for default-off Child Agent product wiring. */
-export function createAgentSessionWithTrustedSubagents(
-	options: AgentSessionConfig,
-	createSubagents: (session: Session, sessionId: string, writer: SessionLedgerWriter) => TrustedSubagentCompositionOptionsV1,
-): AgentSession {
-	const canonical = createCanonicalOptionsFromLegacy(options);
-	const subagents = createSubagents(canonical.canonicalSession, canonical.sessionManager.getSessionId(), canonical.harness.t5.writer);
-	return new AgentSession(new CanonicalAgentSessionServices({ ...canonical, subagents }));
-}
-
-/** Trusted Host composition root for the explicitly default-off Scheduler. */
-export function createAgentSessionWithTrustedScheduler(
-	options: AgentSessionConfig,
-	createScheduler: (
-		session: Session,
-		sessionId: string,
-		runLifecycleSession: SessionManager,
-	) => TrustedSchedulerCompositionOptions,
-): AgentSession {
-	const canonical = createCanonicalOptionsFromLegacy(options);
-	const scheduler = createScheduler(
-		canonical.canonicalSession,
-		canonical.sessionManager.getSessionId(),
-		canonical.sessionManager,
-	);
-	return new AgentSession(new CanonicalAgentSessionServices({ ...canonical, scheduler }));
+	if (options.runtimeComposition !== undefined && options.runtimeComposition !== runtimeComposition) {
+		throw new TypeError("AgentSession accepts one runtime composition factory");
+	}
+	return new AgentSession({ ...options, runtimeComposition });
 }

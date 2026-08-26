@@ -18,6 +18,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
@@ -442,6 +443,18 @@ async function createRuntimeHost(options: {
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
 	} as unknown as ModelRuntime;
 	const resourceLoader = testResourceLoader();
+	let initialExternalAgentRegistry = options.externalAgentRegistry;
+	const runtimeComposition = createAgentRuntimeCompositionFactory({
+		...(options.externalAgentRegistry === undefined
+			? {}
+			: {
+				externalAgentRegistry: () => {
+					const registry = initialExternalAgentRegistry ?? createExternalAgentAdapterRegistry();
+					initialExternalAgentRegistry = undefined;
+					return registry;
+				},
+			}),
+	});
 
 	const openSession = (sessionManager: SessionManager): AgentSession => {
 		return new AgentSession({
@@ -451,7 +464,7 @@ async function createRuntimeHost(options: {
 			cwd: tempDir,
 			modelRuntime,
 			resourceLoader,
-			externalAgentRegistry: options.externalAgentRegistry,
+			runtimeComposition,
 		});
 	};
 

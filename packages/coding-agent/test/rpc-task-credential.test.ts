@@ -14,6 +14,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
@@ -352,7 +353,19 @@ async function createRuntimeHost(options: {
 	} as unknown as ModelRuntime;
 	const resourceLoader = testResourceLoader();
 	const target = options.withProvider === true ? new RecordingTarget() : undefined;
-	const provider = options.withProvider === true ? makeProvider(target) : undefined;
+	let provider: TaskCredentialTestProvider | undefined;
+	const runtimeComposition = createAgentRuntimeCompositionFactory({
+		...(target === undefined
+			? {}
+			: {
+				taskCredentialProvider: () => {
+					const candidate = makeProvider(target);
+					provider ??= candidate;
+					return candidate;
+				},
+				taskCredentialPolicyMaxTtlMs: 300_000,
+			}),
+	});
 	const openSession = (sessionManager: SessionManager): AgentSession =>
 		new AgentSession({
 			agent,
@@ -362,8 +375,8 @@ async function createRuntimeHost(options: {
 			modelRuntime,
 			resourceLoader,
 			sandboxProviders: [makeSandboxProvider()],
-			...(provider === undefined ? {} : { taskCredentialProvider: provider }),
-			...(provider === undefined
+			runtimeComposition,
+			...(target === undefined
 				? {}
 				: {
 						taskCredentialProviderAvailability: {
@@ -371,7 +384,6 @@ async function createRuntimeHost(options: {
 							declaresDelivery: options.providerAvailable !== false,
 						},
 					}),
-			...(provider === undefined ? {} : { taskCredentialPolicyMaxTtlMs: 300_000 }),
 		});
 
 	// Session persistence only flushes to disk on the first assistant message.

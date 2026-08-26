@@ -40,7 +40,6 @@ export {
 	parseSkillBlock,
 	type SessionStats,
 } from "./core/agent-session.ts";
-export { createAgentSessionWithTrustedScheduler } from "./core/agent-session-facade.ts";
 export {
 	TrustedSchedulerComposition,
 	type SchedulerSafeStatus,
@@ -696,6 +695,7 @@ export {
 	type ExternalAgentAdapterDescriptor,
 	type ExternalAgentAdapterRegistrationOptions,
 	type ExternalAgentAdapterRegistry,
+	type ExternalAgentAdapterRegistryView,
 	type ExternalAgentResolvedSelection,
 } from "./core/external-agent-registry.ts";
 export {
@@ -767,6 +767,10 @@ export {
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
+	type AgentRuntimeComposition,
+	type AgentRuntimeCompositionContext,
+	type AgentRuntimeCompositionFactory,
+	type AgentRuntimeCompositionOptions,
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -778,6 +782,7 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createAgentRuntimeCompositionFactory,
 	createTrustedWorkerSandboxComposition,
 	listAllSessions,
 	listSessions,
@@ -785,6 +790,12 @@ export {
 	type TrustedWorkerSandboxComposition,
 	type TrustedWorkerSandboxFactory,
 	type TrustedWorkerSandboxProviderOptions,
+	type TrustedExternalAgentRegistryFactory,
+	type TrustedSchedulerCompositionFactory,
+	type TrustedSchedulerRuntimeOptions,
+	type TrustedSubagentCompositionFactory,
+	type TrustedTaskCredentialProviderFactory,
+	type TrustedToolGatewayFactory,
 	createBashTool,
 	// Tool factories (for custom cwd)
 	createCodingTools,

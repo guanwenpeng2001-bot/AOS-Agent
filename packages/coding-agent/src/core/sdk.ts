@@ -5,7 +5,13 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import {
-	createAgentSessionWithTrustedWorkerSandboxProvider,
+	createAgentRuntimeCompositionFactory,
+	createTrustedWorkerSandboxComposition,
+	type AgentRuntimeComposition,
+	type AgentRuntimeCompositionFactory,
+} from "./agent-runtime-composition.ts";
+import {
+	createAgentSessionWithRuntimeComposition,
 	recordInitialAgentSessionConfiguration,
 } from "./agent-session-facade.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
@@ -30,15 +36,8 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import type { TaskCredentialProvider } from "./task-credential-provider.ts";
-import {
-	WorkerSandboxProviderV1,
-	type WorkerSandboxProfileV1,
-	type WorkerSandboxProviderOptionsV1,
-} from "./worker-sandbox-provider.ts";
 import { SessionManager } from "./session-manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "./session-creation.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
@@ -62,39 +61,27 @@ import {
 // provider-agnostic and does not import the AI compatibility entrypoint itself.
 setDefaultStreamFn(streamSimple);
 
-export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
-	readonly profile: WorkerSandboxProfileV1;
-};
-
 export type { SessionCreationOptions } from "./session-creation.ts";
 
-const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
-
-export interface TrustedWorkerSandboxComposition {
-	readonly provider: WorkerSandboxProviderV1;
-	readonly [trustedWorkerSandboxBrand]: true;
-}
-
-export type TrustedWorkerSandboxFactory = () => TrustedWorkerSandboxComposition;
-
-/** Construct a Worker provider only from trusted programmatic composition. */
-export function createTrustedWorkerSandboxComposition(
-	options: TrustedWorkerSandboxProviderOptions,
-): TrustedWorkerSandboxComposition {
-	return Object.freeze({
-		provider: new WorkerSandboxProviderV1(options),
-		[trustedWorkerSandboxBrand]: true as const,
-	});
-}
-
-function requireTrustedWorkerSandboxProvider(
-	composition: TrustedWorkerSandboxComposition,
-): WorkerSandboxProviderV1 {
-	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProviderV1)) {
-		throw new TypeError("Trusted Worker composition is invalid");
-	}
-	return composition.provider;
-}
+export {
+	createAgentRuntimeCompositionFactory,
+	createTrustedWorkerSandboxComposition,
+};
+export type {
+	AgentRuntimeComposition,
+	AgentRuntimeCompositionContext,
+	AgentRuntimeCompositionFactory,
+	AgentRuntimeCompositionOptions,
+	TrustedExternalAgentRegistryFactory,
+	TrustedSchedulerCompositionFactory,
+	TrustedSchedulerRuntimeOptions,
+	TrustedSubagentCompositionFactory,
+	TrustedTaskCredentialProviderFactory,
+	TrustedToolGatewayFactory,
+	TrustedWorkerSandboxComposition,
+	TrustedWorkerSandboxFactory,
+	TrustedWorkerSandboxProviderOptions,
+} from "./agent-runtime-composition.ts";
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */
@@ -106,6 +93,8 @@ export interface CreateAgentSessionOptions {
 	modelRuntime?: ModelRuntime;
 	/** Broker for declared route/role selection and safe model binding facts. */
 	modelBroker?: ModelBroker;
+	/** One immutable trusted composition factory for all optional runtime authorities. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 	modelBrokerConfigRevision?: string;
 	/** Optional explicit broker route for the initial session operation. */
 	modelRoute?: ModelRouteSelection;
@@ -175,25 +164,14 @@ export interface CreateAgentSessionOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Branded trusted programmatic Operation Worker composition; never read from config or RPC. */
-	trustedWorkerSandbox?: TrustedWorkerSandboxComposition;
-	/** Trusted External Agent Adapter registry composed by the Host. */
-	externalAgentRegistry?: ExternalAgentAdapterRegistry;
-	/**
-	 * Optional Task Credential provider composing the session-scoped Task
-	 * Credential lifecycle service. Absent (or without a policy TTL ceiling)
-	 * means the session has no credential service: every lifecycle signal
-	 * fails closed and no lease is ever issued.
-	 */
-	taskCredentialProvider?: TaskCredentialProvider;
-	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
-	taskCredentialPolicyMaxTtlMs?: number;
 }
 
 /** Result from createAgentSession */
 export interface CreateAgentSessionResult {
 	/** The created session */
 	session: AgentSession;
+	/** The immutable authority graph used by the Session and every entry surface. */
+	runtimeComposition: AgentRuntimeComposition;
 	/** Extensions result (for UI context setup in interactive mode) */
 	extensionsResult: LoadExtensionsResult;
 	/** Warning if session was restored with a different model than saved */
@@ -321,9 +299,7 @@ export function listAllSessions(sessionDirectory?: string) {
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
-	const workerSandboxProvider = options.trustedWorkerSandbox === undefined
-		? undefined
-		: requireTrustedWorkerSandboxProvider(options.trustedWorkerSandbox);
+	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	const sessionManager = options.sessionManager ??
 		createSessionManagerForOptions({ cwd: options.cwd, agentDir, session: options.session }).sessionManager;
@@ -623,7 +599,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const capabilityRegistry =
 		options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir));
 
-	const session = createAgentSessionWithTrustedWorkerSandboxProvider({
+	const session = createAgentSessionWithRuntimeComposition({
 		agent,
 		sessionManager,
 		settingsManager,
@@ -648,11 +624,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
 		policyProfile: options.policyProfile,
-		externalAgentRegistry: options.externalAgentRegistry,
-		taskCredentialProvider: options.taskCredentialProvider,
-		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
 		noTools: options.noTools,
-	}, workerSandboxProvider);
+	}, runtimeComposition);
 	sessionForToolEnvironment = session;
 	if (!hasExistingSession || !hasThinkingEntry) {
 		await recordInitialAgentSessionConfiguration(session, model, thinkingLevel, !hasExistingSession);
@@ -687,6 +660,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 	return {
 		session,
+		runtimeComposition: session.agentRuntimeComposition,
 		extensionsResult,
 		modelFallbackMessage,
 	};

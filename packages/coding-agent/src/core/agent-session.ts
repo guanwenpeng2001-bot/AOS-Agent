@@ -7,8 +7,8 @@ import type {
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
 import type { CompactionResult } from "./compaction/index.ts";
+import type { AgentRuntimeCompositionFactory } from "./agent-runtime-composition.ts";
 import type { ExternalAgentEvent } from "./external-agent-adapter.ts";
-import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -31,10 +31,7 @@ import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import type {
-	TaskCredentialProvider,
-	TaskCredentialProviderAvailability,
-} from "./task-credential-provider.ts";
+import type { TaskCredentialProviderAvailability } from "./task-credential-provider.ts";
 
 /** Parsed skill block from a user message. */
 export interface ParsedSkillBlock {
@@ -115,6 +112,8 @@ export interface AgentSessionConfig {
 	modelRuntime: ModelRuntime;
 	modelBroker?: ModelBroker;
 	modelBrokerConfigRevision?: string;
+	/** One trusted factory for every optional authority in this canonical Session/Harness. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 	initialModelSelection?: "manual" | "default";
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
@@ -128,9 +127,6 @@ export interface AgentSessionConfig {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	policyProfile?: string;
-	externalAgentRegistry?: ExternalAgentAdapterRegistry;
-	taskCredentialProvider?: TaskCredentialProvider;
-	taskCredentialPolicyMaxTtlMs?: number;
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	noTools?: "all" | "builtin";

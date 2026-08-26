@@ -43,6 +43,10 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
+import {
+	createAgentRuntimeCompositionFactory,
+	type AgentRuntimeCompositionFactory,
+} from "./core/agent-runtime-composition.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
@@ -610,11 +614,14 @@ async function promptForMissingSessionCwd(
 
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
+	/** Trusted Host-only authority graph; CLI arguments and RPC cannot populate it. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 }
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
+	const runtimeComposition = options?.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.AOS_AGENT_OFFLINE);
 	if (offlineMode) {
 		process.env.AOS_AGENT_OFFLINE = "1";
@@ -781,6 +788,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
+			runtimeComposition,
 			settingsManager: runtimeSettingsManager,
 			modelRuntimeSignal: AbortSignal.timeout(15_000),
 			extensionFlagValues: parsed.unknownFlags,

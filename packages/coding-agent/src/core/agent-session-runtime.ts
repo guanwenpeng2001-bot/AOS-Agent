@@ -2,6 +2,10 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
+import type {
+	AgentRuntimeComposition,
+	AgentRuntimeCompositionFactory,
+} from "./agent-runtime-composition.ts";
 import { createAgentSessionForkTarget, useAgentSessionForkTarget } from "./agent-session-facade.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
@@ -68,6 +72,7 @@ export class AgentSessionRuntime {
 	private _session: AgentSession;
 	private _services: AgentSessionServices;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
+	private readonly runtimeCompositionFactory: AgentRuntimeCompositionFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
 
@@ -81,6 +86,10 @@ export class AgentSessionRuntime {
 		this._session = _session;
 		this._services = _services;
 		this.createRuntime = createRuntime;
+		this.runtimeCompositionFactory = _services.runtimeComposition;
+		if (_session.agentRuntimeComposition.factory !== this.runtimeCompositionFactory) {
+			throw new TypeError("Initial runtime must derive from the services runtime composition");
+		}
 		this._diagnostics = _diagnostics;
 		this._modelFallbackMessage = _modelFallbackMessage;
 	}
@@ -91,6 +100,10 @@ export class AgentSessionRuntime {
 
 	get session(): AgentSession {
 		return this._session;
+	}
+
+	get runtimeComposition(): AgentRuntimeComposition {
+		return this._session.agentRuntimeComposition;
 	}
 
 	get cwd(): string {
@@ -169,6 +182,13 @@ export class AgentSessionRuntime {
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
+		if (
+			result.services.runtimeComposition !== this.runtimeCompositionFactory ||
+			result.runtimeComposition.factory !== this.runtimeCompositionFactory ||
+			result.session.agentRuntimeComposition !== result.runtimeComposition
+		) {
+			throw new TypeError("Replacement runtime must derive from the original runtime composition");
+		}
 		this._session = result.session;
 		this._services = result.services;
 		this._diagnostics = result.diagnostics;

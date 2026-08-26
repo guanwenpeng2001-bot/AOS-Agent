@@ -43,7 +43,6 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 			waitForBackpressure: waitForRawStdoutBackpressure,
 		},
 		onShutdown: () => requestProcessShutdown(),
-		workerRegistry: (session) => session.getWorkerRegistry(),
 	});
 	await controller.start();
 
@@ -140,7 +139,6 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 
 	const controller = createRpcHostController(runtimeHost, {
 		onShutdown: () => requestProcessShutdown(),
-		workerRegistry: (session) => session.getWorkerRegistry(),
 	});
 	await controller.start();
 

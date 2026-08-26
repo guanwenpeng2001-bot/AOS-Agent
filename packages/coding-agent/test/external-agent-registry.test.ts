@@ -86,6 +86,15 @@ describe("trusted external agent adapter registry", () => {
 		expect(registry.list().map(({ adapterId }) => adapterId)).toEqual(["adapter-a", "adapter-b", "adapter-c"]);
 	});
 
+	it("seals Host registration before publishing the read-only view", () => {
+		const { registry, adapter } = registryWith();
+		const published = registry.seal();
+		expect(Object.isFrozen(published)).toBe(true);
+		expect(published.get(adapter.id)).toBe(adapter);
+		expect(published.list()).toEqual([{ adapterId: "fake-adapter", displayName: "Fake Adapter", version: "1" }]);
+		expectAdapterInvalid(() => registry.register(fakeAdapter("late-adapter")));
+	});
+
 	it("defaults descriptor displayName and version to safe values", () => {
 		const registry = createExternalAgentAdapterRegistry();
 		registry.register(fakeAdapter("minimal-adapter"));

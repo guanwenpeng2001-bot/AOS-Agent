@@ -5,6 +5,10 @@ import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
+import {
+	createAgentRuntimeCompositionFactory,
+	type AgentRuntimeCompositionFactory,
+} from "./agent-runtime-composition.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import {
 	createDefaultMCPAuthManagerOptions,
@@ -20,11 +24,9 @@ import {
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
-	type TrustedWorkerSandboxFactory,
 	createAgentSession,
 } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -55,6 +57,8 @@ export interface CreateAgentSessionServicesOptions {
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
 	modelBroker?: ModelBroker;
+	/** One trusted factory reused for every Session derived from these services. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -73,12 +77,6 @@ export interface CreateAgentSessionServicesOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	/** Optional Task Credential provider composing the session-scoped credential service. */
-	taskCredentialProvider?: TaskCredentialProvider;
-	/** Policy ceiling for Task Credential lease TTLs; required with the provider. */
-	taskCredentialPolicyMaxTtlMs?: number;
-	/** Trusted composition factory invoked once for each Session created from these services. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -102,11 +100,6 @@ export interface CreateAgentSessionFromServicesOptions {
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
 	sandboxProviders?: CreateAgentSessionOptions["sandboxProviders"];
-	taskCredentialProvider?: CreateAgentSessionOptions["taskCredentialProvider"];
-	taskCredentialPolicyMaxTtlMs?: CreateAgentSessionOptions["taskCredentialPolicyMaxTtlMs"];
-	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"];
-	/** Per-call trusted composition factory; invoked once for this created Session. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 }
 
 /**
@@ -121,6 +114,8 @@ export interface AgentSessionServices {
 	modelRuntime: ModelRuntime;
 	modelBroker: ModelBroker;
 	modelBrokerConfigRevision: string;
+	/** Immutable trusted factory reused for initial and replacement runtime candidates. */
+	runtimeComposition: AgentRuntimeCompositionFactory;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	capabilityRegistry: CapabilityRegistry;
@@ -139,10 +134,6 @@ export interface AgentSessionServices {
 	 */
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
-	taskCredentialProvider?: TaskCredentialProvider;
-	taskCredentialPolicyMaxTtlMs?: number;
-	/** Trusted composition factory invoked once for each Session created from these services. */
-	trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -268,6 +259,7 @@ export async function createAgentSessionServices(
 
 	const mcpAuthManagerOptions =
 		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
+	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory();
 
 	return {
 		cwd,
@@ -275,6 +267,7 @@ export async function createAgentSessionServices(
 		modelRuntime,
 		modelBroker,
 		modelBrokerConfigRevision: modelBrokerSettings.configRevision,
+		runtimeComposition,
 		settingsManager,
 		resourceLoader,
 		capabilityRegistry:
@@ -283,9 +276,6 @@ export async function createAgentSessionServices(
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
-		taskCredentialProvider: options.taskCredentialProvider,
-		taskCredentialPolicyMaxTtlMs: options.taskCredentialPolicyMaxTtlMs,
-		trustedWorkerSandboxFactory: options.trustedWorkerSandboxFactory,
 		diagnostics,
 	};
 }
@@ -306,6 +296,7 @@ export async function createAgentSessionFromServices(
 		modelRuntime: options.services.modelRuntime,
 		modelBroker: options.services.modelBroker,
 		modelBrokerConfigRevision: options.services.modelBrokerConfigRevision,
+		runtimeComposition: options.services.runtimeComposition,
 		settingsManager: options.services.settingsManager,
 		resourceLoader: options.services.resourceLoader,
 		capabilityRegistry: options.services.capabilityRegistry,
@@ -313,11 +304,6 @@ export async function createAgentSessionFromServices(
 		mcpAuthProvider: options.services.mcpAuthProvider,
 		mcpAuthManagerOptions: options.services.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
-		taskCredentialProvider: options.taskCredentialProvider ?? options.services.taskCredentialProvider,
-		taskCredentialPolicyMaxTtlMs:
-			options.taskCredentialPolicyMaxTtlMs ?? options.services.taskCredentialPolicyMaxTtlMs,
-		trustedWorkerSandbox: options.trustedWorkerSandbox ??
-			(options.trustedWorkerSandboxFactory ?? options.services.trustedWorkerSandboxFactory)?.(),
 		sessionManager: options.sessionManager,
 		model: options.model,
 		modelRoute: options.modelRoute,

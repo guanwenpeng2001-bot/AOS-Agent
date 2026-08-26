@@ -8,8 +8,9 @@ import {
 	createAgentSession,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
+	createAgentRuntimeCompositionFactory,
 	createTrustedWorkerSandboxComposition,
-	type CreateAgentSessionOptions,
+	type AgentRuntimeCompositionFactory,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -24,7 +25,7 @@ const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", imp
 type SessionCleanup = () => Promise<void>;
 
 async function createSdkSession(
-	trustedWorkerSandbox?: CreateAgentSessionOptions["trustedWorkerSandbox"],
+	runtimeComposition?: AgentRuntimeCompositionFactory,
 ): Promise<{ session: Awaited<ReturnType<typeof createAgentSession>>["session"]; cleanup: SessionCleanup }> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-sdk-worker-composition-"));
 	const faux = registerFauxProvider();
@@ -58,7 +59,7 @@ async function createSdkSession(
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
 		noTools: "all",
-		...(trustedWorkerSandbox === undefined ? {} : { trustedWorkerSandbox }),
+		...(runtimeComposition === undefined ? {} : { runtimeComposition }),
 	});
 	return {
 		session: created.session,
@@ -80,9 +81,7 @@ function createRpcController(session: Awaited<ReturnType<typeof createAgentSessi
 		dispose: async () => {},
 		setRebindSession: () => {},
 	} as unknown as AgentSessionRuntime;
-	return new RpcHostController(runtimeHost, {
-		workerRegistry: (currentSession) => currentSession.getWorkerRegistry(),
-	});
+	return new RpcHostController(runtimeHost);
 }
 
 function createTestWorkerSandboxComposition() {
@@ -145,13 +144,17 @@ describe("SDK Worker composition", () => {
 
 	it("rejects an unbranded Worker composition before session setup", async () => {
 		const trusted = createTestWorkerSandboxComposition();
-		const unbranded = { provider: trusted.provider } as unknown as CreateAgentSessionOptions["trustedWorkerSandbox"];
-		await expect(createAgentSession({ trustedWorkerSandbox: unbranded })).rejects.toThrow("Trusted Worker composition is invalid");
+		const runtimeComposition = createAgentRuntimeCompositionFactory({
+			trustedWorkerSandboxFactory: () => ({ provider: trusted.provider }) as ReturnType<typeof createTestWorkerSandboxComposition>,
+		});
+		await expect(createAgentSession({ runtimeComposition })).rejects.toThrow("Trusted Worker composition is invalid");
 	});
 
 	it("injects the factory provider into the real SDK session and exposes it through RPC", async () => {
 		const trusted = createTestWorkerSandboxComposition();
-		const created = await createSdkSession(trusted);
+		const created = await createSdkSession(createAgentRuntimeCompositionFactory({
+			trustedWorkerSandboxFactory: () => trusted,
+		}));
 		cleanups.push(created.cleanup);
 		const registry = created.session.getWorkerRegistry();
 		expect(registry).toBeDefined();
@@ -205,12 +208,14 @@ describe("SDK Worker composition", () => {
 					noThemes: true,
 					noContextFiles: true,
 				},
-				trustedWorkerSandboxFactory: () => {
-					factoryCalls += 1;
-					const composition = createTestWorkerSandboxComposition();
-					compositions.push(composition);
-					return composition;
-				},
+				runtimeComposition: createAgentRuntimeCompositionFactory({
+					trustedWorkerSandboxFactory: () => {
+						factoryCalls += 1;
+						const composition = createTestWorkerSandboxComposition();
+						compositions.push(composition);
+						return composition;
+					},
+				}),
 			});
 			const first = await createAgentSessionFromServices({
 				services,

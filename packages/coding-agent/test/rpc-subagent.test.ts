@@ -119,7 +119,8 @@ async function harness(registryFactory: (sessionId: string) => RpcSubagentRegist
 		dispose: vi.fn(async () => {}),
 		setRebindSession: vi.fn(),
 	} as unknown as AgentSessionRuntime;
-	const controller = new RpcHostController(runtime, { subagentRegistry: () => registryFactory(session.sessionId) });
+	vi.spyOn(session, "getSubagentRegistry").mockReturnValue(registryFactory(session.sessionId));
+	const controller = new RpcHostController(runtime);
 	await controller.start();
 	cleanupTasks.push(async () => {
 		await controller.shutdown();

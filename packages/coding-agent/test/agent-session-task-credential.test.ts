@@ -15,6 +15,7 @@ import { Agent } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { SandboxProvider } from "../src/core/sandbox.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -235,11 +236,13 @@ describe("AgentSession task credential service ownership", () => {
 			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
 			sandboxProviders: [makeSandboxProvider()],
-			...(provider === undefined ? {} : { taskCredentialProvider: provider }),
+			runtimeComposition: createAgentRuntimeCompositionFactory({
+				...(provider === undefined ? {} : { taskCredentialProvider: () => provider }),
+				...(policyMaxTtlMs === undefined ? {} : { taskCredentialPolicyMaxTtlMs: policyMaxTtlMs }),
+			}),
 			...(provider === undefined
 				? {}
 				: { taskCredentialProviderAvailability: { available: true, declaresDelivery: true } }),
-			...(policyMaxTtlMs === undefined ? {} : { taskCredentialPolicyMaxTtlMs: policyMaxTtlMs }),
 		});
 		session = created;
 		return { session: created, sessionManager };
