@@ -131,7 +131,7 @@ async function createHarness(): Promise<RpcConflictHarness> {
 			resourceLoader: resourceLoader(),
 		});
 	let currentSession = openSession(SessionManager.create(tempDir, tempDir));
-	let rebind: (() => Promise<void>) | undefined;
+	let prepareRebind: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const runtimeHost = {
 		get session(): AgentSession {
 			return currentSession;
@@ -139,12 +139,18 @@ async function createHarness(): Promise<RpcConflictHarness> {
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((callback?: () => Promise<void>) => {
-			rebind = callback;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebind = callback;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
-			currentSession = openSession(SessionManager.open(sessionPath));
-			await rebind?.();
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebind?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await previousSession.dispose();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),

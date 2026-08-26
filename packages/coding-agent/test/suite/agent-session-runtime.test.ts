@@ -87,19 +87,26 @@ describe("AgentSessionRuntime characterization", () => {
 				noThemes: true,
 			},
 		};
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				...runtimeOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: runtimeOptions.model,
+				thinkingLevel: runtimeOptions.thinkingLevel,
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: runtimeOptions.model,
-					thinkingLevel: runtimeOptions.thinkingLevel,
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};
@@ -438,18 +445,25 @@ describe("AgentSessionRuntime characterization", () => {
 				noThemes: true,
 			},
 		};
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				...runtimeOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: runtimeOptions.model,
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: runtimeOptions.model,
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};
@@ -551,17 +565,20 @@ describe("AgentSessionRuntime characterization", () => {
 			cwd,
 			sessionManager,
 			sessionStartEvent,
+			registerCandidateSession,
 		}) => {
 			const services = await createAgentSessionServices({
 				...otherRuntimeOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};
@@ -624,17 +641,20 @@ describe("AgentSessionRuntime characterization", () => {
 			cwd,
 			sessionManager,
 			sessionStartEvent,
+			registerCandidateSession,
 		}) => {
 			const services = await createAgentSessionServices({
 				...otherRuntimeOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
@@ -6,6 +7,11 @@ import type {
 	AgentRuntimeComposition,
 	AgentRuntimeCompositionFactory,
 } from "./agent-runtime-composition.ts";
+import {
+	CurrentSessionScope,
+	type PreparedSessionScopeRebind,
+	type SessionScopePostCommitFailure,
+} from "./current-session-scope.ts";
 import { createAgentSessionForkTarget, useAgentSessionForkTarget } from "./agent-session-facade.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
@@ -44,6 +50,8 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
+	/** Transfer ownership immediately after the factory allocates an AgentSession. */
+	registerCandidateSession(session: AgentSession): void;
 }) => Promise<CreateAgentSessionRuntimeResult>;
 
 /**
@@ -59,67 +67,148 @@ export class SessionImportFileNotFoundError extends Error {
 	}
 }
 
+interface AgentSessionScope {
+	session: AgentSession;
+	services: AgentSessionServices;
+	sessionManager: SessionManager;
+	runtimeComposition: AgentRuntimeComposition;
+	diagnostics: AgentSessionRuntimeDiagnostic[];
+	modelFallbackMessage?: string;
+}
+
+interface ReplaceSessionScopeOptions {
+	sessionManager: SessionManager;
+	cwd: string;
+	sessionStartEvent: SessionStartEvent;
+	shutdownReason: SessionShutdownEvent["reason"];
+	targetSessionFile?: string;
+	projectTrustContext?: ProjectTrustContext;
+	setup?: (session: AgentSession) => void | Promise<void>;
+	beforeSessionStart?: () => void | Promise<void>;
+	/** Post-commit continuation; failures become diagnostics and never imply rollback. */
+	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+	candidateArtifact?: CandidateSessionArtifact;
+}
+
+interface CandidateSessionArtifact {
+	commit(): void;
+	rollback(): void;
+}
+
+function failureWithCleanup(error: unknown, cleanupFailures: readonly unknown[], message: string): unknown {
+	if (cleanupFailures.length === 0) return error;
+	return new AggregateError([error, ...cleanupFailures], message);
+}
+
+async function createRuntimeWithCandidateOwnership(
+	createRuntime: CreateAgentSessionRuntimeFactory,
+	options: Omit<Parameters<CreateAgentSessionRuntimeFactory>[0], "registerCandidateSession">,
+): Promise<CreateAgentSessionRuntimeResult> {
+	const ownedSessions = new Set<AgentSession>();
+	let registeredSession: AgentSession | undefined;
+	let registrationCount = 0;
+	try {
+		const result = await createRuntime({
+			...options,
+			registerCandidateSession: (session) => {
+				registrationCount += 1;
+				ownedSessions.add(session);
+				if (registrationCount > 1) throw new TypeError("Runtime factory registered more than one candidate Session");
+				registeredSession = session;
+			},
+		});
+		ownedSessions.add(result.session);
+		if (registrationCount === 0) {
+			throw new TypeError("Runtime factory must register its candidate Session before returning");
+		}
+		if (registeredSession !== result.session) {
+			throw new TypeError("Runtime factory returned a different Session than its registered candidate");
+		}
+		return result;
+	} catch (error) {
+		const cleanup = await Promise.allSettled(Array.from(ownedSessions, (session) => session.dispose()));
+		const cleanupFailures = cleanup
+			.filter((result): result is PromiseRejectedResult => result.status === "rejected")
+			.map((result) => result.reason);
+		throw failureWithCleanup(error, cleanupFailures, "Runtime construction and candidate Session cleanup failed");
+	}
+}
+
 /**
- * Owns the current AgentSession plus its cwd-bound services.
+ * Owns the single current AgentSession scope pointer.
  *
- * Session replacement methods tear down the current runtime first, then create
- * and apply the next runtime. If creation fails, the error is propagated to the
- * caller. The caller is responsible for user-facing error handling.
+ * Replacements prepare an invisible candidate, atomically swap this pointer,
+ * then clean up the old scope. Pre-commit failures leave the old scope usable.
  */
 export class AgentSessionRuntime {
-	private rebindSession?: (session: AgentSession) => Promise<void>;
+	private prepareSessionRebind?: (
+		session: AgentSession,
+		previousSession: AgentSession,
+	) => PreparedSessionScopeRebind | Promise<PreparedSessionScopeRebind>;
 	private beforeSessionInvalidate?: () => void;
-	private _session: AgentSession;
-	private _services: AgentSessionServices;
+	private readonly currentScope: CurrentSessionScope<AgentSessionScope>;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private readonly runtimeCompositionFactory: AgentRuntimeCompositionFactory;
-	private _diagnostics: AgentSessionRuntimeDiagnostic[];
-	private _modelFallbackMessage?: string;
+	private transitionTail: Promise<void> = Promise.resolve();
 
 	constructor(
 		_session: AgentSession,
 		_services: AgentSessionServices,
 		createRuntime: CreateAgentSessionRuntimeFactory,
+		sessionManager: SessionManager,
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
 	) {
-		this._session = _session;
-		this._services = _services;
 		this.createRuntime = createRuntime;
 		this.runtimeCompositionFactory = _services.runtimeComposition;
 		if (_session.agentRuntimeComposition.factory !== this.runtimeCompositionFactory) {
 			throw new TypeError("Initial runtime must derive from the services runtime composition");
 		}
-		this._diagnostics = _diagnostics;
-		this._modelFallbackMessage = _modelFallbackMessage;
+		this.currentScope = new CurrentSessionScope({
+			session: _session,
+			services: _services,
+			sessionManager,
+			runtimeComposition: _session.agentRuntimeComposition,
+			diagnostics: _diagnostics,
+			...(_modelFallbackMessage === undefined ? {} : { modelFallbackMessage: _modelFallbackMessage }),
+		});
 	}
 
 	get services(): AgentSessionServices {
-		return this._services;
+		return this.currentScope.current.services;
 	}
 
 	get session(): AgentSession {
-		return this._session;
+		return this.currentScope.current.session;
 	}
 
 	get runtimeComposition(): AgentRuntimeComposition {
-		return this._session.agentRuntimeComposition;
+		return this.currentScope.current.runtimeComposition;
 	}
 
 	get cwd(): string {
-		return this._services.cwd;
+		return this.currentScope.current.services.cwd;
 	}
 
 	get diagnostics(): readonly AgentSessionRuntimeDiagnostic[] {
-		return this._diagnostics;
+		return this.currentScope.current.diagnostics;
 	}
 
 	get modelFallbackMessage(): string | undefined {
-		return this._modelFallbackMessage;
+		return this.currentScope.current.modelFallbackMessage;
 	}
 
-	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
-		this.rebindSession = rebindSession;
+	/**
+	 * Prepare every fallible host binding while the candidate is private. The
+	 * returned commit may publish references and fences only and must not throw.
+	 */
+	setPrepareSessionRebind(
+		prepareSessionRebind?: (
+			session: AgentSession,
+			previousSession: AgentSession,
+		) => PreparedSessionScopeRebind | Promise<PreparedSessionScopeRebind>,
+	): void {
+		this.prepareSessionRebind = prepareSessionRebind;
 	}
 
 	/**
@@ -168,40 +257,140 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
-	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
-		// Settle any active response first so the aborted turn (including tool
-		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason,
-			targetSessionFile,
-		});
-		this.beforeSessionInvalidate?.();
-		await this.session.dispose();
+	private async disposeReplacedScope(
+		scope: AgentSessionScope,
+		reason: SessionShutdownEvent["reason"],
+		signal: AbortSignal,
+		targetSessionFile?: string,
+	): Promise<void> {
+		const failures: unknown[] = [];
+		try {
+			await scope.session.abort();
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			await emitSessionShutdownEvent(scope.session.extensionRunner, {
+				type: "session_shutdown",
+				reason,
+				targetSessionFile,
+			});
+		} catch (error) {
+			failures.push(error);
+		}
+		if (!signal.aborted) {
+			try {
+				this.beforeSessionInvalidate?.();
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		try {
+			await scope.session.dispose();
+		} catch (error) {
+			failures.push(error);
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "Old session scope cleanup failed");
 	}
 
-	private apply(result: CreateAgentSessionRuntimeResult): void {
+	private scopeFromResult(
+		result: CreateAgentSessionRuntimeResult,
+		sessionManager: SessionManager,
+	): AgentSessionScope {
+		return {
+			session: result.session,
+			services: result.services,
+			sessionManager,
+			runtimeComposition: result.runtimeComposition,
+			diagnostics: result.diagnostics,
+			...(result.modelFallbackMessage === undefined ? {} : { modelFallbackMessage: result.modelFallbackMessage }),
+		};
+	}
+
+	private validateCandidateScope(candidate: AgentSessionScope): void {
 		if (
-			result.services.runtimeComposition !== this.runtimeCompositionFactory ||
-			result.runtimeComposition.factory !== this.runtimeCompositionFactory ||
-			result.session.agentRuntimeComposition !== result.runtimeComposition
+			candidate.services.runtimeComposition !== this.runtimeCompositionFactory ||
+			candidate.runtimeComposition.factory !== this.runtimeCompositionFactory ||
+			candidate.session.agentRuntimeComposition !== candidate.runtimeComposition
 		) {
 			throw new TypeError("Replacement runtime must derive from the original runtime composition");
 		}
-		this._session = result.session;
-		this._services = result.services;
-		this._diagnostics = result.diagnostics;
-		this._modelFallbackMessage = result.modelFallbackMessage;
 	}
 
-	private async finishSessionReplacement(withSession?: (ctx: ReplacedSessionContext) => Promise<void>): Promise<void> {
-		if (this.rebindSession) {
-			await this.rebindSession(this.session);
+	private recordPostCommitFailures(failures: readonly SessionScopePostCommitFailure[]): void {
+		for (const failure of failures) {
+			const message = failure.error instanceof Error ? failure.error.message : String(failure.error);
+			this.currentScope.current.diagnostics.push({
+				type: "warning",
+				message: `Session scope ${failure.phase.replaceAll("_", " ")} failed after commit: ${message}`,
+			});
 		}
-		if (withSession) {
-			await withSession(this.session.createReplacedSessionContext());
+	}
+
+	private runTransition<TResult>(transition: () => Promise<TResult>): Promise<TResult> {
+		const result = this.transitionTail.then(transition, transition);
+		this.transitionTail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
+
+	private async replaceCurrentScope(options: ReplaceSessionScopeOptions): Promise<void> {
+		let transition: Awaited<ReturnType<CurrentSessionScope<AgentSessionScope>["replace"]>>;
+		try {
+			transition = await this.currentScope.replace({
+				construct: async (previous) => {
+					return this.scopeFromResult(
+						await createRuntimeWithCandidateOwnership(this.createRuntime, {
+							cwd: options.cwd,
+							agentDir: previous.services.agentDir,
+							sessionManager: options.sessionManager,
+							sessionStartEvent: options.sessionStartEvent,
+							projectTrustContext: options.projectTrustContext,
+						}),
+						options.sessionManager,
+					);
+				},
+				validate: (candidate) => this.validateCandidateScope(candidate),
+				checkReadiness: async (candidate) => {
+					await options.setup?.(candidate.session);
+					await candidate.session.whenCapabilitiesReady();
+				},
+				prepareRebind: (candidate, previous) => this.prepareSessionRebind?.(
+					candidate.session,
+					previous.session,
+				) ?? { commit: () => undefined },
+				disposeCandidate: async (candidate) => candidate.session.dispose(),
+				disposePrevious: (previous, signal) => this.disposeReplacedScope(
+					previous,
+					options.shutdownReason,
+					signal,
+					options.targetSessionFile,
+				),
+				beforeActivate: options.beforeSessionStart,
+			});
+			options.candidateArtifact?.commit();
+		} catch (error) {
+			const cleanupFailures: unknown[] = [];
+			try {
+				options.candidateArtifact?.rollback();
+			} catch (cleanupError) {
+				cleanupFailures.push(cleanupError);
+			}
+			throw failureWithCleanup(error, cleanupFailures, "Session transition and candidate artifact rollback failed");
 		}
+
+		const postCommitFailures = [...transition.postCommitFailures];
+		if (options.withSession) {
+			try {
+				await options.withSession(this.session.createReplacedSessionContext());
+			} catch (error) {
+				postCommitFailures.push({ phase: "with_session", error });
+			}
+		}
+		this.recordPostCommitFailures(postCommitFailures);
 	}
 
 	async switchSession(
@@ -212,26 +401,43 @@ export class AgentSessionRuntime {
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 		},
 	): Promise<{ cancelled: boolean }> {
-		const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
-		if (beforeResult.cancelled) {
-			return beforeResult;
-		}
+		return this.runTransition(async () => {
+			const resolvedSessionPath = resolvePath(sessionPath);
+			const beforeResult = await this.emitBeforeSwitch("resume", resolvedSessionPath);
+			if (beforeResult.cancelled) return beforeResult;
 
-		const previousSessionFile = this.session.sessionFile;
-		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
-				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-				projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
-			}),
-		);
-		await this.finishSessionReplacement(options?.withSession);
-		return { cancelled: false };
+			const previousSessionFile = this.session.sessionFile;
+			const previousManager = this.currentScope.current.sessionManager;
+			const candidateArtifact = SessionManager.stageArtifactRollback(
+				resolvedSessionPath,
+				previousSessionFile !== undefined && resolve(previousSessionFile) === resolvedSessionPath
+					? previousManager
+					: undefined,
+			);
+			try {
+				const sessionManager = SessionManager.open(resolvedSessionPath, undefined, options?.cwdOverride);
+				assertSessionCwdExists(sessionManager, this.cwd);
+				await this.replaceCurrentScope({
+					cwd: sessionManager.getCwd(),
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+					shutdownReason: "resume",
+					targetSessionFile: sessionManager.getSessionFile(),
+					projectTrustContext: options?.projectTrustContextFactory?.(sessionManager.getCwd()),
+					withSession: options?.withSession,
+					candidateArtifact,
+				});
+			} catch (error) {
+				const cleanupFailures: unknown[] = [];
+				try {
+					candidateArtifact?.rollback();
+				} catch (cleanupError) {
+					cleanupFailures.push(cleanupError);
+				}
+				throw failureWithCleanup(error, cleanupFailures, "Session switch and candidate artifact rollback failed");
+			}
+			return { cancelled: false };
+		});
 	}
 
 	async newSession(options?: {
@@ -239,56 +445,69 @@ export class AgentSessionRuntime {
 		setup?: (session: AgentSession) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
-		const beforeResult = await this.emitBeforeSwitch("new");
-		if (beforeResult.cancelled) {
-			return beforeResult;
-		}
+		return this.runTransition(async () => {
+			const beforeResult = await this.emitBeforeSwitch("new");
+			if (beforeResult.cancelled) return beforeResult;
 
-		const previousSessionFile = this.session.sessionFile;
-		const sessionDir = this.session.sessionRead.getSessionDir();
-		const sessionManager = this.session.sessionRead.isPersisted()
-			? SessionManager.create(this.cwd, sessionDir, { parentSession: options?.parentSession })
-			: SessionManager.inMemory(this.cwd, { parentSession: options?.parentSession });
+			const previousSessionFile = this.session.sessionFile;
+			const sessionDir = this.session.sessionRead.getSessionDir();
+			const sessionManager = this.session.sessionRead.isPersisted()
+				? SessionManager.create(this.cwd, sessionDir, { parentSession: options?.parentSession })
+				: SessionManager.inMemory(this.cwd, { parentSession: options?.parentSession });
+			const candidateArtifact = SessionManager.stageArtifactRollback(sessionManager.getSessionFile());
 
-		await this.teardownCurrent("new", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+			await this.replaceCurrentScope({
 				cwd: this.cwd,
-				agentDir: this.services.agentDir,
 				sessionManager,
 				sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
-			}),
-		);
-		if (options?.setup) {
-			await options.setup(this.session);
-		}
-		await this.finishSessionReplacement(options?.withSession);
-		return { cancelled: false };
+				shutdownReason: "new",
+				targetSessionFile: sessionManager.getSessionFile(),
+				setup: options?.setup,
+				withSession: options?.withSession,
+				candidateArtifact,
+			});
+			return { cancelled: false };
+		});
 	}
 
 	async fork(
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean; selectedText?: string }> {
-		const position = options?.position ?? "before";
-		const beforeResult = await this.emitBeforeFork(entryId, { position });
-		if (beforeResult.cancelled) {
-			return { cancelled: true };
-		}
-		const previousSessionFile = this.session.sessionFile;
-		const forked = await createAgentSessionForkTarget(this.session, entryId, position);
-		await this.teardownCurrent("fork", forked.sessionFile);
-		this.apply(await useAgentSessionForkTarget(forked, (sessionManager) => this.createRuntime({
-			cwd: this.cwd,
-			agentDir: this.services.agentDir,
-			sessionManager,
-			sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
-		})));
-		await this.finishSessionReplacement(options?.withSession);
-		return {
-			cancelled: false,
-			...(forked.selectedText === undefined ? {} : { selectedText: forked.selectedText }),
-		};
+		return this.runTransition(async () => {
+			const position = options?.position ?? "before";
+			const beforeResult = await this.emitBeforeFork(entryId, { position });
+			if (beforeResult.cancelled) return { cancelled: true };
+			const previousSessionFile = this.session.sessionFile;
+			let candidateArtifact: CandidateSessionArtifact | undefined;
+			let forked: Awaited<ReturnType<typeof createAgentSessionForkTarget>>;
+			try {
+				forked = await createAgentSessionForkTarget(this.session, entryId, position, (sessionFile) => {
+					candidateArtifact = SessionManager.stageArtifactRollback(sessionFile);
+				});
+				await useAgentSessionForkTarget(forked, (sessionManager) => this.replaceCurrentScope({
+					cwd: this.cwd,
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+					shutdownReason: "fork",
+					targetSessionFile: forked.sessionFile,
+					withSession: options?.withSession,
+					candidateArtifact,
+				}));
+			} catch (error) {
+				const cleanupFailures: unknown[] = [];
+				try {
+					candidateArtifact?.rollback();
+				} catch (cleanupError) {
+					cleanupFailures.push(cleanupError);
+				}
+				throw failureWithCleanup(error, cleanupFailures, "Session fork and candidate artifact rollback failed");
+			}
+			return {
+				cancelled: false,
+				...(forked.selectedText === undefined ? {} : { selectedText: forked.selectedText }),
+			};
+		});
 	}
 
 	/**
@@ -299,49 +518,88 @@ export class AgentSessionRuntime {
 	 * @throws {MissingSessionCwdError} When the imported session cwd cannot be resolved and no override is provided.
 	 */
 	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
-		const resolvedPath = resolvePath(inputPath);
-		if (!existsSync(resolvedPath)) {
-			throw new SessionImportFileNotFoundError(resolvedPath);
-		}
+		return this.runTransition(async () => {
+			const resolvedPath = resolvePath(inputPath);
+			if (!existsSync(resolvedPath)) throw new SessionImportFileNotFoundError(resolvedPath);
 
-		const sessionDir = this.session.sessionRead.getSessionDir();
-		if (!existsSync(sessionDir)) {
-			mkdirSync(sessionDir, { recursive: true });
-		}
+			const sessionDir = this.session.sessionRead.getSessionDir();
+			if (!existsSync(sessionDir)) mkdirSync(sessionDir, { recursive: true });
 
-		const destinationPath = join(sessionDir, basename(resolvedPath));
-		const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
-		if (beforeResult.cancelled) {
-			return beforeResult;
-		}
+			const preferredDestinationPath = join(sessionDir, basename(resolvedPath));
+			const destinationPath = resolve(preferredDestinationPath) !== resolvedPath && existsSync(preferredDestinationPath)
+				? join(sessionDir, `import-${randomUUID()}-${basename(resolvedPath)}`)
+				: preferredDestinationPath;
+			const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
+			if (beforeResult.cancelled) return beforeResult;
 
-		const previousSessionFile = this.session.sessionFile;
-		if (resolve(destinationPath) !== resolvedPath) {
-			copyFileSync(resolvedPath, destinationPath);
-		}
+			const previousSessionFile = this.session.sessionFile;
+			const previousManager = this.currentScope.current.sessionManager;
+			const candidateArtifact = SessionManager.stageArtifactRollback(
+				destinationPath,
+				previousSessionFile !== undefined && resolve(previousSessionFile) === resolve(destinationPath)
+					? previousManager
+					: undefined,
+			);
+			try {
+				if (resolve(destinationPath) !== resolvedPath) copyFileSync(resolvedPath, destinationPath);
 
-		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
-				sessionManager,
-				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
-		);
-		await this.finishSessionReplacement();
-		return { cancelled: false };
+				const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+				assertSessionCwdExists(sessionManager, this.cwd);
+				await this.replaceCurrentScope({
+					cwd: sessionManager.getCwd(),
+					sessionManager,
+					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+					shutdownReason: "resume",
+					targetSessionFile: sessionManager.getSessionFile(),
+					candidateArtifact,
+				});
+			} catch (error) {
+				const cleanupFailures: unknown[] = [];
+				try {
+					candidateArtifact?.rollback();
+				} catch (cleanupError) {
+					cleanupFailures.push(cleanupError);
+				}
+				throw failureWithCleanup(error, cleanupFailures, "Session import and candidate artifact rollback failed");
+			}
+			return { cancelled: false };
+		});
+	}
+
+	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		return this.runTransition(async () => {
+			const previousManager = this.currentScope.current.sessionManager;
+			const candidateArtifact = SessionManager.stageArtifactRollback(previousManager.getSessionFile(), previousManager);
+			try {
+				await this.replaceCurrentScope({
+					cwd: this.cwd,
+					sessionManager: previousManager.createDetachedSnapshot(),
+					sessionStartEvent: { type: "session_start", reason: "reload" },
+					shutdownReason: "reload",
+					beforeSessionStart: options?.beforeSessionStart,
+					candidateArtifact,
+				});
+			} catch (error) {
+				const cleanupFailures: unknown[] = [];
+				try {
+					candidateArtifact?.rollback();
+				} catch (cleanupError) {
+					cleanupFailures.push(cleanupError);
+				}
+				throw failureWithCleanup(error, cleanupFailures, "Session reload and candidate artifact rollback failed");
+			}
+		});
 	}
 
 	async dispose(): Promise<void> {
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "quit",
+		return this.runTransition(async () => {
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason: "quit",
+			});
+			this.beforeSessionInvalidate?.();
+			await this.session.dispose();
 		});
-		this.beforeSessionInvalidate?.();
-		await this.session.dispose();
 	}
 }
 
@@ -380,14 +638,25 @@ export async function createAgentSessionRuntimeFromManager(
 	},
 ): Promise<AgentSessionRuntime> {
 	assertSessionCwdExists(options.sessionManager, options.cwd);
-	const result = await createRuntime(options);
-	return new AgentSessionRuntime(
-		result.session,
-		result.services,
-		createRuntime,
-		result.diagnostics,
-		result.modelFallbackMessage,
-	);
+	const result = await createRuntimeWithCandidateOwnership(createRuntime, options);
+	try {
+		return new AgentSessionRuntime(
+			result.session,
+			result.services,
+			createRuntime,
+			options.sessionManager,
+			result.diagnostics,
+			result.modelFallbackMessage,
+		);
+	} catch (error) {
+		const cleanupFailures: unknown[] = [];
+		try {
+			await result.session.dispose();
+		} catch (cleanupError) {
+			cleanupFailures.push(cleanupError);
+		}
+		throw failureWithCleanup(error, cleanupFailures, "Initial runtime validation and Session cleanup failed");
+	}
 }
 
 export {

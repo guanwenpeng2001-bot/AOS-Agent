@@ -470,7 +470,7 @@ async function createRuntimeHost(options: {
 
 	const initialSessionManager = SessionManager.create(tempDir);
 	let currentSession = openSession(initialSessionManager);
-	let rebindCallback: (() => Promise<void>) | undefined;
+	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 
 	const runtimeHost = {
 		get session(): AgentSession {
@@ -479,14 +479,18 @@ async function createRuntimeHost(options: {
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((cb?: (() => Promise<void>) | undefined) => {
-			rebindCallback = cb;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebindCallback = callback;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
-			currentSession = openSession(SessionManager.open(sessionPath));
-			if (rebindCallback !== undefined) {
-				await rebindCallback();
-			}
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await previousSession.dispose();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
@@ -2185,7 +2189,7 @@ describe("Automation Host external agent integration", () => {
 			const switchPath = SessionManager.create(targetDir).getSessionFile()!;
 			// The switch_session command is a host-mutating command that is
 			// rejected after initialize; embedders replace the session through
-			// the runtime, which triggers the host's rebindSession callback.
+			// the runtime, which commits the Host's prepared replacement binding.
 			await runtimeHost.switchSession(switchPath);
 
 			// The started run settles cancelled through the existing gates, and

@@ -273,7 +273,7 @@ describe("AgentSession bash and persistence characterization", () => {
 					!entry.customType.startsWith("harness.config.")),
 		);
 		expect(userFacingEntries.map((entry) => entry.type)).toEqual([
-			"custom_message",
+			"message",
 			"message",
 			"custom",
 			"message",
@@ -283,7 +283,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		]);
 		const semanticEntries = userFacingEntries.filter((entry) => entry.type !== "custom");
 		expect(semanticEntries.map((entry) => entry.type)).toEqual([
-			"custom_message",
+			"message",
 			"message",
 			"message",
 			"message",
@@ -291,7 +291,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		]);
 		expect(
 			semanticEntries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
-		).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		).toEqual(["custom", "user", "assistant", "toolResult", "assistant"]);
 		const contextSnapshots = userFacingEntries.filter((entry) => entry.type === "custom");
 		expect(contextSnapshots).toHaveLength(2);
 		for (const entry of contextSnapshots) {

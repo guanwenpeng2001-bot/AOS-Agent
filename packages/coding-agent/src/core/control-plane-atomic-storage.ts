@@ -15,6 +15,8 @@ import {
 	writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import lockfile from "proper-lockfile";
 
 export type ControlPlaneStorageErrorCode = "control_state_corrupt" | "control_state_write_failed";
 export type ControlPlaneStorageOperation = "write" | "fsync" | "rename" | "permission";
@@ -274,4 +276,163 @@ export function writeControlPlaneState(path: string, content: string, options: C
 		inheritMode(options, path),
 		"last-known-good",
 	);
+}
+
+export interface LockedAtomicStorageOperationOptions {
+	signal?: AbortSignal;
+}
+
+export interface LockedAtomicStorageResult<T> {
+	result: T;
+	next?: string;
+}
+
+/** Serializes read/modify/write operations around the atomic storage format. */
+export class LockedAtomicFileStorage {
+	private readonly path: string;
+	private readonly initialContent: string;
+	private readonly options: ControlPlaneStorageOptions;
+
+	constructor(path: string, initialContent: string, options: ControlPlaneStorageOptions) {
+		this.path = path;
+		this.initialContent = initialContent;
+		this.options = options;
+		options.validate(initialContent);
+	}
+
+	private ensureParentDir(): void {
+		const dir = dirname(this.path);
+		if (!existsSync(dir)) {
+			mkdirSync(dir, {
+				recursive: true,
+				...(this.options.directoryMode === undefined ? {} : { mode: this.options.directoryMode }),
+			});
+		}
+	}
+
+	private ensureFileExists(): void {
+		if (!hasControlPlaneStateArtifacts(this.path)) {
+			writeControlPlaneState(this.path, this.initialContent, this.options);
+		}
+	}
+
+	private acquireLockSyncWithRetry(): () => void {
+		const maxAttempts = 10;
+		const delayMs = 20;
+		let lastError: unknown;
+
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			try {
+				return lockfile.lockSync(this.path, { realpath: false });
+			} catch (error) {
+				const code =
+					typeof error === "object" && error !== null && "code" in error
+						? String((error as { code?: unknown }).code)
+						: undefined;
+				if (code !== "ELOCKED" || attempt === maxAttempts) throw error;
+				lastError = error;
+				const start = Date.now();
+				while (Date.now() - start < delayMs) {
+					// Sleep synchronously to preserve the synchronous transaction API.
+				}
+			}
+		}
+
+		throw lastError ?? new Error("Failed to acquire atomic storage lock");
+	}
+
+	withLock<T>(fn: (current: string | undefined) => LockedAtomicStorageResult<T>): T {
+		this.ensureParentDir();
+		this.ensureFileExists();
+
+		let release: (() => void) | undefined;
+		try {
+			release = this.acquireLockSyncWithRetry();
+			const current = readControlPlaneState(this.path, this.options);
+			const { result, next } = fn(current);
+			if (next !== undefined) writeControlPlaneState(this.path, next, this.options);
+			return result;
+		} finally {
+			release?.();
+		}
+	}
+
+	private async acquireLockAsync(
+		signal: AbortSignal | undefined,
+		onCompromised: (error: Error) => void,
+	): Promise<() => Promise<void>> {
+		const staleMs = 30_000;
+		const maxDelayMs = 2_000;
+		const deadline = Date.now() + staleMs;
+		let retry = 0;
+		while (true) {
+			signal?.throwIfAborted();
+			let release: (() => Promise<void>) | undefined;
+			try {
+				release = await lockfile.lock(this.path, {
+					realpath: false,
+					retries: 0,
+					stale: staleMs,
+					onCompromised,
+				});
+			} catch (error) {
+				signal?.throwIfAborted();
+				const code =
+					typeof error === "object" && error !== null && "code" in error
+						? String((error as { code?: unknown }).code)
+						: undefined;
+				const remainingMs = deadline - Date.now();
+				if (code !== "ELOCKED" || remainingMs <= 0) throw error;
+				const baseDelayMs = Math.min(10 * 2 ** retry, maxDelayMs / 2);
+				retry++;
+				const delayMs = Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs);
+				if (signal) await sleep(delayMs, undefined, { signal });
+				else await sleep(delayMs);
+				continue;
+			}
+			if (signal?.aborted) {
+				await release();
+				signal.throwIfAborted();
+			}
+			return release;
+		}
+	}
+
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockedAtomicStorageResult<T>>,
+		options?: LockedAtomicStorageOperationOptions,
+	): Promise<T> {
+		options?.signal?.throwIfAborted();
+		this.ensureParentDir();
+		this.ensureFileExists();
+
+		let release: (() => Promise<void>) | undefined;
+		let lockCompromisedError: Error | undefined;
+		const throwIfCompromised = () => {
+			if (lockCompromisedError !== undefined) throw lockCompromisedError;
+		};
+
+		try {
+			release = await this.acquireLockAsync(options?.signal, (error) => {
+				lockCompromisedError = error;
+			});
+			throwIfCompromised();
+			options?.signal?.throwIfAborted();
+			const current = readControlPlaneState(this.path, this.options);
+			const { result, next } = await fn(current);
+			throwIfCompromised();
+			options?.signal?.throwIfAborted();
+			if (next !== undefined) writeControlPlaneState(this.path, next, this.options);
+			throwIfCompromised();
+			return result;
+		} finally {
+			if (release !== undefined) {
+				try {
+					await release();
+				} catch {
+					// The operation already failed closed if the lock was compromised.
+				}
+			}
+		}
+	}
 }

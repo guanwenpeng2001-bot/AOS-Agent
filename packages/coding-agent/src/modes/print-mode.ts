@@ -7,7 +7,9 @@
  */
 
 import type { AssistantMessage, ImageContent } from "@aos-agent/ai";
+import type { AgentSession, ExtensionBindings } from "../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import type { PreparedSessionScopeRebind } from "../core/current-session-scope.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
@@ -33,17 +35,20 @@ export interface PrintModeOptions {
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
 	let exitCode = 0;
-	let session = runtimeHost.session;
-	let unsubscribe: (() => void) | undefined;
-	let unsubscribeBackpressure: (() => void) | undefined;
+	interface PrintSessionBinding {
+		session: AgentSession;
+		unsubscribe?: () => void;
+		unsubscribeBackpressure?: () => void;
+	}
+	let currentBinding: PrintSessionBinding = { session: runtimeHost.session };
 	let disposed = false;
 	const signalCleanupHandlers: Array<() => void> = [];
 
 	const disposeRuntime = async (): Promise<void> => {
 		if (disposed) return;
 		disposed = true;
-		unsubscribe?.();
-		unsubscribeBackpressure?.();
+		currentBinding.unsubscribe?.();
+		currentBinding.unsubscribeBackpressure?.();
 		await runtimeHost.dispose();
 	};
 
@@ -67,13 +72,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 	registerSignalHandlers();
 
-	runtimeHost.setRebindSession(async () => {
-		await rebindSession();
-	});
-
-	const rebindSession = async (): Promise<void> => {
-		session = runtimeHost.session;
-		await session.bindExtensions({
+	const extensionBindings = (session: AgentSession): ExtensionBindings => ({
 			mode: mode === "json" ? "json" : "print",
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
@@ -95,49 +94,81 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					return runtimeHost.switchSession(sessionPath, switchOptions);
 				},
 				reload: async () => {
-					await session.reload();
+					await runtimeHost.reload();
 				},
 			},
 			onError: (err) => {
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
-		});
+	});
 
-		unsubscribe?.();
-		unsubscribeBackpressure?.();
-		unsubscribe = session.subscribe((event) => {
+	const subscribeBinding = (binding: PrintSessionBinding): void => {
+		binding.unsubscribe = binding.session.subscribe((event) => {
+			if (currentBinding !== binding) return;
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
 		});
-		unsubscribeBackpressure =
+		binding.unsubscribeBackpressure =
 			mode === "json"
-				? session.agent.subscribe(async () => {
+				? binding.session.agent.subscribe(async () => {
+						if (currentBinding !== binding) return;
 						await waitForRawStdoutBackpressure();
 					})
 				: undefined;
 	};
 
+	runtimeHost.setPrepareSessionRebind(async (nextSession, previousSession): Promise<PreparedSessionScopeRebind> => {
+		if (currentBinding.session !== previousSession) {
+			throw new Error("Print host session binding does not match the current runtime scope");
+		}
+		const previousBinding = currentBinding;
+		const candidateBinding: PrintSessionBinding = { session: nextSession };
+		try {
+			await nextSession.prepareExtensionBindings(extensionBindings(nextSession));
+			subscribeBinding(candidateBinding);
+		} catch (error) {
+			candidateBinding.unsubscribe?.();
+			candidateBinding.unsubscribeBackpressure?.();
+			throw error;
+		}
+		return {
+			commit: () => {
+				currentBinding = candidateBinding;
+			},
+			activate: () => nextSession.activateExtensionBindings(),
+			disposeCandidate: () => {
+				candidateBinding.unsubscribe?.();
+				candidateBinding.unsubscribeBackpressure?.();
+			},
+			disposePrevious: () => {
+				previousBinding.unsubscribe?.();
+				previousBinding.unsubscribeBackpressure?.();
+			},
+		};
+	});
+
 	try {
 		if (mode === "json") {
-			const header = session.sessionRead.getHeader();
+			const header = currentBinding.session.sessionRead.getHeader();
 			if (header) {
 				writeRawStdout(`${JSON.stringify(header)}\n`);
 			}
 		}
 
-		await rebindSession();
+		await currentBinding.session.bindExtensions(extensionBindings(currentBinding.session));
+		subscribeBinding(currentBinding);
 
 		if (initialMessage) {
-			await session.prompt(initialMessage, { images: initialImages });
+			await currentBinding.session.prompt(initialMessage, { images: initialImages });
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			await currentBinding.session.prompt(message);
 		}
 
 		if (mode === "text") {
-			const state = session.state;
+			const state = currentBinding.session.state;
 			const lastMessage = state.messages[state.messages.length - 1];
 
 			if (lastMessage?.role === "assistant") {

@@ -57,19 +57,26 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 				noThemes: true,
 			},
 		};
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				...servicesOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model,
+				tools: ["read", "bash", "edit", "write"],
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model,
-					tools: ["read", "bash", "edit", "write"],
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};

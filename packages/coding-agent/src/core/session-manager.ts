@@ -9,8 +9,10 @@ import {
 	mkdirSync,
 	openSync,
 	readdirSync,
+	readFileSync,
 	readSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
@@ -1181,16 +1183,18 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		this._withWriteLock(() => {
-			const fd = openSync(this.sessionFile!, "w");
-			try {
-				for (const entry of this.fileEntries) {
-					writeFileSync(fd, `${JSON.stringify(entry)}\n`);
-				}
-			} finally {
-				closeSync(fd);
+		this._withWriteLock(() => this._rewriteFileUnlocked());
+	}
+
+	private _rewriteFileUnlocked(): void {
+		const fd = openSync(this.sessionFile!, "w");
+		try {
+			for (const entry of this.fileEntries) {
+				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
 			}
-		});
+		} finally {
+			closeSync(fd);
+		}
 	}
 
 	/** Persist the complete pending log after a canonical assistant response settles. */
@@ -1856,6 +1860,81 @@ export class SessionManager {
 	/** Create an in-memory session (no file persistence) */
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions): SessionManager {
 		return new SessionManager(cwd, "", undefined, false, options);
+	}
+
+	/**
+	 * Create an independent manager over the current append-only state.
+	 *
+	 * Transactional reload uses this snapshot so candidate writes cannot mutate
+	 * the current manager's in-memory tree before the candidate is published.
+	 * Persisted snapshots retain the same target file; the transition owner must
+	 * stage and restore that artifact if the candidate fails before commit.
+	 */
+	createDetachedSnapshot(): SessionManager {
+		const snapshot = new SessionManager(this.cwd, "", undefined, false);
+		snapshot.sessionId = this.sessionId;
+		snapshot.sessionFile = this.sessionFile;
+		snapshot.sessionDir = this.sessionDir;
+		snapshot.persist = this.persist;
+		snapshot.flushed = this.flushed;
+		snapshot.fileEntries = structuredClone(this.fileEntries);
+		snapshot._buildIndex();
+		snapshot.leafId = this.leafId;
+		return initializeSessionReadProjection(snapshot);
+	}
+
+	/**
+	 * @internal Stage a candidate file rollback under the Session write lock.
+	 * When the current manager writes after staging, its in-memory ledger is the
+	 * authoritative rollback source so those concurrent old-scope writes survive.
+	 */
+	static stageArtifactRollback(
+		filePath: string | undefined,
+		concurrentWriter?: SessionManager,
+	): { commit(): void; rollback(): void } | undefined {
+		if (filePath === undefined) return undefined;
+		const resolvedFilePath = resolvePath(filePath);
+		if (
+			concurrentWriter !== undefined &&
+			(concurrentWriter.sessionFile === undefined || resolvePath(concurrentWriter.sessionFile) !== resolvedFilePath)
+		) {
+			throw new TypeError("Concurrent Session writer must own the staged artifact path");
+		}
+		const coordinator = new SessionWriteCoordinator(resolvedFilePath, resolve(resolvedFilePath, ".."));
+		let originalContents: Buffer | undefined;
+		let originalWriterEntryCount: number | undefined;
+		coordinator.withWriteLock(() => {
+			originalContents = existsSync(resolvedFilePath) ? readFileSync(resolvedFilePath) : undefined;
+			originalWriterEntryCount = concurrentWriter?.getPhysicalEntries().length;
+		});
+		let settled = false;
+		return {
+			commit: () => {
+				settled = true;
+			},
+			rollback: () => {
+				if (settled) return;
+				coordinator.withWriteLock(() => {
+					if (
+						concurrentWriter !== undefined &&
+						originalWriterEntryCount !== concurrentWriter.getPhysicalEntries().length
+					) {
+						if (!concurrentWriter.flushed) {
+							if (existsSync(resolvedFilePath)) unlinkSync(resolvedFilePath);
+						} else {
+							concurrentWriter._rewriteFileUnlocked();
+						}
+						return;
+					}
+					if (originalContents === undefined) {
+						if (existsSync(resolvedFilePath)) unlinkSync(resolvedFilePath);
+						return;
+					}
+					writeFileSync(resolvedFilePath, originalContents);
+				});
+				settled = true;
+			},
+		};
 	}
 
 	/**

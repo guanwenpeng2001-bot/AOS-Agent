@@ -166,7 +166,7 @@ async function createRuntimeHost(options: {
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn(),
+		setPrepareSessionRebind: vi.fn(),
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		newSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),

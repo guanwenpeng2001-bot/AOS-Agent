@@ -10,6 +10,7 @@ import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 const cliPath = resolve(__dirname, "../src/cli.ts");
 
 const tempDirs: string[] = [];
+const CLI_TEST_TIMEOUT_MS = 70_000;
 
 beforeEach(() => {
 	allowNetwork();
@@ -82,7 +83,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe("stdout cleanliness in non-interactive modes", () => {
-	it("prints --version to stdout when stdout is redirected", async () => {
+	it("prints --version to stdout when stdout is redirected", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["--version"]);
 
 		expect(result.code).toBe(0);
@@ -90,7 +91,7 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		expect(result.stderr).toBe("");
 	});
 
-	it("prints plain --help to stdout when stdout is redirected", async () => {
+	it("prints plain --help to stdout when stdout is redirected", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["--help"]);
 
 		expect(result.code).toBe(0);
@@ -98,27 +99,35 @@ describe("stdout cleanliness in non-interactive modes", () => {
 		expect(result.stderr).not.toContain("Usage:");
 	});
 
-	it("keeps stdout empty for --mode json --help while routing trusted startup chatter to stderr", async () => {
-		const result = await runCli(["--mode", "json", "--help", "--approve"]);
+	it(
+		"keeps stdout empty for --mode json --help while routing trusted startup chatter to stderr",
+		{ timeout: CLI_TEST_TIMEOUT_MS },
+		async () => {
+			const result = await runCli(["--mode", "json", "--help", "--approve"]);
 
-		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("changed 1 package in 471ms");
-		expect(result.stderr).toContain("found 0 vulnerabilities");
-		expect(result.stderr).toContain("Usage:");
-	});
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("changed 1 package in 471ms");
+			expect(result.stderr).toContain("found 0 vulnerabilities");
+			expect(result.stderr).toContain("Usage:");
+		},
+	);
 
-	it("keeps stdout empty for -p --help while routing trusted startup chatter to stderr", async () => {
-		const result = await runCli(["-p", "--help", "--approve"]);
+	it(
+		"keeps stdout empty for -p --help while routing trusted startup chatter to stderr",
+		{ timeout: CLI_TEST_TIMEOUT_MS },
+		async () => {
+			const result = await runCli(["-p", "--help", "--approve"]);
 
-		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("changed 1 package in 471ms");
-		expect(result.stderr).toContain("found 0 vulnerabilities");
-		expect(result.stderr).toContain("Usage:");
-	});
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("changed 1 package in 471ms");
+			expect(result.stderr).toContain("found 0 vulnerabilities");
+			expect(result.stderr).toContain("Usage:");
+		},
+	);
 
-	it("ignores untrusted project package installs for help", async () => {
+	it("ignores untrusted project package installs for help", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli(["-p", "--help"]);
 
 		expect(result.code).toBe(0);

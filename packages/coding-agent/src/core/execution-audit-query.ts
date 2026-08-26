@@ -131,6 +131,15 @@ const FOUNDATION_CORRELATED_CUSTOM_TYPES = new Set([
 	"worker_receipt.written",
 ]);
 const PROJECTED_AUDIT_CUSTOM_TYPES = new Set([
+	"model.binding",
+	"model.attempt",
+	"context.snapshot",
+	"capability.binding",
+	"policy.binding",
+	"policy.decision",
+	"policy.approval",
+	"sandbox.lifecycle",
+	"policy.violation",
 	"external.mapping",
 	"remote.operation",
 	"task.gate",

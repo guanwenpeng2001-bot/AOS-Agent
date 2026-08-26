@@ -45,6 +45,7 @@ import {
 	LINE13_T0_BASE_SHA,
 	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
+	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
@@ -128,18 +129,9 @@ function reserveTcpPort(): Promise<number> {
 	});
 }
 
-const ac17 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-17",
-		fullTestName: "Line 13 AC-17 keeps session scope replacement atomic when construction fails",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T3b",
-		mode: "fails",
-		expectedFailure: {
-			reason: "session.scope_transaction",
-			fingerprint: "sha256:63f184e12a191d5c8c39b1931fbbe58682a4f21ceadd95939add8dc148f57a4a",
-		},
-	},
+const ac17 = defineLine13ResolvedCase({
+	ac: "AC-17",
+	fullTestName: "Line 13 AC-17 keeps session scope replacement atomic when construction fails",
 	scenario: {
 		fixture: async () => {
 			const directory = mkdtempSync(join(tmpdir(), "aos-line13-ac17-"));
@@ -147,7 +139,12 @@ const ac17 = defineLine13KnownGapCase({
 			const authStorage = AuthStorage.inMemory();
 			await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 			const state = { shutdowns: 0, replacementError: "" };
-			const createProductRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+			const createProductRuntime: CreateAgentSessionRuntimeFactory = async ({
+				cwd,
+				sessionManager,
+				sessionStartEvent,
+				registerCandidateSession,
+			}) => {
 				const serviceOptions = {
 					cwd,
 					agentDir: directory,
@@ -179,6 +176,7 @@ const ac17 = defineLine13KnownGapCase({
 					sessionStartEvent,
 					model: faux.getModel(),
 				});
+				registerCandidateSession(created.session);
 				return { ...created, services, diagnostics: services.diagnostics };
 			};
 			let failReplacement = false;
@@ -245,7 +243,7 @@ const ac18 = defineLine13KnownGapCase({
 			const aiCompatUrl = pathToFileURL(join(sourceRoot, "..", "..", "ai", "src", "compat.ts")).href;
 			writeFileSync(
 				fixture.driverPath,
-				`import { writeFileSync } from "node:fs";\nimport { registerFauxProvider } from ${JSON.stringify(aiCompatUrl)};\nimport { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices } from ${JSON.stringify(indexUrl)};\nimport { AuthStorage } from ${JSON.stringify(authUrl)};\nimport { runRpcMode } from ${JSON.stringify(rpcModeUrl)};\nconst marker = ${JSON.stringify(fixture.markerPath)};\nconst record = ${JSON.stringify(fixture.recordPath)};\nconst directory = ${JSON.stringify(fixture.directory)};\nconst faux = registerFauxProvider();\nconst auth = AuthStorage.inMemory();\nawait auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));\nconst createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => { const services = await createAgentSessionServices({ cwd, agentDir: directory, authStorage: auth, model: faux.getModel(), resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [(agent) => { agent.registerProvider(faux.getModel().provider, { baseUrl: faux.getModel().baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models }); agent.on("session_shutdown", async () => { writeFileSync(marker, "started"); await new Promise(() => {}); }); }] } }); const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel() }); return { ...created, services, diagnostics: services.diagnostics }; };\nconst runtime = await createAgentSessionRuntime(createRuntime, { cwd: directory, agentDir: directory, session: { mode: "memory" } });\nawait runtime.session.bindExtensions({});\nvoid runRpcMode(runtime);\nsetTimeout(() => { const listener = process.listenerCount("SIGINT") > 0; writeFileSync(record, JSON.stringify({ listener })); process.emit("SIGINT"); setTimeout(() => { writeFileSync(record, JSON.stringify({ listener, watchdog: true })); process.exit(91); }, 750); }, 250);\n`,
+				`import { writeFileSync } from "node:fs";\nimport { registerFauxProvider } from ${JSON.stringify(aiCompatUrl)};\nimport { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices } from ${JSON.stringify(indexUrl)};\nimport { AuthStorage } from ${JSON.stringify(authUrl)};\nimport { runRpcMode } from ${JSON.stringify(rpcModeUrl)};\nconst marker = ${JSON.stringify(fixture.markerPath)};\nconst record = ${JSON.stringify(fixture.recordPath)};\nconst directory = ${JSON.stringify(fixture.directory)};\nconst faux = registerFauxProvider();\nconst auth = AuthStorage.inMemory();\nawait auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));\nconst createRuntime = async ({ cwd, sessionManager, sessionStartEvent, registerCandidateSession }) => { const services = await createAgentSessionServices({ cwd, agentDir: directory, authStorage: auth, model: faux.getModel(), resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [(agent) => { agent.registerProvider(faux.getModel().provider, { baseUrl: faux.getModel().baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models }); agent.on("session_shutdown", async () => { writeFileSync(marker, "started"); await new Promise(() => {}); }); }] } }); const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel() }); registerCandidateSession(created.session); return { ...created, services, diagnostics: services.diagnostics }; };\nconst runtime = await createAgentSessionRuntime(createRuntime, { cwd: directory, agentDir: directory, session: { mode: "memory" } });\nawait runtime.session.bindExtensions({});\nvoid runRpcMode(runtime);\nsetTimeout(() => { const listener = process.listenerCount("SIGINT") > 0; writeFileSync(record, JSON.stringify({ listener })); process.emit("SIGINT"); setTimeout(() => { writeFileSync(record, JSON.stringify({ listener, watchdog: true })); process.exit(91); }, 750); }, 250);\n`,
 				"utf8",
 			);
 			fixture.outcome = await runProcess(process.execPath, sourceProcessArgs(fixture.driverPath), {
@@ -773,5 +771,6 @@ export const line13KnownGapCasesAc17Ac24 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-17-24",
 	complete: true,
-	cases: [ac17, ac18, ac19, ac20, ac21, ac22, ac23, ac24],
+	cases: [ac18, ac19, ac20, ac21, ac22, ac23, ac24],
+	resolvedCases: [ac17],
 });

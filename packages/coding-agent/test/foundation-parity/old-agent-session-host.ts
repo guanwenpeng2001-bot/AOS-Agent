@@ -609,18 +609,25 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 			},
 		};
 
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				...runtimeOptions,
 				cwd,
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: runtimeOptions.model,
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: runtimeOptions.model,
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};

@@ -252,7 +252,7 @@ async function startPublicBoundaryHarness(): Promise<{
 	};
 	const runtimeHost = {
 		session,
-		setRebindSession: () => {},
+		setPrepareSessionRebind: () => {},
 		dispose: async () => {},
 	} as unknown as AgentSessionRuntime;
 	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];

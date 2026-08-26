@@ -1,7 +1,8 @@
 import { fauxAssistantMessage } from "@aos-agent/ai";
 import { Container, Text } from "@aos-agent/tui";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
+import type { AgentSession, AgentSessionEvent, ExtensionBindings } from "../../../src/core/agent-session.ts";
+import type { PreparedSessionScopeRebind } from "../../../src/core/current-session-scope.ts";
 import type { ExtensionUIContext } from "../../../src/core/extensions/index.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme, type Theme, theme } from "../../../src/modes/interactive/theme/theme.ts";
@@ -88,10 +89,12 @@ type RebindContext = {
 
 type ReloadCommandContext = {
 	hideThinkingBlock: boolean;
+	runtimeHost: {
+		reload: (options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>;
+	};
 	session: {
 		isStreaming: boolean;
 		isCompacting: boolean;
-		reload: (options?: { beforeSessionStart?: () => void | Promise<void> }) => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
 		extensionRunner: unknown;
 		modelRegistry: { getError: () => string | undefined };
@@ -135,6 +138,15 @@ type InteractiveModePrototype = {
 		options?: { extensions?: Array<{ path: string }>; force?: boolean; showDiagnosticsWhenQuiet?: boolean },
 	): void;
 	rebindCurrentSession(this: RebindContext, options?: { renderBeforeBind?: boolean }): Promise<void>;
+	prepareSessionRebind(
+		this: {
+			currentSessionBinding: { session: AgentSession; unsubscribe?: () => void };
+			createCurrentSessionExtensionBindings: (session: AgentSession) => ExtensionBindings;
+			subscribeToAgent: (binding: { session: AgentSession; unsubscribe?: () => void }) => void;
+		},
+		nextSession: AgentSession,
+		previousSession: AgentSession,
+	): Promise<PreparedSessionScopeRebind>;
 	handleReloadCommand(this: ReloadCommandContext): Promise<void>;
 };
 
@@ -142,8 +154,16 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
 
 type ReloadCommandContextOverrides = Omit<
 	Partial<ReloadCommandContext>,
-	"session" | "settingsManager" | "keybindings" | "editorContainer" | "ui" | "defaultEditor" | "themeController"
+	| "runtimeHost"
+	| "session"
+	| "settingsManager"
+	| "keybindings"
+	| "editorContainer"
+	| "ui"
+	| "defaultEditor"
+	| "themeController"
 > & {
+	runtimeHost?: Partial<ReloadCommandContext["runtimeHost"]>;
 	session?: Partial<ReloadCommandContext["session"]>;
 	settingsManager?: Partial<ReloadCommandContext["settingsManager"]>;
 	keybindings?: Partial<ReloadCommandContext["keybindings"]>;
@@ -157,12 +177,15 @@ function createReloadCommandContext(overrides: ReloadCommandContextOverrides = {
 	const editor = overrides.editor ?? {};
 	return {
 		hideThinkingBlock: overrides.hideThinkingBlock ?? false,
-		session: {
-			isStreaming: false,
-			isCompacting: false,
+		runtimeHost: {
 			reload: async (options) => {
 				await options?.beforeSessionStart?.();
 			},
+			...overrides.runtimeHost,
+		},
+		session: {
+			isStreaming: false,
+			isCompacting: false,
 			resourceLoader: { getThemes: () => ({ themes: [] }) },
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
@@ -310,6 +333,65 @@ describe("regression #5943: session_start transient UI", () => {
 		}
 	});
 
+	it("keeps the old interactive binding usable when candidate preparation fails", async () => {
+		const oldPrompt = vi.fn(async () => {});
+		const oldSession = { prompt: oldPrompt } as unknown as AgentSession;
+		const candidateSession = {
+			prepareExtensionBindings: vi.fn(async () => {
+				throw new Error("candidate binding fault");
+			}),
+		} as unknown as AgentSession;
+		const currentSessionBinding = { session: oldSession, unsubscribe: vi.fn() };
+		const context = {
+			currentSessionBinding,
+			createCurrentSessionExtensionBindings: () => ({}),
+			subscribeToAgent: vi.fn(),
+		};
+
+		await expect(
+			interactiveModePrototype.prepareSessionRebind.call(context, candidateSession, oldSession),
+		).rejects.toThrow("candidate binding fault");
+		await context.currentSessionBinding.session.prompt("old binding still works");
+
+		expect(context.currentSessionBinding).toBe(currentSessionBinding);
+		expect(oldPrompt).toHaveBeenCalledWith("old binding still works");
+		expect(currentSessionBinding.unsubscribe).not.toHaveBeenCalled();
+		expect(context.subscribeToAgent).not.toHaveBeenCalled();
+	});
+
+	it("commits a fully prepared interactive binding with one synchronous reference swap", async () => {
+		const oldSession = {} as AgentSession;
+		const candidateSession = {
+			prepareExtensionBindings: vi.fn(async () => {}),
+			activateExtensionBindings: vi.fn(async () => {}),
+		} as unknown as AgentSession;
+		const oldBinding = { session: oldSession, unsubscribe: vi.fn() };
+		const context = {
+			currentSessionBinding: oldBinding,
+			createCurrentSessionExtensionBindings: vi.fn(() => ({})),
+			subscribeToAgent: vi.fn((binding: { session: AgentSession; unsubscribe?: () => void }) => {
+				binding.unsubscribe = vi.fn();
+			}),
+		};
+
+		const prepared = await interactiveModePrototype.prepareSessionRebind.call(
+			context,
+			candidateSession,
+			oldSession,
+		);
+		expect(candidateSession.prepareExtensionBindings).toHaveBeenCalledTimes(1);
+		expect(context.subscribeToAgent).toHaveBeenCalledTimes(1);
+		expect(candidateSession.activateExtensionBindings).not.toHaveBeenCalled();
+
+		expect(() => prepared.commit()).not.toThrow();
+
+		expect(context.currentSessionBinding.session).toBe(candidateSession);
+		expect(candidateSession.prepareExtensionBindings).toHaveBeenCalledTimes(1);
+		expect(context.subscribeToAgent).toHaveBeenCalledTimes(1);
+		expect(candidateSession.activateExtensionBindings).not.toHaveBeenCalled();
+		expect(oldBinding.unsubscribe).not.toHaveBeenCalled();
+	});
+
 	it("subscribes before replacement session_start handlers send messages", async () => {
 		const events: string[] = [];
 		const harness = await createHarness({
@@ -454,7 +536,7 @@ describe("regression #5943: session_start transient UI", () => {
 		let context: ReloadCommandContext;
 		context = createReloadCommandContext({
 			settingsManager: { getHideThinkingBlock: () => true },
-			session: {
+			runtimeHost: {
 				reload: async (options) => {
 					events.push("reload");
 					await options?.beforeSessionStart?.();
@@ -488,7 +570,7 @@ describe("regression #5943: session_start transient UI", () => {
 
 		const context = createReloadCommandContext({
 			editor,
-			session: {
+			runtimeHost: {
 				reload: async (options) => {
 					await options?.beforeSessionStart?.();
 					markReloadWaiting();

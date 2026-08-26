@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import {
 	AgentHarness,
 	InMemoryArtifactBlobStore,
@@ -1363,8 +1363,8 @@ export class CanonicalAgentSessionServices {
 		const runner = this._extensionRunner;
 		runner.bindCore(
 			{
-			sendMessage: (message, options) => {
-					const task = this.sendCustomMessage(message, options);
+				sendMessage: (message, options) => {
+					const task = this.trackPromptTask(this.sendCustomMessage(message, options));
 					this.harness.trackCompatibilityTask(task);
 					void task.catch((error: unknown) => {
 						runner.emitError({
@@ -2413,14 +2413,14 @@ export class CanonicalAgentSessionServices {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
 	): Promise<void> {
-		const customMessage: CustomMessage<T> = {
+		const customMessage = omitUndefined({
 			role: "custom",
 			customType: message.customType,
 			content: message.content ?? [],
 			display: message.display,
 			details: message.details,
 			timestamp: Date.now(),
-		};
+		}) as CustomMessage<T>;
 		if (options?.deliverAs === "steer") {
 			const result = await this.harness.steer(customMessage);
 			const error = resultError(result);
@@ -2439,7 +2439,7 @@ export class CanonicalAgentSessionServices {
 			if (error) throw error;
 			return;
 		}
-		this.harness.recordCompatibilityMessage(customMessage);
+		await this.harness.recordCompatibilityMessage(customMessage);
 		this.compatibilityMessagesProjection = this.projectCompatibilityMessages(this.canonicalEntriesSnapshot());
 		if (options?.triggerTurn) await this.resume();
 	}
@@ -2795,7 +2795,10 @@ export class CanonicalAgentSessionServices {
 		if (this.canonicalStorage === undefined) {
 			throw new Error("Canonical session storage is required for session name changes");
 		}
-		this.harness.setSessionNameSync(normalizedName);
+		// Startup may persist --name before runtime construction so validation
+		// failures still retain it. Preserve the successful runtime notification
+		// without appending the same durable fact a second time.
+		if (this.sessionName !== normalizedName) this.harness.setSessionNameSync(normalizedName);
 		for (const listener of this.sessionInfoSubscribers) listener({ type: "session_info_changed", name: normalizedName });
 		this._extensionRunner.emitSessionInfoChanged({ type: "session_info_changed", name: normalizedName });
 	}
@@ -2819,7 +2822,7 @@ export class CanonicalAgentSessionServices {
 		return this._extensionRunner;
 	}
 
-	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+	private applyExtensionBindings(bindings: ExtensionBindings): void {
 		if (bindings.mode !== undefined) {
 			this.promptSurface = bindings.mode === "tui"
 				? "tui"
@@ -2832,13 +2835,54 @@ export class CanonicalAgentSessionServices {
 		if (bindings.uiContext !== undefined || bindings.mode !== undefined) this._extensionRunner.setUIContext(bindings.uiContext, bindings.mode);
 		this._extensionRunner.bindCommandContext(bindings.commandContextActions);
 		if (bindings.onError !== undefined) this._extensionRunner.onError(bindings.onError);
+	}
+
+	private async emitSessionStart(): Promise<void> {
 		const startEvent = this._sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._sessionStartEvent = undefined;
 		await this._extensionRunner.emit(startEvent);
-		await this.initializeExtensions();
+	}
+
+	private async waitForActivePromptTasks(): Promise<void> {
 		while (this.activePromptTasks.size > 0) {
 			await Promise.allSettled([...this.activePromptTasks]);
 		}
+	}
+
+	/** Prepare fallible extension bindings without publishing lifecycle events. */
+	async prepareExtensionBindings(bindings: ExtensionBindings): Promise<void> {
+		this.applyExtensionBindings(bindings);
+		await this.initializeExtensions();
+	}
+
+	/** Activate a prepared binding after its Session scope is current. */
+	async activateExtensionBindings(): Promise<void> {
+		const registeredBefore = new Set(
+			this._extensionRunner.getAllRegisteredTools().map((tool) => tool.definition.name),
+		);
+		const activeBefore = this.harness.activeToolNamesSnapshot;
+		await this.emitSessionStart();
+		// session_start handlers may register tools. This refresh is lifecycle
+		// activation work, not host binding preparation, so any failure is a
+		// post-commit diagnostic during a transactional scope replacement.
+		await this.initializeExtensions();
+		const selectedTools = new Set(this.controlPlane.getToolNames());
+		const newlyRegisteredTools = this._extensionRunner
+			.getAllRegisteredTools()
+			.map((tool) => tool.definition.name)
+			.filter((name) => !registeredBefore.has(name) && selectedTools.has(name));
+		if (newlyRegisteredTools.length > 0) {
+			await this.controlPlane.whenCapabilitiesReady();
+			await this.harness.setActiveTools([...new Set([...activeBefore, ...newlyRegisteredTools])]);
+			this._systemPrompt = await this.harness.getSystemPrompt();
+		}
+		await this.waitForActivePromptTasks();
+		await this.harness.waitForCompatibilityTasks();
+	}
+
+	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
+		await this.prepareExtensionBindings(bindings);
+		await this.activateExtensionBindings();
 	}
 
 	getLastContextSnapshotId(): string | undefined {
@@ -3306,6 +3350,7 @@ export class CanonicalAgentSessionServices {
 	async createForkedSessionTarget(
 		entryId: string,
 		position: "before" | "at",
+		onTargetCreated?: (sessionFile: string | undefined) => void,
 	): Promise<AgentSessionForkTarget> {
 		await this.waitForIdle();
 		const selectedEntry = await this.canonicalSession.getEntry(entryId);
@@ -3335,32 +3380,47 @@ export class CanonicalAgentSessionServices {
 
 		const targetManager = this.sessionManager.isPersisted()
 			? SessionManager.create(this._cwd, this.sessionManager.getSessionDir(), {
-				parentSession: sourceSessionFile,
-			})
+					parentSession: sourceSessionFile,
+				})
 			: SessionManager.inMemory(this._cwd);
-		const targetStorage = new SessionManagerStorage(targetManager);
-		const targetSession = new Session(targetStorage);
-		const copiedEntries = targetId === null
-			? []
-			: await this.canonicalSession.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
-		for (const entry of copiedEntries) {
-			const { parentId: _parentId, seq: _seq, timestamp: _timestamp, ...provisioned } = entry;
-			await targetSession.appendEntry(provisioned as ProvisionedEntry, "main");
-		}
+		const targetSessionFile = targetManager.getSessionFile();
+		onTargetCreated?.(targetSessionFile);
+		try {
+			const targetStorage = new SessionManagerStorage(targetManager);
+			const targetSession = new Session(targetStorage);
+			const copiedEntries = targetId === null
+				? []
+				: await this.canonicalSession.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
+			for (const entry of copiedEntries) {
+				const { parentId: _parentId, seq: _seq, timestamp: _timestamp, ...provisioned } = entry;
+				await targetSession.appendEntry(provisioned as ProvisionedEntry, "main");
+			}
 
-		const name = await this.canonicalSession.getName();
-		if (name !== undefined) await targetSession.setName(name);
-		for (const entry of copiedEntries) {
-			const label = await this.canonicalSession.getLabel(entry.id);
-			if (label !== undefined) await targetSession.setLabel(entry.id, label);
+			const name = await this.canonicalSession.getName();
+			if (name !== undefined) await targetSession.setName(name);
+			for (const entry of copiedEntries) {
+				const label = await this.canonicalSession.getLabel(entry.id);
+				if (label !== undefined) await targetSession.setLabel(entry.id, label);
+			}
+			const target: AgentSessionForkTarget = {
+				session: targetSession,
+				sessionFile: targetSessionFile,
+				...(selectedText === undefined ? {} : { selectedText }),
+			};
+			agentSessionForkManagers.set(target, targetManager);
+			return target;
+		} catch (error) {
+			if (onTargetCreated !== undefined) throw error;
+			try {
+				if (targetSessionFile !== undefined && existsSync(targetSessionFile)) unlinkSync(targetSessionFile);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					"Fork target creation failed and its candidate session artifact could not be removed",
+				);
+			}
+			throw error;
 		}
-		const target: AgentSessionForkTarget = {
-			session: targetSession,
-			sessionFile: targetManager.getSessionFile(),
-			...(selectedText === undefined ? {} : { selectedText }),
-		};
-		agentSessionForkManagers.set(target, targetManager);
-		return target;
 	}
 
 	setPreviousExecutionPolicyBindingIdForNextRun(bindingId?: string): void {
@@ -3457,6 +3517,8 @@ export class CanonicalAgentSessionServices {
 		const subagentRecovery = await this.controlPlane.getSubagentComposition()?.reload();
 		if (subagentRecovery !== undefined && !subagentRecovery.ok) throw subagentRecovery.error;
 		await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+		await this.waitForActivePromptTasks();
+		await this.harness.waitForCompatibilityTasks();
 	}
 
 	async exportToHtml(outputPath?: string): Promise<string> {
@@ -3575,6 +3637,8 @@ const COMPATIBILITY_FORWARDERS = [
 	"setSessionName",
 	"setSessionLabel",
 	"createReplacedSessionContext",
+	"prepareExtensionBindings",
+	"activateExtensionBindings",
 	"bindExtensions",
 	"getLastContextSnapshotId",
 	"getContextSnapshotIdForRun",
@@ -3790,6 +3854,8 @@ export class AgentSession {
 	declare readonly setSessionName: CanonicalAgentSessionServices["setSessionName"];
 	declare readonly setSessionLabel: CanonicalAgentSessionServices["setSessionLabel"];
 	declare readonly createReplacedSessionContext: CanonicalAgentSessionServices["createReplacedSessionContext"];
+	declare readonly prepareExtensionBindings: CanonicalAgentSessionServices["prepareExtensionBindings"];
+	declare readonly activateExtensionBindings: CanonicalAgentSessionServices["activateExtensionBindings"];
 	declare readonly bindExtensions: CanonicalAgentSessionServices["bindExtensions"];
 	declare readonly getLastContextSnapshotId: CanonicalAgentSessionServices["getLastContextSnapshotId"];
 	declare readonly getContextSnapshotIdForRun: CanonicalAgentSessionServices["getContextSnapshotIdForRun"];
@@ -3885,10 +3951,11 @@ export function createAgentSessionForkTarget(
 	session: AgentSession,
 	entryId: string,
 	position: "before" | "at",
+	onTargetCreated?: (sessionFile: string | undefined) => void,
 ): Promise<AgentSessionForkTarget> {
 	const delegate = agentSessionDelegates.get(session);
 	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
-	return delegate.createForkedSessionTarget(entryId, position);
+	return delegate.createForkedSessionTarget(entryId, position, onTargetCreated);
 }
 
 /** @internal Consume the physical store behind a canonical fork target. */

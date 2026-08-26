@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentSession } from "../../../src/core/agent-session.ts";
+import type { AgentSession, ExtensionBindings } from "../../../src/core/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -51,7 +51,12 @@ describe("regression #2860: replaced session callbacks", () => {
 			modelsPath: join(tempDir, "models.json"),
 		});
 
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir: tempDir,
@@ -82,13 +87,15 @@ describe("regression #2860: replaced session callbacks", () => {
 					noThemes: true,
 				},
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: faux.getModel(),
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: faux.getModel(),
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};
@@ -100,9 +107,7 @@ describe("regression #2860: replaced session callbacks", () => {
 			session: { mode: "new" },
 		});
 
-		const rebindSession = async (): Promise<void> => {
-			const session = runtime.session;
-			await session.bindExtensions({
+		const extensionBindings = (session: AgentSession): ExtensionBindings => ({
 				commandContextActions: {
 					waitForIdle: () => session.agent.waitForIdle(),
 					newSession: async (options) => runtime.newSession(options),
@@ -121,16 +126,19 @@ describe("regression #2860: replaced session callbacks", () => {
 					},
 					switchSession: async (sessionPath, options) => runtime.switchSession(sessionPath, options),
 					reload: async () => {
-						await session.reload();
+						await runtime.reload();
 					},
 				},
 			});
-		};
 
-		runtime.setRebindSession(async () => {
-			await rebindSession();
+		runtime.setPrepareSessionRebind(async (session) => {
+			await session.prepareExtensionBindings(extensionBindings(session));
+			return {
+				commit: () => undefined,
+				activate: () => session.activateExtensionBindings(),
+			};
 		});
-		await rebindSession();
+		await runtime.session.bindExtensions(extensionBindings(runtime.session));
 
 		cleanups.push(async () => {
 			await runtime.dispose();

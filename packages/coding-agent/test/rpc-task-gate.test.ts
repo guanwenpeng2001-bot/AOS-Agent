@@ -192,7 +192,7 @@ async function createRuntimeHost(options: {
 
 	let currentSession =
 		options.sessionPath === undefined ? createSeededSession(tempDir) : openSession(SessionManager.open(options.sessionPath));
-	let rebindCallback: (() => Promise<void>) | undefined;
+	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 
 	const runtimeHost = {
 		get session(): AgentSession {
@@ -201,18 +201,21 @@ async function createRuntimeHost(options: {
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((cb?: (() => Promise<void>) | undefined) => {
-			rebindCallback = cb;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebindCallback = callback;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
 			// Simulate a real session switch: open the persisted ledger, rebuild the
 			// session, and re-run the registered rebind so the controller rebuilds
 			// its coordinator and TaskGateStore against the restored session.
-			await currentSession.dispose();
-			currentSession = openSession(SessionManager.open(sessionPath));
-			if (rebindCallback !== undefined) {
-				await rebindCallback();
-			}
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await previousSession.dispose();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),

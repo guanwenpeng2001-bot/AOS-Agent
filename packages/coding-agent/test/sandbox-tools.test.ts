@@ -282,7 +282,7 @@ describe("sandbox host policy for built-in tools", () => {
 			const ctx = {
 				model: { provider: "openai", id: "model" },
 				thinkingLevel: "high",
-				sessionManager: {
+				session: {
 					getSessionId: () => "session-secret",
 					getSessionFile: () => join(workspace, "session.jsonl"),
 				},

@@ -16,14 +16,21 @@ import {
 	getAgentDir,
 } from "aos-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+	cwd,
+	sessionManager,
+	sessionStartEvent,
+	registerCandidateSession,
+}) => {
 	const services = await createAgentSessionServices({ cwd });
+	const created = await createAgentSessionFromServices({
+		services,
+		sessionManager,
+		sessionStartEvent,
+	});
+	registerCandidateSession(created.session);
 	return {
-		...(await createAgentSessionFromServices({
-			services,
-			sessionManager,
-			sessionStartEvent,
-		})),
+		...created,
 		services,
 		diagnostics: services.diagnostics,
 	};

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,7 +64,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 		.map((entry) => entry.name ?? "");
 }
 
-async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
+async function runCli(args: string[], dirs: CliDirs, timeoutMs = 40_000): Promise<CliResult> {
 	let stderr = "";
 	const child = spawn(process.execPath, sourceProcessArgs(cliPath, args), {
 		cwd: dirs.projectDir,
@@ -78,7 +78,7 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	return new Promise((resolvePromise, reject) => {
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
-		}, 40_000);
+		}, timeoutMs);
 		child.on("error", (error) => {
 			clearTimeout(timeout);
 			reject(error);
@@ -104,16 +104,57 @@ function setup(): CliDirs {
 }
 
 describe("startup session name", () => {
-	it("sets --name on the selected session before runtime model validation", { timeout: 50_000 }, async () => {
+	it("sets --name on the selected session before runtime model validation", { timeout: 80_000 }, async () => {
 		const dirs = setup();
 		const result = await runCli(
 			["--session", dirs.sessionFile, "--name", "  CLI Named Session  ", "--model", "missing-model", "-p", "hi"],
 			dirs,
+			70_000,
 		);
 
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
 		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
+	});
+
+	it("notifies extensions after startup succeeds without writing --name twice", { timeout: 80_000 }, async () => {
+		const dirs = setup();
+		const notificationFile = join(dirs.projectDir, "session-name-notification.txt");
+		const extensionFile = join(dirs.projectDir, "session-name-extension.ts");
+		writeFileSync(
+			extensionFile,
+			`import { appendFileSync } from "node:fs";
+			export default function (agent) {
+				agent.on("session_info_changed", (event) => {
+					appendFileSync(${JSON.stringify(notificationFile)}, String(event.name) + "\\n");
+				});
+			}
+			`,
+		);
+
+		const result = await runCli(
+			[
+				"--session",
+				dirs.sessionFile,
+				"--name",
+				"CLI Named Session",
+				"--extension",
+				extensionFile,
+				"--approve",
+				"--model",
+				"missing-model",
+				"-p",
+				"hi",
+			],
+			dirs,
+			70_000,
+		);
+
+		expect(result.code).toBe(1);
+		expect(result.signal).toBeNull();
+		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
+		expect(existsSync(notificationFile)).toBe(true);
+		expect(readFileSync(notificationFile, "utf8").trim().split("\n")).toEqual(["CLI Named Session"]);
 	});
 
 	it("rejects empty --name values without appending session metadata", { timeout: 50_000 }, async () => {

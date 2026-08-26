@@ -4,17 +4,13 @@
  */
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
-import { existsSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
-import lockfile from "proper-lockfile";
-import { setTimeout as sleep } from "timers/promises";
+import { join } from "path";
 import { getAgentDir } from "../config.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
 import {
-	hasControlPlaneStateArtifacts,
+	LockedAtomicFileStorage,
 	readControlPlaneState,
-	writeControlPlaneState,
 } from "./control-plane-atomic-storage.ts";
 import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
 
@@ -90,156 +86,21 @@ export interface AuthStorageBackend {
 }
 
 export class FileAuthStorageBackend implements AuthStorageBackend {
-	private authPath: string;
+	private readonly storage: LockedAtomicFileStorage;
 
 	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
-		this.authPath = normalizePath(authPath);
-	}
-
-	private ensureParentDir(): void {
-		const dir = dirname(this.authPath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true, mode: 0o700 });
-		}
-	}
-
-	private ensureFileExists(): void {
-		if (!hasControlPlaneStateArtifacts(this.authPath)) {
-			writeControlPlaneState(this.authPath, "{}", AUTH_STORAGE_OPTIONS);
-		}
-	}
-
-	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return lockfile.lockSync(path, { realpath: false });
-			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire auth storage lock");
+		this.storage = new LockedAtomicFileStorage(normalizePath(authPath), "{}", AUTH_STORAGE_OPTIONS);
 	}
 
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
-		this.ensureParentDir();
-		this.ensureFileExists();
-
-		let release: (() => void) | undefined;
-		try {
-			release = this.acquireLockSyncWithRetry(this.authPath);
-			const current = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
-			const { result, next } = fn(current);
-			if (next !== undefined) {
-				writeControlPlaneState(this.authPath, next, AUTH_STORAGE_OPTIONS);
-			}
-			return result;
-		} finally {
-			if (release) {
-				release();
-			}
-		}
-	}
-
-	private async acquireLockAsync(
-		signal: AbortSignal | undefined,
-		onCompromised: (error: Error) => void,
-	): Promise<() => Promise<void>> {
-		const staleMs = 30_000;
-		const maxDelayMs = 2_000;
-		const deadline = Date.now() + staleMs;
-		let retry = 0;
-		while (true) {
-			signal?.throwIfAborted();
-			let release: (() => Promise<void>) | undefined;
-			try {
-				release = await lockfile.lock(this.authPath, {
-					realpath: false,
-					retries: 0,
-					stale: staleMs,
-					onCompromised,
-				});
-			} catch (error) {
-				signal?.throwIfAborted();
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				const remainingMs = deadline - Date.now();
-				if (code !== "ELOCKED" || remainingMs <= 0) throw error;
-				const baseDelayMs = Math.min(10 * 2 ** retry, maxDelayMs / 2);
-				retry++;
-				const delayMs = Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs);
-				if (signal) await sleep(delayMs, undefined, { signal });
-				else await sleep(delayMs);
-				continue;
-			}
-			if (signal?.aborted) {
-				await release();
-				signal.throwIfAborted();
-			}
-			return release;
-		}
+		return this.storage.withLock(fn);
 	}
 
 	async withLockAsync<T>(
 		fn: (current: string | undefined) => Promise<LockResult<T>>,
 		options?: AuthOperationOptions,
 	): Promise<T> {
-		options?.signal?.throwIfAborted();
-		this.ensureParentDir();
-		this.ensureFileExists();
-
-		let release: (() => Promise<void>) | undefined;
-		let lockCompromised = false;
-		let lockCompromisedError: Error | undefined;
-		const throwIfCompromised = () => {
-			if (lockCompromised) {
-				throw lockCompromisedError ?? new Error("Auth storage lock was compromised");
-			}
-		};
-
-		try {
-			release = await this.acquireLockAsync(options?.signal, (error) => {
-				lockCompromised = true;
-				lockCompromisedError = error;
-			});
-
-			throwIfCompromised();
-			options?.signal?.throwIfAborted();
-			const current = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
-			const { result, next } = await fn(current);
-			throwIfCompromised();
-			options?.signal?.throwIfAborted();
-			if (next !== undefined) {
-				writeControlPlaneState(this.authPath, next, AUTH_STORAGE_OPTIONS);
-			}
-			throwIfCompromised();
-			return result;
-		} finally {
-			if (release) {
-				try {
-					await release();
-				} catch {
-					// Ignore unlock errors when lock is compromised.
-				}
-			}
-		}
+		return this.storage.withLockAsync(fn, options);
 	}
 }
 

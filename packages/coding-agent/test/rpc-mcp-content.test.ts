@@ -305,7 +305,7 @@ async function createRpcMcpHarness(opts: {
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
-		setRebindSession: vi.fn(),
+		setPrepareSessionRebind: vi.fn(),
 	} as unknown as AgentSessionRuntime;
 	const controller = new RpcHostController(runtimeHost);
 	await controller.start();

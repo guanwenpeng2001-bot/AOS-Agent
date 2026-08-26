@@ -178,7 +178,7 @@ async function createHarness(
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
-		setRebindSession: vi.fn(),
+		setPrepareSessionRebind: vi.fn(),
 	} as unknown as AgentSessionRuntime;
 	if (workerRegistry !== undefined) {
 		vi.spyOn(session, "getWorkerRegistry").mockImplementation(() => workerRegistry(session));
@@ -321,10 +321,15 @@ async function createProductionRuntimeHarness(): Promise<{
 	const initial = await createCanonicalWorkerSession(join(tempDir, "initial"), "worker-initial");
 	const replacement = await createCanonicalWorkerSession(join(tempDir, "replacement"), "worker-replacement");
 	let currentSession = initial.session;
-	let rebindSession: (() => Promise<void>) | undefined;
+	let prepareRebindSession: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const replaceSession = async (): Promise<void> => {
+		const previousSession = currentSession;
+		const preparedRebind = await prepareRebindSession?.(replacement.session, previousSession);
 		currentSession = replacement.session;
-		await rebindSession?.();
+		preparedRebind?.commit();
+		await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+		await previousSession.dispose();
+		await preparedRebind?.activate?.();
 	};
 	const runtimeHost = {
 		get session(): AgentSession {
@@ -337,8 +342,8 @@ async function createProductionRuntimeHarness(): Promise<{
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
-		setRebindSession: vi.fn((callback?: () => Promise<void>) => {
-			rebindSession = callback;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebindSession = callback;
 		}),
 	} as unknown as AgentSessionRuntime;
 	return {
