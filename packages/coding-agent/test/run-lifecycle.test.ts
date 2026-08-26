@@ -1018,8 +1018,23 @@ describe("event buffering and sequence", () => {
 		expect((events[1] as Extract<(typeof events)[number], { type: "run.event" }>).event.type).toBe("agent_end");
 
 		const terminal = await settleRun(run, { outcome: "completed" });
-		expect(terminal?.sequence).toBeGreaterThan(4);
-		expect(run.emitted.map((event) => event.sequence)).toEqual([1, 2, 3, 4, terminal?.sequence]);
+		expect(terminal?.sequence).toBe(5);
+		expect(run.emitted.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5]);
+	});
+
+	it("keeps the public sequence continuous when it overtakes Foundation physical ordering", async () => {
+		const session = makeSession();
+		const run = accept(makeCoordinator(session).reserve(), "r-sequence-domains");
+		run.start();
+		for (let index = 0; index < 20; index += 1) run.captureSessionEvent(settled());
+
+		const observed = await observeCanonicalTerminal(session, run, { outcome: "completed" });
+		if (observed.event === undefined) throw new Error("expected canonical terminal event");
+		expect(observed.event.sequence).toBe(22);
+		expect(observed.canonical.writtenEvent.sequence).toBeLessThan(observed.event.sequence);
+		expect(run.emitted.map((event) => event.sequence)).toEqual(
+			run.emitted.map((_, index) => index + 1),
+		);
 	});
 
 	it("returns exactly one wrapped run.event per captured session event while running", async () => {
