@@ -12,6 +12,7 @@ import {
 } from "../src/core/external-agent-adapter.ts";
 import type { ExternalExecutionRef } from "../src/core/external-session-mapping.ts";
 import {
+	EXTERNAL_AGENT_SUPERVISOR_ERROR_CODES,
 	EXTERNAL_AGENT_SUPERVISOR_SCHEMA_VERSION,
 	ExternalAgentSupervisor,
 	isExternalAgentSupervisorPrivateState,
@@ -320,6 +321,12 @@ describe("ExternalAgentSupervisor", () => {
 		expect(Object.keys(value.supervisor.reference).sort()).toEqual(["operationNonce", "schemaVersion", "supervisorRef"]);
 		expect(isExternalAgentSupervisorPrivateState(value.supervisor.hostPrivateState)).toBe(true);
 		expect(value.supervisor.hostPrivateState?.processIdentity).toEqual(identity());
+		expect(EXTERNAL_AGENT_SUPERVISOR_ERROR_CODES).toEqual([
+			"external_resource_limit_exceeded",
+			"external_event_invalid",
+			"side_effect_unknown",
+			"reconcile_required",
+		]);
 		const canonical = JSON.stringify({ reference: value.supervisor.reference, snapshot: value.supervisor.snapshot, result });
 		for (const forbidden of ["pid", "startToken", "executableIdentity", "fileIdentity"]) {
 			expect(canonical).not.toContain(forbidden);
@@ -342,6 +349,19 @@ describe("ExternalAgentSupervisor", () => {
 			failure: { code: "reconcile_required", forcedTermination: false },
 		});
 		expect(value.process.forceCalls).toBe(0);
+
+		const rejected = supervisorFixture();
+		const exceptionMessage = "raw payload at C:\\private\\connector.json from https://private.example/run";
+		rejected.controller.launch = () => {
+			throw new Error(exceptionMessage);
+		};
+		rejected.supervisor.start(adapter(async () => externalHandle()), startRequest());
+		const rejectedResult = await rejected.supervisor.result;
+		expect(rejectedResult).toMatchObject({
+			kind: "failure",
+			failure: { code: "reconcile_required", forcedTermination: false },
+		});
+		expect(JSON.stringify(rejectedResult)).not.toContain(exceptionMessage);
 	});
 
 	it("bounds a non-cooperative start and force-terminates the contained process", async () => {
@@ -439,7 +459,7 @@ describe("ExternalAgentSupervisor", () => {
 		await drainMicrotasks(30);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "event" },
+			failure: { code: "external_resource_limit_exceeded", segment: "event" },
 			eventCount: 6,
 		});
 		expect(value.supervisor.events).toHaveLength(5);
@@ -447,19 +467,24 @@ describe("ExternalAgentSupervisor", () => {
 	});
 
 	it("fails closed on an invalid event and never exposes a completed receipt", async () => {
+		const rawPayload = "raw-payload-secret";
+		const absolutePath = "C:\\private\\connector.json";
+		const privateUrl = "https://private.example/run";
 		const value = supervisorFixture();
 		value.supervisor.start(
 			adapter(async () =>
 				externalHandle({
-					events: iterable([{ ...progress(1), sequence: 0 }]),
+					events: iterable([{ ...progress(1), sequence: 0, rawPayload, absolutePath, privateUrl }]),
 					receipt: Promise.resolve(completedReceipt()),
 				})),
 			startRequest(),
 		);
 		const result = await value.supervisor.result;
-		expect(result).toMatchObject({ kind: "failure", failure: { code: "event_invalid" } });
+		expect(result).toMatchObject({ kind: "failure", failure: { code: "external_event_invalid" } });
 		expect(result).not.toHaveProperty("receipt");
-		expect(JSON.stringify(result)).not.toContain('"status":"completed"');
+		const serialized = JSON.stringify(result);
+		expect(serialized).not.toContain('"status":"completed"');
+		for (const forbidden of [rawPayload, absolutePath, privateUrl]) expect(serialized).not.toContain(forbidden);
 		expect(value.process.forceCalls).toBe(1);
 	});
 
@@ -475,7 +500,7 @@ describe("ExternalAgentSupervisor", () => {
 		);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "event" },
+			failure: { code: "external_resource_limit_exceeded", segment: "event" },
 		});
 	});
 
@@ -493,7 +518,7 @@ describe("ExternalAgentSupervisor", () => {
 		);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "event" },
+			failure: { code: "external_resource_limit_exceeded", segment: "event" },
 		});
 		expect(value.supervisor.events).toHaveLength(1);
 	});
@@ -507,7 +532,7 @@ describe("ExternalAgentSupervisor", () => {
 		);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "event" },
+			failure: { code: "external_resource_limit_exceeded", segment: "event" },
 		});
 		expect(value.supervisor.events).toHaveLength(2);
 	});
@@ -521,7 +546,7 @@ describe("ExternalAgentSupervisor", () => {
 		);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "event" },
+			failure: { code: "external_resource_limit_exceeded", segment: "event" },
 		});
 		expect(value.supervisor.events).toHaveLength(1);
 	});
@@ -539,7 +564,7 @@ describe("ExternalAgentSupervisor", () => {
 		);
 		await expect(value.supervisor.result).resolves.toMatchObject({
 			kind: "failure",
-			failure: { code: "resource_limit_exceeded", segment: "receipt" },
+			failure: { code: "external_resource_limit_exceeded", segment: "receipt" },
 		});
 	});
 
