@@ -12,6 +12,20 @@ export {
 	type SessionStats,
 } from "./agent-session.ts";
 export {
+	createAgentRuntimeCompositionFactory,
+	createTrustedWorkerSandboxComposition,
+	type AgentRuntimeComposition,
+	type AgentRuntimeCompositionContext,
+	type AgentRuntimeCompositionFactory,
+	type AgentRuntimeCompositionOptions,
+	type TrustedSchedulerCompositionFactory,
+	type TrustedSubagentCompositionFactory,
+	type TrustedToolGatewayFactory,
+	type TrustedWorkerSandboxComposition,
+	type TrustedWorkerSandboxFactory,
+	type TrustedWorkerSandboxProviderOptions,
+} from "./agent-runtime-composition.ts";
+export {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,

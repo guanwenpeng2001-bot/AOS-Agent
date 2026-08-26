@@ -32,6 +32,11 @@ import {
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
 import type { AgentSessionConfig } from "../core/agent-session.ts";
+import {
+	createAgentRuntimeCompositionFactoryFromTrustedProviders,
+	materializeAgentRuntimeComposition,
+	type AgentRuntimeCompositionFactory,
+} from "../core/agent-runtime-composition.ts";
 import { createAgentSessionWithTrustedScheduler } from "../core/agent-session-facade.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
@@ -224,6 +229,8 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 	};
 	/** Trusted Host-only opt-in; omitted by every default product path. */
 	subagents?: TrustedSubagentCompositionOptionsV1;
+	/** Unified trusted composition root. Legacy peer provider options cannot be combined with it. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -265,11 +272,15 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPromptOptions,
 		workerSandbox,
 		subagents,
+		runtimeComposition: runtimeCompositionFactory,
 		tools: providedTools,
 		activeToolNames: providedActiveToolNames,
 		systemPrompt: providedSystemPrompt,
 		...harnessOptions
 	} = options;
+	if (runtimeCompositionFactory !== undefined && (workerSandbox !== undefined || subagents !== undefined)) {
+		throw new TypeError("Coding-agent Harness accepts optional providers through one runtime composition");
+	}
 	let harness: AgentHarness | undefined;
 	const getHarness = (): AgentHarness => {
 		if (!harness) throw new Error("Coding-agent Harness callback ran before Harness initialization");
@@ -339,13 +350,46 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
+	const materializeRuntimeComposition = (
+		factory: AgentRuntimeCompositionFactory,
+	) => materializeAgentRuntimeComposition(factory, {
+		session: options.session,
+		harness: created.harness,
+		models: options.models,
+	});
+	if (runtimeCompositionFactory !== undefined) {
+		const runtimeComposition = materializeRuntimeComposition(runtimeCompositionFactory);
+		const subagentComposition = createTrustedSubagentCompositionV1(runtimeComposition.subagents);
+		if (runtimeComposition.toolGateway === undefined) {
+			return {
+				...created,
+				runtimeComposition,
+				...(subagentComposition === undefined ? {} : { subagentComposition }),
+			};
+		}
+		return {
+			...created,
+			runtimeComposition,
+			...(subagentComposition === undefined ? {} : { subagentComposition }),
+			operationToolGateway: runtimeComposition.toolGateway,
+		};
+	}
 	if (subagents !== undefined && subagents.session !== options.session) {
 		await created.harness.close();
 		throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the Harness Session");
 	}
 	const subagentComposition = createTrustedSubagentCompositionV1(subagents);
 	if (workerSandbox === undefined) {
-		return subagentComposition === undefined ? created : { ...created, subagentComposition };
+		const runtimeComposition = materializeRuntimeComposition(
+			createAgentRuntimeCompositionFactoryFromTrustedProviders({
+				...(subagents === undefined ? {} : { subagentOptions: subagents }),
+			}),
+		);
+		return {
+			...created,
+			runtimeComposition,
+			...(subagentComposition === undefined ? {} : { subagentComposition }),
+		};
 	}
 	const workerCapabilities = Object.freeze((await workerSandbox.provider.capabilities()).map((capability) => {
 		const validated = validateFoundationProviderCapability(capability);
@@ -449,12 +493,20 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 			? {}
 			: { onOperationPayload: workerSandbox.onOperationPayload }),
 	});
+	const operationToolGateway = createFoundationToolGateway({
+		gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
+		providers: [sandboxProvider],
+	});
+	const runtimeComposition = materializeRuntimeComposition(
+		createAgentRuntimeCompositionFactoryFromTrustedProviders({
+			toolGateway: () => operationToolGateway,
+			...(subagents === undefined ? {} : { subagentOptions: subagents }),
+		}),
+	);
 	return {
 		...created,
+		runtimeComposition,
 		...(subagentComposition === undefined ? {} : { subagentComposition }),
-		operationToolGateway: createFoundationToolGateway({
-			gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
-			providers: [sandboxProvider],
-		}),
+		operationToolGateway,
 	};
 }

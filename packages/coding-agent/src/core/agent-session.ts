@@ -7,6 +7,7 @@ import type {
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
 import type { CompactionResult } from "./compaction/index.ts";
+import type { AgentRuntimeCompositionFactory } from "./agent-runtime-composition.ts";
 import type { ExternalAgentEvent } from "./external-agent-adapter.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import type {
@@ -115,6 +116,8 @@ export interface AgentSessionConfig {
 	modelRuntime: ModelRuntime;
 	modelBroker?: ModelBroker;
 	modelBrokerConfigRevision?: string;
+	/** One trusted factory for every optional authority in this canonical Session/Harness. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
 	initialModelSelection?: "manual" | "default";
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];
