@@ -134,8 +134,8 @@ const FINGERPRINT_KEYS = new Set(["algorithm", "value"]);
 const EXTERNAL_CONNECTOR_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
-function connectorRegistryError(message: string, cause?: unknown): FoundationError {
-	return new FoundationError("task_executor_invalid_provider_class", message, cause === undefined ? undefined : { cause });
+function connectorRegistryError(message: string): FoundationError {
+	return new FoundationError("task_executor_invalid_provider_class", message);
 }
 
 function isConnectorRecord(value: unknown): value is Record<string, unknown> {
@@ -287,9 +287,9 @@ async function probeConnector(
 		if (!hasExactConnectorKeys(probed, RESULT_ERROR_KEYS) || !FoundationError.is(probed.error)) {
 			return Result.err(connectorRegistryError("External connector returned a malformed capability probe failure."));
 		}
-		return Result.err(probed.error);
-	} catch (error) {
-		return Result.err(connectorRegistryError("External connector threw while probing capabilities.", error));
+		return Result.err(connectorRegistryError("External connector capability probe failed."));
+	} catch {
+		return Result.err(connectorRegistryError("External connector threw while probing capabilities."));
 	}
 }
 
