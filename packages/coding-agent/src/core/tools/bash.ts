@@ -175,8 +175,8 @@ function resolveSpawnContext(
 	delete env.AOS_AGENT_REASONING_LEVEL;
 	if (exposeSessionEnvironment && ctx) {
 		const model = ctx.model;
-		env.AOS_AGENT_SESSION_ID = ctx.sessionManager.getSessionId();
-		const sessionFile = ctx.sessionManager.getSessionFile();
+		env.AOS_AGENT_SESSION_ID = ctx.session.getSessionId();
+		const sessionFile = ctx.session.getSessionFile();
 		if (sessionFile) env.AOS_AGENT_SESSION_FILE = sessionFile;
 		if (model) {
 			env.AOS_AGENT_PROVIDER = model.provider;

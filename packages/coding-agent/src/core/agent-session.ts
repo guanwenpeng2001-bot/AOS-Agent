@@ -189,3 +189,4 @@ export {
 	type CanonicalAgentSessionOptions,
 	type CanonicalAgentSessionServices,
 } from "./agent-session-facade.ts";
+export type { AgentSessionReadProjection } from "./session-read-projection.ts";

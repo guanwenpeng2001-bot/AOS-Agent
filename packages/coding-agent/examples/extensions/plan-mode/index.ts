@@ -332,7 +332,7 @@ After completing a step, include a [DONE:n] tag in your response.`;
 			planModeEnabled = true;
 		}
 
-		const entries = ctx.sessionManager.getEntries();
+		const entries = ctx.session.getEntries();
 
 		// Restore persisted state
 		const planModeEntry = entries

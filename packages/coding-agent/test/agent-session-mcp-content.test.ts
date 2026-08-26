@@ -885,7 +885,7 @@ describe("AgentSession MCP content list/read/get and attachments", () => {
 			await session.attachMcpResource({ serverId: "docs", uri: "file:///guide.md" });
 			await session.attachMcpPrompt({ serverId: "docs", name: "summarize", args: { topic: "MCP" } });
 
-			const entries = session.sessionManager
+			const entries = session.sessionRead
 				.getEntries()
 				.filter((entry): entry is Extract<SessionEntry, { type: "custom" }> =>
 					entry.type === "custom" && entry.customType === "mcp.content.audit",
@@ -933,7 +933,7 @@ describe("AgentSession MCP content list/read/get and attachments", () => {
 
 			await expect(session.attachMcpResource({ serverId: "missing", uri: "file:///nope.md" })).rejects.toThrow();
 
-			const entries = session.sessionManager
+			const entries = session.sessionRead
 				.getEntries()
 				.filter((entry): entry is Extract<SessionEntry, { type: "custom" }> =>
 					entry.type === "custom" && entry.customType === "mcp.content.audit",
@@ -965,7 +965,7 @@ describe("AgentSession MCP content list/read/get and attachments", () => {
 			const attachment = await session.attachMcpResource({ serverId: "docs", uri: "file:///guide.md" });
 			await session.prompt("hello");
 
-			const snapshotEntry = session.sessionManager
+			const snapshotEntry = session.sessionRead
 				.getEntries()
 				.find((entry): entry is Extract<SessionEntry, { type: "custom" }> =>
 					entry.type === "custom" && entry.customType === CONTEXT_SNAPSHOT_CUSTOM_TYPE,

@@ -72,7 +72,6 @@ describe("session cwd handling", () => {
 		cleanupPaths.push(fallbackCwd, sessionDir);
 		writeSessionFile(sessionFile, missingCwd);
 
-		const sessionManager = SessionManager.open(sessionFile);
 		let createRuntimeCalled = false;
 		const createRuntime: CreateAgentSessionRuntimeFactory = async () => {
 			createRuntimeCalled = true;
@@ -83,7 +82,7 @@ describe("session cwd handling", () => {
 			createAgentSessionRuntime(createRuntime, {
 				cwd: fallbackCwd,
 				agentDir: fallbackCwd,
-				sessionManager,
+				session: { mode: "open", path: sessionFile },
 			}),
 		).rejects.toBeInstanceOf(MissingSessionCwdError);
 		expect(createRuntimeCalled).toBe(false);

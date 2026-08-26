@@ -3,6 +3,7 @@
  */
 
 import type { AgentMessage } from "@aos-agent/agent-core";
+import type { AgentSession } from "../agent-session.ts";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@aos-agent/ai";
 import type { KeyId } from "@aos-agent/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
@@ -11,7 +12,7 @@ import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { SessionManager } from "../session-manager.ts";
+import type { AgentSessionReadProjection } from "../session-read-projection.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
@@ -166,7 +167,7 @@ interface ExtensionProviderActions {
 
 export type NewSessionHandler = (options?: {
 	parentSession?: string;
-	setup?: (sessionManager: SessionManager) => Promise<void>;
+	setup?: (session: AgentSession) => Promise<void>;
 	withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 }) => Promise<{ cancelled: boolean }>;
 
@@ -275,7 +276,7 @@ export class ExtensionRunner {
 	private uiContext: ExtensionUIContext;
 	private mode: ExtensionMode = "print";
 	private cwd: string;
-	private sessionManager: SessionManager;
+	private session: AgentSessionReadProjection;
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
 	private getModel: () => Model<any> | undefined = () => undefined;
@@ -308,14 +309,14 @@ export class ExtensionRunner {
 		extensions: Extension[],
 		runtime: ExtensionRuntime,
 		cwd: string,
-		sessionManager: SessionManager,
+		session: AgentSessionReadProjection,
 		modelRegistry: ModelRegistry,
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
-		this.sessionManager = sessionManager;
+		this.session = session;
 		this.modelRegistry = modelRegistry;
 	}
 
@@ -743,9 +744,9 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.cwd;
 			},
-			get sessionManager() {
+			get session() {
 				runner.assertActive();
-				return runner.sessionManager;
+				return runner.session;
 			},
 			get modelRegistry() {
 				runner.assertActive();

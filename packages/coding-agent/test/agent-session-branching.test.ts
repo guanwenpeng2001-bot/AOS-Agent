@@ -21,14 +21,12 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
 import { API_KEY } from "./utilities.ts";
 
 describe.skipIf(!API_KEY)("AgentSession forking", () => {
 	let session: AgentSession;
 	let runtimeHost: AgentSessionRuntime;
 	let tempDir: string;
-	let sessionManager: SessionManager;
 
 	beforeEach(() => {
 		tempDir = join(tmpdir(), `aos-branching-test-${Date.now()}`);
@@ -46,7 +44,6 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 
 	async function createSession(noSession: boolean = false) {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
-		sessionManager = noSession ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: API_KEY! }));
 
@@ -80,7 +77,7 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 		runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager,
+			session: { mode: noSession ? "memory" : "new" },
 		});
 		session = runtimeHost.session;
 		session.subscribe(() => {});

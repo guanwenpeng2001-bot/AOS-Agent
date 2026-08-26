@@ -937,7 +937,7 @@ function denyMcpAuthPolicySettings(): {
 
 /** Allowlist-only auth audit entries of the session's MCP operation trail. */
 function authAuditEntries(session: AgentSession): Array<Record<string, unknown>> {
-	return session.sessionManager
+	return session.sessionRead
 			.getEntries()
 			.filter(
 				(entry): entry is Extract<SessionEntry, { type: "custom" }> =>

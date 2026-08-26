@@ -112,6 +112,24 @@ interface ReadSnapshot {
 
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const FOUNDATION_CORRELATED_CUSTOM_TYPES = new Set([
+	"automation.run",
+	"model.binding",
+	"model.attempt",
+	"context.snapshot",
+	"capability.binding",
+	"policy.binding",
+	"policy.decision",
+	"policy.approval",
+	"sandbox.lifecycle",
+	"policy.violation",
+	"task.gate",
+	"task.graph",
+	"task.credential",
+	"worker.lifecycle_transitioned",
+	"worker.operation_recorded",
+	"worker_receipt.written",
+]);
 const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
 
@@ -408,7 +426,41 @@ export class ExecutionAuditQuery {
 				getEntries: () => entries,
 			};
 			const adapter = new ExecutionAuditAdapter(snapshot);
-			return { sessionId, adapter, fold: adapter.fold() };
+			const physicalFold = adapter.fold();
+			if (this.source.getPhysicalEntries === undefined) return { sessionId, adapter, fold: physicalFold };
+			const physicalIds = new Set(entries.map((entry) => entry.id));
+			const projectedEntries = this.source.getEntries().filter(
+				(entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom" &&
+					!FOUNDATION_CORRELATED_CUSTOM_TYPES.has(entry.customType) &&
+					!physicalIds.has(entry.id),
+			);
+			if (projectedEntries.length === 0) return { sessionId, adapter, fold: physicalFold };
+			const externalEntries = projectedEntries.filter(
+				(entry) => entry.customType === "external.mapping" || entry.customType === "remote.operation",
+			);
+			const unsupportedWarnings: AuditWarning[] = projectedEntries.filter(
+				(entry) => entry.customType !== "external.mapping" && entry.customType !== "remote.operation",
+			).map((entry) => ({
+				code: "unknown_source",
+				sessionId,
+				sourceEntryId: entry.id,
+				schemaVersion: 1,
+			}));
+			const projectedFold = externalEntries.length === 0
+				? { events: [], warnings: [], runSummaries: new Map() } satisfies AuditFoldResult
+				: new ExecutionAuditAdapter({
+						getSessionId: () => sessionId,
+						getEntries: () => externalEntries,
+					}).fold();
+			return {
+				sessionId,
+				adapter,
+				fold: {
+					events: [...physicalFold.events, ...projectedFold.events],
+					warnings: [...physicalFold.warnings, ...projectedFold.warnings, ...unsupportedWarnings],
+					runSummaries: physicalFold.runSummaries,
+				},
+			};
 		} catch (error) {
 			if (error instanceof ExecutionAuditError) throw error;
 			throw new ExecutionAuditError("audit_scope_unavailable");

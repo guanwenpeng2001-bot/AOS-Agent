@@ -8,7 +8,6 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
-	SessionManager,
 } from "aos-agent";
 
 const cwd = process.cwd();
@@ -27,7 +26,7 @@ await loader1.reload();
 
 const { session: session1 } = await createAgentSession({
 	resourceLoader: loader1,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 
 try {
@@ -57,7 +56,7 @@ await loader2.reload();
 
 const { session: session2 } = await createAgentSession({
 	resourceLoader: loader2,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 
 try {

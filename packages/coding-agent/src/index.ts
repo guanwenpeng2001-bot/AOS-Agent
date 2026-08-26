@@ -32,7 +32,6 @@ export {
 } from "./config.ts";
 export {
 	AgentSession,
-	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
 	type ModelCycleResult,
@@ -779,6 +778,9 @@ export {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	createTrustedWorkerSandboxComposition,
+	listAllSessions,
+	listSessions,
+	type SessionCreationOptions,
 	type TrustedWorkerSandboxComposition,
 	type TrustedWorkerSandboxFactory,
 	type TrustedWorkerSandboxProviderOptions,
@@ -837,7 +839,6 @@ export {
 	type SessionHeader,
 	type SessionInfo,
 	type SessionInfoEntry,
-	SessionManager,
 	type SessionMessageEntry,
 	type SessionTreeNode,
 	sessionEntryToContextMessages,

@@ -12,7 +12,6 @@ import {
 } from "../../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";
 
 function getText(message: AgentSession["messages"][number]): string {
@@ -98,7 +97,7 @@ describe("regression #2860: replaced session callbacks", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			session: { mode: "new" },
 		});
 
 		const rebindSession = async (): Promise<void> => {
@@ -167,14 +166,14 @@ describe("regression #2860: replaced session callbacks", () => {
 					handler: async (_args, ctx) => {
 						oldCtx = ctx;
 						oldPi = agent;
-						oldSessionFile = ctx.sessionManager.getSessionFile();
+						oldSessionFile = ctx.session.getSessionFile();
 						await ctx.newSession({
 							parentSession: oldSessionFile,
 							withSession: async (replacedCtx) => {
 								events.push(`with:${currentInstance}`);
-								replacementSessionFile = replacedCtx.sessionManager.getSessionFile();
+								replacementSessionFile = replacedCtx.session.getSessionFile();
 								try {
-									oldCtx?.sessionManager.getSessionFile();
+									oldCtx?.session.getSessionFile();
 								} catch {
 									staleCtxThrows = true;
 								}
@@ -213,7 +212,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				agent.registerCommand("fork-it", {
 					description: "fork-it",
 					handler: async (_args, ctx) => {
-						const leafId = ctx.sessionManager.getLeafId();
+						const leafId = ctx.session.getLeafId();
 						if (!leafId) {
 							throw new Error("Missing leaf id");
 						}

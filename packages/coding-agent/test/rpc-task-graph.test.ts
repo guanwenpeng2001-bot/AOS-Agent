@@ -5,6 +5,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -280,7 +281,7 @@ function dispatchCommand(
 }
 
 function graphEntries(session: AgentSession): Array<{ id: string; data: unknown }> {
-	return session.sessionManager
+	return session.sessionRead
 		.getEntries()
 		.filter((entry) => entry.type === "custom" && entry.customType === "task.graph")
 		.map((entry) => ({
@@ -1120,7 +1121,7 @@ describe("task graph automation host rpc", () => {
 				clientRequestId: "attach-2",
 			});
 			expect(expectGraphMutationResponse(attachBoom, "task.graph.node.attach").node?.status).toBe("running");
-			await writeCanonicalRunResult(failed.runtimeHost.session.sessionManager, failedRunId, {
+			await writeCanonicalRunResult(getAgentCanonicalSession(failed.runtimeHost.session), failedRunId, {
 				outcome: "failed",
 			});
 			const settleBoom = await dispatchCommand(failed.controller, {
@@ -1173,7 +1174,7 @@ describe("task graph automation host rpc", () => {
 				runId: cancelledRunId,
 			});
 			expect(cancelResponse).toMatchObject({ type: "response", command: "run.cancel", success: true });
-			await writeCanonicalRunResult(cancelled.runtimeHost.session.sessionManager, cancelledRunId, {
+			await writeCanonicalRunResult(getAgentCanonicalSession(cancelled.runtimeHost.session), cancelledRunId, {
 				outcome: "cancelled",
 			});
 			const settleStop = await dispatchCommand(cancelled.controller, {
@@ -1230,7 +1231,7 @@ describe("task graph automation host rpc", () => {
 				expect(expectGraphMutationResponse(attach, "task.graph.node.attach").node?.status).toBe("running");
 				if (terminalType === "run.cancelled") {
 					await dispatchCommand(mixed.controller, { id: `cancel-${nodeId}`, type: "run.cancel", runId });
-					await writeCanonicalRunResult(mixed.runtimeHost.session.sessionManager, runId, {
+					await writeCanonicalRunResult(getAgentCanonicalSession(mixed.runtimeHost.session), runId, {
 						outcome: "cancelled",
 					});
 				} else {
@@ -1411,7 +1412,7 @@ describe("task graph automation host rpc", () => {
 			const sessionId = runtimeHost.session.sessionId;
 			const runId = "run_mismatch";
 			const model = { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" as const };
-			const sessionManager = runtimeHost.session.sessionManager;
+			const sessionManager = getAgentSessionLedger(runtimeHost.session);
 			sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
@@ -1436,7 +1437,7 @@ describe("task graph automation host rpc", () => {
 
 			// A canonical Foundation receipt and a later conflicting transport
 			// record make the projected record and receipt facts disagree.
-			await writeCanonicalRunResult(sessionManager, runId, { outcome: "completed" });
+			await writeCanonicalRunResult(getAgentCanonicalSession(runtimeHost.session), runId, { outcome: "completed" });
 			sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
@@ -1481,7 +1482,7 @@ describe("task graph automation host rpc", () => {
 			const sessionId = runtimeHost.session.sessionId;
 			const runId = "run_no_receipt";
 			const model = { provider: "anthropic", id: "claude-sonnet-4-5", thinkingLevel: "off" as const };
-			const sessionManager = runtimeHost.session.sessionManager;
+			const sessionManager = getAgentSessionLedger(runtimeHost.session);
 			sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 				schemaVersion: 1,
 				kind: "accepted",
@@ -1598,7 +1599,7 @@ describe("task graph automation host rpc", () => {
 		try {
 			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
 			const appendSpy = vi
-				.spyOn(runtimeHost.session.sessionManager, "appendCustomEntry")
+				.spyOn(getAgentSessionLedger(runtimeHost.session), "appendCustomEntry")
 				.mockImplementation(() => {
 					throw new Error("disk full");
 				});

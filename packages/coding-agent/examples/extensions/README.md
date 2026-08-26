@@ -203,7 +203,7 @@ return {
 
 // Reconstruct on session events
 agent.on("session_start", async (_event, ctx) => {
-  for (const entry of ctx.sessionManager.getBranch()) {
+  for (const entry of ctx.session.getBranch()) {
     if (entry.type === "message" && entry.message.toolName === "my_tool") {
       const details = entry.message.details;
       // Reconstruct state from details

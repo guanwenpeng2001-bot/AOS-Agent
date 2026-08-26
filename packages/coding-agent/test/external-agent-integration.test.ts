@@ -18,6 +18,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ExternalAgentExecutionContext, ExternalAgentPrepareRequest } from "../src/core/external-agent-adapter.ts";
@@ -389,7 +390,7 @@ function externalAgentEvents(records: RpcHostOutputRecord[]): ParsedOutputLine[]
 }
 
 function customEntries(
-	sessionManager: SessionManager,
+	sessionManager: { getEntries(): SessionEntry[] },
 	customType: string,
 ): Array<Extract<SessionEntry, { type: "custom" }>> {
 	return sessionManager.getEntries().filter(
@@ -454,7 +455,8 @@ async function createRuntimeHost(options: {
 		});
 	};
 
-	let currentSession = openSession(SessionManager.create(tempDir));
+	const initialSessionManager = SessionManager.create(tempDir);
+	let currentSession = openSession(initialSessionManager);
 	let rebindCallback: (() => Promise<void>) | undefined;
 
 	const runtimeHost = {
@@ -481,7 +483,7 @@ async function createRuntimeHost(options: {
 
 	return {
 		runtimeHost,
-		sessionManager: currentSession.sessionManager,
+		sessionManager: initialSessionManager,
 		getSession: () => currentSession,
 		cleanup: async () => {
 			try {
@@ -852,7 +854,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, getSession, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -944,7 +946,7 @@ describe("Automation Host external agent integration", () => {
 			expect(JSON.stringify(sessionManager.getEntries())).not.toContain("secret");
 
 			// The Audit query filters the persisted remote.operation receipt by adapter.
-			const audit = new ExecutionAuditQuery(sessionManager).query({
+			const audit = new ExecutionAuditQuery(getAgentSessionLedger(getSession())).query({
 				scope: "current-session",
 				types: ["remote.operation"],
 				adapter: { adapterId: "test-adapter", targetId: "target-1", protocol: { name: "test-protocol", version: "1" } },
@@ -979,7 +981,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, getSession, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1004,7 +1006,7 @@ describe("Automation Host external agent integration", () => {
 
 			const cancelCommand = controller.handleCommand({ id: "c4", type: "run.cancel", runId });
 			await vi.waitFor(() => expect(handle.cancelCalls).toBeGreaterThanOrEqual(1));
-			await writeCanonicalRunResult(sessionManager, runId, {
+			await writeCanonicalRunResult(getAgentCanonicalSession(getSession()), runId, {
 				outcome: "cancelled",
 				completedAt: new Date().toISOString(),
 			});
@@ -1635,7 +1637,7 @@ describe("Automation Host external agent integration", () => {
 		});
 		adapter.handle = handle;
 		registerFakeAdapter(registry, adapter);
-		const { controller, records, sessionManager, cleanup } = await startInMemoryController({
+		const { controller, records, sessionManager, getSession, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
 			externalAgentRegistry: registry,
@@ -1660,8 +1662,9 @@ describe("Automation Host external agent integration", () => {
 			// The spy throws only for the remote.operation custom entry so every
 			// other append (run facts, cancellation intents) still succeeds, and it
 			// is restored by the suite's afterEach restoreAllMocks.
-			const originalAppend = sessionManager.appendCustomEntry.bind(sessionManager);
-			const appendSpy = vi.spyOn(sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
+			const sessionLedger = getAgentSessionLedger(getSession());
+			const originalAppend = sessionLedger.appendCustomEntry.bind(sessionLedger);
+			const appendSpy = vi.spyOn(sessionLedger, "appendCustomEntry").mockImplementation((customType, data) => {
 				if (customType === "remote.operation") throw new Error("disk failure");
 				return originalAppend(customType, data);
 			});
@@ -2117,7 +2120,7 @@ describe("Automation Host external agent integration", () => {
 			const targetDir = join(tmpdir(), `aos-external-agent-switch-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 			const switchPath = SessionManager.create(targetDir).getSessionFile()!;
 			await runtimeHost.switchSession(switchPath);
-			const incomingManager = getSession().sessionManager;
+			const incomingManager = getSession().sessionRead;
 			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);
@@ -2198,7 +2201,7 @@ describe("Automation Host external agent integration", () => {
 
 			// The incoming session's ledger must stay clean: no Run records, no
 			// Remote Operation receipt, and no external mapping.
-			const incomingManager = getSession().sessionManager;
+			const incomingManager = getSession().sessionRead;
 			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);
@@ -2279,7 +2282,7 @@ describe("Automation Host external agent integration", () => {
 			// incoming session's ledger.
 			expect(runEventsOfType(records, "run.started")).toHaveLength(0);
 			expect(terminalEvents(records)).toHaveLength(0);
-			const incomingManager = getSession().sessionManager;
+			const incomingManager = getSession().sessionRead;
 			expect(customEntries(incomingManager, RUN_LEDGER_CUSTOM_TYPE)).toHaveLength(0);
 			expect(customEntries(incomingManager, "remote.operation")).toHaveLength(0);
 			expect(customEntries(incomingManager, "external.mapping")).toHaveLength(0);

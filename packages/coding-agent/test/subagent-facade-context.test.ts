@@ -247,7 +247,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			message.role === "user" && typeof message.content === "string" && message.content.includes("subagent-context")
 		);
 		expect(childMessage?.content).toContain('trust="untrusted_child_output"');
-		const childSource = enabled.sessionManager.getContextSnapshots()
+		const childSource = enabled.sessionRead.getContextSnapshots()
 			.find((snapshot) => snapshot.runId === "run-enabled")
 			?.sources.find((source) => source.sourceId === "subagent:next-turn:run-enabled");
 		expect(childSource).toMatchObject({

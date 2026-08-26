@@ -42,7 +42,7 @@ export default function (agent: ExtensionAPI) {
 			}
 
 			// Find the last assistant message on the current branch
-			const branch = ctx.sessionManager.getBranch();
+			const branch = ctx.session.getBranch();
 			let lastAssistantText: string | undefined;
 
 			for (let i = branch.length - 1; i >= 0; i--) {

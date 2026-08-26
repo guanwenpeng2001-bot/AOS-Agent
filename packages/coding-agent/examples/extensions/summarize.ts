@@ -146,7 +146,7 @@ export default function (agent: ExtensionAPI) {
 	agent.registerCommand("summarize", {
 		description: "Summarize the current conversation in a custom UI",
 		handler: async (_args, ctx) => {
-			const branch = ctx.sessionManager.getBranch();
+			const branch = ctx.session.getBranch();
 			const conversationText = buildConversationText(branch);
 
 			if (!conversationText.trim()) {

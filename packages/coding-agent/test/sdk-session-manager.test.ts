@@ -37,48 +37,52 @@ describe("createAgentSession session manager defaults", () => {
 
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 		const expectedSessionDir = join(agentDir, "sessions", safePath);
-		const sessionDir = session.sessionManager.getSessionDir();
-		const sessionFile = session.sessionManager.getSessionFile();
+		const sessionDir = session.sessionRead.getSessionDir();
+		const sessionFile = session.sessionRead.getSessionFile();
 
 		expect(sessionDir).toBe(expectedSessionDir);
 		expect(sessionFile).toBeDefined();
 		expect(dirname(sessionFile!)).toBe(expectedSessionDir);
 
 		session.dispose();
+		await session.waitForDispose();
 	});
 
-	it("keeps an explicit sessionManager override", async () => {
+	it("supports an explicit in-memory session", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
-		const sessionManager = SessionManager.inMemory(cwd);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
 			model: model!,
-			sessionManager,
+			session: { mode: "memory", id: "sdk-memory-session" },
 		});
 
-		expect(session.sessionManager).toBe(sessionManager);
-		expect(session.sessionManager.isPersisted()).toBe(false);
+		expect(session.sessionId).toBe("sdk-memory-session");
+		expect(session.sessionRead.isPersisted()).toBe(false);
 
 		session.dispose();
+		await session.waitForDispose();
 	});
 
-	it("derives cwd from an explicit sessionManager when cwd is omitted", async () => {
+	it("derives cwd from an explicitly opened session when cwd is omitted", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
 		const sessionCwd = join(tempDir, "session-project");
 		mkdirSync(sessionCwd, { recursive: true });
-		const sessionManager = SessionManager.inMemory(sessionCwd);
+		const sessionManager = SessionManager.create(sessionCwd, join(tempDir, "sessions"));
+		sessionManager.flushPendingSession();
+		const sessionPath = sessionManager.getSessionFile();
+		if (sessionPath === undefined) throw new Error("Expected a persisted fixture session");
 		const { session } = await createAgentSession({
 			agentDir,
 			model: model!,
-			sessionManager,
+			session: { mode: "open", path: sessionPath },
 		});
 
-		expect(session.sessionManager).toBe(sessionManager);
+		expect(session.sessionFile).toBe(sessionPath);
 		expect(session.systemPrompt).toContain(`Current working directory: ${sessionCwd}`);
 
 		const bashTool = session.agent.state.tools.find((tool) => tool.name === "bash");
@@ -95,6 +99,7 @@ describe("createAgentSession session manager defaults", () => {
 		expect(realpathSync(shellPath)).toBe(realpathSync(sessionCwd));
 
 		session.dispose();
+		await session.waitForDispose();
 	});
 
 	it("exposes current session state to the built-in bash tool", async () => {
@@ -131,5 +136,6 @@ describe("createAgentSession session manager defaults", () => {
 		]);
 
 		session.dispose();
+		await session.waitForDispose();
 	});
 });

@@ -463,9 +463,7 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 		};
 		try {
 			legacy.session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
-			legacy.session.sessionManager.appendMessage(structuredClone(user));
-			legacy.session.sessionManager.appendMessage(structuredClone(response));
-			legacy.session.agent.state.messages = legacy.session.sessionManager.buildSessionContext().messages;
+			legacy.session.agent.state.messages = [structuredClone(user), structuredClone(response)];
 			await canonical.session.appendMessage(structuredClone(user));
 			await canonical.session.appendMessage(structuredClone(response));
 			await canonical.harness.setCompactionSettings({ enabled: true, reserveTokens: 10, keepRecentTokens: 1 });

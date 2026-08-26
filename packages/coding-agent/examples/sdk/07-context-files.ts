@@ -8,7 +8,6 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
-	SessionManager,
 } from "aos-agent";
 
 // Disable context files entirely by returning an empty list in agentsFilesOverride.
@@ -41,7 +40,7 @@ for (const file of discovered) {
 
 const { session } = await createAgentSession({
 	resourceLoader: loader,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 console.log(`Session created with ${discovered.length + 1} context files`);
 session.dispose();

@@ -54,20 +54,19 @@ import {
 	SchedulerExecutorRegistry,
 	SchedulerInProcessTaskExecutorProvider,
 	SchedulerQueueStore,
-	SessionManager,
 	SettingsManager,
 	type CreateAgentSessionResult,
 	type ExternalAgentAdapter,
 	type ExternalAgentCapabilitySnapshot,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { getAgentCanonicalSession } from "../../src/core/agent-session-facade.ts";
 import {
 	CapabilityPublicIdentity,
 	getCapabilityPublicIdentityPath,
 } from "../../src/core/capability-public-identity.ts";
 import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "../../src/core/scheduler-executors.ts";
 import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../../src/core/scheduler.ts";
-import { SessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import {
 	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
@@ -610,7 +609,7 @@ async function productAuthorityFixture(): Promise<ProductAuthorityFixture> {
 			modelRuntime,
 			resourceLoader,
 			settingsManager,
-			sessionManager: SessionManager.inMemory(tempDir),
+			session: { mode: "memory" },
 			noTools: "all",
 		});
 		return {
@@ -630,7 +629,7 @@ async function prepareProductAuthorityFixture(fixture: ProductAuthorityFixture):
 	await fixture.result.session.prompt("exercise the package-root product composition", {
 		runId: "line13-ac13-run",
 	});
-	const durableSession = new Session(new SessionManagerStorage(fixture.result.session.sessionManager));
+	const durableSession = getAgentCanonicalSession(fixture.result.session);
 	const records = await durableSession.findFoundationRecords({ kind: "fact", order: "oldestFirst" });
 	fixture.canonicalObjectTypes = records.flatMap((record) => (record.kind === "fact" ? [record.objectType] : []));
 	if (
@@ -994,36 +993,6 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 		}),
 		defineLine13KnownGapCase({
 			entry: {
-				ac: "AC-13",
-				fullTestName: "Line 13 AC-13 exposes one canonical Session authority from package-root composition",
-				baseSha: BASE_SHA,
-				ownerStage: "T3a",
-				mode: "fails",
-				expectedFailure: {
-					reason: "session.legacy_writer_public",
-					fingerprint: "sha256:90826c548cd59ec7e46004bb07824b015315f6c94b44a5f8b8a417ef9ce58380",
-				},
-			},
-			scenario: {
-				fixture: productAuthorityFixture,
-				setup: prepareProductAuthorityFixture,
-				assertion: ({ result }) => {
-					assert.equal(
-						"sessionManager" in result.session,
-						false,
-						"expected package-root AgentSession to hide legacy SessionManager write authority",
-					);
-				},
-				cleanup: async ({ tempDir, result, unregisterFaux }) => {
-					result.session.dispose();
-					await result.session.waitForDispose();
-					unregisterFaux();
-					rmSync(tempDir, { recursive: true, force: true });
-				},
-			},
-		}),
-		defineLine13KnownGapCase({
-			entry: {
 				ac: "AC-15",
 				fullTestName:
 					"Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
@@ -1093,6 +1062,27 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 		}),
 	],
 	resolvedCases: [
+		defineLine13ResolvedCase({
+			ac: "AC-13",
+			fullTestName: "Line 13 AC-13 exposes one canonical Session authority from package-root composition",
+			scenario: {
+				fixture: productAuthorityFixture,
+				setup: prepareProductAuthorityFixture,
+				assertion: ({ result }) => {
+					assert.equal(
+						"sessionManager" in result.session,
+						false,
+						"expected package-root AgentSession to hide legacy SessionManager write authority",
+					);
+				},
+				cleanup: async ({ tempDir, result, unregisterFaux }) => {
+					result.session.dispose();
+					await result.session.waitForDispose();
+					unregisterFaux();
+					rmSync(tempDir, { recursive: true, force: true });
+				},
+			},
+		}),
 		defineLine13ResolvedCase({
 			ac: "AC-14",
 			fullTestName: "Line 13 AC-14 removes version-suffixed business exports and aliases from public roots",

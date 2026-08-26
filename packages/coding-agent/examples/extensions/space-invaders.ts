@@ -535,7 +535,7 @@ export default function (agent: ExtensionAPI) {
 			}
 
 			// Load saved state from session
-			const entries = ctx.sessionManager.getEntries();
+			const entries = ctx.session.getEntries();
 			let savedState: GameState | undefined;
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const entry = entries[i];

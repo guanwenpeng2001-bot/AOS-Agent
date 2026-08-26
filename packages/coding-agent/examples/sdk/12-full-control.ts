@@ -10,7 +10,6 @@ import {
 	createExtensionRuntime,
 	ModelRuntime,
 	type ResourceLoader,
-	SessionManager,
 	SettingsManager,
 } from "aos-agent";
 
@@ -58,7 +57,7 @@ const { session } = await createAgentSession({
 	modelRuntime,
 	resourceLoader,
 	tools: ["read", "bash"],
-	sessionManager: SessionManager.inMemory(cwd),
+	session: { mode: "memory" },
 	settingsManager,
 });
 

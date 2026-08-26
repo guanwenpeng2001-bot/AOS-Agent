@@ -4,7 +4,10 @@ import { clampThinkingLevel, type Message, type Model, streamSimple } from "@aos
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
-import { createAgentSessionWithTrustedWorkerSandboxProvider } from "./agent-session-facade.ts";
+import {
+	createAgentSessionWithTrustedWorkerSandboxProvider,
+	recordInitialAgentSessionConfiguration,
+} from "./agent-session-facade.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
@@ -33,7 +36,8 @@ import {
 	type WorkerSandboxProfileV1,
 	type WorkerSandboxProviderOptionsV1,
 } from "./worker-sandbox-provider.ts";
-import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
+import { SessionManager } from "./session-manager.ts";
+import { createSessionManagerForOptions, type SessionCreationOptions } from "./session-creation.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
@@ -61,6 +65,8 @@ setDefaultStreamFn(streamSimple);
 export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
 	readonly profile: WorkerSandboxProfileV1;
 };
+
+export type { SessionCreationOptions } from "./session-creation.ts";
 
 const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
 
@@ -139,7 +145,10 @@ export interface CreateAgentSessionOptions {
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;
 
-	/** Session manager. Default: SessionManager.create(cwd) */
+	/** Session persistence and selection. Default: a new persisted session. */
+	session?: SessionCreationOptions;
+
+	/** @internal Physical store injection retained for coding-agent tests and hosts. */
 	sessionManager?: SessionManager;
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
@@ -266,6 +275,16 @@ function getDefaultAgentDir(): string {
 	return getAgentDir();
 }
 
+/** List persisted sessions without exposing the physical SessionManager writer. */
+export function listSessions(cwd: string = process.cwd(), sessionDirectory?: string) {
+	return SessionManager.list(cwd, sessionDirectory);
+}
+
+/** List persisted sessions across project directories. */
+export function listAllSessions(sessionDirectory?: string) {
+	return sessionDirectory === undefined ? SessionManager.listAll() : SessionManager.listAll(sessionDirectory);
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -283,7 +302,7 @@ function getDefaultAgentDir(): string {
  *
  * // Continue previous session
  * const { session, modelFallbackMessage } = await createAgentSession({
- *   continueSession: true,
+ *   session: { mode: "continue" },
  * });
  *
  * // Full control
@@ -297,7 +316,7 @@ function getDefaultAgentDir(): string {
  *   model: myModel,
  *   tools: ["read", "bash"],
  *   resourceLoader: loader,
- *   sessionManager: SessionManager.inMemory(),
+ *   session: { mode: "memory" },
  * });
  * ```
  */
@@ -305,8 +324,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const workerSandboxProvider = options.trustedWorkerSandbox === undefined
 		? undefined
 		: requireTrustedWorkerSandboxProvider(options.trustedWorkerSandbox);
-	const cwd = resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd());
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
+	const sessionManager = options.sessionManager ??
+		createSessionManagerForOptions({ cwd: options.cwd, agentDir, session: options.session }).sessionManager;
+	const cwd = resolvePath(options.cwd ?? sessionManager.getCwd());
 	let resourceLoader = options.resourceLoader;
 
 	const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
@@ -314,7 +335,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelRuntime = options.modelRuntime ?? (await ModelRuntime.create({ authPath, modelsPath }));
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
@@ -594,18 +614,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 	});
 
-	// Restore messages if session has existing data
+	// Restore messages if session has existing data. Bootstrap facts are
+	// persisted after canonical Session composition below.
 	if (hasExistingSession) {
 		agent.state.messages = existingSession.messages;
-		if (!hasThinkingEntry) {
-			sessionManager.appendThinkingLevelChange(thinkingLevel);
-		}
-	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
-		if (model) {
-			sessionManager.appendModelChange(model.provider, model.id);
-		}
-		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
 	const capabilityRegistry =
@@ -642,6 +654,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		noTools: options.noTools,
 	}, workerSandboxProvider);
 	sessionForToolEnvironment = session;
+	if (!hasExistingSession || !hasThinkingEntry) {
+		await recordInitialAgentSessionConfiguration(session, model, thinkingLevel, !hasExistingSession);
+	}
 	if (!explicitModelSelection && (options.modelRoute !== undefined || options.modelRole !== undefined)) {
 		const selection = modelBroker.resolveResult({
 			...(options.modelRoute === undefined ? {} : { modelRoute: options.modelRoute }),

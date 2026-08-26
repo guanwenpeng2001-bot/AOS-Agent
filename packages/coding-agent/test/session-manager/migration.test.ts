@@ -21,8 +21,10 @@ describe("migrateSessionEntries", () => {
 				},
 			},
 		] as FileEntry[];
+		const replay = structuredClone(entries);
 
 		migrateSessionEntries(entries);
+		migrateSessionEntries(replay);
 
 		// Header should have version set (v3 is current after hookMessage->custom migration)
 		expect((entries[0] as any).version).toBe(3);
@@ -38,6 +40,7 @@ describe("migrateSessionEntries", () => {
 		expect(msg2.id).toBeDefined();
 		expect(msg2.id.length).toBe(8);
 		expect(msg2.parentId).toBe(msg1.id);
+		expect(replay).toEqual(entries);
 	});
 
 	it("should be idempotent (skip already migrated)", () => {

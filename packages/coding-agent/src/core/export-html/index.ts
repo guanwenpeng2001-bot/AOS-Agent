@@ -1,12 +1,12 @@
-import type { AgentState } from "@aos-agent/agent-core";
+import { Session, type AgentState, type Entry } from "@aos-agent/agent-core";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";
 import { getResolvedThemeColors, getThemeExportColors } from "../../modes/interactive/theme/theme.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import type { SessionEntry } from "../session-manager.ts";
-import { SessionManager } from "../session-manager.ts";
+import { SessionManager, type SessionHeader } from "../session-manager.ts";
+import { SessionManagerStorage, type CodingAgentSessionMetadata } from "../session-manager-storage.ts";
 
 /**
  * Interface for rendering custom tools to HTML.
@@ -128,8 +128,8 @@ function generateThemeVars(themeName?: string): string {
 }
 
 interface SessionData {
-	header: ReturnType<SessionManager["getHeader"]>;
-	entries: ReturnType<SessionManager["getEntries"]>;
+	header: SessionHeader;
+	entries: readonly Entry[];
 	leafId: string | null;
 	systemPrompt?: string;
 	tools?: Array<Pick<ToolDefinition, "name" | "description" | "parameters">>;
@@ -181,7 +181,7 @@ const TEMPLATE_RENDERED_TOOLS = new Set(["bash", "read", "write", "edit", "ls"])
  * Pre-render custom tools to HTML using their TUI renderers.
  */
 function preRenderCustomTools(
-	entries: SessionEntry[],
+	entries: readonly Entry[],
 	toolRenderer: ToolHtmlRenderer,
 ): Record<string, RenderedToolHtml> {
 	const renderedTools: Record<string, RenderedToolHtml> = {};
@@ -230,17 +230,18 @@ function preRenderCustomTools(
 }
 
 /**
- * Export session to HTML using SessionManager and AgentState.
+ * Export session to HTML using the canonical Session and AgentState.
  * Used by TUI's /export command.
  */
 export async function exportSessionToHtml(
-	sm: SessionManager,
+	session: Session<CodingAgentSessionMetadata>,
 	state?: AgentState,
 	options?: ExportOptions | string,
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
 
-	const sessionFile = sm.getSessionFile();
+	const metadata = await session.getMetadata();
+	const sessionFile = metadata.path;
 	if (!sessionFile) {
 		throw new Error("Cannot export in-memory session to HTML");
 	}
@@ -248,7 +249,7 @@ export async function exportSessionToHtml(
 		throw new Error("Nothing to export yet - start a conversation first");
 	}
 
-	const entries = sm.getEntries();
+	const entries = await session.findEntries({ order: "oldestFirst" });
 
 	// Pre-render custom tools if a tool renderer is provided
 	let renderedTools: Record<string, RenderedToolHtml> | undefined;
@@ -261,9 +262,16 @@ export async function exportSessionToHtml(
 	}
 
 	const sessionData: SessionData = {
-		header: sm.getHeader(),
+		header: {
+			type: "session",
+			version: metadata.legacyVersion,
+			id: metadata.id,
+			timestamp: new Date(metadata.createdAt).toISOString(),
+			cwd: metadata.cwd,
+			...(metadata.parentSessionId === undefined ? {} : { parentSession: metadata.parentSessionId }),
+		},
 		entries,
-		leafId: sm.getLeafId(),
+		leafId: await session.getLeafId(),
 		systemPrompt: state?.systemPrompt,
 		tools: state?.tools?.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })),
 		renderedTools,
@@ -293,24 +301,9 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		throw new Error(`File not found: ${resolvedInputPath}`);
 	}
 
-	const sm = SessionManager.open(resolvedInputPath);
-
-	const sessionData: SessionData = {
-		header: sm.getHeader(),
-		entries: sm.getEntries(),
-		leafId: sm.getLeafId(),
-		systemPrompt: undefined,
-		tools: undefined,
-	};
-
-	const html = generateHtml(sessionData, opts.themeName);
-
-	let outputPath = opts.outputPath ? normalizePath(opts.outputPath) : undefined;
-	if (!outputPath) {
-		const inputBasename = basename(resolvedInputPath, ".jsonl");
-		outputPath = `${APP_NAME}-session-${inputBasename}.html`;
-	}
-
-	writeFileSync(outputPath, html, "utf8");
-	return outputPath;
+	const manager = SessionManager.open(resolvedInputPath);
+	return exportSessionToHtml(new Session(new SessionManagerStorage(manager)), undefined, {
+		...opts,
+		outputPath: opts.outputPath ?? `${APP_NAME}-session-${basename(resolvedInputPath, ".jsonl")}.html`,
+	});
 }

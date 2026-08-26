@@ -222,7 +222,7 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		const afterEvent = compactEvents[0];
 		if (afterEvent.type === "session_compact") {
 			// sessionManager is now on ctx, use session.sessionManager directly
-			const entries = session.sessionManager.getEntries();
+			const entries = session.sessionRead.getEntries();
 			const hasCompactionEntry = entries.some((e: { type: string }) => e.type === "compaction");
 			expect(hasCompactionEntry).toBe(true);
 		}
@@ -380,10 +380,10 @@ describe.skipIf(!API_KEY)("Compaction extensions", () => {
 		expect(Array.isArray(event.branchEntries)).toBe(true);
 
 		// sessionManager and model runtime remain available on the session.
-		expect(typeof session.sessionManager.getEntries).toBe("function");
+		expect(typeof session.sessionRead.getEntries).toBe("function");
 		expect(typeof session.modelRuntime.getAuth).toBe("function");
 
-		const entries = session.sessionManager.getEntries();
+		const entries = session.sessionRead.getEntries();
 		expect(Array.isArray(entries)).toBe(true);
 		expect(entries.length).toBeGreaterThan(0);
 	}, 120000);

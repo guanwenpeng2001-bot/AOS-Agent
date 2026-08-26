@@ -1,7 +1,7 @@
 /** Durable branch, checkpoint, and recovery boundaries for Session history. */
 
 import { randomUUID } from "node:crypto";
-import type { SessionEntry, SessionManager } from "./session-manager.ts";
+import type { Entry, Session, SessionMetadata } from "@aos-agent/agent-core";
 
 export const SESSION_BOUNDARY_SCHEMA_VERSION = 1 as const;
 export const SESSION_BOUNDARY_CUSTOM_TYPE = "session.boundary" as const;
@@ -24,11 +24,7 @@ export interface SessionBoundaryRecord {
 	readonly createdAt: string;
 }
 
-export interface SessionBoundarySession
-	extends Pick<
-		SessionManager,
-		"getSessionId" | "getLeafId" | "getEntry" | "getEntries" | "branch" | "resetLeaf" | "appendCustomEntry"
-	> {}
+export type SessionBoundarySession = Session<SessionMetadata>;
 
 export class SessionBoundaryError extends Error {
 	readonly code: "checkpoint_not_found" | "checkpoint_invalid";
@@ -74,87 +70,90 @@ export function isSessionBoundaryRecord(value: unknown): value is SessionBoundar
 	return value.reason === undefined || (typeof value.reason === "string" && value.reason.length <= 512);
 }
 
-function parseBoundaryEntry(entry: SessionEntry): SessionBoundaryRecord | undefined {
+function parseBoundaryEntry(entry: Entry): SessionBoundaryRecord | undefined {
 	if (entry.type !== "custom" || entry.customType !== SESSION_BOUNDARY_CUSTOM_TYPE) return undefined;
 	const value = isRecord(entry.data) && "boundary" in entry.data ? entry.data.boundary : entry.data;
 	return isSessionBoundaryRecord(value) ? value : undefined;
 }
 
-export function getSessionBoundaries(sessionManager: SessionManager): SessionBoundaryRecord[] {
-	return sessionManager.getEntries().flatMap((entry) => {
+export async function getSessionBoundaries(session: SessionBoundarySession): Promise<SessionBoundaryRecord[]> {
+	return (await session.findEntries({ order: "oldestFirst" })).flatMap((entry) => {
 		const boundary = parseBoundaryEntry(entry);
 		return boundary === undefined ? [] : [boundary];
 	});
 }
 
-function persistBoundary(sessionManager: SessionManager, boundary: SessionBoundaryRecord): string {
+async function persistBoundary(session: SessionBoundarySession, boundary: SessionBoundaryRecord): Promise<string> {
 	if (!isSessionBoundaryRecord(boundary)) throw new TypeError("Invalid session boundary");
-	return sessionManager.appendCustomEntry(SESSION_BOUNDARY_CUSTOM_TYPE, {
+	return session.appendCustomEntry(SESSION_BOUNDARY_CUSTOM_TYPE, {
 		schemaVersion: SESSION_BOUNDARY_SCHEMA_VERSION,
 		boundary: { ...boundary },
 	});
 }
 
-export function createSessionCheckpoint(sessionManager: SessionManager, reason?: string): SessionBoundaryRecord {
+export async function createSessionCheckpoint(session: SessionBoundarySession, reason?: string): Promise<SessionBoundaryRecord> {
+	const metadata = await session.getMetadata();
 	const boundary: SessionBoundaryRecord = {
 		schemaVersion: SESSION_BOUNDARY_SCHEMA_VERSION,
 		boundaryId: `checkpoint:${randomUUID()}`,
 		kind: "checkpoint",
 		status: "created",
-		sessionId: sessionManager.getSessionId(),
-		leafId: sessionManager.getLeafId(),
+		sessionId: metadata.id,
+		leafId: await session.getLeafId(),
 		...(reason === undefined ? {} : { reason: reason.slice(0, 512) }),
 		createdAt: new Date().toISOString(),
 	};
-	persistBoundary(sessionManager, boundary);
+	await persistBoundary(session, boundary);
 	return boundary;
 }
 
-export function createSessionBranchBoundary(
-	sessionManager: SessionManager,
+export async function createSessionBranchBoundary(
+	session: SessionBoundarySession,
 	sourceLeafId: string | null,
-	targetLeafId: string | null = sessionManager.getLeafId(),
+	targetLeafId?: string | null,
 	reason?: string,
-): SessionBoundaryRecord {
+): Promise<SessionBoundaryRecord> {
+	const metadata = await session.getMetadata();
+	const resolvedTargetLeafId = targetLeafId === undefined ? await session.getLeafId() : targetLeafId;
 	const boundary: SessionBoundaryRecord = {
 		schemaVersion: SESSION_BOUNDARY_SCHEMA_VERSION,
 		boundaryId: `branch:${randomUUID()}`,
 		kind: "branch",
 		status: "created",
-		sessionId: sessionManager.getSessionId(),
-		leafId: targetLeafId,
+		sessionId: metadata.id,
+		leafId: resolvedTargetLeafId,
 		sourceLeafId,
-		targetLeafId,
+		targetLeafId: resolvedTargetLeafId,
 		...(reason === undefined ? {} : { reason: reason.slice(0, 512) }),
 		createdAt: new Date().toISOString(),
 	};
-	persistBoundary(sessionManager, boundary);
+	await persistBoundary(session, boundary);
 	return boundary;
 }
 
 /** Restore a checkpoint by branching from its recorded leaf, then record recovery. */
-export function recoverSessionCheckpoint(
-	sessionManager: SessionManager,
+export async function recoverSessionCheckpoint(
+	session: SessionBoundarySession,
 	checkpointId: string,
 	reason?: string,
-): SessionBoundaryRecord {
-	const checkpoint = getSessionBoundaries(sessionManager).find(
+): Promise<SessionBoundaryRecord> {
+	const checkpoint = (await getSessionBoundaries(session)).find(
 		(boundary) => boundary.kind === "checkpoint" && boundary.boundaryId === checkpointId,
 	);
 	if (checkpoint === undefined) {
 		throw new SessionBoundaryError("checkpoint_not_found", `Checkpoint ${checkpointId} not found.`);
 	}
-	if (checkpoint.leafId !== null && sessionManager.getEntry(checkpoint.leafId) === undefined) {
+	if (checkpoint.leafId !== null && await session.getEntry(checkpoint.leafId) === undefined) {
 		throw new SessionBoundaryError("checkpoint_invalid", `Checkpoint ${checkpointId} references a missing leaf.`);
 	}
-	if (checkpoint.leafId === null) sessionManager.resetLeaf();
-	else sessionManager.branch(checkpoint.leafId);
+	await session.moveLane("main", checkpoint.leafId);
+	const metadata = await session.getMetadata();
 	const boundary: SessionBoundaryRecord = {
 		schemaVersion: SESSION_BOUNDARY_SCHEMA_VERSION,
 		boundaryId: `recovery:${randomUUID()}`,
 		kind: "recovery",
 		status: "restored",
-		sessionId: sessionManager.getSessionId(),
+		sessionId: metadata.id,
 		leafId: checkpoint.leafId,
 		targetLeafId: checkpoint.leafId,
 		checkpointId: checkpoint.boundaryId,
@@ -162,6 +161,6 @@ export function recoverSessionCheckpoint(
 		...(reason === undefined ? {} : { reason: reason.slice(0, 512) }),
 		createdAt: new Date().toISOString(),
 	};
-	persistBoundary(sessionManager, boundary);
+	await persistBoundary(session, boundary);
 	return boundary;
 }

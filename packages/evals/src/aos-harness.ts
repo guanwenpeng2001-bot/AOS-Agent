@@ -7,10 +7,9 @@ import { contentText } from "@aos-agent/ai";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
-	createAgentSessionFromServices,
+	createAgentSession,
 	createAgentSessionServices,
 	ModelRuntime,
-	SessionManager,
 	SettingsManager,
 } from "aos-agent";
 import {
@@ -123,7 +122,6 @@ async function runAosCodingAgent<TOutput extends JsonValue>(
 	const cwd = join(root, "workspace");
 	const agentDir = join(root, "agent");
 	let transformedSystemPrompt: string | undefined;
-	let sessionManager: SessionManager | undefined;
 	let session: AgentSession | undefined;
 	let outcome: { success: true; result: SimpleHarnessResult<string | TOutput> } | { success: false; error: unknown };
 	try {
@@ -138,17 +136,20 @@ async function runAosCodingAgent<TOutput extends JsonValue>(
 				: {}),
 		});
 		signal?.throwIfAborted();
-		sessionManager = SessionManager.create(cwd, join(root, "sessions"));
-		setArtifact("runId", sessionManager.getSessionId());
 		session = (
-			await createAgentSessionFromServices({
-				services,
-				sessionManager,
+			await createAgentSession({
+				cwd,
+				agentDir,
+				modelRuntime,
+				settingsManager: services.settingsManager,
+				resourceLoader: services.resourceLoader,
+				session: { mode: "new", directory: join(root, "sessions") },
 				model,
 				thinkingLevel: "off",
 				noTools: options.noTools,
 			})
 		).session;
+		setArtifact("runId", session.sessionId);
 
 		const evalSession = session;
 		if (options.transformSystemPrompt) {
@@ -210,9 +211,9 @@ async function runAosCodingAgent<TOutput extends JsonValue>(
 	}
 
 	const cleanupErrors: unknown[] = [];
-	if (sessionManager) {
+	if (session) {
 		try {
-			const sessionPath = sessionManager.getSessionFile();
+			const sessionPath = session.sessionFile;
 			if (sessionPath && existsSync(sessionPath)) {
 				setArtifact(AOS_AGENT_SESSION_SNAPSHOT_ARTIFACT, await readFile(sessionPath, "utf8"));
 			}

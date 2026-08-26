@@ -5,12 +5,12 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
@@ -203,19 +203,20 @@ describe("RpcHostController dispatch and attach", () => {
 			const runId = started.runId;
 
 			detachFirst();
-			await vi.waitFor(() => {
+			await vi.waitFor(async () => {
 				expect(abort).toHaveBeenCalled();
-				const runReceiptFact = runtimeHost.session.sessionManager.getPhysicalEntries().find((entry) => {
-					if (entry.type !== "custom" || entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) return false;
-					const data = entry.data;
-					return typeof data === "object" && data !== null && "record" in data &&
-						typeof data.record === "object" && data.record !== null &&
-						(data.record as { objectType?: unknown }).objectType === "run_receipt";
-				});
+				const runReceiptFact = (
+					await getAgentCanonicalSession(runtimeHost.session).findFoundationRecords({
+						kind: "fact",
+						objectType: "run_receipt",
+						order: "oldestFirst",
+					})
+				).at(-1);
 				expect(runReceiptFact).toMatchObject({
-					data: { record: { objectType: "run_receipt", payload: { runId, terminalStatus: "cancelled" } } },
+					objectType: "run_receipt",
+					payload: { runId, terminalStatus: "cancelled" },
 				});
-				const replay = new ExecutionAuditQuery(runtimeHost.session.sessionManager).replay(runId);
+				const replay = new ExecutionAuditQuery(getAgentSessionLedger(runtimeHost.session)).replay(runId);
 				expect(replay).toMatchObject({
 					run: { status: "cancelled" },
 					events: expect.arrayContaining([expect.objectContaining({ type: "run.cancelled" })]),
