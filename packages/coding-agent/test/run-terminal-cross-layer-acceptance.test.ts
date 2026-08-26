@@ -154,6 +154,39 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		expect(await canonicalReceiptCount(afterSession)).toBe(1);
 	});
 
+	it("recovers the canonical terminal when a later Automation append fails", async () => {
+		const session = SessionManager.inMemory("/workspace/crash-after-canonical-before-automation");
+		const run = acceptRun(createRunLifecycleCoordinator(session), "run-canonical-before-automation-failure");
+		run.start();
+		const canonical = await writeCanonicalRunResult(session, run.runId, { outcome: "completed" });
+		const append = session.appendCustomEntry.bind(session);
+		const spy = vi.spyOn(session, "appendCustomEntry").mockImplementation((customType, data) => {
+			if (customType === "automation.run") throw new Error("injected Automation append failure");
+			return append(customType, data);
+		});
+
+		try {
+			expect(() =>
+				session.appendCustomEntry("automation.run", {
+					schemaVersion: 1,
+					kind: "terminal",
+					endedAt: canonical.runReceipt.completedAt,
+					receipt: canonical.runReceipt,
+				}),
+			).toThrow("injected Automation append failure");
+		} finally {
+			spy.mockRestore();
+		}
+
+		const recovered = createRunLifecycleCoordinator(session).getRun(run.runId);
+		expect(recovered).toMatchObject({ record: { status: "completed" }, receipt: { status: "completed" } });
+		expect(recovered?.receipt?.runReceiptId).toBe(canonical.runReceipt.runReceiptId);
+		expect(await canonicalReceiptCount(session)).toBe(1);
+		expect(
+			session.getEntries().some((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+		).toBe(false);
+	});
+
 	it.each([
 		{ name: "completed", options: { outcome: "completed" }, eventType: "run.completed", status: "completed", code: undefined },
 		{ name: "failed", options: { outcome: "failed", terminalErrorCode: "agent_run_failed" }, eventType: "run.failed", status: "failed", code: "agent_run_failed" },
@@ -190,6 +223,9 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 			usage: { input: 13, output: 8, total: 21 },
 		});
 		if (observed.event === undefined || !("receipt" in observed.event)) throw new Error("missing terminal event");
+		expect(observed.event.sequence).toBe(2);
+		expect(observed.canonical.writtenEvent.sequence).toBeGreaterThan(observed.event.sequence);
+		expect(observed.event.eventId).toBe(observed.canonical.writtenEvent.eventId);
 		const receipt = run.receipt();
 		if (receipt === undefined) throw new Error("missing public receipt");
 

@@ -19,6 +19,7 @@ import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { RpcClient, type RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import {
@@ -701,6 +702,35 @@ describe("RPC Automation Host run lifecycle", () => {
 		} finally {
 			await controller.shutdown();
 			await cleanup();
+		}
+	});
+
+	it("delivers one continuous production run stream through RpcClient replay recovery", async () => {
+		const harness = await startTcpController({ withAuth: true, responseDelayMs: 0 });
+		const client = new RpcClient({ tcp: { host: harness.address.host, port: harness.address.port } });
+		const events: RpcRunStreamEvent[] = [];
+		client.onRunEvent((event) => events.push(event));
+
+		try {
+			await client.start();
+			await client.initializeAutomationHost();
+			const accepted = await client.startRun("Hello");
+			await vi.waitFor(() => expect(events.some((event) => event.type === "run.completed")).toBe(true));
+			const recovery = client.createRunReplayRecovery(accepted.runId, { sessionId: accepted.sessionId });
+			const consumed = events.map((event) => recovery.consumeRunEvent(event));
+
+			expect(events[0]?.type).toBe("run.started");
+			expect(events.at(-1)?.type).toBe("run.completed");
+			expect(events.map((event) => event.sequence)).toEqual(events.map((_, index) => index + 1));
+			expect(consumed.every((result) => result.disposition === "accepted")).toBe(true);
+			expect(recovery.getState()).toMatchObject({
+				lastEventSequence: events.length,
+				terminal: { status: "completed", source: "run.event", sequence: events.length },
+			});
+			expect(recovery.getState().gap).toBeUndefined();
+		} finally {
+			await client.stop();
+			await harness.cleanup();
 		}
 	});
 

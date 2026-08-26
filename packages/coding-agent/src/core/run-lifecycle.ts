@@ -3257,12 +3257,6 @@ class RunHandleImpl implements RunHandle {
 		if (projection.id !== this.runId || projection.sessionId !== this.sessionId) {
 			throw new FoundationError("invalid_correlation", "Canonical RunReceipt belongs to another transport Run");
 		}
-		if (result.writtenEvent.sequence <= this._sequence) {
-			throw new FoundationError(
-				"invalid_correlation",
-				"Canonical RunReceipt sequence does not follow the transport event chain",
-			);
-		}
 		const projected: RunResult = { record: cloneRunRecord(this._record) };
 		applyCanonicalProjectionToResult(projected, projection);
 		if (projected.receipt === undefined) {
@@ -3343,7 +3337,10 @@ class RunHandleImpl implements RunHandle {
 	}
 
 	private emitCanonicalTerminal(writtenEvent: DurableEventEnvelope, receipt: PublicRunReceipt): RunStreamEvent {
-		this._sequence = writtenEvent.sequence;
+		// Foundation sequences order physical ledger facts. The public RPC stream
+		// has its own per-Run replay domain, so project the canonical terminal at
+		// the next public sequence while retaining the Foundation event identity.
+		this._sequence += 1;
 		const event: RunStreamEvent = {
 			type:
 				receipt.status === "completed"
@@ -3353,7 +3350,7 @@ class RunHandleImpl implements RunHandle {
 						: "run.cancelled",
 			runId: this.runId,
 			sessionId: this.sessionId,
-			sequence: writtenEvent.sequence,
+			sequence: this._sequence,
 			timestamp: writtenEvent.timestamp,
 			eventId: writtenEvent.eventId,
 			streamId: writtenEvent.streamId,
