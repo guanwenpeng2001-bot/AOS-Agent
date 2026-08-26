@@ -41,9 +41,6 @@ import type {
 	AutomationError,
 	AutomationErrorCode,
 	ExternalConnectorSelection,
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
 	GetCapabilitiesData,
 	GetContextData,
 	GetExecutionPolicyData,
@@ -822,7 +819,6 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
-		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
 		externalConnector?: ExternalConnectorSelection,
@@ -835,7 +831,6 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
-			...(external !== undefined ? { external } : {}),
 			...(externalConnector !== undefined ? { externalConnector } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
@@ -880,7 +875,6 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
-		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
 		externalConnector?: ExternalConnectorSelection,
@@ -895,7 +889,6 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
-			...(external !== undefined ? { external } : {}),
 			...(externalConnector !== undefined ? { externalConnector } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
@@ -1330,17 +1323,6 @@ export class RpcClient {
 		options: Omit<RunReplayRecoveryOptions, "runId" | "source"> = {},
 	): Promise<RunReplayReconnectResult> {
 		return this.createRunReplayRecovery(runId, options).reconnect();
-	}
-
-	/** Persist a validated external-to-AOS mapping in the current Session. */
-	async externalMap(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
-		const response = await this.sendAutomation({ type: "external.map", ...request });
-		return this.getAutomationData<ExternalMappingPersistenceResult>(response);
-	}
-
-	/** Alias for externalMap for callers that prefer verb-first naming. */
-	async mapExternal(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
-		return this.externalMap(request);
 	}
 
 	// =========================================================================

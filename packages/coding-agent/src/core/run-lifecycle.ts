@@ -81,16 +81,9 @@ import {
 	serializeExternalConnectorSelection,
 } from "./external-agent-registry.ts";
 import {
-	type ExternalExecutionMapping,
-	type ExternalExecutionRef,
-	ExternalMappingError,
-	type ExternalMappingPersistenceResult,
-	type ExternalMappingRequest,
-	type ExternalMappingWarning,
-	ExternalSessionMappingStore,
-	isExternalExecutionRef,
-	serializeExternalExecutionRef,
-} from "./external-session-mapping.ts";
+	isLegacyExternalExecutionRefV1 as isExternalExecutionRef,
+	type LegacyExternalExecutionRefV1,
+} from "./migrations/external-agent-ledger.ts";
 import type { McpAttachment } from "./mcp-attachment.ts";
 import {
 	type LegacyAutomationRunLedgerSourceEntryV1,
@@ -148,7 +141,6 @@ export interface RunRequestFingerprintInput {
 	readonly policyProfile?: string;
 	readonly modelRoute?: ModelRouteSelection;
 	readonly modelRole?: ModelRoleSelection;
-	readonly external?: ExternalExecutionRef;
 	/** Optional explicit trusted External Connector selection for this Run. */
 	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
@@ -168,7 +160,6 @@ export interface CanonicalRunRequest {
 	readonly policyProfileDigest?: string;
 	readonly modelRouteDigest?: string;
 	readonly modelRoleDigest?: string;
-	readonly external?: ExternalExecutionRef;
 	/** Optional explicit External Connector selection; immutable identity only. */
 	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
@@ -259,7 +250,6 @@ function stableRequestSerialization(value: unknown): string {
  * persisting the raw value.
  */
 export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
-	const external = input.external === undefined ? undefined : serializeExternalExecutionRef(input.external);
 	const externalConnector = input.externalConnector === undefined
 		? undefined
 		: serializeExternalConnectorSelection(input.externalConnector);
@@ -279,7 +269,6 @@ export function canonicalizeRunRequest(input: RunRequestFingerprintInput): Canon
 		...(input.policyProfile === undefined ? {} : { policyProfileDigest: digestRequestValue(input.policyProfile) }),
 		...(input.modelRoute === undefined ? {} : { modelRouteDigest: digestRequestValue(input.modelRoute) }),
 		...(input.modelRole === undefined ? {} : { modelRoleDigest: digestRequestValue(input.modelRole) }),
-		...(external === undefined ? {} : { external }),
 		...(externalConnector === undefined ? {} : { externalConnector }),
 		...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
 	};
@@ -400,8 +389,6 @@ export interface RunRecord {
 	requestScope?: RunRequestScope;
 	clientRequestId?: string;
 	requestFingerprint?: string;
-	/** Safe external execution reference persisted separately in external.mapping. */
-	external?: ExternalExecutionRef;
 	/** Inclusive UTC deadline propagated to the model/tool/MCP/Sandbox operation. */
 	deadlineAt?: string;
 	sourceRunId?: RunId;
@@ -506,8 +493,8 @@ export function createRunUsage(): RunUsage {
 interface LegacyRunReceipt {
 	runId: RunId;
 	sessionId: SessionId;
-	/** Safe external execution reference persisted separately in external.mapping. */
-	external?: ExternalExecutionRef;
+	/** Historical Adapter-era association accepted only by the private decoder. */
+	external?: LegacyExternalExecutionRefV1;
 	/** Inclusive UTC deadline propagated to the model/tool/MCP/Sandbox operation. */
 	deadlineAt?: string;
 	status: RunTerminalStatus;
@@ -672,8 +659,6 @@ export type AutomationErrorCode =
 	| "audit_scope_unavailable"
 	| "audit_run_not_found"
 	| "audit_replay_incomplete"
-	| "external_mapping_invalid"
-	| "external_mapping_conflict"
 	| "external_connector_unavailable"
 	| "external_resume_unsupported"
 	| "external_binding_invalid"
@@ -723,24 +708,6 @@ export type AutomationErrorCode =
 	| "run_cancelled"
 	| "side_effect_unknown"
 	| "user_aborted"
-	// External Agent Adapter preflight, start, cancel, receipt, and terminal
-	// outcome codes. Keep in sync with EXTERNAL_AGENT_ERROR_CODES in
-	// core/external-agent-adapter.ts.
-	| "external_agent_adapter_invalid"
-	| "external_agent_target_not_found"
-	| "external_agent_probe_failed"
-	| "external_agent_protocol_unsupported"
-	| "external_agent_capability_missing"
-	| "external_agent_binding_unsupported"
-	| "external_agent_start_failed"
-	| "external_agent_mapping_invalid"
-	| "external_agent_mapping_conflict"
-	| "external_agent_cancel_unsupported"
-	| "external_agent_cancel_failed"
-	| "external_agent_receipt_invalid"
-	| "external_agent_side_effect_unknown"
-	| "external_agent_resume_unsupported"
-	| "external_agent_persistence_failed"
 	// Task-level Human Gate control-plane errors.
 	| "task_gate_invalid"
 	| "task_gate_not_found"
@@ -819,8 +786,6 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_scope_unavailable" ||
 		value === "audit_run_not_found" ||
 		value === "audit_replay_incomplete" ||
-		value === "external_mapping_invalid" ||
-		value === "external_mapping_conflict" ||
 		value === "external_connector_unavailable" ||
 		value === "external_resume_unsupported" ||
 		value === "external_binding_invalid" ||
@@ -864,21 +829,6 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "run_cancelled" ||
 		value === "side_effect_unknown" ||
 		value === "user_aborted" ||
-		value === "external_agent_adapter_invalid" ||
-		value === "external_agent_target_not_found" ||
-		value === "external_agent_probe_failed" ||
-		value === "external_agent_protocol_unsupported" ||
-		value === "external_agent_capability_missing" ||
-		value === "external_agent_binding_unsupported" ||
-		value === "external_agent_start_failed" ||
-		value === "external_agent_mapping_invalid" ||
-		value === "external_agent_mapping_conflict" ||
-		value === "external_agent_cancel_unsupported" ||
-		value === "external_agent_cancel_failed" ||
-		value === "external_agent_receipt_invalid" ||
-		value === "external_agent_side_effect_unknown" ||
-		value === "external_agent_resume_unsupported" ||
-		value === "external_agent_persistence_failed" ||
 		value === "task_gate_invalid" ||
 		value === "task_gate_not_found" ||
 		value === "task_gate_conflict" ||
@@ -960,9 +910,7 @@ export type LedgerDiagnostic =
 	| { kind: "orphan-fact"; entryId: string; runId: RunId; fact: "started" | "terminal" }
 	| { kind: "duplicate-terminal"; runId: RunId }
 	| { kind: "canonical-terminal-invalid"; runId?: RunId }
-	| { kind: "malformed-binding"; entryId: string; detail: string }
-	| { kind: "mapping-conflict"; entryId: string }
-	| { kind: "malformed-mapping"; entryId: string };
+	| { kind: "malformed-binding"; entryId: string; detail: string };
 
 export function formatDiagnostic(diag: LedgerDiagnostic): string {
 	switch (diag.kind) {
@@ -980,10 +928,6 @@ export function formatDiagnostic(diag: LedgerDiagnostic): string {
 			return `automation transport: canonical terminal${diag.runId === undefined ? "" : ` for run ${diag.runId}`} is invalid; run remains non-terminal`;
 		case "malformed-binding":
 			return `capability.binding ledger: custom entry ${diag.entryId} is malformed (${diag.detail}); skipped`;
-		case "mapping-conflict":
-			return `external.mapping ledger: custom entry ${diag.entryId} contradicts an existing mapping; skipped`;
-		case "malformed-mapping":
-			return `external.mapping ledger: custom entry ${diag.entryId} is malformed; skipped`;
 	}
 }
 
@@ -1024,8 +968,6 @@ export interface AcceptOptions {
 	requestScope?: RunRequestScope;
 	clientRequestId?: string;
 	requestFingerprint?: string;
-	/** Optional validated external execution reference for this Run. */
-	external?: ExternalExecutionRef;
 	/** Inclusive UTC deadline for this Run's model/tool/MCP/Sandbox operation. */
 	deadlineAt?: string;
 	sourceRunId?: RunId;
@@ -1248,13 +1190,6 @@ export interface RunLifecycleCoordinator {
 	getCapabilityBindings(): ReadonlyMap<string, CapabilityBindingLedgerRecord>;
 	/** Append a schemaVersion 1 capability.binding custom entry. */
 	persistCapabilityBinding(binding: CapabilityBindingLedgerRecord): void;
-	/** Persist a validated external mapping without touching Run or model state. */
-	persistExternalMapping(request: ExternalMappingRequest): ExternalMappingPersistenceResult;
-	/** Validate an external mapping without appending a Session entry. */
-	validateExternalMapping(request: ExternalMappingRequest): void;
-	/** Folded external mappings recovered from Session custom entries. */
-	getExternalMappings(): ReadonlyArray<ExternalExecutionMapping>;
-	getExternalMappingWarnings(): readonly ExternalMappingWarning[];
 	diagnostics(): readonly LedgerDiagnostic[];
 }
 
@@ -1725,7 +1660,6 @@ function isRunRecord(value: unknown): value is RunRecord {
 		})
 	)
 		return false;
-	if (obj.external !== undefined && !isExternalExecutionRef(obj.external)) return false;
 	if (obj.deadlineAt !== undefined && !isRunTimestamp(obj.deadlineAt)) return false;
 	if (
 		obj.bindingAssociation !== undefined &&
@@ -2014,7 +1948,6 @@ export interface PublicRunRecord {
 	requestScope?: RunRequestScope;
 	clientRequestId?: string;
 	requestFingerprint?: string;
-	external?: ExternalExecutionRef;
 	deadlineAt?: string;
 	sourceRunId?: RunId;
 	/** Only present when the source binding id is a current-format opaque value. */
@@ -2232,10 +2165,6 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 		copy.requestScope = requestRelation.scope;
 		copy.clientRequestId = requestRelation.clientRequestId;
 		copy.requestFingerprint = requestRelation.fingerprint;
-	}
-	if (record.external !== undefined) {
-		const external = serializeExternalExecutionRef(record.external);
-		if (external !== undefined) copy.external = external;
 	}
 	if (record.deadlineAt !== undefined && isRunTimestamp(record.deadlineAt)) copy.deadlineAt = record.deadlineAt;
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
@@ -2759,10 +2688,6 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		copy.clientRequestId = requestRelation.clientRequestId;
 		copy.requestFingerprint = requestRelation.fingerprint;
 	}
-	if (record.external !== undefined) {
-		const external = serializeExternalExecutionRef(record.external);
-		if (external !== undefined) copy.external = external;
-	}
 	if (record.deadlineAt !== undefined && isRunTimestamp(record.deadlineAt)) copy.deadlineAt = record.deadlineAt;
 	if (record.sourceRunId !== undefined) copy.sourceRunId = record.sourceRunId;
 	if (record.previousBindingId !== undefined) copy.previousBindingId = record.previousBindingId;
@@ -3091,15 +3016,6 @@ function applyLegacyMigrationProjectionToResult(result: RunResult, projection: A
 	delete result.recovery;
 }
 
-function externalRefFromMapping(mapping: ExternalExecutionMapping): ExternalExecutionRef | undefined {
-	const ref: ExternalExecutionRef = {
-		namespace: mapping.namespace,
-		externalSessionId: mapping.externalSessionId,
-		...(mapping.externalRunId === undefined ? {} : { externalRunId: mapping.externalRunId }),
-	};
-	return serializeExternalExecutionRef(ref);
-}
-
 // ---- Run handle --------------------------------------------------------------
 
 class RunHandleImpl implements RunHandle {
@@ -3150,10 +3066,6 @@ class RunHandleImpl implements RunHandle {
 			this._record.requestScope = requestIdentity.scope;
 			this._record.clientRequestId = requestIdentity.clientRequestId;
 			this._record.requestFingerprint = requestIdentity.requestFingerprint;
-		}
-		if (options.external !== undefined) {
-			const external = serializeExternalExecutionRef(options.external);
-			if (external !== undefined) this._record.external = external;
 		}
 		if (options.deadlineAt !== undefined) this._record.deadlineAt = options.deadlineAt;
 		if (options.sourceRunId !== undefined) {
@@ -3301,12 +3213,6 @@ class RunHandleImpl implements RunHandle {
 			if (policySummary !== undefined) result.policySummary = policySummary;
 		}
 		return result;
-	}
-
-	setExternalMapping(external: ExternalExecutionRef): void {
-		const safe = serializeExternalExecutionRef(external);
-		if (safe === undefined) return;
-		this._record.external = safe;
 	}
 
 	private emitStream(type: "run.started", timestamp: string): RunStreamEvent {
@@ -3542,22 +3448,8 @@ class RunReservationImpl implements RunReservation {
 						};
 			run = new RunHandleImpl(this.coordinator, this.sessionId, acceptedOptions, requestIdentity);
 			this.coordinator.validateAcceptedPolicyFacts(run.runId, acceptedOptions);
-			if (acceptedOptions.external !== undefined) {
-				this.coordinator.validateExternalMapping({
-					external: acceptedOptions.external,
-					aosSessionId: this.sessionId,
-					aosRunId: run.runId,
-				});
-			}
 			this.coordinator.persistTransport({ schemaVersion: 1, kind: "accepted", record: run.record });
 			this.coordinator.indexAcceptedRun(run.record);
-			if (acceptedOptions.external !== undefined) {
-				this.coordinator.persistExternalMapping({
-					external: acceptedOptions.external,
-					aosSessionId: this.sessionId,
-					aosRunId: run.runId,
-				});
-			}
 			if (acceptedOptions.capabilityBinding !== undefined) {
 				this.coordinator.persistCapabilityBinding(acceptedOptions.capabilityBinding);
 			}
@@ -3602,7 +3494,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	readonly subagentHooks: RunSubagentLifecycleHooks | undefined;
 	readonly schedulerHooks: RunSchedulerLifecycleHooks | undefined;
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
-	private readonly externalMappings: ExternalSessionMappingStore;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
 	private readonly diagnosedEntries = new Set<string>();
 	private readonly canonicalDiagnostics = new Set<RunId | "*">();
@@ -3624,21 +3515,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		this.workerHooks = options.workerHooks;
 		this.subagentHooks = options.subagentHooks;
 		this.schedulerHooks = options.schedulerHooks;
-		try {
-			this.externalMappings = new ExternalSessionMappingStore(session, {
-				now: () => this.now(),
-				diagnostics: (warning) => this.recordExternalMappingWarning(warning),
-			});
-		} catch (error) {
-			if (error instanceof ExternalMappingError) {
-				throw createAutomationError(error.code, error.message, false);
-			}
-			throw createAutomationError(
-				"audit_persistence_failed",
-				"External mapping state could not be loaded safely.",
-				false,
-			);
-		}
 		this.policyLedger = createExecutionPolicyLedger(session);
 	}
 
@@ -3759,7 +3635,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	}
 
 	rebuildIndex(): ReadonlyMap<RunId, RunResult> {
-		this.externalMappings.refresh();
 		const results = new Map<RunId, RunResult>();
 		const bindings = new Map<string, CapabilityBindingLedgerRecord>();
 		this._requestIndex.clear();
@@ -3834,16 +3709,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		}
 
 		for (const result of results.values()) {
-			for (const mapping of this.externalMappings.getMappings()) {
-				if (mapping.aosSessionId !== this.sessionId || mapping.aosRunId !== result.record.id) continue;
-				const mappingExternal = externalRefFromMapping(mapping);
-				if (mappingExternal === undefined) continue;
-				const usable = this.externalMappings.getByExternal(mappingExternal);
-				if (usable === undefined) continue;
-				const external = externalRefFromMapping(usable);
-				if (external === undefined) continue;
-				if (result.record.external === undefined) result.record.external = external;
-			}
 			if (result.receipt === undefined && !isTerminalStatus(result.record.status)) result.recovery = "interrupted";
 			// Interrupted is a recovered-run fact: a Run that is live in this
 			// coordinator (accepted/running handle) is never reported interrupted,
@@ -3893,62 +3758,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		// earlier coordinator (or a previous process) are visible.
 		this.rebuildIndex();
 		return this._capabilityBindings;
-	}
-
-	persistExternalMapping(request: ExternalMappingRequest): ExternalMappingPersistenceResult {
-		if (request.aosSessionId !== this.sessionId) {
-			throw createAutomationError(
-				"external_mapping_invalid",
-				"External mapping AOS session does not match the current session.",
-				false,
-			);
-		}
-		try {
-			const result = this.externalMappings.persistMapping(request);
-			if (request.aosRunId !== undefined) {
-				const live = this.runs.get(request.aosRunId);
-				const external = externalRefFromMapping(result.mapping);
-				if (live !== undefined && external !== undefined) live.setExternalMapping(external);
-			}
-			return result;
-		} catch (error) {
-			if (error instanceof ExternalMappingError) {
-				throw createAutomationError(error.code, error.message, false);
-			}
-			throw createAutomationError("audit_persistence_failed", "External mapping could not be persisted.", false);
-		}
-	}
-
-	validateExternalMapping(request: ExternalMappingRequest): void {
-		if (request.aosSessionId !== this.sessionId) {
-			throw createAutomationError(
-				"external_mapping_invalid",
-				"External mapping AOS session does not match the current session.",
-				false,
-			);
-		}
-		try {
-			this.externalMappings.validateMapping(request);
-		} catch (error) {
-			if (error instanceof ExternalMappingError) {
-				throw createAutomationError(error.code, error.message, false);
-			}
-			throw createAutomationError(
-				"audit_persistence_failed",
-				"External mapping state could not be validated safely.",
-				false,
-			);
-		}
-	}
-
-	getExternalMappings(): ReadonlyArray<ExternalExecutionMapping> {
-		this.externalMappings.refresh();
-		return this.externalMappings.getMappings().filter((mapping) => mapping.aosSessionId === this.sessionId);
-	}
-
-	getExternalMappingWarnings(): readonly ExternalMappingWarning[] {
-		this.externalMappings.refresh();
-		return this.externalMappings.getWarnings();
 	}
 
 	persistCapabilityBinding(binding: CapabilityBindingLedgerRecord): void {
@@ -4079,14 +3888,6 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	recordDiagnostic(diag: LedgerDiagnostic): void {
 		this._diagnostics.push(diag);
 		this.diagnosticsSink(formatDiagnostic(diag));
-	}
-
-	private recordExternalMappingWarning(warning: ExternalMappingWarning): void {
-		if (warning.code === "mapping_conflict") {
-			this.recordDiagnostic({ kind: "mapping-conflict", entryId: warning.entryId });
-		} else {
-			this.recordDiagnostic({ kind: "malformed-mapping", entryId: warning.entryId });
-		}
 	}
 
 	confirmAccept(run: RunHandleImpl): void {

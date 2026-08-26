@@ -4,9 +4,7 @@
  * The adapter deliberately consumes the structural Session custom-entry
  * contract instead of RPC response types. It folds the existing append-only
  * ledgers into a small, allowlisted audit view and never writes to the
- * Session, invokes a provider, or performs an execution operation. Source
- * entries that carry an adapter identity (external.mapping, remote.operation)
- * project it onto events as a safe, exactly-validated association.
+ * Session, invokes a provider, or performs an execution operation.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -96,12 +94,6 @@ import {
 	type LegacyAutomationRunRecordV1,
 } from "./migrations/automation-run-ledger.ts";
 import {
-	isExternalAdapterIdentity,
-	sameExternalAdapterIdentity,
-	serializeExternalAdapterIdentity,
-	type ExternalAdapterIdentity,
-} from "./external-session-mapping.ts";
-import {
 	isLegalTaskCredentialTransition,
 	TASK_CREDENTIAL_SCHEMA_VERSION,
 	type TaskCredentialGrant,
@@ -177,7 +169,6 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"remote.operation",
 	"task.gate",
 	"task.graph",
@@ -214,7 +205,6 @@ export const AUDIT_EVENT_TYPES = [
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"remote.operation",
 	"task.gate",
 	"task.graph",
@@ -237,7 +227,6 @@ export const AUDIT_WARNING_CODES = [
 	"duplicate_source",
 	"source_unavailable",
 	"ambiguous_run_association",
-	"mapping_conflict",
 ] as const;
 export type AuditWarningCode = (typeof AUDIT_WARNING_CODES)[number];
 
@@ -247,8 +236,6 @@ export const AUDIT_ERROR_CODES = [
 	"audit_scope_unavailable",
 	"audit_run_not_found",
 	"audit_replay_incomplete",
-	"external_mapping_invalid",
-	"external_mapping_conflict",
 	"audit_persistence_failed",
 ] as const;
 export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
@@ -290,15 +277,6 @@ export interface ExternalExecutionRef {
 	readonly namespace: string;
 	readonly externalSessionId: string;
 	readonly externalRunId?: string;
-}
-
-export interface ExternalExecutionMapping extends ExternalExecutionRef {
-	readonly aosSessionId: string;
-	readonly aosRunId?: string;
-	readonly createdAt: string;
-	readonly source?: string;
-	readonly correlationId?: string;
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface AuditRunModelReference {
@@ -660,8 +638,6 @@ export interface AuditEventBase {
 	readonly sessionId: string;
 	readonly sourceEntryId: string;
 	readonly external?: ExternalExecutionRef;
-	/** Adapter identity attached when the source entry carries one (mapping or operation receipt). */
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export type AuditEvent =
@@ -717,11 +693,6 @@ export type AuditEvent =
 			readonly summary: AuditPolicyViolationSummary;
 	  })
 	| (AuditEventBase & {
-			readonly type: "external.mapping";
-			readonly runId?: string;
-			readonly summary: ExternalExecutionMapping;
-	  })
-	| (AuditEventBase & {
 			readonly type: "remote.operation";
 			readonly runId?: string;
 			readonly summary: AuditRemoteOperationSummary;
@@ -775,7 +746,6 @@ export interface AuditQuery {
 	readonly sessionId?: string;
 	readonly runId?: string;
 	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -787,7 +757,6 @@ export interface AuditReplayQuery {
 	readonly runId: string;
 	readonly sessionId?: string;
 	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -946,17 +915,6 @@ const CONTEXT_REASONS = new Set([
 	"snapshot_only",
 ]);
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
-const EXTERNAL_MAPPING_KEYS = new Set([
-	"namespace",
-	"externalSessionId",
-	"externalRunId",
-	"aosSessionId",
-	"aosRunId",
-	"createdAt",
-	"source",
-	"correlationId",
-	"adapter",
-]);
 const WORKER_LIFECYCLE_CUSTOM_TYPE = "worker.lifecycle_transitioned";
 const WORKER_OPERATION_CUSTOM_TYPE = "worker.operation_recorded";
 const WORKER_RECEIPT_CUSTOM_TYPE = "worker_receipt.written";
@@ -1022,7 +980,7 @@ const WORKER_LIFECYCLE_CORRELATION_KEYS = new Set([
 ]);
 const WORKER_OPERATION_CORRELATION_KEYS = new Set(["sessionId", "laneId", "workerId", "operationId", "receiptId"]);
 const WORKER_RECEIPT_CORRELATION_KEYS = new Set(["sessionId", "operationId", "workerReceiptId", "taskId"]);
-const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
+const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1387,19 +1345,6 @@ function isExternalExecutionRef(value: unknown): value is ExternalExecutionRef {
 	return value.externalRunId === undefined || isSafeIdentifier(value.externalRunId);
 }
 
-function isExternalMapping(value: unknown): value is ExternalExecutionMapping {
-	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_MAPPING_KEYS) || !isExternalExecutionRef({
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-		...(value.externalRunId === undefined ? {} : { externalRunId: value.externalRunId }),
-	})) return false;
-	if (!isSafeIdentifier(value.aosSessionId) || !isCanonicalTimestamp(value.createdAt)) return false;
-	if (value.aosRunId !== undefined && !isSafeIdentifier(value.aosRunId)) return false;
-	if (value.source !== undefined && !isSafeIdentifier(value.source)) return false;
-	if (value.correlationId !== undefined && !isSafeIdentifier(value.correlationId)) return false;
-	return value.adapter === undefined || isExternalAdapterIdentity(value.adapter);
-}
-
 /** Explicit guard for a `model.binding` source record. */
 export function isModelBindingAuditRecord(value: unknown): value is ModelBindingLedgerRecord {
 	return isModelBindingRecord(value);
@@ -1439,11 +1384,6 @@ export function isSandboxLifecycleAuditRecord(value: unknown): value is SandboxL
 
 export function isPolicyViolationAuditRecord(value: unknown): value is PolicyViolationLedgerRecord {
 	return isPolicyViolationRecord(value);
-}
-
-/** Explicit guard for the `external.mapping` mapping object. */
-export function isExternalMappingAuditRecord(value: unknown): value is ExternalExecutionMapping {
-	return isExternalMapping(value);
 }
 
 function schemaVersion(value: unknown): number | undefined {
@@ -1751,23 +1691,6 @@ function safePolicyViolation(value: PolicyViolationLedgerRecord): AuditPolicyVio
 	return violation;
 }
 
-function safeExternalMapping(value: ExternalExecutionMapping): ExternalExecutionMapping {
-	const mapping = {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-		aosSessionId: value.aosSessionId,
-		createdAt: value.createdAt,
-	} as DeepMutable<ExternalExecutionMapping>;
-	if (value.externalRunId !== undefined) mapping.externalRunId = value.externalRunId;
-	if (value.aosRunId !== undefined) mapping.aosRunId = value.aosRunId;
-	if (value.source !== undefined) mapping.source = value.source;
-	if (value.correlationId !== undefined) mapping.correlationId = value.correlationId;
-	if (value.adapter !== undefined) {
-		mapping.adapter = serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity;
-	}
-	return mapping;
-}
-
 function safeTaskGateSummary(value: TaskGateTransition): AuditTaskGateSummary {
 	const gate = value.gate;
 	const summary = {
@@ -1896,15 +1819,6 @@ function safeSchedulerSummary(value: SchedulerAuditRecord): AuditSchedulerSummar
 		payloadDigest: fingerprintFoundationValue(event.payload),
 		correlation,
 	};
-}
-
-function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
-	const external = {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-	} as DeepMutable<ExternalExecutionRef>;
-	if (value.externalRunId !== undefined) external.externalRunId = value.externalRunId;
-	return external;
 }
 
 function sameExternalRef(left: ExternalExecutionRef, right: ExternalExecutionRef): boolean {
@@ -2381,7 +2295,6 @@ interface SourceCandidateBase {
 	readonly entry: Extract<SessionEntry, { type: "custom" }>;
 	readonly recordedAt: string;
 	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly relation?: Relation;
 }
 
@@ -2424,7 +2337,6 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "policy.approval"; readonly value: PolicyApprovalLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "sandbox.lifecycle"; readonly value: SandboxLifecycleLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "policy.violation"; readonly value: PolicyViolationLedgerRecord })
-	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
 	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
 	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition })
 	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition })
@@ -2508,7 +2420,6 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "policy.approval") return "policy.approval";
 	if (customType === "sandbox.lifecycle") return "sandbox.lifecycle";
 	if (customType === "policy.violation") return "policy.violation";
-	if (customType === "external.mapping") return "external.mapping";
 	if (customType === "remote.operation") return "remote.operation";
 	if (customType === "task.gate") return "task.gate";
 	if (customType === "task.graph") return "task.graph";
@@ -2601,7 +2512,6 @@ function createBase(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
 	external?: ExternalExecutionRef,
-	adapter?: ExternalAdapterIdentity,
 	recordedAt = entry.timestamp,
 ): AuditEventBase {
 	const base = {
@@ -2612,7 +2522,6 @@ function createBase(
 		sourceEntryId: entry.id,
 	} as DeepMutable<AuditEventBase>;
 	if (external !== undefined) base.external = external;
-	if (adapter !== undefined) base.adapter = adapter;
 	return base;
 }
 
@@ -3153,23 +3062,6 @@ function parseSourceCandidate(
 				value,
 				relation: { kind: "policy", bindingId: value.bindingId },
 			};
-	} else if (eventType === "external.mapping") {
-		const value = data.mapping ?? data.record;
-		if (isExternalMappingAuditRecord(value)) {
-			if (value.aosSessionId !== sessionId) {
-				internalWarnings.push(warning(sessionId, "orphan_source", entry, eventType, version, undefined, false));
-				return;
-			}
-			candidate = {
-				eventType,
-				entry,
-				recordedAt: entry.timestamp,
-				value,
-				external: externalFromMapping(value),
-				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
-				relation: { kind: "external", runId: value.aosRunId, sessionId: value.aosSessionId },
-			};
-		}
 	} else if (eventType === "remote.operation") {
 		const value = data.receipt ?? data.operation ?? data;
 		if (isRemoteOperationReceipt(value)) {
@@ -3193,7 +3085,6 @@ function parseSourceCandidate(
 				entry,
 				recordedAt: entry.timestamp,
 				value,
-				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
 				relation: { kind: "remote-operation", runId: relationRunId },
 			};
 		}
@@ -3939,7 +3830,7 @@ function canonicalRunEvents(
 	const source = state.canonicalSource;
 	if (source === undefined) return [];
 	const accepted: AuditEvent = {
-		...createBase(sessionId, source.task.entry, external, undefined, foundationTimestamp(source.task.record)),
+		...createBase(sessionId, source.task.entry, external, foundationTimestamp(source.task.record)),
 		eventId: `${source.task.record.id}:run:${state.runId}`,
 		sourceEntryId: source.task.record.id,
 		type: "run.accepted",
@@ -3947,7 +3838,7 @@ function canonicalRunEvents(
 		summary: { status: "accepted" },
 	};
 	const started = source.attempts.map((attempt): AuditEvent => ({
-		...createBase(sessionId, attempt.entry, external, undefined, attempt.value.startedAt),
+		...createBase(sessionId, attempt.entry, external, attempt.value.startedAt),
 		eventId: `${attempt.record.id}:run:${state.runId}`,
 		sourceEntryId: attempt.record.id,
 		type: "run.started",
@@ -3965,7 +3856,7 @@ function canonicalRunEvents(
 			? "run.failed"
 			: "run.cancelled";
 	const terminal: AuditEvent = {
-		...createBase(sessionId, source.terminal.entry, external, undefined, foundationTimestamp(source.terminal.record)),
+		...createBase(sessionId, source.terminal.entry, external, foundationTimestamp(source.terminal.record)),
 		eventId: source.terminal.record.id,
 		sourceEntryId: source.terminal.record.id,
 		type: terminalType,
@@ -3981,7 +3872,7 @@ function sourceEventForCandidate(
 	runId: string | undefined,
 	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
-	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter, candidate.recordedAt);
+	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.recordedAt);
 	if (candidate.eventType === "model.binding") {
 		const summary = safeModelBinding(candidate.value);
 		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
@@ -4104,12 +3995,7 @@ function sourceEventForCandidate(
 			summary: safeSchedulerSummary(candidate.value),
 		};
 	}
-	return {
-		...base,
-		type: candidate.eventType,
-		...(runId === undefined ? {} : { runId }),
-		summary: safeExternalMapping(candidate.value),
-	};
+	return undefined;
 }
 
 function safeModelBinding(value: ModelBindingLedgerRecord): AuditModelBindingSummary {
@@ -4229,97 +4115,6 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 			const previous = externalByRun.get(state.runId);
 			if (previous !== undefined && !sameExternalRef(previous, external)) conflictedRunIds.add(state.runId);
 			else if (previous === undefined) externalByRun.set(state.runId, external);
-		}
-	}
-	const externalTargets = new Map<string, string>();
-	const aosTargets = new Map<string, string>();
-	const mappingsByExternalKey = new Map<string, ExternalExecutionMapping>();
-	const mappingsByAosKey = new Map<string, ExternalExecutionMapping>();
-	const conflictedExternalKeys = new Set<string>();
-	const conflictedAosKeys = new Set<string>();
-	const markMappingRun = (mapping: ExternalExecutionMapping): void => {
-		if (mapping.aosRunId !== undefined && mapping.aosSessionId === sessionId) conflictedRunIds.add(mapping.aosRunId);
-	};
-	for (const candidate of candidates) {
-		if (candidate.eventType === "external.mapping") {
-			const mapping = candidate.value;
-			const externalKey = `${mapping.namespace}\u0000${mapping.externalSessionId}\u0000${mapping.externalRunId ?? "<absent>"}`;
-			const targetKey = `${mapping.namespace}\u0000${mapping.aosSessionId}\u0000${mapping.aosRunId ?? "<absent>"}`;
-			const previousTarget = externalTargets.get(externalKey);
-			const previousExternal = aosTargets.get(targetKey);
-			const previousMapping = mappingsByExternalKey.get(externalKey);
-			const previousAosMapping = mappingsByAosKey.get(targetKey);
-			const adapterDrift =
-				previousMapping !== undefined &&
-				previousMapping.adapter !== undefined &&
-				mapping.adapter !== undefined &&
-				!sameExternalAdapterIdentity(previousMapping.adapter, mapping.adapter);
-			const hasConflict =
-				(previousTarget !== undefined && previousTarget !== targetKey) ||
-				(previousExternal !== undefined && previousExternal !== externalKey) ||
-				adapterDrift ||
-				conflictedExternalKeys.has(externalKey) ||
-				conflictedAosKeys.has(targetKey);
-			if (hasConflict) {
-				const relatedRunIds = new Set<string>();
-				if (mapping.aosRunId !== undefined) relatedRunIds.add(mapping.aosRunId);
-				if (previousMapping?.aosRunId !== undefined) relatedRunIds.add(previousMapping.aosRunId);
-				if (previousAosMapping?.aosRunId !== undefined) relatedRunIds.add(previousAosMapping.aosRunId);
-				conflictedExternalKeys.add(externalKey);
-				conflictedAosKeys.add(targetKey);
-				if (previousMapping !== undefined) {
-					conflictedAosKeys.add(
-						`${previousMapping.namespace}\u0000${previousMapping.aosSessionId}\u0000${previousMapping.aosRunId ?? "<absent>"}`,
-					);
-					markMappingRun(previousMapping);
-				}
-				if (previousAosMapping !== undefined) {
-					conflictedExternalKeys.add(
-						`${previousAosMapping.namespace}\u0000${previousAosMapping.externalSessionId}\u0000${previousAosMapping.externalRunId ?? "<absent>"}`,
-					);
-					markMappingRun(previousAosMapping);
-				}
-				markMappingRun(mapping);
-				internalWarnings.push(
-					warning(
-						sessionId,
-						"mapping_conflict",
-						candidate.entry,
-						candidate.eventType,
-						schemaVersion(candidate.entry.data),
-						relatedRunIds.size === 0 ? undefined : relatedRunIds,
-						false,
-					),
-				);
-			}
-			if (previousTarget === undefined) {
-				externalTargets.set(externalKey, targetKey);
-				mappingsByExternalKey.set(externalKey, mapping);
-			}
-			if (previousExternal === undefined) {
-				aosTargets.set(targetKey, externalKey);
-				mappingsByAosKey.set(targetKey, mapping);
-			}
-			if (!hasConflict && mapping.aosRunId !== undefined) {
-				const external = externalFromMapping(mapping);
-				const previous = externalByRun.get(mapping.aosRunId);
-				if (previous !== undefined && !sameExternalRef(previous, external)) {
-					conflictedRunIds.add(mapping.aosRunId);
-					internalWarnings.push(
-						warning(
-							sessionId,
-							"mapping_conflict",
-							candidate.entry,
-							candidate.eventType,
-							schemaVersion(candidate.entry.data),
-							new Set([mapping.aosRunId]),
-							false,
-						),
-					);
-				} else if (previous === undefined) {
-					externalByRun.set(mapping.aosRunId, external);
-				}
-			}
 		}
 	}
 	const events: AuditEvent[] = [];
@@ -4493,14 +4288,6 @@ function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
 	return result;
 }
 
-function canonicalAdapter(value: ExternalAdapterIdentity): ExternalAdapterIdentity {
-	return {
-		adapterId: value.adapterId,
-		targetId: value.targetId,
-		protocol: { name: value.protocol.name, version: value.protocol.version },
-	};
-}
-
 function canonicalTypes(types: ReadonlyArray<AuditEventType> | undefined): ReadonlyArray<AuditEventType> | undefined {
 	if (types === undefined) return undefined;
 	const unique = new Set<AuditEventType>(types);
@@ -4527,8 +4314,6 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 		throw new ExecutionAuditError("audit_query_invalid");
 	if (query.external !== undefined && !isExternalExecutionRef(query.external))
 		throw new ExecutionAuditError("audit_query_invalid");
-	if (query.adapter !== undefined && !isExternalAdapterIdentity(query.adapter))
-		throw new ExecutionAuditError("audit_query_invalid");
 	if (
 		query.types !== undefined &&
 		(!Array.isArray(query.types) || query.types.some((type) => !isAuditEventType(type)))
@@ -4551,7 +4336,6 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 	if (query.sessionId !== undefined) normalized.sessionId = query.sessionId;
 	if (query.runId !== undefined) normalized.runId = query.runId;
 	if (query.external !== undefined) normalized.external = canonicalExternal(query.external);
-	if (query.adapter !== undefined) normalized.adapter = canonicalAdapter(query.adapter);
 	const types = canonicalTypes(query.types);
 	if (types !== undefined) normalized.types = [...types];
 	if (query.from !== undefined) normalized.from = query.from;
@@ -4571,7 +4355,6 @@ function queryFingerprint(query: AuditQuery): string {
 		sessionId: query.sessionId,
 		runId: query.runId,
 		external: query.external,
-		adapter: query.adapter,
 		types: query.types,
 		from: query.from,
 		to: query.to,
@@ -4669,15 +4452,10 @@ function matchesExternal(event: AuditEvent, external: ExternalExecutionRef): boo
 	);
 }
 
-function matchesAdapter(event: AuditEvent, adapter: ExternalAdapterIdentity): boolean {
-	return event.adapter !== undefined && sameExternalAdapterIdentity(event.adapter, adapter);
-}
-
 function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): AuditEvent[] {
 	return events.filter((event) => {
 		if (query.runId !== undefined && event.runId !== query.runId) return false;
 		if (query.external !== undefined && !matchesExternal(event, query.external)) return false;
-		if (query.adapter !== undefined && !matchesAdapter(event, query.adapter)) return false;
 		if (query.types !== undefined && !query.types.includes(event.type)) return false;
 		if (query.from !== undefined && event.recordedAt < query.from) return false;
 		if (query.to !== undefined && event.recordedAt >= query.to) return false;
@@ -4798,6 +4576,3 @@ export const createExecutionAuditAdapter = (
 	session: AuditSession,
 	options?: ExecutionAuditAdapterOptions,
 ): ExecutionAuditAdapter => new ExecutionAuditAdapter(session, options);
-
-/** Adapter identity type re-export for query consumers that filter by adapter. */
-export type { ExternalAdapterIdentity } from "./external-session-mapping.ts";

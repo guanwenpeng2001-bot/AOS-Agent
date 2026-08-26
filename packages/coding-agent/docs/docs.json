@@ -110,8 +110,8 @@
           "path": "session-format.md"
         },
         {
-          "title": "External Agent Adapter",
-          "path": "external-agent-adapter.md"
+          "title": "External Agent Connector",
+          "path": "external-agent-connector.md"
         }
       ]
     },

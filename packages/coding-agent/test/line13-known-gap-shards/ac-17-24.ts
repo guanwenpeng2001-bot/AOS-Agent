@@ -10,10 +10,12 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
+	createConnectorCapabilitySnapshot,
 	createFoundationToolGateway,
 	createLocalToolGatewayProvider,
 	createSandboxOperationToolGatewayProvider,
 	type SandboxOperationProvider,
+	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { registerFauxProvider } from "@aos-agent/ai/compat";
 import * as CodingAgent from "../../src/index.ts";
@@ -28,8 +30,7 @@ import {
 	type ExtensionAPI,
 	type SchedulerHostOptions,
 } from "../../src/index.ts";
-import type { ExternalAgentAdapter } from "../../src/core/external-agent-adapter.ts";
-import { createExternalAgentAdapterRegistry } from "../../src/core/external-agent-registry.ts";
+import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
@@ -552,7 +553,7 @@ const ac22 = defineLine13KnownGapCase({
 			const sourceIndexUrl = pathToFileURL(fileURLToPath(new URL("../../src/index.ts", import.meta.url))).href;
 			writeFileSync(
 				fixture.scriptPath,
-				`import { createExternalAgentAdapterRegistry, getPackageDir } from ${JSON.stringify(sourceIndexUrl)};\nconst registry = createExternalAgentAdapterRegistry();\nprocess.stdout.write(JSON.stringify({ packageDir: getPackageDir(), adapters: registry.list().length }));\n`,
+				`import { createExternalConnectorRegistry, getPackageDir } from ${JSON.stringify(sourceIndexUrl)};\nconst registry = createExternalConnectorRegistry();\nprocess.stdout.write(JSON.stringify({ packageDir: getPackageDir(), connectors: registry.list().length }));\n`,
 				"utf8",
 			);
 			fixture.nodeOutcome = await runProcess(process.execPath, sourceProcessArgs(fixture.scriptPath), {
@@ -631,24 +632,45 @@ const ac23 = defineLine13KnownGapCase({
 				isAbsolute(CHILD_ENTRY) &&
 				statSync(CHILD_ENTRY).isFile();
 
-			const adapter: ExternalAgentAdapter = {
-				id: "line13-driver",
-				async probe() {
-					throw new Error("probe is outside this registry regression");
-				},
-				async prepare() {
-					throw new Error("prepare is outside this registry regression");
-				},
-				async start() {
-					throw new Error("start is outside this registry regression");
-				},
+			const providerId = "line13.driver-connector";
+			const snapshot = createConnectorCapabilitySnapshot({
+				schemaVersion: 1,
+				providerId,
+				revision: 1,
+				protocol: { name: "line13-driver", version: "1" },
+				modelAccess: "none",
+				resume: false,
+				toolGateway: false,
+				artifacts: false,
+				images: false,
+			});
+			const connector: ExternalAgentConnector = {
+				schemaVersion: 1,
+				providerId,
+				providerClass: "external_connector",
+				capabilities: async () => [],
+				probeCapabilities: async () => Result.ok(snapshot),
+				createAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
+				runAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
+				resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
+				reconcileAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
+				cancelAttempt: async () => Result.ok(undefined),
+				dispose: async () => {},
 			};
-			const registry = createExternalAgentAdapterRegistry();
-			registry.register(adapter, { displayName: "Line 13 driver", version: "1.0.0", targets: ["target-one"] });
-			const resolved = registry.resolve({ adapterId: adapter.id, targetId: "target-one" });
-			fixture.exactSelection = resolved.adapter === adapter && resolved.selection.adapterId === adapter.id;
-			fixture.safeProjection = JSON.stringify(resolved.target) === '{"targetId":"target-one"}';
-			const privateResolution = resolved as unknown as Record<string, unknown>;
+			const descriptor = {
+				schemaVersion: 1 as const,
+				providerId,
+				providerClass: "external_connector" as const,
+				revision: snapshot.revision,
+				capabilitySnapshotDigest: snapshot.digest,
+			};
+			const registry = createExternalConnectorRegistry();
+			const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+			const projected = registry.list()[0];
+			fixture.exactSelection = registered.ok && projected?.providerId === providerId;
+			fixture.safeProjection = projected !== undefined && Object.keys(projected).sort().join(",") ===
+				"capabilitySnapshotDigest,providerClass,providerId,revision,schemaVersion";
+			const privateResolution = projected as unknown as Record<string, unknown>;
 			const provenance = privateResolution.driverProvenance;
 			fixture.provenanceBound =
 				typeof provenance === "object" &&

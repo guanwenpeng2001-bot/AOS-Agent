@@ -16,8 +16,8 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	cloneCanonicalExternalConnectorMapping,
-	isCanonicalExternalMappingTimestamp,
-	isExternalMappingIdentifier,
+	isCanonicalExternalConnectorMappingTimestamp,
+	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
 } from "./external-session-mapping.ts";
 import {
@@ -162,10 +162,10 @@ function cloneOperationCorrelation(value: unknown): ExecutionCorrelation | undef
 	for (const [key, candidate] of Object.entries(checked.value)) {
 		if (key === "revision") continue;
 		if (key === "ancestorIds") {
-			if (!Array.isArray(candidate) || candidate.some((id) => !isExternalMappingIdentifier(id))) return undefined;
+			if (!Array.isArray(candidate) || candidate.some((id) => !isExternalConnectorMappingIdentifier(id))) return undefined;
 			continue;
 		}
-		if (!isExternalMappingIdentifier(candidate)) return undefined;
+		if (!isExternalConnectorMappingIdentifier(candidate)) return undefined;
 	}
 	return Object.freeze({
 		...checked.value,
@@ -183,24 +183,24 @@ export function isExternalConnectorOperation(value: unknown): value is ExternalC
 	const hasReconcileReason = Object.hasOwn(value, "reconcileReason");
 	if (
 		value.schemaVersion !== 1 ||
-		!isExternalMappingIdentifier(value.providerId) ||
-		!isExternalMappingIdentifier(value.attemptId) ||
-		!isExternalMappingIdentifier(value.bindingId) ||
-		!isExternalMappingIdentifier(value.bindingEpochId) ||
+		!isExternalConnectorMappingIdentifier(value.providerId) ||
+		!isExternalConnectorMappingIdentifier(value.attemptId) ||
+		!isExternalConnectorMappingIdentifier(value.bindingId) ||
+		!isExternalConnectorMappingIdentifier(value.bindingEpochId) ||
 		!operationFingerprint(value.bindingDigest) ||
 		!Number.isSafeInteger(value.bindingRevision) ||
 		(value.bindingRevision as number) < 1 ||
 		!operationFingerprint(value.capabilityDigest) ||
 		!Number.isSafeInteger(value.capabilityRevision) ||
 		(value.capabilityRevision as number) < 1 ||
-		!isExternalMappingIdentifier(value.operationNonce) ||
+		!isExternalConnectorMappingIdentifier(value.operationNonce) ||
 		correlation === undefined ||
 		typeof value.status !== "string" ||
 		!EXTERNAL_CONNECTOR_OPERATION_STATUSES.includes(value.status as ExternalConnectorOperationStatus) ||
 		!Number.isSafeInteger(value.revision) ||
 		(value.revision as number) < 1 ||
-		!isCanonicalExternalMappingTimestamp(value.updatedAt) ||
-		(hasReceiptId && !isExternalMappingIdentifier(value.receiptId)) ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.updatedAt) ||
+		(hasReceiptId && !isExternalConnectorMappingIdentifier(value.receiptId)) ||
 		(hasReconcileReason &&
 			(typeof value.reconcileReason !== "string" ||
 				!EXTERNAL_CONNECTOR_RECONCILE_REASONS.has(value.reconcileReason as ExternalConnectorReconcileReason))) ||

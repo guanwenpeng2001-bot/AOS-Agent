@@ -32,7 +32,7 @@ import {
 } from "./external-agent-operation.ts";
 import {
 	cloneCanonicalExternalConnectorMapping,
-	isCanonicalExternalMappingTimestamp,
+	isCanonicalExternalConnectorMappingTimestamp,
 	type CanonicalExternalConnectorMapping,
 } from "./external-session-mapping.ts";
 import type {
@@ -1039,7 +1039,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			checked.value.bindingId !== attempt.bindingId ||
 			checked.value.bindingEpochIds.length !== attempt.bindingEpochIds.length ||
 			checked.value.bindingEpochIds.some((epochId, index) => epochId !== attempt.bindingEpochIds[index]) ||
-			!isCanonicalExternalMappingTimestamp(checked.value.provenance.producedAt) ||
+			!isCanonicalExternalConnectorMappingTimestamp(checked.value.provenance.producedAt) ||
 			correlation === undefined ||
 			correlation.taskId !== attempt.taskId ||
 			correlation.dispatchId !== attempt.dispatchId ||

@@ -124,7 +124,7 @@ describe("T3 AgentBinding authority", () => {
 	it("keeps association writers and execution inputs out of the T3 call graph", () => {
 		const ingress = source("../src/core/product-prompt-ingress.ts");
 		const runLifecycle = source("../src/core/run-lifecycle.ts");
-		const externalAdapter = source("../src/core/external-agent-adapter.ts");
+		const externalConnector = source("../src/core/external-agent-connector.ts");
 		const remoteOperation = source("../src/core/remote-operation.ts");
 		const rpcHost = source("../src/modes/rpc/rpc-host.ts");
 		const association = source("../src/core/execution-association.ts");
@@ -134,7 +134,7 @@ describe("T3 AgentBinding authority", () => {
 		expect(ingress).not.toMatch(/function\s+(?:roleRevision|modelProfile|dependencies)\s*\(/);
 		expect(runLifecycle).not.toContain("bindingHandles?:");
 		expect(runLifecycle).not.toContain("createRunBindingAssociation");
-		expect(externalAdapter).not.toContain("bindingAssociation");
+		expect(externalConnector).not.toContain("bindingAssociation");
 		expect(remoteOperation).not.toContain("bindingAssociation");
 		expect(rpcHost).not.toContain("createRunBindingAssociation");
 		expect(rpcHost).not.toContain("getActiveBindingHandles");

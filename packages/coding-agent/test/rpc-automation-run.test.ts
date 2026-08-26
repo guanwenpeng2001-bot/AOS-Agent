@@ -2109,10 +2109,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			await writeTcpRecord(first.socket, { id: "tcp-init", type: "initialize", protocolVersion: 1 });
 			const initialize = await first.nextRecord();
 			expect(initialize).toMatchObject({ id: "tcp-init", command: "initialize", success: true });
-			const sessionId = (initialize.data as { sessionId: string }).sessionId;
 
-			const external = { namespace: "ci", externalSessionId: "tcp-job", externalRunId: "tcp-attempt" };
-			await writeTcpRecord(first.socket, { id: "tcp-run", type: "run.start", message: "Hello", external });
+			await writeTcpRecord(first.socket, { id: "tcp-run", type: "run.start", message: "Hello" });
 			const accepted = await first.nextRecord();
 			expect(accepted).toMatchObject({ id: "tcp-run", command: "run.start", success: true });
 			const runId = (accepted.data as { runId: string }).runId;
@@ -2150,15 +2148,6 @@ describe("RPC Automation Host run lifecycle", () => {
 			});
 			const replay = await second.nextRecord();
 			expect(replay.data).toMatchObject({ status: "complete" });
-
-			await writeTcpRecord(second.socket, {
-				id: "tcp-map",
-				type: "external.map",
-				external,
-				aosSessionId: sessionId,
-				aosRunId: runId,
-			});
-			expect(await second.nextRecord()).toMatchObject({ id: "tcp-map", command: "external.map", success: true });
 		} finally {
 			first?.socket.destroy();
 			second?.socket.destroy();
@@ -2308,7 +2297,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("serves redacted audit query/replay and external mapping without execution side effects", async () => {
+	it("serves redacted audit query and replay without execution side effects", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 0 });
 
 		try {
@@ -2316,16 +2305,14 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-audit")).toHaveLength(1));
 			expect(
 				(responsesFor(rpcIo.outputLines, "i-audit")[0].data as { auditCommands: string[] }).auditCommands,
-			).toEqual(["audit.query", "audit.replay", "external.map"]);
+			).toEqual(["audit.query", "audit.replay"]);
 
-			const external = { namespace: "ci", externalSessionId: "job-1", externalRunId: "attempt-1" };
-			lineHandler(JSON.stringify({ id: "run-audit", type: "run.start", message: "Hello", external }));
+			lineHandler(JSON.stringify({ id: "run-audit", type: "run.start", message: "Hello" }));
 			let runId: string;
 			await vi.waitFor(() => {
 				const response = responsesFor(rpcIo.outputLines, "run-audit")[0];
 				expect(response?.success).toBe(true);
 				runId = (response.data as { runId: string }).runId;
-				expect((response.data as { external?: typeof external }).external).toEqual(external);
 			});
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
 
@@ -2333,7 +2320,6 @@ describe("RPC Automation Host run lifecycle", () => {
 			// response must expose only its stable warning code.
 			sessionLedger(runtimeHost.session).appendCustomEntry("unknown.source", { raw: "sensitive-payload" });
 			const promptSpy = vi.spyOn(runtimeHost.session, "prompt");
-			const appendSpy = vi.spyOn(sessionLedger(runtimeHost.session), "appendCustomEntry");
 
 			lineHandler(
 				JSON.stringify({
@@ -2382,36 +2368,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect((responsesFor(rpcIo.outputLines, "audit-missing")[0].error as { code: string }).code).toBe(
 				"audit_run_not_found",
 			);
-
-			lineHandler(
-				JSON.stringify({
-					id: "map-idempotent",
-					type: "external.map",
-					external,
-					aosSessionId: runtimeHost.session.sessionId,
-					aosRunId: runId!,
-				}),
-			);
-			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "map-idempotent")).toHaveLength(1));
-			const idempotentResponse = responsesFor(rpcIo.outputLines, "map-idempotent")[0];
-			expect(idempotentResponse).toMatchObject({ success: true, data: { idempotent: true } });
-
-			lineHandler(
-				JSON.stringify({
-					id: "map-conflict",
-					type: "external.map",
-					external: { namespace: "ci", externalSessionId: "job-2", externalRunId: "attempt-2" },
-					aosSessionId: runtimeHost.session.sessionId,
-					aosRunId: runId!,
-				}),
-			);
-			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "map-conflict")).toHaveLength(1));
-			const conflict = responsesFor(rpcIo.outputLines, "map-conflict")[0];
-			expect(conflict.success).toBe(false);
-			expect((conflict.error as { code: string }).code).toBe("external_mapping_conflict");
-			expect(JSON.stringify(conflict)).not.toContain("job-2");
 			expect(promptSpy).not.toHaveBeenCalled();
-			expect(appendSpy).not.toHaveBeenCalled();
 		} finally {
 			await cleanup();
 		}

@@ -30,7 +30,6 @@ const times = {
 	policyApproval: "2026-01-01T00:00:08.000Z",
 	sandbox: "2026-01-01T00:00:09.000Z",
 	violation: "2026-01-01T00:00:10.000Z",
-	mapping: "2026-01-01T00:00:11.000Z",
 	ended: "2026-01-01T00:00:12.000Z",
 } as const;
 
@@ -204,24 +203,11 @@ function sourceEntries(includeTerminal = true): SessionEntry[] {
 				requestId: "request-1",
 			},
 		}),
-		customEntry("mapping", times.mapping, "external.mapping", {
-			schemaVersion: 1,
-			mapping: {
-				namespace: "provider",
-				externalSessionId: "external-session",
-				externalRunId: "external-run",
-				aosSessionId: SESSION_ID,
-				aosRunId: RUN_ID,
-				createdAt: times.mapping,
-				source: "rpc",
-				correlationId: "correlation-1",
-			},
-		}),
-		customEntry("unknown", times.mapping, "unknown.source", {
+		customEntry("unknown", times.ended, "unknown.source", {
 			prompt: "must not escape",
 			payload: { token: "must-not-escape" },
 		}),
-		customEntry("malformed", times.mapping, "model.attempt", {
+		customEntry("malformed", times.ended, "model.attempt", {
 			schemaVersion: 1,
 			attempt: { bindingId: MODEL_BINDING_ID, summary: "C:\\private\\provider-error" },
 		}),
@@ -265,7 +251,7 @@ describe("single-session execution audit adapter", () => {
 		const adapter = new ExecutionAuditAdapter(session(sourceEntries()));
 		const result = adapter.query({ scope: "current-session", limit: 200 });
 
-		expect(result.events).toHaveLength(13);
+		expect(result.events).toHaveLength(12);
 		expect(eventKeys(result.events)).toEqual([...eventKeys(result.events)].sort());
 		expect(result.events.map((event) => event.type)).toEqual([
 			"run.accepted",
@@ -279,7 +265,6 @@ describe("single-session execution audit adapter", () => {
 			"policy.approval",
 			"sandbox.lifecycle",
 			"policy.violation",
-			"external.mapping",
 			"run.completed",
 		]);
 		expect(result.events.find((event) => event.type === "capability.binding")?.summary).toMatchObject({ id: CAPABILITY_BINDING_ID });
@@ -297,63 +282,12 @@ describe("single-session execution audit adapter", () => {
 			bindingId: POLICY_BINDING_ID,
 			sandboxStatus: "not_required",
 		});
-		expect(result.events.find((event) => event.type === "external.mapping")?.external).toEqual({
-			namespace: "provider",
-			externalSessionId: "external-session",
-			externalRunId: "external-run",
-		});
-		expect(result.events.find((event) => event.type === "run.completed")?.external).toEqual({
-			namespace: "provider",
-			externalSessionId: "external-session",
-			externalRunId: "external-run",
-		});
 		const encoded = JSON.stringify(result.events);
 		expect(encoded).not.toContain("must-not-escape");
 		expect(encoded).not.toContain("private");
 		expect(encoded).not.toContain("raw-child-body-must-not-escape");
 		expect(encoded).not.toContain("raw-child-correlation-must-not-escape");
 		expect(result.warnings.map((item) => item.code)).toEqual(["malformed_source", "unknown_source"]);
-	});
-
-	it("propagates a consistent mapping to the complete run timeline for external filtering", () => {
-		const adapter = new ExecutionAuditAdapter(session(sourceEntries()));
-		const result = adapter.query({
-			scope: "current-session",
-			external: { namespace: "provider", externalSessionId: "external-session", externalRunId: "external-run" },
-			limit: 200,
-		});
-
-		expect(result.events.map((event) => event.type)).toEqual([
-			"run.accepted",
-			"run.started",
-			"model.binding",
-			"model.attempt",
-			"context.snapshot",
-			"capability.binding",
-			"policy.binding",
-			"policy.decision",
-			"policy.approval",
-			"sandbox.lifecycle",
-			"policy.violation",
-			"external.mapping",
-			"run.completed",
-		]);
-	});
-
-	it("does not expose a mapping whose AOS session differs from the queried session", () => {
-		const entry = customEntry("foreign-mapping", times.mapping, "external.mapping", {
-			schemaVersion: 1,
-			mapping: {
-				namespace: "provider",
-				externalSessionId: "external-session",
-				aosSessionId: "other-session",
-				createdAt: times.mapping,
-			},
-		});
-		const result = new ExecutionAuditAdapter(session([entry])).query({ scope: "current-session", limit: 200 });
-
-		expect(result.events).toEqual([]);
-		expect(result.warnings).toEqual([expect.objectContaining({ code: "orphan_source" })]);
 	});
 
 	it("returns interrupted replay without fabricating a terminal", () => {
@@ -410,35 +344,4 @@ describe("single-session execution audit adapter", () => {
 		expect(result.run.status).toBe("accepted");
 	});
 
-	it("reports contradictory append-only external mappings without choosing a winner", () => {
-		const entries = [
-			customEntry("mapping-a", times.mapping, "external.mapping", {
-				schemaVersion: 1,
-				mapping: {
-					namespace: "provider",
-					externalSessionId: "external-session",
-					externalRunId: "external-run",
-					aosSessionId: SESSION_ID,
-					aosRunId: "run-a",
-					createdAt: times.mapping,
-				},
-			}),
-			customEntry("mapping-b", times.mapping, "external.mapping", {
-				schemaVersion: 1,
-				mapping: {
-					namespace: "provider",
-					externalSessionId: "external-session",
-					externalRunId: "external-run",
-					aosSessionId: SESSION_ID,
-					aosRunId: "run-b",
-					createdAt: times.mapping,
-				},
-			}),
-		];
-		const result = new ExecutionAuditAdapter(session(entries)).query({ scope: "current-session", limit: 200 });
-
-		expect(result.events).toHaveLength(2);
-		expect(result.events.map((event) => (event.summary as { aosRunId?: string }).aosRunId)).toEqual(["run-a", "run-b"]);
-		expect(result.warnings.some((item) => item.code === "mapping_conflict")).toBe(true);
-	});
 });

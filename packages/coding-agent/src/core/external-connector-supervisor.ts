@@ -2,7 +2,7 @@
 
 import { Buffer } from "node:buffer";
 import { FoundationError } from "@aos-agent/agent-core";
-import { isExternalMappingIdentifier } from "./external-session-mapping.ts";
+import { isExternalConnectorMappingIdentifier } from "./external-session-mapping.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import {
 	isExternalConnectorDriverEvent,
@@ -263,8 +263,8 @@ export function isExternalConnectorSupervisorReference(value: unknown): value is
 		isRecord(value) &&
 		hasOnlyKeys(value, REFERENCE_KEYS) &&
 		value.schemaVersion === EXTERNAL_CONNECTOR_SUPERVISOR_SCHEMA_VERSION &&
-		isExternalMappingIdentifier(value.supervisorRef) &&
-		isExternalMappingIdentifier(value.operationNonce)
+		isExternalConnectorMappingIdentifier(value.supervisorRef) &&
+		isExternalConnectorMappingIdentifier(value.operationNonce)
 	);
 }
 
@@ -275,9 +275,9 @@ export function isExternalConnectorProcessIdentity(value: unknown): value is Ext
 		typeof value.pid === "number" &&
 		Number.isSafeInteger(value.pid) &&
 		value.pid > 0 &&
-		isExternalMappingIdentifier(value.startToken) &&
-		isExternalMappingIdentifier(value.executableIdentity) &&
-		isExternalMappingIdentifier(value.fileIdentity)
+		isExternalConnectorMappingIdentifier(value.startToken) &&
+		isExternalConnectorMappingIdentifier(value.executableIdentity) &&
+		isExternalConnectorMappingIdentifier(value.fileIdentity)
 	);
 }
 

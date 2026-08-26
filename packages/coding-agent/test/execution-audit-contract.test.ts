@@ -32,8 +32,6 @@ import {
 	AUDIT_SOURCE_CUSTOM_TYPES,
 	AUDIT_WARNING_CODES,
 	EXTERNAL_EXECUTION_REF_KEYS,
-	EXTERNAL_MAP_COMMAND,
-	EXTERNAL_MAPPING_KEYS,
 } from "./fixtures/execution-audit-contract.ts";
 import { canonicalAuditRunEntries } from "./support/canonical-audit-run.ts";
 
@@ -74,7 +72,6 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_SCHEMA_VERSION).toBe(1);
 		expect(AUDIT_QUERY_COMMAND).toBe("audit.query");
 		expect(AUDIT_REPLAY_COMMAND).toBe("audit.replay");
-		expect(EXTERNAL_MAP_COMMAND).toBe("external.map");
 		expect(AUDIT_SOURCE_CUSTOM_TYPES).toEqual([
 			"model.binding",
 			"model.attempt",
@@ -85,7 +82,6 @@ describe("execution audit T0 contract", () => {
 			"policy.approval",
 			"sandbox.lifecycle",
 			"policy.violation",
-			"external.mapping",
 			"task.gate",
 		]);
 		expect(AUDIT_EXCLUDED_CUSTOM_TYPES).toEqual(["context.memory", "mcp.content.audit"]);
@@ -105,7 +101,6 @@ describe("execution audit T0 contract", () => {
 			"policy.approval",
 			"sandbox.lifecycle",
 			"policy.violation",
-			"external.mapping",
 			"task.gate",
 		]);
 	});
@@ -121,7 +116,6 @@ describe("execution audit T0 contract", () => {
 			"duplicate_source",
 			"source_unavailable",
 			"ambiguous_run_association",
-			"mapping_conflict",
 		]);
 		expect(AUDIT_ERROR_CODES).toEqual([
 			"audit_query_invalid",
@@ -129,8 +123,6 @@ describe("execution audit T0 contract", () => {
 			"audit_scope_unavailable",
 			"audit_run_not_found",
 			"audit_replay_incomplete",
-			"external_mapping_invalid",
-			"external_mapping_conflict",
 			"audit_persistence_failed",
 		]);
 		expect(AUDIT_DEFAULT_LIMIT).toBe(50);
@@ -138,18 +130,8 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_CURSOR_SORT_KEYS).toEqual(["recordedAt", "sessionId", "sourceEntryId", "eventId"]);
 	});
 
-	it("freezes external mapping keys and public summary allowlists", () => {
+	it("freezes external reference keys and public summary allowlists", () => {
 		expect(EXTERNAL_EXECUTION_REF_KEYS).toEqual(["namespace", "externalSessionId", "externalRunId"]);
-		expect(EXTERNAL_MAPPING_KEYS).toEqual([
-			"namespace",
-			"externalSessionId",
-			"externalRunId",
-			"aosSessionId",
-			"aosRunId",
-			"createdAt",
-			"source",
-			"correlationId",
-		]);
 		expect(AUDIT_PUBLIC_SUMMARY_KEYS.run).toEqual([
 			"status",
 			"attempt",
@@ -246,7 +228,6 @@ describe("execution audit T0 contract", () => {
 			"actorId",
 			"reasonCode",
 		]);
-		expect(AUDIT_PUBLIC_SUMMARY_KEYS.externalMapping).toBe(EXTERNAL_MAPPING_KEYS);
 	});
 
 	it("keeps forbidden data and side effects outside the contract", () => {
@@ -271,9 +252,6 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "malformed-source-is-incomplete")?.expectedStatus).toBe("incomplete");
 		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "missing-run-is-an-error")?.expectedError).toBe("audit_run_not_found");
 		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "bad-cursor-is-an-error")?.expectedError).toBe("audit_cursor_invalid");
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "mapping-persistence-failure-is-an-error")?.expectedError).toBe(
-			"audit_persistence_failed",
-		);
 	});
 });
 

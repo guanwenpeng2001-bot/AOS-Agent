@@ -15,11 +15,6 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
-	isExternalAdapterIdentity,
-	sameExternalAdapterIdentity,
-	type ExternalAdapterIdentity,
-} from "./external-session-mapping.ts";
-import {
 	AUDIT_CURSOR_SORT_KEYS,
 	AUDIT_DEFAULT_LIMIT,
 	AUDIT_EVENT_TYPES,
@@ -66,7 +61,6 @@ export type {
 	AuditReplayResult,
 	AuditSortKey,
 	AuditWarning,
-	ExternalAdapterIdentity,
 	ExternalExecutionRef,
 } from "./execution-audit.ts";
 
@@ -140,7 +134,6 @@ const PROJECTED_AUDIT_CUSTOM_TYPES = new Set([
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"remote.operation",
 	"task.gate",
 	"task.graph",
@@ -149,7 +142,7 @@ const PROJECTED_AUDIT_CUSTOM_TYPES = new Set([
 	"worker.operation_recorded",
 	"worker_receipt.written",
 ]);
-const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
+const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit"]);
 const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,14 +185,6 @@ function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
 	};
 }
 
-function canonicalAdapter(value: ExternalAdapterIdentity): ExternalAdapterIdentity {
-	return {
-		adapterId: value.adapterId,
-		targetId: value.targetId,
-		protocol: { name: value.protocol.name, version: value.protocol.version },
-	};
-}
-
 function canonicalTypes(value: ReadonlyArray<AuditEventType> | undefined): ReadonlyArray<AuditEventType> | undefined {
 	if (value === undefined) return undefined;
 	return [...new Set(value)].sort((left, right) => left.localeCompare(right));
@@ -232,8 +217,7 @@ function normalizeQuery(input: unknown, currentSessionId: string): AuditQuery {
 		throw new ExecutionAuditError("audit_query_invalid");
 	}
 	if (input.runId !== undefined && !isSafeIdentifier(input.runId)) throw new ExecutionAuditError("audit_query_invalid");
-	if (input.external !== undefined && !isExternalRef(input.external)) throw new ExecutionAuditError("audit_query_invalid");
-	if (input.adapter !== undefined && !isExternalAdapterIdentity(input.adapter))
+	if (input.external !== undefined && !isExternalRef(input.external))
 		throw new ExecutionAuditError("audit_query_invalid");
 	if (input.types !== undefined && (!Array.isArray(input.types) || input.types.some((type) => !isAuditEventType(type)))) {
 		throw new ExecutionAuditError("audit_query_invalid");
@@ -253,7 +237,6 @@ function normalizeQuery(input: unknown, currentSessionId: string): AuditQuery {
 		...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
 		...(input.runId === undefined ? {} : { runId: input.runId }),
 		...(input.external === undefined ? {} : { external: canonicalExternal(input.external) }),
-		...(input.adapter === undefined ? {} : { adapter: canonicalAdapter(input.adapter) }),
 		...(types === undefined ? {} : { types }),
 		...(input.from === undefined ? {} : { from: input.from }),
 		...(input.to === undefined ? {} : { to: input.to }),
@@ -334,16 +317,11 @@ function matchesExternal(event: AuditEvent, external: ExternalExecutionRef): boo
 	);
 }
 
-function matchesAdapter(event: AuditEvent, adapter: ExternalAdapterIdentity): boolean {
-	return event.adapter !== undefined && sameExternalAdapterIdentity(event.adapter, adapter);
-}
-
 function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): AuditEvent[] {
 	return events.filter((event) => {
 		if (query.sessionId !== undefined && event.sessionId !== query.sessionId) return false;
 		if (query.runId !== undefined && event.runId !== query.runId) return false;
 		if (query.external !== undefined && !matchesExternal(event, query.external)) return false;
-		if (query.adapter !== undefined && !matchesAdapter(event, query.adapter)) return false;
 		if (query.types !== undefined && !query.types.includes(event.type)) return false;
 		if (query.from !== undefined && event.recordedAt < query.from) return false;
 		if (query.to !== undefined && event.recordedAt >= query.to) return false;

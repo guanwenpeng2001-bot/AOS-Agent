@@ -1,5 +1,5 @@
 /**
- * T0-only Execution Audit / Replay / External Mapping contract fixture.
+ * T0-only Execution Audit / Replay contract fixture.
  *
  * This file intentionally does not import production code. It records the
  * values and public shapes that the implementation tasks must preserve. The
@@ -19,7 +19,6 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"task.gate",
 ] as const;
 export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
@@ -31,7 +30,7 @@ export type AuditSourceCustomType = (typeof AUDIT_SOURCE_CUSTOM_TYPES)[number];
  */
 export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory", "mcp.content.audit"] as const;
 
-	export const AUDIT_EVENT_TYPES = [
+export const AUDIT_EVENT_TYPES = [
 	"run.accepted",
 	"run.started",
 	"run.completed",
@@ -47,7 +46,6 @@ export const AUDIT_EXCLUDED_CUSTOM_TYPES = ["context.memory", "mcp.content.audit
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"task.gate",
 ] as const;
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];
@@ -70,7 +68,6 @@ export type AuditQueryScope = (typeof AUDIT_QUERY_SCOPES)[number];
 
 export const AUDIT_QUERY_COMMAND = "audit.query" as const;
 export const AUDIT_REPLAY_COMMAND = "audit.replay" as const;
-export const EXTERNAL_MAP_COMMAND = "external.map" as const;
 
 export const AUDIT_WARNING_CODES = [
 	"unknown_source",
@@ -80,7 +77,6 @@ export const AUDIT_WARNING_CODES = [
 	"duplicate_source",
 	"source_unavailable",
 	"ambiguous_run_association",
-	"mapping_conflict",
 ] as const;
 export type AuditWarningCode = (typeof AUDIT_WARNING_CODES)[number];
 
@@ -90,8 +86,6 @@ export const AUDIT_ERROR_CODES = [
 	"audit_scope_unavailable",
 	"audit_run_not_found",
 	"audit_replay_incomplete",
-	"external_mapping_invalid",
-	"external_mapping_conflict",
 	"audit_persistence_failed",
 ] as const;
 export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
@@ -103,29 +97,11 @@ export const AUDIT_MAX_LIMIT = 200 as const;
 export const AUDIT_CURSOR_SORT_KEYS = ["recordedAt", "sessionId", "sourceEntryId", "eventId"] as const;
 
 export const EXTERNAL_EXECUTION_REF_KEYS = ["namespace", "externalSessionId", "externalRunId"] as const;
-export const EXTERNAL_MAPPING_KEYS = [
-	"namespace",
-	"externalSessionId",
-	"externalRunId",
-	"aosSessionId",
-	"aosRunId",
-	"createdAt",
-	"source",
-	"correlationId",
-] as const;
 
 export interface ExternalExecutionRef {
 	readonly namespace: string;
 	readonly externalSessionId: string;
 	readonly externalRunId?: string;
-}
-
-export interface ExternalExecutionMapping extends ExternalExecutionRef {
-	readonly aosSessionId: string;
-	readonly aosRunId?: string;
-	readonly createdAt: string;
-	readonly source?: string;
-	readonly correlationId?: string;
 }
 
 export interface AuditRunModelReference {
@@ -365,8 +341,7 @@ export type AuditEvent =
 	| (AuditEventBase & { readonly type: "policy.approval"; readonly runId?: string; readonly summary: AuditPolicyApprovalSummary })
 	| (AuditEventBase & { readonly type: "sandbox.lifecycle"; readonly runId?: string; readonly summary: AuditSandboxLifecycleSummary })
 	| (AuditEventBase & { readonly type: "policy.violation"; readonly runId?: string; readonly summary: AuditPolicyViolationSummary })
-	| (AuditEventBase & { readonly type: "task.gate"; readonly runId?: string; readonly summary: AuditTaskGateSummary })
-	| (AuditEventBase & { readonly type: "external.mapping"; readonly runId?: string; readonly summary: ExternalExecutionMapping });
+	| (AuditEventBase & { readonly type: "task.gate"; readonly runId?: string; readonly summary: AuditTaskGateSummary });
 
 export interface AuditWarning {
 	readonly code: AuditWarningCode;
@@ -493,7 +468,6 @@ export const AUDIT_PUBLIC_SUMMARY_KEYS = {
 		"actorId",
 		"reasonCode",
 	],
-	externalMapping: EXTERNAL_MAPPING_KEYS,
 } as const;
 
 /** Keys that must never occur in an audit event or summary at any nesting level. */
@@ -578,7 +552,4 @@ export const AUDIT_CONTRACT_CASES = [
 	{ id: "task-gate-without-runid-is-not-guessed-into-a-run", sideEffects: [] },
 	{ id: "malformed-task-gate-is-warning-only", expectedWarning: "malformed_source", sideEffects: [] },
 	{ id: "session-mismatched-task-gate-is-orphan-warning", expectedWarning: "orphan_source", sideEffects: [] },
-	{ id: "mapping-conflict-is-an-error", expectedError: "external_mapping_conflict", sideEffects: [] },
-	{ id: "contradictory-mapping-is-a-warning", expectedWarning: "mapping_conflict", sideEffects: [] },
-	{ id: "mapping-persistence-failure-is-an-error", expectedError: "audit_persistence_failed", sideEffects: [] },
 ] as const satisfies ReadonlyArray<AuditContractCase>;
