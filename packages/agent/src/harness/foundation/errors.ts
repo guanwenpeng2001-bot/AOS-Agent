@@ -35,6 +35,8 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"tool_guard_denied",
 	"tool_pre_hook_denied",
 	"tool_post_validation_failed",
+	"external_event_invalid",
+	"external_resource_limit_exceeded",
 	"side_effect_unknown",
 	"role_not_found",
 	"role_slug_conflict",
@@ -180,7 +182,7 @@ export function foundationErrorCategory(code: FoundationErrorCode): FoundationEr
 	if (code.endsWith("_not_found")) return "not_found";
 	if (code.endsWith("_conflict")) return "conflict";
 	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
-	if (code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
+	if (code.startsWith("external_") || code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
 	if (code === "scheduler_lease_lost" || code === "scheduler_claim_expired") return "concurrency";
 	if (code === "scheduler_no_executor" || code === "scheduler_executor_unavailable") return "provider";
 	return "validation";

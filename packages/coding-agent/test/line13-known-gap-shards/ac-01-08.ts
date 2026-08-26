@@ -28,7 +28,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	createExternalConnectorRegistry,
-	createDurableExternalAgentConnector,
 	executeExternalConnectorProductRun,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
@@ -36,6 +35,7 @@ import {
 	type ExternalConnectorRegistry,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
+import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
 import type {
 	ExternalConnectorDriverHandle,

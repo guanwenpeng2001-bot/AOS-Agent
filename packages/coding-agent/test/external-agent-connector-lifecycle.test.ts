@@ -13,6 +13,7 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type Dispatch,
 	type ExecutionCorrelation,
+	type FoundationJsonValue,
 	type RevisionReference,
 	type SessionLedger,
 	type TaskEnvelope,
@@ -258,7 +259,11 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	store: FakeStore | undefined;
 	spawnFailure = false;
 	readFailure = false;
+	readHangs = false;
+	eventNextHangs = false;
 	disposeHangs = false;
+	disposeAbortObserved = false;
+	eventValues: FoundationJsonValue[] = [];
 	evidence: ExternalConnectorTerminalEvidence = terminalEvidence();
 	cancelEvidence: ExternalConnectorTerminalEvidence = terminalEvidence("cancelled");
 	lookupResult: ExternalConnectorDriverLookup = { status: "terminal", evidence: terminalEvidence() };
@@ -281,10 +286,17 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	events(): AsyncIterable<never> {
+	events(): AsyncIterable<FoundationJsonValue> {
 		this.calls.events++;
+		let index = 0;
 		return {
-			[Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+			[Symbol.asyncIterator]: () => ({
+				next: async () => this.eventNextHangs
+					? new Promise<never>(() => undefined)
+					: index < this.eventValues.length
+						? { done: false, value: this.eventValues[index++] }
+						: { done: true, value: undefined },
+			}),
 		};
 	}
 
@@ -305,6 +317,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	async read(): Promise<ExternalConnectorTerminalEvidence> {
 		this.calls.read++;
 		if (this.readFailure) throw new Error("injected read failure");
+		if (this.readHangs) await new Promise<void>(() => undefined);
 		return this.evidence;
 	}
 
@@ -321,9 +334,15 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		return this.cancelEvidence;
 	}
 
-	async dispose(): Promise<void> {
+	async dispose(options?: { readonly signal?: AbortSignal }): Promise<void> {
 		this.calls.dispose++;
-		if (this.disposeHangs) await new Promise<void>(() => undefined);
+		if (this.disposeHangs) {
+			await new Promise<void>(() => {
+				options?.signal?.addEventListener("abort", () => {
+					this.disposeAbortObserved = true;
+				}, { once: true });
+			});
+		}
 	}
 }
 
@@ -334,6 +353,7 @@ interface Fixture {
 	readonly connector: DurableExternalAgentConnector;
 	readonly attempt: Attempt;
 	readonly snapshot: ConnectorCapabilitySnapshot;
+	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
 }
 
 async function fixture(options: { resume?: boolean; capabilityRevision?: number } = {}): Promise<Fixture> {
@@ -366,7 +386,7 @@ async function fixture(options: { resume?: boolean; capabilityRevision?: number 
 	if (!epoch.ok) throw epoch.error;
 	const created = await connector.createAttempt(dispatch, resolvedBinding, { initialBindingEpoch: epoch.value });
 	if (!created.ok) throw created.error;
-	return { binding: resolvedBinding, store, driver, connector, attempt: created.value, snapshot };
+	return { binding: resolvedBinding, store, driver, connector, attempt: created.value, snapshot, supervision };
 }
 
 function operationFor(
@@ -513,6 +533,84 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		if (!resumed.ok) expect(resumed.error.code).toBe("unsupported_feature");
 		expect(value.driver.calls.connect).toBe(0);
 		expect(value.driver.calls.spawn).toBe(0);
+	});
+
+	it("propagates supervised resume event failures through the same Attempt receipt", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		value.driver.eventValues = [{
+			schemaVersion: 1,
+			type: "progress",
+			externalSessionId: value.driver.handle.externalSessionId,
+			...(value.driver.handle.externalTurnId === undefined
+				? {}
+				: { externalTurnId: value.driver.handle.externalTurnId }),
+			sequence: 1,
+			producedAt: now,
+		}];
+		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
+		expect(resumed.ok).toBe(true);
+		if (resumed.ok) {
+			expect(resumed.value.attemptId).toBe(value.attempt.attemptId);
+			expect(resumed.value).toMatchObject({
+				status: "failed",
+				error: {
+					code: "external_event_invalid",
+					message: "External connector emitted invalid supervised output.",
+				},
+			});
+		}
+		expect(value.driver.calls.connect).toBe(1);
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(value.store.receiptWrites).toBe(1);
+	});
+
+	it("settles an already-aborted run without process, driver, events, or iterator side effects", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		const controller = new AbortController();
+		controller.abort();
+		const completed = await value.connector.runAttempt(value.attempt, {
+			correlation,
+			signal: controller.signal,
+		});
+		expect(completed.ok).toBe(true);
+		if (completed.ok) expect(completed.value.status).toBe("cancelled");
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+	});
+
+	it("remembers cancel before Attempt persistence and never launches later", async () => {
+		const value = await fixture();
+		const requested = await value.connector.cancelAttempt(value.attempt.attemptId);
+		expect(requested.ok).toBe(true);
+		persistAttempt(value);
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+		expect(completed.ok).toBe(true);
+		if (completed.ok) expect(completed.value.status).toBe("cancelled");
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(value.driver.calls.cancel).toBe(0);
+	});
+
+	it("uses one cooperative driver cancel after launch and returns one canonical cancelled receipt", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.driver.readHangs = true;
+		value.driver.eventNextHangs = true;
+		const running = value.connector.runAttempt(value.attempt, { correlation });
+		await expect.poll(() => value.driver.calls.read).toBe(1);
+		const cancelled = await value.connector.cancelAttempt(value.attempt.attemptId);
+		expect(cancelled.ok).toBe(true);
+		const completed = await running;
+		expect(completed.ok).toBe(true);
+		if (completed.ok) expect(completed.value.status).toBe("cancelled");
+		expect(value.driver.calls.cancel).toBe(1);
+		expect(value.driver.calls.connect).toBe(0);
+		expect(value.store.receiptWrites).toBe(1);
+		expect(value.store.receipts.get(value.attempt.attemptId)?.status).toBe("cancelled");
 	});
 
 	it("cancels idempotently after persisting cancelling", async () => {
@@ -781,8 +879,13 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const value = await fixture();
 		value.driver.disposeHangs = true;
 		const startedAt = Date.now();
-		await value.connector.dispose();
+		await expect(value.connector.dispose()).rejects.toMatchObject({
+			code: "side_effect_unknown",
+			segment: "dispose",
+		});
 		expect(Date.now() - startedAt).toBeLessThan(250);
 		expect(value.driver.calls.dispose).toBe(1);
+		expect(value.driver.disposeAbortObserved).toBe(true);
+		expect(value.supervision.processController.launchCalls).toBe(0);
 	});
 });

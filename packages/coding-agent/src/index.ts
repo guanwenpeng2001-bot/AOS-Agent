@@ -618,12 +618,6 @@ export {
 	type ExternalConnectorProductExecutionInput,
 } from "./core/external-connector-product.ts";
 export {
-	DurableExternalAgentConnector,
-	createDurableExternalAgentConnector,
-	externalConnectorAttemptId,
-	type ExternalAgentConnectorRuntimeOptions,
-} from "./core/external-agent-connector.ts";
-export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,
 	CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,
 	ExternalAgentInputError,

@@ -850,12 +850,12 @@ export class RpcHostController {
 		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
 		/**
 		 * Active external agent executions keyed by runId. Cancel is forwarded to
-		 * the adapter handle, which the driver makes idempotent.
+		 * the current Connector's same-Attempt cancel path.
 		 */
 		/**
 		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
 		 * them for external runs only, so a pending start readiness race or a
-		 * started observation race resolves even when the adapter never returns.
+		 * started observation race resolves even when the driver never returns.
 		 */
 		/**
 		 * Deadline controllers of pending external starts, registered when the
@@ -865,7 +865,7 @@ export class RpcHostController {
 		 */
 		/**
 		 * Pending external start promises keyed by runId. Lifecycle transitions
-		 * must never await them: an adapter or preflight that ignores the abort
+		 * must never await them: a driver or preflight that ignores the abort
 		 * signal would block detach/rebind forever. They are aborted best-effort
 		 * and their continuation fails closed on the generation/epoch guards.
 		 */
@@ -2133,7 +2133,7 @@ export class RpcHostController {
 				return;
 			}
 			if (canonical === undefined) {
-				// Prompt promises, adapter receipts, process state, and agent events are
+				// Prompt promises, Connector evidence, process state, and agent events are
 				// observations only. Without the durable RunReceipt chain the Run stays
 				// non-terminal and recovery reports it interrupted.
 				if (binding.activeHandle === handle) {
@@ -2182,11 +2182,11 @@ export class RpcHostController {
 
 
 		/**
-		 * Forward the existing Run cancellation intent to the adapter's idempotent
-		 * cancel path during a host lifecycle transition (transport detach, host
+		 * Forward the existing Run cancellation intent to the Connector's idempotent
+		 * same-Attempt cancel path during a host lifecycle transition (transport detach, host
 		 * shutdown, session switch). The run's deadline controller is aborted
 		 * first so a pending start readiness race or started observation race
-		 * resolves even when the adapter never returns: the driver cancel alone
+		 * resolves even when the driver never returns: driver cancel alone
 		 * awaits startGate and cannot unblock a start that never resolves. Started
 		 * observations are awaited before canonical lookup; a pending start fails closed
 		 * through its own continuation, which forwards the same idempotent cancel.
@@ -2261,9 +2261,9 @@ export class RpcHostController {
 					createAutomationError("external_binding_invalid", "The External Connector selection is invalid.", false),
 				);
 			}
-			// The adapter contract has start() only; there is no same-ref resume
-			// API, so an external run.resume can never be honored. Reject it instead
-			// of silently starting a fresh execution with a new operation id.
+			// RPC run.resume cannot yet recover the source Run's canonical Attempt.
+			// The Connector itself retains durable same-Attempt resume; this product
+			// boundary must reject instead of silently creating a new Attempt.
 			if (deadlineAt !== undefined && !isRunTimestamp(deadlineAt)) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(
@@ -2394,14 +2394,27 @@ export class RpcHostController {
 				}
 				const registry = runBinding.session.getExternalConnectorRegistry?.();
 				const safeSelection = serializeExternalConnectorSelection(externalConnector);
-				if (registry === undefined || safeSelection === undefined) {
+				if (safeSelection === undefined) {
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
 								"external_binding_invalid",
-								"No matching trusted External Connector is composed into this Host.",
+								"The External Connector selection is invalid.",
+								false,
+							),
+						),
+					);
+				}
+				if (registry === undefined) {
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_connector_unavailable",
+								"No trusted External Connector registry is composed into this Host.",
 								false,
 							),
 						),
@@ -2409,13 +2422,18 @@ export class RpcHostController {
 				}
 				const selected = await registry.select(safeSelection);
 				if (!selected.ok) {
+					const providerExists = registry.list().some(
+						(descriptor) => descriptor.providerId === safeSelection.providerId,
+					);
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
-								"external_capability_mismatch",
-								"External Connector selection or capability snapshot is unavailable.",
+								providerExists ? "external_capability_mismatch" : "external_connector_unavailable",
+								providerExists
+									? "External Connector capability snapshot is unavailable or drifted."
+									: "The selected External Connector is not registered in this Host.",
 								false,
 							),
 						),
@@ -2832,18 +2850,13 @@ export class RpcHostController {
 					proposedRunId,
 					externalConnectorResolved.descriptor.providerId,
 				);
-				let execution: Promise<unknown>;
 				runBinding.externalRuns.set(proposedRunId, {
 					cancel: async () => {
-						if (!deadlineController.signal.aborted) deadlineController.abort();
-						const first = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
-						if (first.ok) return;
-						await execution.catch(() => undefined);
-						const retried = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
-						if (!retried.ok) throw retried.error;
+						const cancelled = await externalConnectorResolved.connector.cancelAttempt(productIdentity.attemptId);
+						if (!cancelled.ok) throw cancelled.error;
 					},
 				});
-				execution = persistExternalConnectorProductRunAfterAcceptance({
+				const execution = persistExternalConnectorProductRunAfterAcceptance({
 					...externalProductAdmission,
 					input: { ...externalProductAdmission.input, signal: deadlineController.signal },
 				})
@@ -4762,8 +4775,8 @@ export class RpcHostController {
 					}
 					currentBinding.activeHandle.requestCancel();
 					// Cancellation is a request, not the terminal transition. An external
-					// agent run forwards to the idempotent adapter cancel (the deadline
-					// signal reaches the adapter through the same driver); a local run
+					// agent run forwards one same-Attempt Connector cancel without
+					// aborting the deadline signal; a local run
 					// triggers the existing abort path without waiting for its idle
 					// promise so the command response describes the current running
 					// state. A terminal event is emitted only after canonical lookup.
@@ -4808,8 +4821,48 @@ export class RpcHostController {
 									id,
 									"run.resume",
 									createAutomationError(
-										"start_rejected",
+										"external_binding_invalid",
 										"The External Connector selection is invalid.",
+										false,
+									),
+								);
+							}
+							if (command.externalConnector !== undefined) {
+								const registry = currentBinding.session.getExternalConnectorRegistry?.();
+								if (registry === undefined) {
+									return automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											"external_connector_unavailable",
+											"No trusted External Connector registry is composed into this Host.",
+											false,
+										),
+									);
+								}
+								const selected = await registry.select(command.externalConnector);
+								if (!selected.ok) {
+									const providerExists = registry.list().some(
+										(descriptor) => descriptor.providerId === command.externalConnector?.providerId,
+									);
+									return automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											providerExists ? "external_capability_mismatch" : "external_connector_unavailable",
+											providerExists
+												? "External Connector capability snapshot is unavailable or drifted."
+												: "The selected External Connector is not registered in this Host.",
+											false,
+										),
+									);
+								}
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError(
+										"external_resume_unsupported",
+										"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
 										false,
 									),
 								);
@@ -4999,19 +5052,19 @@ export class RpcHostController {
 									),
 								);
 							}
-							// Resume execution-kind consistency: an external source run can only
-							// be resumed through an External Agent Adapter, which cannot
-							// honor; rejecting here avoids silently resuming a different
-							// execution kind locally.
-							const sourceIsExternal = sourceRun.record.external !== undefined;
+							// RPC cannot yet map an external source Run back to its canonical
+							// durable Attempt. Reject here instead of starting a different
+							// execution kind or a new Connector Attempt.
+							const sourceIsExternal =
+								sourceRun.record.external !== undefined || sourceRun.record.model.provider === "external_connector";
 							if (sourceIsExternal) {
 								return resumeFailure(
 									automationError(
 										id,
 										"run.resume",
 										createAutomationError(
-											"external_agent_resume_unsupported",
-											"External execution cannot be resumed without an explicitly selected resumable connector.",
+											"external_resume_unsupported",
+											"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
 											false,
 										),
 									),
@@ -5772,8 +5825,8 @@ export class RpcHostController {
 					bindingAtDetach.activeReservation = undefined;
 				}
 				if (handleAtDetach !== undefined) {
-					// The Run cancellation intent is forwarded to the adapter's
-					// idempotent cancel path for external executions: the Session
+					// The Run cancellation intent is forwarded to the Connector's
+					// idempotent same-Attempt cancel path for external executions: the Session
 					// agent loop does not drive them, so Session abort alone would
 					// leave the external execution running. Local runs keep the existing
 					// abort plus tracked-prompt observation.
@@ -5792,7 +5845,7 @@ export class RpcHostController {
 				// before external-runs registration) so the preflight or
 				// readiness race resolves where the signal is honored; each fails
 				// closed on the epoch guard. Pending external starts are never
-				// awaited: an adapter start or preflight that ignores the abort
+				// awaited: a driver start or preflight that ignores the abort
 				// signal must not block the detach.
 				for (const controller of bindingAtDetach.externalPendingControllers.values()) {
 					controller.abort();

@@ -4,12 +4,20 @@ import { Buffer } from "node:buffer";
 import { FoundationError } from "@aos-agent/agent-core";
 import { isExternalMappingIdentifier } from "./external-session-mapping.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
+import {
+	isExternalConnectorDriverEvent,
+	isExternalConnectorTerminalEvidence,
+	type ExternalConnectorDriverEvent,
+	type ExternalConnectorDriverHandle,
+} from "./vendor-drivers/types.ts";
 
 export const EXTERNAL_CONNECTOR_SUPERVISOR_SCHEMA_VERSION = 1 as const;
 export const EXTERNAL_CONNECTOR_SUPERVISOR_SEGMENTS = ["start", "event", "receipt", "cancel", "dispose"] as const;
 export type ExternalConnectorSupervisorSegment = (typeof EXTERNAL_CONNECTOR_SUPERVISOR_SEGMENTS)[number];
 export type ExternalConnectorSupervisorErrorCode =
+	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
+	| "terminal_evidence_invalid"
 	| "side_effect_unknown"
 	| "reconcile_required";
 export type ExternalConnectorProcessContainment = "process_group" | "job_object";
@@ -113,6 +121,7 @@ export interface ExternalConnectorBoundedSupervisorOptions {
 	readonly reference: ExternalConnectorSupervisorReference;
 	readonly containment: ExternalConnectorProcessContainment;
 	readonly processController: ExternalConnectorProcessController;
+	readonly artifactsAllowed: boolean;
 	readonly deadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
 	readonly clock?: RuntimeClock;
@@ -388,6 +397,9 @@ export class ExternalConnectorBoundedSupervisor {
 	#quarantined = false;
 	#cleaned = false;
 	#eventTimes: number[] = [];
+	#startedSeen = false;
+	#lastProgressSequence = 0;
+	readonly #artifactsAllowed: boolean;
 
 	constructor(options: ExternalConnectorBoundedSupervisorOptions) {
 		if (!isExternalConnectorSupervisorReference(options.reference)) {
@@ -399,9 +411,13 @@ export class ExternalConnectorBoundedSupervisor {
 		if (typeof options.processController?.launch !== "function") {
 			throw new TypeError("External Connector process controller is invalid");
 		}
+		if (typeof options.artifactsAllowed !== "boolean") {
+			throw new TypeError("External Connector artifact capability is invalid");
+		}
 		this.reference = cloneReference(options.reference);
 		this.#containment = options.containment;
 		this.#processController = options.processController;
+		this.#artifactsAllowed = options.artifactsAllowed;
 		this.#deadlines = mergeDeadlines(options.deadlines);
 		this.#limits = mergeLimits(options.limits);
 		this.#clock = options.clock ?? SYSTEM_RUNTIME_CLOCK;
@@ -488,8 +504,17 @@ export class ExternalConnectorBoundedSupervisor {
 		segment: ExternalConnectorSupervisorSegment,
 		operation: (signal: AbortSignal) => Promise<T>,
 		sourceSignal?: AbortSignal,
+		resultKind: "opaque" | "terminal_evidence" | "optional_terminal_evidence" = "opaque",
 	): Promise<T> {
 		this.#requireProcess();
+		if (sourceSignal?.aborted === true) {
+			const cleaned = await this.#forceAndWait();
+			throw new ExternalConnectorSupervisorError(
+				cleaned ? "side_effect_unknown" : "reconcile_required",
+				cleaned ? segment : "dispose",
+				true,
+			);
+		}
 		const controller = new AbortController();
 		const aborted = deferred<void>();
 		const abort = (): void => {
@@ -497,11 +522,16 @@ export class ExternalConnectorBoundedSupervisor {
 			aborted.resolve();
 		};
 		sourceSignal?.addEventListener("abort", abort, { once: true });
-		if (sourceSignal?.aborted === true) abort();
 		const timer = new SegmentTimer(this.#clock, this.#deadlines[segment]);
 		try {
+			let operationPromise: Promise<T>;
+			try {
+				operationPromise = operation(controller.signal);
+			} catch (error) {
+				operationPromise = Promise.reject(error);
+			}
 			const outcome = await Promise.race<AwaitOutcome<T>>([
-				Promise.resolve().then(() => operation(controller.signal)).then(
+				operationPromise.then(
 					(value): AwaitOutcome<T> => ({ kind: "value", value }),
 					(error: unknown): AwaitOutcome<T> => ({ kind: "rejected", error }),
 				),
@@ -510,7 +540,22 @@ export class ExternalConnectorBoundedSupervisor {
 				this.#processHandle!.exited.then((): AwaitOutcome<T> => ({ kind: "process_exit" })),
 			]);
 			if (outcome.kind === "value") {
-				if (segment === "event" || segment === "receipt") this.#observeValue(outcome.value, segment);
+				if (
+					resultKind === "terminal_evidence" ||
+					(resultKind === "optional_terminal_evidence" && outcome.value !== undefined)
+				) {
+					try {
+						this.#acceptTerminalEvidence(outcome.value);
+					} catch (error) {
+						const cleaned = await this.#forceAndWait();
+						if (error instanceof ExternalConnectorSupervisorError && cleaned) throw error;
+						throw new ExternalConnectorSupervisorError(
+							cleaned ? "side_effect_unknown" : "reconcile_required",
+							cleaned ? segment : "dispose",
+							true,
+						);
+					}
+				}
 				return outcome.value;
 			}
 			if (!controller.signal.aborted) controller.abort();
@@ -526,8 +571,20 @@ export class ExternalConnectorBoundedSupervisor {
 		}
 	}
 
-	async consumeEvents(events: AsyncIterable<unknown>, sourceSignal?: AbortSignal): Promise<void> {
+	async consumeEvents(
+		createEvents: (signal: AbortSignal) => AsyncIterable<unknown>,
+		handle: ExternalConnectorDriverHandle,
+		sourceSignal?: AbortSignal,
+	): Promise<void> {
 		this.#requireProcess();
+		if (sourceSignal?.aborted === true) {
+			const cleaned = await this.#forceAndWait();
+			throw new ExternalConnectorSupervisorError(
+				cleaned ? "side_effect_unknown" : "reconcile_required",
+				cleaned ? "event" : "dispose",
+				true,
+			);
+		}
 		const controller = new AbortController();
 		const aborted = deferred<void>();
 		const abort = (): void => {
@@ -535,10 +592,10 @@ export class ExternalConnectorBoundedSupervisor {
 			aborted.resolve();
 		};
 		sourceSignal?.addEventListener("abort", abort, { once: true });
-		if (sourceSignal?.aborted === true) abort();
 		const timer = new SegmentTimer(this.#clock, this.#deadlines.event);
 		let iterator: AsyncIterator<unknown>;
 		try {
+			const events = createEvents(controller.signal);
 			iterator = events[Symbol.asyncIterator]();
 		} catch {
 			const cleaned = await this.#forceAndWait();
@@ -546,8 +603,22 @@ export class ExternalConnectorBoundedSupervisor {
 		}
 		try {
 			for (;;) {
+				if (controller.signal.aborted) {
+					const cleaned = await this.#forceAndWait();
+					throw new ExternalConnectorSupervisorError(
+						cleaned ? "side_effect_unknown" : "reconcile_required",
+						cleaned ? "event" : "dispose",
+						true,
+					);
+				}
+				let next: Promise<IteratorResult<unknown>>;
+				try {
+					next = Promise.resolve(iterator.next());
+				} catch (error) {
+					next = Promise.reject(error);
+				}
 				const outcome = await Promise.race<AwaitOutcome<IteratorResult<unknown>>>([
-					Promise.resolve().then(() => iterator.next()).then(
+					next.then(
 						(value): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "value", value }),
 						(error: unknown): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "rejected", error }),
 					),
@@ -562,7 +633,7 @@ export class ExternalConnectorBoundedSupervisor {
 				}
 				timer.touch();
 				if (outcome.value.done) return;
-				this.#acceptEvent(outcome.value.value);
+				this.#acceptEvent(outcome.value.value, handle);
 			}
 		} catch (error) {
 			if (error instanceof ExternalConnectorSupervisorError && this.#forcedTermination) throw error;
@@ -609,7 +680,34 @@ export class ExternalConnectorBoundedSupervisor {
 		return this.#processHandle;
 	}
 
-	#acceptEvent(value: unknown): void {
+	#acceptEvent(value: unknown, handle: ExternalConnectorDriverHandle): void {
+		if (!isExternalConnectorDriverEvent(value) || !this.#matchesHandle(value, handle)) {
+			throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+		}
+		if (value.type === "started") {
+			if (this.#startedSeen) {
+				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+			}
+			this.#startedSeen = true;
+		} else {
+			if (!this.#startedSeen) {
+				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+			}
+			if (value.type === "progress") {
+				if (value.sequence <= this.#lastProgressSequence) {
+					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+				}
+				this.#lastProgressSequence = value.sequence;
+			} else {
+				if (!this.#artifactsAllowed) {
+					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+				}
+				this.#artifactRefCount += 1;
+				if (this.#artifactRefCount > this.#limits.maxArtifactRefs) {
+					throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", "event", false);
+				}
+			}
+		}
 		this.#eventCount += 1;
 		if (this.#eventCount > this.#limits.maxEvents) {
 			throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", "event", false);
@@ -623,6 +721,28 @@ export class ExternalConnectorBoundedSupervisor {
 		this.#observeValue(value, "event");
 	}
 
+	#matchesHandle(event: ExternalConnectorDriverEvent, handle: ExternalConnectorDriverHandle): boolean {
+		return (
+			event.externalSessionId === handle.externalSessionId &&
+			(event.externalTurnId ?? undefined) === (handle.externalTurnId ?? undefined)
+		);
+	}
+
+	#acceptTerminalEvidence(value: unknown): void {
+		if (!isExternalConnectorTerminalEvidence(value)) {
+			throw new ExternalConnectorSupervisorError("terminal_evidence_invalid", "receipt", false);
+		}
+		const artifacts = value.artifacts ?? [];
+		if (artifacts.length > 0 && !this.#artifactsAllowed) {
+			throw new ExternalConnectorSupervisorError("external_event_invalid", "receipt", false);
+		}
+		this.#artifactRefCount += artifacts.length;
+		if (this.#artifactRefCount > this.#limits.maxArtifactRefs) {
+			throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", "receipt", false);
+		}
+		this.#observeValue(value, "receipt");
+	}
+
 	#observeValue(value: unknown, segment: "event" | "receipt"): void {
 		const bytes = byteLength(value);
 		if (bytes === undefined) throw new ExternalConnectorSupervisorError("side_effect_unknown", segment, false);
@@ -630,12 +750,6 @@ export class ExternalConnectorBoundedSupervisor {
 			throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", segment, false);
 		}
 		this.#totalBytes += bytes;
-		if (isRecord(value) && Array.isArray(value.artifacts)) {
-			this.#artifactRefCount += value.artifacts.length;
-			if (this.#artifactRefCount > this.#limits.maxArtifactRefs) {
-				throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", segment, false);
-			}
-		}
 	}
 
 	async #forceAndWait(): Promise<boolean> {
@@ -672,8 +786,55 @@ export class ExternalConnectorBoundedSupervisor {
 	}
 }
 
+/** Bound provider cleanup when no child process exists, without launching a synthetic process. */
+export async function runExternalConnectorHostDispose(
+	operation: (signal: AbortSignal) => Promise<void>,
+	options: { readonly deadline?: Partial<ExternalConnectorSegmentDeadline>; readonly clock?: RuntimeClock } = {},
+): Promise<void> {
+	const deadline = {
+		hardMs: options.deadline?.hardMs ?? DEFAULT_DEADLINES.dispose.hardMs,
+		idleMs: options.deadline?.idleMs ?? DEFAULT_DEADLINES.dispose.idleMs,
+	};
+	if (!isPositiveBound(deadline.hardMs) || !isPositiveBound(deadline.idleMs)) {
+		throw new RangeError("External Connector host dispose deadlines must be positive safe integers");
+	}
+	const controller = new AbortController();
+	const timer = new SegmentTimer(options.clock ?? SYSTEM_RUNTIME_CLOCK, deadline);
+	let promise: Promise<void>;
+	try {
+		promise = operation(controller.signal);
+	} catch (error) {
+		promise = Promise.reject(error);
+	}
+	try {
+		const outcome = await Promise.race<AwaitOutcome<void>>([
+			promise.then(
+				(): AwaitOutcome<void> => ({ kind: "value", value: undefined }),
+				(error: unknown): AwaitOutcome<void> => ({ kind: "rejected", error }),
+			),
+			timer.expired.then((): AwaitOutcome<void> => ({ kind: "timeout" })),
+		]);
+		if (outcome.kind === "value") return;
+		if (outcome.kind === "rejected") throw outcome.error;
+		controller.abort();
+		void promise.catch(() => undefined);
+		throw new ExternalConnectorSupervisorError("side_effect_unknown", "dispose", false);
+	} finally {
+		timer.close();
+	}
+}
+
 export function externalConnectorSupervisorFailure(error: unknown): FoundationError {
 	if (error instanceof ExternalConnectorSupervisorError) {
+		if (error.code === "external_event_invalid" || error.code === "external_resource_limit_exceeded") {
+			return new FoundationError(
+				error.code,
+				error.code === "external_event_invalid"
+					? "External connector emitted invalid supervised output."
+					: "External connector exceeded a supervised resource limit.",
+				{ details: { segment: error.segment } },
+			);
+		}
 		return new FoundationError(
 			error.code === "reconcile_required" ? "scheduler_attempt_recovery_failed" : "side_effect_unknown",
 			"External Connector supervision failed closed",

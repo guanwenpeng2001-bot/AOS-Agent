@@ -54,6 +54,33 @@ export interface ExternalConnectorDriverWriteRequest {
 	readonly payload: FoundationJsonValue;
 }
 
+/** Exact, private observation protocol emitted by a current vendor driver. */
+export type ExternalConnectorDriverEvent =
+	| {
+			readonly schemaVersion: 1;
+			readonly type: "started";
+			readonly externalSessionId: string;
+			readonly externalTurnId?: string;
+			readonly producedAt: string;
+	  }
+	| {
+			readonly schemaVersion: 1;
+			readonly type: "progress";
+			readonly externalSessionId: string;
+			readonly externalTurnId?: string;
+			readonly sequence: number;
+			readonly phase?: string;
+			readonly producedAt: string;
+	  }
+	| {
+			readonly schemaVersion: 1;
+			readonly type: "artifact";
+			readonly externalSessionId: string;
+			readonly externalTurnId?: string;
+			readonly artifact: ArtifactRef;
+			readonly producedAt: string;
+	  };
+
 export interface ExternalConnectorTerminalEvidence {
 	readonly externalSessionId: string;
 	readonly externalTurnId?: string;
@@ -77,9 +104,60 @@ const EXTERNAL_CONNECTOR_TERMINAL_EVIDENCE_KEYS = new Set([
 ]);
 const EXTERNAL_CONNECTOR_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "suspended"]);
 const EXTERNAL_CONNECTOR_SIDE_EFFECT_STATES = new Set(["none", "unknown", "side_effect_unknown"]);
+const EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS = new Set([
+	"schemaVersion",
+	"type",
+	"externalSessionId",
+	"externalTurnId",
+	"producedAt",
+]);
+const EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS = new Set([
+	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
+	"sequence",
+	"phase",
+]);
+const EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS = new Set([
+	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
+	"artifact",
+]);
+const EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN = /^[^\u0000-\u001f\u007f]{1,128}$/;
 
 function isTerminalEvidenceRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+/** Reject unknown fields and malformed identity, ordering, or artifact facts before observation. */
+export function isExternalConnectorDriverEvent(value: unknown): value is ExternalConnectorDriverEvent {
+	if (
+		!isTerminalEvidenceRecord(value) ||
+		value.schemaVersion !== 1 ||
+		typeof value.type !== "string" ||
+		!isExternalMappingIdentifier(value.externalSessionId) ||
+		(value.externalTurnId !== undefined && !isExternalMappingIdentifier(value.externalTurnId)) ||
+		!isCanonicalExternalMappingTimestamp(value.producedAt)
+	) {
+		return false;
+	}
+	const keys = value.type === "started"
+		? EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS
+		: value.type === "progress"
+			? EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS
+			: value.type === "artifact"
+				? EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS
+				: undefined;
+	if (keys === undefined || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys.has(key))) {
+		return false;
+	}
+	if (value.type === "progress") {
+		return (
+			typeof value.sequence === "number" &&
+			Number.isSafeInteger(value.sequence) &&
+			value.sequence > 0 &&
+			(value.phase === undefined ||
+				(typeof value.phase === "string" && EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN.test(value.phase)))
+		);
+	}
+	return value.type !== "artifact" || validateArtifactRef(value.artifact).ok;
 }
 
 /** Exact, secret-free terminal evidence accepted from a private vendor driver. */
@@ -169,5 +247,5 @@ export interface ExternalConnectorVendorDriver {
 		handle: ExternalConnectorDriverHandle,
 		options?: { readonly signal?: AbortSignal },
 	): Promise<ExternalConnectorTerminalEvidence | undefined>;
-	dispose(): Promise<void>;
+	dispose(options?: { readonly signal?: AbortSignal }): Promise<void>;
 }

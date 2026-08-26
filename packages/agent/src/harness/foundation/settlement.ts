@@ -783,11 +783,11 @@ export class LayeredResultSettlement {
 				? undefined
 				: unresolvedSideEffect === undefined
 					? input.terminalErrorCode ?? input.terminalError?.code ?? existingReceipt?.terminalErrorCode ?? existingReceipt?.terminalError?.code ?? sourceError?.code ?? (input.terminalStatus === "cancelled" ? "run_cancelled" : "agent_run_failed")
-					: "side_effect_unknown";
+					: unresolvedSideEffect.error?.code ?? "side_effect_unknown";
 			const terminalError: PublicExecutionError | undefined = input.terminalStatus === "completed"
 				? undefined
 				: unresolvedSideEffect !== undefined
-					? { code: "side_effect_unknown", message: "Run failed because an attempt has unresolved side effects", category: "side_effect_unknown", retryable: false }
+					? unresolvedSideEffect.error ?? { code: "side_effect_unknown", message: "Run failed because an attempt has unresolved side effects", category: "side_effect_unknown", retryable: false }
 					: input.terminalError
 						?? (existingReceipt?.terminalError?.code === terminalErrorCode ? existingReceipt?.terminalError : undefined)
 						?? (sourceError?.code === terminalErrorCode ? sourceError : undefined)

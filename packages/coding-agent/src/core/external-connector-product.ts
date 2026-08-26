@@ -513,6 +513,14 @@ export async function executePreparedExternalConnectorProductRun(
 		const terminalStatus = executed.value.receipt.sideEffectState !== "none" || executed.value.receipt.status === "failed" || executed.value.receipt.status === "suspended"
 			? "failed" as const
 			: executed.value.receipt.status === "cancelled" ? "cancelled" as const : "completed" as const;
+		const failedTerminalError = terminalStatus === "failed"
+			? executed.value.receipt.error ?? {
+					code: "side_effect_unknown",
+					message: "External connector terminal outcome could not be proven.",
+					category: "side_effect_unknown" as const,
+					retryable: false,
+				}
+			: undefined;
 		const finalized = await settlement.finalize({
 			runReceiptId: `run_receipt_${input.runId}`,
 			runId: input.runId,
@@ -529,7 +537,10 @@ export async function executePreparedExternalConnectorProductRun(
 					category: "cancelled" as const,
 					retryable: false,
 				},
-			} : {}),
+			} : failedTerminalError === undefined ? {} : {
+				terminalErrorCode: failedTerminalError.code,
+				terminalError: failedTerminalError,
+			}),
 			completedAt: timestamp,
 		});
 		if (!finalized.ok) throw finalized.error;

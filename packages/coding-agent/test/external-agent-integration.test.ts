@@ -8,14 +8,15 @@ import {
 	validateAttempt,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
+	type FoundationJsonValue,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
-	createDurableExternalAgentConnector,
 	createExternalConnectorRegistry,
 	executeExternalConnectorProductRun,
 	type CanonicalExternalAgentInput,
 } from "../src/index.ts";
+import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import type {
 	ExternalConnectorDriverHandle,
@@ -82,10 +83,16 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 	lookupCalls = 0;
 	readonly #matrix: ExternalModelSupportMatrix | undefined;
 	readonly #throwOnMatrixRead: boolean;
+	readonly eventValues: readonly FoundationJsonValue[];
 
-	constructor(matrix?: ExternalModelSupportMatrix, throwOnMatrixRead = false) {
+	constructor(
+		matrix?: ExternalModelSupportMatrix,
+		throwOnMatrixRead = false,
+		eventValues: readonly FoundationJsonValue[] = [],
+	) {
 		this.#matrix = matrix;
 		this.#throwOnMatrixRead = throwOnMatrixRead;
+		this.eventValues = eventValues;
 	}
 
 	get modelSupportMatrix(): ExternalModelSupportMatrix | undefined {
@@ -110,10 +117,8 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	events(): AsyncIterable<never> {
-		return {
-			[Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
-		};
+	async *events(): AsyncIterable<FoundationJsonValue> {
+		for (const value of this.eventValues) yield value;
 	}
 
 	async connect(): Promise<ExternalConnectorDriverHandle> {
@@ -164,6 +169,15 @@ async function fixture(options: {
 	readonly modelAccess?: "agent_owned" | "aos_gateway";
 	readonly unsupportedModelField?: ExternalModelProjectionField;
 	readonly throwOnModelMatrixRead?: boolean;
+	readonly eventValues?: readonly FoundationJsonValue[];
+	readonly supervisionLimits?: {
+		readonly maxEvents?: number;
+		readonly maxEventsPerWindow?: number;
+		readonly eventRateWindowMs?: number;
+		readonly maxItemBytes?: number;
+		readonly maxTotalBytes?: number;
+		readonly maxArtifactRefs?: number;
+	};
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "external-product-session", createdAt: 1 }));
 	const t5 = new SessionT5Ledger(session, { ownerId: "external-product-test" });
@@ -171,6 +185,7 @@ async function fixture(options: {
 	const driver = new FixtureDriver(
 		options.modelAccess === "aos_gateway" ? exactModelSupportMatrix(options.unsupportedModelField) : undefined,
 		options.throwOnModelMatrixRead,
+		options.eventValues,
 	);
 	const snapshot = capability(options);
 	const supervision = createExternalConnectorTestSupervision();
@@ -179,7 +194,10 @@ async function fixture(options: {
 		capability: snapshot,
 		store,
 		driver,
-		supervision: supervision.options,
+		supervision: {
+			...supervision.options,
+			...(options.supervisionLimits === undefined ? {} : { limits: options.supervisionLimits }),
+		},
 		now: () => NOW,
 		operationNonce: () => "operation-nonce",
 	});
@@ -265,6 +283,83 @@ describe("External Connector product integration", () => {
 		expect(types).toContain("task_result");
 		expect(types).toContain("run_receipt");
 	});
+
+	for (const testCase of [
+		{
+			name: "invalid event",
+			code: "external_event_invalid",
+			message: "External connector emitted invalid supervised output.",
+			eventValues: [{
+				schemaVersion: 1,
+				type: "progress",
+				externalSessionId: "external-session",
+				externalTurnId: "external-turn",
+				sequence: 1,
+				producedAt: NOW,
+			}],
+			supervisionLimits: undefined,
+		},
+		{
+			name: "event resource limit",
+			code: "external_resource_limit_exceeded",
+			message: "External connector exceeded a supervised resource limit.",
+			eventValues: [
+				{
+					schemaVersion: 1,
+					type: "started",
+					externalSessionId: "external-session",
+					externalTurnId: "external-turn",
+					producedAt: NOW,
+				},
+				{
+					schemaVersion: 1,
+					type: "progress",
+					externalSessionId: "external-session",
+					externalTurnId: "external-turn",
+					sequence: 1,
+					producedAt: NOW,
+				},
+			],
+			supervisionLimits: { maxEvents: 1 },
+		},
+	] as const) {
+		it(`propagates ${testCase.name} through AttemptReceipt and RunReceipt terminalError`, async () => {
+			const current = await fixture({
+				eventValues: testCase.eventValues,
+				...(testCase.supervisionLimits === undefined ? {} : { supervisionLimits: testCase.supervisionLimits }),
+			});
+			const canonicalInput: CanonicalExternalAgentInput = {
+				schemaVersion: 1,
+				text: "validate supervised terminal propagation",
+				artifacts: [],
+			};
+			const execution = await executeExternalConnectorProductRun({
+				session: current.session,
+				writer: current.t5.writer,
+				registry: current.registry,
+				selection: {
+					providerId: current.descriptor.providerId,
+					revision: current.descriptor.revision,
+					capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				},
+				runId: `run-${testCase.code}`,
+				message: canonicalInput.text,
+				canonicalInput,
+				inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+				workspace: "workspace-ref",
+				now: () => NOW,
+			});
+			expect(execution.attemptReceipt.status).toBe("failed");
+			expect(execution.attemptReceipt.error).toEqual({
+				code: testCase.code,
+				message: testCase.message,
+				category: "unknown",
+				retryable: false,
+			});
+			expect(execution.runReceipt.terminalStatus).toBe("failed");
+			expect(execution.runReceipt.terminalError).toEqual(execution.attemptReceipt.error);
+		});
+	}
 
 	it("fails closed when current connector capability identity drifts", async () => {
 		const current = await fixture();
