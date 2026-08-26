@@ -5,6 +5,9 @@ import {
 	type CanonicalExternalAgentInput,
 	cloneCanonicalExternalAgentInput,
 	type ExternalAgentArtifactInspection,
+	type ExternalAgentInputError,
+	type ExternalAgentInputErrorCode,
+	type ExternalAgentInputReasonCode,
 	fingerprintCanonicalExternalAgentInput,
 	gateCanonicalExternalAgentInputBeforeAcceptance,
 	isCanonicalExternalAgentInput,
@@ -70,10 +73,25 @@ function inspectionFor(reference: CanonicalExternalAgentArtifactReference): Exte
 	};
 }
 
-function expectValidationError(value: unknown, code: string): void {
+function expectInputError(
+	error: ExternalAgentInputError,
+	code: ExternalAgentInputErrorCode,
+	reasonCode: ExternalAgentInputReasonCode,
+): void {
+	expect(error).toMatchObject({ code, reasonCode, retryable: false });
+	expect(Object.keys(error)).toEqual(["code", "reasonCode", "retryable"]);
+}
+
+function expectValidationError(
+	value: unknown,
+	code: ExternalAgentInputErrorCode,
+	reasonCode: ExternalAgentInputReasonCode,
+): ExternalAgentInputError {
 	const checked = validateCanonicalExternalAgentInput(value);
 	expect(checked.ok).toBe(false);
-	if (!checked.ok) expect(checked.error.code).toBe(code);
+	if (checked.ok) throw new Error("Expected External Agent input validation to fail");
+	expectInputError(checked.error, code, reasonCode);
+	return checked.error;
 }
 
 describe("canonical External Agent input", () => {
@@ -112,24 +130,34 @@ describe("canonical External Agent input", () => {
 
 	it("rejects unknown fields, raw bodies, URLs, untrusted refs, and invalid digest identity", () => {
 		const input = validInput();
-		expectValidationError({ ...input, images: [] }, "external_agent_input_invalid");
+		expectValidationError({ ...input, images: [] }, "external_binding_invalid", "input_invalid");
 		expectValidationError(
 			{ ...input, artifacts: [{ ...imageArtifact(), extra: true }] },
-			"external_agent_input_invalid",
+			"external_binding_invalid",
+			"input_invalid",
 		);
-		expectValidationError(
-			{ ...input, artifacts: [{ ...imageArtifact(), data: "AA==" }] },
-			"external_agent_input_unsafe_reference",
+		const contentError = expectValidationError(
+			{ ...input, artifacts: [{ ...imageArtifact(), data: "secret artifact contents" }] },
+			"external_binding_invalid",
+			"unsafe_reference",
 		);
-		expectValidationError(
+		expect(contentError.message).not.toContain("secret artifact contents");
+		expect(JSON.stringify(contentError)).not.toContain("secret artifact contents");
+		const urlError = expectValidationError(
 			{
 				...input,
 				artifacts: [
-					{ ...imageArtifact(), readHandle: { kind: "artifact_store", ref: IMAGE_ID, url: "https://x" } },
+					{
+						...imageArtifact(),
+						readHandle: { kind: "artifact_store", ref: IMAGE_ID, url: "https://secret.invalid/private" },
+					},
 				],
 			},
-			"external_agent_input_unsafe_reference",
+			"external_binding_invalid",
+			"unsafe_reference",
 		);
+		expect(urlError.message).not.toContain("secret.invalid");
+		expect(JSON.stringify(urlError)).not.toContain("secret.invalid");
 		expectValidationError(
 			{
 				...input,
@@ -140,11 +168,13 @@ describe("canonical External Agent input", () => {
 					},
 				],
 			},
-			"external_agent_input_untrusted",
+			"external_binding_invalid",
+			"untrusted_artifact",
 		);
 		expectValidationError(
 			{ ...input, artifacts: [{ ...imageArtifact(), digest: digest(OTHER_ID) }] },
-			"external_agent_input_digest_mismatch",
+			"external_binding_invalid",
+			"digest_mismatch",
 		);
 	});
 
@@ -168,7 +198,8 @@ describe("canonical External Agent input", () => {
 						},
 					],
 				},
-				"external_agent_input_workspace_escape",
+				"external_path_outside_workspace",
+				"input_workspace_escape",
 			);
 		}
 	});
@@ -176,11 +207,13 @@ describe("canonical External Agent input", () => {
 	it("rejects image MIME classification bypasses", () => {
 		expectValidationError(
 			{ ...validInput(), artifacts: [{ ...imageArtifact(), kind: "file" }] },
-			"external_agent_input_reference_mismatch",
+			"external_binding_invalid",
+			"reference_mismatch",
 		);
 		expectValidationError(
 			{ ...validInput(), artifacts: [{ ...workspaceFileArtifact(), kind: "image" }] },
-			"external_agent_input_reference_mismatch",
+			"external_binding_invalid",
+			"reference_mismatch",
 		);
 	});
 
@@ -188,12 +221,10 @@ describe("canonical External Agent input", () => {
 		const parsed = parseCanonicalExternalAgentInput('{"url":"https://secret.invalid"');
 		expect(parsed.ok).toBe(false);
 		if (!parsed.ok) {
-			expect(parsed.error).toMatchObject({
-				code: "external_agent_input_invalid",
-				message: "External Agent input is invalid",
-				retryable: false,
-			});
+			expectInputError(parsed.error, "external_binding_invalid", "input_invalid");
+			expect(parsed.error.message).toBe("External Agent input binding is invalid");
 			expect(parsed.error.message).not.toContain("secret.invalid");
+			expect(JSON.stringify(parsed.error)).not.toContain("secret.invalid");
 		}
 	});
 
@@ -302,7 +333,9 @@ describe("accepted-before External Agent input gate", () => {
 			});
 			if (result.ok) connectorCalls++;
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.error.code).toBe("external_agent_input_unsupported");
+			if (!result.ok) {
+				expectInputError(result.error, "external_capability_mismatch", "input_capability_unsupported");
+			}
 			expect(inspectionCalls).toBe(0);
 			expect(connectorCalls).toBe(0);
 		}
@@ -319,7 +352,7 @@ describe("accepted-before External Agent input gate", () => {
 			},
 		});
 		expect(claimed.ok).toBe(false);
-		if (!claimed.ok) expect(claimed.error.code).toBe("external_agent_input_oversize");
+		if (!claimed.ok) expectInputError(claimed.error, "external_resource_limit_exceeded", "input_oversize");
 		expect(inspectionCalls).toBe(0);
 
 		const inspected = await gateCanonicalExternalAgentInputBeforeAcceptance(validInput([imageArtifact()]), {
@@ -328,7 +361,7 @@ describe("accepted-before External Agent input gate", () => {
 			inspectArtifact: (reference) => ({ ...inspectionFor(reference), sizeBytes: 5 }),
 		});
 		expect(inspected.ok).toBe(false);
-		if (!inspected.ok) expect(inspected.error.code).toBe("external_agent_input_oversize");
+		if (!inspected.ok) expectInputError(inspected.error, "external_resource_limit_exceeded", "input_oversize");
 	});
 
 	it("rejects untrusted provenance and untrusted inspection", async () => {
@@ -350,7 +383,7 @@ describe("accepted-before External Agent input gate", () => {
 			},
 		});
 		expect(candidateResult.ok).toBe(false);
-		if (!candidateResult.ok) expect(candidateResult.error.code).toBe("external_agent_input_untrusted");
+		if (!candidateResult.ok) expectInputError(candidateResult.error, "external_binding_invalid", "untrusted_artifact");
 		expect(inspectionCalls).toBe(0);
 
 		const inspectionResult = await gateCanonicalExternalAgentInputBeforeAcceptance(validInput([imageArtifact()]), {
@@ -358,7 +391,9 @@ describe("accepted-before External Agent input gate", () => {
 			inspectArtifact: (reference) => ({ ...inspectionFor(reference), trusted: false }),
 		});
 		expect(inspectionResult.ok).toBe(false);
-		if (!inspectionResult.ok) expect(inspectionResult.error.code).toBe("external_agent_input_untrusted");
+		if (!inspectionResult.ok) {
+			expectInputError(inspectionResult.error, "external_binding_invalid", "untrusted_artifact");
+		}
 	});
 
 	it("rejects claimed or inspected digest mismatch deterministically", async () => {
@@ -374,7 +409,7 @@ describe("accepted-before External Agent input gate", () => {
 			},
 		);
 		expect(claimed.ok).toBe(false);
-		if (!claimed.ok) expect(claimed.error.code).toBe("external_agent_input_digest_mismatch");
+		if (!claimed.ok) expectInputError(claimed.error, "external_binding_invalid", "digest_mismatch");
 		expect(inspectionCalls).toBe(0);
 
 		const inspected = await gateCanonicalExternalAgentInputBeforeAcceptance(validInput([imageArtifact()]), {
@@ -386,7 +421,7 @@ describe("accepted-before External Agent input gate", () => {
 			}),
 		});
 		expect(inspected.ok).toBe(false);
-		if (!inspected.ok) expect(inspected.error.code).toBe("external_agent_input_digest_mismatch");
+		if (!inspected.ok) expectInputError(inspected.error, "external_binding_invalid", "digest_mismatch");
 	});
 
 	it("rejects lexical and resolved workspace escape before acceptance", async () => {
@@ -410,7 +445,9 @@ describe("accepted-before External Agent input gate", () => {
 			},
 		);
 		expect(lexical.ok).toBe(false);
-		if (!lexical.ok) expect(lexical.error.code).toBe("external_agent_input_workspace_escape");
+		if (!lexical.ok) {
+			expectInputError(lexical.error, "external_path_outside_workspace", "input_workspace_escape");
+		}
 		expect(inspectionCalls).toBe(0);
 
 		const resolved = await gateCanonicalExternalAgentInputBeforeAcceptance(validInput([workspaceFileArtifact()]), {
@@ -418,7 +455,9 @@ describe("accepted-before External Agent input gate", () => {
 			inspectArtifact: (reference) => ({ ...inspectionFor(reference), workspaceContained: false }),
 		});
 		expect(resolved.ok).toBe(false);
-		if (!resolved.ok) expect(resolved.error.code).toBe("external_agent_input_workspace_escape");
+		if (!resolved.ok) {
+			expectInputError(resolved.error, "external_path_outside_workspace", "input_workspace_escape");
+		}
 	});
 
 	it("redacts inspection failure and leaves the caller input unchanged", async () => {
@@ -432,8 +471,9 @@ describe("accepted-before External Agent input gate", () => {
 		});
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.error.code).toBe("external_agent_input_verification_failed");
+			expectInputError(result.error, "external_binding_invalid", "verification_failed");
 			expect(result.error.message).not.toContain("secret");
+			expect(JSON.stringify(result.error)).not.toContain("secret");
 		}
 		expect(mutable).toEqual(before);
 	});

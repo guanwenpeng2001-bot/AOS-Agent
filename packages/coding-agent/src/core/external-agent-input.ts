@@ -69,39 +69,59 @@ export interface CanonicalExternalAgentInput {
 export type CanonicalExternalAgentRequestFingerprint = `sha256:${string}`;
 
 export const EXTERNAL_AGENT_INPUT_ERROR_CODES = [
-	"external_agent_input_invalid",
-	"external_agent_input_unsafe_reference",
-	"external_agent_input_unsupported",
-	"external_agent_input_oversize",
-	"external_agent_input_untrusted",
-	"external_agent_input_digest_mismatch",
-	"external_agent_input_workspace_escape",
-	"external_agent_input_reference_mismatch",
-	"external_agent_input_verification_failed",
+	"external_binding_invalid",
+	"external_capability_mismatch",
+	"external_resource_limit_exceeded",
+	"external_path_outside_workspace",
 ] as const;
 
 export type ExternalAgentInputErrorCode = (typeof EXTERNAL_AGENT_INPUT_ERROR_CODES)[number];
 
+export const EXTERNAL_AGENT_INPUT_REASON_CODES = [
+	"input_invalid",
+	"unsafe_reference",
+	"untrusted_artifact",
+	"digest_mismatch",
+	"reference_mismatch",
+	"verification_failed",
+	"input_capability_unsupported",
+	"input_oversize",
+	"input_workspace_escape",
+] as const;
+
+export type ExternalAgentInputReasonCode = (typeof EXTERNAL_AGENT_INPUT_REASON_CODES)[number];
+
+const ERROR_CODE_BY_REASON = {
+	input_invalid: "external_binding_invalid",
+	unsafe_reference: "external_binding_invalid",
+	untrusted_artifact: "external_binding_invalid",
+	digest_mismatch: "external_binding_invalid",
+	reference_mismatch: "external_binding_invalid",
+	verification_failed: "external_binding_invalid",
+	input_capability_unsupported: "external_capability_mismatch",
+	input_oversize: "external_resource_limit_exceeded",
+	input_workspace_escape: "external_path_outside_workspace",
+} as const satisfies Record<ExternalAgentInputReasonCode, ExternalAgentInputErrorCode>;
+
 const ERROR_MESSAGES = {
-	external_agent_input_invalid: "External Agent input is invalid",
-	external_agent_input_unsafe_reference: "External Agent input contains an unsafe Artifact reference",
-	external_agent_input_unsupported: "External Agent input is not supported by the selected Connector",
-	external_agent_input_oversize: "External Agent input exceeds the accepted size limits",
-	external_agent_input_untrusted: "External Agent input contains an untrusted Artifact reference",
-	external_agent_input_digest_mismatch: "External Agent input Artifact digest verification failed",
-	external_agent_input_workspace_escape: "External Agent input Artifact escapes its workspace",
-	external_agent_input_reference_mismatch: "External Agent input Artifact metadata does not match its reference",
-	external_agent_input_verification_failed: "External Agent input Artifact verification failed",
+	external_binding_invalid: "External Agent input binding is invalid",
+	external_capability_mismatch: "External Agent input capability is unsupported",
+	external_resource_limit_exceeded: "External Agent input exceeds resource limits",
+	external_path_outside_workspace: "External Agent input is outside its workspace",
 } as const satisfies Record<ExternalAgentInputErrorCode, string>;
 
 export class ExternalAgentInputError extends Error {
 	readonly code: ExternalAgentInputErrorCode;
-	readonly retryable = false;
+	readonly reasonCode: ExternalAgentInputReasonCode;
+	readonly retryable: false;
 
-	constructor(code: ExternalAgentInputErrorCode) {
+	constructor(reasonCode: ExternalAgentInputReasonCode) {
+		const code = ERROR_CODE_BY_REASON[reasonCode];
 		super(ERROR_MESSAGES[code]);
-		this.name = "ExternalAgentInputError";
+		Object.defineProperty(this, "name", { configurable: true, value: "ExternalAgentInputError" });
 		this.code = code;
+		this.reasonCode = reasonCode;
+		this.retryable = false;
 	}
 }
 
@@ -179,8 +199,8 @@ const SAFE_OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const SAFE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 
-function inputError(code: ExternalAgentInputErrorCode): ExternalAgentInputError {
-	return new ExternalAgentInputError(code);
+function inputError(reasonCode: ExternalAgentInputReasonCode): ExternalAgentInputError {
+	return new ExternalAgentInputError(reasonCode);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -237,8 +257,8 @@ function cloneReadHandle(
 	provenanceSource: CanonicalExternalAgentArtifactSource,
 	artifactId: string,
 ): CanonicalExternalAgentArtifactReadHandle {
-	if (!isRecord(value)) throw inputError("external_agent_input_invalid");
-	if (hasUnsafeReferenceField(value)) throw inputError("external_agent_input_unsafe_reference");
+	if (!isRecord(value)) throw inputError("input_invalid");
+	if (hasUnsafeReferenceField(value)) throw inputError("unsafe_reference");
 	if (value.kind === "artifact_store") {
 		if (
 			!hasExactKeys(value, ARTIFACT_STORE_HANDLE_KEYS, ARTIFACT_STORE_HANDLE_KEYS) ||
@@ -246,22 +266,22 @@ function cloneReadHandle(
 			!isSafeOpaqueId(value.ref) ||
 			value.ref !== artifactId
 		) {
-			throw inputError("external_agent_input_reference_mismatch");
+			throw inputError("reference_mismatch");
 		}
 		return Object.freeze({ kind: "artifact_store", ref: value.ref });
 	}
 	if (value.kind === "workspace_relative") {
 		if (!hasExactKeys(value, WORKSPACE_HANDLE_KEYS, WORKSPACE_HANDLE_KEYS)) {
-			throw inputError("external_agent_input_invalid");
+			throw inputError("input_invalid");
 		}
 		if (provenanceSource !== "workspace") {
-			throw inputError("external_agent_input_reference_mismatch");
+			throw inputError("reference_mismatch");
 		}
 		if (!isCanonicalWorkspaceRelativePath(value.relativePath)) {
-			throw inputError("external_agent_input_workspace_escape");
+			throw inputError("input_workspace_escape");
 		}
 		if (!isSafeOpaqueId(value.workspaceId) || !isSafeOpaqueId(value.ref)) {
-			throw inputError("external_agent_input_unsafe_reference");
+			throw inputError("unsafe_reference");
 		}
 		return Object.freeze({
 			kind: "workspace_relative",
@@ -270,30 +290,30 @@ function cloneReadHandle(
 			ref: value.ref,
 		});
 	}
-	throw inputError("external_agent_input_unsafe_reference");
+	throw inputError("unsafe_reference");
 }
 
 function cloneProvenance(value: unknown): CanonicalExternalAgentArtifactProvenance {
 	if (!isRecord(value) || !hasExactKeys(value, PROVENANCE_KEYS, PROVENANCE_KEYS)) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
-	if (value.trust !== "trusted") throw inputError("external_agent_input_untrusted");
+	if (value.trust !== "trusted") throw inputError("untrusted_artifact");
 	if (value.source !== "artifact_store" && value.source !== "workspace") {
-		throw inputError("external_agent_input_unsafe_reference");
+		throw inputError("unsafe_reference");
 	}
-	if (!isSafeOpaqueId(value.producer)) throw inputError("external_agent_input_unsafe_reference");
+	if (!isSafeOpaqueId(value.producer)) throw inputError("unsafe_reference");
 	return Object.freeze({ source: value.source, producer: value.producer, trust: "trusted" });
 }
 
 function cloneArtifactReference(value: unknown): CanonicalExternalAgentArtifactReference {
-	if (!isRecord(value)) throw inputError("external_agent_input_invalid");
-	if (hasUnsafeReferenceField(value)) throw inputError("external_agent_input_unsafe_reference");
-	if (!hasExactKeys(value, ARTIFACT_KEYS, ARTIFACT_KEYS)) throw inputError("external_agent_input_invalid");
+	if (!isRecord(value)) throw inputError("input_invalid");
+	if (hasUnsafeReferenceField(value)) throw inputError("unsafe_reference");
+	if (!hasExactKeys(value, ARTIFACT_KEYS, ARTIFACT_KEYS)) throw inputError("input_invalid");
 	if (value.schemaVersion !== CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	if (typeof value.artifactId !== "string" || !isValidArtifactId(value.artifactId)) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	const artifactId = value.artifactId;
 	if (
@@ -301,15 +321,15 @@ function cloneArtifactReference(value: unknown): CanonicalExternalAgentArtifactR
 		!isValidArtifactDigest(value.digest) ||
 		value.digest !== artifactDigestFromId(artifactId)
 	) {
-		throw inputError("external_agent_input_digest_mismatch");
+		throw inputError("digest_mismatch");
 	}
-	if (value.kind !== "file" && value.kind !== "image") throw inputError("external_agent_input_invalid");
-	if (!isSafeMediaType(value.mediaType)) throw inputError("external_agent_input_invalid");
+	if (value.kind !== "file" && value.kind !== "image") throw inputError("input_invalid");
+	if (!isSafeMediaType(value.mediaType)) throw inputError("input_invalid");
 	if ((value.kind === "image") !== value.mediaType.startsWith("image/")) {
-		throw inputError("external_agent_input_reference_mismatch");
+		throw inputError("reference_mismatch");
 	}
 	if (typeof value.sizeBytes !== "number" || !Number.isSafeInteger(value.sizeBytes) || value.sizeBytes < 0) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	const provenance = cloneProvenance(value.provenance);
 	const foundationReference: ArtifactRef = {
@@ -320,7 +340,7 @@ function cloneArtifactReference(value: unknown): CanonicalExternalAgentArtifactR
 		producer: provenance.producer,
 		sizeBytes: value.sizeBytes,
 	};
-	if (!validateArtifactRef(foundationReference).ok) throw inputError("external_agent_input_invalid");
+	if (!validateArtifactRef(foundationReference).ok) throw inputError("input_invalid");
 	return Object.freeze({
 		schemaVersion: CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,
 		artifactId,
@@ -335,26 +355,26 @@ function cloneArtifactReference(value: unknown): CanonicalExternalAgentArtifactR
 
 function cloneInput(value: unknown): CanonicalExternalAgentInput {
 	if (!isRecord(value) || hasUnsafeReferenceField(value) || !hasExactKeys(value, INPUT_KEYS, INPUT_KEYS)) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	if (value.schemaVersion !== CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION || typeof value.text !== "string") {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	const textBytes = new TextEncoder().encode(value.text).byteLength;
-	if (textBytes === 0 || value.text.includes("\0")) throw inputError("external_agent_input_invalid");
+	if (textBytes === 0 || value.text.includes("\0")) throw inputError("input_invalid");
 	if (textBytes > CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS.maxTextBytes) {
-		throw inputError("external_agent_input_oversize");
+		throw inputError("input_oversize");
 	}
-	if (!Array.isArray(value.artifacts)) throw inputError("external_agent_input_invalid");
+	if (!Array.isArray(value.artifacts)) throw inputError("input_invalid");
 	if (value.artifacts.length > CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS.maxArtifacts) {
-		throw inputError("external_agent_input_oversize");
+		throw inputError("input_oversize");
 	}
 	const artifacts = value.artifacts.map(cloneArtifactReference);
 	if (
 		artifacts.filter((artifact) => artifact.kind === "image").length >
 		CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS.maxImages
 	) {
-		throw inputError("external_agent_input_oversize");
+		throw inputError("input_oversize");
 	}
 	const clone = Object.freeze({
 		schemaVersion: CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,
@@ -371,7 +391,7 @@ export function validateCanonicalExternalAgentInput(value: unknown): ExternalAge
 	} catch (error) {
 		return {
 			ok: false,
-			error: error instanceof ExternalAgentInputError ? error : inputError("external_agent_input_invalid"),
+			error: error instanceof ExternalAgentInputError ? error : inputError("input_invalid"),
 		};
 	}
 }
@@ -394,7 +414,7 @@ export function parseCanonicalExternalAgentInput(text: string): ExternalAgentInp
 	try {
 		return validateCanonicalExternalAgentInput(JSON.parse(text) as unknown);
 	} catch {
-		return { ok: false, error: inputError("external_agent_input_invalid") };
+		return { ok: false, error: inputError("input_invalid") };
 	}
 }
 
@@ -405,21 +425,21 @@ export function fingerprintCanonicalExternalAgentInput(value: unknown): Canonica
 
 function cloneCapabilities(value: unknown): ExternalAgentInputCapabilities {
 	if (!isRecord(value) || !hasExactKeys(value, CAPABILITY_KEYS, CAPABILITY_KEYS)) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	if (
 		typeof value.artifacts !== "boolean" ||
 		typeof value.images !== "boolean" ||
 		(value.images && !value.artifacts)
 	) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	return { artifacts: value.artifacts, images: value.images };
 }
 
 function resolveLimits(value: unknown): ExternalAgentInputLimits {
 	if (value !== undefined && (!isRecord(value) || !hasExactKeys(value, LIMIT_KEYS, new Set()))) {
-		throw inputError("external_agent_input_invalid");
+		throw inputError("input_invalid");
 	}
 	const supplied = value as Partial<Record<keyof ExternalAgentInputLimits, unknown>> | undefined;
 	const limits: ExternalAgentInputLimits = {
@@ -438,7 +458,7 @@ function resolveLimits(value: unknown): ExternalAgentInputLimits {
 	for (const key of LIMIT_KEYS as Set<keyof ExternalAgentInputLimits>) {
 		const limit = limits[key];
 		if (!Number.isSafeInteger(limit) || limit < 0 || limit > CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS[key]) {
-			throw inputError("external_agent_input_invalid");
+			throw inputError("input_invalid");
 		}
 	}
 	return limits;
@@ -446,7 +466,7 @@ function resolveLimits(value: unknown): ExternalAgentInputLimits {
 
 function cloneInspection(value: unknown): ExternalAgentArtifactInspection {
 	if (!isRecord(value) || !hasExactKeys(value, INSPECTION_KEYS, INSPECTION_KEYS)) {
-		throw inputError("external_agent_input_verification_failed");
+		throw inputError("verification_failed");
 	}
 	if (
 		typeof value.artifactId !== "string" ||
@@ -461,7 +481,7 @@ function cloneInspection(value: unknown): ExternalAgentArtifactInspection {
 		typeof value.trusted !== "boolean" ||
 		typeof value.workspaceContained !== "boolean"
 	) {
-		throw inputError("external_agent_input_verification_failed");
+		throw inputError("verification_failed");
 	}
 	return {
 		artifactId: value.artifactId,
@@ -477,7 +497,7 @@ function cloneInspection(value: unknown): ExternalAgentArtifactInspection {
 function rejection(error: unknown): ExternalAgentInputAdmissionResult {
 	return {
 		ok: false,
-		error: error instanceof ExternalAgentInputError ? error : inputError("external_agent_input_verification_failed"),
+		error: error instanceof ExternalAgentInputError ? error : inputError("verification_failed"),
 	};
 }
 
@@ -504,7 +524,7 @@ export async function gateCanonicalExternalAgentInputBeforeAcceptance(
 	const textBytes = new TextEncoder().encode(input.text).byteLength;
 	const imageCount = input.artifacts.filter((artifact) => artifact.kind === "image").length;
 	if ((input.artifacts.length > 0 && !capabilities.artifacts) || (imageCount > 0 && !capabilities.images)) {
-		return rejection(inputError("external_agent_input_unsupported"));
+		return rejection(inputError("input_capability_unsupported"));
 	}
 	if (
 		textBytes > limits.maxTextBytes ||
@@ -512,11 +532,11 @@ export async function gateCanonicalExternalAgentInputBeforeAcceptance(
 		imageCount > limits.maxImages ||
 		input.artifacts.some((artifact) => artifact.sizeBytes > limits.maxArtifactBytes)
 	) {
-		return rejection(inputError("external_agent_input_oversize"));
+		return rejection(inputError("input_oversize"));
 	}
 	const claimedTotal = input.artifacts.reduce((total, artifact) => total + artifact.sizeBytes, 0);
 	if (!Number.isSafeInteger(claimedTotal) || claimedTotal > limits.maxTotalArtifactBytes) {
-		return rejection(inputError("external_agent_input_oversize"));
+		return rejection(inputError("input_oversize"));
 	}
 
 	let inspectedTotal = 0;
@@ -527,15 +547,15 @@ export async function gateCanonicalExternalAgentInputBeforeAcceptance(
 		} catch (error) {
 			return rejection(error);
 		}
-		if (!inspection.trusted) return rejection(inputError("external_agent_input_untrusted"));
+		if (!inspection.trusted) return rejection(inputError("untrusted_artifact"));
 		if (artifact.readHandle.kind === "workspace_relative" && !inspection.workspaceContained) {
-			return rejection(inputError("external_agent_input_workspace_escape"));
+			return rejection(inputError("input_workspace_escape"));
 		}
 		if (inspection.digest !== artifact.digest || inspection.digest !== artifactDigestFromId(inspection.artifactId)) {
-			return rejection(inputError("external_agent_input_digest_mismatch"));
+			return rejection(inputError("digest_mismatch"));
 		}
 		if (inspection.sizeBytes > limits.maxArtifactBytes) {
-			return rejection(inputError("external_agent_input_oversize"));
+			return rejection(inputError("input_oversize"));
 		}
 		if (
 			inspection.artifactId !== artifact.artifactId ||
@@ -543,11 +563,11 @@ export async function gateCanonicalExternalAgentInputBeforeAcceptance(
 			inspection.mediaType !== artifact.mediaType ||
 			inspection.sizeBytes !== artifact.sizeBytes
 		) {
-			return rejection(inputError("external_agent_input_reference_mismatch"));
+			return rejection(inputError("reference_mismatch"));
 		}
 		inspectedTotal += inspection.sizeBytes;
 		if (!Number.isSafeInteger(inspectedTotal) || inspectedTotal > limits.maxTotalArtifactBytes) {
-			return rejection(inputError("external_agent_input_oversize"));
+			return rejection(inputError("input_oversize"));
 		}
 	}
 	return {
