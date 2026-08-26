@@ -5,6 +5,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -265,7 +266,7 @@ function dispatchCommand(
 }
 
 function gateEntries(session: AgentSession): Array<{ id: string; data: unknown }> {
-	return session.sessionManager
+	return session.sessionRead
 		.getEntries()
 		.filter((entry) => entry.type === "custom" && entry.customType === "task.gate")
 		.map((entry) => ({
@@ -302,7 +303,7 @@ const PENDING_POLICY_ASK: PolicyApprovalRequest = {
 };
 
 function seedPendingPolicyAsk(session: AgentSession, approval: PolicyApprovalRequest = PENDING_POLICY_ASK): void {
-	appendPolicyApprovalEntry(session.sessionManager, approval);
+	appendPolicyApprovalEntry(getAgentSessionLedger(session), approval);
 	const internals = session as unknown as {
 		_pendingExecutionPolicyApprovals: Map<string, PolicyApprovalRequest>;
 	};
@@ -310,7 +311,7 @@ function seedPendingPolicyAsk(session: AgentSession, approval: PolicyApprovalReq
 }
 
 function policyApprovalEntries(session: AgentSession): unknown[] {
-	return session.sessionManager
+	return session.sessionRead
 		.getEntries()
 		.filter((entry) => entry.type === "custom" && entry.customType === POLICY_APPROVAL_CUSTOM_TYPE)
 		.map((entry) => (entry as { data?: unknown }).data);
@@ -1105,7 +1106,7 @@ describe("task gate automation host rpc", () => {
 			expect(records.some((record) => record.type === "run.started")).toBe(false);
 			expect(records.some((record) => record.type === "run.failed" || record.type === "run.cancelled")).toBe(false);
 
-			const customTypes = runtimeHost.session.sessionManager
+			const customTypes = runtimeHost.session.sessionRead
 				.getEntries()
 				.filter((entry) => entry.type === "custom")
 				.map((entry) => (entry as { customType?: string }).customType);

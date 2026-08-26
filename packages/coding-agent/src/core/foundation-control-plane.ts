@@ -88,7 +88,7 @@ import type { McpAttachmentBindingRefs } from "./mcp-attachment.ts";
 import { mapMCPToolsToDefinitions, type MCPToolDefinitionResult } from "./mcp-tool-adapter.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { SessionManager } from "./session-manager.ts";
+import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
 import type { SandboxHandle, SandboxProvider, SandboxSession } from "./sandbox.ts";
@@ -176,6 +176,11 @@ import type {
 export interface FoundationControlPlaneOptions {
 	harness: AgentHarness;
 	sessionManager: SessionManager;
+	sessionLedger?: {
+		getSessionId(): string;
+		getEntries(): ReadonlyArray<SessionEntry>;
+		appendCustomEntry(customType: string, data?: unknown): string;
+	};
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
 	modelRuntime: ModelRuntime;
@@ -642,6 +647,7 @@ function isCanonicalWorkerTimestamp(value: string): boolean {
 export class FoundationControlPlane {
 	private readonly harness: AgentHarness;
 	private readonly sessionManager: SessionManager;
+	private readonly sessionLedger: NonNullable<FoundationControlPlaneOptions["sessionLedger"]>;
 	private readonly settingsManager: SettingsManager;
 	private readonly resourceLoader: ResourceLoader;
 	private readonly modelRuntime: ModelRuntime;
@@ -713,6 +719,11 @@ export class FoundationControlPlane {
 	constructor(options: FoundationControlPlaneOptions) {
 		this.harness = options.harness;
 		this.sessionManager = options.sessionManager;
+		this.sessionLedger = options.sessionLedger ?? {
+			getSessionId: () => this.sessionManager.getSessionId(),
+			getEntries: () => this.sessionManager.getEntries(),
+			appendCustomEntry: (customType, data) => this.harness.recordCustomEntry(customType, data),
+		};
 		this.settingsManager = options.settingsManager;
 		this.resourceLoader = options.resourceLoader;
 		this.modelRuntime = options.modelRuntime;
@@ -748,7 +759,7 @@ export class FoundationControlPlane {
 				onRunTerminal: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "terminal").catch(() => undefined); },
 				onRunInterrupted: (runId) => { void this.workerSandboxProvider?.notifyRun(runId, "detach").catch(() => undefined); },
 			};
-		this.policyLedger = createExecutionPolicyLedger(this.sessionManager);
+		this.policyLedger = createExecutionPolicyLedger(this.sessionLedger);
 		this.mcpAuthManager = options.mcpAuthManagerOptions === undefined
 			? undefined
 			: new ConcreteMCPAuthManager(options.mcpAuthManagerOptions);
@@ -2003,7 +2014,7 @@ export class FoundationControlPlane {
 		if (this.taskCredentialDisposed || this.taskCredentialProvider === undefined || this.taskCredentialPolicyMaxTtlMs === undefined || this.taskCredentialPolicyMaxTtlMs <= 0) return undefined;
 		try {
 			this.taskCredentialService = new TaskCredentialService({
-				session: this.sessionManager,
+				session: this.sessionLedger,
 				provider: this.taskCredentialProvider,
 				policyMaxTtlMs: this.taskCredentialPolicyMaxTtlMs,
 				preflight: { resolve: (input) => this.resolveTaskCredentialPreflight(input) },
@@ -2905,7 +2916,7 @@ export class FoundationControlPlane {
 
 	private appendWorkerEvent(customType: string, event: FoundationEventEnvelope): void {
 		if (this.hasPersistedWorkerFact(customType, event)) return;
-		this.sessionManager.appendCustomEntry(customType, event);
+		this.harness.recordCustomEntry(customType, event);
 		this.markWorkerFactPersisted(event.eventId, customType, canonicalFoundationJson(event));
 	}
 

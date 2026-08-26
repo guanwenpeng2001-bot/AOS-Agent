@@ -7,12 +7,12 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
@@ -379,7 +379,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 
 			expect(recordsOfType(peer.history, "run.started")).toHaveLength(1);
 			expect(terminalEvents(peer.history)).toHaveLength(1);
-			const ledgerEntries = harness.runtimeHost.session.sessionManager
+			const ledgerEntries = harness.runtimeHost.session.sessionRead
 				.getEntries()
 				.filter(
 					(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
@@ -390,15 +390,15 @@ describe("TCP Automation Host cancel and idempotency", () => {
 				"accepted",
 				"started",
 			]);
-			const runReceiptFact = harness.runtimeHost.session.sessionManager.getPhysicalEntries().find((entry) => {
-				if (entry.type !== "custom" || entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) return false;
-				const data = entry.data;
-				return typeof data === "object" && data !== null && "record" in data &&
-					typeof data.record === "object" && data.record !== null &&
-					(data.record as { objectType?: unknown }).objectType === "run_receipt";
-			});
+			const runReceiptFact = (
+				await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+					kind: "fact",
+					objectType: "run_receipt",
+					order: "oldestFirst",
+				})
+			).at(-1);
 			expect(runReceiptFact).toMatchObject({
-				data: { record: { payload: { runId, terminalStatus: "cancelled" } } },
+				payload: { runId, terminalStatus: "cancelled" },
 			});
 		} finally {
 			peer?.socket.destroy();
@@ -423,7 +423,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			await vi.waitFor(() => expect(terminalEvents(peer!.history)).toHaveLength(1));
 			expect(recordsOfType(peer.history, "run.started")).toHaveLength(1);
 
-			const ledgerCountAfterFirstRun = harness.runtimeHost.session.sessionManager
+			const ledgerCountAfterFirstRun = harness.runtimeHost.session.sessionRead
 				.getEntries()
 				.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE).length;
 			await writeTcpRecord(peer.socket, { id: "tcp-duplicate", ...request });
@@ -437,7 +437,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			expect(recordsOfType(peer.history, "run.started")).toHaveLength(1);
 			expect(terminalEvents(peer.history)).toHaveLength(1);
 			expect(
-				harness.runtimeHost.session.sessionManager
+				harness.runtimeHost.session.sessionRead
 					.getEntries()
 					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCountAfterFirstRun);
@@ -457,7 +457,7 @@ describe("TCP Automation Host cancel and idempotency", () => {
 			expect(recordsOfType(peer.history, "run.started")).toHaveLength(1);
 			expect(terminalEvents(peer.history)).toHaveLength(1);
 			expect(
-				harness.runtimeHost.session.sessionManager
+				harness.runtimeHost.session.sessionRead
 					.getEntries()
 					.filter((entry) => entry.type === "custom" && entry.customType === RUN_LEDGER_CUSTOM_TYPE),
 			).toHaveLength(ledgerCountAfterFirstRun);

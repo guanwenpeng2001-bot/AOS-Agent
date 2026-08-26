@@ -19,8 +19,8 @@ describe("Documentation example", () => {
 			agent.on("session_before_compact", async (event: SessionBeforeCompactEvent, ctx) => {
 				// All these should be accessible on the event
 				const { preparation, branchEntries } = event;
-				// sessionManager, modelRegistry, and model come from ctx
-				const { sessionManager, modelRegistry } = ctx;
+				// session, modelRegistry, and model come from ctx
+				const { session, modelRegistry } = ctx;
 				const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, isSplitTurn } =
 					preparation;
 
@@ -29,7 +29,7 @@ describe("Documentation example", () => {
 				expect(Array.isArray(turnPrefixMessages)).toBe(true);
 				expect(typeof isSplitTurn).toBe("boolean");
 				expect(typeof tokensBefore).toBe("number");
-				expect(typeof sessionManager.getEntries).toBe("function");
+				expect(typeof session.getEntries).toBe("function");
 				expect(typeof modelRegistry.getApiKeyAndHeaders).toBe("function");
 				expect(typeof firstKeptEntryId).toBe("string");
 				expect(Array.isArray(branchEntries)).toBe(true);

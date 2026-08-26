@@ -25,7 +25,7 @@ export default function (agent: ExtensionAPI) {
 		}
 
 		// reason === "resume" - check if there are unsaved changes (messages since last assistant response)
-		const entries = ctx.sessionManager.getEntries();
+		const entries = ctx.session.getEntries();
 		const hasUnsavedWork = entries.some(
 			(e): e is SessionMessageEntry => e.type === "message" && e.message.role === "user",
 		);

@@ -6,6 +6,7 @@
  */
 
 import { createInterface } from "node:readline";
+import { Session, type ProvisionedEntry } from "@aos-agent/agent-core";
 import { type ImageContent, modelsAreEqual } from "@aos-agent/ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
@@ -33,7 +34,10 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
-import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntimeFromManager,
+} from "./core/agent-session-runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
@@ -56,6 +60,7 @@ import {
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { createSessionManagerStorage } from "./core/session-manager-storage.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
@@ -347,9 +352,32 @@ function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
 	}
 }
 
-function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
+async function forkSessionOrExit(
+	sourcePath: string,
+	cwd: string,
+	sessionDir?: string,
+	sessionId?: string,
+): Promise<SessionManager> {
 	try {
-		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
+		const sourceManager = SessionManager.open(sourcePath);
+		const source = new Session(createSessionManagerStorage(sourceManager));
+		const targetManager = SessionManager.create(cwd, sessionDir, {
+			id: sessionId,
+			parentSession: sourceManager.getSessionFile(),
+		});
+		const target = new Session(createSessionManagerStorage(targetManager));
+		const entries = await source.findEntries({ order: "oldestFirst" });
+		for (const entry of entries) {
+			const { parentId: _parentId, seq: _seq, timestamp: _timestamp, ...provisioned } = entry;
+			await target.appendEntry(provisioned as ProvisionedEntry, "main");
+		}
+		const name = await source.getName();
+		if (name !== undefined) await target.setName(name);
+		for (const entry of entries) {
+			const label = await source.getLabel(entry.id);
+			if (label !== undefined) await target.setLabel(entry.id, label);
+		}
+		return targetManager;
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -382,7 +410,7 @@ async function createSessionManager(
 			case "path":
 			case "local":
 			case "global":
-				return forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId);
+				return await forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId);
 
 			case "not_found":
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
@@ -405,7 +433,7 @@ async function createSessionManager(
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
 				}
-				return forkSessionOrExit(resolved.path, cwd, sessionDir);
+				return await forkSessionOrExit(resolved.path, cwd, sessionDir);
 			}
 
 			case "not_found":
@@ -707,13 +735,14 @@ export async function main(args: string[], options?: MainOptions) {
 			process.exit(1);
 		}
 	}
+	let initialSessionName: string | undefined;
 	if (parsed.name !== undefined) {
 		const name = parsed.name.trim();
 		if (!name) {
 			console.error(chalk.red("Error: --name requires a non-empty value"));
 			process.exit(1);
 		}
-		sessionManager.appendSessionInfo(name);
+		initialSessionName = name;
 	}
 	time("createSessionManager");
 
@@ -861,13 +890,14 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
-	const runtime = await createAgentSessionRuntime(createRuntime, {
+	const runtime = await createAgentSessionRuntimeFromManager(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
 	});
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
+	if (initialSessionName !== undefined) session.setSessionName(initialSessionName);
 	const { settingsManager, modelRuntime, resourceLoader } = services;
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());

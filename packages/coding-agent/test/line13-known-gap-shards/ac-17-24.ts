@@ -25,13 +25,13 @@ import {
 	createRpcTransport,
 	getPackageDir,
 	SchedulerHost,
-	SessionManager,
 	type CreateAgentSessionRuntimeFactory,
 	type ExtensionAPI,
 	type ExternalAgentAdapter,
 	type SchedulerHostOptions,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
 import { isSchedulerSideEffectRetryable } from "../../src/core/scheduler.ts";
 import { SchedulerQueueStore } from "../../src/core/scheduler-queue.ts";
@@ -189,7 +189,7 @@ const ac17 = defineLine13KnownGapCase({
 			const runtime = await createAgentSessionRuntime(factory, {
 				cwd: directory,
 				agentDir: directory,
-				sessionManager: SessionManager.inMemory(directory),
+				session: { mode: "memory" },
 			});
 			await runtime.session.bindExtensions({});
 			failReplacement = true;
@@ -245,7 +245,7 @@ const ac18 = defineLine13KnownGapCase({
 			const aiCompatUrl = pathToFileURL(join(sourceRoot, "..", "..", "ai", "src", "compat.ts")).href;
 			writeFileSync(
 				fixture.driverPath,
-				`import { writeFileSync } from "node:fs";\nimport { registerFauxProvider } from ${JSON.stringify(aiCompatUrl)};\nimport { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, SessionManager } from ${JSON.stringify(indexUrl)};\nimport { AuthStorage } from ${JSON.stringify(authUrl)};\nimport { runRpcMode } from ${JSON.stringify(rpcModeUrl)};\nconst marker = ${JSON.stringify(fixture.markerPath)};\nconst record = ${JSON.stringify(fixture.recordPath)};\nconst directory = ${JSON.stringify(fixture.directory)};\nconst faux = registerFauxProvider();\nconst auth = AuthStorage.inMemory();\nawait auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));\nconst createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => { const services = await createAgentSessionServices({ cwd, agentDir: directory, authStorage: auth, model: faux.getModel(), resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [(agent) => { agent.registerProvider(faux.getModel().provider, { baseUrl: faux.getModel().baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models }); agent.on("session_shutdown", async () => { writeFileSync(marker, "started"); await new Promise(() => {}); }); }] } }); const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel() }); return { ...created, services, diagnostics: services.diagnostics }; };\nconst runtime = await createAgentSessionRuntime(createRuntime, { cwd: directory, agentDir: directory, sessionManager: SessionManager.inMemory(directory) });\nawait runtime.session.bindExtensions({});\nvoid runRpcMode(runtime);\nsetTimeout(() => { const listener = process.listenerCount("SIGINT") > 0; writeFileSync(record, JSON.stringify({ listener })); process.emit("SIGINT"); setTimeout(() => { writeFileSync(record, JSON.stringify({ listener, watchdog: true })); process.exit(91); }, 750); }, 250);\n`,
+				`import { writeFileSync } from "node:fs";\nimport { registerFauxProvider } from ${JSON.stringify(aiCompatUrl)};\nimport { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices } from ${JSON.stringify(indexUrl)};\nimport { AuthStorage } from ${JSON.stringify(authUrl)};\nimport { runRpcMode } from ${JSON.stringify(rpcModeUrl)};\nconst marker = ${JSON.stringify(fixture.markerPath)};\nconst record = ${JSON.stringify(fixture.recordPath)};\nconst directory = ${JSON.stringify(fixture.directory)};\nconst faux = registerFauxProvider();\nconst auth = AuthStorage.inMemory();\nawait auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));\nconst createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => { const services = await createAgentSessionServices({ cwd, agentDir: directory, authStorage: auth, model: faux.getModel(), resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [(agent) => { agent.registerProvider(faux.getModel().provider, { baseUrl: faux.getModel().baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models }); agent.on("session_shutdown", async () => { writeFileSync(marker, "started"); await new Promise(() => {}); }); }] } }); const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel() }); return { ...created, services, diagnostics: services.diagnostics }; };\nconst runtime = await createAgentSessionRuntime(createRuntime, { cwd: directory, agentDir: directory, session: { mode: "memory" } });\nawait runtime.session.bindExtensions({});\nvoid runRpcMode(runtime);\nsetTimeout(() => { const listener = process.listenerCount("SIGINT") > 0; writeFileSync(record, JSON.stringify({ listener })); process.emit("SIGINT"); setTimeout(() => { writeFileSync(record, JSON.stringify({ listener, watchdog: true })); process.exit(91); }, 750); }, 250);\n`,
 				"utf8",
 			);
 			fixture.outcome = await runProcess(process.execPath, sourceProcessArgs(fixture.driverPath), {

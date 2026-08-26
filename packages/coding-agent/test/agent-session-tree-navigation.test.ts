@@ -36,7 +36,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		await session.agent.waitForIdle();
 
 		// Get tree entries
-		const tree = session.sessionManager.getTree();
+		const tree = session.sessionRead.getTree();
 		expect(tree.length).toBe(1);
 
 		// Find the first user entry (u1)
@@ -50,7 +50,7 @@ describe.skipIf(!API_KEY)("AgentSession tree navigation e2e", () => {
 		expect(result.editorText).toBe("First message");
 
 		// After navigating to root user message, leaf should be null (empty conversation)
-		expect(session.sessionManager.getLeafId()).toBeNull();
+		expect(session.sessionRead.getLeafId()).toBeNull();
 	}, 60000);
 
 	it("should navigate to non-user message without editor text", async () => {

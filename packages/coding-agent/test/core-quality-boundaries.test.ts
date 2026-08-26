@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Session } from "@aos-agent/agent-core";
 import { classifyProviderFailure } from "../src/core/execution-error.ts";
 import {
 	createSessionCheckpoint,
@@ -10,6 +11,7 @@ import { classifyFallbackEligibility } from "../src/core/model-broker.ts";
 import { createOperationBoundary } from "../src/core/operation-boundary.ts";
 import { type SandboxHandle, type SandboxProvider, SandboxSession } from "../src/core/sandbox.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 
 describe("core quality boundaries", () => {
 	it("does not allow fallback after an unknown provider side effect", () => {
@@ -37,12 +39,13 @@ describe("core quality boundaries", () => {
 		expect("persistExecutionAssociation" in core).toBe(false);
 	});
 
-	it("records checkpoint and recovery boundaries on existing Session facts", () => {
+	it("records checkpoint and recovery boundaries through canonical Session", async () => {
 		const manager = SessionManager.inMemory(process.cwd());
-		const checkpoint = createSessionCheckpoint(manager, "before change");
+		const session = new Session(createSessionManagerStorage(manager));
+		const checkpoint = await createSessionCheckpoint(session, "before change");
 		const lastEntry = manager.getEntries().at(-1);
 		expect(lastEntry?.type === "custom" ? lastEntry.customType : undefined).toBe(SESSION_BOUNDARY_CUSTOM_TYPE);
-		const recovered = recoverSessionCheckpoint(manager, checkpoint.boundaryId, "restore");
+		const recovered = await recoverSessionCheckpoint(session, checkpoint.boundaryId, "restore");
 		expect(recovered.kind).toBe("recovery");
 		expect(recovered.checkpointId).toBe(checkpoint.boundaryId);
 	});

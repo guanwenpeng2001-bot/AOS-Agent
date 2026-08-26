@@ -14,6 +14,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -473,7 +474,7 @@ function dispatchCommand(
 }
 
 function credentialEntries(session: AgentSession): Array<{ id: string; data: unknown }> {
-	return session.sessionManager
+	return session.sessionRead
 		.getEntries()
 		.filter((entry) => entry.type === "custom" && entry.customType === TASK_CREDENTIAL_CUSTOM_TYPE)
 		.map((entry) => ({
@@ -514,7 +515,7 @@ function expectGrantResponse(
 }
 
 function seedRun(session: AgentSession, runId: string): void {
-	const sessionManager = session.sessionManager;
+	const sessionManager = getAgentSessionLedger(session);
 	sessionManager.appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 		schemaVersion: 1,
 		kind: "accepted",
@@ -529,7 +530,7 @@ function seedRun(session: AgentSession, runId: string): void {
 }
 
 async function seedRunTerminal(session: AgentSession, runId: string): Promise<void> {
-	await writeCanonicalRunResult(session.sessionManager, runId, {
+	await writeCanonicalRunResult(getAgentCanonicalSession(session), runId, {
 		outcome: "completed",
 		completedAt: "2026-08-16T12:00:05.000Z",
 	});
@@ -1157,7 +1158,7 @@ describe("task credential automation host rpc", () => {
 		try {
 			await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
 			const boundary = await seedRunGraphAndBoundary(controller, runtimeHost.session, "run_001", "graph-seed-9");
-			const sessionManager = runtimeHost.session.sessionManager;
+			const sessionManager = getAgentSessionLedger(runtimeHost.session);
 			const originalAppend = sessionManager.appendCustomEntry.bind(sessionManager);
 			vi.spyOn(sessionManager, "appendCustomEntry").mockImplementationOnce(() => {
 				throw new Error("disk full");
@@ -1441,7 +1442,7 @@ describe("task credential automation host rpc", () => {
 			const issued = await dispatchCommand(controller, issueCommand("run_001", "issue-switch", boundary));
 			const leaseId = expectGrantResponse(issued, "task.credential.issue").leaseId!;
 
-			const outgoingManager = runtimeHost.session.sessionManager;
+			const outgoingManager = runtimeHost.session.sessionRead;
 			const sessionFile = outgoingManager.getSessionFile();
 			expect(sessionFile).toBeDefined();
 			await runtimeHost.switchSession(sessionFile!);

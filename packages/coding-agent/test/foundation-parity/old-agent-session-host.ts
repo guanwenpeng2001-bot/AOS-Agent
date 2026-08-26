@@ -38,7 +38,6 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../../src/core/extensions/index.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
 import type { ExtensionAPI } from "../../src/index.ts";
 import { createHarness, type Harness } from "../suite/harness.ts";
 import type {
@@ -630,7 +629,7 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
+			session: { mode: "new", directory: join(tempDir, "sessions") },
 		});
 		await runtime.session.bindExtensions({});
 		this.attachToSession(runtime);

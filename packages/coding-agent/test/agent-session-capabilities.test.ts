@@ -1590,7 +1590,7 @@ describe("AgentSession capability binding integration", () => {
 								type: "user_bash",
 								command: "echo no",
 								excludeFromContext: false,
-								cwd: session.sessionManager.getCwd(),
+								cwd: session.sessionRead.getCwd(),
 							});
 						}
 					})(),
@@ -1781,7 +1781,7 @@ describe("AgentSession capability binding integration", () => {
 				expect(fake.state.disposedHandles).toEqual(fake.state.handles.map((handle) => handle.id));
 				expect(
 					JSON.stringify(
-						session.sessionManager
+						session.sessionRead
 							.getEntries()
 							.filter((entry) => entry.type === "custom" && entry.customType === "sandbox.lifecycle"),
 					),
@@ -2482,7 +2482,7 @@ describe("AgentSession capability binding integration", () => {
 						type: "user_bash",
 						command: "echo ok",
 						excludeFromContext: false,
-						cwd: session.sessionManager.getCwd(),
+						cwd: session.sessionRead.getCwd(),
 					});
 				}
 				const result = eventResult?.result ?? await session.executeBash("echo ok", undefined, {

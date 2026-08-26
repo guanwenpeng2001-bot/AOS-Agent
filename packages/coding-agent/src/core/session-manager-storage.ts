@@ -22,6 +22,7 @@ import {
 	type ReleaseWriterLeaseOptions,
 	type RenewWriterLeaseOptions,
 	SessionError,
+	type Session,
 	type SessionMetadata,
 	type SessionStats,
 	type SessionStorage,
@@ -42,7 +43,7 @@ import type {
 	SessionInfoEntry,
 } from "./session-manager.ts";
 import { registerSessionReadProjectionInitializer, type SessionManager } from "./session-manager.ts";
-import { createCustomMessage, type BashExecutionMessage, type CustomMessage } from "./messages.ts";
+import { createCustomMessage } from "./messages.ts";
 
 /** Reserved custom-entry types used to store canonical Harness state in the existing JSONL file. */
 export const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";
@@ -350,14 +351,14 @@ function legacyCustomMessageToCanonical(value: CustomMessageEntry, seq: number, 
 		id: value.id,
 		seq,
 		parentId,
-		timestamp: toTimestamp(value.timestamp, Date.now()),
+		timestamp: toTimestamp(value.timestamp, seq),
 		message: createCustomMessage(value.customType, value.content, value.display, value.details, value.timestamp),
 	};
 }
 
 function legacyEntryToCanonical(value: SessionEntry, seq: number, parentId: string | null): Entry | undefined {
 	if (!legacyEntryType(value)) return undefined;
-	const timestamp = toTimestamp(value.timestamp, Date.now());
+	const timestamp = toTimestamp(value.timestamp, seq);
 	if (value.type === "message") {
 		const entry: Entry = {
 			type: "message",
@@ -462,7 +463,7 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 	if (!header) failClosed("session header is missing");
 	return {
 		id: header.id,
-		createdAt: toTimestamp(header.timestamp, Date.now()),
+		createdAt: toTimestamp(header.timestamp, 0),
 		...(header.parentSession === undefined ? {} : { parentSessionId: header.parentSession }),
 		cwd: header.cwd,
 		...(manager.getSessionFile() === undefined ? {} : { path: manager.getSessionFile() }),
@@ -509,6 +510,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 
 	getLanesSnapshot(): LanePointer[] {
 		return clone(this.snapshot().lanes);
+	}
+
+	/** Internal physical audit source; never exposed through AgentSession.sessionRead. */
+	getAuditEntriesSnapshot(): SessionEntry[] {
+		return clone(this.physicalEntries());
 	}
 
 	/** Wait until every write accepted by this storage instance has settled. */
@@ -854,10 +860,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		assertJsonSerializable(data);
 		if (snapshot.ids.has(id)) throw new SessionError("already_exists", `Durable id already exists: ${id}`);
 		this.manager.appendCustomEntry(customType, data);
+		if (customType === FOUNDATION_DURABLE_CUSTOM_TYPE) this.manager.flushPendingSession();
 		void preserveLeafId;
 	}
 
-	private async appendCanonicalEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): Promise<TEntry> {
+	private appendCanonicalEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): TEntry {
 		const snapshot = this.snapshot();
 		const pointer = snapshot.lanes.find((candidate) => candidate.lane === lane);
 		if (!pointer) throw new SessionError("invalid_lane", `Lane not found: ${lane}`);
@@ -1022,32 +1029,20 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return this.enqueue(() => this.appendCanonicalEntry(entry, lane));
 	}
 
-	/**
-	 * Synchronous compatibility writer for host-service messages. The physical
-	 * JSONL entry is still the same ledger consumed by SessionStorage; this
-	 * method exists only because the legacy Bash API is intentionally void.
-	 */
-	appendMessageSync(message: Parameters<SessionManager["appendMessage"]>[0]): string {
-		assertJsonSerializable(message);
-		return this.manager.appendMessage(message);
+	/** Synchronous physical commit for legacy callers whose logical writer is AgentHarness. */
+	appendHarnessEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): TEntry {
+		return this.appendCanonicalEntry(entry, lane);
 	}
 
-	appendBashMessageSync(message: BashExecutionMessage): string {
-		return this.appendMessageSync(message);
+	/** Synchronous physical commit for AgentHarness session-name writes. */
+	setHarnessName(name: string | undefined): void {
+		const snapshot = this.snapshot();
+		this.appendWrapper(snapshot, FOUNDATION_FACT_CUSTOM_TYPE, { schemaVersion: 1, kind: "name", name: normalizeSessionName(name) }, this.nextId(snapshot));
 	}
 
-	/** Synchronous compatibility writer for extension custom messages. */
-	appendCustomMessageSync<T = unknown>(message: CustomMessage<T>): string {
-		assertJsonSerializable(message.content);
-		if (message.display !== undefined) assertJsonSerializable(message.display);
-		if (message.details !== undefined) assertJsonSerializable(message.details);
-		return this.manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
-	}
-
-	/** Synchronous writer for host-service custom facts that are not messages. */
-	appendCustomEntrySync(customType: string, data?: unknown): string {
-		if (data !== undefined) assertJsonSerializable(data);
-		return this.manager.appendCustomEntry(customType, data);
+	/** Synchronous physical commit for AgentHarness label writes. */
+	setHarnessLabel(id: string, label: string | undefined): void {
+		this.appendLabelFact(this.snapshot(), id, label);
 	}
 
 	appendRecord<TRecord extends LaneRecord>(record: NewRecord<TRecord>): Promise<TRecord> {
@@ -1154,23 +1149,6 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		});
 	}
 
-	/**
-	 * Synchronous compatibility writer for AgentSession.setSessionName.
-	 *
-	 * The physical append still goes through SessionManagerStorage's canonical
-	 * Foundation wrapper and therefore updates the same ledger used by Session.
-	 * It is synchronous because the legacy API promises that getSessionName()
-	 * and subscribers observe the new name before setSessionName() returns.
-	 */
-	setNameSync(name: string | undefined): void {
-		const snapshot = this.snapshot();
-		this.appendWrapper(snapshot, FOUNDATION_FACT_CUSTOM_TYPE, {
-			schemaVersion: 1,
-			kind: "name",
-			name: normalizeSessionName(name),
-		}, this.nextId(snapshot));
-	}
-
 	getLabel(id: string): Promise<string | undefined> {
 		return Promise.resolve(this.snapshot().labels.get(id));
 	}
@@ -1180,11 +1158,6 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			const snapshot = this.snapshot();
 			this.appendLabelFact(snapshot, id, label);
 		});
-	}
-
-	/** Synchronous compatibility writer for extension agent.setLabel(). */
-	setLabelSync(id: string, label: string | undefined): void {
-		this.appendLabelFact(this.snapshot(), id, label);
 	}
 
 	private appendLabelFact(snapshot: Snapshot, id: string, label: string | undefined): void {
@@ -1203,33 +1176,31 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 }
 
 /**
- * Bind the legacy void-compatible writes to the canonical SessionManagerStorage.
- * The callbacks are invoked only by AgentHarness; callers never receive the
- * storage writer as a second runtime authority.
+ * Bind void-compatible Harness callbacks to the canonical Session. The
+ * compatibility surface never writes legacy physical entries back into the
+ * SessionManager store.
  */
-export function createHarnessCompatibilityWriter(storage: SessionManagerStorage): HarnessCompatibilityWriter {
+export function createHarnessCompatibilityWriter(
+	session: Session,
+	storage: SessionManagerStorage,
+): HarnessCompatibilityWriter {
 	return {
 		recordMessage: (message) => {
-			if (message.role === "bashExecution") {
-				storage.appendBashMessageSync(message as BashExecutionMessage);
-				return;
-			}
-			if (message.role === "custom") {
-				storage.appendCustomMessageSync(message as CustomMessage);
-				return;
-			}
-			if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
-				storage.appendMessageSync(message as Parameters<SessionManager["appendMessage"]>[0]);
-				return;
-			}
-			throw new Error(`Unsupported compatibility message role: ${message.role}`);
+			storage.appendHarnessEntry({ type: "message", id: session.idGenerator.next(), message }, "main");
 		},
-		recordCustomEntry: (customType, data) => storage.appendCustomEntrySync(customType, data),
+		recordCustomEntry: (customType, data) => {
+			const id = session.idGenerator.next();
+			storage.appendHarnessEntry(
+				data === undefined ? { type: "custom", id, customType } : { type: "custom", id, customType, data },
+				"main",
+			);
+			return id;
+		},
 		setSessionName: (name) => {
-			storage.setNameSync(name);
+			storage.setHarnessName(name);
 		},
 		setSessionLabel: (targetId, label) => {
-			storage.setLabelSync(targetId, label);
+			storage.setHarnessLabel(targetId, label);
 		},
 	};
 }

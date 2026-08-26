@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import { Session, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
 import type {
@@ -54,7 +54,12 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type AgentSessionReadProjection,
+	parseSkillBlock,
+} from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import {
 	CACHE_TTL_MS,
@@ -91,6 +96,7 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/run-lifecycle.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
+import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
@@ -273,7 +279,7 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+export function formatResumeCommand(sessionManager: AgentSessionReadProjection): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
@@ -555,7 +561,7 @@ export class InteractiveMode {
 		return this.session.agent;
 	}
 	private get sessionManager() {
-		return this.session.sessionManager;
+		return this.session.sessionRead;
 	}
 	private get settingsManager() {
 		return this.session.settingsManager;
@@ -2166,7 +2172,7 @@ export class InteractiveMode {
 			mode: "tui",
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
-			sessionManager: this.sessionManager,
+			session: this.sessionManager,
 			modelRegistry: extensionRunner.getModelRegistry(),
 			model: this.session.model,
 			scopedModels: this.session.scopedModels,
@@ -5401,7 +5407,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				(entryId, label) => {
-					this.sessionManager.appendLabelChange(entryId, label);
+					this.session.setSessionLabel(entryId, label);
 					this.ui.requestRender();
 				},
 				initialSelectedId,
@@ -5449,7 +5455,7 @@ export class InteractiveMode {
 						const next = (nextName ?? "").trim();
 						if (!next) return;
 						const mgr = SessionManager.open(sessionFilePath);
-						mgr.appendSessionInfo(next);
+						await new Session(createSessionManagerStorage(mgr)).setName(next);
 					},
 					showRenameHint: true,
 					keybindings: this.keybindings,
@@ -6108,7 +6114,7 @@ export class InteractiveMode {
 
 		try {
 			if (outputPath?.endsWith(".jsonl")) {
-				const filePath = this.session.exportToJsonl(outputPath);
+				const filePath = await this.session.exportToJsonl(outputPath);
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {
 				const filePath = await this.session.exportToHtml(outputPath);

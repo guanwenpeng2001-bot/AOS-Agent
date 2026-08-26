@@ -115,7 +115,7 @@ export default function (agent: ExtensionAPI) {
 		todos = [];
 		nextId = 1;
 
-		for (const entry of ctx.sessionManager.getBranch()) {
+		for (const entry of ctx.session.getBranch()) {
 			if (entry.type !== "message") continue;
 			const msg = entry.message;
 			if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;

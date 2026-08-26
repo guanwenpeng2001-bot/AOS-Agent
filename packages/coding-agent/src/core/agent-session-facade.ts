@@ -67,8 +67,19 @@ import { classifyProviderFailure } from "./execution-error.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type { ExternalAgentAdapterRegistry } from "./external-agent-registry.ts";
-import { getLatestCompactionEntry, SessionManager, type BranchSummaryEntry, type CompactionEntry as LegacyCompactionEntry } from "./session-manager.ts";
-import { createHarnessCompatibilityWriter, normalizeSessionName, SessionManagerStorage } from "./session-manager-storage.ts";
+import {
+	getLatestCompactionEntry,
+	SessionManager,
+	type BranchSummaryEntry,
+	type CompactionEntry as LegacyCompactionEntry,
+	type SessionEntry,
+} from "./session-manager.ts";
+import {
+	type CodingAgentSessionMetadata,
+	createHarnessCompatibilityWriter,
+	normalizeSessionName,
+	SessionManagerStorage,
+} from "./session-manager-storage.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BashResult } from "./bash-executor.ts";
 import {
@@ -152,6 +163,10 @@ import {
 import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
+import {
+	createAgentSessionReadProjection,
+	type AgentSessionReadProjection,
+} from "./session-read-projection.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -159,7 +174,7 @@ import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition
  */
 export interface CanonicalAgentSessionOptions {
 	harness: AgentHarness;
-	canonicalSession: Session;
+	canonicalSession: Session<CodingAgentSessionMetadata>;
 	canonicalStorage?: SessionManagerStorage;
 	systemPrompt?: string;
 	sessionStartEvent?: SessionStartEvent;
@@ -210,6 +225,23 @@ interface CanonicalAgentCompatibility extends Omit<Agent, "state"> {
 	readonly state: AgentState;
 	setCanonicalStreamFunction(stream: StreamFn): void;
 }
+
+/** @internal Legacy ledger shape whose writes still flow through AgentHarness. */
+export interface AgentSessionLedgerProjection {
+	getEntries(): SessionEntry[];
+	getPhysicalEntries(): SessionEntry[];
+	getSessionId(): string;
+	getSessionFile(): string | undefined;
+	appendCustomEntry(customType: string, data: unknown): string;
+}
+
+interface AgentSessionForkTarget {
+	readonly session: Session<CodingAgentSessionMetadata>;
+	readonly sessionFile?: string;
+	readonly selectedText?: string;
+}
+
+const agentSessionForkManagers = new WeakMap<AgentSessionForkTarget, SessionManager>();
 
 class ModelSelectionState {
 	private selected?: ModelResolution;
@@ -367,7 +399,7 @@ function createCanonicalOptionsFromLegacy(options: InternalAgentSessionConfig): 
 		followUpMode: options.settingsManager.getFollowUpMode(),
 		retry: options.settingsManager.getRetrySettings(),
 		compaction: options.settingsManager.getCompactionSettings(),
-		compatibilityWriter: createHarnessCompatibilityWriter(canonicalStorage),
+		compatibilityWriter: createHarnessCompatibilityWriter(canonicalSession, canonicalStorage),
 		...(options.sessionManager.isPersisted()
 			? {}
 			: { t5Options: { artifactBlobStore: new InMemoryArtifactBlobStore() } }),
@@ -561,9 +593,11 @@ function mcpAuditReasonCode(error: unknown): string | undefined {
  */
 export class CanonicalAgentSessionServices {
 	readonly sessionManager: SessionManager;
+	readonly sessionLedger: AgentSessionLedgerProjection;
 	readonly settingsManager: SettingsManager;
 	private readonly harness: AgentHarness;
-	private readonly canonicalSession: Session;
+	private readonly sessionReadProjection: AgentSessionReadProjection;
+	readonly canonicalSession: Session<CodingAgentSessionMetadata>;
 	private readonly canonicalStorage: SessionManagerStorage;
 	private readonly _resourceLoader: ResourceLoader;
 	private readonly _modelRuntime: ModelRuntime;
@@ -611,6 +645,14 @@ export class CanonicalAgentSessionServices {
 		this.canonicalSession = canonical.canonicalSession;
 		this.canonicalStorage = canonicalStorage;
 		this.sessionManager = canonical.sessionManager;
+		this.sessionReadProjection = createAgentSessionReadProjection(canonical.sessionManager);
+		this.sessionLedger = {
+			getEntries: () => this.sessionRead.getEntries(),
+			getPhysicalEntries: () => this.canonicalStorage.getAuditEntriesSnapshot(),
+			getSessionId: () => this.sessionRead.getSessionId(),
+			getSessionFile: () => this.sessionRead.getSessionFile(),
+			appendCustomEntry: (customType: string, data: unknown) => this.harness.recordCustomEntry(customType, data),
+		};
 		this.settingsManager = canonical.settingsManager;
 		this._resourceLoader = canonical.resourceLoader;
 		this._modelRuntime = canonical.modelRuntime;
@@ -635,12 +677,13 @@ export class CanonicalAgentSessionServices {
 			canonical.resourceLoader.getExtensions().extensions,
 			canonical.resourceLoader.getExtensions().runtime,
 			canonical.cwd,
-			canonical.sessionManager,
+			this.sessionRead,
 			new ModelRegistry(canonical.modelRuntime),
 		);
 		this.controlPlane = new FoundationControlPlane({
 			harness: this.harness,
 			sessionManager: this.sessionManager,
+			sessionLedger: this.sessionLedger,
 			settingsManager: this.settingsManager,
 			resourceLoader: this._resourceLoader,
 			modelRuntime: this._modelRuntime,
@@ -1090,7 +1133,7 @@ export class CanonicalAgentSessionServices {
 			createdAt: binding.createdAt,
 		};
 		try {
-			persistModelBinding(this.sessionManager, ledgerBinding);
+			persistModelBinding(this.sessionLedger, ledgerBinding);
 		} catch {
 			// Ledger serialization must not replace the provider result.
 		}
@@ -1143,7 +1186,7 @@ export class CanonicalAgentSessionServices {
 
 	private persistModelBrokerAttempt(attempt: ModelAttemptLedgerRecord): void {
 		try {
-			persistModelAttempt(this.sessionManager, attempt);
+			persistModelAttempt(this.sessionLedger, attempt);
 		} catch {
 			// Ledger serialization must not replace the provider result.
 		}
@@ -1670,6 +1713,10 @@ export class CanonicalAgentSessionServices {
 
 	get agent(): Agent {
 		return this.compatibilityAgent as unknown as Agent;
+	}
+
+	get sessionRead(): AgentSessionReadProjection {
+		return this.sessionReadProjection;
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -2536,6 +2583,24 @@ export class CanonicalAgentSessionServices {
 		await this.setModelInternal(model, "set");
 	}
 
+	/** @internal Persist SDK bootstrap facts through the canonical Session. */
+	async recordInitialSessionConfiguration(
+		model: Model<Api> | undefined,
+		thinkingLevel: ThinkingLevel,
+		includeModel: boolean,
+	): Promise<void> {
+		if (includeModel && model !== undefined) {
+			await this.canonicalSession.appendEntry(
+				{ type: "model_change", id: this.canonicalSession.idGenerator.next(), provider: model.provider, modelId: model.id },
+				"main",
+			);
+		}
+		await this.canonicalSession.appendEntry(
+			{ type: "thinking_level_change", id: this.canonicalSession.idGenerator.next(), thinkingLevel },
+			"main",
+		);
+	}
+
 	private async setModelInternal(model: Model<Api>, source: "set" | "cycle" | "restore"): Promise<void> {
 		const auth = await this._modelRuntime.checkAuth(model.provider);
 		if (auth === undefined) throw new Error(`No API key for ${model.provider}/${model.id}`);
@@ -2729,6 +2794,10 @@ export class CanonicalAgentSessionServices {
 		this.harness.setSessionNameSync(normalizedName);
 		for (const listener of this.sessionInfoSubscribers) listener({ type: "session_info_changed", name: normalizedName });
 		this._extensionRunner.emitSessionInfoChanged({ type: "session_info_changed", name: normalizedName });
+	}
+
+	setSessionLabel(entryId: string, label: string | undefined): void {
+		this.harness.setSessionLabelSync(entryId, label);
 	}
 
 	createReplacedSessionContext(): ReplacedSessionContext {
@@ -3210,8 +3279,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	getUserMessagesForForking(): Array<{ entryId: string; text: string }> {
-		return this.sessionManager
-			.getEntries()
+		return this.canonicalEntriesSnapshot()
 			.filter((entry): entry is Extract<typeof entry, { type: "message" }> => entry.type === "message" && entry.message.role === "user")
 			.map((entry) => ({ entryId: entry.id, text: messageText(entry.message) }));
 	}
@@ -3221,10 +3289,10 @@ export class CanonicalAgentSessionServices {
 	 * SessionManager only supplies the legacy view; it must not clone its
 	 * physical wrapper IDs or reconstruct a second transcript.
 	 */
-	async createForkedSession(
+	async createForkedSessionTarget(
 		entryId: string,
 		position: "before" | "at",
-	): Promise<{ sessionManager: SessionManager; selectedText?: string }> {
+	): Promise<AgentSessionForkTarget> {
 		await this.waitForIdle();
 		const selectedEntry = await this.canonicalSession.getEntry(entryId);
 		if (selectedEntry === undefined) throw new Error("Invalid entry ID for forking");
@@ -3257,21 +3325,28 @@ export class CanonicalAgentSessionServices {
 			})
 			: SessionManager.inMemory(this._cwd);
 		const targetStorage = new SessionManagerStorage(targetManager);
+		const targetSession = new Session(targetStorage);
 		const copiedEntries = targetId === null
 			? []
 			: await this.canonicalSession.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
 		for (const entry of copiedEntries) {
 			const { parentId: _parentId, seq: _seq, timestamp: _timestamp, ...provisioned } = entry;
-			await targetStorage.appendEntry(provisioned as ProvisionedEntry, "main");
+			await targetSession.appendEntry(provisioned as ProvisionedEntry, "main");
 		}
 
 		const name = await this.canonicalSession.getName();
-		if (name !== undefined) await targetStorage.setName(name);
+		if (name !== undefined) await targetSession.setName(name);
 		for (const entry of copiedEntries) {
 			const label = await this.canonicalSession.getLabel(entry.id);
-			if (label !== undefined) await targetStorage.setLabel(entry.id, label);
+			if (label !== undefined) await targetSession.setLabel(entry.id, label);
 		}
-		return { sessionManager: targetManager, ...(selectedText === undefined ? {} : { selectedText }) };
+		const target: AgentSessionForkTarget = {
+			session: targetSession,
+			sessionFile: targetManager.getSessionFile(),
+			...(selectedText === undefined ? {} : { selectedText }),
+		};
+		agentSessionForkManagers.set(target, targetManager);
+		return target;
 	}
 
 	setPreviousExecutionPolicyBindingIdForNextRun(bindingId?: string): void {
@@ -3371,14 +3446,30 @@ export class CanonicalAgentSessionServices {
 	}
 
 	async exportToHtml(outputPath?: string): Promise<string> {
-		return exportSessionToHtml(this.sessionManager, this.state, outputPath);
+		return exportSessionToHtml(this.canonicalSession, this.state, outputPath);
 	}
 
-	exportToJsonl(outputPath?: string): string {
+	async exportToJsonl(outputPath?: string): Promise<string> {
 		const target = outputPath ?? this.sessionFile;
 		if (target === undefined) throw new Error("Cannot export an in-memory session to JSONL");
+		const metadata = await this.canonicalSession.getMetadata();
+		const entries = await this.canonicalSession.findEntries({ order: "oldestFirst" });
 		mkdirSync(dirname(target), { recursive: true });
-		writeFileSync(target, `${this.sessionManager.getEntries().map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+		writeFileSync(
+			target,
+			`${[
+				{
+					type: "session",
+					version: 3,
+					id: metadata.id,
+					timestamp: new Date(metadata.createdAt).toISOString(),
+					cwd: this._cwd,
+					...(metadata.parentSessionId === undefined ? {} : { parentSession: metadata.parentSessionId }),
+				},
+				...entries,
+			].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+			"utf8",
+		);
 		return target;
 	}
 
@@ -3400,6 +3491,7 @@ export class CanonicalAgentSessionServices {
 
 const COMPATIBILITY_FORWARDERS = [
 	"agent",
+	"sessionRead",
 	"modelRuntime",
 	"modelBroker",
 	"modelBrokerConfigRevision",
@@ -3466,6 +3558,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getContextUsage",
 	"getLastAssistantText",
 	"setSessionName",
+	"setSessionLabel",
 	"createReplacedSessionContext",
 	"bindExtensions",
 	"getLastContextSnapshotId",
@@ -3511,7 +3604,6 @@ const COMPATIBILITY_FORWARDERS = [
 	"executeBash",
 	"recordBashResult",
 	"getUserMessagesForForking",
-	"createForkedSession",
 	"setPreviousExecutionPolicyBindingIdForNextRun",
 	"getActiveExecutionPolicyProfile",
 	"getActiveExecutionPolicyBinding",
@@ -3543,7 +3635,7 @@ function installCompatibilityForwarders(
 		}
 		return delegate;
 	};
-	for (const name of ["sessionManager", "settingsManager"] as const) {
+	for (const name of ["settingsManager"] as const) {
 		Object.defineProperty(target, name, {
 			configurable: true,
 			enumerable: false,
@@ -3604,11 +3696,13 @@ function installCompatibilityForwarders(
 	});
 }
 
+const agentSessionDelegates = new WeakMap<AgentSession, CanonicalAgentSessionServices>();
+
 export class AgentSession {
 	private readonly delegate: CanonicalAgentSessionServices;
-	declare readonly sessionManager: CanonicalAgentSessionServices["sessionManager"];
 	declare readonly settingsManager: CanonicalAgentSessionServices["settingsManager"];
 	declare readonly agent: CanonicalAgentSessionServices["agent"];
+	declare readonly sessionRead: CanonicalAgentSessionServices["sessionRead"];
 	declare readonly modelRuntime: CanonicalAgentSessionServices["modelRuntime"];
 	declare readonly modelBroker: CanonicalAgentSessionServices["modelBroker"];
 	declare readonly modelBrokerConfigRevision: CanonicalAgentSessionServices["modelBrokerConfigRevision"];
@@ -3677,6 +3771,7 @@ export class AgentSession {
 	declare readonly getContextUsage: CanonicalAgentSessionServices["getContextUsage"];
 	declare readonly getLastAssistantText: CanonicalAgentSessionServices["getLastAssistantText"];
 	declare readonly setSessionName: CanonicalAgentSessionServices["setSessionName"];
+	declare readonly setSessionLabel: CanonicalAgentSessionServices["setSessionLabel"];
 	declare readonly createReplacedSessionContext: CanonicalAgentSessionServices["createReplacedSessionContext"];
 	declare readonly bindExtensions: CanonicalAgentSessionServices["bindExtensions"];
 	declare readonly getLastContextSnapshotId: CanonicalAgentSessionServices["getLastContextSnapshotId"];
@@ -3722,7 +3817,6 @@ export class AgentSession {
 	declare readonly executeBash: CanonicalAgentSessionServices["executeBash"];
 	declare readonly recordBashResult: CanonicalAgentSessionServices["recordBashResult"];
 	declare readonly getUserMessagesForForking: CanonicalAgentSessionServices["getUserMessagesForForking"];
-	declare readonly createForkedSession: CanonicalAgentSessionServices["createForkedSession"];
 	declare readonly setPreviousExecutionPolicyBindingIdForNextRun: CanonicalAgentSessionServices["setPreviousExecutionPolicyBindingIdForNextRun"];
 	declare readonly getActiveExecutionPolicyProfile: CanonicalAgentSessionServices["getActiveExecutionPolicyProfile"];
 	declare readonly getActiveExecutionPolicyBinding: CanonicalAgentSessionServices["getActiveExecutionPolicyBinding"];
@@ -3748,6 +3842,7 @@ export class AgentSession {
 		if (!(this.delegate instanceof CanonicalAgentSessionServices)) {
 			throw new Error("AgentSession compatibility facade requires canonical services");
 		}
+		agentSessionDelegates.set(this, this.delegate);
 		this.delegate.bindCompatibilityFacade(this);
 	}
 
@@ -3765,6 +3860,53 @@ export class AgentSession {
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		return this.delegate._runAutoCompaction(reason, willRetry);
 	}
+}
+
+/** @internal Materialize a canonical fork without exposing its physical runtime target. */
+export function createAgentSessionForkTarget(
+	session: AgentSession,
+	entryId: string,
+	position: "before" | "at",
+): Promise<AgentSessionForkTarget> {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	return delegate.createForkedSessionTarget(entryId, position);
+}
+
+/** @internal Consume the physical store behind a canonical fork target. */
+export function useAgentSessionForkTarget<TValue>(
+	target: AgentSessionForkTarget,
+	use: (sessionManager: SessionManager) => Promise<TValue>,
+): Promise<TValue> {
+	const sessionManager = agentSessionForkManagers.get(target);
+	if (sessionManager === undefined) throw new Error("AgentSession fork target is not bound to a physical store");
+	return use(sessionManager);
+}
+
+/** @internal Return a read/append adapter whose append path is AgentHarness. */
+export function getAgentSessionLedger(session: AgentSession): AgentSessionLedgerProjection {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	return delegate.sessionLedger;
+}
+
+/** @internal Return the canonical Session without exposing its physical store. */
+export function getAgentCanonicalSession(session: AgentSession): Session<CodingAgentSessionMetadata> {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	return delegate.canonicalSession;
+}
+
+/** @internal Persist SDK bootstrap facts after canonical composition exists. */
+export async function recordInitialAgentSessionConfiguration(
+	session: AgentSession,
+	model: Model<Api> | undefined,
+	thinkingLevel: ThinkingLevel,
+	includeModel: boolean,
+): Promise<void> {
+	const delegate = agentSessionDelegates.get(session);
+	if (delegate === undefined) throw new Error("AgentSession is not bound to canonical services");
+	await delegate.recordInitialSessionConfiguration(model, thinkingLevel, includeModel);
 }
 
 installCompatibilityForwarders(AgentSession.prototype);

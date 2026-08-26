@@ -415,7 +415,7 @@ export default function presetExtension(agent: ExtensionAPI) {
 		}
 
 		// Restore preset from session state
-		const entries = ctx.sessionManager.getEntries();
+		const entries = ctx.session.getEntries();
 		const presetEntry = entries
 			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "preset-state")
 			.pop() as { data?: { name: string } } | undefined;

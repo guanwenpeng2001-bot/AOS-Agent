@@ -18,7 +18,7 @@ export default function (agent: ExtensionAPI) {
 		}
 
 		// Find the last assistant message for commit context
-		const entries = ctx.sessionManager.getEntries();
+		const entries = ctx.session.getEntries();
 		let lastAssistantText = "";
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];

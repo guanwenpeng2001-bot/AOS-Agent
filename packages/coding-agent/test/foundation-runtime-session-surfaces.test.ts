@@ -1,14 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	Session,
-	type AgentBinding,
-	type AttemptReceipt,
-	type Dispatch,
-	type RunReceipt,
-	type TaskEnvelope,
-	type TaskResult,
+import type {
+	AgentBinding,
+	AttemptReceipt,
+	Dispatch,
+	RunReceipt,
+	TaskEnvelope,
+	TaskResult,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,11 +17,11 @@ import {
 	createRuntimeSessionSurfaceAdapter,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 function settledResponse(text: string): AssistantMessage {
@@ -120,10 +119,10 @@ describe("Foundation RuntimeSession public surfaces", () => {
 			modelRuntime,
 			resourceLoader,
 			settingsManager,
-			sessionManager: SessionManager.inMemory(cwd),
+			session: { mode: "memory" },
 			noTools: "all",
 		});
-		const durableSession = new Session(new SessionManagerStorage(result.session.sessionManager));
+		const durableSession = getAgentCanonicalSession(result.session);
 
 		const latestFact = async <T>(objectType: string): Promise<T> => {
 			const records = await durableSession.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" });
@@ -159,7 +158,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 				const runId = `surface-${surface}`;
 				await adapter.prompt(`prompt from ${surface}`, { runId });
 				const canonical = canonicalBusinessTerminal(await assertLatestChain(surface));
-				const audit = new ExecutionAuditQuery(result.session.sessionManager).replay(runId).run;
+				const audit = new ExecutionAuditQuery(getAgentSessionLedger(result.session)).replay(runId).run;
 				expect(auditBusinessTerminal(audit)).toEqual(canonical);
 			}
 
@@ -176,7 +175,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 				const runId = `surface-binding-${mode}`;
 				await result.session.prompt(`prompt from ${mode} binding`, { runId });
 				const canonical = canonicalBusinessTerminal(await assertLatestChain(surface));
-				const audit = new ExecutionAuditQuery(result.session.sessionManager).replay(runId).run;
+				const audit = new ExecutionAuditQuery(getAgentSessionLedger(result.session)).replay(runId).run;
 				expect(auditBusinessTerminal(audit)).toEqual(canonical);
 			}
 		} finally {
@@ -219,7 +218,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 				modelRuntime,
 				resourceLoader,
 				settingsManager,
-				sessionManager: SessionManager.inMemory(cwd),
+				session: { mode: "memory" },
 				noTools: "all",
 			});
 		};
@@ -227,8 +226,8 @@ describe("Foundation RuntimeSession public surfaces", () => {
 		const tui = await createSurfaceSession();
 		const runId = "surface-parity";
 
-		const readSurface = async (sessionManager: SessionManager, expectedSurface: "sdk" | "tui") => {
-			const durable = new Session(new SessionManagerStorage(sessionManager));
+		const readSurface = async (agentSession: AgentSession, expectedSurface: "sdk" | "tui") => {
+			const durable = getAgentCanonicalSession(agentSession);
 			const latestFact = async <T>(objectType: string): Promise<T> => {
 				const records = await durable.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" });
 				const record = records.at(-1);
@@ -238,7 +237,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 			const ingress = await latestFact<{ readonly surface: string }>("coding_agent.product_prompt_ingress");
 			const receipt = await latestFact<RunReceipt>("run_receipt");
 			const canonical = canonicalBusinessTerminal(receipt);
-			const audit = new ExecutionAuditQuery(sessionManager).replay(runId).run;
+			const audit = new ExecutionAuditQuery(getAgentSessionLedger(agentSession)).replay(runId).run;
 			expect(ingress.surface).toBe(expectedSurface);
 			expect(auditBusinessTerminal(audit)).toEqual(canonical);
 			return canonical;
@@ -249,8 +248,8 @@ describe("Foundation RuntimeSession public surfaces", () => {
 			await tui.session.bindExtensions({ mode: "tui" });
 			await tui.session.prompt("same prompt", { runId });
 
-			const sdkView = await readSurface(sdk.session.sessionManager, "sdk");
-			const tuiView = await readSurface(tui.session.sessionManager, "tui");
+			const sdkView = await readSurface(sdk.session, "sdk");
+			const tuiView = await readSurface(tui.session, "tui");
 			expect(tuiView).toEqual(sdkView);
 		} finally {
 			sdk.session.dispose();

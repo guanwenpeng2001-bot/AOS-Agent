@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@aos-agent/agent-core";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@aos-agent/ai";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
 	appendFileSync,
 	closeSync,
@@ -395,7 +395,10 @@ function generateId(byId: { has(id: string): boolean }): string {
 /** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */
 function migrateV1ToV2(entries: FileEntry[]): void {
 	const ids = new Set<string>();
+	const header = entries.find((entry): entry is SessionHeader => entry.type === "session");
+	if (header === undefined) throw new Error("Session migration requires a header");
 	let prevId: string | null = null;
+	let entryIndex = 0;
 
 	for (const entry of entries) {
 		if (entry.type === "session") {
@@ -403,9 +406,23 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 			continue;
 		}
 
-		entry.id = generateId(ids);
+		entryIndex += 1;
+		const digest = createHash("sha256")
+			.update(JSON.stringify({ schemaVersion: 1, sessionId: header.id, index: entryIndex, entry }))
+			.digest("hex");
+		let id: string | undefined;
+		for (let offset = 0; offset <= digest.length - 8; offset += 8) {
+			const candidate = digest.slice(offset, offset + 8);
+			if (!ids.has(candidate)) {
+				id = candidate;
+				break;
+			}
+		}
+		if (id === undefined) throw new Error("Session migration entry id digest collision");
+		entry.id = id;
 		entry.parentId = prevId;
 		prevId = entry.id;
+		ids.add(entry.id);
 
 		// Convert firstKeptEntryIndex to firstKeptEntryId for compaction
 		if (entry.type === "compaction") {

@@ -18,11 +18,11 @@ import {
 	type FoundationError,
 	LayeredResultSettlement,
 	type Result as ResultValue,
-	Session,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
 import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
@@ -111,6 +111,7 @@ import {
 	isTerminalStatus,
 	redactAutomationError,
 	redactErrorText,
+	RUN_LEDGER_CUSTOM_TYPE,
 	serializePublicAutomationError,
 	serializePublicCapabilityBinding,
 	serializePublicContextDrift,
@@ -123,7 +124,6 @@ import {
 	serializePublicSessionTreeNode,
 } from "../../core/run-lifecycle.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
-import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
@@ -654,7 +654,11 @@ function toRpcMcpAttachmentReceipt(attachment: McpAttachment): RpcMcpAttachmentR
  */
 function loadReadOnlyRunCoordinator(
 	sessionPath: string,
-): { sessionId: string; coordinator?: RunLifecycleCoordinator } | undefined {
+): {
+	sessionId: string;
+	coordinator: RunLifecycleCoordinator;
+	getRunByClientRequestId(clientRequestId: string, scope: "start" | "resume"): RunRequestLookup | undefined;
+} | undefined {
 	let fileEntries: ReturnType<typeof loadEntriesFromFile>;
 	try {
 		fileEntries = loadEntriesFromFile(sessionPath);
@@ -681,7 +685,48 @@ function loadReadOnlyRunCoordinator(
 	// Force the complete canonical/legacy fold before returning a coordinator.
 	// Conflicts propagate to run.resume instead of degrading to path idempotency.
 	coordinator.rebuildIndex();
-	return { sessionId: header.id, coordinator };
+	return {
+		sessionId: header.id,
+		coordinator,
+		getRunByClientRequestId: (clientRequestId, scope) => {
+			for (const entry of sessionEntries) {
+				if (
+					entry.type !== "custom" ||
+					entry.customType !== "__aos.foundation.entry.v1" ||
+					typeof entry.data !== "object" ||
+					entry.data === null ||
+					!("entry" in entry.data) ||
+					typeof entry.data.entry !== "object" ||
+					entry.data.entry === null
+				) continue;
+				const projected = entry.data.entry as Record<string, unknown>;
+				if (
+					projected.type !== "custom" ||
+					projected.customType !== RUN_LEDGER_CUSTOM_TYPE ||
+					typeof projected.data !== "object" ||
+					projected.data === null
+				) continue;
+				const envelope = projected.data as Record<string, unknown>;
+				if (envelope.kind !== "accepted" || typeof envelope.record !== "object" || envelope.record === null) continue;
+				const record = envelope.record as Record<string, unknown>;
+				if (
+					record.clientRequestId !== clientRequestId ||
+					record.requestScope !== scope ||
+					typeof record.requestFingerprint !== "string" ||
+					typeof record.id !== "string"
+				) continue;
+				const result = coordinator.getRun(record.id);
+				if (result === undefined) continue;
+				return {
+					clientRequestId,
+					scope,
+					fingerprint: record.requestFingerprint,
+					result,
+				};
+			}
+			return undefined;
+		},
+	};
 }
 
 function hashResumeTargetPath(sessionPath: string): string {
@@ -1543,7 +1588,7 @@ export class RpcHostController {
 		 */
 		const rebuildAutomationStores = (): void => {
 			taskCredentialService = session.getTaskCredentialService?.();
-			coordinator = createRunLifecycleCoordinator(session.sessionManager, {
+			coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session), {
 				credentialHooks: {
 					onRunTerminal: (runId, receipt) => {
 						taskCredentialService?.onRunTerminal({
@@ -1562,7 +1607,7 @@ export class RpcHostController {
 					},
 				},
 			});
-			taskGateStore = createTaskGateStore(session.sessionManager, {
+			taskGateStore = createTaskGateStore(getAgentSessionLedger(session), {
 				onGateInvalidated: (gate) => {
 					taskCredentialService?.onGateInvalidated({
 						taskId: gate.taskId,
@@ -1573,7 +1618,7 @@ export class RpcHostController {
 				},
 			});
 			taskGraphStore = createTaskGraphStore(
-				session.sessionManager,
+				getAgentSessionLedger(session),
 				{
 					get: (runId) => {
 						const result = coordinator?.getRun(runId);
@@ -2104,8 +2149,7 @@ export class RpcHostController {
 		};
 
 		const readCanonicalRun = async (runId: RunId): Promise<CanonicalRunResult | undefined> => {
-			const storage = createSessionManagerStorage(session.sessionManager);
-			const settlement = new LayeredResultSettlement(new Session(storage));
+			const settlement = new LayeredResultSettlement(getAgentCanonicalSession(session));
 			try {
 				const lookup = await settlement.lookupCanonicalRun(runId);
 				if (!lookup.ok) throw lookup.error;
@@ -2131,7 +2175,7 @@ export class RpcHostController {
 				// non-terminal and recovery reports it interrupted.
 				if (activeHandle === handle) {
 					activeHandle = undefined;
-					coordinator = createRunLifecycleCoordinator(session.sessionManager);
+					coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
 				}
 				clearRunDeadline(handle.runId);
 				runPromptPromises.delete(handle.runId);
@@ -2226,7 +2270,7 @@ export class RpcHostController {
 			let operationLedgerFailed = false;
 			const remoteHandle = startRemoteOperation(createExternalAgentRemoteInvoker(adapterRun), remoteRequest, {
 				signal: deadlineSignal,
-				ledger: createSessionRemoteOperationLedger(session.sessionManager),
+				ledger: createSessionRemoteOperationLedger(getAgentSessionLedger(session)),
 				now: () => new Date().toISOString(),
 				onLedgerError: () => {
 					operationLedgerFailed = true;
@@ -2717,7 +2761,7 @@ export class RpcHostController {
 				// id is derived from descriptor id + revision + profile, so id equality is
 				// the drift check. Rejection happens before session.prompt/accept, so no
 				// accepted/terminal ledger write occurs.
-				const knownBindings = foldCapabilityBindingEntries(session.sessionManager.getEntries());
+				const knownBindings = foldCapabilityBindingEntries(session.sessionRead.getEntries());
 				if (knownBindings.get(previousBindingId) === undefined) {
 					activeReservation = undefined;
 					try {
@@ -2893,7 +2937,7 @@ export class RpcHostController {
 					// event carries a placeholder external ref.
 					activeReservation = undefined;
 					activeHandle = undefined;
-					coordinator = createRunLifecycleCoordinator(session.sessionManager);
+					coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
 					externalRuns.delete(proposedRunId);
 					void externalAdapterRun?.cancel().catch(() => {
 						// The driver retries idempotently.
@@ -3435,7 +3479,7 @@ export class RpcHostController {
 								// The accepted fact was durable but the started fact was not. Discard
 								// the live coordinator so this failed start cannot retain Session
 								// ownership; its ledger record is replayed as interrupted if recovered.
-								coordinator = createRunLifecycleCoordinator(session.sessionManager);
+								coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(session));
 							}
 							const response = automationError(id, commandType, asAutomationError(err));
 							output(response);
@@ -4380,7 +4424,7 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(session.sessionManager).query(query) satisfies AuditQueryData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(session)).query(query) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.query", auditCommandError(err, "audit_query_invalid"));
@@ -4403,7 +4447,7 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(session.sessionManager).replay(query) satisfies AuditReplayData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(session)).replay(query) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
@@ -5332,7 +5376,10 @@ export class RpcHostController {
 							let resumeClaim: RunRequestIdentity | undefined;
 							if (resumeIdentity !== undefined) {
 								const gate = beginRunRequest(id, "run.resume", resumeIdentity, () =>
-									targetLedger?.coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
+										targetSessionId === session.sessionId
+											? coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume") ??
+												targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume")
+											: targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
 								);
 								if (gate.kind === "response") return gate.response;
 								if (gate.kind === "pending") return undefined;
@@ -5454,7 +5501,7 @@ export class RpcHostController {
 							const inheritedModelBinding =
 								previousModelBindingId === undefined
 									? undefined
-									: foldModelBrokerLedger(session.sessionManager.getEntries()).bindings.get(
+									: foldModelBrokerLedger(session.sessionRead.getEntries()).bindings.get(
 											previousModelBindingId,
 										);
 							return startRun(
@@ -5660,7 +5707,7 @@ export class RpcHostController {
 								type: "user_bash",
 								command: command.command,
 								excludeFromContext: command.excludeFromContext ?? false,
-								cwd: session.sessionManager.getCwd(),
+								cwd: session.sessionRead.getCwd(),
 							})
 						: undefined;
 
@@ -5707,7 +5754,7 @@ export class RpcHostController {
 				case "get_capabilities": {
 					// Ordinary read-only inspection: no Automation Host initialize is
 					// required, and only public-safe metadata is ever returned.
-					const history = foldCapabilityBindingEntries(session.sessionManager.getEntries());
+					const history = foldCapabilityBindingEntries(session.sessionRead.getEntries());
 					const current = session.getActiveCapabilityBinding();
 					if (command.bindingId !== undefined) {
 						const found = history.get(command.bindingId);
@@ -6010,7 +6057,7 @@ export class RpcHostController {
 				}
 
 				case "clone": {
-					const leafId = session.sessionManager.getLeafId();
+					const leafId = session.sessionRead.getLeafId();
 					if (!leafId) {
 						return error(id, "clone", "Cannot clone session: no current entry selected");
 					}
@@ -6027,8 +6074,8 @@ export class RpcHostController {
 				}
 
 				case "get_entries": {
-					const sessionManager = session.sessionManager;
-					let entries = sessionManager.getEntries();
+					const sessionRead = session.sessionRead;
+					let entries = sessionRead.getEntries();
 					if (command.since !== undefined) {
 						const sinceIndex = entries.findIndex((e) => e.id === command.since);
 						if (sinceIndex === -1) {
@@ -6038,15 +6085,15 @@ export class RpcHostController {
 					}
 					return success(id, "get_entries", {
 						entries: entries.map((entry) => serializePublicSessionEntry(entry)),
-						leafId: sessionManager.getLeafId(),
+						leafId: sessionRead.getLeafId(),
 					});
 				}
 
 				case "get_tree": {
-					const sessionManager = session.sessionManager;
+					const sessionRead = session.sessionRead;
 					return success(id, "get_tree", {
-						tree: sessionManager.getTree().map((node) => serializePublicSessionTreeNode(node)),
-						leafId: sessionManager.getLeafId(),
+						tree: sessionRead.getTree().map((node) => serializePublicSessionTreeNode(node)),
+						leafId: sessionRead.getLeafId(),
 					});
 				}
 

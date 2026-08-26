@@ -16,7 +16,7 @@ export default function (agent: ExtensionAPI) {
 			const label = args.trim() || `bookmark-${Date.now()}`;
 
 			// Find the last assistant message entry
-			const entries = ctx.sessionManager.getEntries();
+			const entries = ctx.session.getEntries();
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const entry = entries[i];
 				if (entry.type === "message" && entry.message.role === "assistant") {
@@ -34,10 +34,10 @@ export default function (agent: ExtensionAPI) {
 	agent.registerCommand("unbookmark", {
 		description: "Remove bookmark from last labeled entry",
 		handler: async (_args, ctx) => {
-			const entries = ctx.sessionManager.getEntries();
+			const entries = ctx.session.getEntries();
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const entry = entries[i];
-				const label = ctx.sessionManager.getLabel(entry.id);
+				const label = ctx.session.getLabel(entry.id);
 				if (label) {
 					agent.setLabel(entry.id, undefined);
 					ctx.ui.notify(`Removed bookmark: ${label}`, "info");

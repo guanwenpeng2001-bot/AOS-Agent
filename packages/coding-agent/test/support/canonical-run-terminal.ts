@@ -57,11 +57,14 @@ function errorCode(options: CanonicalTerminalOptions): string | undefined {
  * never creates the retired private `automation.run` terminal fact.
  */
 export async function writeCanonicalRunResult(
-	sessionManager: SessionManager,
+	sessionSource: Session | SessionManager,
 	runId: string,
 	options: CanonicalTerminalOptions,
 ): Promise<CanonicalRunResult> {
-	const sessionId = sessionManager.getSessionId();
+	const session = sessionSource instanceof Session
+		? sessionSource
+		: new Session(createSessionManagerStorage(sessionSource));
+	const sessionId = (await session.getMetadata()).id;
 	const suffix = fixtureSuffix(runId);
 	const taskId = `task-${suffix}`;
 	const goalId = `goal-${suffix}`;
@@ -141,8 +144,8 @@ export async function writeCanonicalRunResult(
 		startedAt: completedAt,
 		completedAt,
 	};
-	const session = new Session(createSessionManagerStorage(sessionManager));
-	const ledger = new SessionLedger(session, { ownerId: `canonical-run-seed-${suffix}` });
+	const ownerId = (await session.getWriterLease())?.ownerId ?? `canonical-run-seed-${suffix}`;
+	const ledger = new SessionLedger(session, { ownerId });
 	try {
 		await ledger.appendFact("task", taskId, task, {
 			clientRequestId: `canonical-run:task:${suffix}`,
@@ -170,7 +173,7 @@ export async function writeCanonicalRunResult(
 		await ledger.release();
 	}
 
-	const settlement = new LayeredResultSettlement(session, { ownerId: `canonical-run-settlement-${suffix}` });
+	const settlement = new LayeredResultSettlement(session, { ownerId });
 	try {
 		const taskResult = await settlement.settle({
 			taskResultId,
@@ -223,10 +226,10 @@ export async function writeCanonicalRunResult(
 
 /** Write the Foundation result and project it through the Automation observer. */
 export async function observeCanonicalTerminal(
-	sessionManager: SessionManager,
+	session: Session | SessionManager,
 	run: RunHandle,
 	options: CanonicalTerminalOptions,
 ): Promise<ObservedCanonicalTerminal> {
-	const canonical = await writeCanonicalRunResult(sessionManager, run.runId, options);
+	const canonical = await writeCanonicalRunResult(session, run.runId, options);
 	return { canonical, event: run.observeCanonicalResult(canonical) };
 }

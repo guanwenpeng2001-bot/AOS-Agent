@@ -4,11 +4,11 @@
  * Configure provider auth through ModelRuntime.
  */
 
-import { createAgentSession, ModelRuntime, SessionManager } from "aos-agent";
+import { createAgentSession, ModelRuntime } from "aos-agent";
 
 const modelRuntime = await ModelRuntime.create();
 const { session: defaultAuthSession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 	modelRuntime,
 });
 console.log("Session with default model runtime");
@@ -19,7 +19,7 @@ const customRuntime = await ModelRuntime.create({
 	modelsPath: "/tmp/my-app/models.json",
 });
 const { session: customAuthSession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 	modelRuntime: customRuntime,
 });
 console.log("Session with custom auth and models locations");
@@ -27,7 +27,7 @@ customAuthSession.dispose();
 
 await modelRuntime.setRuntimeApiKey("anthropic", "sk-my-temp-key");
 const { session: runtimeKeySession } = await createAgentSession({
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 	modelRuntime,
 });
 console.log("Session with runtime API key override");

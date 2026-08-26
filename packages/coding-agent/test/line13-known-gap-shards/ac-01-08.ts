@@ -15,7 +15,6 @@ import * as codingAgentEntry from "../../src/index.ts";
 import {
 	createAgentSession,
 	createAgentSessionFromServices,
-	createAgentSessionRuntime,
 	createAgentSessionServices,
 	type createAgentSessionWithTrustedScheduler,
 	createExternalAgentAdapterRegistry,
@@ -39,6 +38,7 @@ import {
 	type ExternalAgentTarget,
 } from "../../src/index.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { createAgentSessionRuntimeFromManager } from "../../src/core/agent-session-runtime.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { createRunLifecycleCoordinator, type RunHandle, type RunResult } from "../../src/core/run-lifecycle.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -212,7 +212,7 @@ async function createRpcProductFixture(options: {
 		});
 		return { ...created, services, diagnostics: services.diagnostics };
 	};
-	const runtime = await createAgentSessionRuntime(createRuntime, {
+	const runtime = await createAgentSessionRuntimeFromManager(createRuntime, {
 		cwd,
 		agentDir: cwd,
 		sessionManager,
@@ -230,7 +230,7 @@ async function createRpcProductFixture(options: {
 		adapter,
 		reopen: async () => {
 			await activeController.shutdown();
-			const reopenedRuntime = await createAgentSessionRuntime(createRuntime, {
+			const reopenedRuntime = await createAgentSessionRuntimeFromManager(createRuntime, {
 				cwd,
 				agentDir: cwd,
 				sessionManager,
@@ -382,7 +382,7 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 		codingAgentEntry.createAgentSessionRuntime(createRuntime, {
 			cwd,
 			agentDir: cwd,
-			sessionManager: SessionManager.inMemory(cwd, { id }),
+			session: { mode: "memory", id },
 		});
 
 	const mainRuntime = await createSurfaceRuntime("line13-main-surface");

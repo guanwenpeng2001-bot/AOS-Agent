@@ -107,7 +107,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			session: { mode: "new" },
 		});
 		await runtime.session.bindExtensions({});
 
@@ -151,7 +151,7 @@ describe("AgentSessionRuntime characterization", () => {
 		}
 		expect(sessionAssistant.usage.cost.total).toBe(0.123);
 
-		const persistedAssistant = runtime.session.sessionManager
+		const persistedAssistant = runtime.session.sessionRead
 			.getEntries()
 			.filter((entry) => entry.type === "message")
 			.map((entry) => entry.message)
@@ -344,7 +344,7 @@ describe("AgentSessionRuntime characterization", () => {
 	it("reports why an unflushed session cannot be forked", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		const sessionFile = runtime.session.sessionFile;
-		const leafId = runtime.session.sessionManager.getLeafId();
+		const leafId = runtime.session.sessionRead.getLeafId();
 		expect(sessionFile).toBeDefined();
 		expect(existsSync(sessionFile!)).toBe(false);
 		expect(leafId).toBeTruthy();
@@ -372,7 +372,7 @@ describe("AgentSessionRuntime characterization", () => {
 					: undefined,
 		}));
 		const previousSessionFile = runtime.session.sessionFile;
-		const leafId = runtime.session.sessionManager.getLeafId();
+		const leafId = runtime.session.sessionRead.getLeafId();
 		expect(leafId).toBeTruthy();
 
 		const result = await runtime.fork(leafId!, { position: "at" });
@@ -457,7 +457,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.inMemory(tempDir),
+			session: { mode: "memory" },
 		});
 		await runtime.session.bindExtensions({});
 		cleanups.push(async () => {
@@ -483,7 +483,7 @@ describe("AgentSessionRuntime characterization", () => {
 								.join("")
 					: undefined,
 		}));
-		const leafId = runtime.session.sessionManager.getLeafId();
+		const leafId = runtime.session.sessionRead.getLeafId();
 		expect(leafId).toBeTruthy();
 		expect(runtime.session.sessionFile).toBeUndefined();
 
@@ -569,7 +569,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: secondDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(secondDir),
+			session: { mode: "new" },
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
@@ -579,7 +579,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 		await runtime.switchSession(otherSessionFile);
 
-		expect(realpathSync(runtime.session.sessionManager.getCwd())).toBe(realpathSync(secondDir));
+		expect(realpathSync(runtime.session.sessionRead.getCwd())).toBe(realpathSync(secondDir));
 		expect(realpathSync(runtime.cwd)).toBe(realpathSync(secondDir));
 	});
 
@@ -642,7 +642,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: otherDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(otherDir),
+			session: { mode: "new" },
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();

@@ -11,7 +11,6 @@ import {
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
 import type {
 	ExtensionFactory,
 	SessionBeforeForkEvent,
@@ -97,7 +96,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const runtimeHost = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			session: { mode: "new" },
 		});
 		await runtimeHost.session.bindExtensions({});
 
@@ -190,7 +189,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const oldSession = runtimeHost.session;
 		runtimeHost.setBeforeSessionInvalidate(() => {
 			phases.push("beforeSessionInvalidate");
-			expect(oldSession.extensionRunner.createContext().cwd).toBe(oldSession.sessionManager.getCwd());
+			expect(oldSession.extensionRunner.createContext().cwd).toBe(oldSession.sessionRead.getCwd());
 		});
 		runtimeHost.setRebindSession(async () => {
 			phases.push("rebindSession");

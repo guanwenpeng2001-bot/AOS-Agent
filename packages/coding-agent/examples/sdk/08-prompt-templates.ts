@@ -10,7 +10,6 @@ import {
 	DefaultResourceLoader,
 	getAgentDir,
 	type PromptTemplate,
-	SessionManager,
 } from "aos-agent";
 
 // Define custom templates
@@ -45,7 +44,7 @@ for (const template of discovered) {
 
 const { session } = await createAgentSession({
 	resourceLoader: loader,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 console.log(`Session created with ${discovered.length + 1} prompt templates`);
 session.dispose();
