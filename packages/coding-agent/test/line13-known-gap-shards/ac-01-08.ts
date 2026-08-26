@@ -5,8 +5,20 @@ import { join } from "node:path";
 import {
 	InMemorySessionStorage,
 	LayeredResultSettlement,
+	FoundationError,
+	Result,
 	Session,
+	SessionLedger,
+	SessionT5Ledger,
+	createAttempt,
+	createConnectorCapabilitySnapshot,
+	validateAttemptReceiptForProvider,
 	type AgentBinding,
+	type Attempt,
+	type Dispatch,
+	type ExternalAgentConnector,
+	type FoundationProviderExecutionOptions,
+	type TaskExecutorAttemptContext,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
@@ -15,27 +27,24 @@ import {
 	createAgentSession,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-	createExternalAgentAdapterRegistry,
-	createExternalAgentPreparedBinding,
+	createExternalConnectorRegistry,
+	executeExternalConnectorProductRun,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
-	serializeExternalAgentInput,
 	type CreateAgentSessionRuntimeFactory,
-	type ExternalAgentAdapter,
-	type ExternalAgentAdapterRegistry,
-	type ExternalAgentBindingMode,
-	type ExternalAgentCapabilityFlags,
-	type ExternalAgentCapabilitySnapshot,
-	type ExternalAgentExecutionContext,
-	type ExternalAgentHandle,
-	type ExternalAgentInput,
-	type ExternalAgentPrepareRequest,
-	type ExternalAgentPreparedBinding,
-	type ExternalAgentProbeContext,
-	type ExternalAgentStartRequest,
-	type ExternalAgentTarget,
+	type ExternalConnectorRegistry,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
+import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorDriverSpawnRequest,
+	ExternalConnectorDriverWriteRequest,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../../src/core/vendor-drivers/types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { createAgentSessionRuntimeFromManager } from "../../src/core/agent-session-runtime.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
@@ -56,109 +65,73 @@ import {
 	defineLine13ResolvedCase,
 	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
+import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
 
 const NOW = "2026-08-25T00:00:00.000Z";
 const LATER = "2026-08-25T00:06:00.000Z";
 
-interface ExternalAdapterTrace {
-	probeCalls: number;
-	prepareCalls: number;
-	startCalls: number;
-	inputs: ExternalAgentInput[];
-}
 
-interface ExternalAdapterHarness {
-	readonly adapter: ExternalAgentAdapter;
-	readonly trace: ExternalAdapterTrace;
-}
+class Line13CurrentDriver implements ExternalConnectorVendorDriver {
+	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: "line13-current-session",
+			externalTurnId: "line13-current-turn",
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
+	}
 
-interface ExternalAdapterOptions {
-	readonly resume?: boolean;
-	readonly toolGateway?: boolean;
-	readonly bindingMode?: ExternalAgentBindingMode;
-}
+	events(): AsyncIterable<never> {
+		return {
+			[Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+		};
+	}
 
-function createExternalAdapterHarness(options: ExternalAdapterOptions = {}): ExternalAdapterHarness {
-	const trace: ExternalAdapterTrace = { probeCalls: 0, prepareCalls: 0, startCalls: 0, inputs: [] };
-	const capabilities: ExternalAgentCapabilityFlags = {
-		start: true,
-		events: "metadata",
-		cancel: "strong",
-		receipt: "terminal",
-		resume: options.resume ?? false,
-		artifacts: true,
-		toolGateway: options.toolGateway ?? false,
-	};
-	const external = { namespace: "line13-connector", externalSessionId: "external-session-1" } as const;
-	const adapter: ExternalAgentAdapter = {
-		id: "line13-connector",
-		async probe(
-			target: ExternalAgentTarget,
-			_context: ExternalAgentProbeContext,
-		): Promise<ExternalAgentCapabilitySnapshot> {
-			trace.probeCalls += 1;
-			return {
-				schemaVersion: 1,
-				adapterId: "line13-connector",
-				targetId: target.targetId,
-				protocol: { name: "line13-test", version: "1" },
-				status: "ready",
-				capabilities,
-				observedAt: NOW,
-			};
-		},
-		async prepare(
-			request: ExternalAgentPrepareRequest,
-			snapshot: ExternalAgentCapabilitySnapshot,
-		): Promise<ExternalAgentPreparedBinding> {
-			trace.prepareCalls += 1;
-			return createExternalAgentPreparedBinding(request, snapshot, {
-				bindingMode: options.bindingMode ?? "reference-only",
-			});
-		},
-		async start(
-			request: ExternalAgentStartRequest,
-			_context: ExternalAgentExecutionContext,
-		): Promise<ExternalAgentHandle> {
-			trace.startCalls += 1;
-			trace.inputs.push(request.input);
-			return {
-				external,
-				events: {
-					[Symbol.asyncIterator](): AsyncIterator<never> {
-						return {
-							next: async () => ({ done: true, value: undefined }),
-						};
-					},
-				},
-				receipt: Promise.resolve({
-					schemaVersion: 1,
-					external,
-					status: "completed",
-					endedAt: NOW,
-					artifactRefs: [],
-					sideEffects: "none",
-				}),
-				cancel: async () => {},
-				heartbeat: async () => ({ leaseId: "line13-lease", expiresAt: LATER }),
-			};
-		},
-	};
-	return { adapter, trace };
+	async connect(): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: "line13-current-session",
+			externalTurnId: "line13-current-turn",
+			supervisorRef: "line13-current-supervisor",
+			operationNonce: "line13-operation-nonce",
+		};
+	}
+
+	async lookup(): Promise<ExternalConnectorDriverLookup> { return { status: "missing" }; }
+
+	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		return {
+			externalSessionId: handle.externalSessionId,
+			externalTurnId: handle.externalTurnId,
+			operationNonce: handle.operationNonce,
+			status: "succeeded",
+			artifacts: [],
+			sideEffectState: "none",
+			producedAt: NOW,
+		};
+	}
+
+	async write(_handle: ExternalConnectorDriverHandle, _request: ExternalConnectorDriverWriteRequest): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<ExternalConnectorTerminalEvidence | undefined> { return undefined; }
+	async dispose(): Promise<void> {}
 }
 
 interface RpcProductFixture {
 	readonly controller: RpcHostController;
 	readonly records: RpcHostOutputRecord[];
 	readonly sessionManager: SessionManager;
-	readonly adapter: ExternalAdapterHarness;
+	readonly externalConnectorSelection: {
+		readonly providerId: string;
+		readonly revision: number;
+		readonly capabilitySnapshotDigest: { readonly algorithm: "sha256"; readonly value: string };
+	};
 	readonly reopen: () => Promise<RpcHostController>;
 	readonly cleanup: () => Promise<void>;
 }
 
 async function createRpcProductFixture(options: {
 	readonly withModel: boolean;
-	readonly adapter?: ExternalAdapterOptions;
+	readonly modelAccess?: "none" | "agent_owned";
 }): Promise<RpcProductFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-rpc-"));
 	const faux = options.withModel ? registerFauxProvider() : undefined;
@@ -177,13 +150,41 @@ async function createRpcProductFixture(options: {
 		});
 	}
 	const settingsManager = SettingsManager.inMemory();
-	const adapters: ExternalAdapterHarness[] = [];
+	const currentSnapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: "line13-current-connector",
+		revision: 1,
+		protocol: { name: "line13-current", version: "1" },
+		modelAccess: options.modelAccess ?? "agent_owned",
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
+	});
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		externalAgentRegistry: () => {
-			const adapter = createExternalAdapterHarness(options.adapter);
-			adapters.push(adapter);
-			const registry = createExternalAgentAdapterRegistry();
-			registry.register(adapter.adapter, { targets: ["target-1"] });
+			externalConnectorRegistry: (context) => {
+			const registry = createExternalConnectorRegistry();
+			const connector = createDurableExternalAgentConnector({
+				providerId: currentSnapshot.providerId,
+				capability: currentSnapshot,
+				store: new SessionExternalConnectorDurableStore(new SessionLedger(context.session, { writer: context.harness.t5.writer })),
+				driver: new Line13CurrentDriver(),
+				supervision: createExternalConnectorTestSupervision().options,
+				now: () => NOW,
+				operationNonce: () => "line13-operation-nonce",
+			});
+			const registered = registry.registerPrepared({
+				descriptor: {
+					schemaVersion: 1,
+					providerId: currentSnapshot.providerId,
+					providerClass: "external_connector",
+					revision: currentSnapshot.revision,
+					capabilitySnapshotDigest: currentSnapshot.digest,
+				},
+				connector,
+				trusted: true,
+			}, currentSnapshot);
+			if (!registered.ok) throw registered.error;
 			return registry;
 		},
 	});
@@ -225,8 +226,6 @@ async function createRpcProductFixture(options: {
 		agentDir: cwd,
 		sessionManager,
 	});
-	const adapter = adapters[0];
-	if (adapter === undefined) throw new Error("Expected the initial External Agent adapter composition");
 	const records: RpcHostOutputRecord[] = [];
 	const controller = new RpcHostController(runtime, {
 		output: { publish: (record) => records.push(record) } as RpcHostOutputSink,
@@ -237,7 +236,11 @@ async function createRpcProductFixture(options: {
 		controller,
 		records,
 		sessionManager,
-		adapter,
+		externalConnectorSelection: {
+			providerId: currentSnapshot.providerId,
+			revision: currentSnapshot.revision,
+			capabilitySnapshotDigest: currentSnapshot.digest,
+		},
 		reopen: async () => {
 			await activeController.shutdown();
 			const reopenedRuntime = await createAgentSessionRuntimeFromManager(createRuntime, {
@@ -319,19 +322,60 @@ interface ProductCompositionEvidence {
 
 interface ProductCompositionFixture {
 	readonly evidence: ProductCompositionEvidence;
-	readonly registries: readonly ExternalAgentAdapterRegistry[];
+	readonly registries: readonly ExternalConnectorRegistry[];
 	readonly cleanup: () => Promise<void>;
+}
+
+function createCompositionConnectorRegistry(): ExternalConnectorRegistry {
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: "line13-connector",
+		revision: 1,
+		protocol: { name: "line13-composition", version: "1" },
+		modelAccess: "none",
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
+	});
+	const unsupported = new FoundationError("unsupported_feature", "composition fixture is discovery-only");
+	const connector: ExternalAgentConnector = {
+		schemaVersion: 1,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector",
+		capabilities: async () => [],
+		dispose: async () => {},
+		probeCapabilities: async () => Result.ok(snapshot),
+		createAttempt: async () => Result.err(unsupported),
+		runAttempt: async () => Result.err(unsupported),
+		cancelAttempt: async () => Result.err(unsupported),
+		resumeAttempt: async () => Result.err(unsupported),
+		reconcileAttempt: async () => Result.err(unsupported),
+	};
+	const registry = createExternalConnectorRegistry();
+	const registered = registry.registerPrepared({
+		descriptor: {
+			schemaVersion: 1,
+			providerId: snapshot.providerId,
+			providerClass: "external_connector",
+			revision: snapshot.revision,
+			capabilitySnapshotDigest: snapshot.digest,
+		},
+		connector,
+		trusted: true,
+	}, snapshot);
+	if (!registered.ok) throw registered.error;
+	return registry;
 }
 
 async function createProductCompositionFixture(): Promise<ProductCompositionFixture> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-services-"));
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 	const settingsManager = SettingsManager.inMemory();
-	const registries: ExternalAgentAdapterRegistry[] = [];
+	const registries: ExternalConnectorRegistry[] = [];
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		externalAgentRegistry: () => {
-			const registry = createExternalAgentAdapterRegistry();
-			registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
+		externalConnectorRegistry: () => {
+			const registry = createCompositionConnectorRegistry();
 			registries.push(registry);
 			return registry;
 		},
@@ -393,8 +437,8 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	const mainHasRegistry =
 		typeof codingAgentEntry.main === "function" &&
 		services.runtimeComposition === runtimeComposition &&
-		mainRuntime.runtimeComposition.externalAgentRegistry === mainRuntime.session.getExternalAgentRegistry() &&
-		mainRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
+		mainRuntime.runtimeComposition.externalConnectorRegistry === mainRuntime.session.getExternalConnectorRegistry() &&
+		mainRuntime.runtimeComposition.externalConnectorRegistry?.list().length === 1;
 	const tuiHasRegistry = mainRuntime.runtimeComposition === mainRuntime.session.agentRuntimeComposition;
 	interactiveMode.stop("transcript");
 
@@ -408,30 +452,30 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	})) as unknown as {
 		readonly success?: boolean;
 		readonly data?: {
-			readonly externalAgentAdapters?: ReadonlyArray<{ readonly adapterId?: string }>;
+			readonly externalConnectors?: ReadonlyArray<{ readonly providerId?: string }>;
 		};
 	};
 
 	const printRuntime = await createSurfaceRuntime("line13-print-surface");
 	const printHasRegistry =
-		printRuntime.runtimeComposition.externalAgentRegistry === printRuntime.session.getExternalAgentRegistry() &&
-		printRuntime.runtimeComposition.externalAgentRegistry?.list().length === 1;
+		printRuntime.runtimeComposition.externalConnectorRegistry === printRuntime.session.getExternalConnectorRegistry() &&
+		printRuntime.runtimeComposition.externalConnectorRegistry?.list().length === 1;
 	const printExitCode = await codingAgentEntry.runPrintMode(printRuntime, { mode: "text" });
 	return {
 			evidence: {
 			sdk:
 				sdk.runtimeComposition === sdk.session.agentRuntimeComposition &&
-				sdk.runtimeComposition.externalAgentRegistry?.list().length === 1,
+				sdk.runtimeComposition.externalConnectorRegistry?.list().length === 1,
 			services:
 				servicesCreated.runtimeComposition === servicesCreated.session.agentRuntimeComposition &&
-				servicesCreated.runtimeComposition.externalAgentRegistry?.list().length === 1,
+				servicesCreated.runtimeComposition.externalConnectorRegistry?.list().length === 1,
 			main: mainHasRegistry,
 			tui: tuiHasRegistry,
 			print: printHasRegistry && printExitCode === 0,
 			rpc:
 				rpcInitialize.success === true &&
-				(rpcInitialize.data?.externalAgentAdapters?.some(
-					(descriptor) => descriptor.adapterId === "line13-connector",
+				(rpcInitialize.data?.externalConnectors?.some(
+					(descriptor) => descriptor.providerId === "line13-connector",
 				) ?? false),
 		},
 		registries,
@@ -598,6 +642,97 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 	};
 }
 
+async function createCurrentConnectorFixture(toolGateway = false) {
+	const session = new Session(new InMemorySessionStorage({ id: `line13-current-${toolGateway}`, createdAt: 1 }));
+	const t5 = new SessionT5Ledger(session, { ownerId: `line13-current-${toolGateway}` });
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: "line13-current-connector",
+		revision: 1,
+		protocol: { name: "line13-fixture", version: "1" },
+		modelAccess: "agent_owned",
+		resume: false,
+		toolGateway,
+		artifacts: false,
+		images: false,
+	});
+	let toolGatewayCalls = 0;
+	const invokeToolGateway = (): void => { toolGatewayCalls += 1; };
+	const connector: ExternalAgentConnector = {
+		schemaVersion: 1,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector",
+		capabilities: async () => [{ schemaVersion: 1, id: "line13.current", version: 1 }],
+		dispose: async () => {},
+		probeCapabilities: async () => Result.ok(snapshot),
+		createAttempt: async (dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) => {
+			if (context === undefined) return Result.err(new FoundationError("binding_epoch_mismatch", "fixture requires epoch"));
+			return createAttempt({
+				attemptId: context.initialBindingEpoch.attemptId,
+				dispatch,
+				providerId: snapshot.providerId,
+				providerClass: "external_connector",
+				initialBindingEpoch: context.initialBindingEpoch,
+			});
+		},
+		runAttempt: async (attempt: Attempt, options?: FoundationProviderExecutionOptions) => {
+			const correlation = options?.correlation;
+			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "fixture requires correlation"));
+			return validateAttemptReceiptForProvider({
+				schemaVersion: 1,
+				attemptReceiptId: `attempt_receipt_${attempt.attemptId}`,
+				taskId: attempt.taskId,
+				dispatchId: attempt.dispatchId,
+				attemptId: attempt.attemptId,
+				providerId: snapshot.providerId,
+				bindingId: attempt.bindingId,
+				bindingEpochIds: attempt.bindingEpochIds,
+				status: "succeeded",
+				workerReceiptRefs: [],
+				artifacts: [],
+				provenance: {
+					producerKind: "external_connector",
+					providerId: snapshot.providerId,
+					producedAt: "2026-08-27T00:00:00.000Z",
+					correlation: { ...correlation, attemptReceiptId: `attempt_receipt_${attempt.attemptId}` },
+				},
+				sideEffectState: "none",
+			}, { providerId: snapshot.providerId, providerClass: "external_connector" });
+		},
+		cancelAttempt: async () => Result.ok(undefined),
+		resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "resume disabled")),
+		reconcileAttempt: async (attempt, options) => connector.runAttempt(attempt, options),
+	};
+	const registry = createExternalConnectorRegistry();
+	const descriptor = {
+		schemaVersion: 1 as const,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector" as const,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+	const registered = await registry.register({
+		descriptor,
+		connector,
+		trusted: true,
+		...(toolGateway ? {
+			capabilityEvidence: {
+				toolGateway: {
+					declaration: { id: "line13.tool-gateway", revision: 1, reachable: true as const },
+					handler: { id: "line13.tool-gateway.handler", invoke: invokeToolGateway },
+				},
+			},
+		} : {}),
+	});
+	if (!registered.ok) throw registered.error;
+	const selection = {
+		providerId: descriptor.providerId,
+		revision: descriptor.revision,
+		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+	};
+	return { session, t5, registry, descriptor, selection, invokeToolGateway, toolGatewayCalls: () => toolGatewayCalls };
+}
+
 export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-01-08",
@@ -708,7 +843,7 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			scenario: {
 				fixture: createProductCompositionFixture,
 				setup: (fixture) => {
-					if (fixture.registries.length < 5 || fixture.registries.some((registry) => registry.list().length !== 1)) {
+					if (fixture.registries.length < 5 || fixture.registries.some((registry) => registry.list().length > 1)) {
 						throw new Error("AC-04 product composition fixture did not create isolated registry descriptors");
 					}
 				},
@@ -727,13 +862,9 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			fullTestName:
 				"Line 13 package root exposes one External Connector contract and excludes protocol placeholders from Native Agent taxonomy",
 			scenario: {
-				fixture: () => {
-					const registry = createExternalAgentAdapterRegistry();
-					registry.register(createExternalAdapterHarness().adapter, { targets: ["target-1"] });
-					return registry;
-				},
-				setup: (registry) => {
-					if (registry.list().length !== 1) throw new Error("AC-02 real registry fixture did not register its adapter");
+				fixture: () => createCurrentConnectorFixture(),
+				setup: (fixture) => {
+					if (fixture.registry.list().length !== 1) throw new Error("AC-02 current registry fixture did not register its Connector");
 				},
 				assertion: () => {
 					const publicEntry = codingAgentEntry as unknown as Readonly<Record<string, unknown>>;
@@ -757,193 +888,136 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-	],
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-03",
-				fullTestName:
-					"Line 13 External RPC work traverses Foundation Task, Attempt, Receipt, TaskResult, and RunReceipt settlement",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T4",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external-connector.foundation-chain",
-					fingerprint: "sha256:2d188bd534a63056d48b4e2a00827621277ff786e1f7507e9b036ad4d24f9f46",
-				},
-			},
-			scenario: {
-				fixture: () => createRpcProductFixture({ withModel: true }),
-				setup: initializeRpc,
-				assertion: async (fixture) => {
-					const started = automationResponseView(
-						await fixture.controller.dispatch({
-							id: "ac03-start",
-							type: "run.start",
-							message: "Traverse the full Foundation settlement chain",
-							externalAgent: { adapterId: "line13-connector", targetId: "target-1" },
-						}),
-					);
-					assert.equal(started.success, true, "AC-03 External RPC run.start must be accepted");
-					const runId = started.data?.runId;
-					assert.equal(typeof runId, "string", "AC-03 External RPC run.start must return a Run id");
-					if (runId === undefined) return;
-					await waitForRpcTerminal(fixture.records, runId);
-					const durableSession = new Session(new SessionManagerStorage(fixture.sessionManager));
-					const objectTypes = new Set(
-						(await durableSession.findFoundationRecords({ includePruned: true, order: "oldestFirst" })).flatMap(
-							(record) => (record.kind === "retention" ? [] : [record.objectType]),
-						),
-					);
-					assert.deepStrictEqual(
-						{
-							task: objectTypes.has("task"),
-							attempt: objectTypes.has("attempt"),
-							attemptReceipt: objectTypes.has("attempt_receipt"),
-							taskResult: objectTypes.has("task_result"),
-							runReceipt: objectTypes.has("run_receipt"),
-						},
-						{ task: true, attempt: true, attemptReceipt: true, taskResult: true, runReceipt: true },
-						"external RPC work must persist the Foundation Task-to-RunReceipt chain",
-					);
-				},
-				cleanup: (fixture) => fixture.cleanup(),
-			},
-		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-05",
-				fullTestName:
-					"Line 13 External Connector input preserves text plus exact image and file reference shapes",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T4",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external-connector.input-shape",
-					fingerprint: "sha256:94a80aadcb7efd92e9fc9eb6c1da93d060398c19a2a782987a2b98dced112ddc",
-				},
-			},
-			scenario: {
-				fixture: async () => ({
-					product: await createRpcProductFixture({ withModel: true }),
-					expectedInput: {
-						message: "Preserve every safe input reference",
-						images: [{ id: "image-line13", mimeType: "image/png", sizeBytes: 1 }],
-						files: [
-							{
-								id: "file-line13",
-								name: "evidence.txt",
-								mimeType: "text/plain",
-								sizeBytes: 512,
-							},
-						],
-					},
-				}),
-				setup: ({ product }) => initializeRpc(product),
-				assertion: async ({ product, expectedInput }) => {
-					const started = automationResponseView(
-						await product.controller.dispatch({
-							id: "ac05-start",
-							type: "run.start",
-							message: expectedInput.message,
-							images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
-							externalAgent: { adapterId: "line13-connector", targetId: "target-1" },
-						}),
-					);
-					const forwarded = product.adapter.trace.inputs[0]?.images;
-					const rejectedBeforeAcceptance = started.success === false && product.adapter.trace.startCalls === 0;
-					const forwardedAsSafeReference =
-						started.success === true &&
-						product.adapter.trace.startCalls === 1 &&
-						forwarded?.length === 1 &&
-						typeof forwarded[0]?.id === "string" &&
-						forwarded[0].id.length > 0 &&
-						forwarded[0].mimeType === "image/png" &&
-						forwarded[0].sizeBytes === 1;
-					assert.equal(
-						rejectedBeforeAcceptance || forwardedAsSafeReference,
-						true,
-						"external RPC input must reject image bytes before acceptance or forward only an exact safe reference",
-					);
-					assert.deepStrictEqual(
-						serializeExternalAgentInput(expectedInput),
-						expectedInput,
-						"external input serialization must preserve text, image, and file reference shapes",
-					);
-				},
-				cleanup: ({ product }) => product.cleanup(),
-			},
-		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-06",
-				fullTestName:
-					"Line 13 External-only RPC execution reaches the Connector without requiring a local model",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T4",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external-connector.model-independent",
-					fingerprint: "sha256:76ae152d1cf9184d89ecfad8af4b35df678e1045f313ce793a6cad66498d4f24",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-03",
+			fullTestName: "Line 13 current External Connector persists the complete Foundation terminal chain without AgentInstance",
 			scenario: {
 				fixture: () => createRpcProductFixture({ withModel: false }),
 				setup: initializeRpc,
 				assertion: async (fixture) => {
+					const dispatched = await fixture.controller.dispatch({
+						id: "ac03-current-start",
+						type: "run.start",
+						message: "Traverse the canonical Foundation chain",
+						externalConnector: fixture.externalConnectorSelection,
+					});
 					const started = automationResponseView(
-						await fixture.controller.dispatch({
-							id: "ac06-start",
-							type: "run.start",
-							message: "Run without a local model",
-							externalAgent: { adapterId: "line13-connector", targetId: "target-1" },
-						}),
+						dispatched ?? await waitForRpcResponse(fixture.records, "ac03-current-start"),
 					);
-					assert.deepStrictEqual(
-						{ success: started.success, adapterStarts: fixture.adapter.trace.startCalls },
-						{ success: true, adapterStarts: 1 },
-						"external-only RPC execution must reach the Connector without a local model",
-					);
+					assert.equal(started.success, true);
+					const runId = started.data?.runId;
+					assert.equal(typeof runId, "string");
+					if (runId === undefined) return;
+					await waitForRpcTerminal(fixture.records, runId);
+					const durableSession = new Session(new SessionManagerStorage(fixture.sessionManager));
+					const records = await durableSession.findFoundationRecords({ includePruned: true, order: "oldestFirst" });
+					const objectTypes = records.flatMap((record) => record.kind === "retention" ? [] : [record.objectType]);
+					for (const objectType of ["task", "attempt", "attempt_receipt", "task_result", "run_receipt"]) {
+						assert.equal(objectTypes.includes(objectType), true, `missing ${objectType}`);
+					}
+					assert.equal(objectTypes.includes("agent_instance"), false);
 				},
 				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
+		defineLine13ResolvedCase({
+			ac: "AC-05",
+			fullTestName: "Line 13 RPC rejects non-canonical External Connector resources before product persistence",
+			scenario: {
+				fixture: () => createRpcProductFixture({ withModel: false }),
+				setup: initializeRpc,
+				assertion: async (fixture) => {
+					const response = automationResponseView(await fixture.controller.dispatch({
+						id: "ac05-raw-image",
+						type: "run.start",
+						message: "Reject raw image bytes",
+						images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+						externalConnector: fixture.externalConnectorSelection,
+					}));
+					assert.equal(response.success, false);
+					assert.equal(response.error?.code, "external_binding_invalid");
+					const durableSession = new Session(new SessionManagerStorage(fixture.sessionManager));
+					const records = await durableSession.findFoundationRecords({ includePruned: true });
+					const productWrites = records.filter((record) =>
+						record.kind !== "retention" && ["foundation.goal", "task", "attempt"].includes(record.objectType)
+					);
+					assert.equal(productWrites.length, 0);
+				},
+				cleanup: (fixture) => fixture.cleanup(),
+			},
+		}),
+		defineLine13ResolvedCase({
+			ac: "AC-06",
+			fullTestName: "Line 13 RPC none and agent-owned External Connectors run without a local model",
+			scenario: {
+				fixture: async () => ({
+					fixtures: await Promise.all([
+						createRpcProductFixture({ withModel: false, modelAccess: "none" }),
+						createRpcProductFixture({ withModel: false, modelAccess: "agent_owned" }),
+					]),
+				}),
+				assertion: async (fixture) => {
+					for (const [index, current] of fixture.fixtures.entries()) {
+						await initializeRpc(current);
+						const dispatched = await current.controller.dispatch({
+							id: `ac06-start-${index}`,
+							type: "run.start",
+							message: "Run without a local model",
+							externalConnector: current.externalConnectorSelection,
+						});
+						const response = automationResponseView(
+							dispatched ?? await waitForRpcResponse(current.records, `ac06-start-${index}`),
+						);
+						assert.equal(response.success, true);
+						const runId = response.data?.runId;
+						assert.equal(typeof runId, "string");
+						if (runId !== undefined) await waitForRpcTerminal(current.records, runId);
+					}
+				},
+				cleanup: async (fixture) => {
+					for (const current of fixture.fixtures) await current.cleanup();
+				},
+			},
+		}),
+	],
+	cases: [
 		defineLine13KnownGapCase({
 			entry: {
 				ac: "AC-07",
-				fullTestName:
-					"Line 13 advertised External Connector tool-gateway capability reaches execution instead of a fixed rejection",
+				fullTestName: "Line 13 advertised External Connector tool-gateway capability reaches real product execution",
 				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T4",
+				ownerStage: "T5",
 				mode: "fails",
 				expectedFailure: {
-					reason: "external-connector.capability-reachability",
-					fingerprint: "sha256:babdac6c4531018bb7ea0dc7c15679692a6cc23a177ed1d6fdcfaccd5a37faff",
+					reason: "external-connector.tool-gateway-product",
+					fingerprint: "sha256:aa26ba49c1d52a139c675bfaaa82280e5dfee58c1ae7269b4bc8acc06bca17f8",
 				},
 			},
 			scenario: {
-				fixture: () =>
-					createRpcProductFixture({
-						withModel: true,
-						adapter: { toolGateway: true, bindingMode: "tool-gateway" },
-					}),
-				setup: initializeRpc,
+				fixture: () => createCurrentConnectorFixture(true),
 				assertion: async (fixture) => {
-					const started = automationResponseView(
-						await fixture.controller.dispatch({
-							id: "ac07-start",
-							type: "run.start",
-							message: "Reach the advertised tool gateway",
-							externalAgent: { adapterId: "line13-connector", targetId: "target-1" },
-						}),
-					);
-					assert.deepStrictEqual(
-						{ success: started.success, adapterStarts: fixture.adapter.trace.startCalls },
-						{ success: true, adapterStarts: 1 },
-						"advertised External Connector tool-gateway capability must reach execution",
+					await executeExternalConnectorProductRun({
+						session: fixture.session,
+						writer: fixture.t5.writer,
+						registry: fixture.registry,
+						selection: fixture.selection,
+						runId: "line13-ac07-tool-gateway",
+						message: "Reach the bound tool gateway during real execution",
+						canonicalInput: {
+							schemaVersion: 1,
+							text: "Reach the bound tool gateway during real execution",
+							artifacts: [],
+						},
+						inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+						workspace: "workspace-ref",
+						now: () => NOW,
+					});
+					assert.equal(
+						fixture.toolGatewayCalls(),
+						1,
+						"advertised tool gateway must be invoked by real product execution",
 					);
 				},
-				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
 		defineLine13KnownGapCase({

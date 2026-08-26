@@ -464,6 +464,35 @@ function isSupportMatrix(value: unknown): value is ExternalModelSupportMatrix {
 	});
 }
 
+export function isExternalTranslatedModelProjection(value: unknown): value is ExternalTranslatedModelProjection {
+	if (
+		!isRecord(value) ||
+		value.schemaVersion !== EXTERNAL_MODEL_PROJECTION_SCHEMA_VERSION ||
+		!isFingerprint(value.sourceBindingDigest) ||
+		!isRecord(value.fields) ||
+		!hasOnlyKeys(value, new Set(["schemaVersion", "sourceBindingDigest", "fields"])) ||
+		!hasOnlyKeys(value.fields, SUPPORT_MATRIX_KEYS) ||
+		Object.keys(value.fields).length !== EXTERNAL_MODEL_PROJECTION_FIELDS.length
+	) {
+		return false;
+	}
+	const targets = new Set<string>();
+	for (const field of EXTERNAL_MODEL_PROJECTION_FIELDS) {
+		const translated = value.fields[field];
+		if (
+			!isRecord(translated) ||
+			!hasOnlyKeys(translated, new Set(["targetField", "value"])) ||
+			!isSafeIdentifier(translated.targetField) ||
+			!isExplicitTranslationValue(translated.value) ||
+			targets.has(translated.targetField)
+		) {
+			return false;
+		}
+		targets.add(translated.targetField);
+	}
+	return true;
+}
+
 /** Translate every canonical field exactly; one missing/unsupported field rejects the whole projection. */
 export function translateExternalModelProjection(
 	projectionValue: unknown,

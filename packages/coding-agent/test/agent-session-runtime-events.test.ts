@@ -16,7 +16,7 @@ import {
 import type { AgentSession, ExtensionBindings } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CurrentSessionScope } from "../src/core/current-session-scope.ts";
-import { createExternalAgentAdapterRegistry } from "../src/core/external-agent-registry.ts";
+import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import type {
@@ -102,7 +102,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			modelRuntime,
 			model: faux.getModel(),
 			runtimeComposition: createAgentRuntimeCompositionFactory({
-				externalAgentRegistry: () => createExternalAgentAdapterRegistry(),
+				externalConnectorRegistry: () => createExternalConnectorRegistry(),
 			}),
 			resourceLoaderOptions: {
 				extensionFactories: [extensionFactory],
@@ -298,9 +298,9 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		expect(fixture.runtimeHost.runtimeComposition.factory).toBe(fixture.runtimeHost.services.runtimeComposition);
 		expect(fixture.runtimeHost.runtimeComposition.session).not.toBe(oldComposition.session);
 		expect(fixture.runtimeHost.runtimeComposition.harness).not.toBe(oldComposition.harness);
-		expect(fixture.runtimeHost.runtimeComposition.externalAgentRegistry).toBeDefined();
-		expect(fixture.runtimeHost.runtimeComposition.externalAgentRegistry).not.toBe(
-			oldComposition.externalAgentRegistry,
+		expect(fixture.runtimeHost.runtimeComposition.externalConnectorRegistry).toBeDefined();
+		expect(fixture.runtimeHost.runtimeComposition.externalConnectorRegistry).not.toBe(
+			oldComposition.externalConnectorRegistry,
 		);
 		await oldSession.waitForDispose();
 		expect(oldDispose).toHaveBeenCalledTimes(1);

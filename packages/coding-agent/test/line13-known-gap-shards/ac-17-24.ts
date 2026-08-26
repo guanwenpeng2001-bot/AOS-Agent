@@ -21,15 +21,15 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createExternalAgentAdapterRegistry,
 	createRpcTransport,
 	getPackageDir,
 	SchedulerHost,
 	type CreateAgentSessionRuntimeFactory,
 	type ExtensionAPI,
-	type ExternalAgentAdapter,
 	type SchedulerHostOptions,
 } from "../../src/index.ts";
+import type { ExternalAgentAdapter } from "../../src/core/external-agent-adapter.ts";
+import { createExternalAgentAdapterRegistry } from "../../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";

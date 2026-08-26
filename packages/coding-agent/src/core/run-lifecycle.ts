@@ -76,7 +76,10 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
 } from "./execution-policy-ledger.ts";
-import { type ExternalAgentSelection, serializeExternalAgentSelection } from "./external-agent-adapter.ts";
+import {
+	type ExternalConnectorSelection,
+	serializeExternalConnectorSelection,
+} from "./external-agent-registry.ts";
 import {
 	type ExternalExecutionMapping,
 	type ExternalExecutionRef,
@@ -146,8 +149,8 @@ export interface RunRequestFingerprintInput {
 	readonly modelRoute?: ModelRouteSelection;
 	readonly modelRole?: ModelRoleSelection;
 	readonly external?: ExternalExecutionRef;
-	/** Optional explicit External Agent Adapter selection for this Run. */
-	readonly externalAgent?: ExternalAgentSelection;
+	/** Optional explicit trusted External Connector selection for this Run. */
+	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -166,8 +169,8 @@ export interface CanonicalRunRequest {
 	readonly modelRouteDigest?: string;
 	readonly modelRoleDigest?: string;
 	readonly external?: ExternalExecutionRef;
-	/** Optional explicit External Agent Adapter selection; safe identifiers only. */
-	readonly externalAgent?: ExternalAgentSelection;
+	/** Optional explicit External Connector selection; immutable identity only. */
+	readonly externalConnector?: ExternalConnectorSelection;
 	readonly deadlineAt?: string;
 }
 
@@ -257,8 +260,9 @@ function stableRequestSerialization(value: unknown): string {
  */
 export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
 	const external = input.external === undefined ? undefined : serializeExternalExecutionRef(input.external);
-	const externalAgent =
-		input.externalAgent === undefined ? undefined : serializeExternalAgentSelection(input.externalAgent);
+	const externalConnector = input.externalConnector === undefined
+		? undefined
+		: serializeExternalConnectorSelection(input.externalConnector);
 	const scope = input.scope ?? (input.command === "run.start" ? "start" : "resume");
 	return {
 		schemaVersion: 1,
@@ -276,7 +280,7 @@ export function canonicalizeRunRequest(input: RunRequestFingerprintInput): Canon
 		...(input.modelRoute === undefined ? {} : { modelRouteDigest: digestRequestValue(input.modelRoute) }),
 		...(input.modelRole === undefined ? {} : { modelRoleDigest: digestRequestValue(input.modelRole) }),
 		...(external === undefined ? {} : { external }),
-		...(externalAgent === undefined ? {} : { externalAgent }),
+		...(externalConnector === undefined ? {} : { externalConnector }),
 		...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
 	};
 }
@@ -670,6 +674,13 @@ export type AutomationErrorCode =
 	| "audit_replay_incomplete"
 	| "external_mapping_invalid"
 	| "external_mapping_conflict"
+	| "external_connector_unavailable"
+	| "external_resume_unsupported"
+	| "external_binding_invalid"
+	| "external_capability_mismatch"
+	| "external_event_invalid"
+	| "external_resource_limit_exceeded"
+	| "external_path_outside_workspace"
 	| "audit_persistence_failed"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
@@ -810,6 +821,13 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_replay_incomplete" ||
 		value === "external_mapping_invalid" ||
 		value === "external_mapping_conflict" ||
+		value === "external_connector_unavailable" ||
+		value === "external_resume_unsupported" ||
+		value === "external_binding_invalid" ||
+		value === "external_capability_mismatch" ||
+		value === "external_event_invalid" ||
+		value === "external_resource_limit_exceeded" ||
+		value === "external_path_outside_workspace" ||
 		value === "audit_persistence_failed" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||
@@ -2324,8 +2342,16 @@ export function serializePublicContextDrift(drift: ContextSourceDrift): PublicCo
  * credential-shaped values but deliberately preserves ordinary text, including
  * file paths, so it cannot serve as this public serialization boundary.
  */
-export function serializePublicAutomationError(error: AutomationError, message = "Run failed."): AutomationError {
-	return createAutomationError(error.code, message, error.retryable);
+export function serializePublicAutomationError(error: AutomationError, message?: string): AutomationError {
+	return createAutomationError(
+		error.code,
+		message ?? (error.code === "external_event_invalid"
+			? "External connector emitted invalid supervised output."
+			: error.code === "external_resource_limit_exceeded"
+				? "External connector exceeded a supervised resource limit."
+				: "Run failed."),
+		error.retryable,
+	);
 }
 
 /** Return a public Session event through the common capability-safe boundary. */

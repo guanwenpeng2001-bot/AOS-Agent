@@ -40,7 +40,26 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "./vendor-drivers/types.ts";
 import {
+	ExternalConnectorBoundedSupervisor,
+	ExternalConnectorSupervisorError,
+	externalConnectorSupervisorFailure,
+	runExternalConnectorHostDispose,
+	type ExternalConnectorProcessContainment,
+	type ExternalConnectorProcessController,
+	type ExternalConnectorSupervisorDeadlineOverrides,
+	type ExternalConnectorSupervisorLimits,
+	type ExternalConnectorSupervisorPrivateStateStore,
+} from "./external-connector-supervisor.ts";
+import type { RuntimeClock } from "./runtime-clock.ts";
+import {
+	translateExternalModelProjection,
+	type ExternalModelTranslationResult,
+	type ExternalResolvedModelProjection,
+} from "./external-model-projection.ts";
+import {
 	cloneExternalConnectorTerminalEvidence,
+	isExternalConnectorDriverHandle,
+	isExternalConnectorDriverLookup,
 	type ExternalConnectorTerminalEvidence,
 } from "./vendor-drivers/types.ts";
 
@@ -49,9 +68,16 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	readonly capability: ConnectorCapabilitySnapshot;
 	readonly store: ExternalConnectorDurableStore;
 	readonly driver: ExternalConnectorVendorDriver;
+	readonly supervision: {
+		readonly containment: ExternalConnectorProcessContainment;
+		readonly processController: ExternalConnectorProcessController;
+		readonly privateStateStore: ExternalConnectorSupervisorPrivateStateStore;
+		readonly deadlines?: ExternalConnectorSupervisorDeadlineOverrides;
+		readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
+		readonly clock?: RuntimeClock;
+	};
 	readonly now?: () => string;
 	readonly operationNonce?: () => string;
-	readonly disposeTimeoutMs?: number;
 }
 
 const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
@@ -86,6 +112,57 @@ function externalFailure(
 	return new FoundationError(code, message, attemptId === undefined ? {} : { details: { attemptId } });
 }
 
+function isDeadlineAbort(signal: AbortSignal | undefined): boolean {
+	const reason = signal?.reason;
+	return (
+		typeof reason === "object" &&
+		reason !== null &&
+		(("code" in reason && reason.code === "deadline_exceeded") ||
+			("name" in reason && reason.name === "AgentDeadlineExceeded"))
+	);
+}
+
+function isAbortedSignal(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true;
+}
+
+function supervisedFailureEvidence(
+	error: unknown,
+	handle: ExternalConnectorDriverHandle,
+	now: () => string,
+	sourceSignal?: AbortSignal,
+): ExternalConnectorTerminalEvidence | undefined {
+	let code: "external_event_invalid" | "external_resource_limit_exceeded" | "run_deadline_exceeded";
+	let message: string;
+	let category: "unknown" | "deadline";
+	if (isDeadlineAbort(sourceSignal)) {
+		code = "run_deadline_exceeded";
+		message = "External connector run deadline was exceeded.";
+		category = "deadline";
+	} else if (
+		error instanceof ExternalConnectorSupervisorError &&
+		(error.code === "external_event_invalid" || error.code === "external_resource_limit_exceeded")
+	) {
+		code = error.code;
+		message = error.code === "external_event_invalid"
+			? "External connector emitted invalid supervised output."
+			: "External connector exceeded a supervised resource limit.";
+		category = "unknown";
+	} else {
+		return undefined;
+	}
+	return {
+		externalSessionId: handle.externalSessionId,
+		...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+		operationNonce: handle.operationNonce,
+		status: "failed",
+		artifacts: [],
+		error: { code, message, category, retryable: false },
+		sideEffectState: "unknown",
+		producedAt: now(),
+	};
+}
+
 /**
  * One runtime implements the merged Foundation ExternalAgentConnector and
  * TaskExecutorProvider contract. Only runAttempt crosses the durable start
@@ -98,9 +175,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #capability: ConnectorCapabilitySnapshot;
 	readonly #store: ExternalConnectorDurableStore;
 	readonly #driver: ExternalConnectorVendorDriver;
+	readonly #supervision: ExternalAgentConnectorRuntimeOptions["supervision"];
 	readonly #now: () => string;
 	readonly #operationNonce: () => string;
-	readonly #disposeTimeoutMs: number;
+	readonly #supervisors = new Map<string, ExternalConnectorBoundedSupervisor>();
+	readonly #driverHandles = new Map<string, ExternalConnectorDriverHandle>();
+	readonly #observationControllers = new Map<string, AbortController>();
+	readonly #pendingCancellations = new Set<string>();
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
 
@@ -110,16 +191,25 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			providerClass: "external_connector",
 		});
 		if (!checked.ok) throw checked.error;
-		if (!Number.isFinite(options.disposeTimeoutMs ?? 1_000) || (options.disposeTimeoutMs ?? 1_000) < 0) {
-			throw externalFailure("invalid_correlation", "External connector dispose timeout is invalid");
-		}
+		if (
+			options.supervision === undefined ||
+			(options.supervision.containment !== "process_group" && options.supervision.containment !== "job_object") ||
+			typeof options.supervision.processController?.launch !== "function" ||
+			typeof options.supervision.privateStateStore?.read !== "function" ||
+			typeof options.supervision.privateStateStore?.write !== "function" ||
+			typeof options.supervision.privateStateStore?.delete !== "function"
+		) throw externalFailure("invalid_correlation", "External connector supervision is invalid");
 		this.providerId = options.providerId;
 		this.#capability = checked.value;
 		this.#store = options.store;
 		this.#driver = options.driver;
+		this.#supervision = options.supervision;
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
-		this.#disposeTimeoutMs = options.disposeTimeoutMs ?? 1_000;
+	}
+
+	preflightModelProjection(projection: ExternalResolvedModelProjection): ExternalModelTranslationResult {
+		return translateExternalModelProjection(projection, this.#driver.modelSupportMatrix);
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
@@ -189,17 +279,40 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	async dispose(): Promise<void> {
-		await new Promise<void>((resolve) => {
-			let settled = false;
-			const finish = (): void => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				resolve();
-			};
-			const timer = setTimeout(finish, this.#disposeTimeoutMs);
-			void this.#driver.dispose().then(finish, finish);
-		});
+		const supervisors = [...this.#supervisors.entries()];
+		const disposalSupervisor = supervisors[0]?.[1];
+		let disposalFailure: unknown;
+		try {
+			if (disposalSupervisor !== undefined) {
+				await disposalSupervisor.run(
+					"dispose",
+					(signal) => this.#driver.dispose({ signal }),
+				);
+			} else {
+				await runExternalConnectorHostDispose(
+					(signal) => this.#driver.dispose({ signal }),
+					{
+						...(this.#supervision.deadlines?.dispose === undefined
+							? {}
+							: { deadline: this.#supervision.deadlines.dispose }),
+						...(this.#supervision.clock === undefined ? {} : { clock: this.#supervision.clock }),
+					},
+				);
+			}
+		} catch (error) {
+			disposalFailure = error;
+		}
+		const cleanupResults = await Promise.allSettled(supervisors.map(async ([attemptId, supervisor]) => {
+			await supervisor.dispose();
+			if (supervisor.snapshot.cleaned) await this.#supervision.privateStateStore.delete(attemptId);
+		}));
+		this.#supervisors.clear();
+		this.#driverHandles.clear();
+		for (const controller of this.#observationControllers.values()) controller.abort();
+		this.#observationControllers.clear();
+		this.#pendingCancellations.clear();
+		disposalFailure ??= cleanupResults.find((result) => result.status === "rejected")?.reason;
+		if (disposalFailure !== undefined) throw disposalFailure;
 	}
 
 	#exclusive(
@@ -223,6 +336,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			return Result.err(
 				error instanceof FoundationError
 					? error
+					: error instanceof ExternalConnectorSupervisorError
+						? externalConnectorSupervisorFailure(error)
 					: externalFailure("worker_lost", "External connector lifecycle operation failed"),
 			);
 		}
@@ -235,15 +350,131 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			return Result.err(
 				error instanceof FoundationError
 					? error
+					: error instanceof ExternalConnectorSupervisorError
+						? externalConnectorSupervisorFailure(error)
 					: externalFailure("worker_cancel_failed", "External connector cancellation failed"),
 			);
 		}
+	}
+
+	#createSupervisor(operation: ExternalConnectorOperation): ExternalConnectorBoundedSupervisor {
+		return new ExternalConnectorBoundedSupervisor({
+			reference: {
+				schemaVersion: 1,
+				supervisorRef: `external_supervisor_${fingerprintFoundationValue({
+					providerId: this.providerId,
+					attemptId: operation.attemptId,
+				}).value.slice(0, 32)}`,
+				operationNonce: operation.operationNonce,
+			},
+			containment: this.#supervision.containment,
+			processController: this.#supervision.processController,
+			artifactsAllowed: this.#capability.artifacts,
+			deadlines: this.#supervision.deadlines,
+			limits: this.#supervision.limits,
+			clock: this.#supervision.clock,
+		});
+	}
+
+	async #launchSupervisor(
+		operation: ExternalConnectorOperation,
+		signal?: AbortSignal,
+	): Promise<ExternalConnectorBoundedSupervisor> {
+		const supervisor = this.#createSupervisor(operation);
+		let launched = false;
+		try {
+			if (signal?.aborted === true) throw signal.reason;
+			const state = supervisor.launch();
+			launched = true;
+			await this.#supervision.privateStateStore.write(operation.attemptId, state);
+			this.#supervisors.set(operation.attemptId, supervisor);
+			return supervisor;
+		} catch (error) {
+			if (launched) await supervisor.dispose().catch(() => undefined);
+			throw externalConnectorSupervisorFailure(error);
+		}
+	}
+
+	async #releaseSupervisor(attemptId: string, supervisor: ExternalConnectorBoundedSupervisor): Promise<void> {
+		await supervisor.dispose();
+		if (!supervisor.snapshot.cleaned) {
+			throw externalConnectorSupervisorFailure(
+				new Error("External Connector supervisor process did not terminate"),
+			);
+		}
+		this.#supervisors.delete(attemptId);
+		this.#driverHandles.delete(attemptId);
+		this.#observationControllers.delete(attemptId);
+		await this.#supervision.privateStateStore.delete(attemptId);
+	}
+
+	async #recoverAndReapSupervisor(operation: ExternalConnectorOperation): Promise<ResultValue<void, FoundationError>> {
+		const state = await this.#supervision.privateStateStore.read(operation.attemptId);
+		if (state === undefined) return Result.ok(undefined);
+		const supervisor = this.#createSupervisor(operation);
+		try {
+			await supervisor.recoverAndReap(state);
+			await this.#supervision.privateStateStore.delete(operation.attemptId);
+			return Result.ok(undefined);
+		} catch (error) {
+			return Result.err(externalConnectorSupervisorFailure(error));
+		}
+	}
+
+	async #reattachOrLaunchSupervisor(
+		operation: ExternalConnectorOperation,
+		signal?: AbortSignal,
+	): Promise<ExternalConnectorBoundedSupervisor> {
+		const throwIfAborted = (): void => {
+			if (signal?.aborted === true) throw externalConnectorSupervisorFailure(signal.reason);
+		};
+		throwIfAborted();
+		const active = this.#supervisors.get(operation.attemptId);
+		if (active !== undefined) return active;
+		const state = await this.#supervision.privateStateStore.read(operation.attemptId);
+		throwIfAborted();
+		if (state === undefined) return this.#launchSupervisor(operation, signal);
+		const supervisor = this.#createSupervisor(operation);
+		try {
+			supervisor.reattach(state);
+			this.#supervisors.set(operation.attemptId, supervisor);
+			return supervisor;
+		} catch (error) {
+			throw externalConnectorSupervisorFailure(error);
+		}
+	}
+
+	#requireAuthoritativeDriverHandle(
+		value: unknown,
+		supervisor: ExternalConnectorBoundedSupervisor,
+		mapping?: CanonicalExternalConnectorMapping,
+	): ResultValue<ExternalConnectorDriverHandle, FoundationError> {
+		if (
+			!isExternalConnectorDriverHandle(value) ||
+			value.supervisorRef !== supervisor.reference.supervisorRef ||
+			value.operationNonce !== supervisor.reference.operationNonce ||
+			(mapping !== undefined &&
+				(value.externalSessionId !== mapping.externalSessionId ||
+					(value.externalTurnId ?? undefined) !== (mapping.externalTurnId ?? undefined) ||
+					value.supervisorRef !== mapping.supervisor.ref ||
+					value.operationNonce !== mapping.supervisor.nonce))
+		) {
+			return Result.err(externalFailure("invalid_correlation", "External connector driver handle conflicts with durable authority"));
+		}
+		return Result.ok(Object.freeze({
+			externalSessionId: value.externalSessionId,
+			...(value.externalTurnId === undefined ? {} : { externalTurnId: value.externalTurnId }),
+			supervisorRef: value.supervisorRef,
+			operationNonce: value.operationNonce,
+		}));
 	}
 
 	async #run(
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const isAborted = (): boolean =>
+			options?.signal?.aborted === true || this.#pendingCancellations.has(attempt.attemptId);
 		const durable = await this.#requireDurableAttempt(attempt);
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
@@ -256,6 +487,34 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const correlation = this.#requireCorrelation(attempt, options?.correlation);
 		if (!correlation.ok) return correlation;
+		if (isAborted()) {
+			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, undefined, options?.signal);
+		}
+		const executionInput = await this.#store.readExecutionInput(attempt.taskId);
+		if (executionInput === undefined) {
+			return Result.err(externalFailure("binding_required_fact", "External connector requires durable canonical input", attempt.attemptId));
+		}
+		if (
+			(this.#capability.modelAccess === "aos_gateway") !== (executionInput.modelProjection !== undefined) ||
+			(executionInput.modelProjection === undefined) !== (executionInput.modelTranslation === undefined)
+		) {
+			return Result.err(externalFailure("binding_required_fact", "External connector model projection does not match its capability", attempt.attemptId));
+		}
+		let modelTranslation = executionInput.modelTranslation;
+		if (executionInput.modelProjection !== undefined) {
+			const translated = translateExternalModelProjection(
+				executionInput.modelProjection,
+				this.#driver.modelSupportMatrix,
+			);
+			if (
+				!translated.ok ||
+				modelTranslation === undefined ||
+				canonicalFoundationJson(translated.translation) !== canonicalFoundationJson(modelTranslation)
+			) {
+				return Result.err(externalFailure("binding_required_fact", "External connector model translation is unavailable or drifted", attempt.attemptId));
+			}
+			modelTranslation = translated.translation;
+		}
 
 		let operation = await this.#store.readOperation(attempt.attemptId);
 		if (operation === undefined) {
@@ -276,6 +535,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				updatedAt: this.#now(),
 			});
 		}
+		if (isAborted()) {
+			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+		}
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
 		if (operation.status !== "prepared") {
@@ -288,26 +550,65 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		operation = await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "start_intent", { now: this.#now() }),
 		);
-		let handle: ExternalConnectorDriverHandle;
+		if (isAborted()) {
+			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+		}
+		const operationNonce = operation.operationNonce;
+		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
-			handle = await this.#driver.spawn({
-				attempt,
-				capability: this.#capability,
-				bindingDigest: binding.value.fingerprint.value,
-				bindingRevision: binding.value.contextRevision.revision,
-				operationNonce: operation.operationNonce,
-				...(options?.signal === undefined ? {} : { signal: options.signal }),
-			});
+			supervisor = await this.#launchSupervisor(operation, options?.signal);
 		} catch {
+			if (isAborted()) {
+				return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+			}
+			await this.#markReconcile(operation, "start_outcome_unknown");
+			return Result.err(externalFailure("side_effect_unknown", "External connector process launch could not be proven", attempt.attemptId));
+		}
+		if (isAborted()) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+		}
+		let handle: ExternalConnectorDriverHandle;
+		let spawnCalled = false;
+		try {
+			handle = await supervisor.run("start", (signal) => {
+				spawnCalled = true;
+				return this.#driver.spawn({
+					attempt,
+					input: executionInput.input,
+					...(executionInput.modelProjection === undefined ? {} : { modelProjection: executionInput.modelProjection }),
+					...(modelTranslation === undefined ? {} : { modelTranslation }),
+					capability: this.#capability,
+					bindingDigest: binding.value.fingerprint.value,
+					bindingRevision: binding.value.contextRevision.revision,
+					supervisorRef: supervisor.reference.supervisorRef,
+					operationNonce,
+					signal,
+				});
+			}, options?.signal);
+		} catch {
+			if (supervisor.snapshot.cleaned) {
+				this.#supervisors.delete(attempt.attemptId);
+				await this.#supervision.privateStateStore.delete(attempt.attemptId);
+			}
+			if (isAborted()) {
+				return spawnCalled
+					? this.#settleFailedWithoutMapping(attempt, correlation.value, operation, options?.signal)
+					: this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+			}
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(externalFailure("provider_spawn_failed", "External connector start outcome is unknown", attempt.attemptId));
 		}
 
+		const checkedHandle = this.#requireAuthoritativeDriverHandle(handle, supervisor);
+		if (!checkedHandle.ok) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(checkedHandle.error);
+		}
+		handle = checkedHandle.value;
 		let mapping: CanonicalExternalConnectorMapping;
 		try {
-			if (handle.operationNonce !== operation.operationNonce) {
-				throw externalFailure("invalid_correlation", "External connector driver returned a different operation nonce", attempt.attemptId);
-			}
 			mapping = cloneCanonicalExternalConnectorMapping({
 				schemaVersion: 1,
 				providerId: this.providerId,
@@ -324,17 +625,56 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			});
 			mapping = await this.#store.writeMapping(mapping, operation.correlation);
 		} catch {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
 			await this.#markReconcile(operation, "mapping_persistence_unknown");
 			return Result.err(externalFailure("side_effect_unknown", "External connector mapping could not be proven durable", attempt.attemptId));
 		}
+		this.#driverHandles.set(attempt.attemptId, handle);
 		operation = await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 		);
+		if (this.#pendingCancellations.has(attempt.attemptId)) {
+			const cancellation = await this.#cancel(attempt.attemptId);
+			if (!cancellation.ok) return Result.err(cancellation.error);
+			const cancelledReceipt = await this.#requirePriorReceipt(attempt);
+			if (!cancelledReceipt.ok) return cancelledReceipt;
+			if (cancelledReceipt.value !== undefined) return Result.ok(cancelledReceipt.value);
+		}
 		try {
-			const evidence = await this.#driver.read(handle, options?.signal === undefined ? undefined : { signal: options.signal });
+			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, handle, options?.signal);
+			const concurrentReceipt = await this.#requirePriorReceipt(attempt);
+			if (!concurrentReceipt.ok) return concurrentReceipt;
+			if (concurrentReceipt.value !== undefined) {
+				await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+				return Result.ok(concurrentReceipt.value);
+			}
+			await this.#releaseSupervisor(attempt.attemptId, supervisor);
 			return await this.#settle(attempt, operation, mapping, evidence);
-		} catch {
-			await this.#markReconcile(operation, "driver_failure");
+		} catch (error) {
+			if (supervisor.snapshot.cleaned) {
+				this.#supervisors.delete(attempt.attemptId);
+				await this.#supervision.privateStateStore.delete(attempt.attemptId);
+			}
+			this.#driverHandles.delete(attempt.attemptId);
+			this.#observationControllers.delete(attempt.attemptId);
+			const concurrentReceipt = await this.#requirePriorReceipt(attempt);
+			if (concurrentReceipt.ok && concurrentReceipt.value !== undefined) {
+				return Result.ok(concurrentReceipt.value);
+			}
+			if (options?.signal?.aborted === true && !supervisor.snapshot.cleaned) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
+			const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
+			if (failureEvidence !== undefined) {
+				return this.#settle(attempt, operation, mapping, failureEvidence);
+			}
+			await this.#markReconcile(
+				operation,
+				error instanceof ExternalConnectorSupervisorError && error.code === "terminal_evidence_invalid"
+					? "mapping_conflict"
+					: "driver_failure",
+			);
 			return Result.err(externalFailure("worker_lost", "External connector terminal state is unknown", attempt.attemptId));
 		}
 	}
@@ -343,6 +683,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		if (options?.signal?.aborted === true) {
+			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector resume was aborted before recovery", attempt.attemptId));
+		}
 		const durable = await this.#requireDurableAttempt(attempt);
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
@@ -361,15 +704,50 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!frozen.ok) return frozen;
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
+		let supervisor: ExternalConnectorBoundedSupervisor | undefined;
+		let handle: ExternalConnectorDriverHandle | undefined;
 		try {
-			const handle = await this.#driver.connect(
-				mapping.value,
-				options?.signal === undefined ? undefined : { signal: options.signal },
+			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
+			const connected = await supervisor.run(
+				"start",
+				(signal) => this.#driver.connect(mapping.value, { signal }),
+				options?.signal,
 			);
-			const evidence = await this.#driver.read(handle, options?.signal === undefined ? undefined : { signal: options.signal });
+			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!checkedHandle.ok) {
+				await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+				await this.#markReconcile(operation, "mapping_conflict");
+				return Result.err(checkedHandle.error);
+			}
+			handle = checkedHandle.value;
+			this.#driverHandles.set(attempt.attemptId, handle);
+			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, handle, options?.signal);
+			await this.#releaseSupervisor(attempt.attemptId, supervisor);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
-		} catch {
-			await this.#markReconcile(operation, "driver_failure");
+		} catch (error) {
+			const cleanupUnknown = isAbortedSignal(options?.signal) && supervisor?.snapshot.cleaned !== true;
+			if (supervisor?.snapshot.cleaned === true) {
+				this.#supervisors.delete(attempt.attemptId);
+				await this.#supervision.privateStateStore.delete(attempt.attemptId);
+			}
+			this.#driverHandles.delete(attempt.attemptId);
+			this.#observationControllers.delete(attempt.attemptId);
+			if (cleanupUnknown) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
+			if (handle !== undefined) {
+				const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
+				if (failureEvidence !== undefined) {
+					return this.#settle(attempt, operation, mapping.value, failureEvidence);
+				}
+			}
+			await this.#markReconcile(
+				operation,
+				error instanceof ExternalConnectorSupervisorError && error.code === "terminal_evidence_invalid"
+					? "mapping_conflict"
+					: "driver_failure",
+			);
 			return Result.err(externalFailure("worker_lost", "External connector resume state is unknown", attempt.attemptId));
 		}
 	}
@@ -378,6 +756,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		if (options?.signal?.aborted === true) {
+			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector reconciliation was aborted before recovery", attempt.attemptId));
+		}
 		const durable = await this.#requireDurableAttempt(attempt);
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
@@ -394,19 +775,41 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
+		if (operation.status === "reconcile_required") {
+			const reaped = await this.#recoverAndReapSupervisor(operation);
+			if (!reaped.ok) return reaped;
+		}
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
-		let lookup: Awaited<ReturnType<ExternalConnectorVendorDriver["lookup"]>>;
+		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
-			lookup = await this.#driver.lookup(
-				mapping.value,
-				options?.signal === undefined ? undefined : { signal: options.signal },
+			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
+		} catch {
+			await this.#markReconcile(operation, "driver_failure");
+			return Result.err(externalFailure("side_effect_unknown", "External connector process identity requires reconciliation", attempt.attemptId));
+		}
+		let lookup: unknown;
+		try {
+			lookup = await supervisor.run(
+				"receipt",
+				(signal) => this.#driver.lookup(mapping.value, { signal }),
+				options?.signal,
 			);
 		} catch {
+			if (supervisor.snapshot.cleaned) {
+				this.#supervisors.delete(attempt.attemptId);
+				await this.#supervision.privateStateStore.delete(attempt.attemptId);
+			}
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("worker_lost", "External connector reconciliation lookup failed", attempt.attemptId));
 		}
+		if (!isExternalConnectorDriverLookup(lookup)) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(externalFailure("invalid_correlation", "External connector lookup result is invalid", attempt.attemptId));
+		}
 		if (lookup.status === "missing" || lookup.status === "ambiguous") {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
 			await this.#markReconcile(
 				operation,
 				lookup.status === "missing" ? "driver_state_missing" : "driver_state_ambiguous",
@@ -419,33 +822,91 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 				);
 			}
-			return this.#settle(attempt, operation, mapping.value, lookup.evidence);
+			try {
+				const evidence = await supervisor.run(
+					"receipt",
+					() => Promise.resolve(lookup.evidence),
+					options?.signal,
+					"terminal_evidence",
+				);
+				await this.#releaseSupervisor(attempt.attemptId, supervisor);
+				return this.#settle(attempt, operation, mapping.value, evidence);
+			} catch (error) {
+				if (supervisor.snapshot.cleaned) {
+					this.#supervisors.delete(attempt.attemptId);
+					await this.#supervision.privateStateStore.delete(attempt.attemptId);
+				}
+				const failureEvidence = supervisedFailureEvidence(error, {
+					externalSessionId: mapping.value.externalSessionId,
+					...(mapping.value.externalTurnId === undefined
+						? {}
+						: { externalTurnId: mapping.value.externalTurnId }),
+					supervisorRef: mapping.value.supervisor.ref,
+					operationNonce: mapping.value.supervisor.nonce,
+				}, this.#now, options?.signal);
+				if (failureEvidence !== undefined) {
+					return this.#settle(attempt, operation, mapping.value, failureEvidence);
+				}
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
 		}
 		if (operation.status === "start_intent") {
 			operation = await this.#store.writeOperation(
 				transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 			);
 		}
+		const checkedHandle = this.#requireAuthoritativeDriverHandle(lookup.handle, supervisor, mapping.value);
+		if (!checkedHandle.ok) {
+			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			await this.#markReconcile(operation, "mapping_conflict");
+			return Result.err(checkedHandle.error);
+		}
+		const handle = checkedHandle.value;
+		this.#driverHandles.set(attempt.attemptId, handle);
 		try {
-			const evidence = await this.#driver.read(
-				lookup.handle,
-				options?.signal === undefined ? undefined : { signal: options.signal },
-			);
+			const evidence = await this.#observeToReceipt(attempt.attemptId, supervisor, handle, options?.signal);
+			await this.#releaseSupervisor(attempt.attemptId, supervisor);
 			return await this.#settle(attempt, operation, mapping.value, evidence);
-		} catch {
-			await this.#markReconcile(operation, "driver_failure");
+		} catch (error) {
+			const cleanupUnknown = isAbortedSignal(options?.signal) && !supervisor.snapshot.cleaned;
+			if (supervisor.snapshot.cleaned) {
+				this.#supervisors.delete(attempt.attemptId);
+				await this.#supervision.privateStateStore.delete(attempt.attemptId);
+			}
+			this.#driverHandles.delete(attempt.attemptId);
+			this.#observationControllers.delete(attempt.attemptId);
+			if (cleanupUnknown) {
+				await this.#markReconcile(operation, "driver_failure");
+				return Result.err(externalFailure("side_effect_unknown", "External connector process cleanup is unknown", attempt.attemptId));
+			}
+			const failureEvidence = supervisedFailureEvidence(error, handle, this.#now, options?.signal);
+			if (failureEvidence !== undefined) {
+				return this.#settle(attempt, operation, mapping.value, failureEvidence);
+			}
+			await this.#markReconcile(
+				operation,
+				error instanceof ExternalConnectorSupervisorError && error.code === "terminal_evidence_invalid"
+					? "mapping_conflict"
+					: "driver_failure",
+			);
 			return Result.err(externalFailure("worker_lost", "External connector reconciled execution did not settle", attempt.attemptId));
 		}
 	}
 
 	async #cancel(attemptId: string): Promise<ResultValue<void, FoundationError>> {
 		const attempt = await this.#store.readAttempt(attemptId);
-		if (attempt === undefined || attempt.providerId !== this.providerId) {
-			return Result.err(externalFailure("invalid_correlation", "cancelAttempt requires an existing durable Attempt", attemptId));
+		if (attempt === undefined) {
+			this.#pendingCancellations.add(attemptId);
+			return Result.ok(undefined);
+		}
+		if (attempt.providerId !== this.providerId) {
+			return Result.err(externalFailure("invalid_correlation", "cancelAttempt requires this connector's durable Attempt", attemptId));
 		}
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return Result.err(priorReceipt.error);
 		if (priorReceipt.value !== undefined) return Result.ok(undefined);
+		this.#pendingCancellations.add(attemptId);
 		let operation = await this.#store.readOperation(attemptId);
 		if (operation === undefined || operation.status === "prepared") return Result.ok(undefined);
 		if (operation.status === "terminal") {
@@ -457,6 +918,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return Result.err(frozen.error);
 		if (operation.status === "start_intent") {
+			if (this.#active.has(attemptId)) return Result.ok(undefined);
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(externalFailure("side_effect_unknown", "External connector start outcome must be reconciled before cancellation", attemptId));
 		}
@@ -470,17 +932,87 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				transitionExternalConnectorOperation(operation, "cancelling", { now: this.#now() }),
 			);
 		}
+		let supervisor: ExternalConnectorBoundedSupervisor | undefined;
 		try {
-			const handle = await this.#driver.connect(mapping.value);
-			const evidence = await this.#driver.cancel(handle);
+			supervisor = await this.#reattachOrLaunchSupervisor(operation);
+			const activeHandle = this.#driverHandles.get(attemptId);
+			const connected = activeHandle ?? await supervisor.run(
+				"start",
+				(signal) => this.#driver.connect(mapping.value, { signal }),
+			);
+			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!checkedHandle.ok) {
+				await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
+				await this.#markReconcile(operation, "mapping_conflict");
+				return Result.err(checkedHandle.error);
+			}
+			const handle = checkedHandle.value;
+			const evidence = await supervisor.run(
+				"cancel",
+				(signal) => this.#driver.cancel(handle, { signal }),
+				undefined,
+				"optional_terminal_evidence",
+			);
 			if (evidence !== undefined) {
 				const settled = await this.#settle(attempt, operation, mapping.value, evidence);
-				if (!settled.ok) return Result.err(settled.error);
+				if (!settled.ok) {
+					const concurrentReceipt = await this.#requirePriorReceipt(attempt);
+					if (!concurrentReceipt.ok || concurrentReceipt.value === undefined) return Result.err(settled.error);
+				}
+				this.#observationControllers.get(attemptId)?.abort();
+				await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
+				this.#pendingCancellations.delete(attemptId);
 			}
 			return Result.ok(undefined);
 		} catch {
+			if (supervisor?.snapshot.cleaned === true) {
+				this.#supervisors.delete(attemptId);
+				await this.#supervision.privateStateStore.delete(attemptId);
+			}
+			const concurrentReceipt = await this.#requirePriorReceipt(attempt);
+			if (concurrentReceipt.ok && concurrentReceipt.value !== undefined) return Result.ok(undefined);
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("worker_cancel_failed", "External connector cancellation outcome is unknown", attemptId));
+		}
+	}
+
+	async #observeToReceipt(
+		attemptId: string,
+		supervisor: ExternalConnectorBoundedSupervisor,
+		handle: ExternalConnectorDriverHandle,
+		sourceSignal?: AbortSignal,
+	): Promise<ExternalConnectorTerminalEvidence> {
+		if (sourceSignal?.aborted === true) {
+			await this.#releaseSupervisor(attemptId, supervisor);
+			throw sourceSignal.reason;
+		}
+		const controller = new AbortController();
+		this.#observationControllers.set(attemptId, controller);
+		const abort = (): void => controller.abort(sourceSignal?.reason);
+		sourceSignal?.addEventListener("abort", abort, { once: true });
+		const events = supervisor.consumeEvents(
+			(signal) => this.#driver.events(handle, { signal }),
+			handle,
+			controller.signal,
+		);
+		const receipt = supervisor.run(
+			"receipt",
+			(signal) => this.#driver.read(handle, { signal }),
+			controller.signal,
+			"terminal_evidence",
+		);
+		try {
+			const [, evidence] = await Promise.all([events, receipt]);
+			return evidence;
+		} catch (error) {
+			if (!controller.signal.aborted) controller.abort();
+			await Promise.allSettled([events, receipt]);
+			throw error;
+		} finally {
+			sourceSignal?.removeEventListener("abort", abort);
+			if (this.#observationControllers.get(attemptId) === controller) {
+				this.#observationControllers.delete(attemptId);
+			}
 		}
 	}
 
@@ -658,6 +1190,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		mapping: CanonicalExternalConnectorMapping,
 		evidence: ExternalConnectorTerminalEvidence,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const priorReceipt = await this.#requirePriorReceipt(attempt);
+		if (!priorReceipt.ok) return priorReceipt;
+		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
 		if (operation.status === "terminal") {
 			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector operation is already terminal", attempt.attemptId));
 		}
@@ -700,6 +1235,110 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			sideEffectState: canonicalEvidence.sideEffectState,
 		};
 		const checked = validateAttemptReceiptForProvider(receipt, {
+			providerId: this.providerId,
+			providerClass: this.providerClass,
+		});
+		if (!checked.ok) return checked;
+		const persisted = await this.#store.writeReceipt(checked.value);
+		await this.#store.writeOperation(
+			transitionExternalConnectorOperation(operation, "terminal", {
+				now: this.#now(),
+				receiptId: persisted.attemptReceiptId,
+			}),
+		);
+		this.#pendingCancellations.delete(attempt.attemptId);
+		return Result.ok(persisted);
+	}
+
+	async #settleCancelledBeforeLaunch(
+		attempt: Attempt,
+		correlation: ExecutionCorrelation,
+		operation?: ExternalConnectorOperation,
+		sourceSignal?: AbortSignal,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const deadline = isDeadlineAbort(sourceSignal);
+		const receiptId = `attempt_receipt_${attempt.attemptId}`;
+		const checked = validateAttemptReceiptForProvider({
+			schemaVersion: 1,
+			attemptReceiptId: receiptId,
+			taskId: attempt.taskId,
+			dispatchId: attempt.dispatchId,
+			attemptId: attempt.attemptId,
+			providerId: this.providerId,
+			bindingId: attempt.bindingId,
+			bindingEpochIds: [...attempt.bindingEpochIds],
+			status: deadline ? "failed" : "cancelled",
+			workerReceiptRefs: [],
+			artifacts: [],
+			...(deadline ? {
+				error: {
+					code: "run_deadline_exceeded",
+					message: "External connector run deadline was exceeded.",
+					category: "deadline" as const,
+					retryable: false,
+				},
+			} : {}),
+			provenance: {
+				producerKind: "external_connector",
+				providerId: this.providerId,
+				producedAt: this.#now(),
+				correlation: { ...correlation, attemptReceiptId: receiptId },
+			},
+			sideEffectState: "none",
+		}, {
+			providerId: this.providerId,
+			providerClass: this.providerClass,
+		});
+		if (!checked.ok) return checked;
+		const persisted = await this.#store.writeReceipt(checked.value);
+		if (operation !== undefined && operation.status !== "terminal") {
+			await this.#store.writeOperation(
+				transitionExternalConnectorOperation(operation, "terminal", {
+					now: this.#now(),
+					receiptId: persisted.attemptReceiptId,
+				}),
+			);
+		}
+		this.#pendingCancellations.delete(attempt.attemptId);
+		return Result.ok(persisted);
+	}
+
+	async #settleFailedWithoutMapping(
+		attempt: Attempt,
+		correlation: ExecutionCorrelation,
+		operation: ExternalConnectorOperation,
+		sourceSignal?: AbortSignal,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const deadline = isDeadlineAbort(sourceSignal);
+		const receiptId = `attempt_receipt_${attempt.attemptId}`;
+		const checked = validateAttemptReceiptForProvider({
+			schemaVersion: 1,
+			attemptReceiptId: receiptId,
+			taskId: attempt.taskId,
+			dispatchId: attempt.dispatchId,
+			attemptId: attempt.attemptId,
+			providerId: this.providerId,
+			bindingId: attempt.bindingId,
+			bindingEpochIds: [...attempt.bindingEpochIds],
+			status: "failed",
+			workerReceiptRefs: [],
+			artifacts: [],
+			error: {
+				code: deadline ? "run_deadline_exceeded" : "side_effect_unknown",
+				message: deadline
+					? "External connector run deadline was exceeded."
+					: "External connector start outcome could not be proven.",
+				category: deadline ? "deadline" as const : "side_effect_unknown" as const,
+				retryable: false,
+			},
+			provenance: {
+				producerKind: "external_connector",
+				providerId: this.providerId,
+				producedAt: this.#now(),
+				correlation: { ...correlation, attemptReceiptId: receiptId },
+			},
+			sideEffectState: "unknown",
+		}, {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
 		});

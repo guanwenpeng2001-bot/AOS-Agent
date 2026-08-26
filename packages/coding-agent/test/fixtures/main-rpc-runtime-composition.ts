@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import {
 	createModelProfileRevision,
+	createConnectorCapabilitySnapshot,
 	createRoleRevision,
 	createScopedMemoryStore,
 	createTaskEnvelope,
@@ -14,6 +15,7 @@ import {
 	SessionT5Ledger,
 	type AgentBinding,
 	type ArtifactStoreProvider,
+	type ExternalAgentConnector,
 	type ModelProfile,
 	type QuotaProvider,
 	type RevisionReference,
@@ -23,13 +25,11 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	createAgentRuntimeCompositionFactory,
-	createExternalAgentAdapterRegistry,
-	createExternalAgentPreparedBinding,
+	createExternalConnectorRegistry,
 	createTrustedWorkerSandboxComposition,
 	main,
 	SchedulerExecutorRegistry,
 	type AgentRuntimeCompositionContext,
-	type ExternalAgentAdapter,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
@@ -39,9 +39,7 @@ import { createTaskCredentialTestProvider } from "../../src/core/task-credential
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
-const LATER = "2026-08-26T00:01:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fake-worker-child.ts", import.meta.url));
-const external = { namespace: "main-rpc-test", externalSessionId: "main-rpc-external" } as const;
 const schedulerAdmissionGate = Object.freeze({ getByBusinessKey: () => undefined });
 const settleRunAtHost = async () => {
 	throw new Error("The main RPC composition fixture contains no graph work");
@@ -277,42 +275,46 @@ function createScheduler(context: AgentRuntimeCompositionContext): TrustedSchedu
 	};
 }
 
-function createAdapter(): ExternalAgentAdapter {
-	return {
-		id: "main-rpc-trusted-adapter",
-		probe: async (target) => ({
-			schemaVersion: 1,
-			adapterId: "main-rpc-trusted-adapter",
-			targetId: target.targetId,
-			protocol: { name: "main-rpc-test", version: "1" },
-			status: "ready",
-			capabilities: {
-				start: true,
-				events: "none",
-				cancel: "strong",
-				receipt: "terminal",
-				resume: false,
-				artifacts: false,
-				toolGateway: false,
-			},
-			observedAt: NOW,
-		}),
-		prepare: async (request, snapshot) => createExternalAgentPreparedBinding(request, snapshot),
-		start: async () => ({
-			external,
-			events: { async *[Symbol.asyncIterator]() {} },
-			receipt: Promise.resolve({
-				schemaVersion: 1,
-				external,
-				status: "completed",
-				endedAt: NOW,
-				artifactRefs: [],
-				sideEffects: "none",
-			}),
-			cancel: async () => {},
-			heartbeat: async () => ({ leaseId: "main-rpc-lease", expiresAt: LATER }),
-		}),
+function createConnectorRegistry() {
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: "main-rpc-trusted-connector",
+		revision: 1,
+		protocol: { name: "main-rpc-test", version: "1" },
+		modelAccess: "none",
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
+	});
+	const unsupported = new FoundationError("unsupported_feature", "initialize-only connector fixture");
+	const connector: ExternalAgentConnector = {
+		schemaVersion: 1,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector",
+		capabilities: async () => [],
+		dispose: async () => {},
+		probeCapabilities: async () => Result.ok(snapshot),
+		createAttempt: async () => Result.err(unsupported),
+		runAttempt: async () => Result.err(unsupported),
+		cancelAttempt: async () => Result.err(unsupported),
+		resumeAttempt: async () => Result.err(unsupported),
+		reconcileAttempt: async () => Result.err(unsupported),
 	};
+	const registry = createExternalConnectorRegistry();
+	const registered = registry.registerPrepared({
+		descriptor: {
+			schemaVersion: 1,
+			providerId: snapshot.providerId,
+			providerClass: "external_connector",
+			revision: snapshot.revision,
+			capabilitySnapshotDigest: snapshot.digest,
+		},
+		connector,
+		trusted: true,
+	}, snapshot);
+	if (!registered.ok) throw registered.error;
+	return registry;
 }
 
 const runtimeComposition = createAgentRuntimeCompositionFactory({
@@ -370,14 +372,9 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		}
 		return scheduler;
 	},
-	externalAgentRegistry: (context) => {
+	externalConnectorRegistry: (context) => {
 		requireCanonicalContext(context);
-		const registry = createExternalAgentAdapterRegistry();
-		registry.register(createAdapter(), {
-			displayName: "Main RPC trusted adapter",
-			targets: ["main-rpc-target"],
-		});
-		return registry;
+		return createConnectorRegistry();
 	},
 	taskCredentialProvider: (context) => {
 		requireCanonicalContext(context);

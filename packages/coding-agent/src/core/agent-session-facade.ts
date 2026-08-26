@@ -73,7 +73,9 @@ import {
 import { classifyProviderFailure } from "./execution-error.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { ExternalAgentAdapterRegistryView } from "./external-agent-registry.ts";
+import type {
+	ExternalConnectorRegistry,
+} from "./external-agent-registry.ts";
 import {
 	getLatestCompactionEntry,
 	SessionManager,
@@ -704,7 +706,7 @@ export class CanonicalAgentSessionServices {
 			subagents: this.runtimeComposition.subagents,
 			scheduler: bindAgentRuntimeSchedulerComposition(this.runtimeComposition, this.sessionManager),
 			policyProfile: canonical.policyProfile,
-			externalAgentRegistry: this.runtimeComposition.externalAgentRegistry,
+			externalConnectorRegistry: this.runtimeComposition.externalConnectorRegistry,
 			taskCredentialProvider: this.runtimeComposition.taskCredentialProvider,
 			taskCredentialPolicyMaxTtlMs: this.runtimeComposition.taskCredentialPolicyMaxTtlMs,
 			taskCredentialProviderAvailability: canonical.taskCredentialProviderAvailability,
@@ -3327,8 +3329,8 @@ export class CanonicalAgentSessionServices {
 		return this.controlPlane.getActiveBindingHandles();
 	}
 
-	getExternalAgentRegistry(): ExternalAgentAdapterRegistryView | undefined {
-		return this.controlPlane.getExternalAgentRegistry();
+	getExternalConnectorRegistry(): ExternalConnectorRegistry | undefined {
+		return this.controlPlane.getExternalConnectorRegistry();
 	}
 
 	getWorkerRegistry():
@@ -3775,7 +3777,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getActiveCapabilityProfile",
 	"setModelBrokerResolution",
 	"getActiveBindingHandles",
-	"getExternalAgentRegistry",
+	"getExternalConnectorRegistry",
 	"getWorkerRegistry",
 	"getSubagentRegistry",
 	"getTaskCredentialService",
@@ -4000,7 +4002,7 @@ export class AgentSession {
 	declare readonly getActiveCapabilityProfile: CanonicalAgentSessionServices["getActiveCapabilityProfile"];
 	declare readonly setModelBrokerResolution: CanonicalAgentSessionServices["setModelBrokerResolution"];
 	declare readonly getActiveBindingHandles: CanonicalAgentSessionServices["getActiveBindingHandles"];
-	declare readonly getExternalAgentRegistry: CanonicalAgentSessionServices["getExternalAgentRegistry"];
+	declare readonly getExternalConnectorRegistry: CanonicalAgentSessionServices["getExternalConnectorRegistry"];
 	declare readonly getWorkerRegistry: CanonicalAgentSessionServices["getWorkerRegistry"];
 	declare readonly getSubagentRegistry: CanonicalAgentSessionServices["getSubagentRegistry"];
 	declare readonly getTaskCredentialService: CanonicalAgentSessionServices["getTaskCredentialService"];

@@ -14,6 +14,7 @@
 import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
+	fingerprintFoundationValue,
 	type CanonicalRunResult,
 	type FoundationError,
 	LayeredResultSettlement,
@@ -24,8 +25,8 @@ import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/agent-session.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/agent-session-facade.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
+import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
 import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
@@ -37,32 +38,23 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import {
-	EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH,
-	EXTERNAL_AGENT_ERROR_CODES,
-	EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY,
-	type ExternalAgentAdapter,
-	type ExternalAgentCapabilitySnapshot,
-	ExternalAgentError,
-	type ExternalAgentPreparedBinding,
-	type ExternalAgentPrepareRequest,
-	type ExternalAgentRunHandle,
-	type ExternalAgentSelection,
-	type ExternalAgentStartRequest,
-	externalAgentCapabilityError,
-	isExternalAgentCapabilitySnapshot,
-	isExternalAgentPreparedBinding,
-	isExternalAgentSelection,
-	runExternalAgentAdapter,
-	serializeExternalAgentSelection,
-	toExternalAgentError,
-	verifyExternalAgentPreparedBinding,
-} from "../../core/external-agent-adapter.ts";
-import type { ExternalAgentResolvedSelection as ExternalAgentResolved } from "../../core/external-agent-registry.ts";
+	type CanonicalExternalAgentInput,
+	gateCanonicalExternalAgentInputBeforeAcceptance,
+} from "../../core/external-agent-input.ts";
 import {
-	type ExternalAdapterIdentity,
-	isExternalExecutionRef,
-	serializeExternalExecutionRef,
-} from "../../core/external-session-mapping.ts";
+	type ExternalConnectorResolvedSelection,
+	type ExternalConnectorSelection,
+	isExternalConnectorSelection,
+	serializeExternalConnectorSelection,
+} from "../../core/external-agent-registry.ts";
+import {
+	executePreparedExternalConnectorProductRun,
+	externalConnectorProductIdentity,
+	persistExternalConnectorProductRunAfterAcceptance,
+	prepareExternalConnectorProductRun,
+	type ExternalConnectorProductAdmission,
+} from "../../core/external-connector-product.ts";
+import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
@@ -76,16 +68,6 @@ import type {
 	ModelRouteSelection,
 } from "../../core/model-broker.ts";
 import { foldModelBrokerLedger, type ModelBindingLedgerRecord } from "../../core/model-broker-ledger.ts";
-import {
-	createSessionRemoteOperationLedger,
-	RemoteOperationError,
-	type RemoteOperationHeartbeat,
-	type RemoteOperationInvoker,
-	type RemoteOperationLease,
-	type RemoteOperationRequest,
-	type RemoteOperationResult,
-	startRemoteOperation,
-} from "../../core/remote-operation.ts";
 import type {
 	AutomationError,
 	PublicRunStreamEvent,
@@ -110,9 +92,9 @@ import {
 	isRunClientRequestId,
 	isRunTimestamp,
 	isTerminalStatus,
+	RUN_LEDGER_CUSTOM_TYPE,
 	redactAutomationError,
 	redactErrorText,
-	RUN_LEDGER_CUSTOM_TYPE,
 	serializePublicAutomationError,
 	serializePublicCapabilityBinding,
 	serializePublicContextDrift,
@@ -128,6 +110,7 @@ import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manag
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import {
 	isTaskCredentialScope,
 	serializeTaskCredentialDeliveryReceipt,
@@ -649,13 +632,13 @@ function toRpcMcpAttachmentReceipt(attachment: McpAttachment): RpcMcpAttachmentR
  * SessionManager. Resume idempotency must inspect durable state before
  * switchSession() runs any recovery side effects.
  */
-function loadReadOnlyRunCoordinator(
-	sessionPath: string,
-): {
-	sessionId: string;
-	coordinator: RunLifecycleCoordinator;
-	getRunByClientRequestId(clientRequestId: string, scope: "start" | "resume"): RunRequestLookup | undefined;
-} | undefined {
+function loadReadOnlyRunCoordinator(sessionPath: string):
+	| {
+			sessionId: string;
+			coordinator: RunLifecycleCoordinator;
+			getRunByClientRequestId(clientRequestId: string, scope: "start" | "resume"): RunRequestLookup | undefined;
+	  }
+	| undefined {
 	let fileEntries: ReturnType<typeof loadEntriesFromFile>;
 	try {
 		fileEntries = loadEntriesFromFile(sessionPath);
@@ -730,62 +713,6 @@ function hashResumeTargetPath(sessionPath: string): string {
 	return `path:${crypto.createHash("sha256").update(sessionPath, "utf8").digest("hex")}`;
 }
 
-/** Bounded probe deadline for an External Agent Adapter target before any start. */
-const EXTERNAL_AGENT_PROBE_DEADLINE_MS = 10_000;
-
-/**
- * Fixed host-authored `start_rejected` messages that may pass through the
- * external start error mapping verbatim. These are the only lifecycle
- * rejection texts this host creates for the external path (session switch,
- * shutdown, connection close, and the consumed-reservation invariant); any
- * other message carried by a `{code: "start_rejected", message}` payload is
- * caller data and is never forwarded.
- */
-const EXTERNAL_AGENT_START_REJECTED_MESSAGES: ReadonlySet<string> = new Set([
-	"The Host switched sessions before the external agent started.",
-	"Automation Host is shutting down; no new runs are accepted.",
-	"The RPC connection closed before the Run was accepted.",
-	"reservation has already been accepted or released",
-]);
-
-/**
- * Wrap a validated External Agent Adapter run handle in the existing Remote
- * Operation invoker contract, so its observation is recorded through
- * `startRemoteOperation` and its Session ledger instead of a second loop.
- * `execute` awaits the driver terminal receipt and maps only bounded
- * artifacts and the side-effect vocabulary; `cancel` and `heartbeat` delegate
- * to the driver handle, which is idempotent. Without a lease in the adapter
- * start request, heartbeat fails closed (the driver and the operation both
- * reject). The adapter and Remote Operation receipts remain observations; only
- * a canonical Foundation result can author the Automation terminal state.
- */
-export function createExternalAgentRemoteInvoker(adapterRun: ExternalAgentRunHandle): RemoteOperationInvoker {
-	return {
-		async execute(): Promise<RemoteOperationResult> {
-			const receipt = await adapterRun.receipt;
-			if (receipt.status === "completed") {
-				return {
-					...(receipt.artifactRefs.length === 0 ? {} : { artifactRefs: receipt.artifactRefs }),
-					...(receipt.sideEffects === "none" ? {} : { sideEffects: receipt.sideEffects }),
-				};
-			}
-			// The driver already rewrote cancelled receipts that report associated
-			// or unknown side effects into failed side-effect-unknown, so a
-			// `cancelled` status here is side-effect-free and maps to the
-			// operation's cancelled category.
-			throw new RemoteOperationError(receipt.status === "cancelled" ? "cancelled" : "invalid", {
-				retryable: false,
-				sideEffects: receipt.sideEffects,
-			});
-		},
-		async cancel(): Promise<void> {
-			await adapterRun.cancel();
-		},
-		async heartbeat(_heartbeat: RemoteOperationHeartbeat): Promise<RemoteOperationLease> {
-			return adapterRun.heartbeat();
-		},
-	};
-}
 
 /**
  * Owns the RPC and Automation Host command/lifecycle state independently of
@@ -869,9 +796,11 @@ export class RpcHostController {
 			clientRequestId: string;
 			fingerprint: string;
 			key: string;
+			claimToken?: object;
 		};
 		type PendingRunRequest = {
 			fingerprint: string;
+			claimToken: object;
 			waiters: Array<{ id: string | undefined; command: "run.start" | "run.resume" }>;
 		};
 		type RunRequestGate =
@@ -879,6 +808,13 @@ export class RpcHostController {
 			| { kind: "new"; identity: RunRequestIdentity }
 			| { kind: "pending" }
 			| { kind: "response"; response: RpcAutomationResponse };
+		interface ExternalPendingStartControl {
+			runId?: RunId;
+			requestClaim?: RunRequestIdentity;
+			deadlineController?: AbortController;
+			lifecycleController?: AbortController;
+			accepted?: boolean;
+		}
 		interface RpcSessionBinding {
 			session: AgentSession;
 			coordinator?: RunLifecycleCoordinator;
@@ -924,22 +860,13 @@ export class RpcHostController {
 		const pendingStartPromises = new Set<Promise<RpcAutomationResponse | undefined>>();
 		/**
 		 * Active external agent executions keyed by runId. Cancel is forwarded to
-		 * the adapter handle, which the driver makes idempotent.
+		 * the current Connector's same-Attempt cancel path.
 		 */
-		/**
-		 * Host deadline controllers keyed by runId. Lifecycle transitions abort
-		 * them for external runs only, so a pending start readiness race or a
-		 * started observation race resolves even when the adapter never returns.
-		 */
-		/**
-		 * Deadline controllers of pending external starts, registered when the
-		 * external path commits (before preflight and before the currentBinding.externalRuns
-		 * entry exists) so lifecycle transitions abort preflight-phase starts
-		 * too; preflight is signal-aware and fails closed on the abort.
-		 */
+		/** Host deadline controllers keyed by runId; ordinary lifecycle cancellation never aborts them. */
+		/** Lifecycle-only controllers registered before current Connector admission begins. */
 		/**
 		 * Pending external start promises keyed by runId. Lifecycle transitions
-		 * must never await them: an adapter or preflight that ignores the abort
+		 * must never await them: a driver or preflight that ignores the abort
 		 * signal would block detach/rebind forever. They are aborted best-effort
 		 * and their continuation fails closed on the generation/epoch guards.
 		 */
@@ -1498,16 +1425,19 @@ export class RpcHostController {
 		 * never fabricates them. Returns the stable failure code or undefined
 		 * when the preflight passes.
 		 */
-		const taskCredentialIssuePreflight = (binding: RpcSessionBinding, input: {
-			readonly taskId: string;
-			readonly graphRevision: number;
-			readonly nodeId: string;
-			readonly stageId?: string;
-			readonly stageRevision?: number;
-			readonly runId: string;
-			readonly scopes: ReadonlyArray<TaskCredentialScope>;
-			readonly requestedTtlMs: number;
-		}): TaskCredentialError["code"] | undefined => {
+		const taskCredentialIssuePreflight = (
+			binding: RpcSessionBinding,
+			input: {
+				readonly taskId: string;
+				readonly graphRevision: number;
+				readonly nodeId: string;
+				readonly stageId?: string;
+				readonly stageRevision?: number;
+				readonly runId: string;
+				readonly scopes: ReadonlyArray<TaskCredentialScope>;
+				readonly requestedTtlMs: number;
+			},
+		): TaskCredentialError["code"] | undefined => {
 			// The stage pair must appear together or not at all.
 			if ((input.stageId === undefined) !== (input.stageRevision === undefined)) {
 				return "task_credential_invalid";
@@ -1724,6 +1654,20 @@ export class RpcHostController {
 			return Object.keys(command).every((key) => allowed.has(key));
 		};
 
+		const EXTERNAL_RUN_START_KEYS = new Set([
+			"id",
+			"type",
+			"message",
+			"clientRequestId",
+			"deadlineAt",
+			"images",
+			"externalConnector",
+			"capabilityProfile",
+			"policyProfile",
+			"modelRoute",
+			"modelRole",
+		]);
+
 		const slashRunInputError = (
 			id: string | undefined,
 			command: "run.start" | "run.resume",
@@ -1743,18 +1687,12 @@ export class RpcHostController {
 
 		const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-		/** Stable code-derived External Agent Adapter error text; raw detail never escapes. */
-		const externalAgentMessage = (code: ExternalAgentError["code"]): string => new ExternalAgentError(code).message;
-
-		/** Map an External Agent Adapter failure to the stable Automation Host contract. */
-		const externalAgentAutomationError = (err: unknown, fallback: ExternalAgentError["code"]): AutomationError => {
-			const agentError = err instanceof ExternalAgentError ? err : toExternalAgentError(err, fallback);
-			return createAutomationError(agentError.code, agentError.message, agentError.retryable);
-		};
-
 		const asAutomationError = (err: unknown): AutomationError => {
 			if (typeof err === "object" && err !== null && "code" in err && "message" in err && "retryable" in err) {
 				const candidate = err as AutomationError;
+				if (!isAutomationErrorCode(candidate.code)) {
+					return createAutomationError("start_rejected", errorMessage(err), false);
+				}
 				if (isAuditAutomationCode(candidate.code)) {
 					return createAutomationError(candidate.code, auditErrorMessage(candidate.code), false);
 				}
@@ -1858,6 +1796,7 @@ export class RpcHostController {
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
 			inheritedBinding?: ModelBindingLedgerRecord,
+			commitResolution = true,
 		): Promise<{ resolution?: BrokerModelResolution; error?: AutomationError }> => {
 			if (modelRoute !== undefined && modelRole !== undefined) {
 				return {
@@ -1928,16 +1867,20 @@ export class RpcHostController {
 					) {
 						return { error: unavailableModelError() };
 					}
+					if (commitResolution) {
+						try {
+							await binding.session.setModel(model);
+						} catch {
+							return { error: unavailableModelError() };
+						}
+					}
+				}
+				if (commitResolution) {
 					try {
-						await binding.session.setModel(model);
+						binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
 					} catch {
 						return { error: unavailableModelError() };
 					}
-				}
-				try {
-					binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
-				} catch {
-					return { error: unavailableModelError() };
 				}
 				return { resolution: result.resolution };
 			}
@@ -1952,22 +1895,27 @@ export class RpcHostController {
 
 			let model: ReturnType<typeof binding.session.modelRuntime.getModel>;
 			try {
-				model = binding.session.modelRuntime.getModel(result.resolution.reference.provider, result.resolution.reference.id);
+				model = binding.session.modelRuntime.getModel(
+					result.resolution.reference.provider,
+					result.resolution.reference.id,
+				);
 			} catch {
 				return { error: unavailableModelError() };
 			}
 			if (model === undefined) return { error: unavailableModelError() };
-			try {
-				await binding.session.setModel(model);
-				binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
-				if (
-					result.resolution.reference.thinkingLevel !== undefined &&
-					isThinkingLevel(result.resolution.reference.thinkingLevel)
-				) {
-					binding.session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+			if (commitResolution) {
+				try {
+					await binding.session.setModel(model);
+					binding.session.setModelBrokerResolution(result.resolution, inheritedBinding?.bindingId);
+					if (
+						result.resolution.reference.thinkingLevel !== undefined &&
+						isThinkingLevel(result.resolution.reference.thinkingLevel)
+					) {
+						binding.session.setThinkingLevel(result.resolution.reference.thinkingLevel);
+					}
+				} catch {
+					return { error: unavailableModelError() };
 				}
-			} catch {
-				return { error: unavailableModelError() };
 			}
 			return { resolution: result.resolution };
 		};
@@ -2008,7 +1956,7 @@ export class RpcHostController {
 				modelRoute?: ModelRouteSelection;
 				modelRole?: ModelRoleSelection;
 				external?: ExternalExecutionRef;
-				externalAgent?: ExternalAgentSelection;
+				externalConnector?: ExternalConnectorSelection;
 				deadlineAt?: string;
 			},
 		): RunRequestIdentity | undefined => {
@@ -2029,7 +1977,7 @@ export class RpcHostController {
 					modelRoute: input.modelRoute,
 					modelRole: input.modelRole,
 					external: input.external,
-					externalAgent: input.externalAgent,
+					externalConnector: input.externalConnector,
 					deadlineAt: input.deadlineAt,
 				}),
 				key: `${identityScope}\u0000${clientRequestId}`,
@@ -2132,14 +2080,24 @@ export class RpcHostController {
 				pending.waiters.push({ id, command });
 				return { kind: "pending" };
 			}
-			pendingRunRequests.set(identity.key, { fingerprint: identity.fingerprint, waiters: [] });
-			return { kind: "new", identity };
+			const claimedIdentity = { ...identity, claimToken: {} };
+			pendingRunRequests.set(identity.key, {
+				fingerprint: identity.fingerprint,
+				claimToken: claimedIdentity.claimToken,
+				waiters: [],
+			});
+			return { kind: "new", identity: claimedIdentity };
 		};
 
 		const finishRunRequest = (identity: RunRequestIdentity | undefined, response: RpcAutomationResponse): void => {
 			if (identity === undefined) return;
 			const pending = pendingRunRequests.get(identity.key);
-			if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+			if (
+				pending === undefined ||
+				pending.fingerprint !== identity.fingerprint ||
+				identity.claimToken === undefined ||
+				pending.claimToken !== identity.claimToken
+			) return;
 			pendingRunRequests.delete(identity.key);
 			for (const waiter of pending.waiters) {
 				output({ ...response, id: waiter.id, command: waiter.command } as RpcAutomationResponse);
@@ -2157,7 +2115,12 @@ export class RpcHostController {
 		const discardRunRequest = (identity: RunRequestIdentity | undefined): void => {
 			if (identity === undefined) return;
 			const pending = pendingRunRequests.get(identity.key);
-			if (pending === undefined || pending.fingerprint !== identity.fingerprint) return;
+			if (
+				pending === undefined ||
+				pending.fingerprint !== identity.fingerprint ||
+				identity.claimToken === undefined ||
+				pending.claimToken !== identity.claimToken
+			) return;
 			pendingRunRequests.delete(identity.key);
 		};
 
@@ -2186,7 +2149,7 @@ export class RpcHostController {
 				return;
 			}
 			if (canonical === undefined) {
-				// Prompt promises, adapter receipts, process state, and agent events are
+				// Prompt promises, Connector evidence, process state, and agent events are
 				// observations only. Without the durable RunReceipt chain the Run stays
 				// non-terminal and recovery reports it interrupted.
 				if (binding.activeHandle === handle) {
@@ -2232,163 +2195,76 @@ export class RpcHostController {
 			})();
 			binding.runPromptPromises.set(handle.runId, tracked);
 		};
-
-		/**
-		 * Race a terminal promise against the Run deadline signal. The deadline is
-		 * a hard bound: an unresponsive adapter must not keep the Run open past
-		 * its deadline. Resolves undefined when the deadline fires first.
-		 */
-		const raceWithDeadlineSignal = <T>(signal: AbortSignal, terminal: Promise<T>): Promise<T | undefined> => {
-			if (signal.aborted) return Promise.resolve(undefined);
-			return new Promise((resolve) => {
-				const onAbort = (): void => resolve(undefined);
-				signal.addEventListener("abort", onAbort, { once: true });
-				void terminal.then(
-					(value) => {
-						signal.removeEventListener("abort", onAbort);
-						resolve(value);
-					},
-					() => {
-						signal.removeEventListener("abort", onAbort);
-						resolve(undefined);
-					},
-				);
-			});
-		};
-
-		/**
-		 * Track an external execution through the existing Remote Operation
-		 * machinery and forward bounded events. Adapter and Remote Operation
-		 * receipts are observations only; terminal status requires a canonical
-		 * Foundation result chain.
-		 */
-		const trackExternalRun = (
-			binding: RpcSessionBinding,
-			handle: RunHandle,
-			adapterRun: ExternalAgentRunHandle,
-			operationId: string,
-			deadlineSignal: AbortSignal | undefined,
-			adapter?: ExternalAdapterIdentity,
-		): void => {
-			const remoteRequest: RemoteOperationRequest = {
-				operationId,
-				runId: handle.runId,
-				sessionId: binding.session.sessionId,
-				...(handle.record.capabilityBindingId === undefined
-					? {}
-					: { capabilityBindingId: handle.record.capabilityBindingId }),
-				...(handle.record.modelBindingId === undefined ? {} : { modelBindingId: handle.record.modelBindingId }),
-				...(handle.record.policyBindingId === undefined ? {} : { policyBindingId: handle.record.policyBindingId }),
-				...(handle.record.deadlineAt === undefined ? {} : { deadlineAt: handle.record.deadlineAt }),
-				...(adapter === undefined ? {} : { adapter }),
-			};
-			// A remote.operation ledger append failure is observed but cannot author
-			// Automation terminal state.
-			let operationLedgerFailed = false;
-			const remoteHandle = startRemoteOperation(createExternalAgentRemoteInvoker(adapterRun), remoteRequest, {
-				signal: deadlineSignal,
-				ledger: createSessionRemoteOperationLedger(getAgentSessionLedger(binding.session)),
-				now: () => new Date().toISOString(),
-				onLedgerError: () => {
-					operationLedgerFailed = true;
-				},
-			});
-			binding.externalRuns.set(handle.runId, {
-				cancel: async () => {
-					// The operation cancels the provider and the driver cancel is
-					// idempotent; both paths reach the adapter handle exactly once.
-					await remoteHandle.cancel();
-					await adapterRun.cancel();
-				},
-			});
-			const tracked = (async (): Promise<void> => {
-				// The Remote Operation receipt is durably recorded as an observation.
-				// The Run deadline still bounds how long this transport waits.
-				const remoteReceipt = await raceWithDeadlineSignal(
-					deadlineSignal ?? new AbortController().signal,
-					remoteHandle.receipt,
-				);
-				if (remoteReceipt === undefined) {
-					handle.requestDeadlineExceeded();
-					await observeRunCompletion(binding, handle);
-					return;
-				}
-				// The Remote Operation maps the same Run deadline into its own
-				// request.deadlineAt timer. When that timer fires before the host
-				// deadlineController, record deadline intent and wait for Foundation;
-				// the observation itself cannot decide failed versus cancelled.
-				if (remoteReceipt.error?.category === "deadline") {
-					handle.requestDeadlineExceeded();
-					await observeRunCompletion(binding, handle);
-					return;
-				}
-				// A failed observation append cannot complete or cancel the Run.
-				if (operationLedgerFailed) {
-					await observeRunCompletion(binding, handle);
-					return;
-				}
-				// Map bounded events only: validated started/progress/artifact
-				// observations become run.event records; transcripts, prompts, and
-				// raw protocol data never cross the driver boundary.
-				for (const event of adapterRun.eventsList) {
-					const emitted = handle.captureSessionEvent({ type: "external_agent_event", event });
-					if (emitted !== undefined) outputRunEvent(emitted);
-				}
-				// The adapter receipt is an observation only. Until the External
-				// Connector creates the canonical Foundation result chain, every
-				// outcome (including side-effect-unknown) remains non-terminal.
-				const adapterReceipt = await adapterRun.receipt;
-				if (adapterReceipt.status === "cancelled") handle.requestCancel();
-				await observeRunCompletion(binding, handle);
-			})();
-			binding.externalRunSettlements.set(handle.runId, tracked);
-			void tracked.then(
-				() => {
-					binding.externalRuns.delete(handle.runId);
-					binding.externalRunSettlements.delete(handle.runId);
-				},
-				() => {
-					binding.externalRuns.delete(handle.runId);
-					binding.externalRunSettlements.delete(handle.runId);
-				},
-			);
-		};
-
-		/**
-		 * Forward the existing Run cancellation intent to the adapter's idempotent
-		 * cancel path during a host lifecycle transition (transport detach, host
-		 * shutdown, session switch). The run's deadline controller is aborted
-		 * first so a pending start readiness race or started observation race
-		 * resolves even when the adapter never returns: the driver cancel alone
-		 * awaits startGate and cannot unblock a start that never resolves. Started
-		 * observations are awaited before canonical lookup; a pending start fails closed
-		 * through its own continuation, which forwards the same idempotent cancel.
-		 * Local runs are untouched and keep the Session abort path. Returns true
-		 * when the run was an external execution.
-		 */
+		/** Forward lifecycle cancellation through the Connector before observing settlement. */
 		const forwardExternalRunLifecycleCancel = async (binding: RpcSessionBinding, runId: RunId): Promise<boolean> => {
 			const externalRun = binding.externalRuns.get(runId);
 			if (externalRun === undefined) return false;
-			binding.runAbortControllers.get(runId)?.abort();
-			const settlement = binding.externalRunSettlements.get(runId);
-			if (settlement !== undefined) {
-				await settlement;
+			try {
+				await externalRun.cancel();
+			} catch {
+				// Connector cancellation owns its bounded reconciliation result.
 			}
-			void externalRun.cancel().catch(() => {
-				// The driver retries idempotently; the tracked settlement owns the terminal.
-			});
 			return true;
 		};
 
 		const trackPendingStart = (
 			pending: Promise<RpcAutomationResponse | undefined>,
+			binding?: RpcSessionBinding,
+			control?: ExternalPendingStartControl,
+			id?: string,
+			command: "run.start" | "run.resume" = "run.start",
 		): Promise<RpcAutomationResponse | undefined> => {
-			pendingStartPromises.add(pending);
-			void pending.then(
-				() => pendingStartPromises.delete(pending),
-				() => pendingStartPromises.delete(pending),
+			const tracked = control?.runId === undefined || control.lifecycleController === undefined || control.deadlineController === undefined
+				? pending
+				: raceWithAbortSignal(
+					raceWithAbortSignal(pending, control.lifecycleController.signal),
+					control.deadlineController.signal,
+				).catch((error: unknown) => {
+					if (control.deadlineController?.signal.aborted === true) {
+						const response = automationError(
+							id,
+							command,
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							),
+						);
+						finishRunRequest(control.requestClaim, response);
+						return response;
+					}
+					if (control.lifecycleController?.signal.aborted === true) {
+						discardRunRequest(control.requestClaim);
+						return undefined;
+					}
+					discardRunRequest(control.requestClaim);
+					throw error;
+				});
+			pendingStartPromises.add(tracked);
+			if (binding !== undefined && control?.runId !== undefined) {
+				binding.pendingExternalStarts.set(control.runId, tracked);
+			}
+			void tracked.then(
+				() => {
+					pendingStartPromises.delete(tracked);
+					if (binding !== undefined && control?.runId !== undefined) {
+						if (binding.pendingExternalStarts.get(control.runId) === tracked) {
+							binding.pendingExternalStarts.delete(control.runId);
+						}
+						if (!control.accepted) clearRunDeadline(binding, control.runId);
+					}
+				},
+				() => {
+					pendingStartPromises.delete(tracked);
+					if (binding !== undefined && control?.runId !== undefined) {
+						if (binding.pendingExternalStarts.get(control.runId) === tracked) {
+							binding.pendingExternalStarts.delete(control.runId);
+						}
+						if (!control.accepted) clearRunDeadline(binding, control.runId);
+					}
+				},
 			);
-			return pending;
+			return tracked;
 		};
 
 		const startRun = async (
@@ -2408,12 +2284,13 @@ export class RpcHostController {
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
 			external: ExternalExecutionRef | undefined,
-			externalAgent: ExternalAgentSelection | undefined,
+			externalConnector: ExternalConnectorSelection | undefined,
 			deadlineAt: string | undefined,
 			clientRequestId: string | undefined,
 			precomputedRequestIdentity: RunRequestIdentity | undefined,
 			requestAlreadyClaimed: boolean,
 			expectedTransportEpoch?: number,
+			externalStartControl?: ExternalPendingStartControl,
 		): Promise<RpcAutomationResponse | undefined> => {
 			const runBinding = commandBinding;
 			const requestEpoch = expectedTransportEpoch ?? transportEpoch;
@@ -2426,33 +2303,17 @@ export class RpcHostController {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(id, commandType, auditCommandError(undefined, "external_mapping_invalid"));
 			}
-			if (externalAgent !== undefined && !isExternalAgentSelection(externalAgent)) {
+			if (externalConnector !== undefined && !isExternalConnectorSelection(externalConnector)) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(
 					id,
 					commandType,
-					createAutomationError(
-						"external_agent_adapter_invalid",
-						"The External Agent Adapter selection is invalid.",
-						false,
-					),
+					createAutomationError("external_binding_invalid", "The External Connector selection is invalid.", false),
 				);
 			}
-			// The adapter contract has start() only; there is no same-ref resume
-			// API, so an external run.resume can never be honored. Reject it instead
-			// of silently starting a fresh execution with a new operation id.
-			if (commandType === "run.resume" && externalAgent !== undefined) {
-				discardRunRequest(precomputedRequestIdentity);
-				return automationError(
-					id,
-					commandType,
-					createAutomationError(
-						"external_agent_resume_unsupported",
-						externalAgentMessage("external_agent_resume_unsupported"),
-						false,
-					),
-				);
-			}
+			// RPC run.resume cannot yet recover the source Run's canonical Attempt.
+			// The Connector itself retains durable same-Attempt resume; this product
+			// boundary must reject instead of silently creating a new Attempt.
 			if (deadlineAt !== undefined && !isRunTimestamp(deadlineAt)) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(
@@ -2508,11 +2369,15 @@ export class RpcHostController {
 					modelRoute,
 					modelRole,
 					external,
-					externalAgent,
+					externalConnector,
 					deadlineAt,
 				});
 			let requestClaim: RunRequestIdentity | undefined;
+			let proposedRunId: RunId | undefined;
 			const startFailure = (response: RpcAutomationResponse): RpcAutomationResponse => {
+				if (proposedRunId !== undefined && externalStartControl === undefined) {
+					clearRunDeadline(runBinding, proposedRunId);
+				}
 				finishRunRequest(requestClaim, response);
 				return response;
 			};
@@ -2539,6 +2404,7 @@ export class RpcHostController {
 				if (gate.kind === "pending") return undefined;
 				if (gate.kind === "new") requestClaim = gate.identity;
 			}
+			if (externalStartControl !== undefined) externalStartControl.requestClaim = requestClaim;
 			if (requestEpoch !== transportEpoch) {
 				return startFailure(
 					automationError(
@@ -2565,156 +2431,143 @@ export class RpcHostController {
 					),
 				);
 			}
-			// Explicit External Agent Adapter selection: resolve the trusted
-			// adapter/target and probe it with a bounded deadline BEFORE any
-			// preflight or ledger write. The probe carries no business input; only a
-			// target that confirms a known protocol/version and the minimum
-			// capability gate (start, terminal receipt, cooperative or strong cancel)
-			// may enter the existing Model/Capability/Policy/Sandbox preflight below.
-			let externalProbe:
-				| {
-						readonly adapter: ExternalAgentAdapter;
-						readonly selection: ExternalAgentSelection;
-						readonly snapshot: ExternalAgentCapabilitySnapshot;
-				  }
-				| undefined;
-			if (externalAgent !== undefined) {
-				const registry = runBinding.session.getExternalAgentRegistry?.();
-				if (registry === undefined) {
+			proposedRunId = crypto.randomUUID();
+			const deadlineController = new AbortController();
+			runBinding.runAbortControllers.set(proposedRunId, deadlineController);
+			if (externalStartControl !== undefined) {
+				const lifecycleController = new AbortController();
+				externalStartControl.runId = proposedRunId;
+				externalStartControl.deadlineController = deadlineController;
+				externalStartControl.lifecycleController = lifecycleController;
+				runBinding.externalPendingControllers.set(proposedRunId, lifecycleController);
+			}
+			if (deadlineAt !== undefined) {
+				const deadlineTimer = setTimeout(
+					() => {
+						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
+						if (runBinding.activeHandle?.runId === proposedRunId) {
+							runBinding.activeHandle.requestDeadlineExceeded();
+							if (externalConnector === undefined) {
+								void runBinding.session.abort().catch(() => {
+									// Foundation remains the only terminal authority.
+								});
+							}
+						}
+					},
+					Math.max(0, Date.parse(deadlineAt) - Date.now()),
+				);
+				if (
+					typeof deadlineTimer === "object" &&
+					"unref" in deadlineTimer &&
+					typeof deadlineTimer.unref === "function"
+				) {
+					deadlineTimer.unref();
+				}
+				runBinding.runDeadlineTimers.set(proposedRunId, deadlineTimer);
+			}
+			const externalStartWasTornDown = (): boolean =>
+				externalStartControl !== undefined &&
+				(shuttingDown ||
+					runBinding !== captureCurrentBinding() ||
+					requestEpoch !== transportEpoch ||
+					externalStartControl.deadlineController?.signal.aborted === true ||
+					externalStartControl.lifecycleController?.signal.aborted === true);
+			const abandonExternalStart = (): undefined => {
+				if (proposedRunId !== undefined) clearRunDeadline(runBinding, proposedRunId);
+				discardRunRequest(requestClaim);
+				return undefined;
+			};
+			let externalConnectorResolved: ExternalConnectorResolvedSelection | undefined;
+			let externalCanonicalInput: CanonicalExternalAgentInput | undefined;
+			if (externalConnector !== undefined) {
+				if (images !== undefined && images.length > 0) {
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
-								"external_agent_adapter_invalid",
-								"No trusted External Agent Adapter registry is composed into this Host.",
+								"external_binding_invalid",
+								"External Connector input rejects raw image payloads; use canonical trusted artifact references.",
 								false,
 							),
 						),
 					);
 				}
-				const safeSelection = serializeExternalAgentSelection(externalAgent);
+				const registry = runBinding.session.getExternalConnectorRegistry?.();
+				const safeSelection = serializeExternalConnectorSelection(externalConnector);
 				if (safeSelection === undefined) {
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
-								"external_agent_adapter_invalid",
-								"The External Agent Adapter selection is invalid.",
+								"external_binding_invalid",
+								"The External Connector selection is invalid.",
 								false,
 							),
 						),
 					);
 				}
-				let resolved: ExternalAgentResolved;
-				try {
-					resolved = registry.resolve(safeSelection);
-				} catch (err) {
-					return startFailure(
-						automationError(id, commandType, externalAgentAutomationError(err, "external_agent_adapter_invalid")),
-					);
-				}
-				const probeController = new AbortController();
-				// The probe is bounded by both the fixed probe deadline and the
-				// requested Run deadline when one is earlier: a run with a 1s deadline
-				// must not spend 10s in probe. The Run deadline winning maps to
-				// run_deadline_exceeded; the probe deadline winning maps to
-				// external_agent_probe_failed.
-				const runDeadlineMs = deadlineAt === undefined ? undefined : Date.parse(deadlineAt) - Date.now();
-				const probeDeadlineMs = Math.min(
-					EXTERNAL_AGENT_PROBE_DEADLINE_MS,
-					runDeadlineMs === undefined ? EXTERNAL_AGENT_PROBE_DEADLINE_MS : runDeadlineMs,
-				);
-				const probeDeadline = new Date(Date.now() + probeDeadlineMs).toISOString();
-				const probeTimer = setTimeout(() => probeController.abort(), Math.max(0, probeDeadlineMs));
-				if (typeof probeTimer === "object" && "unref" in probeTimer && typeof probeTimer.unref === "function") {
-					probeTimer.unref();
-				}
-				let snapshot: ExternalAgentCapabilitySnapshot | undefined;
-				try {
-					// The probe AbortSignal also bounds the Host await itself: an
-					// adapter that ignores the signal and never settles must not hang
-					// run.start past the probe bound. A synchronous throw or a rejected
-					// probe settles the race the same way: probe failed.
-					snapshot = await raceWithDeadlineSignal(
-						probeController.signal,
-						resolved.adapter.probe(resolved.target, {
-							signal: probeController.signal,
-							deadlineAt: probeDeadline,
-						}),
-					);
-				} catch {
-					snapshot = undefined;
-				} finally {
-					clearTimeout(probeTimer);
-				}
-				if (snapshot === undefined) {
-					// The requested Run deadline expiring during probe is a deadline
-					// failure, not a probe failure: the run never entered preflight or
-					// acceptance, and the deadline intent wins.
-					const probeError =
-						deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()
-							? createAutomationError(
-									"run_deadline_exceeded",
-									"The Run deadline was exceeded before acceptance.",
-									false,
-								)
-							: createAutomationError(
-									"external_agent_probe_failed",
-									externalAgentMessage("external_agent_probe_failed"),
-									false,
-								);
-					return startFailure(automationError(id, commandType, probeError));
-				}
-				// Exact-shape guard: a target self-report that is not a bounded snapshot
-				// with a known protocol/version and capability vocabulary is a probe
-				// failure, never a protocol we recognize.
-				if (!isExternalAgentCapabilitySnapshot(snapshot)) {
+				if (registry === undefined) {
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
-								"external_agent_probe_failed",
-								externalAgentMessage("external_agent_probe_failed"),
+								"external_connector_unavailable",
+								"No trusted External Connector registry is composed into this Host.",
 								false,
 							),
 						),
 					);
 				}
-				// Identity guard: the snapshot must self-identify exactly as the
-				// resolved explicit selection. A probe that reports a different
-				// adapter or target fails closed before any preflight or acceptance.
-				if (
-					snapshot.adapterId !== resolved.selection.adapterId ||
-					snapshot.targetId !== resolved.selection.targetId
-				) {
+				const selected = await registry.select(safeSelection);
+				if (externalStartWasTornDown()) return abandonExternalStart();
+				if (!selected.ok) {
+					const providerExists = registry.list().some(
+						(descriptor) => descriptor.providerId === safeSelection.providerId,
+					);
 					return startFailure(
 						automationError(
 							id,
 							commandType,
 							createAutomationError(
-								"external_agent_probe_failed",
-								externalAgentMessage("external_agent_probe_failed"),
+								providerExists ? "external_capability_mismatch" : "external_connector_unavailable",
+								providerExists
+									? "External Connector capability snapshot is unavailable or drifted."
+									: "The selected External Connector is not registered in this Host.",
 								false,
 							),
 						),
 					);
 				}
-				const capabilityGateError = externalAgentCapabilityError(snapshot);
-				if (capabilityGateError !== undefined) {
+				const canonicalInput: CanonicalExternalAgentInput = {
+					schemaVersion: 1,
+					text: message,
+					artifacts: [],
+				};
+				const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(canonicalInput, {
+					capabilities: {
+						artifacts: selected.value.capabilitySnapshot.artifacts,
+						images: selected.value.capabilitySnapshot.images,
+					},
+					inspectArtifact: () => {
+						throw new Error("RPC has no trusted artifact reference authority");
+					},
+				});
+				if (externalStartWasTornDown()) return abandonExternalStart();
+				if (!admitted.ok) {
 					return startFailure(
 						automationError(
 							id,
 							commandType,
-							createAutomationError(capabilityGateError, externalAgentMessage(capabilityGateError), false),
+							createAutomationError(admitted.error.code, admitted.error.message, false),
 						),
 					);
 				}
-				externalProbe = { adapter: resolved.adapter, selection: safeSelection, snapshot };
+				externalConnectorResolved = selected.value;
+				externalCanonicalInput = admitted.input;
 			}
-			const proposedRunId = crypto.randomUUID();
 			// Capability profile preflight: materialize the requested capability profile
 			// into the frozen binding before any reservation or prompt. The public API
 			// owns the undefined => configured default semantics and waits for capability
@@ -2726,9 +2579,12 @@ export class RpcHostController {
 				// discovery. MCP startup is a policy operation and its binding must be
 				// the same binding that reservation.accept validates below.
 				await runBinding.session.setExecutionPolicyProfile(policyProfile);
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				runBinding.session.setPreviousExecutionPolicyBindingIdForNextRun(previousPolicyBindingId);
 				await runBinding.session.setCapabilityProfile(capabilityProfile, { runId: proposedRunId });
+				if (externalStartWasTornDown()) return abandonExternalStart();
 			} catch (err) {
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
 			// The materialized profile (requested, or the configured default when omitted)
@@ -2741,24 +2597,27 @@ export class RpcHostController {
 				return startFailure(automationError(id, commandType, asAutomationError(err)));
 			}
 			runBinding.activeReservation = reservation;
+			const releaseOwnReservation = (): void => {
+				if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
+				try {
+					reservation.release();
+				} catch {
+					// Reservation may already be consumed or released by lifecycle teardown.
+				}
+			};
 			try {
 				await runBinding.session.whenCapabilitiesReady(proposedRunId);
 			} catch (err) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
+				if (externalStartWasTornDown()) return abandonExternalStart();
 				return startFailure(automationError(id, commandType, capabilityError(err)));
 			}
+			if (externalStartWasTornDown()) {
+				releaseOwnReservation();
+				return abandonExternalStart();
+			}
 			if (requestEpoch !== transportEpoch) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2781,12 +2640,7 @@ export class RpcHostController {
 				// accepted/terminal ledger write occurs.
 				const knownBindings = foldCapabilityBindingEntries(runBinding.session.sessionRead.getEntries());
 				if (knownBindings.get(previousBindingId) === undefined) {
-					runBinding.activeReservation = undefined;
-					try {
-						reservation.release();
-					} catch {
-						// reservation may already be consumed
-					}
+					releaseOwnReservation();
 					return startFailure(
 						automationError(
 							id,
@@ -2800,12 +2654,7 @@ export class RpcHostController {
 					);
 				}
 				if (preflightBinding === undefined || preflightBinding.id !== previousBindingId) {
-					runBinding.activeReservation = undefined;
-					try {
-						reservation.release();
-					} catch {
-						// reservation may already be consumed
-					}
+					releaseOwnReservation();
 					return startFailure(
 						automationError(
 							id,
@@ -2822,12 +2671,7 @@ export class RpcHostController {
 			// The requested profile is already materialized into the frozen binding by
 			// setCapabilityProfile above, so no profile-mismatch rejection applies.
 			if (preflightBinding !== undefined && preflightBinding.decisionSummary.awaitingApproval > 0) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2840,14 +2684,25 @@ export class RpcHostController {
 					),
 				);
 			}
-			const modelSelection = await resolveRequestedModel(runBinding, modelRoute, modelRole, inheritedModelBinding);
+			// none/agent_owned connectors own model choice and must not touch the
+			// local ModelBroker. aos_gateway alone uses the exact local projection.
+			const modelSelection =
+				externalConnectorResolved !== undefined &&
+				externalConnectorResolved.capabilitySnapshot.modelAccess !== "aos_gateway"
+					? { resolution: undefined, error: undefined }
+					: await resolveRequestedModel(
+						runBinding,
+						modelRoute,
+						modelRole,
+						inheritedModelBinding,
+						externalConnectorResolved?.capabilitySnapshot.modelAccess !== "aos_gateway",
+					);
+			if (externalStartWasTornDown()) {
+				releaseOwnReservation();
+				return abandonExternalStart();
+			}
 			if (runBinding !== captureCurrentBinding()) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2861,12 +2716,7 @@ export class RpcHostController {
 				);
 			}
 			if (requestEpoch !== transportEpoch) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2880,21 +2730,82 @@ export class RpcHostController {
 				);
 			}
 			if (modelSelection.error !== undefined) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
-				}
+				releaseOwnReservation();
 				return startFailure(automationError(id, commandType, modelSelection.error));
 			}
-			if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
-				runBinding.activeReservation = undefined;
-				try {
-					reservation.release();
-				} catch {
-					// reservation may already be consumed
+			let externalProductAdmission: ExternalConnectorProductAdmission | undefined;
+			if (
+				externalConnectorResolved !== undefined &&
+				externalConnector !== undefined &&
+				externalCanonicalInput !== undefined
+			) {
+				let gatewayModelRoute: ExternalConnectorProductAdmission["input"]["gatewayModelRoute"];
+				if (externalConnectorResolved.capabilitySnapshot.modelAccess === "aos_gateway") {
+					const resolution = modelSelection.resolution;
+					const effort = resolution?.reference.thinkingLevel;
+					const serviceTier = resolution?.reference.serviceTier;
+					if (
+						resolution === undefined ||
+						effort === undefined ||
+						serviceTier === undefined ||
+						(resolution.candidateIndex !== undefined && resolution.candidateIndex > 0)
+					) {
+						releaseOwnReservation();
+						return startFailure(
+							automationError(
+								id,
+								commandType,
+								createAutomationError(
+									"external_binding_invalid",
+									"The resolved AOS gateway model lacks an exact translatable route.",
+									false,
+								),
+							),
+						);
+					}
+					gatewayModelRoute = {
+						provider: resolution.reference.provider,
+						model: resolution.reference.id,
+						effort,
+						serviceTier,
+						fallbackDecision: resolution.fallbackAllowed
+							? { kind: "primary", reason: "fallback_not_used" }
+							: { kind: "disabled", reason: "fallback_disabled" },
+						bindingDigest: fingerprintFoundationValue(resolution.binding),
+					};
 				}
+				try {
+					// The first selection chooses the model-access branch. This late selection
+					// intentionally re-probes the pinned capability after intervening awaits so
+					// capability drift cannot cross the acceptance boundary.
+					externalProductAdmission = await prepareExternalConnectorProductRun({
+						session: getAgentCanonicalSession(runBinding.session),
+						writer: runBinding.session.agentRuntimeComposition.harness.t5.writer,
+						registry: runBinding.session.getExternalConnectorRegistry()!,
+						selection: externalConnector,
+						runId: proposedRunId,
+						message,
+						canonicalInput: externalCanonicalInput,
+						inputAdmission: {
+							inspectArtifact: () => {
+								throw new Error("RPC has no trusted artifact reference authority");
+							},
+						},
+						workspace: runBinding.session.cwd,
+						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
+					});
+				} catch (err) {
+					releaseOwnReservation();
+					if (externalStartWasTornDown()) return abandonExternalStart();
+					return startFailure(automationError(id, commandType, asAutomationError(err)));
+				}
+				if (externalStartWasTornDown()) {
+					releaseOwnReservation();
+					return abandonExternalStart();
+				}
+			}
+			if (deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now()) {
+				releaseOwnReservation();
 				return startFailure(
 					automationError(
 						id,
@@ -2902,34 +2813,6 @@ export class RpcHostController {
 						createAutomationError("run_deadline_exceeded", "The Run deadline expired during preflight.", false),
 					),
 				);
-			}
-			// Reserve before the prompt's preflight so the session is busy while the run
-			// is pending. Only a preflight that succeeds persists the accepted fact and
-			// starts the run; otherwise the reservation is released and the caller gets
-			// start_rejected with no run id and no ledger entry.
-			const deadlineController = new AbortController();
-			runBinding.runAbortControllers.set(proposedRunId, deadlineController);
-			if (deadlineAt !== undefined) {
-				const deadlineTimer = setTimeout(
-					() => {
-						deadlineController.abort(new AgentOperationError("deadline_exceeded"));
-						if (runBinding.activeHandle?.runId === proposedRunId) {
-							runBinding.activeHandle.requestDeadlineExceeded();
-							void runBinding.session.abort().catch(() => {
-								// Foundation remains the only terminal authority.
-							});
-						}
-					},
-					Math.max(0, Date.parse(deadlineAt) - Date.now()),
-				);
-				if (
-					typeof deadlineTimer === "object" &&
-					"unref" in deadlineTimer &&
-					typeof deadlineTimer.unref === "function"
-				) {
-					deadlineTimer.unref();
-				}
-				runBinding.runDeadlineTimers.set(proposedRunId, deadlineTimer);
 			}
 			let promptPromise: Promise<unknown>;
 			let startSettled = false;
@@ -2954,311 +2837,88 @@ export class RpcHostController {
 							true,
 						)
 					: deadlineController.signal.aborted
-					? createAutomationError(
-							"run_deadline_exceeded",
-							"The Run deadline was exceeded before acceptance.",
-							false,
-						)
-					: modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
-						? createAutomationError("start_rejected", errorMessage(err), false)
-						: unavailableModelError();
+						? createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							)
+						: modelSelection.resolution === undefined || (modelRoute === undefined && modelRole === undefined)
+							? createAutomationError("start_rejected", errorMessage(err), false)
+							: unavailableModelError();
 				const response = automationError(id, commandType, startError);
 				output(response);
 				finishRunRequest(requestClaim, response);
 			};
-			// ---- External Agent Adapter run path -------------------------------
-			// The existing Model/Capability/Policy/Sandbox preflight ran above; the
-			// prompt-preflight policy/sandbox preparation runs without the model
-			// loop, the adapter executes with the bounded in-memory input, and the
-			// adapter observations use the existing Remote Operation path. They do
-			// not create an Automation terminal result.
-			let externalAccepted = false;
-			let externalAdapterRun: ExternalAgentRunHandle | undefined;
-			const failExternalStart = (
-				err: unknown,
-				fallback: ExternalAgentError["code"] = "external_agent_start_failed",
-			): RpcAutomationResponse | undefined => {
-				if (externalAccepted) {
-					// The accepted fact is durable but the run never started: discard
-					// the live runBinding.coordinator so this failed start cannot retain Session
-					// ownership; its ledger record is replayed as interrupted if
-					// recovered. No external.mapping was persisted and no started
-					// event carries a placeholder external ref.
-					runBinding.activeReservation = undefined;
-					runBinding.activeHandle = undefined;
-					runBinding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(runBinding.session));
-					runBinding.externalRuns.delete(proposedRunId);
-					void externalAdapterRun?.cancel().catch(() => {
-						// The driver retries idempotently.
-					});
-				} else if (runBinding.activeReservation === reservation) {
-					runBinding.activeReservation = undefined;
+			if (
+				externalConnectorResolved !== undefined &&
+				externalConnector !== undefined &&
+				externalCanonicalInput !== undefined &&
+				externalProductAdmission !== undefined
+			) {
+				const authoritativeSelection = externalProductAdmission.selected;
+				if (
+					authoritativeSelection.connector !== externalConnectorResolved.connector ||
+					authoritativeSelection.descriptor.schemaVersion !== externalConnectorResolved.descriptor.schemaVersion ||
+					authoritativeSelection.descriptor.providerId !== externalConnectorResolved.descriptor.providerId ||
+					authoritativeSelection.descriptor.providerClass !== externalConnectorResolved.descriptor.providerClass ||
+					authoritativeSelection.descriptor.revision !== externalConnectorResolved.descriptor.revision ||
+					authoritativeSelection.descriptor.capabilitySnapshotDigest.algorithm !==
+						externalConnectorResolved.descriptor.capabilitySnapshotDigest.algorithm ||
+					authoritativeSelection.descriptor.capabilitySnapshotDigest.value !==
+						externalConnectorResolved.descriptor.capabilitySnapshotDigest.value
+				) {
+					releaseOwnReservation();
+					clearRunDeadline(runBinding, proposedRunId);
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_capability_mismatch",
+								"External Connector authority changed during preflight.",
+								false,
+							),
+						),
+					);
+				}
+				if (
+					externalStartWasTornDown() ||
+					runBinding.activeReservation !== reservation ||
+					externalStartControl?.lifecycleController?.signal.aborted === true
+				) {
+					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
 					} catch {
-						// reservation may already be consumed
+						// Lifecycle teardown may already have released this reservation.
 					}
-				}
-				clearRunDeadline(runBinding, proposedRunId);
-				const startError = mapExternalStartError(err, fallback);
-				const response = automationError(id, commandType, startError);
-				output(response);
-				finishRunRequest(requestClaim, response);
-				return undefined;
-			};
-
-			/**
-			 * Map an external start-phase failure to a stable Automation Host error
-			 * without leaking raw provider detail. ExternalAgentError keeps its
-			 * stable code; known mapping/ledger store codes fold into the adapter
-			 * vocabulary (external_agent_mapping_invalid / _conflict /
-			 * _persistence_failed); every other raw exception becomes the phase
-			 * fallback code (prepare -> external_agent_binding_unsupported, start
-			 * -> external_agent_start_failed, mapping ->
-			 * external_agent_persistence_failed) with the code-derived message, so
-			 * caller payloads, paths, commands, and credentials never escape
-			 * through Error.message.
-			 */
-			const mapExternalStartError = (err: unknown, fallback: ExternalAgentError["code"]): AutomationError => {
-				if (err instanceof ExternalAgentError) return externalAgentAutomationError(err, fallback);
-				// A lifecycle rejection (transport detach, host shutdown, session
-				// switch, consumed reservation) is pre-encoded as start_rejected and
-				// must keep its code, fixed message, and retryable flag even when the
-				// transition aborted the deadline controller: the rejection is the
-				// cause, not the deadline. Only the host's own fixed messages pass
-				// through; a spoofed `{code: "start_rejected", message: "..."}`
-				// payload falls through to the phase fallback below so caller text
-				// can never ride a known code out of the host.
-				if (
-					typeof err === "object" &&
-					err !== null &&
-					"code" in err &&
-					(err as { code?: unknown }).code === "start_rejected"
-				) {
-					const rejected = err as AutomationError;
-					if (EXTERNAL_AGENT_START_REJECTED_MESSAGES.has(rejected.message)) {
-						return createAutomationError("start_rejected", rejected.message, rejected.retryable === true);
-					}
-				}
-				if (deadlineController.signal.aborted) {
-					return createAutomationError(
-						"run_deadline_exceeded",
-						"The Run deadline was exceeded before acceptance.",
-						false,
-					);
-				}
-				const code =
-					typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
-				if (typeof code === "string" && isAutomationErrorCode(code)) {
-					if (code === "external_mapping_invalid") {
-						return createAutomationError(
-							"external_agent_mapping_invalid",
-							externalAgentMessage("external_agent_mapping_invalid"),
-							false,
-						);
-					}
-					if (code === "external_mapping_conflict") {
-						return createAutomationError(
-							"external_agent_mapping_conflict",
-							externalAgentMessage("external_agent_mapping_conflict"),
-							false,
-						);
-					}
-					if (code === "audit_persistence_failed" || code === "ledger_persistence_failed") {
-						return createAutomationError(
-							"external_agent_persistence_failed",
-							externalAgentMessage("external_agent_persistence_failed"),
-							false,
-						);
-					}
-					// A known stable code keeps its code only when it is part of the
-					// External Agent vocabulary, and it is always paired with the
-					// code-derived allowlisted message, never with the raw
-					// Error.message. Any other known code (for example session_busy
-					// from the reservation layer) is not an adapter outcome and falls
-					// back to the phase fallback, so a payload that borrows a known
-					// code cannot smuggle caller text into the public error.
-					if (EXTERNAL_AGENT_ERROR_CODES.includes(code as ExternalAgentError["code"])) {
-						return createAutomationError(code, externalAgentMessage(code as ExternalAgentError["code"]), false);
-					}
-					return createAutomationError(fallback, externalAgentMessage(fallback), false);
-				}
-				return createAutomationError(fallback, externalAgentMessage(fallback), false);
-			};
-			const runExternalStart = async (): Promise<RpcAutomationResponse | undefined> => {
-				const probe = externalProbe;
-				if (probe === undefined) {
-					return failExternalStart(new ExternalAgentError("external_agent_adapter_invalid"));
-				}
-				// Session replacement guard: the Run was accepted for the session that
-				// prepared it. If the Host switched sessions while the start was
-				// pending, the run must fail closed instead of continuing against the
-				// incoming Session; its accepted record replays as interrupted in the
-				// outgoing Session. The client can retry on the new Session.
-				const sessionSwitchedStartError = (): AutomationError =>
-					createAutomationError(
-						"start_rejected",
-						"The Host switched sessions before the external agent started.",
-						true,
-					);
-				if (runBinding !== captureCurrentBinding()) {
-					return failExternalStart(sessionSwitchedStartError());
-				}
-				if (shuttingDown) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"Automation Host is shutting down; no new runs are accepted.",
-							false,
-						),
-					);
-				}
-				try {
-					await runBinding.session.runExternalAgentPreflight(proposedRunId, deadlineController.signal);
-				} catch (err) {
-					// The abort of a lifecycle transition (detach, shutdown, session
-					// switch) surfaces through the signal-aware preflight; report the
-					// actual cause instead of a provider or deadline failure.
-					if (runBinding !== captureCurrentBinding()) {
-						return failExternalStart(sessionSwitchedStartError());
-					}
-					if (requestEpoch !== transportEpoch) {
-						return failExternalStart(
-							createAutomationError(
-								"start_rejected",
-								"The RPC connection closed before the Run was accepted.",
-								true,
-							),
-						);
-					}
-					if (shuttingDown) {
-						return failExternalStart(
-							createAutomationError(
-								"start_rejected",
-								"Automation Host is shutting down; no new runs are accepted.",
-								false,
-							),
-						);
-					}
-					return failExternalStart(err);
-				}
-				if (runBinding !== captureCurrentBinding()) {
-					return failExternalStart(sessionSwitchedStartError());
-				}
-				if (requestEpoch !== transportEpoch) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"The RPC connection closed before the Run was accepted.",
-							true,
-						),
-					);
-				}
-				if (shuttingDown) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"Automation Host is shutting down; no new runs are accepted.",
-							false,
-						),
-					);
+					clearRunDeadline(runBinding, proposedRunId);
+					discardRunRequest(requestClaim);
+					return undefined;
 				}
 				if (
 					deadlineController.signal.aborted ||
 					(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
 				) {
-					return failExternalStart(
-						createAutomationError("run_deadline_exceeded", "The Run deadline expired during preflight.", false),
+					runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// Deadline teardown may already have released this reservation.
+					}
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							),
+						),
 					);
-				}
-				// Prepare the immutable Binding from the frozen preflight facts. The
-				// binding is reference-only unless the probed target proves the
-				// tool-gateway capability; the prepared binding is verified against
-				// the prepare request and the probe before any start.
-				const capabilityBinding = runBinding.session.getActiveCapabilityBinding();
-				const policyBinding = runBinding.session.getActiveExecutionPolicyBinding();
-				const capabilitySummary: string[] = [];
-				if (capabilityBinding !== undefined) {
-					for (const descriptor of capabilityBinding.descriptors) {
-						const name = descriptor.exposedToolName;
-						if (
-							name !== undefined &&
-							name.length >= 1 &&
-							name.length <= EXTERNAL_AGENT_CAPABILITY_SUMMARY_ITEM_MAX_LENGTH
-						) {
-							capabilitySummary.push(name);
-						}
-						if (capabilitySummary.length >= EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY) break;
-					}
-				}
-				const prepareRequest: ExternalAgentPrepareRequest = {
-					runId: proposedRunId,
-					sessionId: runBinding.session.sessionId,
-					selection: probe.selection,
-					...(modelSelection.resolution === undefined
-						? {}
-						: { modelBindingId: modelSelection.resolution.bindingId }),
-					...(capabilityBinding === undefined ? {} : { capabilityBindingId: capabilityBinding.id }),
-					...(policyBinding === undefined ? {} : { policyBindingId: policyBinding.id }),
-					capabilitySummary,
-					policyProfile: runBinding.session.getActiveExecutionPolicyProfile(),
-					...(policyBinding?.sandboxProviderId === undefined
-						? {}
-						: { sandboxProfile: policyBinding.sandboxProviderId }),
-					deadlineAt,
-				};
-				let prepared: ExternalAgentPreparedBinding;
-				try {
-					// The trusted adapter owns protocol/version-specific Binding
-					// translation: the host invokes adapter.prepare and never uses a
-					// default translator, so an unknown protocol/version fails closed
-					// in the adapter before any Run acceptance. The result must be a
-					// shape-valid prepared binding verified against the prepare request
-					// and the probed snapshot.
-					prepared = await probe.adapter.prepare(prepareRequest, probe.snapshot);
-					if (!isExternalAgentPreparedBinding(prepared)) {
-						throw new ExternalAgentError("external_agent_binding_unsupported");
-					}
-					if (!verifyExternalAgentPreparedBinding(prepared, prepareRequest, probe.snapshot)) {
-						throw new ExternalAgentError("external_agent_binding_unsupported");
-					}
-					// The adapter has no independent tool-call/Policy/cancel/result gateway
-					// contract and the selection carries no explicit gateway opt-in:
-					// a target self-reporting toolGateway=true must never expand the
-					// AOS boundary or claim AOS tools, so a gateway-mode prepared
-					// binding is rejected until a separate contract exists.
-					if (prepared.bindingMode === "tool-gateway") {
-						throw new ExternalAgentError("external_agent_binding_unsupported");
-					}
-				} catch (err) {
-					return failExternalStart(err, "external_agent_binding_unsupported");
 				}
 				let handle: RunHandle;
-				// Lifecycle guards before the durable accepted write: a pending
-				// external start whose preflight or prepare ignored the abort
-				// signal must still fail closed here instead of accepting after a
-				// detach, shutdown, or session switch.
-				if (runBinding !== captureCurrentBinding()) {
-					return failExternalStart(sessionSwitchedStartError());
-				}
-				if (requestEpoch !== transportEpoch) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"The RPC connection closed before the Run was accepted.",
-							true,
-						),
-					);
-				}
-				if (shuttingDown) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"Automation Host is shutting down; no new runs are accepted.",
-							false,
-						),
-					);
-				}
 				try {
 					handle = reservation.accept({
 						runId: proposedRunId,
@@ -3272,155 +2932,24 @@ export class RpcHostController {
 						previousBindingId,
 						previousPolicyBindingId,
 						previousModelBindingId,
-						model: currentRunModel(runBinding),
-						...(modelSelection.resolution === undefined
-							? {}
-							: {
-									modelBindingId: modelSelection.resolution.bindingId,
-									finalModel: finalModelForResolution(modelSelection.resolution),
-								}),
-						capabilityBinding: runBinding.session.getActiveCapabilityBinding(),
-						policyBinding: runBinding.session.getActiveExecutionPolicyBinding(),
-						policySummary: runBinding.session.getActiveExecutionPolicySummary(),
+						model: {
+							provider: "external_connector",
+							id: authoritativeSelection.descriptor.providerId,
+							thinkingLevel: "off",
+						},
 					});
 					handle.setUsageBaseline(usageSnapshot(runBinding));
 				} catch (err) {
-					return failExternalStart(asAutomationError(err));
+					releaseOwnReservation();
+					clearRunDeadline(runBinding, proposedRunId);
+					return startFailure(automationError(id, commandType, asAutomationError(err)));
 				}
 				runBinding.activeReservation = undefined;
 				runBinding.activeHandle = handle;
-				externalAccepted = true;
-				// Start with the bounded in-memory input. Images are never forwarded:
-				// the adapter contract carries image references only, never bytes.
-				const startRequest: ExternalAgentStartRequest = {
-					preparedBinding: prepared,
-					input: { message },
-					operationId: proposedRunId,
-					deadlineAt,
-				};
-				try {
-					externalAdapterRun = runExternalAgentAdapter(probe.adapter, startRequest, {
-						signal: deadlineController.signal,
-						now: () => new Date().toISOString(),
-					});
-				} catch (err) {
-					return failExternalStart(err);
-				}
-				// Register the idempotent adapter cancel immediately so run.cancel
-				// reaches the adapter even while start readiness is pending.
-				runBinding.externalRuns.set(proposedRunId, {
-					cancel: async () => {
-						try {
-							await externalAdapterRun!.cancel();
-						} catch {
-							// The driver retries idempotently; the receipt settles the run.
-						}
-					},
-				});
-				// Readiness gate: await the driver's explicit start confirmation and
-				// persist ONLY the real, validated external ref before the started
-				// event. The driver's fallback getter is never persisted. The Run
-				// deadline bounds the readiness wait so a hanging adapter.start cannot
-				// keep the run pending past its deadline.
-				const externalRef = await raceWithDeadlineSignal(
-					deadlineController.signal,
-					externalAdapterRun.externalReady,
-				);
-				if (externalRef === undefined) {
-					// The readiness race resolves undefined when a lifecycle transition
-					// aborted the deadline controller (detach, shutdown, session switch)
-					// or when the run deadline fired. Report the actual cause: a replaced
-					// session or a disconnected transport is a retryable start_rejection,
-					// never a deadline that never existed.
-					if (runBinding !== captureCurrentBinding()) {
-						return failExternalStart(sessionSwitchedStartError());
-					}
-					if (requestEpoch !== transportEpoch) {
-						return failExternalStart(
-							createAutomationError(
-								"start_rejected",
-								"The RPC connection closed before the Run was accepted.",
-								true,
-							),
-						);
-					}
-					if (shuttingDown) {
-						return failExternalStart(
-							createAutomationError(
-								"start_rejected",
-								"Automation Host is shutting down; no new runs are accepted.",
-								false,
-							),
-						);
-					}
-					if (deadlineController.signal.aborted) {
-						return failExternalStart(
-							createAutomationError(
-								"run_deadline_exceeded",
-								"The Run deadline was exceeded before the external agent started.",
-								false,
-							),
-						);
-					}
-					return failExternalStart(new ExternalAgentError("external_agent_start_failed"));
-				}
-				if (runBinding !== captureCurrentBinding()) {
-					return failExternalStart(sessionSwitchedStartError());
-				}
-				if (requestEpoch !== transportEpoch) {
-					return failExternalStart(
-						createAutomationError(
-							"start_rejected",
-							"The RPC connection closed before the Run was accepted.",
-							true,
-						),
-					);
-				}
-				const safeExternal = serializeExternalExecutionRef(externalRef);
-				if (safeExternal === undefined) {
-					return failExternalStart(new ExternalAgentError("external_agent_mapping_invalid"));
-				}
-				// A caller-provided external ref must be compatible with the identity
-				// the adapter returned: a mismatch fails closed before any mapping
-				// append or started event (PR section 6 field rules), and a matching
-				// ref is persisted as-is.
-				if (
-					external !== undefined &&
-					(external.namespace !== safeExternal.namespace ||
-						external.externalSessionId !== safeExternal.externalSessionId ||
-						(external.externalRunId ?? undefined) !== (safeExternal.externalRunId ?? undefined))
-				) {
-					return failExternalStart(new ExternalAgentError("external_agent_mapping_invalid"));
-				}
-				// The probed selection plus the verified protocol snapshot is the one
-				// safe adapter identity for this external execution; it is attached to
-				// the mapping and the Remote Operation request so the persisted
-				// receipt and Audit stay filterable by adapter without exposing any
-				// raw protocol or target data.
-				const probedAdapterIdentity: ExternalAdapterIdentity = {
-					adapterId: probe.selection.adapterId,
-					targetId: probe.selection.targetId,
-					protocol: probe.snapshot.protocol,
-				};
-				try {
-					runBinding.coordinator!.persistExternalMapping({
-						external: safeExternal,
-						aosSessionId: runBinding.session.sessionId,
-						aosRunId: handle.runId,
-						source: "external-agent",
-						adapter: probedAdapterIdentity,
-					});
-				} catch (err) {
-					return failExternalStart(err, "external_agent_persistence_failed");
-				}
-				let startEvents: RunStreamEvent[];
-				try {
-					startEvents = handle.start();
-				} catch (err) {
-					return failExternalStart(asAutomationError(err));
-				}
-				// Emit the accepted response before run.started so records appear in
-				// the contract order: response -> run.started -> run.event* -> terminal.
+				if (externalStartControl !== undefined) externalStartControl.accepted = true;
+				runBinding.externalPendingControllers.delete(proposedRunId);
+				startSettled = true;
+				const startEvents = handle.start();
 				const acceptedResponse: RpcAutomationResponse = {
 					id,
 					type: "response",
@@ -3430,32 +2959,40 @@ export class RpcHostController {
 				};
 				output(acceptedResponse);
 				finishRunRequest(requestClaim, acceptedResponse);
-				for (const event of startEvents) {
-					outputRunEvent(event);
-				}
-				trackExternalRun(
-					runBinding,
-					handle,
-					externalAdapterRun,
-					startRequest.operationId,
-					deadlineController.signal,
-					probedAdapterIdentity,
+				for (const event of startEvents) outputRunEvent(event);
+				const productIdentity = externalConnectorProductIdentity(
+					proposedRunId,
+					authoritativeSelection.descriptor.providerId,
 				);
+				runBinding.externalRuns.set(proposedRunId, {
+					cancel: async () => {
+						const cancelled = await authoritativeSelection.connector.cancelAttempt(productIdentity.attemptId);
+						if (!cancelled.ok) throw cancelled.error;
+					},
+				});
+				const execution = persistExternalConnectorProductRunAfterAcceptance({
+					...externalProductAdmission,
+					input: { ...externalProductAdmission.input, signal: deadlineController.signal },
+				})
+					.then(executePreparedExternalConnectorProductRun);
+				const settlement = execution.then(() => undefined);
+				runBinding.externalRunSettlements.set(proposedRunId, settlement);
+				void settlement.then(
+					() => {
+						runBinding.externalRuns.delete(proposedRunId);
+						if (runBinding.externalRunSettlements.get(proposedRunId) === settlement) {
+							runBinding.externalRunSettlements.delete(proposedRunId);
+						}
+					},
+					() => {
+						runBinding.externalRuns.delete(proposedRunId);
+						if (runBinding.externalRunSettlements.get(proposedRunId) === settlement) {
+							runBinding.externalRunSettlements.delete(proposedRunId);
+						}
+					},
+				);
+				trackRunPrompt(runBinding, handle, execution);
 				return undefined;
-			};
-			if (externalProbe !== undefined) {
-				// Register the deadline controller and promise of the pending
-				// external start BEFORE preflight so a lifecycle transition (detach,
-				// shutdown, session switch) can abort it even though runBinding.externalRuns
-				// does not exist yet, and so it is never awaited by the transition.
-				runBinding.externalPendingControllers.set(proposedRunId, deadlineController);
-				const pendingExternal = runExternalStart();
-				runBinding.pendingExternalStarts.set(proposedRunId, pendingExternal);
-				void pendingExternal.then(
-					() => runBinding.pendingExternalStarts.delete(proposedRunId),
-					() => runBinding.pendingExternalStarts.delete(proposedRunId),
-				);
-				return trackPendingStart(pendingExternal);
 			}
 			try {
 				promptPromise = runBinding.session.prompt(message, {
@@ -3534,7 +3071,9 @@ export class RpcHostController {
 								// The accepted fact was durable but the started fact was not. Discard
 								// the live runBinding.coordinator so this failed start cannot retain Session
 								// ownership; its ledger record is replayed as interrupted if recovered.
-								runBinding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(runBinding.session));
+								runBinding.coordinator = createRunLifecycleCoordinator(
+									getAgentSessionLedger(runBinding.session),
+								);
 							}
 							const response = automationError(id, commandType, asAutomationError(err));
 							startSettled = true;
@@ -3917,38 +3456,38 @@ export class RpcHostController {
 		});
 
 		const extensionBindings = (binding: RpcSessionBinding): ExtensionBindings => ({
-				uiContext: createExtensionUIContext(),
-				mode: "rpc" as const,
-				commandContextActions: {
-					waitForIdle: () => binding.session.waitForIdle(),
-					newSession: async (options) => runtimeHost.newSession(options),
-					fork: async (entryId, forkOptions) => {
-						const result = await runtimeHost.fork(entryId, forkOptions);
-						return { cancelled: result.cancelled };
-					},
-					navigateTree: async (targetId, options) => {
-						const result = await binding.session.navigateTree(targetId, {
-							summarize: options?.summarize,
-							customInstructions: options?.customInstructions,
-							replaceInstructions: options?.replaceInstructions,
-							label: options?.label,
-						});
-						return { cancelled: result.cancelled };
-					},
-					switchSession: async (sessionPath, options) => {
-						return runtimeHost.switchSession(sessionPath, options);
-					},
-					reload: async () => {
-						await runtimeHost.reload();
-					},
+			uiContext: createExtensionUIContext(),
+			mode: "rpc" as const,
+			commandContextActions: {
+				waitForIdle: () => binding.session.waitForIdle(),
+				newSession: async (options) => runtimeHost.newSession(options),
+				fork: async (entryId, forkOptions) => {
+					const result = await runtimeHost.fork(entryId, forkOptions);
+					return { cancelled: result.cancelled };
 				},
-				shutdownHandler: () => {
-					shutdownRequested = true;
+				navigateTree: async (targetId, options) => {
+					const result = await binding.session.navigateTree(targetId, {
+						summarize: options?.summarize,
+						customInstructions: options?.customInstructions,
+						replaceInstructions: options?.replaceInstructions,
+						label: options?.label,
+					});
+					return { cancelled: result.cancelled };
 				},
-				onError: (err) => {
-					output({ type: "extension_error", event: err.event, error: "Extension failed." });
+				switchSession: async (sessionPath, options) => {
+					return runtimeHost.switchSession(sessionPath, options);
 				},
-			});
+				reload: async () => {
+					await runtimeHost.reload();
+				},
+			},
+			shutdownHandler: () => {
+				shutdownRequested = true;
+			},
+			onError: (err) => {
+				output({ type: "extension_error", event: err.event, error: "Extension failed." });
+			},
+		});
 
 		const subscribeBinding = (binding: RpcSessionBinding): void => {
 			binding.unsubscribe = binding.session.subscribe((event) => {
@@ -3990,7 +3529,11 @@ export class RpcHostController {
 			binding.activeReservation = undefined;
 			attempt(() => binding.activeHandle?.requestCancel());
 			for (const timer of binding.runDeadlineTimers.values()) clearTimeout(timer);
-			for (const controller of binding.runAbortControllers.values()) controller.abort();
+			for (const [runId, controller] of binding.runAbortControllers) {
+				if (!binding.externalRuns.has(runId) && !binding.externalPendingControllers.has(runId)) {
+					controller.abort();
+				}
+			}
 			for (const controller of binding.externalPendingControllers.values()) controller.abort();
 			const settleWithinDeadline = async (work: Promise<unknown>[]): Promise<void> => {
 				const settledWork = Promise.allSettled(work);
@@ -4012,11 +3555,12 @@ export class RpcHostController {
 					if (result.status === "rejected") cleanupFailures.push(result.reason);
 				}
 			};
-			await settleWithinDeadline([
-				Promise.resolve().then(() => binding.session.abort()),
-				...Array.from(binding.externalRuns.values(), (externalRun) =>
-					Promise.resolve().then(() => externalRun.cancel())),
-			]);
+			await settleWithinDeadline(
+				Array.from(binding.externalRuns.values(), (externalRun) =>
+					Promise.resolve().then(() => externalRun.cancel()),
+				),
+			);
+			await settleWithinDeadline([Promise.resolve().then(() => binding.session.abort())]);
 			await settleWithinDeadline([
 				...binding.runPromptPromises.values(),
 				...binding.externalRunSettlements.values(),
@@ -4183,12 +3727,9 @@ export class RpcHostController {
 							: { subagentCommands: ["subagent.get", "subagent.list", "subagent.cancel"] }),
 						...(schedulerStatus === undefined ? {} : { schedulerCommands: ["scheduler.status"] }),
 					};
-					// Safe adapter summary: descriptors only (adapterId/displayName/version).
-					// Endpoints, commands, credentials, protocol names, and raw probe data
-					// are never advertised by initialize.
-					const externalAgentRegistry = currentBinding.session.getExternalAgentRegistry?.();
-					if (externalAgentRegistry !== undefined) {
-						initializeData.externalAgentAdapters = externalAgentRegistry.list();
+					const externalConnectorRegistry = currentBinding.session.getExternalConnectorRegistry?.();
+					if (externalConnectorRegistry !== undefined) {
+						initializeData.externalConnectors = externalConnectorRegistry.list();
 					}
 					const initializeResponse: RpcAutomationResponse = {
 						id,
@@ -4408,7 +3949,9 @@ export class RpcHostController {
 					if (!isRpcWorkerRecordList(records)) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
 					}
-					const currentSessionRecords = records.filter((record) => record.sessionId === currentBinding.session.sessionId);
+					const currentSessionRecords = records.filter(
+						(record) => record.sessionId === currentBinding.session.sessionId,
+					);
 					const workerIds = new Set(currentSessionRecords.map((record) => record.workerId));
 					if (workerIds.size !== currentSessionRecords.length) {
 						return rpcWorkerError(id, "worker.list", "worker_invalid");
@@ -4514,7 +4057,9 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).query(query) satisfies AuditQueryData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).query(
+							query,
+						) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.query", auditCommandError(err, "audit_query_invalid"));
@@ -4537,7 +4082,9 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).replay(query) satisfies AuditReplayData;
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).replay(
+							query,
+						) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
@@ -4889,7 +4436,14 @@ export class RpcHostController {
 							clientRequestId: command.clientRequestId,
 							...(command.stageId === undefined || command.stageRevision === undefined
 								? {}
-								: { gate: resolveGateFact(currentBinding, command.taskId, command.stageId, command.stageRevision) }),
+								: {
+										gate: resolveGateFact(
+											currentBinding,
+											command.taskId,
+											command.stageId,
+											command.stageRevision,
+										),
+									}),
 							nodeAttached: resolveNodeAttached(
 								currentBinding,
 								command.taskId,
@@ -5077,7 +4631,13 @@ export class RpcHostController {
 							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
 								gate = resolveGateFact(currentBinding, grant.taskId, grant.stageId, grant.stageRevision);
 							}
-							nodeAttached = resolveNodeAttached(currentBinding, grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+							nodeAttached = resolveNodeAttached(
+								currentBinding,
+								grant.taskId,
+								grant.graphRevision,
+								grant.nodeId,
+								grant.runId,
+							);
 						}
 						const result = currentBinding.taskCredentialService.renew({
 							leaseId: command.leaseId,
@@ -5149,7 +4709,13 @@ export class RpcHostController {
 							if (grant.stageId !== undefined && grant.stageRevision !== undefined) {
 								gate = resolveGateFact(currentBinding, grant.taskId, grant.stageId, grant.stageRevision);
 							}
-							nodeAttached = resolveNodeAttached(currentBinding, grant.taskId, grant.graphRevision, grant.nodeId, grant.runId);
+							nodeAttached = resolveNodeAttached(
+								currentBinding,
+								grant.taskId,
+								grant.graphRevision,
+								grant.nodeId,
+								grant.runId,
+							);
 						}
 						const result = currentBinding.taskCredentialService.revoke({
 							leaseId: command.leaseId,
@@ -5239,6 +4805,23 @@ export class RpcHostController {
 				}
 
 				case "run.start": {
+					if (
+						command.externalConnector !== undefined &&
+						!Object.keys(command).every((key) => EXTERNAL_RUN_START_KEYS.has(key))
+					) {
+						return automationError(
+							id,
+							"run.start",
+							createAutomationError(
+								"external_binding_invalid",
+								"RPC External Connector input supports canonical text only; artifact and image references are unavailable.",
+								false,
+							),
+						);
+					}
+					const externalStartControl = command.externalConnector === undefined
+						? undefined
+						: {} satisfies ExternalPendingStartControl;
 					return trackPendingStart(
 						startRun(
 							currentBinding,
@@ -5257,12 +4840,18 @@ export class RpcHostController {
 							command.modelRoute,
 							command.modelRole,
 							command.external,
-							command.externalAgent,
+							command.externalConnector,
 							command.deadlineAt,
 							command.clientRequestId,
 							undefined,
 							false,
+							undefined,
+							externalStartControl,
 						),
+						currentBinding,
+						externalStartControl,
+						id,
+						"run.start",
 					);
 				}
 
@@ -5326,14 +4915,16 @@ export class RpcHostController {
 					}
 					currentBinding.activeHandle.requestCancel();
 					// Cancellation is a request, not the terminal transition. An external
-					// agent run forwards to the idempotent adapter cancel (the deadline
-					// signal reaches the adapter through the same driver); a local run
+					// agent run forwards one same-Attempt Connector cancel without
+					// aborting the deadline signal; a local run
 					// triggers the existing abort path without waiting for its idle
 					// promise so the command response describes the current running
 					// state. A terminal event is emitted only after canonical lookup.
 					const externalRun = currentBinding.externalRuns.get(command.runId);
 					if (externalRun !== undefined) {
-						void externalRun.cancel();
+						void externalRun.cancel().catch(() => {
+							// The tracked product execution owns canonical terminal or reconciliation output.
+						});
 					} else {
 						void currentBinding.session.abort().catch(() => {
 							// Foundation remains the only terminal authority.
@@ -5362,27 +4953,62 @@ export class RpcHostController {
 									auditCommandError(undefined, "external_mapping_invalid"),
 								);
 							}
-							if (command.externalAgent !== undefined && !isExternalAgentSelection(command.externalAgent)) {
+							if (
+								command.externalConnector !== undefined &&
+								!isExternalConnectorSelection(command.externalConnector)
+							) {
 								return automationError(
 									id,
 									"run.resume",
 									createAutomationError(
-										"external_agent_adapter_invalid",
-										"The External Agent Adapter selection is invalid.",
+										"external_binding_invalid",
+										"The External Connector selection is invalid.",
 										false,
 									),
 								);
 							}
-							// The adapter contract has start() only; there is no same-ref
-							// resume API, so an external run.resume can never be honored.
-							// Reject it instead of silently starting a fresh execution.
-							if (command.externalAgent !== undefined) {
+							if (command.externalConnector !== undefined) {
+								const registry = currentBinding.session.getExternalConnectorRegistry?.();
+								if (registry === undefined) {
+									return automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											"external_connector_unavailable",
+											"No trusted External Connector registry is composed into this Host.",
+											false,
+										),
+									);
+								}
+								const descriptor = registry.list().find(
+									(candidate) => candidate.providerId === command.externalConnector?.providerId,
+								);
+								if (
+									descriptor === undefined ||
+									descriptor.revision !== command.externalConnector.revision ||
+									descriptor.capabilitySnapshotDigest.algorithm !==
+										command.externalConnector.capabilitySnapshotDigest.algorithm ||
+									descriptor.capabilitySnapshotDigest.value !==
+										command.externalConnector.capabilitySnapshotDigest.value
+								) {
+									return automationError(
+										id,
+										"run.resume",
+										createAutomationError(
+											descriptor === undefined ? "external_connector_unavailable" : "external_capability_mismatch",
+											descriptor !== undefined
+												? "External Connector capability snapshot is unavailable or drifted."
+												: "The selected External Connector is not registered in this Host.",
+											false,
+										),
+									);
+								}
 								return automationError(
 									id,
 									"run.resume",
 									createAutomationError(
-										"external_agent_resume_unsupported",
-										externalAgentMessage("external_agent_resume_unsupported"),
+										"external_resume_unsupported",
+										"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
 										false,
 									),
 								);
@@ -5462,16 +5088,18 @@ export class RpcHostController {
 								modelRoute: command.modelRoute,
 								modelRole: command.modelRole,
 								external: command.external,
-								externalAgent: command.externalAgent,
+								externalConnector: command.externalConnector,
 								deadlineAt: command.deadlineAt,
 							});
 							let resumeClaim: RunRequestIdentity | undefined;
 							if (resumeIdentity !== undefined) {
 								const gate = beginRunRequest(id, "run.resume", resumeIdentity, () =>
-										targetSessionId === currentBinding.session.sessionId
-											? currentBinding.coordinator?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume") ??
-												targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume")
-											: targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
+									targetSessionId === currentBinding.session.sessionId
+										? (currentBinding.coordinator?.getRunByClientRequestId(
+												resumeIdentity.clientRequestId,
+												"resume",
+											) ?? targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"))
+										: targetLedger?.getRunByClientRequestId(resumeIdentity.clientRequestId, "resume"),
 								);
 								if (gate.kind === "response") return gate.response;
 								if (gate.kind === "pending") return undefined;
@@ -5570,19 +5198,19 @@ export class RpcHostController {
 									),
 								);
 							}
-							// Resume execution-kind consistency: an external source run can only
-							// be resumed through an External Agent Adapter, which cannot
-							// honor; rejecting here avoids silently resuming a different
-							// execution kind locally.
-							const sourceIsExternal = sourceRun.record.external !== undefined;
+							// RPC cannot yet map an external source Run back to its canonical
+							// durable Attempt. Reject here instead of starting a different
+							// execution kind or a new Connector Attempt.
+							const sourceIsExternal =
+								sourceRun.record.external !== undefined || sourceRun.record.model.provider === "external_connector";
 							if (sourceIsExternal) {
 								return resumeFailure(
 									automationError(
 										id,
 										"run.resume",
 										createAutomationError(
-											"external_agent_resume_unsupported",
-											externalAgentMessage("external_agent_resume_unsupported"),
+											"external_resume_unsupported",
+											"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
 											false,
 										),
 									),
@@ -5629,7 +5257,7 @@ export class RpcHostController {
 								command.modelRoute,
 								command.modelRole,
 								command.external,
-								command.externalAgent,
+								command.externalConnector,
 								command.deadlineAt,
 								command.clientRequestId,
 								resumeIdentity,
@@ -5807,7 +5435,9 @@ export class RpcHostController {
 				// =================================================================
 
 				case "bash": {
-					const allowExtensionBash = await currentBinding.session.authorizeUserBashExtension(command.command, { id });
+					const allowExtensionBash = await currentBinding.session.authorizeUserBashExtension(command.command, {
+						id,
+					});
 					const eventResult = allowExtensionBash
 						? await currentBinding.session.extensionRunner.emitUserBash({
 								type: "user_bash",
@@ -5907,7 +5537,9 @@ export class RpcHostController {
 					return success(
 						id,
 						"get_model_routes",
-						currentBinding.session.modelBroker.publicSummary(currentBinding.session.modelBrokerBindingId) satisfies GetModelRoutesData,
+						currentBinding.session.modelBroker.publicSummary(
+							currentBinding.session.modelBrokerBindingId,
+						) satisfies GetModelRoutesData,
 					);
 				}
 
@@ -6339,8 +5971,8 @@ export class RpcHostController {
 					bindingAtDetach.activeReservation = undefined;
 				}
 				if (handleAtDetach !== undefined) {
-					// The Run cancellation intent is forwarded to the adapter's
-					// idempotent cancel path for external executions: the Session
+					// The Run cancellation intent is forwarded to the Connector's
+					// idempotent same-Attempt cancel path for external executions: the Session
 					// agent loop does not drive them, so Session abort alone would
 					// leave the external execution running. Local runs keep the existing
 					// abort plus tracked-prompt observation.
@@ -6359,7 +5991,7 @@ export class RpcHostController {
 				// before external-runs registration) so the preflight or
 				// readiness race resolves where the signal is honored; each fails
 				// closed on the epoch guard. Pending external starts are never
-				// awaited: an adapter start or preflight that ignores the abort
+				// awaited: a driver start or preflight that ignores the abort
 				// signal must not block the detach.
 				for (const controller of bindingAtDetach.externalPendingControllers.values()) {
 					controller.abort();

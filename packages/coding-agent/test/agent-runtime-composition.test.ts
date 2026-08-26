@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	createModelProfileRevision,
+	createConnectorCapabilitySnapshot,
 	createRoleRevision,
 	createScopedMemoryStore,
 	createTaskEnvelope,
@@ -19,6 +20,7 @@ import {
 	SessionT5Ledger,
 	type AgentBinding,
 	type ArtifactStoreProvider,
+	type ExternalAgentConnector,
 	type ModelProfile,
 	type QuotaProvider,
 	type RevisionReference,
@@ -37,8 +39,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createExternalAgentAdapterRegistry,
-	createExternalAgentPreparedBinding,
 	createRpcHostController,
 	createTrustedWorkerSandboxComposition,
 	SchedulerExecutorRegistry,
@@ -47,11 +47,11 @@ import {
 	type AgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionOptions,
 	type CreateAgentSessionRuntimeFactory,
-	type ExternalAgentAdapter,
-	type ExternalAgentAdapterRegistry,
 	type TaskCredentialProvider,
 	type TrustedSchedulerRuntimeOptions,
+	type ExternalConnectorRegistry,
 } from "../src/index.ts";
+import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
@@ -66,7 +66,6 @@ import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
-const LATER = "2026-08-26T00:01:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
 const MAIN_RPC_ENTRY = fileURLToPath(new URL("./fixtures/main-rpc-runtime-composition.ts", import.meta.url));
 
@@ -81,7 +80,7 @@ interface CompositionCaptures {
 	readonly workers: ReturnType<typeof createTrustedWorkerSandboxComposition>[];
 	readonly subagents: TrustedSubagentCompositionOptionsV1[];
 	readonly schedulers: TrustedSchedulerRuntimeOptions[];
-	readonly externalRegistries: ExternalAgentAdapterRegistry[];
+	readonly externalRegistries: ExternalConnectorRegistry[];
 	readonly credentialProviders: TaskCredentialProvider[];
 }
 
@@ -335,45 +334,46 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 	};
 }
 
-function createFakeExternalAdapter(sessionId: string): ExternalAgentAdapter {
-	const external = { namespace: "composition", externalSessionId: `external-${sessionId}` } as const;
-	return {
-		id: `external-adapter-${sessionId}`,
-		probe: async (target) => ({
-			schemaVersion: 1,
-			adapterId: `external-adapter-${sessionId}`,
-			targetId: target.targetId,
-			protocol: { name: "composition-test", version: "1" },
-			status: "ready",
-			capabilities: {
-				start: true,
-				events: "none",
-				cancel: "strong",
-				receipt: "terminal",
-				resume: false,
-				artifacts: false,
-				toolGateway: false,
-			},
-			observedAt: NOW,
-		}),
-		prepare: async (request, snapshot) => createExternalAgentPreparedBinding(request, snapshot),
-		start: async () => ({
-			external,
-			events: {
-				async *[Symbol.asyncIterator]() {},
-			},
-			receipt: Promise.resolve({
-				schemaVersion: 1,
-				external,
-				status: "completed",
-				endedAt: NOW,
-				artifactRefs: [],
-				sideEffects: "none",
-			}),
-			cancel: async () => {},
-			heartbeat: async () => ({ leaseId: `lease-${sessionId}`, expiresAt: LATER }),
-		}),
+function createTestExternalConnectorRegistry(sessionId: string): ExternalConnectorRegistry {
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: `external-connector-${sessionId}`,
+		revision: 1,
+		protocol: { name: "composition-test", version: "1" },
+		modelAccess: "none",
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
+	});
+	const unsupported = new FoundationError("unsupported_feature", "Composition-only connector fixture");
+	const connector: ExternalAgentConnector = {
+		schemaVersion: 1,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector",
+		capabilities: async () => [],
+		dispose: async () => {},
+		probeCapabilities: async () => Result.ok(snapshot),
+		createAttempt: async () => Result.err(unsupported),
+		runAttempt: async () => Result.err(unsupported),
+		cancelAttempt: async () => Result.err(unsupported),
+		resumeAttempt: async () => Result.err(unsupported),
+		reconcileAttempt: async () => Result.err(unsupported),
 	};
+	const registry = createExternalConnectorRegistry();
+	const registered = registry.registerPrepared({
+		descriptor: {
+			schemaVersion: 1,
+			providerId: snapshot.providerId,
+			providerClass: "external_connector",
+			revision: snapshot.revision,
+			capabilitySnapshotDigest: snapshot.digest,
+		},
+		connector,
+		trusted: true,
+	}, snapshot);
+	if (!registered.ok) throw registered.error;
+	return registry;
 }
 
 function createCompositionFactory(cwd: string, captures: CompositionCaptures): AgentRuntimeCompositionFactory {
@@ -425,10 +425,9 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 			captures.schedulers.push(scheduler);
 			return scheduler;
 		},
-		externalAgentRegistry: (context) => {
+		externalConnectorRegistry: (context) => {
 			captures.contexts.push(context);
-			const registry = createExternalAgentAdapterRegistry();
-			registry.register(createFakeExternalAdapter(context.sessionId), { targets: [`target-${context.sessionId}`] });
+			const registry = createTestExternalConnectorRegistry(context.sessionId);
 			captures.externalRegistries.push(registry);
 			return registry;
 		},
@@ -472,7 +471,7 @@ function expectFreshComposition(initial: AgentRuntimeComposition, replacement: A
 	expect(replacement.scheduler).not.toBe(initial.scheduler);
 	expect(replacement.scheduler?.targetGraph).not.toBe(initial.scheduler?.targetGraph);
 	expect(replacement.scheduler?.registry).not.toBe(initial.scheduler?.registry);
-	expect(replacement.externalAgentRegistry).not.toBe(initial.externalAgentRegistry);
+	expect(replacement.externalConnectorRegistry).not.toBe(initial.externalConnectorRegistry);
 	expect(replacement.taskCredentialProvider).not.toBe(initial.taskCredentialProvider);
 }
 
@@ -572,15 +571,13 @@ describe("AgentRuntimeComposition", () => {
 			expect(composition.subagents).toBe(captures.subagents[0]);
 			expect(composition.scheduler).toMatchObject(captures.schedulers[0] ?? {});
 			expect(composition.scheduler).not.toHaveProperty("runLifecycleSession");
-			expect(composition.externalAgentRegistry).toBe(captures.externalRegistries[0]);
+			expect(composition.externalConnectorRegistry).toBe(captures.externalRegistries[0]);
 			expect(composition.taskCredentialProvider).toBe(captures.credentialProviders[0]);
-			expect(created.session.getExternalAgentRegistry()).toBe(composition.externalAgentRegistry);
+			expect(created.session.getExternalConnectorRegistry()).toBe(composition.externalConnectorRegistry);
 			expect(created.session.getWorkerRegistry()?.listWorkerRecords()).toEqual([]);
 			expect(created.session.getSubagentRegistry()).toBeDefined();
 			expect(created.session.getSchedulerStatus()).toBeDefined();
-			expect(() => captures.externalRegistries[0]?.register(createFakeExternalAdapter("late"))).toThrowError(
-				expect.objectContaining({ code: "external_agent_adapter_invalid" }),
-			);
+			expect(captures.externalRegistries[0]?.list()).toHaveLength(1);
 			expect(composition.subagents?.session).toBe(composition.session);
 			expect(composition.subagents?.toolGateway).toBe(composition.toolGateway);
 			expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
@@ -634,7 +631,7 @@ describe("AgentRuntimeComposition", () => {
 				expect(composition.workerSandboxProvider).toBeDefined();
 				expect(composition.subagents).toBeDefined();
 				expect(composition.scheduler).toBeDefined();
-				expect(composition.externalAgentRegistry).toBeDefined();
+				expect(composition.externalConnectorRegistry).toBeDefined();
 				expect(composition.taskCredentialProvider).toBeDefined();
 				expect(composition.subagents?.session).toBe(composition.session);
 				expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
@@ -649,7 +646,7 @@ describe("AgentRuntimeComposition", () => {
 	it("disposes the allocated Session when initial runtime composition validation fails", async () => {
 		const hostFactory = createAgentRuntimeCompositionFactory({});
 		const candidateFactory = createAgentRuntimeCompositionFactory({
-			externalAgentRegistry: () => createExternalAgentAdapterRegistry(),
+			externalConnectorRegistry: () => createExternalConnectorRegistry(),
 		});
 		const hostFixture = await createRuntimeFixture(hostFactory);
 		const candidateFixture = await createRuntimeFixture(candidateFactory);
@@ -796,16 +793,13 @@ describe("AgentRuntimeComposition", () => {
 		expect(captures.workers).toHaveLength(3);
 		expect(captures.externalRegistries).toHaveLength(3);
 		expect(captures.credentialProviders).toHaveLength(3);
-		for (const [index, registry] of captures.externalRegistries.entries()) {
-			expect(() => registry.register(createFakeExternalAdapter(`late-${index}`))).toThrowError(
-				expect.objectContaining({ code: "external_agent_adapter_invalid" }),
-			);
-		}
+		for (const registry of captures.externalRegistries.slice(0, -1)) expect(registry.list()).toHaveLength(0);
+		expect(captures.externalRegistries.at(-1)?.list()).toHaveLength(1);
 		expect(secondReplacement.subagents?.writer).toBe(secondReplacement.harness.t5.writer);
 		expect(secondReplacement.subagents?.session).toBe(secondReplacement.session);
 		expect(secondReplacement.subagents?.toolGateway).toBe(secondReplacement.toolGateway);
 		expect(secondReplacement.scheduler?.sourceSession).toBe(secondReplacement.session);
-		expect(secondReplacement.externalAgentRegistry?.list()).toHaveLength(1);
+		expect(secondReplacement.externalConnectorRegistry?.list()).toHaveLength(1);
 		expect(secondReplacement.taskCredentialProvider).toBeDefined();
 		expect(runtime.session.getWorkerRegistry()?.listWorkerRecords()).toEqual([]);
 		await runtime.dispose();
@@ -835,12 +829,11 @@ describe("AgentRuntimeComposition", () => {
 				throw new Error("not exercised");
 			},
 		});
-		const registry = createExternalAgentAdapterRegistry();
-		registry.register(createFakeExternalAdapter("reused"), { targets: ["target-reused"] });
+		const registry = createTestExternalConnectorRegistry("reused");
 		const credential = createTaskCredentialTestProvider({ materials: { fixture: "reused" }, now: () => NOW });
 		const factory = createAgentRuntimeCompositionFactory({
 			trustedWorkerSandboxFactory: () => worker,
-			externalAgentRegistry: () => registry,
+			externalConnectorRegistry: () => registry,
 			taskCredentialProvider: () => credential,
 			taskCredentialPolicyMaxTtlMs: 60_000,
 		});
@@ -917,11 +910,11 @@ describe("AgentRuntimeComposition", () => {
 					"task.credential.revoke",
 					"task.credential.settle",
 				],
-				externalAgentAdapters: [
+				externalConnectors: [
 					{
-						adapterId: "main-rpc-trusted-adapter",
-						displayName: "Main RPC trusted adapter",
-						version: "1",
+						providerId: "main-rpc-trusted-connector",
+						providerClass: "external_connector",
+						revision: 1,
 					},
 				],
 			},
@@ -942,7 +935,7 @@ describe("AgentRuntimeComposition", () => {
 		expect(composition.workerSandboxProvider).toBeUndefined();
 		expect(composition.subagents).toBeUndefined();
 		expect(composition.scheduler).toBeUndefined();
-		expect(composition.externalAgentRegistry).toBeUndefined();
+		expect(composition.externalConnectorRegistry).toBeUndefined();
 		expect(composition.taskCredentialProvider).toBeUndefined();
 
 		const controller = createRpcHostController(runtime);
