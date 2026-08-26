@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
+import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
 	RpcHostController,
@@ -196,25 +198,28 @@ describe("RpcHostController dispatch and attach", () => {
 
 			await controller.dispatch({ id: "start", type: "run.start", message: "long-running" });
 			await vi.waitFor(() => expect(hasRecord(first.records, "run.started")).toBe(true));
+			const started = first.records.find((record) => record.type === "run.started");
+			if (started?.type !== "run.started") throw new Error("run.started was not published");
+			const runId = started.runId;
 
 			detachFirst();
 			await vi.waitFor(() => {
 				expect(abort).toHaveBeenCalled();
-				const automationEntries = runtimeHost.session.sessionManager
-					.getEntries()
-					.filter(
-						(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
-							entry.type === "custom" && entry.customType === "automation.run",
-					);
-				const terminalEntries = automationEntries.filter(
-					(entry) =>
-						typeof entry.data === "object" &&
-						entry.data !== null &&
-						"kind" in entry.data &&
-						entry.data.kind === "terminal",
-				);
-				expect(terminalEntries).toHaveLength(1);
-				expect(terminalEntries[0]).toMatchObject({ data: { receipt: { status: "cancelled" } } });
+				const runReceiptFact = runtimeHost.session.sessionManager.getPhysicalEntries().find((entry) => {
+					if (entry.type !== "custom" || entry.customType !== FOUNDATION_DURABLE_CUSTOM_TYPE) return false;
+					const data = entry.data;
+					return typeof data === "object" && data !== null && "record" in data &&
+						typeof data.record === "object" && data.record !== null &&
+						(data.record as { objectType?: unknown }).objectType === "run_receipt";
+				});
+				expect(runReceiptFact).toMatchObject({
+					data: { record: { objectType: "run_receipt", payload: { runId, terminalStatus: "cancelled" } } },
+				});
+				const replay = new ExecutionAuditQuery(runtimeHost.session.sessionManager).replay(runId);
+				expect(replay).toMatchObject({
+					run: { status: "cancelled" },
+					events: expect.arrayContaining([expect.objectContaining({ type: "run.cancelled" })]),
+				});
 			});
 
 			const second = createSink();

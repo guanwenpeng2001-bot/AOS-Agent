@@ -10,7 +10,6 @@
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 
 export const AUDIT_SOURCE_CUSTOM_TYPES = [
-	"automation.run",
 	"model.binding",
 	"model.attempt",
 	"context.snapshot",
