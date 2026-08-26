@@ -23,7 +23,7 @@ import {
 	type TaskResult,
 	type WorkerReceipt,
 } from "./results.ts";
-import { validateChildSpawnRequest, validateChildSpawnResult, type ChildAgentProvider, type ChildSpawnRequest, type ChildSpawnResult, type FoundationProviderExecutionOptions, type TaskExecutorProvider } from "./providers.ts";
+import { validateChildSpawnRequest, validateChildSpawnResult, type ChildAgentProvider, type ChildSpawnRequest, type ChildSpawnResult, type ExternalAgentConnector, type FoundationProviderExecutionOptions, type TaskExecutorProvider } from "./providers.ts";
 import { validateAgentInstance, validateBindingEpoch, validateRoleRevision, type AgentBinding, type AgentInstance, type BindingEpoch, type ModelProfile, type ModelRoute, type RoleRevision } from "./role.ts";
 import { validateRoleRegistryRecord } from "./role-registry.ts";
 import { validateSecretFreeModelProfile } from "./model-profile.ts";
@@ -490,12 +490,16 @@ export class LayeredResultSettlement {
 	async resumeDispatch(input: DispatchExecutionInput & { readonly agentInstance?: AgentInstance }): Promise<ResultValue<DispatchStartResult, FoundationError>> {
 		const started = await this.startDispatch(input);
 		if (!started.ok || started.value.receipt !== undefined && started.value.receipt.status !== "suspended") return started;
-		const provider = input.provider as TaskExecutorProviderResumeSurface;
 		try {
 			let resumed: ResultValue<AttemptReceipt, FoundationError>;
-			if (provider.resumeAttempt !== undefined) resumed = await provider.resumeAttempt(started.value.attempt.attemptId, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
-			else if (provider.resume !== undefined) resumed = await provider.resume(started.value.attempt.attemptId, { signal: input.signal });
-			else return started;
+			const options = { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) };
+			if (input.provider.providerClass === "external_connector") resumed = await (input.provider as ExternalAgentConnector).resumeAttempt(started.value.attempt, options);
+			else {
+				const provider = input.provider as TaskExecutorProviderResumeSurface;
+				if (provider.resumeAttempt !== undefined) resumed = await provider.resumeAttempt(started.value.attempt.attemptId, options);
+				else if (provider.resume !== undefined) resumed = await provider.resume(started.value.attempt.attemptId, { signal: input.signal });
+				else return started;
+			}
 			if (!resumed.ok) return resumed;
 			const accepted = await this.acceptProviderExecution({ ...started.value, receipt: resumed.value }, input.provider.providerId, input.provider.providerClass);
 			if (!accepted.ok) return accepted;

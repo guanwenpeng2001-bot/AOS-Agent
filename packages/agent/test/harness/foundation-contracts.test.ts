@@ -54,10 +54,8 @@ import {
 	validateDurableEvent,
 	validateEventPayloadForCategory,
 	validateProtocolMessageEnvelope,
-	validateExternalAgentStartRequest,
 	validateToolGatewayRequest,
 	validateScopedModelRequest,
-	serializeExternalAgentStartRequest,
 	serializeToolGatewayRequest,
 	serializeScopedModelRequest,
 	validateGoal,
@@ -78,11 +76,8 @@ import {
 	type ChildAgentProvider,
 	type ChildSpawnRequest,
 	type ChildSpawnResult,
-	type ConnectorCapabilitySnapshot,
 	type FoundationEventEnvelope,
 	type Dispatch,
-	type ExternalAgentConnector,
-	type ExternalAgentStartRequest,
 	type ProductObserverAdapter,
 	type QuotaAttribution,
 	type QuotaProvider,
@@ -579,18 +574,6 @@ class FakeSchedulerTaskExecutor implements SchedulerTaskExecutorProvider {
 	async dispose() {}
 }
 
-class FakeExternalAgentConnector implements ExternalAgentConnector {
-	readonly schemaVersion = 1 as const;
-	readonly providerId = "fake-line-13";
-	readonly providerClass = "external_connector" as const;
-	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [fakeProviderCapability]; }
-	async probe() { return { ok: true as const, value: { schemaVersion: 1, providerId: this.providerId, protocol: "fake-external", capabilityVersion: 1, resumeSupported: true, modelAccess: "aos_gateway" as const } satisfies ConnectorCapabilitySnapshot }; }
-	async start(request: ExternalAgentStartRequest) { return Result.ok(fakeAgentAttempt(this.providerId, request.task.taskId, request.binding.bindingId).attempt); }
-	async resume(_attemptId: string) { return Result.err(new FoundationError("foundation_schema_unknown_record", "fake connector resume is not implemented")); }
-	async cancel(_attemptId: string) { return Result.ok(undefined); }
-	async dispose() {}
-}
-
 class FakeToolGateway implements ToolGateway {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "fake-tool-gateway";
@@ -798,7 +781,7 @@ describe("provider-neutral compilation contracts", () => {
 		expect(validateAttemptReceipt(omit(receipt(), "error")).ok).toBe(true);
 	});
 
-	it("covers deterministic line 11, 12A, 12B, and 13 providers", async () => {
+	it("covers deterministic line 11, 12A, and 12B providers", async () => {
 		const sandbox = new FakeSandboxOperationProvider();
 	const worker = await sandbox.start({ schemaVersion: 1, operationId: "operation-11" });
 		expect(worker.ok && validateWorkerReceipt(worker.value).ok).toBe(true);
@@ -826,11 +809,6 @@ describe("provider-neutral compilation contracts", () => {
 			}
 		}
 		expect(validateAttemptReceipt({ ...receipt(), agentInstanceId: undefined, provenance: { ...receipt().provenance, producerKind: "agent_executor" } }).ok).toBe(false);
-
-		const connector = new FakeExternalAgentConnector();
-		expect((await connector.probe()).ok).toBe(true);
-		const connectorResult = await connector.start({ schemaVersion: 1, requestId: "request-13", task, binding: fakeBinding() });
-		expect(connectorResult.ok).toBe(true);
 	});
 
 	it("covers every remaining provider interface at the contract boundary", async () => {
@@ -861,13 +839,6 @@ describe("provider-neutral compilation contracts", () => {
 
 	it("validates provider payloads with exact nested schemas and recursive JSON values", () => {
 		const binding = fakeBinding();
-		const externalRequest: ExternalAgentStartRequest = { schemaVersion: 1, requestId: "external-request", task, binding, translatedConfig: { mode: "safe", retries: 2 } };
-		expect(validateExternalAgentStartRequest(externalRequest).ok).toBe(true);
-		expect(serializeExternalAgentStartRequest(externalRequest)).toContain('"schemaVersion":1');
-		expect(validateExternalAgentStartRequest({ ...externalRequest, task: { ...task, unexpected: true } }).ok).toBe(false);
-		const cyclicConfig: Record<string, unknown> = {};
-		cyclicConfig.self = cyclicConfig;
-		expect(validateExternalAgentStartRequest({ ...externalRequest, translatedConfig: cyclicConfig }).ok).toBe(false);
 		const toolRequest: ToolGatewayRequest = { schemaVersion: 1, toolCallId: "tool-call", toolName: "read", originalArguments: { path: "artifact" }, context: { schemaVersion: 1, bindingId: binding.bindingId, bindingEpochId: "epoch-1", taskId: task.taskId } };
 		expect(validateToolGatewayRequest(toolRequest).ok).toBe(true);
 		expect(serializeToolGatewayRequest(toolRequest)).toContain('"toolCallId":"tool-call"');
