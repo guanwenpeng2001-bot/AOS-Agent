@@ -47,6 +47,12 @@ describe("canonical Session write authority", () => {
 		await session.dispose();
 	});
 
+	it("routes the CLI startup name through canonical Session", () => {
+		const mainSource = readFileSync(join(__dirname, "../src/main.ts"), "utf8");
+
+		expect(mainSource).not.toContain(".appendSessionInfo(");
+	});
+
 	it("routes compatibility messages, custom entries, names, and labels through canonical Session", async () => {
 		const manager = SessionManager.inMemory();
 		const appendMessage = vi.spyOn(manager, "appendMessage");

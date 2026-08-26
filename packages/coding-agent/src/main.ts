@@ -751,7 +751,9 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 		initialSessionName = name;
 	}
-	if (initialSessionName !== undefined) sessionManager.appendSessionInfo(initialSessionName);
+	if (initialSessionName !== undefined) {
+		await new Session(createSessionManagerStorage(sessionManager)).setName(initialSessionName);
+	}
 	time("createSessionManager");
 
 	const trustStore = new ProjectTrustStore(agentDir);

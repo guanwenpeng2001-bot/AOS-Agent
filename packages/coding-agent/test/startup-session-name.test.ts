@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import { FOUNDATION_FACT_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
@@ -55,13 +56,22 @@ function createSessionFile(projectDir: string, sessionFile: string): void {
 	);
 }
 
-function readSessionInfoNames(sessionFile: string): string[] {
+function readSessionNameFacts(sessionFile: string): string[] {
 	return readFileSync(sessionFile, "utf8")
 		.trim()
 		.split("\n")
-		.map((line) => JSON.parse(line) as { type?: string; name?: string })
-		.filter((entry) => entry.type === "session_info")
-		.map((entry) => entry.name ?? "");
+		.map((line) => JSON.parse(line) as {
+			type?: string;
+			customType?: string;
+			data?: { kind?: string; name?: string };
+		})
+		.filter(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === FOUNDATION_FACT_CUSTOM_TYPE &&
+				entry.data?.kind === "name",
+		)
+		.map((entry) => entry.data?.name ?? "");
 }
 
 async function runCli(args: string[], dirs: CliDirs, timeoutMs = 40_000): Promise<CliResult> {
@@ -114,7 +124,7 @@ describe("startup session name", () => {
 
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
-		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
+		expect(readSessionNameFacts(dirs.sessionFile)).toEqual(["CLI Named Session"]);
 	});
 
 	it("notifies extensions after startup succeeds without writing --name twice", { timeout: 80_000 }, async () => {
@@ -152,7 +162,7 @@ describe("startup session name", () => {
 
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
-		expect(readSessionInfoNames(dirs.sessionFile)).toEqual(["CLI Named Session"]);
+		expect(readSessionNameFacts(dirs.sessionFile)).toEqual(["CLI Named Session"]);
 		expect(existsSync(notificationFile)).toBe(true);
 		expect(readFileSync(notificationFile, "utf8").trim().split("\n")).toEqual(["CLI Named Session"]);
 	});
@@ -167,6 +177,6 @@ describe("startup session name", () => {
 		expect(result.code).toBe(1);
 		expect(result.signal).toBeNull();
 		expect(result.stderr).toContain("--name requires a non-empty value");
-		expect(readSessionInfoNames(dirs.sessionFile)).toEqual([]);
+		expect(readSessionNameFacts(dirs.sessionFile)).toEqual([]);
 	});
 });
