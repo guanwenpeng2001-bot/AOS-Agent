@@ -21,6 +21,7 @@
 
 ### Changed
 
+- Restricted current Native Subagent lifecycle events and capability metadata to Native provider kinds; external protocols use the separate External Agent Connector contract.
 - Renamed the machine-readable Foundation capability manifest to `foundation-capabilities.ts`; serialized `schemaVersion` fields and protocol revision values remain unchanged.
 
 ### Fixed

@@ -12,6 +12,7 @@ import {
 	type Result as ResultValue,
 	type SessionLedger,
 } from "@aos-agent/agent-core";
+import { SUBAGENT_PROVIDER_KINDS } from "./subagent.ts";
 import type { ChildAgentRosterEntryV1 } from "./subagent-supervisor.ts";
 
 export const SUBAGENT_MAILBOX_SENT_OBJECT_TYPE = "subagent.mailbox_message_sent";
@@ -259,7 +260,7 @@ function validateRosterEntry(value: unknown): value is ChildAgentRosterEntryV1 {
 		isIdentifier(value.taskId) &&
 		isIdentifier(value.attemptId) &&
 		isIdentifier(value.providerId) &&
-		["in_process", "fork", "agent_runtime_host", "acp", "sdk"].includes(value.providerKind as string) &&
+		SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as (typeof SUBAGENT_PROVIDER_KINDS)[number]) &&
 		["spawning", "running", "awaiting_input", "background", "cancelling", "succeeded", "failed", "cancelled", "lost", "closed"].includes(
 			value.status as string,
 		) &&

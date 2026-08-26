@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	ACP_PROVIDER,
 	AGENT_RUNTIME_HOST_PROVIDER,
-	SDK_PROVIDER,
 	type SubagentProviderDescriptorV1,
 	SubagentProviderRegistryV1,
 } from "../../../coding-agent/src/core/subagent-registry.ts";
@@ -435,11 +433,4 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		await executeSpawnTest(AGENT_RUNTIME_HOST_PROVIDER, "task-host");
 	});
 
-	it("registers acp as unavailable while a consumer fake conforms through the public spawn entry", async () => {
-		await executeSpawnTest(ACP_PROVIDER, "task-acp");
-	});
-
-	it("registers sdk as unavailable while a consumer fake conforms through the public spawn entry", async () => {
-		await executeSpawnTest(SDK_PROVIDER, "task-sdk");
-	});
 });

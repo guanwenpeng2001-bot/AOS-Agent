@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FoundationError } from "../../agent/src/harness/foundation/errors.ts";
 import {
-	ACP_PROVIDER,
+	AGENT_RUNTIME_HOST_PROVIDER,
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
 	type SubagentProviderDescriptorV1, type SubagentCapabilityRequirementsV1,
@@ -313,13 +313,17 @@ describe("SubagentProviderRegistryV1", () => {
 		);
 	});
 
-	it("negotiates capabilities correctly and checks providerKind", () => {
+	it("negotiates capabilities correctly and rejects historical external kinds", () => {
 		const registry = new SubagentProviderRegistryV1();
 		registry.register(IN_PROCESS_PROVIDER);
 
-		expect(() => registry.resolve("native.in_process", { providerKind: "sdk" })).toThrowError(
-			new FoundationError("subagent_capability_unsupported", "Provider native.in_process is not of kind sdk."),
-		);
+		for (const providerKind of ["acp", "sdk"] as const) {
+			expect(() =>
+				registry.resolve("native.in_process", {
+					providerKind,
+				} as unknown as SubagentCapabilityRequirementsV1),
+			).toThrowError(new FoundationError("subagent_spawn_invalid", `Invalid providerKind: ${providerKind}`));
+		}
 
 		expect(() => registry.resolve("native.in_process", { maxDepthRequired: 50 })).toThrowError(
 			new FoundationError(
@@ -331,15 +335,35 @@ describe("SubagentProviderRegistryV1", () => {
 
 	it("fails closed on unavailability before capability checking (unavailable ordering)", () => {
 		const registry = new SubagentProviderRegistryV1();
-		registry.register(ACP_PROVIDER);
+		registry.register(AGENT_RUNTIME_HOST_PROVIDER);
 
 		// Should throw unavailable because implementedInThisLine is false, NOT unsupported because of maxDepth
-		expect(() => registry.resolve("connector.acp", { maxDepthRequired: 50 })).toThrowError(
+		expect(() => registry.resolve("remote.agent_runtime_host", { maxDepthRequired: 50 })).toThrowError(
 			new FoundationError(
 				"subagent_provider_unavailable",
-				"Provider connector.acp is not implemented in this line.",
+				"Provider remote.agent_runtime_host is not implemented in this line.",
 			),
 		);
+	});
+
+	it("rejects historical external provider descriptors as current Native records", () => {
+		const registry = new SubagentProviderRegistryV1();
+		for (const providerKind of ["acp", "sdk"] as const) {
+			const historical = {
+				...IN_PROCESS_PROVIDER,
+				providerKind,
+				descriptor: {
+					...IN_PROCESS_PROVIDER.descriptor,
+					providerId: `connector.${providerKind}`,
+				},
+			};
+			expect(() => registry.register(historical as unknown as SubagentProviderDescriptorV1)).toThrowError(
+				new FoundationError(
+					"subagent_spawn_invalid",
+					"Registry entries must have exact descriptor shape with positive revision and maxDepth and providerClass 'agent'.",
+				),
+			);
+		}
 	});
 
 	it("resolves successfully when capabilities match and provider is implemented", () => {

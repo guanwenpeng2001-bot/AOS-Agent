@@ -1442,7 +1442,7 @@ const futureOwners = [
 		id: 111,
 		laterOwner: "12A",
 		title: "Subagent Provider Registry",
-		description: "In-process, fork, Agent Runtime Host, ACP, Codex, Claude and SDK subagent providers.",
+		description: "In-process, fork, and Agent Runtime Host native subagent providers; external connectors use their separate provider contract.",
 		consumedFoundationContracts: ["TaskExecutorProvider/Dispatch/Attempt contract", "Capability descriptor/registry"],
 	},
 	{

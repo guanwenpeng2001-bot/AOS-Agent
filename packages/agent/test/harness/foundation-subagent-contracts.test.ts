@@ -145,6 +145,8 @@ describe("line 12A Foundation additions", () => {
 		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, rawFrame: "forbidden" })).toBe(false);
 		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, status: "terminal" })).toBe(false);
 		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, ancestorIds: ["parent-2"] })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, providerKind: "acp" })).toBe(false);
+		expect(validateEventPayloadForCategory(event.category, { ...lifecyclePayload, providerKind: "sdk" })).toBe(false);
 	});
 
 	it("requires Scheduler payload identities to match the durable correlation", () => {

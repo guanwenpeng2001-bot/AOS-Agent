@@ -104,4 +104,14 @@ describe("Line 12A Native Subagent capability manifest", () => {
 			FOUNDATION_FUTURE_CAPABILITY_OWNERS.filter((entry) => entry.laterOwner === "12A").map((entry) => entry.id),
 		).toEqual(IMPLEMENTED_IDS);
 	});
+
+	it("describes capability 111 as Native Agent taxonomy without external placeholders", () => {
+		const capability = foundationFutureOwnerById(111);
+		expect(capability?.description).toContain("native subagent providers");
+		expect(capability?.description).not.toMatch(/\b(?:ACP|Codex|Claude|SDK)\b/);
+		const closure = LINE12A_SUBAGENT_CAPABILITY_CLOSURES.find((entry) => entry.id === 111);
+		expect(closure?.publicContract).toContain("three-kind Native Agent provider registry");
+		expect(closure?.publicContract).toContain("two native implementations");
+		expect(closure?.publicContract).not.toContain("connector.");
+	});
 });

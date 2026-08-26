@@ -722,21 +722,10 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				cleanup: (fixture) => fixture.cleanup(),
 			},
 		}),
-	],
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-02",
-				fullTestName:
-					"Line 13 package root exposes one External Connector contract and excludes protocol placeholders from Native Agent taxonomy",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T4",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external-connector.public-taxonomy",
-					fingerprint: "sha256:06d7f0584ba687bda557430c417519fe9c073caae3d3476ffe24d22b9d228738",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-02",
+			fullTestName:
+				"Line 13 package root exposes one External Connector contract and excludes protocol placeholders from Native Agent taxonomy",
 			scenario: {
 				fixture: () => {
 					const registry = createExternalAgentAdapterRegistry();
@@ -754,7 +743,9 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 							connectorRegistryExported: typeof publicEntry.createExternalConnectorRegistry === "function",
 							externalConnectorClassDeclared:
 								Array.isArray(providerClasses) && providerClasses.includes("external_connector"),
-							nativePlaceholders: SUBAGENT_PROVIDER_KINDS.filter((kind) => kind === "acp" || kind === "sdk"),
+							nativePlaceholders: (SUBAGENT_PROVIDER_KINDS as readonly string[]).filter(
+								(kind) => kind === "acp" || kind === "sdk",
+							),
 						},
 						{
 							connectorRegistryExported: true,
@@ -766,6 +757,8 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
+	],
+	cases: [
 		defineLine13KnownGapCase({
 			entry: {
 				ac: "AC-03",

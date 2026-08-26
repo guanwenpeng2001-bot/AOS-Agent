@@ -36,6 +36,7 @@ import {
 	type SessionLedger,
 } from "@aos-agent/agent-core";
 import {
+	SUBAGENT_PROVIDER_KINDS,
 	createChildAgentRecordV1,
 	isChildExecutionTerminalStatusV1,
 	transitionChildAgentRecordV1,
@@ -284,7 +285,7 @@ function validateProviderDescriptor(value: unknown): value is SubagentProviderDe
 	if (!isRecord(value) || !exactKeys(value, PROVIDER_DESCRIPTOR_KEYS)) return false;
 	if (
 		value.schemaVersion !== 1 ||
-		!["in_process", "fork", "agent_runtime_host", "acp", "sdk"].includes(value.providerKind as string) ||
+		!SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as (typeof SUBAGENT_PROVIDER_KINDS)[number]) ||
 		!isPositiveInteger(value.revision) ||
 		typeof value.implementedInThisLine !== "boolean" ||
 		!isRecord(value.descriptor) ||
