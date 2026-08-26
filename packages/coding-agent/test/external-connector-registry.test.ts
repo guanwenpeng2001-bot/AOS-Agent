@@ -241,6 +241,30 @@ function registration(connector: ZetaConnector): ExternalConnectorRegistration {
 	};
 }
 
+function expectSafeRegistryProbeFailure(
+	error: FoundationError,
+	expectedMessage: string,
+	forbiddenValues: readonly string[],
+): void {
+	expect(error.code).toBe("task_executor_invalid_provider_class");
+	expect(error.message).toBe(expectedMessage);
+	expect(error.cause).toBeUndefined();
+	expect(error.details).toBeUndefined();
+
+	const exposedSurfaces = [
+		...Object.getOwnPropertyNames(error).map((property) => `${property}:${String(Reflect.get(error, property))}`),
+		JSON.stringify(error),
+		String(error.cause),
+		error.message,
+		JSON.stringify(error.details),
+		JSON.stringify(error.redact()),
+		JSON.stringify(error.toPublicExecutionError()),
+	].join("\n");
+	for (const forbiddenValue of forbiddenValues) {
+		expect(exposedSurfaces).not.toContain(forbiddenValue);
+	}
+}
+
 describe("ExternalConnectorRegistry open SPI", () => {
 	it("registers and selects an arbitrary connector, then schedules, runs, and settles its Attempt", async () => {
 		const connector = new ZetaConnector();
@@ -336,6 +360,54 @@ describe("ExternalConnectorRegistry open SPI", () => {
 				provenance: { producerKind: "external_connector" },
 			});
 		}
+	});
+
+	it("normalizes thrown and returned probe failures without exposing connector error data", async () => {
+		const rawExceptionText = "raw vendor exception text 9f4d";
+		const credential = "credential-registry-canary";
+		const token = "sk-registry-token-canary";
+		const path = "C:\\vendor-private\\connector\\credentials.json";
+		const url = "https://user:password@vendor.invalid/probe?token=registry-canary";
+		const vendorPayload = "vendor-payload-registry-canary";
+		const forbiddenValues = [rawExceptionText, credential, token, path, url, vendorPayload];
+		const thrownError = Object.assign(
+			new Error(`${rawExceptionText}; ${credential}; ${token}; ${path}; ${url}; ${vendorPayload}`),
+			{ credential, token, path, url, vendorPayload: { body: vendorPayload } },
+		);
+
+		const assertProbeFailure = async (
+			probeCapabilities: () => Promise<Result<ConnectorCapabilitySnapshot, FoundationError>>,
+			expectedMessage: string,
+			sourceError: Error,
+		): Promise<void> => {
+			const connector = new ZetaConnector();
+			Object.defineProperty(connector, "probeCapabilities", { value: probeCapabilities });
+			const registry = createExternalConnectorRegistry();
+			const result = await registry.register(registration(connector));
+
+			expect(result.ok).toBe(false);
+			if (result.ok) return;
+			expect(result.error).not.toBe(sourceError);
+			expectSafeRegistryProbeFailure(result.error, expectedMessage, forbiddenValues);
+		};
+
+		await assertProbeFailure(
+			async () => {
+				throw thrownError;
+			},
+			"External connector threw while probing capabilities.",
+			thrownError,
+		);
+
+		const returnedError = new FoundationError("provider_spawn_failed", rawExceptionText, {
+			cause: thrownError,
+			details: { credential, token, path, url, vendorPayload },
+		});
+		await assertProbeFailure(
+			async () => Result.err(returnedError),
+			"External connector capability probe failed.",
+			returnedError,
+		);
 	});
 
 	it("fails closed on untrusted, mismatched, unknown, and drifted connector facts", async () => {
