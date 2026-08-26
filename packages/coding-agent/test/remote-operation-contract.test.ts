@@ -20,11 +20,6 @@ import {
 	type TaskLeaseReference,
 } from "../src/core/remote-operation.ts";
 import type { ExternalAdapterIdentity } from "../src/core/external-session-mapping.ts";
-import {
-	createBindingHandle,
-	createRunBindingAssociation,
-	type RunBindingAssociation,
-} from "../src/core/binding-handles.ts";
 import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
 import {
@@ -52,7 +47,7 @@ const NOW = "2026-08-14T00:00:00.000Z";
 const FUTURE = "2026-08-14T00:01:00.000Z";
 const LEASE_EXPIRY = "2026-08-14T00:02:00.000Z";
 
-function request(operationId: string, bindingAssociation?: RunBindingAssociation): RemoteOperationRequest {
+function request(operationId: string): RemoteOperationRequest {
 	return {
 		operationId,
 		runId: "run-1",
@@ -60,7 +55,6 @@ function request(operationId: string, bindingAssociation?: RunBindingAssociation
 		capabilityBindingId: "capability-binding-1",
 		modelBindingId: "model-binding-1",
 		policyBindingId: "policy-binding-1",
-		...(bindingAssociation === undefined ? {} : { bindingAssociation }),
 		deadlineAt: FUTURE,
 		lease: { leaseId: "lease-1", expiresAt: LEASE_EXPIRY },
 		artifactRefs: [{ id: "input-1", kind: "input", digest: "sha256:input-1", sizeBytes: 2 }],
@@ -324,27 +318,25 @@ describe("remote-neutral operation contract", () => {
 	});
 
 	it.each(eachProvider())(
-		"records the same safe terminal fact through the Session ledger on the %s path",
+		"records canonical correlation refs and rejects association input on the %s path",
 		async (_name, _state, provider) => {
 			const session = SessionManager.inMemory("/workspace/remote-operation");
-			const bindingAssociation = createRunBindingAssociation("run-1", [
-				createBindingHandle({
-					domain: "model",
-					bindingId: "model-binding-1",
-					revision: "rev-1",
-					relation: "run.model",
+			expect(
+				isRemoteOperationRequest({
+					...request("operation-association-rejected"),
+					bindingAssociation: { schemaVersion: 1, associationId: "association-1", runId: "run-1", bindings: [] },
 				}),
-			]);
+			).toBe(false);
 			const receipt = await executeRemoteOperation(
 				provider,
-				{ ...request("operation-ledger", bindingAssociation), sessionId: session.getSessionId() },
+				{ ...request("operation-ledger"), sessionId: session.getSessionId() },
 				{
 					now: () => NOW,
 					ledger: createSessionRemoteOperationLedger(session),
 				},
 			);
 
-			expect(receipt.bindingAssociation).toEqual(bindingAssociation);
+			expect(receipt).not.toHaveProperty("bindingAssociation");
 			expect(session.getEntries()).toHaveLength(1);
 			expect(session.getEntries()[0]).toMatchObject({
 				type: "custom",
@@ -353,7 +345,6 @@ describe("remote-neutral operation contract", () => {
 					schemaVersion: REMOTE_OPERATION_LEDGER_SCHEMA_VERSION,
 					receipt: {
 						operationId: "operation-ledger",
-						bindingAssociation,
 						sessionId: session.getSessionId(),
 					},
 				},
@@ -367,8 +358,9 @@ describe("remote-neutral operation contract", () => {
 			expect(audit.events[0]).toMatchObject({
 				type: "remote.operation",
 				runId: "run-1",
-				summary: { operationId: "operation-ledger", bindingAssociation },
+				summary: { operationId: "operation-ledger" },
 			});
+			expect(audit.events[0]?.summary).not.toHaveProperty("bindingAssociation");
 			expect(JSON.stringify(session.getEntries())).not.toContain("fake-provider");
 		},
 	);

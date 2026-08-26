@@ -10,6 +10,7 @@ import {
 	sha256HexValue,
 	type FoundationProviderExecutionOptions,
 	type FoundationJsonValue,
+	type AgentBinding,
 	type ArtifactStoreProvider,
 	type QuotaProvider,
 	type SandboxOperationProvider,
@@ -28,6 +29,7 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { deriveProductPromptModelProfileIdV1 } from "../src/core/product-prompt-binding-authority.ts";
 import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
 import { TrustedSubagentCompositionV1 } from "../src/core/subagent-composition.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
@@ -104,7 +106,6 @@ describe("ProductPromptIngressV1", () => {
 	it("executes explicit in_process Child Agents through the production ingress and exposes only a durable safe next-turn result", async () => {
 		if (MODEL === undefined) throw new Error("Test model is unavailable");
 		const runId = "product-run-native-child";
-		const token = sha256HexValue(runId).slice(0, 32);
 		const storage = new LeaseCountingStorage({ id: "product-native-child", createdAt: 1 });
 		const session = new Session(storage);
 		const baseModels = createModels();
@@ -147,7 +148,12 @@ describe("ProductPromptIngressV1", () => {
 			description: "Review explicit product work",
 			revision: 0,
 			persona: "Review the child task.",
-			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: `model_profile_coding_agent_${token}`, revision: 1 },
+			modelProfileRef: {
+				schemaVersion: 1,
+				type: "model_profile",
+				id: deriveProductPromptModelProfileIdV1(MODEL, "off"),
+				revision: 1,
+			},
 			capabilitySelector: { policy: "none" },
 			skillSelector: { policy: "none" },
 			mcpSelector: { policy: "none" },
@@ -372,7 +378,10 @@ describe("ProductPromptIngressV1", () => {
 			cwd: "C:/workspace",
 			currentModel: () => MODEL,
 			currentThinkingLevel: () => "off",
-			dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+			dependencySnapshot: (name, context): FoundationJsonValue =>
+				name === "capability" || name === "policy"
+					? { name, state: "active" }
+					: { name, runId: context.runId, state: "active" },
 			now: () => "2026-08-20T00:00:00.000Z",
 		});
 
@@ -412,6 +421,32 @@ describe("ProductPromptIngressV1", () => {
 			expect(attemptReceipts).toHaveLength(2);
 			expect(taskResults).toHaveLength(2);
 			expect(runReceipts).toHaveLength(2);
+			for (const objectType of [
+				"role_revision",
+				"model_profile_revision",
+				"capability_binding",
+				"policy_binding",
+			] as const) {
+				expect(
+					await session.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" }),
+					`${objectType} must be reused across Runs`,
+				).toHaveLength(1);
+			}
+			const bindings = await session.findFoundationRecords({
+				kind: "fact",
+				objectType: "agent_binding",
+				order: "oldestFirst",
+			});
+			expect(bindings).toHaveLength(2);
+			if (bindings[0]?.kind !== "fact" || bindings[1]?.kind !== "fact") {
+				throw new Error("Expected two durable AgentBinding facts");
+			}
+			const firstBinding = bindings[0].payload as unknown as AgentBinding;
+			const secondBinding = bindings[1].payload as unknown as AgentBinding;
+			expect(firstBinding.roleRevision).toEqual(secondBinding.roleRevision);
+			expect(firstBinding.modelProfileRevision).toEqual(secondBinding.modelProfileRevision);
+			expect(firstBinding.capabilityRevision).toEqual(secondBinding.capabilityRevision);
+			expect(firstBinding.policyRevision).toEqual(secondBinding.policyRevision);
 			expect(new Set(tasks.map((record) => record.kind === "fact" && (record.payload as { goalId: string }).goalId))).toEqual(new Set([first.task.goalId]));
 			await expect(ingress.execute({ prompt: "conflicting prompt", surface: "sdk", runId: "product-run-1" })).rejects.toMatchObject({ code: "session_ledger_conflict" });
 			await expect(ingress.execute({ prompt: "@agent reviewer first prompt", surface: "tui", runId: "product-run-1" })).rejects.toMatchObject({ code: "session_ledger_conflict" });

@@ -3173,7 +3173,7 @@ function parseSourceCandidate(
 	} else if (eventType === "remote.operation") {
 		const value = data.receipt ?? data.operation ?? data;
 		if (isRemoteOperationReceipt(value)) {
-			const relationRunId = value.runId ?? value.bindingAssociation?.runId;
+			const relationRunId = value.runId;
 			if (value.sessionId !== undefined && value.sessionId !== sessionId) {
 				internalWarnings.push(
 					warning(

@@ -43,7 +43,6 @@ export {
 	getExecutionAssociations,
 	isExecutionAssociationRecord,
 	parseExecutionAssociation,
-	persistExecutionAssociation,
 } from "./execution-association.ts";
 export {
 	classifyAssistantFailure,

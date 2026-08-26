@@ -24,7 +24,6 @@ import {
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
-import { createRunBindingAssociation } from "../../core/binding-handles.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
 import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
@@ -2219,9 +2218,6 @@ export class RpcHostController {
 					: { capabilityBindingId: handle.record.capabilityBindingId }),
 				...(handle.record.modelBindingId === undefined ? {} : { modelBindingId: handle.record.modelBindingId }),
 				...(handle.record.policyBindingId === undefined ? {} : { policyBindingId: handle.record.policyBindingId }),
-				...(handle.record.bindingAssociation === undefined
-					? {}
-					: { bindingAssociation: handle.record.bindingAssociation }),
 				...(handle.record.deadlineAt === undefined ? {} : { deadlineAt: handle.record.deadlineAt }),
 				...(adapter === undefined ? {} : { adapter }),
 			};
@@ -3088,7 +3084,6 @@ export class RpcHostController {
 				// the prepare request and the probe before any start.
 				const capabilityBinding = session.getActiveCapabilityBinding();
 				const policyBinding = session.getActiveExecutionPolicyBinding();
-				const bindingHandles = session.getActiveBindingHandles();
 				const capabilitySummary: string[] = [];
 				if (capabilityBinding !== undefined) {
 					for (const descriptor of capabilityBinding.descriptors) {
@@ -3103,8 +3098,6 @@ export class RpcHostController {
 						if (capabilitySummary.length >= EXTERNAL_AGENT_MAX_CAPABILITY_SUMMARY) break;
 					}
 				}
-				const bindingAssociation =
-					bindingHandles.length === 0 ? undefined : createRunBindingAssociation(proposedRunId, bindingHandles);
 				const prepareRequest: ExternalAgentPrepareRequest = {
 					runId: proposedRunId,
 					sessionId: session.sessionId,
@@ -3114,7 +3107,6 @@ export class RpcHostController {
 						: { modelBindingId: modelSelection.resolution.bindingId }),
 					...(capabilityBinding === undefined ? {} : { capabilityBindingId: capabilityBinding.id }),
 					...(policyBinding === undefined ? {} : { policyBindingId: policyBinding.id }),
-					...(bindingAssociation === undefined ? {} : { bindingAssociation }),
 					capabilitySummary,
 					policyProfile: session.getActiveExecutionPolicyProfile(),
 					...(policyBinding?.sandboxProviderId === undefined
@@ -3197,7 +3189,6 @@ export class RpcHostController {
 						capabilityBinding: session.getActiveCapabilityBinding(),
 						policyBinding: session.getActiveExecutionPolicyBinding(),
 						policySummary: session.getActiveExecutionPolicySummary(),
-						bindingHandles: session.getActiveBindingHandles(),
 					});
 					handle.setUsageBaseline(usageSnapshot());
 				} catch (err) {
@@ -3425,7 +3416,6 @@ export class RpcHostController {
 								capabilityBinding: session.getActiveCapabilityBinding(),
 								policyBinding: session.getActiveExecutionPolicyBinding(),
 								policySummary: session.getActiveExecutionPolicySummary(),
-								bindingHandles: session.getActiveBindingHandles(),
 							});
 							handle.setUsageBaseline(usageSnapshot());
 							// Persist the started fact before publishing accepted. The returned events

@@ -296,6 +296,23 @@ describe("private automation.run ledger migration", () => {
 		]);
 	});
 
+	it("fails closed when mixed legacy entries disagree on the derived binding view", () => {
+		const conflictingAssociation = createRunBindingAssociation(RUN_ID, [
+			createBindingHandle({
+				domain: "model",
+				bindingId: "model-binding-2",
+				revision: "revision-2",
+				relation: "run.model",
+			}),
+		]);
+		expect(() =>
+			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+				source(1, "accepted-a", accepted()),
+				source(2, "accepted-b", accepted(conflictingAssociation)),
+			]),
+		).toThrow("accepted fact conflicts");
+	});
+
 	it("fails closed on conflicting terminal facts", () => {
 		expect(() =>
 			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [

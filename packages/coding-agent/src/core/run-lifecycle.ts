@@ -40,8 +40,6 @@ import {
 	projectAutomationRuns,
 } from "./automation-run-projection.ts";
 import {
-	type BindingHandle,
-	createRunBindingAssociation,
 	parseRunBindingAssociation,
 	type RunBindingAssociation,
 	serializePublicRunBindingAssociation,
@@ -1039,8 +1037,6 @@ export interface AcceptOptions {
 	policyViolation?: PolicyViolationLedgerRecord;
 	/** Public-safe Execution Policy summary. Derived from policyBinding when omitted. */
 	policySummary?: PublicPolicySummary;
-	/** Public-safe binding handles frozen for this Run. */
-	bindingHandles?: ReadonlyArray<BindingHandle>;
 }
 
 export interface RunReservation {
@@ -3088,7 +3084,6 @@ class RunHandleImpl implements RunHandle {
 	private readonly _record: RunRecord;
 	private readonly _policyBindingId: string | undefined;
 	private readonly _previousPolicyBindingId: string | undefined;
-	private readonly _bindingAssociation: RunBindingAssociation | undefined;
 	private _policySummary: PublicPolicySummary | undefined;
 	private _sequence = 0;
 	private _terminationIntent: RunTerminationIntent | undefined;
@@ -3112,10 +3107,6 @@ class RunHandleImpl implements RunHandle {
 		}
 		this._policyBindingId = options.policyBinding?.id;
 		this._previousPolicyBindingId = options.policyBinding?.previousPolicyBindingId ?? options.previousPolicyBindingId;
-		this._bindingAssociation =
-			options.bindingHandles === undefined || options.bindingHandles.length === 0
-				? undefined
-				: createRunBindingAssociation(this.runId, options.bindingHandles);
 		this._policySummary =
 			options.policyBinding === undefined
 				? options.policySummary === undefined
@@ -3171,7 +3162,6 @@ class RunHandleImpl implements RunHandle {
 			if (modelBudget !== undefined) this._record.modelBudget = modelBudget;
 		}
 		if (this._policySummary !== undefined) this._record.policySummary = this._policySummary;
-		if (this._bindingAssociation !== undefined) this._record.bindingAssociation = this._bindingAssociation;
 	}
 
 	get record(): RunRecord {

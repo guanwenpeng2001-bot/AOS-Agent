@@ -1,13 +1,13 @@
 /**
- * Immutable cross-ledger association for one model dispatch.
+ * Read-only decoder for the historical cross-ledger association record.
  *
  * Context snapshots, ModelBroker attempts, policy bindings, and capability
  * bindings are intentionally written by separate ledgers. This small fact
- * links their opaque identifiers without copying mutable configuration or
- * credentials into any of them.
+ * Legacy ledgers may still contain this migration input. New execution must
+ * use AgentBinding/BindingEpoch and must never persist this second aggregate.
  */
 
-import type { ModelBrokerLedgerEntry, ModelBrokerLedgerSession } from "./model-broker-ledger.ts";
+import type { ModelBrokerLedgerEntry } from "./model-broker-ledger.ts";
 
 export const EXECUTION_ASSOCIATION_SCHEMA_VERSION = 1 as const;
 export const EXECUTION_ASSOCIATION_CUSTOM_TYPE = "execution.association" as const;
@@ -30,7 +30,7 @@ export interface PersistedExecutionAssociationEntry {
 	readonly association: ExecutionAssociationRecord;
 }
 
-export type ExecutionAssociationSession = ModelBrokerLedgerSession & Pick<SessionAssociationEntries, "getEntries">;
+export type ExecutionAssociationSession = Pick<SessionAssociationEntries, "getEntries">;
 
 interface SessionAssociationEntries {
 	getEntries(): ReadonlyArray<ModelBrokerLedgerEntry & { customType?: string }>;
@@ -65,26 +65,12 @@ export function parseExecutionAssociation(value: unknown): ExecutionAssociationR
 	return isExecutionAssociationRecord(association) ? association : undefined;
 }
 
-export function persistExecutionAssociation(
-	session: ExecutionAssociationSession,
-	association: ExecutionAssociationRecord,
-): string {
-	if (!isExecutionAssociationRecord(association)) {
-		throw new TypeError("Invalid execution association");
-	}
-	const data: PersistedExecutionAssociationEntry = {
-		schemaVersion: EXECUTION_ASSOCIATION_SCHEMA_VERSION,
-		association: { ...association },
-	};
-	return session.appendCustomEntry(EXECUTION_ASSOCIATION_CUSTOM_TYPE, data);
-}
-
 export function getExecutionAssociations(session: ExecutionAssociationSession): ExecutionAssociationRecord[] {
 	const associations: ExecutionAssociationRecord[] = [];
 	for (const entry of session.getEntries()) {
 		if (entry.customType !== EXECUTION_ASSOCIATION_CUSTOM_TYPE) continue;
 		const association = parseExecutionAssociation(entry.data);
-		if (association !== undefined) associations.push(association);
+		if (association !== undefined) associations.push(Object.freeze({ ...association }));
 	}
 	return associations;
 }

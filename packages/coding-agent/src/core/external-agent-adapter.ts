@@ -37,7 +37,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { parseRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
 import {
 	isCanonicalExternalMappingTimestamp,
 	isExternalExecutionRef,
@@ -182,7 +181,6 @@ export interface ExternalAgentBindingInput {
 	readonly modelBindingId?: string;
 	readonly capabilityBindingId?: string;
 	readonly policyBindingId?: string;
-	readonly bindingAssociation?: RunBindingAssociation;
 	/** Bounded allowlisted capability summary of the current Run. */
 	readonly capabilitySummary: ReadonlyArray<string>;
 	readonly policyProfile?: string;
@@ -438,7 +436,6 @@ const BINDING_INPUT_KEYS = new Set([
 	"modelBindingId",
 	"capabilityBindingId",
 	"policyBindingId",
-	"bindingAssociation",
 	"capabilitySummary",
 	"policyProfile",
 	"sandboxProfile",
@@ -621,10 +618,6 @@ function hasValidBindingInputFields(value: Record<string, unknown>): boolean {
 	}
 	if (value.sandboxProfile !== undefined && !isBoundedIdentifier(value.sandboxProfile, EXTERNAL_AGENT_PROFILE_MAX_LENGTH)) {
 		return false;
-	}
-	if (value.bindingAssociation !== undefined) {
-		const association = parseRunBindingAssociation(value.bindingAssociation);
-		if (association === undefined || association.runId !== value.runId) return false;
 	}
 	return true;
 }

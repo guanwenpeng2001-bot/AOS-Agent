@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { createBindingHandle } from "../src/core/binding-handles.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
@@ -1791,15 +1790,8 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("propagates the Run deadline, aborts the prompt, and keeps receipt metadata minimal", async () => {
+	it("propagates the Run deadline without accepting a derived binding association", async () => {
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({ withAuth: true, responseDelayMs: 1500 });
-		const modelHandle = createBindingHandle({
-			domain: "model",
-			bindingId: "model-binding-rpc",
-			revision: "rev-rpc",
-			relation: "run.model",
-		});
-		vi.spyOn(runtimeHost.session, "getActiveBindingHandles").mockReturnValue([modelHandle]);
 		const abortSpy = vi.spyOn(runtimeHost.session, "abort");
 
 		try {
@@ -1812,7 +1804,6 @@ describe("RPC Automation Host run lifecycle", () => {
 			let acceptedData: {
 				runId: string;
 				deadlineAt?: string;
-				bindingAssociation?: { bindings: Array<{ bindingId: string }> };
 			};
 			await vi.waitFor(() => {
 				const responses = responsesFor(rpcIo.outputLines, "deadline-run");
@@ -1821,9 +1812,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				acceptedData = responses[0].data as typeof acceptedData;
 			});
 			expect(acceptedData!.deadlineAt).toBe(deadlineAt);
-			expect(acceptedData!.bindingAssociation?.bindings).toEqual([
-				expect.objectContaining({ bindingId: "model-binding-rpc" }),
-			]);
+			expect("bindingAssociation" in acceptedData!).toBe(false);
 
 			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
 			const terminal = terminalEvents(currentLines())[0];

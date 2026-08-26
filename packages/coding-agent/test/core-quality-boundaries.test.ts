@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { classifyProviderFailure } from "../src/core/execution-error.ts";
 import {
 	createSessionCheckpoint,
-	getExecutionAssociations,
-	persistExecutionAssociation,
 	recoverSessionCheckpoint,
 	SESSION_BOUNDARY_CUSTOM_TYPE,
 } from "../src/core/index.ts";
+import * as core from "../src/core/index.ts";
 import { classifyFallbackEligibility } from "../src/core/model-broker.ts";
 import { createOperationBoundary } from "../src/core/operation-boundary.ts";
 import { type SandboxHandle, type SandboxProvider, SandboxSession } from "../src/core/sandbox.ts";
@@ -34,21 +33,8 @@ describe("core quality boundaries", () => {
 		});
 	});
 
-	it("persists associations without copying provider secrets", () => {
-		const manager = SessionManager.inMemory(process.cwd());
-		persistExecutionAssociation(manager, {
-			schemaVersion: 1,
-			associationId: "association:test",
-			sessionId: manager.getSessionId(),
-			modelAttemptId: "model-attempt:test",
-			modelBindingId: "model-binding:test",
-			contextSnapshotId: "snapshot:test",
-			policyBindingId: "policy:test",
-			capabilityBindingId: "capability:test",
-			createdAt: new Date().toISOString(),
-		});
-		expect(getExecutionAssociations(manager)).toHaveLength(1);
-		expect(JSON.stringify(manager.getEntries())).not.toContain("apiKey");
+	it("does not expose a writable execution-association aggregate", () => {
+		expect("persistExecutionAssociation" in core).toBe(false);
 	});
 
 	it("records checkpoint and recovery boundaries on existing Session facts", () => {
