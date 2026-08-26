@@ -14,6 +14,7 @@ import {
 	type Dispatch,
 	type ExecutionCorrelation,
 	type RevisionReference,
+	type SessionLedger,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import * as packageEntry from "../src/index.ts";
@@ -25,6 +26,11 @@ import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
 	ExternalConnectorOperationStatus,
+} from "../src/core/external-agent-operation.ts";
+import {
+	cloneExternalConnectorOperation,
+	SessionExternalConnectorDurableStore,
+	transitionExternalConnectorOperation,
 } from "../src/core/external-agent-operation.ts";
 import {
 	cloneCanonicalExternalConnectorMapping,
@@ -135,12 +141,19 @@ const correlation: ExecutionCorrelation = {
 	revision: 1,
 };
 
-function terminalEvidence(status: "succeeded" | "cancelled" = "succeeded"): ExternalConnectorTerminalEvidence {
+function terminalEvidence(
+	status: "succeeded" | "cancelled" = "succeeded",
+	overrides: Partial<ExternalConnectorTerminalEvidence> = {},
+): ExternalConnectorTerminalEvidence {
 	return {
+		externalSessionId: "external-session-1",
+		externalTurnId: "external-turn-1",
+		operationNonce: "operation-nonce-1",
 		status,
 		artifacts: [],
 		sideEffectState: "none",
 		producedAt: now,
+		...overrides,
 	};
 }
 
@@ -212,6 +225,23 @@ class FakeStore implements ExternalConnectorDurableStore {
 	}
 }
 
+class OperationLedger {
+	payload: unknown;
+
+	async get(_objectType: string, objectId: string): Promise<unknown> {
+		return this.payload === undefined ? undefined : { kind: "fact", objectId, payload: this.payload };
+	}
+
+	async appendFact<TPayload>(
+		_objectType: string,
+		_objectId: string,
+		payload: TPayload,
+	): Promise<{ readonly payload: TPayload }> {
+		this.payload = payload;
+		return { payload };
+	}
+}
+
 class FakeDriver implements ExternalConnectorVendorDriver {
 	readonly calls = { spawn: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 };
 	readonly spawnStates: Array<ExternalConnectorOperationStatus | undefined> = [];
@@ -220,6 +250,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	readFailure = false;
 	disposeHangs = false;
 	evidence: ExternalConnectorTerminalEvidence = terminalEvidence();
+	cancelEvidence: ExternalConnectorTerminalEvidence = terminalEvidence("cancelled");
 	lookupResult: ExternalConnectorDriverLookup = { status: "terminal", evidence: terminalEvidence() };
 
 	readonly handle: ExternalConnectorDriverHandle = {
@@ -262,7 +293,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 
 	async cancel(): Promise<ExternalConnectorTerminalEvidence> {
 		this.calls.cancel++;
-		return terminalEvidence("cancelled");
+		return this.cancelEvidence;
 	}
 
 	async dispose(): Promise<void> {
@@ -365,6 +396,34 @@ function mappingFor(value: Fixture): CanonicalExternalConnectorMapping {
 		supervisor: { ref: "supervisor-ref-1", nonce: "operation-nonce-1" },
 		createdAt: now,
 	});
+}
+
+function receiptFor(value: Fixture, receiptProviderId = providerId): AttemptReceipt {
+	const attemptReceiptId = `attempt_receipt_${value.attempt.attemptId}`;
+	return {
+		schemaVersion: 1,
+		attemptReceiptId,
+		taskId: value.attempt.taskId,
+		dispatchId: value.attempt.dispatchId,
+		attemptId: value.attempt.attemptId,
+		providerId: receiptProviderId,
+		bindingId: value.attempt.bindingId,
+		bindingEpochIds: [...value.attempt.bindingEpochIds],
+		status: "succeeded",
+		workerReceiptRefs: [],
+		artifacts: [],
+		provenance: {
+			producerKind: "external_connector",
+			providerId: receiptProviderId,
+			producedAt: now,
+			correlation: {
+				...operationFor(value, "prepared").correlation,
+				providerId: receiptProviderId,
+				attemptReceiptId,
+			},
+		},
+		sideEffectState: "none",
+	};
 }
 
 function persistAttempt(value: Fixture): void {
@@ -509,6 +568,169 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.operations.get(value.attempt.attemptId)?.reconcileReason).toBe("capability_drift");
 	});
 
+	it("rejects unknown durable operation fields and strips none through transitions", async () => {
+		const value = await fixture();
+		const prepared = operationFor(value, "prepared");
+		for (const injected of [
+			{ rawConfig: { token: "secret" } },
+			{ prompt: "secret" },
+			{ transcript: "secret" },
+			{ credential: "secret" },
+			{ url: "https://secret.invalid" },
+			{ path: "C:\\secret" },
+		]) {
+			expect(() => cloneExternalConnectorOperation({ ...prepared, ...injected })).toThrowError(
+				FoundationError,
+			);
+			expect(() =>
+				transitionExternalConnectorOperation(
+					{ ...prepared, ...injected } as unknown as ExternalConnectorOperation,
+					"start_intent",
+					{ now },
+				),
+			).toThrowError(FoundationError);
+		}
+
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, {
+			...operationFor(value, "running"),
+			prompt: "secret",
+		} as unknown as ExternalConnectorOperation);
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
+		expect(resumed.ok).toBe(false);
+		expect(value.driver.calls.connect).toBe(0);
+		expect(value.store.receiptWrites).toBe(0);
+	});
+
+	it("validates, clones, and freezes the exact durable operation shape", async () => {
+		const value = await fixture();
+		const prepared = operationFor(value, "prepared");
+		const cloned = cloneExternalConnectorOperation(prepared);
+		expect(Object.isFrozen(cloned)).toBe(true);
+		expect(Object.isFrozen(cloned.correlation)).toBe(true);
+		expect(Object.isFrozen(cloned.bindingDigest)).toBe(true);
+		expect(Object.isFrozen(cloned.capabilityDigest)).toBe(true);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, operationNonce: "https://secret.invalid" })).toThrowError(FoundationError);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, updatedAt: "2026-08-27T00:00:00Z" })).toThrowError(FoundationError);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, bindingDigest: { algorithm: "sha256", value: "bad" } })).toThrowError(FoundationError);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, reconcileReason: "unknown_reason" })).toThrowError(FoundationError);
+
+		const ledger = new OperationLedger();
+		ledger.payload = { ...prepared, prompt: "secret" };
+		const store = new SessionExternalConnectorDurableStore(ledger as unknown as SessionLedger);
+		await expect(store.readOperation(prepared.attemptId)).rejects.toMatchObject({ code: "session_ledger_corrupt" });
+	});
+
+	it("pins every immutable operation fact across durable revisions", async () => {
+		const value = await fixture();
+		const ledger = new OperationLedger();
+		const store = new SessionExternalConnectorDurableStore(ledger as unknown as SessionLedger);
+		const prepared = await store.writeOperation(operationFor(value, "prepared"));
+		const startIntent = transitionExternalConnectorOperation(prepared, "start_intent", { now });
+		const drifts: ExternalConnectorOperation[] = [
+			cloneExternalConnectorOperation({ ...startIntent, capabilityRevision: startIntent.capabilityRevision + 1 }),
+			cloneExternalConnectorOperation({ ...startIntent, bindingRevision: startIntent.bindingRevision + 1 }),
+			cloneExternalConnectorOperation({ ...startIntent, operationNonce: "operation-nonce-2" }),
+			cloneExternalConnectorOperation({
+				...startIntent,
+				bindingEpochId: "binding-epoch-external-1",
+				correlation: { ...startIntent.correlation, bindingEpochId: "binding-epoch-external-1" },
+			}),
+			cloneExternalConnectorOperation({
+				...startIntent,
+				correlation: { ...startIntent.correlation, laneId: "different-lane" },
+			}),
+		];
+		for (const drift of drifts) {
+			await expect(store.writeOperation(drift)).rejects.toMatchObject({ code: "session_ledger_conflict" });
+		}
+		const persisted = await store.writeOperation(startIntent);
+		expect(Object.isFrozen(persisted)).toBe(true);
+		expect(Object.isFrozen(persisted.correlation)).toBe(true);
+	});
+
+	it("rejects extra correlation fields and AgentInstance correlation before start", async () => {
+		const extra = await fixture();
+		persistAttempt(extra);
+		const withExtra = await extra.connector.runAttempt(extra.attempt, {
+			correlation: { ...correlation, rawConfig: { token: "secret" } } as unknown as ExecutionCorrelation,
+		});
+		expect(withExtra.ok).toBe(false);
+		expect(extra.driver.calls.spawn).toBe(0);
+		expect(extra.store.operationHistory).toEqual([]);
+
+		const agent = await fixture();
+		persistAttempt(agent);
+		const withAgentInstance = await agent.connector.runAttempt(agent.attempt, {
+			correlation: { ...correlation, agentInstanceId: "agent-instance-1" },
+		});
+		expect(withAgentInstance.ok).toBe(false);
+		expect(agent.driver.calls.spawn).toBe(0);
+		expect(agent.store.operationHistory).toEqual([]);
+	});
+
+	it("fails closed on a canonical receipt from the wrong provider for resume and cancel", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		value.store.receipts.set(value.attempt.attemptId, receiptFor(value, "wrong-provider"));
+
+		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
+		const cancelled = await value.connector.cancelAttempt(value.attempt.attemptId);
+		expect(resumed.ok).toBe(false);
+		expect(cancelled.ok).toBe(false);
+		expect(value.driver.calls.connect).toBe(0);
+		expect(value.driver.calls.cancel).toBe(0);
+	});
+
+	it("reconciles instead of settling terminal evidence for a different external session", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.driver.evidence = terminalEvidence("succeeded", { externalSessionId: "different-session" });
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+		expect(completed.ok).toBe(false);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "mapping_conflict",
+		});
+		expect(value.store.operationHistory).not.toContain("terminal");
+	});
+
+	it("reconciles instead of settling terminal evidence with a different operation nonce", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "reconcile_required"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		value.driver.lookupResult = {
+			status: "terminal",
+			evidence: terminalEvidence("succeeded", { operationNonce: "different-nonce" }),
+		};
+		const reconciled = await value.connector.reconcileAttempt(value.attempt, { correlation });
+		expect(reconciled.ok).toBe(false);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "mapping_conflict",
+		});
+		expect(value.store.operationHistory).not.toContain("terminal");
+	});
+
+	it("rejects unknown terminal evidence fields without writing a receipt", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.driver.evidence = {
+			...terminalEvidence(),
+			transcript: "secret",
+		} as unknown as ExternalConnectorTerminalEvidence;
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+		expect(completed.ok).toBe(false);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)?.reconcileReason).toBe("mapping_conflict");
+	});
+
 	it("accepts only the canonical safe mapping shape", () => {
 		const value = {
 			schemaVersion: 1,
@@ -524,6 +746,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(isCanonicalExternalConnectorMapping({ ...value, url: "https://secret.invalid" })).toBe(false);
 		expect(isCanonicalExternalConnectorMapping({ ...value, prompt: "secret" })).toBe(false);
 		expect(isCanonicalExternalConnectorMapping({ ...value, externalSessionId: "C:\\absolute\\path" })).toBe(false);
+		expect(isCanonicalExternalConnectorMapping({ ...value, createdAt: "2026-08-27T00:00:00Z" })).toBe(false);
 	});
 
 	it("bounds dispose even when the driver does not settle", async () => {
