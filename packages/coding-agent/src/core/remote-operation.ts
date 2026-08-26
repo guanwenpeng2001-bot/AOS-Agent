@@ -22,11 +22,6 @@
  */
 
 import {
-	parseRunBindingAssociation,
-	serializePublicRunBindingAssociation,
-	type RunBindingAssociation,
-} from "./binding-handles.ts";
-import {
 	isExternalAdapterIdentity,
 	serializeExternalAdapterIdentity,
 	type ExternalAdapterIdentity,
@@ -139,7 +134,6 @@ export interface RemoteOperationBindingRefs {
 	readonly capabilityBindingId?: string;
 	readonly modelBindingId?: string;
 	readonly policyBindingId?: string;
-	readonly bindingAssociation?: RunBindingAssociation;
 }
 
 export interface RemoteOperationRequest extends RemoteOperationBindingRefs {
@@ -395,14 +389,12 @@ function cloneTaskLeaseVerificationResult(value: TaskLeaseVerificationResult): T
 
 function safeBindingRefs(request: unknown): RemoteOperationBindingRefs {
 	if (!isRecord(request)) return {};
-	const bindingAssociation = serializePublicRunBindingAssociation(request.bindingAssociation);
 	return {
 		...(isSafeIdentifier(request.runId) ? { runId: request.runId } : {}),
 		...(isSafeIdentifier(request.sessionId) ? { sessionId: request.sessionId } : {}),
 		...(isSafeIdentifier(request.capabilityBindingId) ? { capabilityBindingId: request.capabilityBindingId } : {}),
 		...(isSafeIdentifier(request.modelBindingId) ? { modelBindingId: request.modelBindingId } : {}),
 		...(isSafeIdentifier(request.policyBindingId) ? { policyBindingId: request.policyBindingId } : {}),
-		...(bindingAssociation === undefined ? {} : { bindingAssociation }),
 	};
 }
 
@@ -519,11 +511,6 @@ function isRemoteOperationErrorInfo(value: unknown): value is RemoteOperationErr
 	);
 }
 
-function isBindingAssociationForRun(value: unknown, runId: unknown): value is RunBindingAssociation {
-	const association = parseRunBindingAssociation(value);
-	return association !== undefined && (runId === undefined || association.runId === runId);
-}
-
 /** Return true when a value has the exact safe request shape. */
 export function isRemoteOperationRequest(value: unknown): value is RemoteOperationRequest {
 	if (!isRecord(value) || !isSafeIdentifier(value.operationId)) return false;
@@ -532,8 +519,6 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
 	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (value.bindingAssociation !== undefined && !isBindingAssociationForRun(value.bindingAssociation, value.runId))
-		return false;
 	if (value.deadlineAt !== undefined && !isCanonicalTimestamp(value.deadlineAt)) return false;
 	if (value.lease !== undefined && !validateLease(value.lease)) return false;
 	if (value.taskLease !== undefined && !isTaskLeaseReference(value.taskLease)) return false;
@@ -547,7 +532,6 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 			key === "capabilityBindingId" ||
 			key === "modelBindingId" ||
 			key === "policyBindingId" ||
-			key === "bindingAssociation" ||
 			key === "deadlineAt" ||
 			key === "lease" ||
 			key === "taskLease" ||
@@ -564,13 +548,6 @@ function cloneRequest(request: RemoteOperationRequest): RemoteOperationRequest {
 		...(request.capabilityBindingId === undefined ? {} : { capabilityBindingId: request.capabilityBindingId }),
 		...(request.modelBindingId === undefined ? {} : { modelBindingId: request.modelBindingId }),
 		...(request.policyBindingId === undefined ? {} : { policyBindingId: request.policyBindingId }),
-		...(request.bindingAssociation === undefined
-			? {}
-			: {
-					bindingAssociation: serializePublicRunBindingAssociation(
-						request.bindingAssociation,
-					) as RunBindingAssociation,
-				}),
 		...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
 		...(request.lease === undefined ? {} : { lease: cloneLease(request.lease) }),
 		...(request.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(request.taskLease) }),
@@ -609,8 +586,6 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
 	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (value.bindingAssociation !== undefined && !isBindingAssociationForRun(value.bindingAssociation, value.runId))
-		return false;
 	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
 		(key) =>
@@ -622,7 +597,6 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 			key === "capabilityBindingId" ||
 			key === "modelBindingId" ||
 			key === "policyBindingId" ||
-			key === "bindingAssociation" ||
 			key === "startedAt" ||
 			key === "endedAt" ||
 			key === "artifactRefs" ||
@@ -925,13 +899,6 @@ export function createSessionRemoteOperationLedger(session: RemoteOperationLedge
 				...(receipt.adapter === undefined
 					? {}
 					: { adapter: serializeExternalAdapterIdentity(receipt.adapter) as ExternalAdapterIdentity }),
-				...(receipt.bindingAssociation === undefined
-					? {}
-					: {
-							bindingAssociation: serializePublicRunBindingAssociation(
-								receipt.bindingAssociation,
-							) as RunBindingAssociation,
-						}),
 				...(receipt.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(receipt.taskLease) }),
 				...(receipt.taskLeaseVerified === undefined
 					? {}
@@ -977,7 +944,6 @@ export interface RemoteOperationReceiptInput {
 	readonly capabilityBindingId?: string;
 	readonly modelBindingId?: string;
 	readonly policyBindingId?: string;
-	readonly bindingAssociation?: RunBindingAssociation;
 	readonly adapter?: ExternalAdapterIdentity;
 }
 
@@ -993,7 +959,6 @@ const REMOTE_OPERATION_RECEIPT_INPUT_KEYS = new Set([
 	"capabilityBindingId",
 	"modelBindingId",
 	"policyBindingId",
-	"bindingAssociation",
 	"adapter",
 ]);
 const REMOTE_OPERATION_RECEIPT_INPUT_ERROR_KEYS = new Set(["code", "retryable", "sideEffects"]);
@@ -1024,8 +989,6 @@ export function isRemoteOperationReceiptInput(value: unknown): value is RemoteOp
 	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
 	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (value.bindingAssociation !== undefined && !isBindingAssociationForRun(value.bindingAssociation, value.runId))
-		return false;
 	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return true;
 }

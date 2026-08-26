@@ -183,6 +183,8 @@ export {
 	parseBindingAssociation,
 	parseBindingHandle,
 	parseRunBindingAssociation,
+	projectAgentBindingHandles,
+	projectRunBindingAssociation,
 	serializePublicBindingAssociation,
 	serializePublicBindingHandle,
 	serializePublicBindingReference,
@@ -216,7 +218,6 @@ export {
 	getExecutionAssociations,
 	isExecutionAssociationRecord,
 	parseExecutionAssociation,
-	persistExecutionAssociation,
 } from "./core/execution-association.ts";
 export {
 	classifyAssistantFailure,

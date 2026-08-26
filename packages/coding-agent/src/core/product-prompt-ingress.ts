@@ -23,8 +23,6 @@ import {
 	type Result as ResultValue,
 	type ToolExecutionResult,
 	type WorkerReceiptRef,
-	type ModelProfile,
-	type RoleRevision,
 	type Session,
 	type StepAttemptRecord,
 	type TaskExecutorAttemptContext,
@@ -33,15 +31,18 @@ import {
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model, Models } from "@aos-agent/ai";
 import {
-	PROMPT_TASK_DEPENDENCY_NAMES,
 	createPromptTaskAdapter,
-	type PromptTaskCompositionDependencies,
-	type PromptTaskDependencyContext,
 	type PromptTaskDependencyName,
 	type PromptTaskExecution,
 } from "./prompt-task-adapter.ts";
+import {
+	ProductPromptBindingRevisionAuthorityV1,
+	type ProductPromptDependencySnapshotContextV1,
+} from "./product-prompt-binding-authority.ts";
 import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type { TrustedSubagentCompositionV1 } from "./subagent-composition.ts";
+
+export type { ProductPromptDependencySnapshotContextV1 } from "./product-prompt-binding-authority.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
@@ -109,21 +110,6 @@ function isExactWorkerToolExecutionFactPayload(value: unknown): value is WorkerT
 	return keys.every((key) => WORKER_TOOL_EXECUTION_FACT_KEYS.has(key)) && [...REQUIRED_WORKER_TOOL_EXECUTION_FACT_KEYS].every((key) => keys.includes(key));
 }
 
-const DEPENDENCY_FACT_TYPES = {
-	context: "context_snapshot",
-	model: "model_broker_binding",
-	capability: "capability_binding",
-	mcp: "mcp_binding",
-	policy: "policy_binding",
-	sandbox: "sandbox_binding",
-	audit: "audit_binding",
-	run: "run_binding",
-	gate: "task_gate_binding",
-	graph: "task_graph_binding",
-	credential: "credential_lease_binding",
-	adapter: "external_agent_binding",
-} as const satisfies Record<PromptTaskDependencyName, string>;
-
 type ProductPromptIngressFactV1 = {
 	readonly schemaVersion: 1;
 	readonly type: "coding_agent.product_prompt_ingress";
@@ -134,14 +120,6 @@ type ProductPromptIngressFactV1 = {
 	readonly inputDigest: string;
 	readonly submittedAt: string;
 } & { readonly [key: string]: FoundationJsonValue };
-
-export interface ProductPromptDependencySnapshotContextV1 {
-	readonly runId: string;
-	readonly goalId: string;
-	readonly taskId: string;
-	readonly model: Model<Api>;
-	readonly thinkingLevel: ThinkingLevel;
-}
 
 export interface ProductPromptIngressOptionsV1 {
 	readonly session: Session;
@@ -184,79 +162,6 @@ function inputDigest(
 	surface: RuntimeSessionSurface,
 ): string {
 	return fingerprintFoundationValue({ prompt, images: images ?? [], surface }).value;
-}
-
-function roleRevision(token: string, modelProfile: ModelProfile, timestamp: string): RoleRevision {
-	const base = {
-		schemaVersion: 1 as const,
-		roleRevisionId: `role_revision_coding_agent_${token}`,
-		roleId: BUILTIN_CODING_AGENT_ROLE_ID,
-		scope: "global" as const,
-		revision: 1,
-		slug: "coding-agent",
-		name: "AOS Coding Agent",
-		description: "Built-in coding-agent product role",
-		persona: "Execute the bound coding task through the canonical AgentHarness",
-		modelProfileRef: {
-			schemaVersion: 1 as const,
-			type: "model_profile",
-			id: modelProfile.modelProfileId,
-			revision: modelProfile.revision,
-			fingerprint: modelProfile.fingerprint,
-		},
-		capabilitySelector: { policy: "all" as const },
-		skillSelector: { policy: "all" as const },
-		mcpSelector: { policy: "all" as const },
-		createdAt: timestamp,
-	};
-	return { ...base, fingerprint: fingerprintFoundationValue(base) };
-}
-
-function modelProfile(token: string, model: Model<Api>, thinkingLevel: ThinkingLevel, timestamp: string): ModelProfile {
-	const base = {
-		schemaVersion: 1 as const,
-		modelProfileId: `model_profile_coding_agent_${token}`,
-		name: "AOS Coding Agent prompt route",
-		provider: model.provider,
-		model: model.id,
-		...(thinkingLevel === "off" ? {} : { effort: thinkingLevel }),
-		budget: {},
-		revision: 1,
-		createdAt: timestamp,
-	};
-	return { ...base, fingerprint: fingerprintFoundationValue(base) };
-}
-
-function dependencies(
-	token: string,
-	providerId: string,
-	snapshot: ProductPromptIngressOptionsV1["dependencySnapshot"],
-	context: ProductPromptDependencySnapshotContextV1,
-): PromptTaskCompositionDependencies {
-	return Object.fromEntries(PROMPT_TASK_DEPENDENCY_NAMES.map((name) => [name, {
-		name,
-		revision: 1,
-		resolve: (_dependencyContext: PromptTaskDependencyContext) => {
-			const payload = {
-				schemaVersion: 1 as const,
-				type: DEPENDENCY_FACT_TYPES[name],
-				id: `${name}_binding_${token}`,
-				revision: 1,
-				snapshot: snapshot(name, context),
-			};
-			return {
-				reference: {
-					schemaVersion: 1 as const,
-					type: payload.type,
-					id: payload.id,
-					revision: payload.revision,
-					fingerprint: fingerprintFoundationValue(payload),
-					...(name === "adapter" ? { providerId } : {}),
-				},
-				payload,
-			};
-		},
-	}])) as unknown as PromptTaskCompositionDependencies;
 }
 
 class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
@@ -527,6 +432,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 export class ProductPromptIngressV1 {
 	private readonly options: ProductPromptIngressOptionsV1;
 	private readonly provider: CodingAgentTaskExecutorProvider;
+	private readonly bindingAuthority: ProductPromptBindingRevisionAuthorityV1;
 
 	constructor(options: ProductPromptIngressOptionsV1) {
 		if (options.harness.session !== options.session) {
@@ -534,6 +440,12 @@ export class ProductPromptIngressV1 {
 		}
 		this.options = options;
 		this.provider = new CodingAgentTaskExecutorProvider(options.session);
+		this.bindingAuthority = new ProductPromptBindingRevisionAuthorityV1({
+			session: options.session,
+			roleId: BUILTIN_CODING_AGENT_ROLE_ID,
+			providerId: this.provider.providerId,
+			dependencySnapshot: options.dependencySnapshot,
+		});
 	}
 
 	private async establishIngressFact(
@@ -609,8 +521,6 @@ export class ProductPromptIngressV1 {
 		});
 		const model = this.options.currentModel();
 		const thinkingLevel = this.options.currentThinkingLevel();
-		const profile = modelProfile(token, model, thinkingLevel, ingress.submittedAt);
-		const role = roleRevision(token, profile, ingress.submittedAt);
 		const taskId = `task_coding_agent_${token}`;
 		const dependencyContext: ProductPromptDependencySnapshotContextV1 = {
 			runId,
@@ -619,9 +529,10 @@ export class ProductPromptIngressV1 {
 			model,
 			thinkingLevel,
 		};
+		const bindingFacts = await this.bindingAuthority.resolve(dependencyContext);
 		const subagentRoles = this.options.subagents?.productPromptRoles();
 		const adapter = createPromptTaskAdapter({
-			dependencies: dependencies(token, this.provider.providerId, this.options.dependencySnapshot, dependencyContext),
+			dependencies: bindingFacts.dependencies,
 			provider: this.provider,
 			harness: {
 				session: this.options.session,
@@ -653,8 +564,8 @@ export class ProductPromptIngressV1 {
 					budget: {},
 					acceptanceCriteria: [],
 				},
-				roleRevision: role,
-				modelProfile: profile,
+				roleRevision: bindingFacts.roleRevision,
+				modelProfile: bindingFacts.modelProfile,
 				identity: {
 					bindingId: `binding_coding_agent_${token}`,
 					dispatchId: `dispatch_coding_agent_${token}`,

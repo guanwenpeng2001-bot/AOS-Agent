@@ -6,7 +6,6 @@ import {
 	resolveCapabilityBinding,
 	type CapabilityBinding,
 } from "../src/core/capability-registry.ts";
-import { createBindingHandle, createRunBindingAssociation } from "../src/core/binding-handles.ts";
 import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
@@ -308,27 +307,19 @@ describe("state machine", () => {
 		expect(coordinator.activeRun).toBeUndefined();
 	});
 
-	it("persists the Run deadline and stable binding association through receipt and replay", async () => {
+	it("persists the Run deadline without generating a second binding aggregate", async () => {
 		const session = makeSession();
 		const coordinator = makeCoordinator(session);
 		const deadlineAt = "2026-08-14T00:01:00.000Z";
-		const modelHandle = createBindingHandle({
-			domain: "model",
-			bindingId: "model-binding-1",
-			revision: "rev-1",
-			relation: "run.model",
-		});
-		const expectedAssociation = createRunBindingAssociation("r-bound", [modelHandle]);
 		const run = coordinator.reserve().accept({
 			runId: "r-bound",
 			attempt: 1,
 			model: MODEL,
 			deadlineAt,
-			bindingHandles: [modelHandle],
 		});
 
 		expect(run.record.deadlineAt).toBe(deadlineAt);
-		expect(run.record.bindingAssociation).toEqual(expectedAssociation);
+		expect(run.record.bindingAssociation).toBeUndefined();
 		run.start();
 		await settleRun(run, { outcome: "completed" });
 		expect(run.receipt()).toMatchObject({ runId: "r-bound", status: "completed" });
@@ -337,8 +328,8 @@ describe("state machine", () => {
 
 		const replayed = makeCoordinator(session).getRun("r-bound");
 		expect(replayed?.record.deadlineAt).toBe(deadlineAt);
-		expect(replayed?.record.bindingAssociation).toEqual(expectedAssociation);
-		expect(serializePublicRunRecord(replayed!.record).bindingAssociation).toEqual(expectedAssociation);
+		expect(replayed?.record.bindingAssociation).toBeUndefined();
+		expect(serializePublicRunRecord(replayed!.record).bindingAssociation).toBeUndefined();
 		expect("bindingAssociation" in serializePublicRunReceipt(replayed!.receipt!)).toBe(false);
 	});
 

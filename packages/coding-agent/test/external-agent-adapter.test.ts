@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createBindingHandle, createRunBindingAssociation } from "../src/core/binding-handles.ts";
 import type { ExternalExecutionRef } from "../src/core/external-session-mapping.ts";
 import { isExternalExecutionRef } from "../src/core/external-session-mapping.ts";
 import type { RemoteOperationLease } from "../src/core/remote-operation.ts";
@@ -533,12 +532,12 @@ describe("capability requirements", () => {
 
 describe("binding input and prepared binding", () => {
 	it("validates binding input exactly and rejects smuggled raw data", () => {
-		const binding = createBindingHandle({ domain: "capability", bindingId: "capability-binding:1", revision: "rev:1" });
-		const association = createRunBindingAssociation("run-1", [binding]);
-		expect(isExternalAgentBindingInput(sampleBindingInput({ bindingAssociation: association }))).toBe(true);
-		expect(isExternalAgentBindingInput(sampleBindingInput({ runId: "run-2", bindingAssociation: association }))).toBe(
-			false,
-		);
+		expect(
+			isExternalAgentBindingInput({
+				...sampleBindingInput(),
+				bindingAssociation: { schemaVersion: 1, associationId: "association-1", runId: "run-1", bindings: [] },
+			}),
+		).toBe(false);
 
 		for (const smuggled of [
 			{ credentials: "secret" },

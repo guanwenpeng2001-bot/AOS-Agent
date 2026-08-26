@@ -8,6 +8,7 @@
 - With Context Engine enabled (the default), extensions must return a labeled `before_agent_start` `contribution` for model-facing input. Legacy `message`/`systemPrompt` returns, `context` mutations, and `before_provider_request` payload rewrites require `context.enabled: false`.
 - Capability registry ids, revisions, binding ids, and public capability provenance are now installation-scoped opaque references. Public RPC, SDK, Context Engine, run receipt, and session-event surfaces no longer return raw capability source paths, URLs, session file paths, or legacy raw capability identifiers.
 - Renamed current public Scheduler, Worker, Subagent, Foundation, and external-agent business exports to their unversioned names and removed transitional version-suffixed aliases. Use `scripts/migrate-versioned-names.mjs` to migrate source references.
+- Removed the writable execution-association API and binding association/handle execution inputs. Execution now uses canonical `AgentBinding`/`BindingEpoch`; historical associations remain read-only migration and public views.
 
 ### Added
 
@@ -43,6 +44,7 @@
 - ModelRuntime credential enumeration now skips MCP namespace keys (`mcp__*` / `mcp:*`) so MCP OAuth records in the shared CredentialStore never appear as model providers.
 - Public MCP auth status is `authenticated` / `expired` / `required` only (no issuer, resource, or server URL). Streamable HTTP settings accept a secret-free `oauth` object. Session/SDK expose `startMcpOAuth` / `logoutMcp` aliases. HTTP connect retries one 401 when an auth provider is configured.
 - Task Credential service closes on Session shutdown before tearing down outstanding leases, so a later service cannot issue into a disposed session. The Run lifecycle cancel-requested observer fires at most once per Run on the first explicit cancel intent and writes no Run fact.
+- Product prompt composition now persists and reuses content-addressed Role, ModelProfile, Capability, and Policy revision facts across Runs, and derives detached public binding views only from canonical `AgentBinding` records.
 
 ### Fixed
 

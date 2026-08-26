@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { validateAgentBinding, type AgentBinding, type RevisionReference } from "@aos-agent/agent-core";
 
 export const BINDING_HANDLE_SCHEMA_VERSION = 1 as const;
 export const BINDING_ASSOCIATION_SCHEMA_VERSION = 1 as const;
@@ -287,6 +288,59 @@ export function createBindingHandle(input: BindingHandleInput): BindingHandle {
 	return normalizeHandleInput(input);
 }
 
+function handleRevision(reference: RevisionReference): string {
+	return createBindingRevision({
+		type: reference.type,
+		id: reference.id,
+		revision: reference.revision,
+		fingerprint: reference.fingerprint,
+	});
+}
+
+/**
+ * Project the public binding view only from the canonical AgentBinding.
+ * The returned handles are detached, frozen, and never feed execution.
+ */
+export function projectAgentBindingHandles(binding: AgentBinding): readonly BindingHandle[] {
+	const checked = validateAgentBinding(binding);
+	if (!checked.ok) throw new BindingHandleError("binding_handle_invalid", "AgentBinding projection input is invalid");
+	const value = checked.value;
+	return deepFreeze([
+		createBindingHandle({
+			domain: "capability",
+			bindingId: value.capabilityRevision.id,
+			revision: handleRevision(value.capabilityRevision),
+			relation: "agent-binding.capability",
+			summary: { source: value.capabilityRevision.type },
+		}),
+		createBindingHandle({
+			domain: "model",
+			bindingId: value.modelBrokerBindingRevision.id,
+			revision: handleRevision(value.modelBrokerBindingRevision),
+			relation: "agent-binding.model",
+			summary: {
+				provider: value.modelRoute.provider,
+				modelId: value.modelRoute.model,
+			},
+		}),
+		createBindingHandle({
+			domain: "policy",
+			bindingId: value.policyRevision.id,
+			revision: handleRevision(value.policyRevision),
+			relation: "agent-binding.policy",
+			summary: { source: value.policyRevision.type },
+		}),
+	].sort(compareHandles));
+}
+
+/** Deterministic public/migration view for one Run's canonical binding. */
+export function projectRunBindingAssociation(
+	runId: string,
+	binding: AgentBinding,
+): RunBindingAssociation {
+	return createRunBindingAssociation(runId, projectAgentBindingHandles(binding));
+}
+
 const HANDLE_KEYS: ReadonlySet<string> = new Set([
 	"schemaVersion",
 	"id",
@@ -372,7 +426,7 @@ function associationIdentity(runId: string, bindings: ReadonlyArray<BindingHandl
 	})}`;
 }
 
-/** Associate one or more persisted binding handles with a Run. */
+/** Associate public/migration handles with a Run; never use as execution input. */
 export function createRunBindingAssociation(
 	runId: string,
 	handles: ReadonlyArray<BindingHandle>,
