@@ -24,7 +24,7 @@ export type ExternalConnectorSupervisorErrorCode =
 export type ExternalConnectorProcessContainment = "process_group" | "job_object";
 
 export function externalConnectorProcessContainment(platform: string = process.platform): ExternalConnectorProcessContainment {
-	if (platform === "linux") return "process_group";
+	if (platform === "linux" || platform === "darwin") return "process_group";
 	if (platform === "win32") return "job_object";
 	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
 }
@@ -95,9 +95,15 @@ export interface ExternalConnectorProcessController {
 }
 
 export interface ExternalConnectorSupervisorPrivateStateStore {
+	list(): Promise<readonly ExternalConnectorSupervisorPrivateStateEntry[]>;
 	read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined>;
 	write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void>;
 	delete(attemptId: string): Promise<void>;
+}
+
+export interface ExternalConnectorSupervisorPrivateStateEntry {
+	readonly attemptId: string;
+	readonly state: ExternalConnectorSupervisorPrivateState;
 }
 
 const EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION = 1 as const;
@@ -170,6 +176,16 @@ export class FileExternalConnectorSupervisorPrivateStateStore
 		});
 	}
 
+	async list(): Promise<readonly ExternalConnectorSupervisorPrivateStateEntry[]> {
+		return this.#storage.withLock((content) => {
+			const current = parseExternalConnectorSupervisorPrivateStateFile(content);
+			const entries = Object.entries(current.attempts)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([attemptId, state]) => Object.freeze({ attemptId, state: clonePrivateState(state) }));
+			return { result: Object.freeze(entries) };
+		});
+	}
+
 	async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
 		this.#assertAttemptId(attemptId);
 		return this.#storage.withLock((content) => {
@@ -229,6 +245,14 @@ export class InMemoryExternalConnectorSupervisorPrivateStateStore
 	implements ExternalConnectorSupervisorPrivateStateStore
 {
 	readonly #states = new Map<string, ExternalConnectorSupervisorPrivateState>();
+
+	async list(): Promise<readonly ExternalConnectorSupervisorPrivateStateEntry[]> {
+		return Object.freeze(
+			[...this.#states.entries()]
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([attemptId, state]) => Object.freeze({ attemptId, state: clonePrivateState(state) })),
+		);
+	}
 
 	async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
 		const state = this.#states.get(attemptId);

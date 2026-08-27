@@ -973,6 +973,98 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		});
 	});
 
+	it("startup-reaps exact private trees despite missing or drifted canonical state", async () => {
+		for (const canonicalState of ["missing_operation", "missing_mapping", "capability_and_mapping_drift"] as const) {
+			const value = await fixture();
+			persistAttempt(value);
+			if (canonicalState !== "missing_operation") {
+				value.store.operations.set(
+					value.attempt.attemptId,
+					operationFor(
+						value,
+						"running",
+						canonicalState === "capability_and_mapping_drift" ? capability(true, 2) : value.snapshot,
+					),
+				);
+			}
+			if (canonicalState === "capability_and_mapping_drift") {
+				value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+			}
+			await persistSupervisorIdentity(value);
+			const restarted = restartedConnector(value);
+
+			const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+			expect(recovered).toEqual([{ attemptId: value.attempt.attemptId, status: "reaped" }]);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(value.supervision.processController.forceCalls).toBe(1);
+			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+			if (canonicalState !== "missing_operation") {
+				expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+					status: "reconcile_required",
+					reconcileReason: "driver_failure",
+				});
+			}
+
+			const laterOpened = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+			expect(laterOpened.ok).toBe(false);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(restarted.driver.calls.spawn).toBe(0);
+		}
+	});
+
+	it("startup quarantines not-found, PID-reused, and ambiguous identities without killing", async () => {
+		for (const status of ["not_found", "identity_mismatch", "ambiguous"] as const) {
+			const value = await fixture();
+			persistAttempt(value);
+			value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+			await persistSupervisorIdentity(value);
+			value.supervision.processController.reattachResult = { status };
+			const restarted = restartedConnector(value);
+
+			const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+			expect(recovered).toEqual([{ attemptId: value.attempt.attemptId, status: "quarantined" }]);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(value.supervision.processController.forceCalls).toBe(0);
+			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "driver_failure",
+			});
+			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		}
+	});
+
+	it("retains private state when confirmed startup cleanup cannot be durably deleted", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		await persistSupervisorIdentity(value);
+		value.supervision.privateStateStore.failDeletes = 1;
+		const restarted = restartedConnector(value);
+
+		const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+		expect(recovered).toEqual([{
+			attemptId: value.attempt.attemptId,
+			status: "cleanup_confirmed_state_retained",
+		}]);
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
+	});
+
+	it("fails production startup when private state cannot be safely enumerated", async () => {
+		const value = await fixture();
+		value.supervision.privateStateStore.failLists = 1;
+		const restarted = restartedConnector(value);
+
+		await expect(restarted.connector.recoverPrivateSupervisorState()).rejects.toThrow("list failure");
+		expect(value.supervision.processController.forceCalls).toBe(0);
+		expect(value.supervision.processController.launchCalls).toBe(0);
+	});
+
 	it("keeps missing, PID-reuse, and ambiguous mappingless identities quarantined without killing", async () => {
 		for (const status of ["not_found", "identity_mismatch", "ambiguous"] as const) {
 			const value = await fixture();

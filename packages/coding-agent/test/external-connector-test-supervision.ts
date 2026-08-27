@@ -66,8 +66,17 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 
 export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConnectorSupervisorPrivateStateStore {
 	failDeletes = 0;
+	failLists = 0;
 	failReads = 0;
 	failWrites = 0;
+
+	override async list() {
+		if (this.failLists > 0) {
+			this.failLists -= 1;
+			throw new Error("injected private identity list failure");
+		}
+		return super.list();
+	}
 
 	override async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
 		if (this.failReads > 0) {

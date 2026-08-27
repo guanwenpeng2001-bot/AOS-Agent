@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
+import {
+	externalConnectorGuardianLaunchStrategy,
+	externalConnectorMinimalEnvironment,
+	ProductionExternalConnectorProcessController,
+} from "../src/core/external-connector-process-controller.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
 	externalConnectorProcessContainment,
@@ -139,6 +143,64 @@ describe("production External Connector process controller", () => {
 		await waitForExit(handle);
 	}, 30_000);
 
+	it("launches guardians and companions without ambient secrets", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-process-environment-"));
+		const environmentPath = join(root, "environment.json");
+		const key = "AOS_EXTERNAL_CONNECTOR_TEST_SECRET";
+		const previous = process.env[key];
+		let controller: ProductionExternalConnectorProcessController;
+		try {
+			process.env[key] = "must-not-leak";
+			controller = new ProductionExternalConnectorProcessController({
+				process: fixtureProcess([
+					"-e",
+					"require('node:fs').writeFileSync(process.argv[1],JSON.stringify(process.env));setInterval(function(){},2147483647)",
+					environmentPath,
+				]),
+			});
+		} finally {
+			if (previous === undefined) delete process.env[key];
+			else process.env[key] = previous;
+		}
+		const launchRequest = request("environment-nonce");
+		const handle = await controller.launch(launchRequest);
+		try {
+			await handle.activate();
+			await expect.poll(() => existsSync(environmentPath)).toBe(true);
+			const environment: unknown = JSON.parse(readFileSync(environmentPath, "utf8"));
+			expect(environment).toMatchObject(externalConnectorMinimalEnvironment(process.platform));
+			expect(environment).not.toHaveProperty(key);
+			expect(environment).not.toHaveProperty("OPENAI_API_KEY");
+			expect(environment).not.toHaveProperty("ANTHROPIC_API_KEY");
+			expect(environment).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
+		} finally {
+			handle.forceTerminate({
+				operationNonce: launchRequest.operationNonce,
+				processIdentity: handle.identity,
+			});
+			await waitForExit(handle);
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("keeps only platform-required environment variables", () => {
+		expect(externalConnectorMinimalEnvironment("linux", {
+			PATH: "/untrusted",
+			OPENAI_API_KEY: "secret",
+		})).toEqual({});
+		expect(externalConnectorMinimalEnvironment("darwin", {
+			TMPDIR: "/private/tmp",
+			PATH: "/untrusted",
+			ANTHROPIC_API_KEY: "secret",
+		})).toEqual({ TMPDIR: "/private/tmp" });
+		expect(externalConnectorMinimalEnvironment("win32", {
+			SYSTEMROOT: "C:\\Windows",
+			TEMP: "C:\\Temp",
+			PATH: "C:\\untrusted",
+			OPENAI_API_KEY: "secret",
+		})).toEqual({ SystemRoot: "C:\\Windows", TEMP: "C:\\Temp" });
+	});
+
 	it("rejects reattach when the nonce or any full-identity field differs", async () => {
 		const controller = new ProductionExternalConnectorProcessController({ process: fixtureProcess() });
 		const launchRequest = request("reattach-nonce");
@@ -161,12 +223,16 @@ describe("production External Connector process controller", () => {
 		}
 	}, 30_000);
 
-	it("fails closed on hosts without a production containment implementation", () => {
+	it("selects a detached macOS guardian whose companion remains in its process group", () => {
+		expect(externalConnectorGuardianLaunchStrategy("darwin")).toEqual({
+			kind: "direct_process_group",
+			guardianDetached: true,
+			companionDetached: false,
+		});
 		expect(() => new ProductionExternalConnectorProcessController({
 			platform: "darwin",
 			process: fixtureProcess(),
-		})).toThrow(
-			"unsupported",
-		);
+		})).not.toThrow();
+		expect(() => externalConnectorGuardianLaunchStrategy("freebsd")).toThrow("unsupported");
 	});
 });
