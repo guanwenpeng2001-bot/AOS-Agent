@@ -828,6 +828,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "cancelling"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		const restarted = restartedConnector(value);
 		restarted.driver.lookupResult = { status: "terminal", evidence: terminalEvidence("cancelled") };
 
@@ -836,6 +837,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 
 		expect(first.ok).toBe(true);
 		expect(second.ok).toBe(true);
+		expect(value.supervision.processController.launchCalls).toBe(0);
 		expect(restarted.driver.calls).toMatchObject({ spawn: 0, lookup: 1, cancel: 0 });
 		expect(value.store.receiptWrites).toBe(1);
 		expect(value.store.receipts.get(value.attempt.attemptId)?.status).toBe("cancelled");
