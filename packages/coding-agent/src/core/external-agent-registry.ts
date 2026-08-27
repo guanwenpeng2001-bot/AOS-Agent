@@ -10,6 +10,7 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
 	type Fingerprint,
+	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
@@ -26,6 +27,11 @@ import {
 	getHostSupervisedExternalAgentConnectorImplementation,
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./external-agent-connector.ts";
+import {
+	runExternalConnectorHostOperation,
+	type ExternalConnectorSegmentDeadline,
+} from "./external-connector-supervisor.ts";
+import type { RuntimeClock } from "./runtime-clock.ts";
 
 /** The only current provider class admitted by the open connector registry. */
 export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze(["external_connector"] as const);
@@ -74,9 +80,17 @@ export interface ExternalConnectorRegistry {
 		registration: ExternalConnectorRegistration,
 		capabilitySnapshot: ConnectorCapabilitySnapshot,
 	): ResultValue<ExternalConnectorDescriptor, FoundationError>;
-	select(selection: ExternalConnectorSelection): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>>;
+	select(
+		selection: ExternalConnectorSelection,
+		options?: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>>;
 	list(): readonly ExternalConnectorDescriptor[];
 	dispose(): Promise<void>;
+}
+
+export interface ExternalConnectorRegistryOptions {
+	readonly capabilityProbeDeadline?: Partial<ExternalConnectorSegmentDeadline>;
+	readonly clock?: RuntimeClock;
 }
 
 interface RegisteredConnector {
@@ -262,39 +276,53 @@ function lifecycleCapabilityError(): FoundationError {
 	);
 }
 
+function connectorRegistryShutdownError(): FoundationError {
+	return new FoundationError(
+		"side_effect_unknown",
+		"External connector registry shutdown could not confirm cleanup.",
+	);
+}
+
 function createCapabilityPinnedConnector(
 	connector: ExternalAgentConnector,
 	implementation: HostSupervisedExternalAgentConnectorImplementation,
-	recheck: () => Promise<FoundationError | undefined>,
+	probePinned: (
+		options?: FoundationProviderExecutionOptions,
+	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>,
+	probeSelected: (
+		options?: FoundationProviderExecutionOptions,
+	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>,
 ): ExternalAgentConnector {
+	const recheck = async (options?: FoundationProviderExecutionOptions): Promise<FoundationError | undefined> => {
+		const probed = await probePinned(options);
+		return probed.ok || options?.signal?.aborted === true ? undefined : lifecycleCapabilityError();
+	};
 	const reconcileAttempt: ExternalAgentConnector["reconcileAttempt"] = async (attempt, options) => {
-		await recheck();
+		await recheck(options);
 		return Reflect.apply(implementation.reconcileAttempt, connector, [attempt, options]);
 	};
 	const runAttempt: ExternalAgentConnector["runAttempt"] = async (attempt, options) => {
-		const drift = await recheck();
+		const drift = await recheck(options);
 		if (drift !== undefined) {
 			return Reflect.apply(implementation.reconcileAttempt, connector, [attempt, options]);
 		}
 		return Reflect.apply(implementation.runAttempt, connector, [attempt, options]);
 	};
 	const resumeAttempt: ExternalAgentConnector["resumeAttempt"] = async (attempt, options) => {
-		const drift = await recheck();
+		const drift = await recheck(options);
 		return drift === undefined
 			? Reflect.apply(implementation.resumeAttempt, connector, [attempt, options])
 			: Reflect.apply(implementation.reconcileAttempt, connector, [attempt, options]);
 	};
 	const cancelAttempt: ExternalAgentConnector["cancelAttempt"] = async (attemptId) => {
 		const drift = await recheck();
-		return drift === undefined
-			? Reflect.apply(implementation.cancelAttempt, connector, [attemptId])
-			: Result.err(drift);
+		const cancelled = await Reflect.apply(implementation.cancelAttempt, connector, [attemptId]);
+		return drift === undefined || !cancelled.ok ? cancelled : Result.err(drift);
 	};
 	const capabilities: ExternalAgentConnector["capabilities"] = () =>
 		Reflect.apply(implementation.capabilities, connector, []);
 	const dispose: ExternalAgentConnector["dispose"] = () => Reflect.apply(implementation.dispose, connector, []);
-	const probeCapabilities: ExternalAgentConnector["probeCapabilities"] = () =>
-		Reflect.apply(implementation.probeCapabilities, connector, []);
+	const probeCapabilities: ExternalAgentConnector["probeCapabilities"] = (options) => probeSelected(options);
 	const createAttempt: ExternalAgentConnector["createAttempt"] = (dispatch, binding, context) =>
 		Reflect.apply(implementation.createAttempt, connector, [dispatch, binding, context]);
 	const preflightModelProjection: HostSupervisedExternalAgentConnectorImplementation["preflightModelProjection"] =
@@ -341,10 +369,36 @@ function capabilityTruth(
 async function probeConnector(
 	connector: ExternalAgentConnector,
 	implementation: HostSupervisedExternalAgentConnectorImplementation,
+	options: {
+		readonly capabilityProbeDeadline?: Partial<ExternalConnectorSegmentDeadline>;
+		readonly clock?: RuntimeClock;
+		readonly execution?: Parameters<ExternalAgentConnector["probeCapabilities"]>[0];
+		readonly registrySignal: AbortSignal;
+		readonly requireCurrentImplementation?: boolean;
+	},
 ): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> {
 	try {
-		const probed: unknown = await Reflect.apply(implementation.probeCapabilities, connector, []);
-		if (getHostSupervisedExternalAgentConnectorImplementation(connector) !== implementation) {
+		const signals = options.execution?.signal === undefined
+			? [options.registrySignal]
+			: [options.registrySignal, options.execution.signal];
+		const probed: unknown = await runExternalConnectorHostOperation(
+			"start",
+			(signal) => Reflect.apply(implementation.probeCapabilities, connector, [{
+				...options.execution,
+				signal,
+			}]),
+			{
+				...(options.capabilityProbeDeadline === undefined
+					? {}
+					: { deadline: options.capabilityProbeDeadline }),
+				...(options.clock === undefined ? {} : { clock: options.clock }),
+				signals,
+			},
+		);
+		if (
+			options.requireCurrentImplementation !== false &&
+			getHostSupervisedExternalAgentConnectorImplementation(connector) !== implementation
+		) {
 			return Result.err(connectorRegistryError("External connector constructed implementation changed while probing capabilities."));
 		}
 		if (!isConnectorRecord(probed) || typeof probed.ok !== "boolean") {
@@ -369,20 +423,31 @@ async function probeConnector(
 class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	readonly #connectors = new Map<string, RegisteredConnector>();
 	readonly #pendingRegistrations = new Map<string, PendingConnector>();
-	readonly #disposedConnectors = new Set<ExternalAgentConnector>();
+	readonly #disposalOperations = new Map<ExternalAgentConnector, Promise<void>>();
+	readonly #lifetime = new AbortController();
+	readonly #options: ExternalConnectorRegistryOptions;
 	#disposed = false;
+	#disposal: Promise<void> | undefined;
+
+	constructor(options: ExternalConnectorRegistryOptions) {
+		this.#options = options;
+	}
 
 	async #disposeConnectorOnce(
 		connector: ExternalAgentConnector,
 		implementation: HostSupervisedExternalAgentConnectorImplementation,
 	): Promise<void> {
-		if (this.#disposedConnectors.has(connector)) return;
-		this.#disposedConnectors.add(connector);
-		await Reflect.apply(implementation.dispose, connector, []);
+		const active = this.#disposalOperations.get(connector);
+		if (active !== undefined) return active;
+		const disposal = Promise.resolve().then(() => Reflect.apply(implementation.dispose, connector, []));
+		this.#disposalOperations.set(connector, disposal);
+		return disposal;
 	}
 
 	async #verifyRegisteredConnector(
 		registered: RegisteredConnector,
+		execution?: FoundationProviderExecutionOptions,
+		requireCurrentImplementation = true,
 	): Promise<ResultValue<{
 		readonly snapshot: ConnectorCapabilitySnapshot;
 		readonly truth: ExternalCapabilityTruthSnapshot;
@@ -390,13 +455,19 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (
 			this.#disposed ||
 			this.#connectors.get(registered.descriptor.providerId) !== registered ||
-			getHostSupervisedExternalAgentConnectorImplementation(registered.connector) !== registered.implementation ||
+			(requireCurrentImplementation &&
+				getHostSupervisedExternalAgentConnectorImplementation(registered.connector) !== registered.implementation) ||
 			registered.implementation.providerClass !== "external_connector" ||
 			registered.implementation.providerId !== registered.descriptor.providerId
 		) {
 			return Result.err(connectorRegistryError("External connector registry or constructed instance changed."));
 		}
-		const snapshotResult = await probeConnector(registered.connector, registered.implementation);
+		const snapshotResult = await probeConnector(registered.connector, registered.implementation, {
+			...this.#options,
+			...(execution === undefined ? {} : { execution }),
+			registrySignal: this.#lifetime.signal,
+			requireCurrentImplementation,
+		});
 		if (!snapshotResult.ok) return snapshotResult;
 		if (this.#disposed || this.#connectors.get(registered.descriptor.providerId) !== registered) {
 			return Result.err(connectorRegistryError("External connector registry changed while resolving the selection."));
@@ -445,10 +516,17 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const pending = Object.freeze({ connector, implementation });
 		this.#pendingRegistrations.set(descriptor.providerId, pending);
 		try {
-			const snapshotResult = await probeConnector(connector, implementation);
+			const snapshotResult = await probeConnector(connector, implementation, {
+				...this.#options,
+				registrySignal: this.#lifetime.signal,
+			});
 			if (!snapshotResult.ok) return snapshotResult;
 			if (this.#disposed) {
-				await Promise.resolve().then(() => this.#disposeConnectorOnce(connector, implementation));
+				try {
+					await this.#disposeConnectorOnce(connector, implementation);
+				} catch {
+					return Result.err(connectorRegistryShutdownError());
+				}
 				return Result.err(connectorRegistryError("External connector registry is disposed."));
 			}
 			return this.#registerPrepared(registration, snapshotResult.value);
@@ -523,10 +601,15 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const selectedConnector = createCapabilityPinnedConnector(
 			connector,
 			implementation,
-			async () => {
-				if (stored === undefined) return lifecycleCapabilityError();
-				const verified = await this.#verifyRegisteredConnector(stored);
-				return verified.ok ? undefined : lifecycleCapabilityError();
+			async (options) => {
+				if (stored === undefined) return Result.err(lifecycleCapabilityError());
+				const verified = await this.#verifyRegisteredConnector(stored, options);
+				return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
+			},
+			async (options) => {
+				if (stored === undefined) return Result.err(lifecycleCapabilityError());
+				const verified = await this.#verifyRegisteredConnector(stored, options, false);
+				return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
 			},
 		);
 		stored = {
@@ -545,6 +628,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 
 	async select(
 		selection: ExternalConnectorSelection,
+		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>> {
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		if (!isExternalConnectorSelection(selection)) {
@@ -558,10 +642,10 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		) {
 			return Result.err(connectorRegistryError("External connector selection is unknown or does not match its pinned descriptor."));
 		}
-		const verified = await this.#verifyRegisteredConnector(registered);
+		const verified = await this.#verifyRegisteredConnector(registered, options);
 		if (!verified.ok) return verified;
 		const executeToolGateway: ExternalConnectorResolvedSelection["executeToolGateway"] = async (request, options) => {
-			const current = await this.#verifyRegisteredConnector(registered);
+			const current = await this.#verifyRegisteredConnector(registered, options);
 			if (!current.ok) return Result.err(lifecycleCapabilityError());
 			if (!current.value.truth.capabilities.toolGateway) {
 				return Result.err(connectorRegistryError("External connector does not support the Tool Gateway bridge."));
@@ -616,34 +700,32 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		return Object.freeze([...this.#connectors.values()].map(({ descriptor }) => descriptor));
 	}
 
-	async dispose(): Promise<void> {
-		if (this.#disposed) return;
+	dispose(): Promise<void> {
+		if (this.#disposal !== undefined) return this.#disposal;
 		this.#disposed = true;
+		this.#lifetime.abort();
 		const connectors: readonly PendingConnector[] = [
 			...Array.from(this.#connectors.values(), ({ connector, implementation }) => ({ connector, implementation })),
 			...this.#pendingRegistrations.values(),
 		];
 		this.#connectors.clear();
 		this.#pendingRegistrations.clear();
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		try {
-			await Promise.race([
-				Promise.allSettled(
-					connectors.map(({ connector, implementation }) =>
-						Promise.resolve().then(() => this.#disposeConnectorOnce(connector, implementation)),
-					),
-				),
-				new Promise<void>((resolve) => {
-					timer = setTimeout(resolve, 5_000);
-				}),
-			]);
-		} finally {
-			if (timer !== undefined) clearTimeout(timer);
-		}
+		this.#disposal = Promise.allSettled(
+			connectors.map(({ connector, implementation }) =>
+				this.#disposeConnectorOnce(connector, implementation),
+			),
+		).then((results) => {
+			if (results.some((result) => result.status === "rejected")) {
+				throw connectorRegistryShutdownError();
+			}
+		});
+		return this.#disposal;
 	}
 }
 
 /** Create the single open External Connector registry. */
-export function createExternalConnectorRegistry(): ExternalConnectorRegistry {
-	return new ExternalConnectorRegistryImpl();
+export function createExternalConnectorRegistry(
+	options: ExternalConnectorRegistryOptions = {},
+): ExternalConnectorRegistry {
+	return new ExternalConnectorRegistryImpl(options);
 }
