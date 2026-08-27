@@ -177,7 +177,7 @@ const implemented = [
 	{
 		id: 111,
 		ownerModule: "packages/coding-agent/src/core/subagent-registry.ts",
-		publicContract: "Immutable three-kind Native Agent provider registry with two native implementations",
+		publicContract: "Immutable three-kind Native Agent provider registry: in-process and fork available, Agent Runtime Host unavailable",
 		tests: [
 			"packages/coding-agent/test/subagent-registry.test.ts",
 			"packages/agent/test/harness/foundation-provider-conformance.test.ts",
