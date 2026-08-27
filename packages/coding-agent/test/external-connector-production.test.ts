@@ -7,14 +7,12 @@ import { describe, expect, it } from "vitest";
 import { DurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
-import {
-	createProductionExternalAgentConnector,
-	createProductionExternalConnectorSupervision,
-} from "../src/core/external-connector-production.ts";
+import { createProductionExternalConnectorSupervision } from "../src/core/external-connector-production.ts";
 import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 } from "../src/core/external-connector-supervisor.ts";
+import { createExternalConnectorRegistry, createProductionExternalAgentConnector } from "../src/index.ts";
 import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
 
 const processOptions = {
@@ -43,25 +41,41 @@ describe("production External Connector composition", () => {
 	});
 
 	it("creates the production connector only after its startup recovery sweep", async () => {
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
 		const connector = await createProductionExternalAgentConnector({
 			providerId: "production-connector",
-			capability: createConnectorCapabilitySnapshot({
-				schemaVersion: 1,
-				providerId: "production-connector",
-				revision: 1,
-				protocol: { name: "production-protocol", version: "1" },
-				modelAccess: "agent_owned",
-				resume: true,
-				toolGateway: false,
-				artifacts: false,
-				images: false,
-			}),
+			capability,
 			store: Object.freeze({}) as ExternalConnectorDurableStore,
-			driver: Object.freeze({}) as ExternalConnectorVendorDriver,
+			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
 			privateStatePath: join(tmpdir(), `aos-external-production-factory-${process.pid}.json`),
 			process: processOptions,
 		});
 		expect(connector).toBeInstanceOf(DurableExternalAgentConnector);
+		const registry = createExternalConnectorRegistry();
+		const registered = await registry.register({
+			descriptor: {
+				schemaVersion: 1,
+				providerId: capability.providerId,
+				providerClass: "external_connector",
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			},
+			connector,
+			trusted: true,
+		});
+		if (!registered.ok) throw registered.error;
+		expect(registered).toMatchObject({ ok: true });
+		await registry.dispose();
 	});
 
 	// The Windows test worker is already in a kill-on-close Job, so it cannot leave a nested guardian orphan.

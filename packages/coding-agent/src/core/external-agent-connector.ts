@@ -266,6 +266,8 @@ function externalFailure(
 	code:
 		| "binding_epoch_mismatch"
 		| "binding_required_fact"
+		| "external_mapping_conflict"
+		| "external_resume_unsupported"
 		| "invalid_correlation"
 		| "provider_spawn_failed"
 		| "scheduler_attempt_recovery_failed"
@@ -873,10 +875,17 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				createdAt: this.#now(),
 			});
 			mapping = await this.#store.writeMapping(mapping, operation.correlation);
-		} catch {
+		} catch (error) {
 			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
-			await this.#markReconcile(operation, "mapping_persistence_unknown");
-			return Result.err(externalFailure("side_effect_unknown", "External connector mapping could not be proven durable", attempt.attemptId));
+			const mappingConflict = error instanceof FoundationError && error.code === "session_ledger_conflict";
+			await this.#markReconcile(operation, mappingConflict ? "mapping_conflict" : "mapping_persistence_unknown");
+			return Result.err(externalFailure(
+				mappingConflict ? "external_mapping_conflict" : "side_effect_unknown",
+				mappingConflict
+					? "External connector mapping conflicts with another durable Attempt"
+					: "External connector mapping could not be proven durable",
+				attempt.attemptId,
+			));
 		}
 		this.#driverHandles.set(attempt.attemptId, handle);
 		operation = await this.#store.writeOperation(
@@ -941,7 +950,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!priorReceipt.ok) return priorReceipt;
 		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
 		if (!this.#capability.resume) {
-			return Result.err(externalFailure("unsupported_feature", "External connector does not support resume", attempt.attemptId));
+			return Result.err(externalFailure("external_resume_unsupported", "External connector does not support resume", attempt.attemptId));
 		}
 		const operation = await this.#store.readOperation(attempt.attemptId);
 		if (operation === undefined || operation.status !== "running") {
@@ -1448,7 +1457,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			mapping.supervisor.nonce !== operation.operationNonce
 		) {
 			await this.#markReconcile(operation, "mapping_conflict");
-			return Result.err(externalFailure("side_effect_unknown", "External connector durable mapping conflicts with its Attempt", operation.attemptId));
+			return Result.err(externalFailure("external_mapping_conflict", "External connector durable mapping conflicts with its Attempt", operation.attemptId));
 		}
 		return Result.ok(mapping);
 	}

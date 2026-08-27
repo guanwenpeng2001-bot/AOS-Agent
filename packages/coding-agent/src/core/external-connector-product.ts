@@ -133,7 +133,11 @@ export interface ExternalConnectorProductRecoveryInput {
 	};
 }
 
-export type ExternalConnectorProductErrorCode = "external_binding_invalid" | "external_capability_mismatch";
+export type ExternalConnectorProductErrorCode =
+	| "external_binding_invalid"
+	| "external_capability_mismatch"
+	| "external_mapping_conflict"
+	| "external_resume_unsupported";
 
 export class ExternalConnectorProductError extends Error {
 	readonly code: ExternalConnectorProductErrorCode;
@@ -925,6 +929,15 @@ export async function preflightExternalConnectorProductRecovery(
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
 	try {
+		if (
+			!selected.capabilitySnapshot.resume &&
+			await ledger.get("run_receipt", input.runId) !== undefined
+		) {
+			throw new ExternalConnectorProductError(
+				"external_resume_unsupported",
+				"The selected External Connector does not support resume.",
+			);
+		}
 		const store = new SessionExternalConnectorDurableStore(ledger);
 		validateExternalConnectorRecoveryExpectedInput(
 			input,
@@ -1152,6 +1165,7 @@ export async function recoverExternalConnectorProductRun(
 					if (recovered?.ok === true) {
 						attemptReceipt = recovered.value;
 					} else {
+						const mappingConflict = recovered?.ok === false && recovered.error.code === "external_mapping_conflict";
 						const attemptReceiptId = `attempt_receipt_${started.value.attempt.attemptId}`;
 						attemptReceipt = await store.writeReceipt({
 							schemaVersion: 1,
@@ -1166,8 +1180,10 @@ export async function recoverExternalConnectorProductRun(
 							workerReceiptRefs: [],
 							artifacts: [],
 							error: {
-								code: "side_effect_unknown",
-								message: "External connector recovery could not prove a terminal vendor outcome.",
+								code: mappingConflict ? "external_mapping_conflict" : "side_effect_unknown",
+								message: mappingConflict
+									? "External connector durable mapping conflicts with its Attempt."
+									: "External connector recovery could not prove a terminal vendor outcome.",
 								category: "side_effect_unknown",
 								retryable: false,
 							},

@@ -26,6 +26,7 @@ import {
 import {
 	executeExternalConnectorProductRun,
 	persistExternalConnectorProductRunAfterAcceptance,
+	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
 } from "../src/core/external-connector-product.ts";
@@ -360,6 +361,42 @@ function expectSafeRegistryProbeFailure(
 }
 
 describe("ExternalConnectorRegistry supervised SPI", () => {
+	it("projects unsupported Connector resume for a terminal source without a second vendor effect", async () => {
+		const fixture = createSupportedConnector();
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const runId = "run-zeta-resume-unsupported";
+		const message = `Execute supervised third-party connector run ${runId}`;
+		await expect(executeExternalConnectorProductRun(productInput(fixture, registry, runId)))
+			.resolves.toMatchObject({ runReceipt: { terminalStatus: "completed" } });
+		expect(fixture.driver.spawnCalls).toBe(1);
+		expect(await fixture.session.findFoundationRecords({
+			objectType: "run_receipt",
+			objectId: runId,
+			includePruned: true,
+		})).toHaveLength(1);
+
+		await expect(preflightExternalConnectorProductRecovery({
+			session: fixture.session,
+			writer: fixture.t5.writer,
+			registry,
+			runId,
+			providerId: fixture.snapshot.providerId,
+			selection: selection(fixture.snapshot),
+			expectedCanonicalInput: {
+				schemaVersion: 1,
+				text: message,
+				artifacts: [],
+			},
+		})).rejects.toMatchObject({
+			code: "external_resume_unsupported",
+			message: "The selected External Connector does not support resume.",
+			retryable: false,
+		});
+		expect(fixture.driver.spawnCalls).toBe(1);
+		await registry.dispose();
+	});
+
 	it("rejects an arbitrary connector before probe and leaves its provider slot available", async () => {
 		const arbitrary = new ArbitraryConnector();
 		const arbitraryDescriptor = descriptor(arbitrary.snapshot);

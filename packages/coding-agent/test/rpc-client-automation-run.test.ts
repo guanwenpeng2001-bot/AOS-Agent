@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { ImageContent } from "@aos-agent/ai";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import type { RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
+import type {
+	CanonicalExternalAgentArtifactReference,
+	ExternalConnectorToolGatewayRequestInput,
+} from "../src/index.ts";
 
 type RpcClientPrivate = {
 	send: (command: { type: string }) => Promise<unknown>;
@@ -16,6 +20,25 @@ function createClient(): { client: RpcClient; privateClient: RpcClientPrivate } 
 }
 
 const IMAGE: ImageContent = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
+const ARTIFACT_ID = "4".repeat(64);
+const ARTIFACT: CanonicalExternalAgentArtifactReference = {
+	schemaVersion: 1,
+	artifactId: ARTIFACT_ID,
+	kind: "image",
+	digest: `sha256:${ARTIFACT_ID}`,
+	mediaType: "image/png",
+	sizeBytes: 4,
+	provenance: { source: "artifact_store", producer: "rpc-client", trust: "trusted" },
+	readHandle: { kind: "artifact_store", ref: ARTIFACT_ID },
+};
+const TOOL_GATEWAY_REQUEST: ExternalConnectorToolGatewayRequestInput = {
+	schemaVersion: 1,
+	toolCallId: "tool-call-rpc-client",
+	toolName: "workspace.read",
+	namespace: "workspace",
+	originalArguments: { path: "docs/input.txt" },
+	idempotencyKey: "rpc-client-gateway-request",
+};
 
 const acceptedResponse = {
 	type: "response",
@@ -127,6 +150,65 @@ describe("RpcClient Automation Host request shapes", () => {
 			images: [IMAGE],
 		});
 		expect(result).toEqual({ runId: "r2", sessionId: "s2", attempt: 2, status: "accepted" });
+	});
+
+	it("startRun and resumeRun serialize canonical artifacts and Tool Gateway request fields", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+		const externalConnector = {
+			providerId: "trusted-connector",
+			revision: 1,
+			capabilitySnapshotDigest: { algorithm: "sha256" as const, value: "a".repeat(64) },
+		};
+
+		await client.startRun(
+			"external start",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			externalConnector,
+			[ARTIFACT],
+			TOOL_GATEWAY_REQUEST,
+		);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "external start",
+			images: undefined,
+			externalConnector,
+			artifacts: [ARTIFACT],
+			toolGatewayRequest: TOOL_GATEWAY_REQUEST,
+		});
+
+		await client.resumeRun(
+			"/tmp/s.jsonl",
+			"r1",
+			"external resume",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			externalConnector,
+			[ARTIFACT],
+			TOOL_GATEWAY_REQUEST,
+		);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "external resume",
+			images: undefined,
+			externalConnector,
+			artifacts: [ARTIFACT],
+			toolGatewayRequest: TOOL_GATEWAY_REQUEST,
+		});
 	});
 
 	it("startRun forwards an optional capabilityProfile and omits it when absent", async () => {
