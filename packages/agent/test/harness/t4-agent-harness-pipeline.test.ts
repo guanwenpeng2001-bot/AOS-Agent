@@ -2,7 +2,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Model, t
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { AgentHarness, type AgentHarnessFoundationExecution, type AgentHarnessOptions, type HarnessTool } from "../../src/harness/agent-harness.ts";
-import { canonicalFoundationJson, createAttempt, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type ArtifactStoreProvider, type AttemptReceipt, type Attempt, type Dispatch, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type RoleRevision, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
+import { canonicalFoundationJson, createAttempt, createEmptyMcpSelection, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type ArtifactStoreProvider, type AttemptReceipt, type Attempt, type Dispatch, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type RoleRevision, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
 import { FoundationToolGuard, FoundationToolPipeline, SessionToolPipelineStorage, finalizeToolReceipt, validateToolIntent, validateToolReceipt, type ToolDefinitionRegistry, type ToolPipelineContext } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
@@ -111,6 +111,7 @@ function execution(): AgentHarnessFoundationExecution {
 		modelBrokerBindingRevision: immutableReference("model_broker_binding", "model-broker"),
 		policyRevision: immutableReference("policy_binding", "policy"),
 		capabilitySelector: { policy: "all" as const },
+		mcpSelection: createEmptyMcpSelection("capability"),
 		budget: {},
 		sourceTrace: [],
 		conflicts: [],

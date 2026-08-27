@@ -12,7 +12,7 @@ import {
 } from "../../src/harness/agent-harness.ts";
 import { InMemoryArtifactBlobStore } from "../../src/harness/artifacts.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
-import { createAttempt, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type AgentInstance, type AttemptReceipt, type Attempt, type Budget, type Dispatch, type ExecutionCorrelation, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type ModelRoute, type RoleRevision, type SideEffectState, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
+import { createAttempt, createEmptyMcpSelection, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type AgentInstance, type AttemptReceipt, type Attempt, type Budget, type Dispatch, type ExecutionCorrelation, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type ModelRoute, type RoleRevision, type SideEffectState, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
 import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecord, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
@@ -121,6 +121,7 @@ function createFoundationExecution(route: Partial<Pick<ModelRoute, "effort" | "s
 		modelBrokerBindingRevision: immutableRef("model_broker_binding", "model-broker"),
 		policyRevision: immutableRef("policy_binding", "policy"),
 		capabilitySelector: { policy: "none" as const },
+		mcpSelection: createEmptyMcpSelection("capability"),
 		budget,
 		sourceTrace: [],
 		conflicts: [],

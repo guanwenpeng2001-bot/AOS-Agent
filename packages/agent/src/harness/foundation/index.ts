@@ -25,6 +25,7 @@ export * from "./conformance.ts";
 export * from "./gateway.ts";
 export * from "./model-profile.ts";
 export * from "./model-call.ts";
+export * from "./mcp-selection.ts";
 export * from "./observer.ts";
 export * from "./plugin.ts";
 export * from "./profile.ts";

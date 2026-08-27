@@ -18,6 +18,7 @@ import {
 } from "../../src/harness/tool-pipeline.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
+import { createEmptyMcpSelection } from "../../src/harness/foundation/mcp-selection.ts";
 import { Result } from "../../src/harness/result.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 
@@ -39,6 +40,7 @@ function context(): ToolPipelineContext {
 			capabilityRevision: { schemaVersion: 1, type: "capability", id: "capability-1", revision: 1 },
 			policyRevision: { schemaVersion: 1, type: "policy", id: "policy-1", revision: 1 },
 			capabilitySelector: { policy: "all" },
+			mcpSelection: createEmptyMcpSelection("capability-1"),
 			budget: {},
 			sourceTrace: [],
 			conflicts: [],

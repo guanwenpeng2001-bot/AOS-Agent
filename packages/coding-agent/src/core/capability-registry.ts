@@ -127,7 +127,11 @@ export interface ResolveBindingInput {
 export interface CapabilityBindingDescriptorRef {
 	id: string;
 	revision: string;
+	kind?: CapabilityKind;
+	name?: string;
 	exposedToolName?: string;
+	parentId?: string;
+	mcpServerId?: string;
 }
 
 export interface CapabilityDecisionSummary {
@@ -188,7 +192,7 @@ export interface CapabilityBindingView {
 	id: string;
 	profile: string;
 	createdAt: string;
-	descriptors: ReadonlyArray<CapabilityBindingDescriptorRef>;
+	descriptors: ReadonlyArray<Pick<CapabilityBindingDescriptorRef, "id" | "revision" | "exposedToolName">>;
 	decisionSummary: CapabilityDecisionSummary;
 	toolAllowlist: ReadonlyArray<string>;
 }
@@ -668,7 +672,11 @@ export function resolveCapabilityBinding(input: ResolveBindingInput): Capability
 		refs.push({
 			id: descriptor.id,
 			revision: descriptor.revision,
+			kind: descriptor.kind,
+			name: descriptor.name,
 			...(descriptor.exposedToolName !== undefined ? { exposedToolName: descriptor.exposedToolName } : {}),
+			...(descriptor.parentId !== undefined ? { parentId: descriptor.parentId } : {}),
+			...(descriptor.mcpServerId !== undefined ? { mcpServerId: descriptor.mcpServerId } : {}),
 		});
 	}
 
@@ -787,7 +795,11 @@ export function getCapabilityBindingRevision(binding: CapabilityBinding): string
 			.map((descriptor) => ({
 				id: descriptor.id,
 				revision: descriptor.revision,
-				exposedToolName: descriptor.exposedToolName,
+				...(descriptor.kind === undefined ? {} : { kind: descriptor.kind }),
+				...(descriptor.name === undefined ? {} : { name: descriptor.name }),
+				...(descriptor.exposedToolName === undefined ? {} : { exposedToolName: descriptor.exposedToolName }),
+				...(descriptor.parentId === undefined ? {} : { parentId: descriptor.parentId }),
+				...(descriptor.mcpServerId === undefined ? {} : { mcpServerId: descriptor.mcpServerId }),
 			})),
 		decisionSummary: binding.decisionSummary,
 		toolAllowlist: [...binding.toolAllowlist].sort(),
