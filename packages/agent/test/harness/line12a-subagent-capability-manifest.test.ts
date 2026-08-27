@@ -105,13 +105,14 @@ describe("Line 12A Native Subagent capability manifest", () => {
 		).toEqual(IMPLEMENTED_IDS);
 	});
 
-	it("describes capability 111 as Native Agent taxonomy without external placeholders", () => {
+	it("separates capability 111 registry taxonomy from provider availability", () => {
 		const capability = foundationFutureOwnerById(111);
 		expect(capability?.description).toContain("native subagent providers");
 		expect(capability?.description).not.toMatch(/\b(?:ACP|Codex|Claude|SDK)\b/);
 		const closure = LINE12A_SUBAGENT_CAPABILITY_CLOSURES.find((entry) => entry.id === 111);
 		expect(closure?.publicContract).toContain("three-kind Native Agent provider registry");
-		expect(closure?.publicContract).toContain("two native implementations");
+		expect(closure?.publicContract).toContain("in-process and fork available");
+		expect(closure?.publicContract).toContain("Agent Runtime Host unavailable");
 		expect(closure?.publicContract).not.toContain("connector.");
 	});
 });

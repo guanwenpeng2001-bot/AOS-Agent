@@ -385,8 +385,24 @@ describe("child binding projection", () => {
 		expect(validateChildBindingProjectionV1({ ...projection, fields: projection.fields.slice(1) })).toBe(false);
 	});
 
-	it("persists the projection as a durable Session fact", async () => {
-		const projection = mustProject(input());
+	it("persists the projection and inherited MCP approval evidence reference as a durable Session fact", async () => {
+		const projectionInput = input();
+		const selection = projectionInput.parentBinding.mcpSelection;
+		const projection = mustProject({
+			...projectionInput,
+			mcpInheritanceApprovalRequired: true,
+			mcpInheritanceApprovalEvidence: {
+				schemaVersion: 1,
+				evidenceId: "mcp-approval-1",
+				parentBindingId: projectionInput.parentBinding.bindingId,
+				parentSelectionDigest: selection.digest,
+				childSelectionDigest: selection.digest,
+				decision: "allow",
+				approvedBy: "principal:reviewer-1",
+				decidedAt: NOW,
+			},
+		});
+		expect(projection.mcpApprovalEvidenceId).toBe("mcp-approval-1");
 		const session = new Session(new InMemorySessionStorage({ id: "session-binding", createdAt: 1 }));
 		const ledger = new SessionLedger(session);
 		const persisted = await persistChildBindingProjectionV1(ledger, projection, {
@@ -396,5 +412,8 @@ describe("child binding projection", () => {
 		expect(persisted.ok).toBe(true);
 		const stored = await ledger.getFact(CHILD_BINDING_PROJECTION_OBJECT_TYPE, projection.spawnId);
 		expect(stored?.payload).toEqual(projection);
+		expect((stored?.payload as { mcpApprovalEvidenceId?: string } | undefined)?.mcpApprovalEvidenceId).toBe(
+			"mcp-approval-1",
+		);
 	});
 });
