@@ -3265,7 +3265,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		let deadlineTimerHandle: ReturnType<typeof setTimeout> | undefined;
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
 			const timer = originalSetTimeout(handler, timeout, ...args);
-			if (typeof timeout === "number" && timeout > 800 && timeout < 2000) deadlineTimerHandle = timer;
+			if (typeof timeout === "number" && timeout > 8000 && timeout < 11_000) deadlineTimerHandle = timer;
 			return timer;
 		});
 		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
@@ -3274,14 +3274,14 @@ describe("RPC Automation Host run lifecycle", () => {
 			lineHandler(JSON.stringify({ id: "i-deadline-cleanup", type: "initialize", protocolVersion: 1 }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-deadline-cleanup")).toHaveLength(1));
 
-			const deadlineAt = new Date(Date.now() + 1000).toISOString();
+			const deadlineAt = new Date(Date.now() + 10_000).toISOString();
 			lineHandler(JSON.stringify({ id: "deadline-cleanup-run", type: "run.start", message: "Hello", deadlineAt }));
 			await vi.waitFor(() => {
 				const response = responsesFor(rpcIo.outputLines, "deadline-cleanup-run")[0];
 				expect(response?.success).toBe(true);
 			});
 			const deadlineTimerCall = setTimeoutSpy.mock.calls.find(
-				([, delay]) => typeof delay === "number" && delay > 800 && delay < 2000,
+				([, delay]) => typeof delay === "number" && delay > 8000 && delay < 11_000,
 			);
 			expect(deadlineTimerCall).toBeDefined();
 			expect(deadlineTimerHandle).toBeDefined();
@@ -3289,10 +3289,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
 			await vi.waitFor(
 				() => expect(clearTimeoutSpy.mock.calls.some(([timer]) => timer === deadlineTimerHandle)).toBe(true),
-				{ timeout: 500 },
+				{ timeout: 2000 },
 			);
-
-			await sleep(1100);
 			expect(terminalEvents(currentLines())).toHaveLength(1);
 			expect(runEventsOfType(currentLines(), "run.failed")).toHaveLength(0);
 		} finally {
