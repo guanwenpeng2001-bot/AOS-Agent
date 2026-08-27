@@ -21,12 +21,8 @@ import type {
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
-import type {
-	ExternalConnectorDescriptor,
-	ExternalConnectorSelection,
-} from "../../core/external-agent-registry.ts";
+import type { ExternalConnectorDescriptor, ExternalConnectorSelection } from "../../core/external-agent-registry.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
-import type { ExternalConnectorToolGatewayRequestInput } from "../../core/external-connector-product.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
@@ -198,8 +194,6 @@ export type RpcCommand =
 			externalConnector?: ExternalConnectorSelection;
 			/** Canonical references resolved only by the Host's trusted Artifact authority. */
 			artifacts?: readonly CanonicalExternalAgentArtifactReference[];
-			/** Required Tool Gateway request material; the Host supplies execution context. */
-			toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -221,7 +215,6 @@ export type RpcCommand =
 			/** Explicit trusted External Connector selection for the resumed Run. */
 			externalConnector?: ExternalConnectorSelection;
 			artifacts?: readonly CanonicalExternalAgentArtifactReference[];
-			toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -1225,7 +1218,12 @@ export interface SubagentCancelData {
 	idempotent: boolean;
 }
 
-export type RpcSubagentErrorCode = "host_not_initialized" | "subagent_invalid" | "subagent_not_found" | "subagent_unavailable" | "subagent_cancel_failed";
+export type RpcSubagentErrorCode =
+	| "host_not_initialized"
+	| "subagent_invalid"
+	| "subagent_not_found"
+	| "subagent_unavailable"
+	| "subagent_cancel_failed";
 
 export interface RpcSubagentError {
 	code: RpcSubagentErrorCode;
@@ -1282,7 +1280,13 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.credential.issue"; success: true; data: TaskCredentialIssueData }
 	| { id?: string; type: "response"; command: "task.credential.get"; success: true; data: TaskCredentialGetData }
 	| { id?: string; type: "response"; command: "task.credential.list"; success: true; data: TaskCredentialListData }
-	| { id?: string; type: "response"; command: "task.credential.heartbeat"; success: true; data: TaskCredentialHeartbeatData }
+	| {
+			id?: string;
+			type: "response";
+			command: "task.credential.heartbeat";
+			success: true;
+			data: TaskCredentialHeartbeatData;
+	  }
 	| { id?: string; type: "response"; command: "task.credential.revoke"; success: true; data: TaskCredentialRevokeData }
 	| { id?: string; type: "response"; command: "task.credential.settle"; success: true; data: TaskCredentialSettleData }
 	| {

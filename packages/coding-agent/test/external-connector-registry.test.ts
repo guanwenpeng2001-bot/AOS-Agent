@@ -12,6 +12,7 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type ExternalAgentConnector,
+	type FoundationJsonValue,
 	type Result as ResultValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
@@ -33,6 +34,7 @@ import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
 	ExternalConnectorDriverSpawnRequest,
+	ExternalConnectorDriverWriteRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
@@ -42,11 +44,13 @@ const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "third-party.zeta-connector";
 let supervisedFixtureId = 0;
 
-function capabilitySnapshot(options: {
-	readonly providerId?: string;
-	readonly toolGateway?: boolean;
-	readonly modelAccess?: "agent_owned" | "aos_gateway";
-} = {}): ConnectorCapabilitySnapshot {
+function capabilitySnapshot(
+	options: {
+		readonly providerId?: string;
+		readonly toolGateway?: boolean;
+		readonly modelAccess?: "agent_owned" | "aos_gateway";
+	} = {},
+): ConnectorCapabilitySnapshot {
 	return createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId: options.providerId ?? PROVIDER_ID,
@@ -91,17 +95,31 @@ class ArbitraryConnector implements ExternalAgentConnector {
 		this.snapshot = capabilitySnapshot({ providerId });
 	}
 
-	async capabilities() { return []; }
+	async capabilities() {
+		return [];
+	}
 	async probeCapabilities() {
 		this.probeCalls += 1;
 		return Result.ok(this.snapshot);
 	}
-	async createAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
-	async runAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
-	async cancelAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
-	async resumeAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
-	async reconcileAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
-	async dispose() { this.disposeCalls += 1; }
+	async createAttempt() {
+		return Result.err(new FoundationError("unsupported_feature", "arbitrary connector"));
+	}
+	async runAttempt() {
+		return Result.err(new FoundationError("unsupported_feature", "arbitrary connector"));
+	}
+	async cancelAttempt() {
+		return Result.err(new FoundationError("unsupported_feature", "arbitrary connector"));
+	}
+	async resumeAttempt() {
+		return Result.err(new FoundationError("unsupported_feature", "arbitrary connector"));
+	}
+	async reconcileAttempt() {
+		return Result.err(new FoundationError("unsupported_feature", "arbitrary connector"));
+	}
+	async dispose() {
+		this.disposeCalls += 1;
+	}
 }
 
 class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
@@ -111,14 +129,19 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	lookupCalls = 0;
 	spawnCalls = 0;
 	readCalls = 0;
+	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
 	readonly #throwOnDispose: boolean;
+	readonly #emitToolGatewayRequest: boolean;
+	#spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 
-	constructor(options: { readonly throwOnDispose?: boolean } = {}) {
+	constructor(options: { readonly throwOnDispose?: boolean; readonly emitToolGatewayRequest?: boolean } = {}) {
 		this.#throwOnDispose = options.throwOnDispose ?? false;
+		this.#emitToolGatewayRequest = options.emitToolGatewayRequest ?? false;
 	}
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		this.spawnCalls += 1;
+		this.#spawnedRequest = request;
 		return {
 			externalSessionId: `zeta-session-${this.spawnCalls}`,
 			externalTurnId: `zeta-turn-${this.spawnCalls}`,
@@ -127,7 +150,45 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	async *events(): AsyncIterable<never> {}
+	async *events(handle: ExternalConnectorDriverHandle): AsyncIterable<FoundationJsonValue> {
+		const request = this.#spawnedRequest;
+		const operationId = request?.correlation.operationId;
+		if (!this.#emitToolGatewayRequest || request === undefined) return;
+		if (operationId === undefined) throw new Error("Zeta driver requires an operation correlation");
+		yield {
+			schemaVersion: 1,
+			type: "started",
+			externalSessionId: handle.externalSessionId,
+			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+			producedAt: NOW,
+		};
+		yield {
+			schemaVersion: 1,
+			type: "tool_gateway_request",
+			externalSessionId: handle.externalSessionId,
+			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+			operationNonce: handle.operationNonce,
+			request: {
+				schemaVersion: 1,
+				toolCallId: `tool-call-${operationId}`,
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/input.txt" },
+				idempotencyKey: `gateway-${operationId}`,
+				context: {
+					schemaVersion: 1,
+					bindingId: request.attempt.bindingId,
+					bindingEpochId: request.attempt.bindingEpochIds[0]!,
+					taskId: request.attempt.taskId,
+					dispatchId: request.attempt.dispatchId,
+					providerId: request.capability.providerId,
+					attemptId: request.attempt.attemptId,
+					operationId,
+				},
+			},
+			producedAt: NOW,
+		};
+	}
 
 	async connect(): Promise<ExternalConnectorDriverHandle> {
 		this.connectCalls += 1;
@@ -152,7 +213,9 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	async write(): Promise<void> {}
+	async write(_handle: ExternalConnectorDriverHandle, request: ExternalConnectorDriverWriteRequest): Promise<void> {
+		this.writes.push(request);
+	}
 	async heartbeat(): Promise<void> {}
 	async cancel(): Promise<undefined> {
 		this.cancelCalls += 1;
@@ -174,22 +237,26 @@ interface SupportedConnectorFixture {
 	readonly t5: SessionT5Ledger;
 }
 
-function createSupportedConnector(options: {
-	readonly providerId?: string;
-	readonly toolGateway?: boolean;
-	readonly modelAccess?: "agent_owned" | "aos_gateway";
-	readonly driver?: ThirdPartyZetaDriver;
-	readonly capabilityProbe?: (
-		snapshot: ConnectorCapabilitySnapshot,
-	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
-} = {}): SupportedConnectorFixture {
+function createSupportedConnector(
+	options: {
+		readonly providerId?: string;
+		readonly toolGateway?: boolean;
+		readonly modelAccess?: "agent_owned" | "aos_gateway";
+		readonly driver?: ThirdPartyZetaDriver;
+		readonly capabilityProbe?: (
+			snapshot: ConnectorCapabilitySnapshot,
+		) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
+	} = {},
+): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
 	const fixtureId = supervisedFixtureId;
 	const snapshot = capabilitySnapshot(options);
-	const session = new Session(new InMemorySessionStorage({
-		id: `supervised-zeta-${fixtureId}`,
-		createdAt: fixtureId,
-	}));
+	const session = new Session(
+		new InMemorySessionStorage({
+			id: `supervised-zeta-${fixtureId}`,
+			createdAt: fixtureId,
+		}),
+	);
 	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${fixtureId}` });
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
@@ -221,31 +288,33 @@ function registration(
 		descriptor: descriptor(fixture.snapshot),
 		connector: fixture.connector,
 		trusted: true,
-		...(fixture.snapshot.toolGateway ? {
-			capabilityEvidence: {
-				toolGateway: {
-					declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
-					handler: {
-						id: "zeta.tool-gateway-handler",
-						invoke: (request: ToolGatewayRequest) => {
-							if (toolGateway !== undefined) {
-								toolGateway.count += 1;
-								toolGateway.requests.push(request);
-							}
-							const result: ToolExecutionResult = {
-								schemaVersion: 1,
-								toolCallId: request.toolCallId,
-								toolName: request.toolName,
-								ok: true,
-								sideEffectState: "none",
-								toolReceiptRef: `tool-receipt-${request.toolCallId}`,
-							};
-							return Result.ok(result);
+		...(fixture.snapshot.toolGateway
+			? {
+					capabilityEvidence: {
+						toolGateway: {
+							declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
+							handler: {
+								id: "zeta.tool-gateway-handler",
+								invoke: (request: ToolGatewayRequest) => {
+									if (toolGateway !== undefined) {
+										toolGateway.count += 1;
+										toolGateway.requests.push(request);
+									}
+									const result: ToolExecutionResult = {
+										schemaVersion: 1,
+										toolCallId: request.toolCallId,
+										toolName: request.toolName,
+										ok: true,
+										sideEffectState: "none",
+										toolReceiptRef: `tool-receipt-${request.toolCallId}`,
+									};
+									return Result.ok(result);
+								},
+							},
 						},
 					},
-				},
-			},
-		} : {}),
+				}
+			: {}),
 	};
 }
 
@@ -253,7 +322,6 @@ function productInput(
 	fixture: SupportedConnectorFixture,
 	registry: ReturnType<typeof createExternalConnectorRegistry>,
 	runId: string,
-	includeToolGatewayRequest = false,
 ): ExternalConnectorProductExecutionInput {
 	const text = `Execute supervised third-party connector run ${runId}`;
 	return {
@@ -268,18 +336,12 @@ function productInput(
 		runId,
 		message: text,
 		canonicalInput: { schemaVersion: 1, text, artifacts: [] },
-		inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
-		workspace: "workspace-zeta",
-		...(includeToolGatewayRequest ? {
-			toolGatewayRequest: {
-				schemaVersion: 1,
-				toolCallId: `tool-call-${runId}`,
-				toolName: "workspace.read",
-				namespace: "workspace",
-				originalArguments: { path: "docs/input.txt" },
-				idempotencyKey: `gateway-${runId}`,
+		inputAdmission: {
+			inspectArtifact: () => {
+				throw new Error("no artifacts");
 			},
-		} : {}),
+		},
+		workspace: "workspace-zeta",
 		now: () => NOW,
 	};
 }
@@ -365,11 +427,15 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		const arbitraryDescriptor = descriptor(arbitrary.snapshot);
 		const registry = createExternalConnectorRegistry();
 
-		expect(registry.registerPrepared(
-			{ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true },
-			arbitrary.snapshot,
-		)).toMatchObject({ ok: false });
-		expect(await registry.register({ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true })).toMatchObject({
+		expect(
+			registry.registerPrepared(
+				{ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true },
+				arbitrary.snapshot,
+			),
+		).toMatchObject({ ok: false });
+		expect(
+			await registry.register({ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true }),
+		).toMatchObject({
 			ok: false,
 		});
 		expect(arbitrary.probeCalls).toBe(0);
@@ -473,16 +539,19 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await registry.dispose();
 	});
 
-	it("executes only an advertised Tool Gateway before the supervised vendor driver", async () => {
+	it("routes only an advertised Connector-originated request through Tool Gateway", async () => {
 		const gateway = { count: 0, requests: [] as ToolGatewayRequest[] };
-		const enabled = createSupportedConnector({ toolGateway: true });
+		const enabled = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
+		});
 		const enabledRegistry = createExternalConnectorRegistry();
-		expect(await enabledRegistry.register(registration(enabled, { toolGateway: gateway }))).toMatchObject({ ok: true });
+		expect(await enabledRegistry.register(registration(enabled, { toolGateway: gateway }))).toMatchObject({
+			ok: true,
+		});
 
 		const runId = "run-zeta-tool-gateway";
-		const execution = await executeExternalConnectorProductRun(
-			productInput(enabled, enabledRegistry, runId, true),
-		);
+		const execution = await executeExternalConnectorProductRun(productInput(enabled, enabledRegistry, runId));
 		expect(execution.runReceipt.terminalStatus).toBe("completed");
 		expect(gateway.count).toBe(1);
 		expect(gateway.requests).toHaveLength(1);
@@ -506,19 +575,29 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			},
 		});
 		expect(enabled.driver.spawnCalls).toBe(1);
+		expect(enabled.driver.writes).toEqual([
+			{
+				schemaVersion: 1,
+				kind: "tool_gateway_result",
+				operationNonce: expect.any(String),
+				result: execution.toolGatewayExchange?.result,
+			},
+		]);
 
-		const disabled = createSupportedConnector();
+		const disabled = createSupportedConnector({
+			driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
+		});
 		const disabledRegistry = createExternalConnectorRegistry();
 		expect(await disabledRegistry.register(registration(disabled))).toMatchObject({ ok: true });
-		await expect(executeExternalConnectorProductRun(
-			productInput(disabled, disabledRegistry, "run-zeta-tool-gateway-disabled", true),
-		)).rejects.toMatchObject({
-			code: "external_capability_mismatch",
-			message: "External connector does not support the required Tool Gateway bridge",
-			retryable: false,
+		const disabledExecution = await executeExternalConnectorProductRun(
+			productInput(disabled, disabledRegistry, "run-zeta-tool-gateway-disabled"),
+		);
+		expect(disabledExecution).toMatchObject({
+			runReceipt: { terminalStatus: "failed", terminalError: { code: "external_event_invalid" } },
+			attemptReceipt: { status: "failed", error: { code: "external_event_invalid" } },
 		});
-		expect(disabled.driver.spawnCalls).toBe(0);
-		expect(await disabled.session.findFoundationRecords({ includePruned: true })).toEqual([]);
+		expect(disabled.driver.spawnCalls).toBe(1);
+		expect(disabled.driver.writes).toEqual([]);
 		await enabledRegistry.dispose();
 		await disabledRegistry.dispose();
 	});
@@ -553,19 +632,23 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 			const persisted = await createPersistedProductAttempt(fixture, registry, `run-zeta-${operation}-drift`);
 
-			const result = operation === "resume"
-				? await persisted.connector.resumeAttempt(persisted.attempt, { correlation: persisted.correlation })
-				: operation === "reconcile"
-					? await persisted.connector.reconcileAttempt(persisted.attempt, { correlation: persisted.correlation })
-					: await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
+			const result =
+				operation === "resume"
+					? await persisted.connector.resumeAttempt(persisted.attempt, { correlation: persisted.correlation })
+					: operation === "reconcile"
+						? await persisted.connector.reconcileAttempt(persisted.attempt, {
+								correlation: persisted.correlation,
+							})
+						: await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
 
 			expect(result).toMatchObject({
 				ok: false,
 				error: {
 					code: "scheduler_attempt_recovery_failed",
-					message: operation === "cancel"
-						? "External connector capability truth could not be rechecked"
-						: "External connector operation does not exist",
+					message:
+						operation === "cancel"
+							? "External connector capability truth could not be rechecked"
+							: "External connector operation does not exist",
 				},
 			});
 			expect(fixture.probeCalls()).toBe(3);
@@ -726,7 +809,9 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			},
 		]) {
 			const registry = createExternalConnectorRegistry();
-			expect(await registry.register(invalid as unknown as ExternalConnectorRegistration)).toMatchObject({ ok: false });
+			expect(await registry.register(invalid as unknown as ExternalConnectorRegistration)).toMatchObject({
+				ok: false,
+			});
 			expect(registry.list()).toEqual([]);
 		}
 
@@ -735,10 +820,12 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		const selected = selection(fixture.snapshot);
 		expect(await registry.select({ ...selected, providerId: "unknown.connector" })).toMatchObject({ ok: false });
 		expect(await registry.select({ ...selected, revision: selected.revision + 1 })).toMatchObject({ ok: false });
-		expect(await registry.select({
-			...selected,
-			capabilitySnapshotDigest: fingerprintFoundationValue("wrong-selection"),
-		})).toMatchObject({ ok: false });
+		expect(
+			await registry.select({
+				...selected,
+				capabilitySnapshotDigest: fingerprintFoundationValue("wrong-selection"),
+			}),
+		).toMatchObject({ ok: false });
 		await registry.dispose();
 	});
 

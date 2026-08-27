@@ -617,7 +617,6 @@ export {
 	type ExternalConnectorProductExecution,
 	type ExternalConnectorProductExecutionInput,
 	type ExternalConnectorToolGatewayExchange,
-	type ExternalConnectorToolGatewayRequestInput,
 } from "./core/external-connector-product.ts";
 export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,

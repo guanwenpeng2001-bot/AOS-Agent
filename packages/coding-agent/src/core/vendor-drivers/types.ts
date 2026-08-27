@@ -10,12 +10,16 @@ import {
 	FoundationError,
 	validateArtifactRef,
 	validatePublicExecutionError,
+	validateToolGatewayRequest,
 	type ArtifactRef,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
+	type ExecutionCorrelation,
 	type FoundationJsonValue,
 	type PublicExecutionError,
 	type SideEffectState,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
 	isCanonicalExternalConnectorMappingTimestamp,
@@ -45,6 +49,7 @@ const EXTERNAL_CONNECTOR_DRIVER_HANDLE_KEYS = new Set([
 
 export interface ExternalConnectorDriverSpawnRequest {
 	readonly attempt: Attempt;
+	readonly correlation: ExecutionCorrelation;
 	readonly input: CanonicalExternalAgentInput;
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
@@ -57,8 +62,10 @@ export interface ExternalConnectorDriverSpawnRequest {
 }
 
 export interface ExternalConnectorDriverWriteRequest {
-	readonly kind: string;
-	readonly payload: FoundationJsonValue;
+	readonly schemaVersion: 1;
+	readonly kind: "tool_gateway_result";
+	readonly operationNonce: string;
+	readonly result: ToolExecutionResult;
 }
 
 /** Exact, private observation protocol emitted by a current vendor driver. */
@@ -94,6 +101,15 @@ export type ExternalConnectorDriverEvent =
 			readonly externalTurnId?: string;
 			readonly artifact: ArtifactRef;
 			readonly producedAt: string;
+	  }
+	| {
+			readonly schemaVersion: 1;
+			readonly type: "tool_gateway_request";
+			readonly externalSessionId: string;
+			readonly externalTurnId?: string;
+			readonly operationNonce: string;
+			readonly request: ToolGatewayRequest;
+			readonly producedAt: string;
 	  };
 
 export interface ExternalConnectorTerminalEvidence {
@@ -126,18 +142,13 @@ const EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS = new Set([
 	"externalTurnId",
 	"producedAt",
 ]);
-const EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS = new Set([
+const EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS = new Set([...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS, "sequence", "phase"]);
+const EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS = new Set([...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS, "sequence"]);
+const EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS = new Set([...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS, "artifact"]);
+const EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT_KEYS = new Set([
 	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
-	"sequence",
-	"phase",
-]);
-const EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS = new Set([
-	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
-	"sequence",
-]);
-const EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS = new Set([
-	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
-	"artifact",
+	"operationNonce",
+	"request",
 ]);
 const EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN = /^[^\u0000-\u001f\u007f]{1,128}$/;
 const EXTERNAL_CONNECTOR_SHA256_DIGEST_PATTERN = /^sha256:[A-Fa-f0-9]{64}$/;
@@ -176,15 +187,23 @@ const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
 		message: "External connector terminal outcome could not be proven.",
 		category: "side_effect_unknown",
 	},
-} as const satisfies Record<string, {
-	readonly message: string;
-	readonly category: NonNullable<PublicExecutionError["category"]>;
-}>);
+} as const satisfies Record<
+	string,
+	{
+		readonly message: string;
+		readonly category: NonNullable<PublicExecutionError["category"]>;
+	}
+>);
 
 type ExternalConnectorTerminalErrorCode = keyof typeof EXTERNAL_CONNECTOR_TERMINAL_ERRORS;
 
 function isTerminalEvidenceRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.getPrototypeOf(value) === Object.prototype
+	);
 }
 
 /** Retain only content-addressed identity and bounded metadata from a vendor Artifact reference. */
@@ -269,15 +288,18 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 	) {
 		return false;
 	}
-	const keys = value.type === "started"
-		? EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS
-		: value.type === "progress"
-			? EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS
-			: value.type === "heartbeat"
-				? EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS
-				: value.type === "artifact"
-					? EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS
-					: undefined;
+	const keys =
+		value.type === "started"
+			? EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS
+			: value.type === "progress"
+				? EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS
+				: value.type === "heartbeat"
+					? EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS
+					: value.type === "artifact"
+						? EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS
+						: value.type === "tool_gateway_request"
+							? EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT_KEYS
+							: undefined;
 	if (keys === undefined || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys.has(key))) {
 		return false;
 	}
@@ -286,9 +308,13 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 			typeof value.sequence === "number" &&
 			Number.isSafeInteger(value.sequence) &&
 			value.sequence > 0 &&
-			(value.type === "heartbeat" || value.phase === undefined ||
+			(value.type === "heartbeat" ||
+				value.phase === undefined ||
 				(typeof value.phase === "string" && EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN.test(value.phase)))
 		);
+	}
+	if (value.type === "tool_gateway_request") {
+		return isExternalConnectorMappingIdentifier(value.operationNonce) && validateToolGatewayRequest(value.request).ok;
 	}
 	return value.type !== "artifact" || canonicalExternalConnectorArtifactRef(value.artifact) !== undefined;
 }
@@ -323,10 +349,7 @@ export function isExternalConnectorTerminalEvidence(value: unknown): value is Ex
 
 export function cloneExternalConnectorTerminalEvidence(value: unknown): ExternalConnectorTerminalEvidence {
 	if (!isExternalConnectorTerminalEvidence(value)) {
-		throw new FoundationError(
-			"foundation_schema_invalid_shape",
-			"External connector terminal evidence is invalid",
-		);
+		throw new FoundationError("foundation_schema_invalid_shape", "External connector terminal evidence is invalid");
 	}
 	const artifacts = value.artifacts?.map((artifact) => {
 		const canonical = canonicalExternalConnectorArtifactRef(artifact);
@@ -344,9 +367,7 @@ export function cloneExternalConnectorTerminalEvidence(value: unknown): External
 		...(value.externalTurnId === undefined ? {} : { externalTurnId: value.externalTurnId }),
 		operationNonce: value.operationNonce,
 		status: value.status,
-		...(artifacts === undefined
-			? {}
-			: { artifacts: Object.freeze(artifacts) }),
+		...(artifacts === undefined ? {} : { artifacts: Object.freeze(artifacts) }),
 		...(error === undefined ? {} : { error: Object.freeze(error) }),
 		sideEffectState: value.sideEffectState,
 		producedAt: value.producedAt,
@@ -366,13 +387,14 @@ const EXTERNAL_CONNECTOR_DRIVER_LOOKUP_EMPTY_KEYS = new Set(["status"]);
 /** Exact runtime shape for every lookup branch returned by an untrusted driver. */
 export function isExternalConnectorDriverLookup(value: unknown): value is ExternalConnectorDriverLookup {
 	if (!isTerminalEvidenceRecord(value) || typeof value.status !== "string") return false;
-	const allowedKeys = value.status === "running"
-		? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_RUNNING_KEYS
-		: value.status === "terminal"
-			? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_TERMINAL_KEYS
-			: value.status === "missing" || value.status === "ambiguous"
-				? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_EMPTY_KEYS
-				: undefined;
+	const allowedKeys =
+		value.status === "running"
+			? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_RUNNING_KEYS
+			: value.status === "terminal"
+				? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_TERMINAL_KEYS
+				: value.status === "missing" || value.status === "ambiguous"
+					? EXTERNAL_CONNECTOR_DRIVER_LOOKUP_EMPTY_KEYS
+					: undefined;
 	if (
 		allowedKeys === undefined ||
 		Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowedKeys.has(key))
@@ -409,10 +431,7 @@ export interface ExternalConnectorVendorDriver {
 		request: ExternalConnectorDriverWriteRequest,
 		options?: { readonly signal?: AbortSignal },
 	): Promise<void>;
-	heartbeat(
-		handle: ExternalConnectorDriverHandle,
-		options?: { readonly signal?: AbortSignal },
-	): Promise<void>;
+	heartbeat(handle: ExternalConnectorDriverHandle, options?: { readonly signal?: AbortSignal }): Promise<void>;
 	cancel(
 		handle: ExternalConnectorDriverHandle,
 		options?: { readonly signal?: AbortSignal },

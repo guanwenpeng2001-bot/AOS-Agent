@@ -89,7 +89,6 @@ export interface ExternalConnectorExecutionInput {
 	readonly taskId: string;
 	readonly requestFingerprint: CanonicalExternalAgentRequestFingerprint;
 	readonly input: CanonicalExternalAgentInput;
-	readonly toolGatewayRequest?: ToolGatewayRequest;
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
 }
@@ -148,6 +147,9 @@ export interface ExternalConnectorDurableStore {
 	): Promise<CanonicalExternalConnectorMapping>;
 	readReceipt(attemptId: string): Promise<AttemptReceipt | undefined>;
 	writeReceipt(receipt: AttemptReceipt): Promise<AttemptReceipt>;
+	readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined>;
+	writeToolGatewayIntent(value: ExternalConnectorToolGatewayIntent): Promise<ExternalConnectorToolGatewayIntentWrite>;
+	writeToolGatewayTerminal(value: ExternalConnectorToolGatewayTerminal): Promise<ExternalConnectorToolGatewayTerminal>;
 }
 
 const EXTERNAL_CONNECTOR_OPERATION_KEYS = new Set([
@@ -183,7 +185,12 @@ const EXTERNAL_CONNECTOR_RECONCILE_REASONS: ReadonlySet<ExternalConnectorReconci
 ]);
 
 function operationRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		Object.getPrototypeOf(value) === Object.prototype
+	);
 }
 
 function operationExactKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
@@ -202,17 +209,14 @@ function operationFingerprint(value: unknown): value is Fingerprint {
 
 function cloneOperationCorrelation(value: unknown): ExecutionCorrelation | undefined {
 	const checked = validateExecutionCorrelation(value);
-	if (
-		!checked.ok ||
-		!Number.isSafeInteger(checked.value.revision) ||
-		checked.value.agentInstanceId !== undefined
-	) {
+	if (!checked.ok || !Number.isSafeInteger(checked.value.revision) || checked.value.agentInstanceId !== undefined) {
 		return undefined;
 	}
 	for (const [key, candidate] of Object.entries(checked.value)) {
 		if (key === "revision") continue;
 		if (key === "ancestorIds") {
-			if (!Array.isArray(candidate) || candidate.some((id) => !isExternalConnectorMappingIdentifier(id))) return undefined;
+			if (!Array.isArray(candidate) || candidate.some((id) => !isExternalConnectorMappingIdentifier(id)))
+				return undefined;
 			continue;
 		}
 		if (!isExternalConnectorMappingIdentifier(candidate)) return undefined;
@@ -275,7 +279,10 @@ export function cloneExternalConnectorOperation(value: unknown): ExternalConnect
 	}
 	const correlation = cloneOperationCorrelation(value.correlation);
 	if (correlation === undefined) {
-		throw new FoundationError("session_ledger_corrupt", "Durable external connector operation correlation is invalid");
+		throw new FoundationError(
+			"session_ledger_corrupt",
+			"Durable external connector operation correlation is invalid",
+		);
 	}
 	return Object.freeze({
 		schemaVersion: 1,
@@ -316,7 +323,7 @@ const EXTERNAL_CONNECTOR_TOOL_GATEWAY_TERMINAL_KEYS = new Set([
 	"completedAt",
 ]);
 
-function gatewayRequestMatchesExecution(
+export function externalConnectorToolGatewayRequestMatchesExecution(
 	request: ToolGatewayRequest,
 	providerId: string,
 	attemptId: string,
@@ -345,9 +352,7 @@ function gatewayRequestMatchesExecution(
 	);
 }
 
-export function cloneExternalConnectorToolGatewayIntent(
-	value: unknown,
-): ExternalConnectorToolGatewayIntent {
+export function cloneExternalConnectorToolGatewayIntent(value: unknown): ExternalConnectorToolGatewayIntent {
 	if (
 		!operationRecord(value) ||
 		!operationExactKeys(value, EXTERNAL_CONNECTOR_TOOL_GATEWAY_INTENT_KEYS) ||
@@ -369,7 +374,7 @@ export function cloneExternalConnectorToolGatewayIntent(
 	if (
 		correlation === undefined ||
 		!request.ok ||
-		!gatewayRequestMatchesExecution(
+		!externalConnectorToolGatewayRequestMatchesExecution(
 			request.value,
 			value.providerId,
 			value.attemptId,
@@ -395,9 +400,7 @@ export function cloneExternalConnectorToolGatewayIntent(
 	});
 }
 
-export function cloneExternalConnectorToolGatewayTerminal(
-	value: unknown,
-): ExternalConnectorToolGatewayTerminal {
+export function cloneExternalConnectorToolGatewayTerminal(value: unknown): ExternalConnectorToolGatewayTerminal {
 	if (
 		!operationRecord(value) ||
 		!operationExactKeys(value, EXTERNAL_CONNECTOR_TOOL_GATEWAY_TERMINAL_KEYS) ||
@@ -424,7 +427,7 @@ export function cloneExternalConnectorToolGatewayTerminal(
 		!result.ok ||
 		result.value.toolCallId !== request.value.toolCallId ||
 		result.value.toolName !== request.value.toolName ||
-		!gatewayRequestMatchesExecution(
+		!externalConnectorToolGatewayRequestMatchesExecution(
 			request.value,
 			value.providerId,
 			value.attemptId,
@@ -468,7 +471,9 @@ function gatewayTerminalMatchesIntent(
 	);
 }
 
-const OPERATION_TRANSITIONS: Readonly<Record<ExternalConnectorOperationStatus, ReadonlySet<ExternalConnectorOperationStatus>>> = {
+const OPERATION_TRANSITIONS: Readonly<
+	Record<ExternalConnectorOperationStatus, ReadonlySet<ExternalConnectorOperationStatus>>
+> = {
 	prepared: new Set(["start_intent", "terminal", "reconcile_required"]),
 	start_intent: new Set(["running", "terminal", "reconcile_required"]),
 	running: new Set(["cancelling", "terminal", "reconcile_required"]),
@@ -493,27 +498,43 @@ export function transitionExternalConnectorOperation(
 		});
 	}
 	if (!OPERATION_TRANSITIONS[canonicalCurrent.status].has(status)) {
-		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector operation transition is invalid", {
-			details: { attemptId: canonicalCurrent.attemptId, from: canonicalCurrent.status, to: status },
-		});
+		throw new FoundationError(
+			"scheduler_attempt_recovery_failed",
+			"External connector operation transition is invalid",
+			{
+				details: { attemptId: canonicalCurrent.attemptId, from: canonicalCurrent.status, to: status },
+			},
+		);
 	}
 	if (status === "terminal" && options.receiptId === undefined) {
-		throw new FoundationError("scheduler_attempt_recovery_failed", "Terminal external connector operation requires a receipt", {
-			details: { attemptId: canonicalCurrent.attemptId },
-		});
+		throw new FoundationError(
+			"scheduler_attempt_recovery_failed",
+			"Terminal external connector operation requires a receipt",
+			{
+				details: { attemptId: canonicalCurrent.attemptId },
+			},
+		);
 	}
 	if (status === "reconcile_required" && options.reconcileReason === undefined) {
-		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector reconciliation requires a reason", {
-			details: { attemptId: canonicalCurrent.attemptId },
-		});
+		throw new FoundationError(
+			"scheduler_attempt_recovery_failed",
+			"External connector reconciliation requires a reason",
+			{
+				details: { attemptId: canonicalCurrent.attemptId },
+			},
+		);
 	}
 	if (
 		(status !== "terminal" && options.receiptId !== undefined) ||
 		(status !== "reconcile_required" && options.reconcileReason !== undefined)
 	) {
-		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector transition metadata is invalid", {
-			details: { attemptId: canonicalCurrent.attemptId, status },
-		});
+		throw new FoundationError(
+			"scheduler_attempt_recovery_failed",
+			"External connector transition metadata is invalid",
+			{
+				details: { attemptId: canonicalCurrent.attemptId, status },
+			},
+		);
 	}
 	return cloneExternalConnectorOperation({
 		schemaVersion: canonicalCurrent.schemaVersion,
@@ -543,10 +564,7 @@ function operationMatches(left: ExternalConnectorOperation, right: ExternalConne
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 }
 
-function operationImmutableFactsMatch(
-	left: ExternalConnectorOperation,
-	right: ExternalConnectorOperation,
-): boolean {
+function operationImmutableFactsMatch(left: ExternalConnectorOperation, right: ExternalConnectorOperation): boolean {
 	return (
 		left.schemaVersion === right.schemaVersion &&
 		left.providerId === right.providerId &&
@@ -613,29 +631,41 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			await this.#ledger.get(EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE, taskId),
 			EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
 		);
-		if (payload === undefined || typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+		if (payload === undefined || typeof payload !== "object" || payload === null || Array.isArray(payload))
+			return undefined;
 		const record = payload as Record<string, unknown>;
 		const checked = validateCanonicalExternalAgentInput(record.input);
-		const modelProjection = record.modelProjection === undefined
-			? undefined
-			: isExternalResolvedModelProjection(record.modelProjection) ? record.modelProjection : null;
-		const modelTranslation = record.modelTranslation === undefined
-			? undefined
-			: isExternalTranslatedModelProjection(record.modelTranslation) ? record.modelTranslation : null;
-		const toolGatewayRequest = record.toolGatewayRequest === undefined
-			? undefined
-			: validateToolGatewayRequest(record.toolGatewayRequest);
+		const modelProjection =
+			record.modelProjection === undefined
+				? undefined
+				: isExternalResolvedModelProjection(record.modelProjection)
+					? record.modelProjection
+					: null;
+		const modelTranslation =
+			record.modelTranslation === undefined
+				? undefined
+				: isExternalTranslatedModelProjection(record.modelTranslation)
+					? record.modelTranslation
+					: null;
 		if (
 			!checked.ok ||
-			(toolGatewayRequest !== undefined && !toolGatewayRequest.ok) ||
-			(toolGatewayRequest?.ok && toolGatewayRequest.value.context.taskId !== taskId) ||
 			modelProjection === null ||
 			modelTranslation === null ||
 			(modelProjection === undefined) !== (modelTranslation === undefined) ||
-			(modelProjection !== undefined && modelTranslation !== undefined &&
+			(modelProjection !== undefined &&
+				modelTranslation !== undefined &&
 				modelProjection.bindingDigest.value !== modelTranslation.sourceBindingDigest.value) ||
 			Reflect.ownKeys(record).some(
-				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "toolGatewayRequest", "modelProjection", "modelTranslation"].includes(key),
+				(key) =>
+					typeof key !== "string" ||
+					![
+						"schemaVersion",
+						"taskId",
+						"requestFingerprint",
+						"input",
+						"modelProjection",
+						"modelTranslation",
+					].includes(key),
 			) ||
 			record.schemaVersion !== 1 ||
 			record.taskId !== taskId ||
@@ -651,17 +681,12 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			taskId,
 			requestFingerprint: record.requestFingerprint as CanonicalExternalAgentRequestFingerprint,
 			input: checked.value,
-			...(toolGatewayRequest === undefined || !toolGatewayRequest.ok
-				? {}
-				: { toolGatewayRequest: cloneDeepFrozen(toolGatewayRequest.value) }),
 			...(modelProjection === undefined ? {} : { modelProjection }),
 			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		});
 	}
 
-	async readToolGatewayExecution(
-		attemptId: string,
-	): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+	async readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined> {
 		const intentRecords = await this.#ledger.find({
 			kind: "intent",
 			objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
@@ -674,10 +699,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 				details: { attemptId },
 			});
 		}
-		const current = await this.#ledger.get(
-			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-			attemptId,
-		);
+		const current = await this.#ledger.get(EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE, attemptId);
 		if (intentRecords.length === 0) {
 			if (current !== undefined) {
 				throw new FoundationError("session_ledger_corrupt", "Tool Gateway terminal result has no durable intent", {
@@ -706,7 +728,11 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const terminal = cloneExternalConnectorToolGatewayTerminal(
 			requireFactPayload(current, EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE),
 		);
-		if (current.revision !== 2 || terminal.attemptId !== attemptId || !gatewayTerminalMatchesIntent(terminal, intent)) {
+		if (
+			current.revision !== 2 ||
+			terminal.attemptId !== attemptId ||
+			!gatewayTerminalMatchesIntent(terminal, intent)
+		) {
 			throw new FoundationError("session_ledger_corrupt", "Tool Gateway terminal result conflicts with its intent", {
 				details: { attemptId },
 			});
@@ -753,15 +779,23 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const proposed = cloneExternalConnectorToolGatewayTerminal(value);
 		const current = await this.readToolGatewayExecution(proposed.attemptId);
 		if (current === undefined || !gatewayTerminalMatchesIntent(proposed, current.intent)) {
-			throw new FoundationError("session_ledger_missing_intent", "Tool Gateway terminal result requires its durable intent", {
-				details: { attemptId: proposed.attemptId },
-			});
+			throw new FoundationError(
+				"session_ledger_missing_intent",
+				"Tool Gateway terminal result requires its durable intent",
+				{
+					details: { attemptId: proposed.attemptId },
+				},
+			);
 		}
 		if (current.terminal !== undefined) {
 			if (canonicalFoundationJson(current.terminal) !== canonicalFoundationJson(proposed)) {
-				throw new FoundationError("session_ledger_conflict", "Tool Gateway already has a different terminal result", {
-					details: { attemptId: proposed.attemptId },
-				});
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"Tool Gateway already has a different terminal result",
+					{
+						details: { attemptId: proposed.attemptId },
+					},
+				);
 			}
 			return current.terminal;
 		}
@@ -811,9 +845,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const current = await this.readOperation(proposed.attemptId);
 		if (current === undefined) {
 			if (proposed.status !== "prepared" || proposed.revision !== 1) {
-				throw new FoundationError("session_ledger_missing_intent", "External connector operation must begin as prepared", {
-					details: { attemptId: proposed.attemptId },
-				});
+				throw new FoundationError(
+					"session_ledger_missing_intent",
+					"External connector operation must begin as prepared",
+					{
+						details: { attemptId: proposed.attemptId },
+					},
+				);
 			}
 		} else {
 			if (operationMatches(current, proposed)) return current;
@@ -822,9 +860,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 				!operationImmutableFactsMatch(current, proposed) ||
 				!OPERATION_TRANSITIONS[current.status].has(proposed.status)
 			) {
-				throw new FoundationError("session_ledger_conflict", "External connector operation conflicts with durable history", {
-					details: { attemptId: proposed.attemptId },
-				});
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"External connector operation conflicts with durable history",
+					{
+						details: { attemptId: proposed.attemptId },
+					},
+				);
 			}
 		}
 		const persisted = await this.#ledger.appendFact(
@@ -862,9 +904,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const existing = await this.readMapping(proposed.attemptId);
 		if (existing !== undefined) {
 			if (!mappingMatches(existing, proposed)) {
-				throw new FoundationError("session_ledger_conflict", "Attempt already has a different external connector mapping", {
-					details: { attemptId: proposed.attemptId },
-				});
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"Attempt already has a different external connector mapping",
+					{
+						details: { attemptId: proposed.attemptId },
+					},
+				);
 			}
 			return existing;
 		}
@@ -879,7 +925,10 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			try {
 				candidate = cloneCanonicalExternalConnectorMapping(record.payload);
 			} catch {
-				throw new FoundationError("session_ledger_corrupt", "Canonical external connector mapping history is invalid");
+				throw new FoundationError(
+					"session_ledger_corrupt",
+					"Canonical external connector mapping history is invalid",
+				);
 			}
 			if (
 				candidate.providerId === proposed.providerId &&
@@ -887,9 +936,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 				candidate.externalTurnId === proposed.externalTurnId &&
 				candidate.attemptId !== proposed.attemptId
 			) {
-				throw new FoundationError("session_ledger_conflict", "External execution already belongs to another Attempt", {
-					details: { attemptId: proposed.attemptId },
-				});
+				throw new FoundationError(
+					"session_ledger_conflict",
+					"External execution already belongs to another Attempt",
+					{
+						details: { attemptId: proposed.attemptId },
+					},
+				);
 			}
 		}
 		const persisted = await this.#ledger.appendFact(
@@ -928,9 +981,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			providerClass: "external_connector",
 		});
 		if (!checked.ok || receipt.attemptReceiptId !== expectedId) {
-			throw new FoundationError("worker_receipt_invalid_producer", "External terminal evidence did not produce a canonical AttemptReceipt", {
-				details: { attemptId: receipt.attemptId },
-			});
+			throw new FoundationError(
+				"worker_receipt_invalid_producer",
+				"External terminal evidence did not produce a canonical AttemptReceipt",
+				{
+					details: { attemptId: receipt.attemptId },
+				},
+			);
 		}
 		const existing = await this.readReceipt(receipt.attemptId);
 		if (existing !== undefined) {

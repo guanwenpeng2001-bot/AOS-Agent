@@ -58,7 +58,6 @@ import {
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
-	type ExternalConnectorToolGatewayRequestInput,
 } from "../../core/external-connector-product.ts";
 import type { ExternalModelFallbackDecision } from "../../core/external-model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
@@ -762,7 +761,10 @@ export class RpcHostController {
 	): ExternalAgentArtifactInspection | Promise<ExternalAgentArtifactInspection> {
 		const authority = this.externalArtifactAuthority;
 		if (authority === undefined) throw new Error("RPC has no trusted artifact reference authority");
-		if (reference.readHandle.kind === "workspace_relative" && reference.readHandle.workspaceId !== authority.workspaceId) {
+		if (
+			reference.readHandle.kind === "workspace_relative" &&
+			reference.readHandle.workspaceId !== authority.workspaceId
+		) {
 			return {
 				artifactId: reference.artifactId,
 				ref: reference.readHandle.ref,
@@ -1703,17 +1705,12 @@ export class RpcHostController {
 			"images",
 			"externalConnector",
 			"artifacts",
-			"toolGatewayRequest",
 			"capabilityProfile",
 			"policyProfile",
 			"modelRoute",
 			"modelRole",
 		]);
-		const EXTERNAL_RUN_RESUME_KEYS = new Set([
-			...EXTERNAL_RUN_START_KEYS,
-			"sessionPath",
-			"sourceRunId",
-		]);
+		const EXTERNAL_RUN_RESUME_KEYS = new Set([...EXTERNAL_RUN_START_KEYS, "sessionPath", "sourceRunId"]);
 
 		const slashRunInputError = (
 			id: string | undefined,
@@ -2032,7 +2029,6 @@ export class RpcHostController {
 				modelRole?: ModelRoleSelection;
 				externalConnector?: ExternalConnectorSelection;
 				artifacts?: readonly CanonicalExternalAgentArtifactReference[];
-				toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 				deadlineAt?: string;
 			},
 		): RunRequestIdentity | undefined => {
@@ -2055,13 +2051,13 @@ export class RpcHostController {
 			return {
 				scopeSessionId: identityScope,
 				clientRequestId,
-				fingerprint: input.externalConnector === undefined
-					? baseFingerprint
-					: fingerprintFoundationValue({
-						baseFingerprint,
-						artifacts: input.artifacts ?? [],
-						...(input.toolGatewayRequest === undefined ? {} : { toolGatewayRequest: input.toolGatewayRequest }),
-					}).value,
+				fingerprint:
+					input.externalConnector === undefined
+						? baseFingerprint
+						: fingerprintFoundationValue({
+								baseFingerprint,
+								artifacts: input.artifacts ?? [],
+							}).value,
 				key: `${identityScope}\u0000${clientRequestId}`,
 			};
 		};
@@ -2360,7 +2356,6 @@ export class RpcHostController {
 			message: string,
 			images: ImageContent[] | undefined,
 			artifacts: readonly CanonicalExternalAgentArtifactReference[] | undefined,
-			toolGatewayRequest: ExternalConnectorToolGatewayRequestInput | undefined,
 			attempt: number,
 			sourceRunId: string | undefined,
 			capabilityProfile: string | undefined,
@@ -2450,7 +2445,6 @@ export class RpcHostController {
 					modelRole,
 					externalConnector,
 					artifacts,
-					toolGatewayRequest,
 					deadlineAt,
 				});
 			let requestClaim: RunRequestIdentity | undefined;
@@ -2869,7 +2863,6 @@ export class RpcHostController {
 							inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
 						},
 						workspace: runBinding.session.cwd,
-						...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
 						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					});
 				} catch (err) {
@@ -2959,10 +2952,7 @@ export class RpcHostController {
 						),
 					);
 				}
-				if (
-					externalStartWasTornDown() ||
-					runBinding.activeReservation !== reservation
-				) {
+				if (externalStartWasTornDown() || runBinding.activeReservation !== reservation) {
 					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
@@ -3002,10 +2992,7 @@ export class RpcHostController {
 					clearRunDeadline(runBinding, proposedRunId);
 					return startFailure(automationError(id, commandType, asAutomationError(err)));
 				}
-				if (
-					externalStartWasTornDown() ||
-					runBinding.activeReservation !== reservation
-				) {
+				if (externalStartWasTornDown() || runBinding.activeReservation !== reservation) {
 					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
 					try {
 						reservation.release();
@@ -4908,11 +4895,15 @@ export class RpcHostController {
 				}
 
 				case "run.start": {
-					if (command.externalConnector === undefined && (command.artifacts !== undefined || command.toolGatewayRequest !== undefined)) {
+					if (command.externalConnector === undefined && command.artifacts !== undefined) {
 						return automationError(
 							id,
 							"run.start",
-							createAutomationError("external_binding_invalid", "Canonical external resources require an External Connector selection.", false),
+							createAutomationError(
+								"external_binding_invalid",
+								"Canonical external resources require an External Connector selection.",
+								false,
+							),
 						);
 					}
 					if (
@@ -4939,7 +4930,6 @@ export class RpcHostController {
 							command.message,
 							command.images,
 							command.artifacts,
-							command.toolGatewayRequest,
 							1,
 							undefined,
 							command.capabilityProfile,
@@ -5060,18 +5050,29 @@ export class RpcHostController {
 							const requestEpoch = transportEpoch;
 							const inputError = slashRunInputError(id, "run.resume", command.message);
 							if (inputError !== undefined) return inputError;
-							if (command.externalConnector === undefined && (command.artifacts !== undefined || command.toolGatewayRequest !== undefined)) {
+							if (command.externalConnector === undefined && command.artifacts !== undefined) {
 								return automationError(
 									id,
 									"run.resume",
-									createAutomationError("external_binding_invalid", "Canonical external resources require an External Connector selection.", false),
+									createAutomationError(
+										"external_binding_invalid",
+										"Canonical external resources require an External Connector selection.",
+										false,
+									),
 								);
 							}
-							if (command.externalConnector !== undefined && !Object.keys(command).every((key) => EXTERNAL_RUN_RESUME_KEYS.has(key))) {
+							if (
+								command.externalConnector !== undefined &&
+								!Object.keys(command).every((key) => EXTERNAL_RUN_RESUME_KEYS.has(key))
+							) {
 								return automationError(
 									id,
 									"run.resume",
-									createAutomationError("external_binding_invalid", "RPC External Connector input contains an unsupported field.", false),
+									createAutomationError(
+										"external_binding_invalid",
+										"RPC External Connector input contains an unsupported field.",
+										false,
+									),
 								);
 							}
 							if (
@@ -5196,7 +5197,6 @@ export class RpcHostController {
 								message: command.message,
 								images: command.images,
 								artifacts: command.artifacts,
-								toolGatewayRequest: command.toolGatewayRequest,
 								targetSessionId,
 								sourceRunId: command.sourceRunId,
 								capabilityProfile: command.capabilityProfile,
@@ -5485,12 +5485,7 @@ export class RpcHostController {
 									providerId,
 									selection,
 									expectedCanonicalInput,
-									...(command.toolGatewayRequest === undefined
-										? {}
-										: { expectedToolGatewayRequest: command.toolGatewayRequest }),
-									...(expectedGatewayModelRoute === undefined
-										? {}
-										: { expectedGatewayModelRoute }),
+									...(expectedGatewayModelRoute === undefined ? {} : { expectedGatewayModelRoute }),
 									signal: recoveryController.signal,
 									reconstruction: {
 										inputAdmission: {
@@ -5579,7 +5574,6 @@ export class RpcHostController {
 								command.message,
 								command.images,
 								command.artifacts,
-								command.toolGatewayRequest,
 								sourceRun.record.attempt + 1,
 								command.sourceRunId,
 								command.capabilityProfile,
