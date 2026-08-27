@@ -119,7 +119,6 @@ interface AuditEventBase {
   recordedAt: string;
   sessionId: string;
   sourceEntryId: string;
-  external?: ExternalExecutionRef;
 }
 ```
 
@@ -523,22 +522,12 @@ responses, and OAuth codes can never become credential facts.
 An unknown key is not preserved merely because it appears in a current source
 entry. Unknown source data produces a warning, not a generic summary field.
 
-## 4. Historical ExternalExecutionRef
+## 4. Historical ledger isolation
 
-The exact reference shape is:
-
-```ts
-interface ExternalExecutionRef {
-  namespace: string;
-  externalSessionId: string;
-  externalRunId?: string;
-}
-```
-
-The reference exists only for historical automation-ledger reads. Its exact
-shape is decoded by a private migration parser. Current Run commands and audit
-sources do not create references or mapping records, and migration never
-generates current external execution or `AgentInstance` facts.
+Historical Adapter-era associations are accepted only by a private migration
+parser. They are ignored when current Run and audit facts are projected: no
+historical association is emitted, queryable, replayable, or converted into a
+current external execution or `AgentInstance` fact.
 
 ## 5. Query scope, filtering, and pagination
 
@@ -549,7 +538,6 @@ interface AuditQuery {
   scope: "current-session" | "session-directory";
   sessionId?: string;
   runId?: string;
-  external?: ExternalExecutionRef;
   types?: AuditEventType[];
   from?: string;
   to?: string;
@@ -718,11 +706,10 @@ type AuditErrorCode =
   | "audit_cursor_invalid"
   | "audit_scope_unavailable"
   | "audit_run_not_found"
-  | "audit_replay_incomplete"
-  | "audit_persistence_failed";
+  | "audit_replay_incomplete";
 ```
 
-All six errors are stable, non-retryable control-plane errors. Their public
+All five errors are stable, non-retryable control-plane errors. Their public
 messages, if an RPC envelope requires one, are generic and contain no source
 error, path, stack, prompt, command, or raw payload.
 

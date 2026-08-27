@@ -86,7 +86,6 @@ export const AUDIT_ERROR_CODES = [
 	"audit_scope_unavailable",
 	"audit_run_not_found",
 	"audit_replay_incomplete",
-	"audit_persistence_failed",
 ] as const;
 export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
 
@@ -95,14 +94,6 @@ export const AUDIT_MAX_LIMIT = 200 as const;
 
 /** The complete stable sort key encoded by an opaque cursor. */
 export const AUDIT_CURSOR_SORT_KEYS = ["recordedAt", "sessionId", "sourceEntryId", "eventId"] as const;
-
-export const EXTERNAL_EXECUTION_REF_KEYS = ["namespace", "externalSessionId", "externalRunId"] as const;
-
-export interface ExternalExecutionRef {
-	readonly namespace: string;
-	readonly externalSessionId: string;
-	readonly externalRunId?: string;
-}
 
 export interface AuditRunModelReference {
 	readonly provider: string;
@@ -322,7 +313,6 @@ export interface AuditEventBase {
 	readonly recordedAt: string;
 	readonly sessionId: string;
 	readonly sourceEntryId: string;
-	readonly external?: ExternalExecutionRef;
 }
 
 export type AuditEvent =
@@ -332,15 +322,51 @@ export type AuditEvent =
 	| (AuditEventBase & { readonly type: "run.failed"; readonly runId: string; readonly summary: AuditRunSummary })
 	| (AuditEventBase & { readonly type: "run.cancelled"; readonly runId: string; readonly summary: AuditRunSummary })
 	| (AuditEventBase & { readonly type: "run.interrupted"; readonly runId: string; readonly summary: AuditRunSummary })
-	| (AuditEventBase & { readonly type: "model.binding"; readonly runId?: string; readonly summary: AuditModelBindingSummary })
-	| (AuditEventBase & { readonly type: "model.attempt"; readonly runId?: string; readonly summary: AuditModelAttemptSummary })
-	| (AuditEventBase & { readonly type: "context.snapshot"; readonly runId?: string; readonly summary: AuditContextSnapshotSummary })
-	| (AuditEventBase & { readonly type: "capability.binding"; readonly runId?: string; readonly summary: AuditCapabilityBindingSummary })
-	| (AuditEventBase & { readonly type: "policy.binding"; readonly runId?: string; readonly summary: AuditPolicySummary })
-	| (AuditEventBase & { readonly type: "policy.decision"; readonly runId?: string; readonly summary: AuditPolicySummary })
-	| (AuditEventBase & { readonly type: "policy.approval"; readonly runId?: string; readonly summary: AuditPolicyApprovalSummary })
-	| (AuditEventBase & { readonly type: "sandbox.lifecycle"; readonly runId?: string; readonly summary: AuditSandboxLifecycleSummary })
-	| (AuditEventBase & { readonly type: "policy.violation"; readonly runId?: string; readonly summary: AuditPolicyViolationSummary })
+	| (AuditEventBase & {
+			readonly type: "model.binding";
+			readonly runId?: string;
+			readonly summary: AuditModelBindingSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "model.attempt";
+			readonly runId?: string;
+			readonly summary: AuditModelAttemptSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "context.snapshot";
+			readonly runId?: string;
+			readonly summary: AuditContextSnapshotSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "capability.binding";
+			readonly runId?: string;
+			readonly summary: AuditCapabilityBindingSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.binding";
+			readonly runId?: string;
+			readonly summary: AuditPolicySummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.decision";
+			readonly runId?: string;
+			readonly summary: AuditPolicySummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.approval";
+			readonly runId?: string;
+			readonly summary: AuditPolicyApprovalSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "sandbox.lifecycle";
+			readonly runId?: string;
+			readonly summary: AuditSandboxLifecycleSummary;
+	  })
+	| (AuditEventBase & {
+			readonly type: "policy.violation";
+			readonly runId?: string;
+			readonly summary: AuditPolicyViolationSummary;
+	  })
 	| (AuditEventBase & { readonly type: "task.gate"; readonly runId?: string; readonly summary: AuditTaskGateSummary });
 
 export interface AuditWarning {
@@ -355,7 +381,6 @@ export interface AuditQuery {
 	readonly scope: AuditQueryScope;
 	readonly sessionId?: string;
 	readonly runId?: string;
-	readonly external?: ExternalExecutionRef;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	/** Inclusive lower bound, in ISO-8601 form. */
 	readonly from?: string;
@@ -429,7 +454,17 @@ export const AUDIT_PUBLIC_SUMMARY_KEYS = {
 		"contextSnapshotId",
 		"summary",
 	],
-	contextSnapshot: ["schemaVersion", "id", "purpose", "sessionId", "runId", "createdAt", "parentSnapshotId", "sources", "budget"],
+	contextSnapshot: [
+		"schemaVersion",
+		"id",
+		"purpose",
+		"sessionId",
+		"runId",
+		"createdAt",
+		"parentSnapshotId",
+		"sources",
+		"budget",
+	],
 	contextSource: ["kind", "scope", "trust", "visibility", "contentDigest", "estimatedTokens", "disposition", "reason"],
 	capabilityBinding: ["id", "profile", "createdAt", "descriptors", "decisionSummary", "toolAllowlist"],
 	capabilityDescriptor: ["id", "revision", "exposedToolName"],
@@ -450,7 +485,17 @@ export const AUDIT_PUBLIC_SUMMARY_KEYS = {
 		"requestId",
 		"timestamp",
 	],
-	policyApproval: ["id", "requestId", "bindingId", "resource", "reasonCode", "createdAt", "outcome", "source", "scope"],
+	policyApproval: [
+		"id",
+		"requestId",
+		"bindingId",
+		"resource",
+		"reasonCode",
+		"createdAt",
+		"outcome",
+		"source",
+		"scope",
+	],
 	policyApprovalScope: ["resource", "workspaceScopes", "environmentCount", "destinationCount", "credentialCount"],
 	sandboxLifecycle: ["bindingId", "status", "timestamp", "providerId", "capabilities", "reasonCode"],
 	policyViolation: ["bindingId", "timestamp", "reasonCode", "resource", "requestId"],
@@ -543,7 +588,12 @@ export interface AuditContractCase {
 export const AUDIT_CONTRACT_CASES = [
 	{ id: "terminal-run-is-complete", expectedStatus: "complete", sideEffects: [] },
 	{ id: "accepted-without-terminal-is-interrupted", expectedStatus: "interrupted", sideEffects: [] },
-	{ id: "malformed-source-is-incomplete", expectedStatus: "incomplete", expectedWarning: "malformed_source", sideEffects: [] },
+	{
+		id: "malformed-source-is-incomplete",
+		expectedStatus: "incomplete",
+		expectedWarning: "malformed_source",
+		sideEffects: [],
+	},
 	{ id: "unknown-source-is-warning-only-for-query", expectedWarning: "unknown_source", sideEffects: [] },
 	{ id: "missing-run-is-an-error", expectedError: "audit_run_not_found", sideEffects: [] },
 	{ id: "bad-cursor-is-an-error", expectedError: "audit_cursor_invalid", sideEffects: [] },

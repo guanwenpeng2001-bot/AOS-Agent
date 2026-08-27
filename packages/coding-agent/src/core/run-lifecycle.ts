@@ -76,14 +76,7 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
 } from "./execution-policy-ledger.ts";
-import {
-	type ExternalConnectorSelection,
-	serializeExternalConnectorSelection,
-} from "./external-agent-registry.ts";
-import {
-	isLegacyExternalExecutionRefV1 as isExternalExecutionRef,
-	type LegacyExternalExecutionRefV1,
-} from "./migrations/external-agent-ledger.ts";
+import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "./external-agent-registry.ts";
 import type { McpAttachment } from "./mcp-attachment.ts";
 import {
 	type LegacyAutomationRunLedgerSourceEntryV1,
@@ -250,9 +243,8 @@ function stableRequestSerialization(value: unknown): string {
  * persisting the raw value.
  */
 export function canonicalizeRunRequest(input: RunRequestFingerprintInput): CanonicalRunRequest {
-	const externalConnector = input.externalConnector === undefined
-		? undefined
-		: serializeExternalConnectorSelection(input.externalConnector);
+	const externalConnector =
+		input.externalConnector === undefined ? undefined : serializeExternalConnectorSelection(input.externalConnector);
 	const scope = input.scope ?? (input.command === "run.start" ? "start" : "resume");
 	return {
 		schemaVersion: 1,
@@ -493,8 +485,6 @@ export function createRunUsage(): RunUsage {
 interface LegacyRunReceipt {
 	runId: RunId;
 	sessionId: SessionId;
-	/** Historical Adapter-era association accepted only by the private decoder. */
-	external?: LegacyExternalExecutionRefV1;
 	/** Inclusive UTC deadline propagated to the model/tool/MCP/Sandbox operation. */
 	deadlineAt?: string;
 	status: RunTerminalStatus;
@@ -666,7 +656,6 @@ export type AutomationErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
 	| "external_path_outside_workspace"
-	| "audit_persistence_failed"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
 	// contract instead of degrading them into generic model failures.
@@ -793,7 +782,6 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "external_event_invalid" ||
 		value === "external_resource_limit_exceeded" ||
 		value === "external_path_outside_workspace" ||
-		value === "audit_persistence_failed" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||
 		value === "capability_approval_required" ||
@@ -1696,7 +1684,6 @@ function isLegacyRunReceipt(value: unknown): value is LegacyRunReceipt {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
 	if (typeof obj.runId !== "string" || typeof obj.sessionId !== "string") return false;
-	if (obj.external !== undefined && !isExternalExecutionRef(obj.external)) return false;
 	if (obj.deadlineAt !== undefined && !isRunTimestamp(obj.deadlineAt)) return false;
 	if (
 		obj.bindingAssociation !== undefined &&
@@ -2274,11 +2261,12 @@ export function serializePublicContextDrift(drift: ContextSourceDrift): PublicCo
 export function serializePublicAutomationError(error: AutomationError, message?: string): AutomationError {
 	return createAutomationError(
 		error.code,
-		message ?? (error.code === "external_event_invalid"
-			? "External connector emitted invalid supervised output."
-			: error.code === "external_resource_limit_exceeded"
-				? "External connector exceeded a supervised resource limit."
-				: "Run failed."),
+		message ??
+			(error.code === "external_event_invalid"
+				? "External connector emitted invalid supervised output."
+				: error.code === "external_resource_limit_exceeded"
+					? "External connector exceeded a supervised resource limit."
+					: "Run failed."),
 		error.retryable,
 	);
 }

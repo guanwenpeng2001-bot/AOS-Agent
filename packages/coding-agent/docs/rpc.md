@@ -1726,15 +1726,13 @@ Accepted response (emitted before any run event):
     "attempt": 1,
     "status": "accepted",
     "deadlineAt": "2026-08-15T12:00:10.000Z",
-    "external": {"namespace": "ci", "externalSessionId": "job-123", "externalRunId": "attempt-1"},
     "modelBindingId": "model-binding:...",
     "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
   }
 }
 ```
 
-When `external` was supplied, the accepted response includes the validated
-external reference. Accepted and terminal run records may also include `previousModelBindingId`,
+Accepted and terminal run records may also include `previousModelBindingId`,
 `modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
 same fields are available from `run.get` and terminal receipts; attempt
 records contain candidate identity, status, timestamps, and safe usage only.
@@ -1748,7 +1746,6 @@ Failures:
 - `run_deadline_invalid` when `deadlineAt` is not a canonical UTC timestamp
 - `run_deadline_exceeded` when the deadline has expired before the run is accepted, including while asynchronous preflight is still running
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
-- `audit_persistence_failed` when an optional external mapping cannot be durably appended. The host does not publish a successful accepted response or acknowledge the mapping.
 
 ```json
 {
@@ -1936,7 +1933,7 @@ Callers should branch on `terminalError.code`, not on the human-readable
 message. TCP and stdio consume the same Host dispatch, so the public records
 are identical.
 
-### Audit query, replay, and external mapping
+### Audit query and replay
 
 These commands require a successful `initialize`. `audit.query` and
 `audit.replay` are read-only: they only fold safe audit summaries from the
@@ -2452,7 +2449,7 @@ Task Graph preserves the existing single-active-run boundary. A Graph is shared 
 
 #### Audit summary
 
-Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay / External Mapping Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
+Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
 
 #### Non-goals
 
@@ -2464,7 +2461,7 @@ Task Graph deliberately does not implement:
 - a cross-agent message bus, shared prompts, free-text handoff, budget allocation, or a TaskReceipt ledger;
 - inline editing of a created Graph; structural changes require a new `graphRevision`;
 - Gate creation or decision; Graph only consumes Gate state;
-- an external Agent Adapter, MCP OAuth, resources/prompts, or remote Workers;
+- an additional External Agent Connector protocol, MCP OAuth, resources/prompts, or remote Workers;
 - CLI/TUI commands, login/roles, TLS, WebSocket, a database, or a message queue.
 
 Graph commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot mutate Graph state itself.
@@ -2711,9 +2708,6 @@ Error codes:
 | `audit_scope_unavailable` | The requested Session audit scope cannot be read safely | no |
 | `audit_run_not_found` | The requested Run has no accepted audit fact in scope | no |
 | `audit_replay_incomplete` | No safe replay result could be constructed | no |
-| `external_mapping_invalid` | External mapping identifiers or metadata are invalid | no |
-| `external_mapping_conflict` | Mapping history already binds a key to another target | no |
-| `audit_persistence_failed` | The external mapping could not be durably appended | no |
 | `task_gate_invalid` | Task Gate input failed validation (IDs, `stageRevision`, `reasonCode`, or payload bounds) | no |
 | `task_gate_not_found` | The given `gateId` does not exist in the current session | no |
 | `task_gate_conflict` | The business key already has a Gate, or the Gate was already terminated by an opposite decision | no |
@@ -2755,21 +2749,14 @@ Error codes:
 | `subagent_not_found` | The child is not owned by the requested Run in the current Session | no |
 | `subagent_unavailable` | The current Session has no available Subagent authority | yes |
 | `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
-| `external_agent_adapter_invalid` | Adapter selection or registration is invalid (unsafe `adapterId` / `targetId` / descriptor) | no |
-| `external_agent_target_not_found` | The trusted registry has no such target | no |
-| `external_agent_probe_failed` | Target probe failed or timed out; probe has no business side effects by contract | yes |
-| `external_agent_protocol_unsupported` | Protocol or version has no verified translator | no |
-| `external_agent_capability_missing` | The target lacks `start`, terminal `receipt`, `cancel`, or another required capability | no |
-| `external_agent_binding_unsupported` | The current Model / Capability / Policy / Sandbox Binding cannot be mapped safely | no |
-| `external_agent_start_failed` | The target rejected start or the start result is unconfirmed; reconcile before retrying | no |
-| `external_agent_mapping_invalid` | The external identity is unsafe or inconsistent with the request | no |
-| `external_agent_mapping_conflict` | Append-only mapping history already binds a key to another target | no |
-| `external_agent_cancel_unsupported` | The target has no verifiable cancel capability | no |
-| `external_agent_cancel_failed` | The cancel request failed; the target must not be claimed stopped | no |
-| `external_agent_receipt_invalid` | The receipt is missing, malformed, or identity-mismatched | no |
-| `external_agent_side_effect_unknown` | An external effect may have occurred; automatic retry is forbidden | no |
-| `external_agent_resume_unsupported` | The target cannot resume and no safe successor can be established | no |
-| `external_agent_persistence_failed` | Mapping or operation facts could not be durably persisted | no |
+| `external_connector_unavailable` | No trusted External Connector registry is composed, or the selected Connector is not registered | no |
+| `external_resume_unsupported` | The source External Connector run cannot be restored as the same durable Attempt | no |
+| `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
+| `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
+| `external_event_invalid` | The Connector emitted invalid or out-of-order supervised output | no |
+| `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
+| `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
+| `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.

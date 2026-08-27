@@ -7,11 +7,7 @@
  * for a discovered file, because opening can migrate and rewrite old sessions.
  */
 
-import {
-	lstatSync,
-	readdirSync,
-	realpathSync,
-} from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -39,7 +35,6 @@ import {
 	type AuditSortKey,
 	type AuditWarning,
 	type AuditQueryScope,
-	type ExternalExecutionRef,
 } from "./execution-audit.ts";
 import { loadEntriesFromFile, type FileEntry, type SessionEntry } from "./session-manager.ts";
 
@@ -61,7 +56,6 @@ export type {
 	AuditReplayResult,
 	AuditSortKey,
 	AuditWarning,
-	ExternalExecutionRef,
 } from "./execution-audit.ts";
 
 export interface ExecutionAuditQueryOptions {
@@ -142,8 +136,7 @@ const PROJECTED_AUDIT_CUSTOM_TYPES = new Set([
 	"worker.operation_recorded",
 	"worker_receipt.written",
 ]);
-const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit"]);
-const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
+const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "types", "from", "to", "cursor", "limit"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -172,19 +165,6 @@ function isAuditEventType(value: unknown): value is AuditEventType {
 	return typeof value === "string" && (AUDIT_EVENT_TYPES as readonly string[]).includes(value);
 }
 
-function isExternalRef(value: unknown): value is ExternalExecutionRef {
-	if (!isRecord(value) || Object.keys(value).some((key) => !EXTERNAL_REF_KEYS.has(key)) || !isSafeIdentifier(value.namespace) || !isSafeIdentifier(value.externalSessionId)) return false;
-	return value.externalRunId === undefined || isSafeIdentifier(value.externalRunId);
-}
-
-function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
-	return {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-		...(value.externalRunId === undefined ? {} : { externalRunId: value.externalRunId }),
-	};
-}
-
 function canonicalTypes(value: ReadonlyArray<AuditEventType> | undefined): ReadonlyArray<AuditEventType> | undefined {
 	if (value === undefined) return undefined;
 	return [...new Set(value)].sort((left, right) => left.localeCompare(right));
@@ -208,7 +188,8 @@ function normalizeQuery(input: unknown, currentSessionId: string): AuditQuery {
 	if (!isRecord(input) || !AUDIT_QUERY_SCOPES.includes(input.scope as AuditQueryScope)) {
 		throw new ExecutionAuditError("audit_query_invalid");
 	}
-	if (Object.keys(input).some((key) => !AUDIT_QUERY_KEYS.has(key))) throw new ExecutionAuditError("audit_query_invalid");
+	if (Object.keys(input).some((key) => !AUDIT_QUERY_KEYS.has(key)))
+		throw new ExecutionAuditError("audit_query_invalid");
 	const scope = input.scope as AuditQueryScope;
 	if (input.sessionId !== undefined && !isSafeIdentifier(input.sessionId)) {
 		throw new ExecutionAuditError("audit_query_invalid");
@@ -216,13 +197,16 @@ function normalizeQuery(input: unknown, currentSessionId: string): AuditQuery {
 	if (scope === "current-session" && input.sessionId !== undefined && input.sessionId !== currentSessionId) {
 		throw new ExecutionAuditError("audit_query_invalid");
 	}
-	if (input.runId !== undefined && !isSafeIdentifier(input.runId)) throw new ExecutionAuditError("audit_query_invalid");
-	if (input.external !== undefined && !isExternalRef(input.external))
+	if (input.runId !== undefined && !isSafeIdentifier(input.runId))
 		throw new ExecutionAuditError("audit_query_invalid");
-	if (input.types !== undefined && (!Array.isArray(input.types) || input.types.some((type) => !isAuditEventType(type)))) {
+	if (
+		input.types !== undefined &&
+		(!Array.isArray(input.types) || input.types.some((type) => !isAuditEventType(type)))
+	) {
 		throw new ExecutionAuditError("audit_query_invalid");
 	}
-	if (input.from !== undefined && !isCanonicalTimestamp(input.from)) throw new ExecutionAuditError("audit_query_invalid");
+	if (input.from !== undefined && !isCanonicalTimestamp(input.from))
+		throw new ExecutionAuditError("audit_query_invalid");
 	if (input.to !== undefined && !isCanonicalTimestamp(input.to)) throw new ExecutionAuditError("audit_query_invalid");
 	if (input.from !== undefined && input.to !== undefined && input.from > input.to) {
 		throw new ExecutionAuditError("audit_query_invalid");
@@ -236,7 +220,6 @@ function normalizeQuery(input: unknown, currentSessionId: string): AuditQuery {
 		limit: normalizeLimit(input.limit),
 		...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
 		...(input.runId === undefined ? {} : { runId: input.runId }),
-		...(input.external === undefined ? {} : { external: canonicalExternal(input.external) }),
 		...(types === undefined ? {} : { types }),
 		...(input.from === undefined ? {} : { from: input.from }),
 		...(input.to === undefined ? {} : { to: input.to }),
@@ -278,11 +261,23 @@ function eventIdentity(event: AuditEvent): string {
 }
 
 function warningIdentity(value: AuditWarning): string {
-	return [value.code, value.sessionId ?? "", value.sourceEntryId ?? "", value.eventType ?? "", value.schemaVersion ?? ""].join("\u0000");
+	return [
+		value.code,
+		value.sessionId ?? "",
+		value.sourceEntryId ?? "",
+		value.eventType ?? "",
+		value.schemaVersion ?? "",
+	].join("\u0000");
 }
 
 function warningSortKey(value: AuditWarning): string {
-	return [value.sessionId ?? "", value.sourceEntryId ?? "", value.eventType ?? "", value.code, value.schemaVersion ?? ""].join("\u0000");
+	return [
+		value.sessionId ?? "",
+		value.sourceEntryId ?? "",
+		value.eventType ?? "",
+		value.code,
+		value.schemaVersion ?? "",
+	].join("\u0000");
 }
 
 function mergeWarnings(warnings: ReadonlyArray<AuditWarning>): AuditWarning[] {
@@ -308,20 +303,10 @@ function mergeEvents(events: ReadonlyArray<AuditEvent>): AuditEvent[] {
 	return [...unique.values()].sort(compareEvents);
 }
 
-function matchesExternal(event: AuditEvent, external: ExternalExecutionRef): boolean {
-	return (
-		event.external !== undefined &&
-		event.external.namespace === external.namespace &&
-		event.external.externalSessionId === external.externalSessionId &&
-		(event.external.externalRunId ?? undefined) === (external.externalRunId ?? undefined)
-	);
-}
-
 function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): AuditEvent[] {
 	return events.filter((event) => {
 		if (query.sessionId !== undefined && event.sessionId !== query.sessionId) return false;
 		if (query.runId !== undefined && event.runId !== query.runId) return false;
-		if (query.external !== undefined && !matchesExternal(event, query.external)) return false;
 		if (query.types !== undefined && !query.types.includes(event.type)) return false;
 		if (query.from !== undefined && event.recordedAt < query.from) return false;
 		if (query.to !== undefined && event.recordedAt >= query.to) return false;
@@ -338,7 +323,8 @@ function paginate(
 	const fingerprint = createAuditQueryFingerprint(query);
 	if (query.cursor !== undefined) {
 		const cursor = decodeAuditCursor(query.cursor, secret);
-		if (cursor === undefined || cursor.queryFingerprint !== fingerprint) throw new ExecutionAuditError("audit_cursor_invalid");
+		if (cursor === undefined || cursor.queryFingerprint !== fingerprint)
+			throw new ExecutionAuditError("audit_cursor_invalid");
 		filtered = filtered.filter((event) => compareSortKeys(sortKey(event), cursor.last) > 0);
 	}
 	const limit = query.limit ?? AUDIT_DEFAULT_LIMIT;
@@ -351,12 +337,18 @@ function paginate(
 }
 
 function unavailableWarning(sessionId?: string): AuditWarning {
-	return { code: "source_unavailable", ...(sessionId !== undefined && isSafeIdentifier(sessionId) ? { sessionId } : {}) };
+	return {
+		code: "source_unavailable",
+		...(sessionId !== undefined && isSafeIdentifier(sessionId) ? { sessionId } : {}),
+	};
 }
 
 function isPathWithinRoot(root: string, target: string): boolean {
 	const pathRelation = relative(root, target);
-	return pathRelation === "" || (!isAbsolute(pathRelation) && pathRelation !== ".." && !pathRelation.startsWith(`..${sep}`));
+	return (
+		pathRelation === "" ||
+		(!isAbsolute(pathRelation) && pathRelation !== ".." && !pathRelation.startsWith(`..${sep}`))
+	);
 }
 
 function resolveDirectoryRoot(source: AuditQuerySession): string {
@@ -367,7 +359,8 @@ function resolveDirectoryRoot(source: AuditQuerySession): string {
 	} catch {
 		throw new ExecutionAuditError("audit_scope_unavailable");
 	}
-	if (typeof configuredRoot !== "string" || configuredRoot.length === 0) throw new ExecutionAuditError("audit_scope_unavailable");
+	if (typeof configuredRoot !== "string" || configuredRoot.length === 0)
+		throw new ExecutionAuditError("audit_scope_unavailable");
 	const root = resolve(configuredRoot);
 	try {
 		const realRoot = realpathSync(root);
@@ -426,30 +419,35 @@ export class ExecutionAuditQuery {
 			const physicalFold = adapter.fold();
 			if (this.source.getPhysicalEntries === undefined) return { sessionId, adapter, fold: physicalFold };
 			const physicalIds = new Set(entries.map((entry) => entry.id));
-			const projectedEntries = this.source.getEntries().filter(
-				(entry): entry is Extract<SessionEntry, { type: "custom" }> => entry.type === "custom" &&
-					!physicalIds.has(entry.id),
-			);
+			const projectedEntries = this.source
+				.getEntries()
+				.filter(
+					(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
+						entry.type === "custom" && !physicalIds.has(entry.id),
+				);
 			if (projectedEntries.length === 0) return { sessionId, adapter, fold: physicalFold };
-			const projectedAuditEntries = projectedEntries.filter(
-				(entry) => PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
+			const projectedAuditEntries = projectedEntries.filter((entry) =>
+				PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
 			);
-			const unsupportedWarnings: AuditWarning[] = projectedEntries.filter(
-				(entry) =>
-					!FOUNDATION_CORRELATED_CUSTOM_TYPES.has(entry.customType) &&
-					!PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
-			).map((entry) => ({
-				code: "unknown_source",
-				sessionId,
-				sourceEntryId: entry.id,
-				schemaVersion: 1,
-			}));
-			const projectedFold = projectedAuditEntries.length === 0
-				? { events: [], warnings: [], runSummaries: new Map() } satisfies AuditFoldResult
-				: new ExecutionAuditAdapter({
-						getSessionId: () => sessionId,
-						getEntries: () => projectedAuditEntries,
-					}).fold();
+			const unsupportedWarnings: AuditWarning[] = projectedEntries
+				.filter(
+					(entry) =>
+						!FOUNDATION_CORRELATED_CUSTOM_TYPES.has(entry.customType) &&
+						!PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
+				)
+				.map((entry) => ({
+					code: "unknown_source",
+					sessionId,
+					sourceEntryId: entry.id,
+					schemaVersion: 1,
+				}));
+			const projectedFold =
+				projectedAuditEntries.length === 0
+					? ({ events: [], warnings: [], runSummaries: new Map() } satisfies AuditFoldResult)
+					: new ExecutionAuditAdapter({
+							getSessionId: () => sessionId,
+							getEntries: () => projectedAuditEntries,
+						}).fold();
 			return {
 				sessionId,
 				adapter,
@@ -476,7 +474,8 @@ export class ExecutionAuditQuery {
 		} catch {
 			throw new ExecutionAuditError("audit_scope_unavailable");
 		}
-		if (candidates.length > this.limits.maxSessionCandidates) throw new ExecutionAuditError("audit_scope_unavailable");
+		if (candidates.length > this.limits.maxSessionCandidates)
+			throw new ExecutionAuditError("audit_scope_unavailable");
 
 		const sessions: FoldedSession[] = [];
 		const warnings: AuditWarning[] = [];
@@ -534,10 +533,7 @@ export class ExecutionAuditQuery {
 		}
 
 		const events = mergeEvents(sessions.flatMap((session) => [...session.fold.events]));
-		const mergedWarnings = mergeWarnings([
-			...warnings,
-			...sessions.flatMap((session) => [...session.fold.warnings]),
-		]);
+		const mergedWarnings = mergeWarnings([...warnings, ...sessions.flatMap((session) => [...session.fold.warnings])]);
 		return { sessions, events, warnings: mergedWarnings, unavailable };
 	}
 
@@ -621,8 +617,10 @@ export class ExecutionAuditQuery {
 	}
 }
 
-export const createExecutionAuditQuery = (source: AuditQuerySession, options?: ExecutionAuditQueryOptions): ExecutionAuditQuery =>
-	new ExecutionAuditQuery(source, options);
+export const createExecutionAuditQuery = (
+	source: AuditQuerySession,
+	options?: ExecutionAuditQueryOptions,
+): ExecutionAuditQuery => new ExecutionAuditQuery(source, options);
 
 export { ExecutionAuditQuery as ExecutionAuditQueryService };
 

@@ -8,6 +8,14 @@ import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "./support/line13-t0-base
 import ts from "typescript";
 
 const businessVersionPattern = /_?V\d+(?=[A-Z_]|$)/u;
+const legacyPublicSurfacePatterns = [
+	/External Agent Adapter/giu,
+	/Execution Audit \/ Replay \/ External Mapping Contract/gu,
+	/\bexternal mapping\b/giu,
+	/\bExternalExecutionRef\b/gu,
+	/\baudit_persistence_failed\b/gu,
+	/\bexternal_agent_[a-z0-9_]+\b/gu,
+] as const;
 
 describe("current public naming", () => {
 	it("exposes only unversioned business names from package roots and subpaths", () => {
@@ -49,7 +57,9 @@ describe("current public naming", () => {
 				if (
 					resolved
 						.getDeclarations()
-						?.some((declaration) => declaration.getSourceFile().fileName.replaceAll("\\", "/").includes("/migrations/"))
+						?.some((declaration) =>
+							declaration.getSourceFile().fileName.replaceAll("\\", "/").includes("/migrations/"),
+						)
 				) {
 					migrationExports.push(`${publicRoot.specifier}:${symbol.name}`);
 				}
@@ -65,10 +75,7 @@ describe("current public naming", () => {
 		expect(agentRootExports?.has("JsonlSessionHeader")).toBe(true);
 		expect(agentRootExports?.has("JsonlV4Header")).toBe(false);
 		expect(agentRootExports?.has("JsonlV5Header")).toBe(false);
-		const jsonlTypes = readFileSync(
-			join(root, "packages/agent/src/harness/session/jsonl/types.ts"),
-			"utf8",
-		);
+		const jsonlTypes = readFileSync(join(root, "packages/agent/src/harness/session/jsonl/types.ts"), "utf8");
 		expect(jsonlTypes).toMatch(/export interface JsonlV4Header[\s\S]*version: 4;/u);
 		expect(jsonlTypes).toMatch(/export interface JsonlV5Header[\s\S]*version: 5;/u);
 		expect(jsonlTypes).toMatch(/JsonlSessionHeader = JsonlV4Header \| JsonlV5Header/u);
@@ -113,24 +120,31 @@ describe("current public naming", () => {
 		}
 		const staleNames: string[] = [];
 		const maturityLabels: string[] = [];
+		const legacyPublicSurfaces: string[] = [];
 		for (const path of documents) {
 			const text = readFileSync(path, "utf8");
 			for (const match of text.matchAll(/[$A-Z_a-z][$\w]*_?V\d+(?:[A-Z_][$\w]*)?/gu)) {
 				if (match[0] !== "WorkerProtocolV1") staleNames.push(`${path}:${match[0]}`);
 			}
 			if (
-				/\b(?:Foundation|Automation Host|Task Gate|Task Graph|Task Credential|Capability|Context Engine|Execution Policy|Execution Audit|External Agent Adapter|Sandbox Operation Worker) \(?v\d+\)?\b/iu.test(
+				/\b(?:Foundation|Automation Host|Task Gate|Task Graph|Task Credential|Capability|Context Engine|Execution Policy|Execution Audit|External Agent Connector|Sandbox Operation Worker) \(?v\d+\)?\b/iu.test(
 					text,
 				) ||
-				/^(?:#.*(?:External Agent Adapter|Execution Audit|Remote-Neutral Operation Contract).*)\(v\d+\)$/imu.test(text) ||
+				/^(?:#.*(?:External Agent Connector|Execution Audit|Remote-Neutral Operation Contract).*)\(v\d+\)$/imu.test(
+					text,
+				) ||
 				/\b(?:a v1 response|v1 (?:does|never|performs|has|rejects))\b|\(v1:\s*\d/iu.test(text) ||
 				/Out of scope \(v1\)/iu.test(text)
 			) {
 				maturityLabels.push(path);
 			}
+			for (const pattern of legacyPublicSurfacePatterns) {
+				for (const match of text.matchAll(pattern)) legacyPublicSurfaces.push(`${path}:${match[0]}`);
+			}
 		}
 		expect(staleNames).toEqual([]);
 		expect(maturityLabels).toEqual([]);
+		expect(legacyPublicSurfaces).toEqual([]);
 		expect(existsSync(join(docsRoot, "architecture-atlas-foundation.md"))).toBe(true);
 		expect(existsSync(join(docsRoot, "architecture-atlas-foundation-v1.md"))).toBe(false);
 		expect(existsSync(join(docsRoot, "foundation-final-audit.md"))).toBe(true);
