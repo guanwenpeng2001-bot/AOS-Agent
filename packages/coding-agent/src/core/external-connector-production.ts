@@ -1,8 +1,8 @@
 /** Trusted production composition for the current External Connector runtime. */
 
+import type { ExternalAgentConnector } from "@aos-agent/agent-core";
 import {
 	createDurableExternalAgentConnector,
-	type DurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
 } from "./external-agent-connector.ts";
 import {
@@ -47,7 +47,7 @@ export function createProductionExternalConnectorSupervision(
 /** Production-only connector creation; tests may continue to inject explicit supervision. */
 export async function createProductionExternalAgentConnector(
 	options: ProductionExternalAgentConnectorRuntimeOptions,
-): Promise<DurableExternalAgentConnector> {
+): Promise<ExternalAgentConnector> {
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,

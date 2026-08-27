@@ -12,6 +12,11 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
+		code: "external_protocol_unsupported",
+		meaning: "The selected Connector protocol or version is not supported by the trusted Host",
+		retryable: "no",
+	},
+	{
 		code: "external_mapping_conflict",
 		meaning: "Mapping history already conflicts with the persisted External Connector Attempt",
 		retryable: "no",
@@ -45,6 +50,11 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 	{
 		code: "external_path_outside_workspace",
 		meaning: "A Connector input or artifact reference resolves outside its trusted workspace",
+		retryable: "no",
+	},
+	{
+		code: "external_terminal_ambiguous",
+		meaning: "Vendor terminal lookup returned ambiguous state; operator reconciliation is required",
 		retryable: "no",
 	},
 	{
@@ -110,13 +120,32 @@ function publicAutomationErrorCodes(): readonly string[] {
 	return literals.map((member) => member.value);
 }
 
+function publicAsyncReturnTypeName(exportName: string): string {
+	const { checker, symbol } = inspectPublicEntrypoint();
+	const exported = checker.getExportsOfModule(symbol).find((entry) => entry.name === exportName);
+	if (exported === undefined) throw new Error(`${exportName} is not publicly exported`);
+	const declared = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
+	const declaration = declared.valueDeclaration ?? declared.declarations?.[0];
+	if (declaration === undefined) throw new Error(`${exportName} has no declaration`);
+	const type = checker.getTypeOfSymbolAtLocation(declared, declaration);
+	const signature = type.getCallSignatures()[0];
+	if (signature === undefined) throw new Error(`${exportName} is not callable`);
+	const returnType = checker.getReturnTypeOfSignature(signature);
+	return checker.typeToString(returnType);
+}
+
 describe("External Connector public exports", () => {
-	it("exports only the current connector contract and safe product gates", () => {
+	it("exports only the current connector contract and safe input gates", () => {
 		expect(typeof publicApi.createExternalConnectorRegistry).toBe("function");
 		expect(typeof publicApi.createProductionExternalAgentConnector).toBe("function");
-		expect(typeof publicApi.executeExternalConnectorProductRun).toBe("function");
 		expect(typeof publicApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
 		expect(typeof publicApi.projectExternalModelForExecution).toBe("function");
+	});
+
+	it("types the supported production factory as only the public connector", () => {
+		expect(publicAsyncReturnTypeName("createProductionExternalAgentConnector")).toBe(
+			"Promise<ExternalAgentConnector>",
+		);
 	});
 
 	it("does not export legacy Adapter, mapping, or private driver contracts", () => {
@@ -147,6 +176,11 @@ describe("External Connector public exports", () => {
 			"ExternalConnectorBoundedSupervisor",
 			"ExternalConnectorVendorDriver",
 			"ExternalConnectorDriverHandle",
+			"executeExternalConnectorProductRun",
+			"externalConnectorProductIdentity",
+			"ExternalConnectorProductExecution",
+			"ExternalConnectorProductExecutionInput",
+			"ExternalConnectorToolGatewayExchange",
 		]) {
 			expect(name in publicApi).toBe(false);
 			expect(exports).not.toContain(name);

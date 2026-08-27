@@ -175,6 +175,10 @@ const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
 		message: "External connector emitted invalid supervised output.",
 		category: "side_effect_unknown",
 	},
+	external_protocol_unsupported: {
+		message: "External connector protocol is unsupported.",
+		category: "parameter",
+	},
 	external_resource_limit_exceeded: {
 		message: "External connector exceeded a supervised resource limit.",
 		category: "side_effect_unknown",

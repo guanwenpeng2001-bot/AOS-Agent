@@ -650,6 +650,7 @@ export type AutomationErrorCode =
 	| "audit_run_not_found"
 	| "audit_replay_incomplete"
 	| "external_connector_unavailable"
+	| "external_protocol_unsupported"
 	| "external_mapping_conflict"
 	| "external_resume_unsupported"
 	| "external_binding_invalid"
@@ -657,6 +658,7 @@ export type AutomationErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
 	| "external_path_outside_workspace"
+	| "external_terminal_ambiguous"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
 	// contract instead of degrading them into generic model failures.
@@ -777,6 +779,7 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_run_not_found" ||
 		value === "audit_replay_incomplete" ||
 		value === "external_connector_unavailable" ||
+		value === "external_protocol_unsupported" ||
 		value === "external_mapping_conflict" ||
 		value === "external_resume_unsupported" ||
 		value === "external_binding_invalid" ||
@@ -784,6 +787,7 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "external_event_invalid" ||
 		value === "external_resource_limit_exceeded" ||
 		value === "external_path_outside_workspace" ||
+		value === "external_terminal_ambiguous" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||
 		value === "capability_approval_required" ||

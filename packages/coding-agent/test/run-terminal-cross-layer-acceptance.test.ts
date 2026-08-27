@@ -192,6 +192,8 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		{ name: "failed", options: { outcome: "failed", terminalErrorCode: "agent_run_failed" }, eventType: "run.failed", status: "failed", code: "agent_run_failed" },
 		{ name: "cancelled", options: { outcome: "cancelled", terminalErrorCode: "user_aborted" }, eventType: "run.cancelled", status: "cancelled", code: "user_aborted" },
 		{ name: "deadline", options: { outcome: "failed", terminalErrorCode: "run_deadline_exceeded" }, eventType: "run.failed", status: "failed", code: "run_deadline_exceeded" },
+		{ name: "external-protocol-unsupported", options: { outcome: "failed", terminalErrorCode: "external_protocol_unsupported" }, eventType: "run.failed", status: "failed", code: "external_protocol_unsupported" },
+		{ name: "external-terminal-ambiguous", options: { outcome: "failed", sideEffectState: "side_effect_unknown", terminalErrorCode: "external_terminal_ambiguous" }, eventType: "run.failed", status: "failed", code: "external_terminal_ambiguous" },
 		{ name: "side-effect-unknown", options: { outcome: "failed", sideEffectState: "side_effect_unknown", terminalErrorCode: "side_effect_unknown" }, eventType: "run.failed", status: "failed", code: "side_effect_unknown" },
 	] as const)("projects the $name outcome from one canonical receipt", async ({ name, options, eventType, status, code }) => {
 		const session = SessionManager.inMemory(`/workspace/outcome-${name}`);

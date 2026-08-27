@@ -284,6 +284,7 @@ function externalFailure(
 		| "binding_required_fact"
 		| "external_mapping_conflict"
 		| "external_resume_unsupported"
+		| "external_terminal_ambiguous"
 		| "invalid_correlation"
 		| "provider_spawn_failed"
 		| "scheduler_attempt_recovery_failed"
@@ -1317,8 +1318,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 			return Result.err(
 				externalFailure(
-					"side_effect_unknown",
-					"External connector state requires operator reconciliation",
+					lookup.status === "ambiguous" ? "external_terminal_ambiguous" : "side_effect_unknown",
+					lookup.status === "ambiguous"
+						? "External connector terminal lookup is ambiguous and requires operator reconciliation"
+						: "External connector state requires operator reconciliation",
 					attempt.attemptId,
 				),
 			);

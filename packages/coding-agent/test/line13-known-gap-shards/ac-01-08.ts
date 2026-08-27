@@ -24,8 +24,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	createExternalConnectorRegistry,
-	executeExternalConnectorProductRun,
-	externalConnectorProductIdentity,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
 	type CreateAgentSessionRuntimeFactory,
@@ -34,6 +32,10 @@ import {
 } from "../../src/index.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import {
+	executeExternalConnectorProductRun,
+	externalConnectorProductIdentity,
+} from "../../src/core/external-connector-product.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,

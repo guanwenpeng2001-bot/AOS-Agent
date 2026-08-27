@@ -1300,6 +1300,26 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.receiptWrites).toBe(1);
 	});
 
+	it("preserves an ambiguous terminal lookup as external_terminal_ambiguous", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "reconcile_required"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
+		value.driver.lookupResult = { status: "ambiguous" };
+
+		const reconciled = await value.connector.reconcileAttempt(value.attempt, { correlation });
+
+		expect(reconciled.ok).toBe(false);
+		if (!reconciled.ok) expect(reconciled.error.code).toBe("external_terminal_ambiguous");
+		expect(value.driver.calls).toMatchObject({ spawn: 0, lookup: 1, events: 0, read: 0 });
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "driver_state_ambiguous",
+		});
+	});
+
 	it("rejects a running lookup handle that does not match durable authority before reads", async () => {
 		const value = await fixture();
 		persistAttempt(value);
@@ -1527,6 +1547,34 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(cancelled.ok).toBe(false);
 		expect(value.driver.calls.connect).toBe(0);
 		expect(value.driver.calls.cancel).toBe(0);
+	});
+
+	it("preserves a supported protocol failure code in canonical terminal evidence", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.driver.evidence = terminalEvidence("succeeded", {
+			status: "failed",
+			error: {
+				code: "external_protocol_unsupported",
+				message: "vendor protocol detail",
+				category: "parameter",
+				retryable: true,
+			},
+		});
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed.ok).toBe(true);
+		if (!completed.ok) throw completed.error;
+		expect(completed.value).toMatchObject({
+			status: "failed",
+			error: {
+				code: "external_protocol_unsupported",
+				message: "External connector protocol is unsupported.",
+				category: "parameter",
+				retryable: false,
+			},
+		});
 	});
 
 	it("reconciles instead of settling terminal evidence for a different external session", async () => {

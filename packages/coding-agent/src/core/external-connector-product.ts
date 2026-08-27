@@ -1093,6 +1093,8 @@ export async function recoverExternalConnectorProductRun(
 						attemptReceipt = recovered.value;
 					} else {
 						const mappingConflict = recovered?.ok === false && recovered.error.code === "external_mapping_conflict";
+						const terminalAmbiguous =
+							recovered?.ok === false && recovered.error.code === "external_terminal_ambiguous";
 						const attemptReceiptId = `attempt_receipt_${started.value.attempt.attemptId}`;
 						attemptReceipt = await store.writeReceipt({
 							schemaVersion: 1,
@@ -1107,9 +1109,15 @@ export async function recoverExternalConnectorProductRun(
 							workerReceiptRefs: [],
 							artifacts: [],
 							error: {
-								code: mappingConflict ? "external_mapping_conflict" : "side_effect_unknown",
+								code: mappingConflict
+									? "external_mapping_conflict"
+									: terminalAmbiguous
+										? "external_terminal_ambiguous"
+										: "side_effect_unknown",
 								message: mappingConflict
 									? "External connector durable mapping conflicts with its Attempt."
+									: terminalAmbiguous
+										? "External connector terminal lookup is ambiguous and requires operator reconciliation."
 									: "External connector recovery could not prove a terminal vendor outcome.",
 								category: "side_effect_unknown",
 								retryable: false,

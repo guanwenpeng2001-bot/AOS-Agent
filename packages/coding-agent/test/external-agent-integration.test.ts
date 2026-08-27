@@ -14,10 +14,10 @@ import {
 import { describe, expect, it } from "vitest";
 import {
 	createExternalConnectorRegistry,
-	executeExternalConnectorProductRun,
 	type CanonicalExternalAgentInput,
 } from "../src/index.ts";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { executeExternalConnectorProductRun } from "../src/core/external-connector-product.ts";
 import { ExecutionAuditAdapter } from "../src/core/execution-audit.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
