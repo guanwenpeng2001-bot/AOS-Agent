@@ -48,6 +48,8 @@ import {
 	type ExternalConnectorProcessController,
 	type ExternalConnectorSupervisorDeadlineOverrides,
 	type ExternalConnectorSupervisorLimits,
+	type ExternalConnectorSupervisorPrivateStateEntry,
+	type ExternalConnectorSupervisorReference,
 	type ExternalConnectorSupervisorPrivateStateStore,
 } from "./external-connector-supervisor.ts";
 import type { RuntimeClock } from "./runtime-clock.ts";
@@ -78,6 +80,11 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	};
 	readonly now?: () => string;
 	readonly operationNonce?: () => string;
+}
+
+export interface ExternalConnectorStartupRecoveryResult {
+	readonly attemptId: string;
+	readonly status: "cleanup_confirmed_state_retained" | "quarantined" | "reaped";
 }
 
 const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
@@ -195,6 +202,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			options.supervision === undefined ||
 			(options.supervision.containment !== "process_group" && options.supervision.containment !== "job_object") ||
 			typeof options.supervision.processController?.launch !== "function" ||
+			typeof options.supervision.privateStateStore?.list !== "function" ||
 			typeof options.supervision.privateStateStore?.read !== "function" ||
 			typeof options.supervision.privateStateStore?.write !== "function" ||
 			typeof options.supervision.privateStateStore?.delete !== "function"
@@ -206,6 +214,40 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#supervision = options.supervision;
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
+	}
+
+	/** Reap every provable Host-owned process tree before production accepts lifecycle work. */
+	async recoverPrivateSupervisorState(): Promise<readonly ExternalConnectorStartupRecoveryResult[]> {
+		const entries = await this.#supervision.privateStateStore.list();
+		const results: ExternalConnectorStartupRecoveryResult[] = [];
+		for (const entry of entries) {
+			const supervisor = this.#createSupervisorForReference(entry.state.reference);
+			try {
+				await supervisor.recoverAndReap(entry.state);
+			} catch {
+				await this.#markStartupReconcile(entry);
+				results.push(Object.freeze({ attemptId: entry.attemptId, status: "quarantined" }));
+				continue;
+			}
+			if (!supervisor.snapshot.cleaned) {
+				await this.#markStartupReconcile(entry);
+				results.push(Object.freeze({ attemptId: entry.attemptId, status: "quarantined" }));
+				continue;
+			}
+			try {
+				await this.#supervision.privateStateStore.delete(entry.attemptId);
+			} catch {
+				await this.#markStartupReconcile(entry);
+				results.push(Object.freeze({
+					attemptId: entry.attemptId,
+					status: "cleanup_confirmed_state_retained",
+				}));
+				continue;
+			}
+			await this.#markStartupReconcile(entry);
+			results.push(Object.freeze({ attemptId: entry.attemptId, status: "reaped" }));
+		}
+		return Object.freeze(results);
 	}
 
 	preflightModelProjection(projection: ExternalResolvedModelProjection): ExternalModelTranslationResult {
@@ -358,15 +400,19 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	#createSupervisor(operation: ExternalConnectorOperation): ExternalConnectorBoundedSupervisor {
-		return new ExternalConnectorBoundedSupervisor({
-			reference: {
+		return this.#createSupervisorForReference({
 				schemaVersion: 1,
 				supervisorRef: `external_supervisor_${fingerprintFoundationValue({
 					providerId: this.providerId,
 					attemptId: operation.attemptId,
 				}).value.slice(0, 32)}`,
 				operationNonce: operation.operationNonce,
-			},
+			});
+	}
+
+	#createSupervisorForReference(reference: ExternalConnectorSupervisorReference): ExternalConnectorBoundedSupervisor {
+		return new ExternalConnectorBoundedSupervisor({
+			reference,
 			containment: this.#supervision.containment,
 			processController: this.#supervision.processController,
 			artifactsAllowed: this.#capability.artifacts,
@@ -374,6 +420,24 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			limits: this.#supervision.limits,
 			clock: this.#supervision.clock,
 		});
+	}
+
+	async #markStartupReconcile(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<void> {
+		try {
+			const operationValue = await this.#store.readOperation(entry.attemptId);
+			if (operationValue === undefined) return;
+			const operation = cloneExternalConnectorOperation(operationValue);
+			if (
+				operation.providerId !== this.providerId ||
+				operation.attemptId !== entry.attemptId ||
+				operation.operationNonce !== entry.state.reference.operationNonce ||
+				operation.status === "terminal" ||
+				operation.status === "reconcile_required"
+			) return;
+			await this.#markReconcile(operation, "driver_failure");
+		} catch {
+			// Process cleanup is authoritative only for private identity; corrupt canonical state stays untouched.
+		}
 	}
 
 	async #launchSupervisor(

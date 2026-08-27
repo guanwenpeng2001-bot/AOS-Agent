@@ -44,10 +44,10 @@ export function createProductionExternalConnectorSupervision(
 }
 
 /** Production-only connector creation; tests may continue to inject explicit supervision. */
-export function createProductionExternalAgentConnector(
+export async function createProductionExternalAgentConnector(
 	options: ProductionExternalAgentConnectorRuntimeOptions,
-): DurableExternalAgentConnector {
-	return new DurableExternalAgentConnector({
+): Promise<DurableExternalAgentConnector> {
+	const connector = new DurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
 		store: options.store,
@@ -56,4 +56,6 @@ export function createProductionExternalAgentConnector(
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});
+	await connector.recoverPrivateSupervisorState();
+	return connector;
 }

@@ -43,6 +43,7 @@ process.stdin.on("data", (chunk) => {
 	active = true;
 	const child = spawn(processSpec.executablePath, processSpec.arguments, {
 		detached: false,
+		env: processSpec.environment,
 		shell: false,
 		stdio: "ignore",
 		windowsHide: true,
@@ -206,10 +207,11 @@ public static class AosExternalConnectorJob {
         return quoted.ToString();
     }
 
-    public static AosExternalConnectorJobHandle Start(string executablePath, string[] arguments) {
+    public static AosExternalConnectorJobHandle Start(string executablePath, string[] arguments, string[] environment) {
         const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
         const uint CREATE_SUSPENDED = 0x00000004;
         const uint CREATE_NO_WINDOW = 0x08000000;
+        const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
 
@@ -234,20 +236,26 @@ public static class AosExternalConnectorJob {
             commandLine.Append(' ');
             commandLine.Append(QuoteArgument(argument));
         }
-        if (!CreateProcess(
-            executablePath,
-            commandLine,
-            IntPtr.Zero,
-            IntPtr.Zero,
-            false,
-            CREATE_SUSPENDED | CREATE_NO_WINDOW,
-            IntPtr.Zero,
-            null,
-            ref startup,
-            out process
-        )) {
-            CloseHandle(job);
-            throw new Win32Exception(Marshal.GetLastWin32Error());
+        string environmentBlock = String.Join("\0", environment) + "\0\0";
+        IntPtr environmentPointer = Marshal.StringToHGlobalUni(environmentBlock);
+        try {
+            if (!CreateProcess(
+                executablePath,
+                commandLine,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                false,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                environmentPointer,
+                null,
+                ref startup,
+                out process
+            )) {
+                CloseHandle(job);
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        } finally {
+            Marshal.FreeHGlobal(environmentPointer);
         }
 
         try {
@@ -277,7 +285,8 @@ $prefix = "ACTIVATE " + $marker + " "
 if ($null -eq $activation -or !$activation.StartsWith($prefix)) { exit 72 }
 $processSpecJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($activation.Substring($prefix.Length)))
 $processSpec = $processSpecJson | ConvertFrom-Json
-$contained = [AosExternalConnectorJob]::Start([string]$processSpec.executablePath, [string[]]@($processSpec.arguments))
+$environment = @($processSpec.environment.PSObject.Properties | ForEach-Object { $_.Name + "=" + [string]$_.Value })
+$contained = [AosExternalConnectorJob]::Start([string]$processSpec.executablePath, [string[]]@($processSpec.arguments), [string[]]$environment)
 [Console]::Out.WriteLine("ACTIVE " + $marker)
 try {
 	while ([AosExternalConnectorJob]::WaitForSingleObject($contained.Process, 3600000) -eq 258) {}
@@ -288,7 +297,52 @@ try {
 }
 `;
 
-type SupportedExternalConnectorPlatform = "linux" | "win32";
+type SupportedExternalConnectorPlatform = "darwin" | "linux" | "win32";
+
+export type ExternalConnectorGuardianLaunchKind = "direct_process_group" | "setsid_process_group" | "windows_job";
+
+export interface ExternalConnectorGuardianLaunchStrategy {
+	readonly kind: ExternalConnectorGuardianLaunchKind;
+	readonly guardianDetached: boolean;
+	readonly companionDetached: false;
+}
+
+export function externalConnectorGuardianLaunchStrategy(platform: string): ExternalConnectorGuardianLaunchStrategy {
+	if (platform === "darwin") {
+		return Object.freeze({ kind: "direct_process_group", guardianDetached: true, companionDetached: false });
+	}
+	if (platform === "linux") {
+		return Object.freeze({ kind: "setsid_process_group", guardianDetached: false, companionDetached: false });
+	}
+	if (platform === "win32") {
+		return Object.freeze({ kind: "windows_job", guardianDetached: false, companionDetached: false });
+	}
+	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
+}
+
+const MINIMAL_ENVIRONMENT_KEYS = Object.freeze({
+	darwin: Object.freeze(["TMPDIR"]),
+	linux: Object.freeze([]),
+	win32: Object.freeze(["SystemRoot", "TEMP", "TMP", "WINDIR"]),
+} satisfies Readonly<Record<SupportedExternalConnectorPlatform, readonly string[]>>);
+
+/** Allow only variables required to start the platform containment helper and its companion. */
+export function externalConnectorMinimalEnvironment(
+	platform: string,
+	source: NodeJS.ProcessEnv = process.env,
+): Readonly<Record<string, string>> {
+	const supported = supportedPlatform(platform);
+	const environment: Record<string, string> = {};
+	for (const allowedKey of MINIMAL_ENVIRONMENT_KEYS[supported]) {
+		const sourceKey = Object.keys(source).find((key) =>
+			supported === "win32" ? key.toLowerCase() === allowedKey.toLowerCase() : key === allowedKey
+		);
+		if (sourceKey === undefined) continue;
+		const value = source[sourceKey];
+		if (value !== undefined && !value.includes("\0")) environment[allowedKey] = value;
+	}
+	return Object.freeze(environment);
+}
 
 interface LiveProcessInspection {
 	readonly identity: ExternalConnectorProcessIdentity;
@@ -310,7 +364,7 @@ export interface ProductionExternalConnectorProcess {
 }
 
 function supportedPlatform(platform: string): SupportedExternalConnectorPlatform {
-	if (platform === "linux" || platform === "win32") return platform;
+	if (platform === "darwin" || platform === "linux" || platform === "win32") return platform;
 	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
 }
 
@@ -362,6 +416,73 @@ function inspectLinuxProcess(pid: number, expectedNonce: string): ProcessInspect
 	}
 }
 
+function inspectDarwinProcess(pid: number, expectedNonce: string): ProcessInspection {
+	const start = inspectDarwinField(pid, "lstart");
+	if (start.status !== "value") return { status: start.status };
+	const command = inspectDarwinField(pid, "command");
+	if (command.status !== "value") return { status: command.status };
+	const secondStart = inspectDarwinField(pid, "lstart");
+	if (secondStart.status !== "value" || secondStart.value !== start.value) {
+		return { status: secondStart.status === "not_found" ? "not_found" : "ambiguous" };
+	}
+	const executablePath = inspectDarwinExecutable(pid);
+	if (executablePath === undefined) return { status: "ambiguous" };
+	try {
+		const marker = nonceMarker(expectedNonce);
+		const markerPattern = new RegExp(`(?:^|[\\s"'])${escapeRegExp(marker)}(?:$|[\\s"'])`, "u");
+		return {
+			status: "live",
+			value: {
+				identity: {
+					pid,
+					startToken: `darwin:${createHash("sha256").update(start.value).digest("hex")}`,
+					...executableIdentity(executablePath),
+				},
+				nonceMarkerPresent: markerPattern.test(command.value),
+			},
+		};
+	} catch {
+		return { status: "ambiguous" };
+	}
+}
+
+type DarwinFieldInspection =
+	| { readonly status: "value"; readonly value: string }
+	| { readonly status: "not_found" | "ambiguous" };
+
+function inspectDarwinField(pid: number, field: "command" | "lstart"): DarwinFieldInspection {
+	const inspected = spawnSync("/bin/ps", ["-ww", "-p", String(pid), "-o", `${field}=`], {
+		encoding: "utf8",
+		env: externalConnectorMinimalEnvironment("darwin"),
+		timeout: ACTIVATION_TIMEOUT_MS,
+		maxBuffer: 1024 * 1024,
+	});
+	if (inspected.status === 1 && inspected.stdout.trim().length === 0) return { status: "not_found" };
+	if (inspected.status !== 0 || inspected.error !== undefined) return { status: "ambiguous" };
+	const value = inspected.stdout.trim();
+	return value.length === 0 ? { status: "ambiguous" } : { status: "value", value };
+}
+
+function inspectDarwinExecutable(pid: number): string | undefined {
+	const inspected = spawnSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], {
+		encoding: "utf8",
+		env: externalConnectorMinimalEnvironment("darwin"),
+		timeout: ACTIVATION_TIMEOUT_MS,
+		maxBuffer: 1024 * 1024,
+	});
+	if (inspected.status !== 0 || inspected.error !== undefined) return undefined;
+	for (const line of inspected.stdout.split(/\r?\n/u)) {
+		if (!line.startsWith("n/")) continue;
+		try {
+			const path = realpathSync(line.slice(1));
+			if (statSync(path).isFile()) return path;
+		} catch {
+			// A deleted or racing text mapping is not sufficient identity evidence.
+		}
+	}
+	return undefined;
+}
+
 const WINDOWS_PROCESS_INSPECTION_SOURCE = `
 $ErrorActionPreference = "Stop"
 $targetPid = [int]$args[0]
@@ -390,7 +511,13 @@ function inspectWindowsProcess(pid: number, expectedNonce: string, shellPath: st
 	const inspected = spawnSync(
 		shellPath,
 		["-NoProfile", "-NonInteractive", "-Command", `& {\n${WINDOWS_PROCESS_INSPECTION_SOURCE}\n} '${pid}'`],
-		{ encoding: "utf8", timeout: ACTIVATION_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+		{
+			encoding: "utf8",
+			env: externalConnectorMinimalEnvironment("win32"),
+			timeout: ACTIVATION_TIMEOUT_MS,
+			windowsHide: true,
+			maxBuffer: 1024 * 1024,
+		},
 	);
 	if (inspected.status === 3) return { status: "not_found" };
 	if (inspected.status !== 0 || inspected.error !== undefined) return { status: "ambiguous" };
@@ -528,22 +655,29 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 	}
 }
 
-/** Concrete fail-closed process controller for Linux process groups and Windows Job Objects. */
+/** Concrete fail-closed process controller for POSIX process groups and Windows Job Objects. */
 export class ProductionExternalConnectorProcessController implements ExternalConnectorProcessController {
 	readonly #platform: SupportedExternalConnectorPlatform;
+	readonly #environment: Readonly<Record<string, string>>;
+	readonly #launchStrategy: ExternalConnectorGuardianLaunchStrategy;
 	readonly #shellPath: string | undefined;
 	readonly #setsidPath: string | undefined;
 	readonly #processSpec: string;
 
 	constructor(options: ProductionExternalConnectorProcessControllerOptions) {
 		this.#platform = supportedPlatform(options.platform ?? process.platform);
-		this.#processSpec = encodeProcessSpec(options.process);
+		this.#environment = externalConnectorMinimalEnvironment(this.#platform);
+		this.#launchStrategy = externalConnectorGuardianLaunchStrategy(this.#platform);
+		this.#processSpec = encodeProcessSpec(options.process, this.#environment);
 		if (this.#platform === "win32") {
 			this.#shellPath = powershellPath();
 			this.#setsidPath = undefined;
-		} else {
+		} else if (this.#platform === "linux") {
 			this.#shellPath = undefined;
 			this.#setsidPath = this.#resolveSetsid();
+		} else {
+			this.#shellPath = undefined;
+			this.#setsidPath = undefined;
 		}
 	}
 
@@ -618,7 +752,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 			return "identity_mismatch";
 		}
 		try {
-			if (this.#platform === "linux") process.kill(-boundIdentity.pid, "SIGKILL");
+			if (this.#platform === "linux" || this.#platform === "darwin") process.kill(-boundIdentity.pid, "SIGKILL");
 			else process.kill(boundIdentity.pid, "SIGKILL");
 			return "termination_requested";
 		} catch (error) {
@@ -629,7 +763,17 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 	#spawnGuardian(marker: string): ChildProcessWithoutNullStreams {
 		if (this.#platform === "linux") {
 			return spawn(this.#setsidPath!, [process.execPath, "-e", POSIX_GUARDIAN_SOURCE, marker], {
-				detached: false,
+				detached: this.#launchStrategy.guardianDetached,
+				env: this.#environment,
+				shell: false,
+				stdio: ["pipe", "pipe", "pipe"],
+				windowsHide: true,
+			});
+		}
+		if (this.#platform === "darwin") {
+			return spawn(process.execPath, ["-e", POSIX_GUARDIAN_SOURCE, marker], {
+				detached: this.#launchStrategy.guardianDetached,
+				env: this.#environment,
 				shell: false,
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
@@ -645,14 +789,20 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				"-Command",
 				`& {\n${WINDOWS_JOB_GUARDIAN_SOURCE}\n} '${powerShellLiteral(marker)}'`,
 			],
-			{ detached: false, shell: false, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+			{
+				detached: this.#launchStrategy.guardianDetached,
+				env: this.#environment,
+				shell: false,
+				stdio: ["pipe", "pipe", "pipe"],
+				windowsHide: true,
+			},
 		);
 	}
 
 	#inspect(pid: number, nonce: string): ProcessInspection {
-		return this.#platform === "linux"
-			? inspectLinuxProcess(pid, nonce)
-			: inspectWindowsProcess(pid, nonce, this.#shellPath!);
+		if (this.#platform === "linux") return inspectLinuxProcess(pid, nonce);
+		if (this.#platform === "darwin") return inspectDarwinProcess(pid, nonce);
+		return inspectWindowsProcess(pid, nonce, this.#shellPath!);
 	}
 
 	#monitorExit(pid: number): Promise<void> {
@@ -697,7 +847,10 @@ function powerShellLiteral(value: string): string {
 	return value.replaceAll("'", "''");
 }
 
-function encodeProcessSpec(value: ProductionExternalConnectorProcess): string {
+function encodeProcessSpec(
+	value: ProductionExternalConnectorProcess,
+	environment: Readonly<Record<string, string>>,
+): string {
 	if (
 		typeof value?.executablePath !== "string" ||
 		!isAbsolute(value.executablePath) ||
@@ -717,6 +870,7 @@ function encodeProcessSpec(value: ProductionExternalConnectorProcess): string {
 	const serialized = JSON.stringify({
 		executablePath,
 		arguments: value.arguments === undefined ? [] : [...value.arguments],
+		environment,
 	});
 	if (Buffer.byteLength(serialized, "utf8") > 1024 * 1024) {
 		throw new TypeError("External Connector companion process specification is too large");

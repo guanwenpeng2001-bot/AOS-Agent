@@ -137,10 +137,11 @@ function event(
 }
 
 describe("current External Connector robust supervision", () => {
-	it("selects process-group containment on Linux and Job containment on Windows", () => {
+	it("selects process-group containment on Linux and macOS and Job containment on Windows", () => {
 		expect(externalConnectorProcessContainment("linux")).toBe("process_group");
+		expect(externalConnectorProcessContainment("darwin")).toBe("process_group");
 		expect(externalConnectorProcessContainment("win32")).toBe("job_object");
-		expect(() => externalConnectorProcessContainment("darwin")).toThrow("unsupported");
+		expect(() => externalConnectorProcessContainment("freebsd")).toThrow("unsupported");
 	});
 
 	for (const segment of ["start", "receipt", "cancel"] as const) {
@@ -395,6 +396,7 @@ describe("current External Connector robust supervision", () => {
 			const state = await supervisor(controller).launch(() => Promise.resolve());
 			await store.write("attempt-1", state);
 			expect(await store.read("attempt-1")).toEqual(state);
+			expect(await store.list()).toEqual([{ attemptId: "attempt-1", state }]);
 			expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
 				schemaVersion: 1,
 				attempts: { "attempt-1": state },
@@ -416,6 +418,7 @@ describe("current External Connector robust supervision", () => {
 			})).rejects.toThrow("identity conflict");
 			await restarted.delete("attempt-1");
 			expect(await restarted.read("attempt-1")).toBeUndefined();
+			expect(await restarted.list()).toEqual([]);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
