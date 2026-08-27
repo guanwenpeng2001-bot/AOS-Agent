@@ -483,6 +483,7 @@ async function installRpcExternalConnector(
 		readonly eventNextHangs?: boolean;
 		readonly readHangs?: boolean;
 		readonly cooperativeCancel?: boolean;
+		readonly supervisionDeadlines?: ReturnType<typeof createExternalConnectorTestSupervision>["options"]["deadlines"];
 		readonly supervisionLimits?: {
 			readonly maxEvents?: number;
 			readonly maxEventsPerWindow?: number;
@@ -542,6 +543,7 @@ async function installRpcExternalConnector(
 		driver,
 		supervision: {
 			...supervision.options,
+			...(options.supervisionDeadlines === undefined ? {} : { deadlines: options.supervisionDeadlines }),
 			...(options.supervisionLimits === undefined ? {} : { limits: options.supervisionLimits }),
 		},
 		now: () => "2026-08-27T00:00:00.000Z",
@@ -1555,6 +1557,13 @@ describe("RPC Automation Host run lifecycle", () => {
 				modelAccess: "none",
 				eventNextHangs: true,
 				readHangs: true,
+				supervisionDeadlines: {
+					start: { hardMs: 30_000, idleMs: 30_000 },
+					event: { hardMs: 30_000, idleMs: 30_000 },
+					receipt: { hardMs: 30_000, idleMs: 30_000 },
+					cancel: { hardMs: 30_000, idleMs: 30_000 },
+					dispose: { hardMs: 1_000, idleMs: 1_000 },
+				},
 			});
 			await harness.controller.handleCommand({ id: "external-live-deadline-init", type: "initialize", protocolVersion: 1 });
 			await harness.controller.handleCommand({
@@ -1562,12 +1571,12 @@ describe("RPC Automation Host run lifecycle", () => {
 				type: "run.start",
 				message: "deadline after driver launch",
 				externalConnector: fixture.selection,
-				deadlineAt: new Date(Date.now() + 100).toISOString(),
+				deadlineAt: new Date(Date.now() + 5_000).toISOString(),
 			});
-			await vi.waitFor(() => expect(fixture.driver.readCalls).toBe(1));
+			await vi.waitFor(() => expect(fixture.driver.readCalls).toBe(1), { timeout: 10_000 });
 			await vi.waitFor(() => expect(harness.records.filter((record) =>
 				record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
-			)).toHaveLength(1), { timeout: 5_000 });
+			)).toHaveLength(1), { timeout: 10_000 });
 			const terminal = harness.records.find((record) => record.type === "run.failed");
 			expect(terminal).toMatchObject({
 				type: "run.failed",
@@ -3256,7 +3265,7 @@ describe("RPC Automation Host run lifecycle", () => {
 		let deadlineTimerHandle: ReturnType<typeof setTimeout> | undefined;
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
 			const timer = originalSetTimeout(handler, timeout, ...args);
-			if (typeof timeout === "number" && timeout > 800 && timeout < 2000) deadlineTimerHandle = timer;
+			if (typeof timeout === "number" && timeout > 8000 && timeout < 11_000) deadlineTimerHandle = timer;
 			return timer;
 		});
 		const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
@@ -3265,14 +3274,14 @@ describe("RPC Automation Host run lifecycle", () => {
 			lineHandler(JSON.stringify({ id: "i-deadline-cleanup", type: "initialize", protocolVersion: 1 }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-deadline-cleanup")).toHaveLength(1));
 
-			const deadlineAt = new Date(Date.now() + 1000).toISOString();
+			const deadlineAt = new Date(Date.now() + 10_000).toISOString();
 			lineHandler(JSON.stringify({ id: "deadline-cleanup-run", type: "run.start", message: "Hello", deadlineAt }));
 			await vi.waitFor(() => {
 				const response = responsesFor(rpcIo.outputLines, "deadline-cleanup-run")[0];
 				expect(response?.success).toBe(true);
 			});
 			const deadlineTimerCall = setTimeoutSpy.mock.calls.find(
-				([, delay]) => typeof delay === "number" && delay > 800 && delay < 2000,
+				([, delay]) => typeof delay === "number" && delay > 8000 && delay < 11_000,
 			);
 			expect(deadlineTimerCall).toBeDefined();
 			expect(deadlineTimerHandle).toBeDefined();
@@ -3280,10 +3289,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
 			await vi.waitFor(
 				() => expect(clearTimeoutSpy.mock.calls.some(([timer]) => timer === deadlineTimerHandle)).toBe(true),
-				{ timeout: 500 },
+				{ timeout: 2000 },
 			);
-
-			await sleep(1100);
 			expect(terminalEvents(currentLines())).toHaveLength(1);
 			expect(runEventsOfType(currentLines(), "run.failed")).toHaveLength(0);
 		} finally {

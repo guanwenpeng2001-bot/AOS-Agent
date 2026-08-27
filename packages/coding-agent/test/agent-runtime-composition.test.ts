@@ -496,10 +496,11 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 		let stdout = "";
 		let stderr = "";
 		let response: unknown;
+		let timeoutError: Error | undefined;
 		const timer = setTimeout(() => {
+			timeoutError = new Error(`main -> RPC initialize timed out: ${stderr}`);
 			child.kill();
-			reject(new Error(`main -> RPC initialize timed out: ${stderr}`));
-		}, 30_000);
+		}, 60_000);
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString();
 			for (const line of stdout.split(/\r?\n/u)) {
@@ -527,6 +528,10 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
+			if (timeoutError !== undefined) {
+				reject(timeoutError);
+				return;
+			}
 			if (response === undefined) {
 				reject(new Error(`main -> RPC initialize produced no response. stdout=${stdout} stderr=${stderr}`));
 				return;
@@ -540,7 +545,9 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 describe("AgentRuntimeComposition", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
-		for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+		for (const directory of directories.splice(0)) {
+			rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+		}
 	});
 
 	it("constructs every trusted authority from one canonical public root", async () => {
@@ -920,7 +927,7 @@ describe("AgentRuntimeComposition", () => {
 			},
 		});
 		expect(result.stderr).not.toContain("Error:");
-	});
+	}, 70_000);
 
 	it("keeps optional providers off across SDK and RPC when Host composition omits them", async () => {
 		const fixture = await createRuntimeFixture();

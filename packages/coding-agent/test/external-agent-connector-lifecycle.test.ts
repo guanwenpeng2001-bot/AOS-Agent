@@ -400,6 +400,27 @@ async function fixture(options: { resume?: boolean; capabilityRevision?: number 
 	return { binding: resolvedBinding, store, driver, connector, attempt: created.value, snapshot, supervision };
 }
 
+function restartedConnector(value: Fixture): {
+	readonly connector: DurableExternalAgentConnector;
+	readonly driver: FakeDriver;
+} {
+	const driver = new FakeDriver();
+	driver.store = value.store;
+	const supervision = createExternalConnectorTestSupervision();
+	return {
+		driver,
+		connector: new DurableExternalAgentConnector({
+			providerId,
+			capability: value.snapshot,
+			store: value.store,
+			driver,
+			supervision: supervision.options,
+			now: () => now,
+			operationNonce: () => "restart-must-not-create-an-operation",
+		}),
+	};
+}
+
 function operationFor(
 	value: Fixture,
 	status: ExternalConnectorOperationStatus,
@@ -523,6 +544,34 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.receiptWrites).toBe(1);
 		expect(value.driver.calls.spawn).toBe(1);
 		expect("ExternalConnectorVendorDriver" in packageEntry).toBe(false);
+	});
+
+	it("repairs the terminal operation after a crash following canonical receipt persistence", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		value.store.receipts.set(value.attempt.attemptId, receiptFor(value));
+		const restarted = restartedConnector(value);
+
+		const recovered = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+
+		expect(recovered).toEqual({ ok: true, value: receiptFor(value) });
+		expect(value.store.receipts.size).toBe(1);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.mappings.size).toBe(1);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "terminal",
+			receiptId: `attempt_receipt_${value.attempt.attemptId}`,
+		});
+		expect(value.store.operationHistory).toEqual(["terminal"]);
+		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+
+		const replayed = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+
+		expect(replayed).toEqual({ ok: true, value: value.store.receipts.get(value.attempt.attemptId) });
+		expect(value.store.operationHistory).toEqual(["terminal"]);
+		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
 	});
 
 	it("resumes only an existing mapped Attempt when capability is supported", async () => {
@@ -705,6 +754,15 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.supervision.processController.launchCalls).toBe(0);
 		expect(value.driver.calls.spawn).toBe(0);
 		expect(value.driver.calls.cancel).toBe(0);
+		expect(value.store.operations.has(value.attempt.attemptId)).toBe(false);
+
+		const restarted = restartedConnector(value);
+		const replayed = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+		expect(replayed).toEqual(completed);
+		expect(value.store.operations.has(value.attempt.attemptId)).toBe(false);
+		expect(value.store.receipts.size).toBe(1);
+		expect(value.store.receiptWrites).toBe(1);
+		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
 	});
 
 	it("uses one cooperative driver cancel after launch and returns one canonical cancelled receipt", async () => {

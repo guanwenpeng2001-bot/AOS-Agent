@@ -240,7 +240,7 @@ async function fixture(options: {
 	return { session, t5, driver, connector, registry, descriptor, supervision };
 }
 
-describe("External Connector product integration", () => {
+describe("T4 final acceptance: External Connector product integration", () => {
 	it("runs Task -> Dispatch -> Attempt -> AttemptReceipt -> TaskResult -> RunReceipt without AgentInstance", async () => {
 		const current = await fixture();
 		const canonicalInput: CanonicalExternalAgentInput = {
@@ -282,9 +282,15 @@ describe("External Connector product integration", () => {
 		expect(trace).not.toContain("agentInstanceId");
 		const types = records.flatMap((record) => "objectType" in record ? [record.objectType] : []);
 		expect(types.indexOf("attempt")).toBeLessThan(types.indexOf("external_connector_operation"));
-		expect(types).toContain("attempt_receipt");
-		expect(types).toContain("task_result");
-		expect(types).toContain("run_receipt");
+		for (const objectType of [
+			"attempt",
+			"external_connector_mapping",
+			"attempt_receipt",
+			"task_result",
+			"run_receipt",
+		]) {
+			expect(types.filter((type) => type === objectType)).toHaveLength(1);
+		}
 	});
 
 	for (const testCase of [
@@ -356,7 +362,7 @@ describe("External Connector product integration", () => {
 			expect(execution.attemptReceipt.error).toEqual({
 				code: testCase.code,
 				message: testCase.message,
-				category: "unknown",
+				category: "side_effect_unknown",
 				retryable: false,
 			});
 			expect(execution.runReceipt.terminalStatus).toBe("failed");
