@@ -3,6 +3,7 @@
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
+	fingerprintFoundationValue,
 	FoundationError,
 	type SessionLedger,
 	validateAttempt,
@@ -147,7 +148,11 @@ export interface ExternalConnectorDurableStore {
 	): Promise<CanonicalExternalConnectorMapping>;
 	readReceipt(attemptId: string): Promise<AttemptReceipt | undefined>;
 	writeReceipt(receipt: AttemptReceipt): Promise<AttemptReceipt>;
-	readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined>;
+	readToolGatewayExecution(
+		attemptId: string,
+		toolCallId: string,
+	): Promise<ExternalConnectorToolGatewayExecution | undefined>;
+	listToolGatewayExecutions(attemptId: string): Promise<readonly ExternalConnectorToolGatewayExecution[]>;
 	writeToolGatewayIntent(value: ExternalConnectorToolGatewayIntent): Promise<ExternalConnectorToolGatewayIntentWrite>;
 	writeToolGatewayTerminal(value: ExternalConnectorToolGatewayTerminal): Promise<ExternalConnectorToolGatewayTerminal>;
 }
@@ -323,6 +328,10 @@ const EXTERNAL_CONNECTOR_TOOL_GATEWAY_TERMINAL_KEYS = new Set([
 	"completedAt",
 ]);
 
+export function externalConnectorToolGatewayExchangeId(attemptId: string, toolCallId: string): string {
+	return `external_tool_exchange_${fingerprintFoundationValue({ attemptId, toolCallId }).value}`;
+}
+
 export function externalConnectorToolGatewayRequestMatchesExecution(
 	request: ToolGatewayRequest,
 	providerId: string,
@@ -362,7 +371,6 @@ export function cloneExternalConnectorToolGatewayIntent(value: unknown): Externa
 		!isExternalConnectorMappingIdentifier(value.id) ||
 		!isExternalConnectorMappingIdentifier(value.providerId) ||
 		!isExternalConnectorMappingIdentifier(value.attemptId) ||
-		value.id !== value.attemptId ||
 		!isExternalConnectorMappingIdentifier(value.bindingId) ||
 		!isExternalConnectorMappingIdentifier(value.bindingEpochId) ||
 		!isCanonicalExternalConnectorMappingTimestamp(value.createdAt)
@@ -374,6 +382,7 @@ export function cloneExternalConnectorToolGatewayIntent(value: unknown): Externa
 	if (
 		correlation === undefined ||
 		!request.ok ||
+		value.id !== externalConnectorToolGatewayExchangeId(value.attemptId, request.value.toolCallId) ||
 		!externalConnectorToolGatewayRequestMatchesExecution(
 			request.value,
 			value.providerId,
@@ -410,7 +419,6 @@ export function cloneExternalConnectorToolGatewayTerminal(value: unknown): Exter
 		!isExternalConnectorMappingIdentifier(value.id) ||
 		!isExternalConnectorMappingIdentifier(value.providerId) ||
 		!isExternalConnectorMappingIdentifier(value.attemptId) ||
-		value.id !== value.attemptId ||
 		!isExternalConnectorMappingIdentifier(value.bindingId) ||
 		!isExternalConnectorMappingIdentifier(value.bindingEpochId) ||
 		!isCanonicalExternalConnectorMappingTimestamp(value.createdAt) ||
@@ -425,6 +433,7 @@ export function cloneExternalConnectorToolGatewayTerminal(value: unknown): Exter
 		correlation === undefined ||
 		!request.ok ||
 		!result.ok ||
+		value.id !== externalConnectorToolGatewayExchangeId(value.attemptId, request.value.toolCallId) ||
 		result.value.toolCallId !== request.value.toolCallId ||
 		result.value.toolName !== request.value.toolName ||
 		!externalConnectorToolGatewayRequestMatchesExecution(
@@ -686,11 +695,15 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		});
 	}
 
-	async readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+	async readToolGatewayExecution(
+		attemptId: string,
+		toolCallId: string,
+	): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+		const exchangeId = externalConnectorToolGatewayExchangeId(attemptId, toolCallId);
 		const intentRecords = await this.#ledger.find({
 			kind: "intent",
 			objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-			objectId: attemptId,
+			objectId: exchangeId,
 			includePruned: true,
 			order: "oldestFirst",
 		});
@@ -699,7 +712,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 				details: { attemptId },
 			});
 		}
-		const current = await this.#ledger.get(EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE, attemptId);
+		const current = await this.#ledger.get(EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE, exchangeId);
 		if (intentRecords.length === 0) {
 			if (current !== undefined) {
 				throw new FoundationError("session_ledger_corrupt", "Tool Gateway terminal result has no durable intent", {
@@ -711,15 +724,15 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const intentRecord = intentRecords[0]!;
 		if (
 			intentRecord.kind !== "intent" ||
-			intentRecord.objectId !== attemptId ||
-			intentRecord.clientRequestId !== `external-connector-tool-gateway:${attemptId}`
+			intentRecord.objectId !== exchangeId ||
+			intentRecord.clientRequestId !== `external-connector-tool-gateway:${exchangeId}`
 		) {
 			throw new FoundationError("session_ledger_corrupt", "Tool Gateway durable intent identity is invalid", {
 				details: { attemptId },
 			});
 		}
 		const intent = cloneExternalConnectorToolGatewayIntent(intentRecord.payload);
-		if (intent.attemptId !== attemptId) {
+		if (intent.attemptId !== attemptId || intent.request.toolCallId !== toolCallId) {
 			throw new FoundationError("invalid_correlation", "Tool Gateway durable intent Attempt is invalid", {
 				details: { attemptId },
 			});
@@ -740,11 +753,34 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		return Object.freeze({ intent, terminal });
 	}
 
+	async listToolGatewayExecutions(attemptId: string): Promise<readonly ExternalConnectorToolGatewayExecution[]> {
+		const intentRecords = await this.#ledger.find({
+			kind: "intent",
+			objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			includePruned: true,
+			order: "oldestFirst",
+		});
+		const executions: ExternalConnectorToolGatewayExecution[] = [];
+		for (const record of intentRecords) {
+			if (record.kind !== "intent") continue;
+			const intent = cloneExternalConnectorToolGatewayIntent(record.payload);
+			if (intent.attemptId !== attemptId) continue;
+			const execution = await this.readToolGatewayExecution(attemptId, intent.request.toolCallId);
+			if (execution === undefined) {
+				throw new FoundationError("session_ledger_corrupt", "Tool Gateway durable intent disappeared", {
+					details: { attemptId },
+				});
+			}
+			executions.push(execution);
+		}
+		return Object.freeze(executions);
+	}
+
 	async writeToolGatewayIntent(
 		value: ExternalConnectorToolGatewayIntent,
 	): Promise<ExternalConnectorToolGatewayIntentWrite> {
 		const proposed = cloneExternalConnectorToolGatewayIntent(value);
-		const current = await this.readToolGatewayExecution(proposed.attemptId);
+		const current = await this.readToolGatewayExecution(proposed.attemptId, proposed.request.toolCallId);
 		if (current !== undefined) {
 			if (canonicalFoundationJson(current.intent) !== canonicalFoundationJson(proposed)) {
 				throw new FoundationError("session_ledger_conflict", "Tool Gateway request conflicts with durable intent", {
@@ -755,9 +791,9 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		}
 		const persisted = await this.#ledger.appendIntent(
 			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-			proposed.attemptId,
+			proposed.id,
 			{
-				clientRequestId: `external-connector-tool-gateway:${proposed.attemptId}`,
+				clientRequestId: `external-connector-tool-gateway:${proposed.id}`,
 				expectedRevision: 0,
 				intent: "create",
 				payload: proposed as unknown as FoundationJsonValue,
@@ -777,7 +813,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		value: ExternalConnectorToolGatewayTerminal,
 	): Promise<ExternalConnectorToolGatewayTerminal> {
 		const proposed = cloneExternalConnectorToolGatewayTerminal(value);
-		const current = await this.readToolGatewayExecution(proposed.attemptId);
+		const current = await this.readToolGatewayExecution(proposed.attemptId, proposed.request.toolCallId);
 		if (current === undefined || !gatewayTerminalMatchesIntent(proposed, current.intent)) {
 			throw new FoundationError(
 				"session_ledger_missing_intent",
@@ -801,10 +837,10 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		}
 		const persisted = await this.#ledger.appendFact(
 			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-			proposed.attemptId,
+			proposed.id,
 			proposed,
 			{
-				clientRequestId: `external-connector-tool-gateway:${proposed.attemptId}:terminal`,
+				clientRequestId: `external-connector-tool-gateway:${proposed.id}:terminal`,
 				expectedRevision: 1,
 				correlation: proposed.correlation,
 			},

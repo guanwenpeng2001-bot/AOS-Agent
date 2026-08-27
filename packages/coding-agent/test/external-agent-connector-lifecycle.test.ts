@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	AgentOperationError,
 	FoundationError,
+	Result,
 	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
 	createModelProfileRevision,
@@ -18,6 +19,8 @@ import {
 	type RevisionReference,
 	type SessionLedger,
 	type TaskEnvelope,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import * as packageEntry from "../src/index.ts";
 import { DurableExternalAgentConnector, externalConnectorAttemptId } from "../src/core/external-agent-connector.ts";
@@ -31,6 +34,7 @@ import type {
 } from "../src/core/external-agent-operation.ts";
 import {
 	cloneExternalConnectorOperation,
+	externalConnectorToolGatewayExchangeId,
 	SessionExternalConnectorDurableStore,
 	transitionExternalConnectorOperation,
 } from "../src/core/external-agent-operation.ts";
@@ -114,7 +118,7 @@ function binding(): AgentBinding {
 	return resolved.value;
 }
 
-function capability(resume = true, revision = 1): ConnectorCapabilitySnapshot {
+function capability(resume = true, revision = 1, toolGateway = false): ConnectorCapabilitySnapshot {
 	return createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId,
@@ -122,7 +126,7 @@ function capability(resume = true, revision = 1): ConnectorCapabilitySnapshot {
 		protocol: { name: "third-party-protocol", version: "1" },
 		modelAccess: "agent_owned",
 		resume,
-		toolGateway: false,
+		toolGateway,
 		artifacts: true,
 		images: false,
 	});
@@ -241,21 +245,28 @@ class FakeStore implements ExternalConnectorDurableStore {
 		return receipt;
 	}
 
-	async readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined> {
-		return this.toolGatewayExecutions.get(attemptId);
+	async readToolGatewayExecution(
+		attemptId: string,
+		toolCallId: string,
+	): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+		return this.toolGatewayExecutions.get(externalConnectorToolGatewayExchangeId(attemptId, toolCallId));
+	}
+
+	async listToolGatewayExecutions(attemptId: string): Promise<readonly ExternalConnectorToolGatewayExecution[]> {
+		return [...this.toolGatewayExecutions.values()].filter((execution) => execution.intent.attemptId === attemptId);
 	}
 
 	async writeToolGatewayIntent(value: ExternalConnectorToolGatewayIntent) {
-		const current = this.toolGatewayExecutions.get(value.attemptId);
+		const current = this.toolGatewayExecutions.get(value.id);
 		if (current !== undefined) return { intent: current.intent, claimed: false };
-		this.toolGatewayExecutions.set(value.attemptId, { intent: value });
+		this.toolGatewayExecutions.set(value.id, { intent: value });
 		return { intent: value, claimed: true };
 	}
 
 	async writeToolGatewayTerminal(value: ExternalConnectorToolGatewayTerminal) {
-		const current = this.toolGatewayExecutions.get(value.attemptId);
+		const current = this.toolGatewayExecutions.get(value.id);
 		if (current === undefined) throw new FoundationError("session_ledger_missing_intent", "Missing test intent");
-		this.toolGatewayExecutions.set(value.attemptId, { intent: current.intent, terminal: value });
+		this.toolGatewayExecutions.set(value.id, { intent: current.intent, terminal: value });
 		return value;
 	}
 }
@@ -290,6 +301,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		dispose: 0,
 	};
 	readonly spawnStates: Array<ExternalConnectorOperationStatus | undefined> = [];
+	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
 	store: FakeStore | undefined;
 	spawnFailure = false;
 	spawnGate: Promise<void> | undefined;
@@ -373,8 +385,9 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		return this.evidence;
 	}
 
-	async write(_handle: ExternalConnectorDriverHandle, _request: ExternalConnectorDriverWriteRequest): Promise<void> {
+	async write(_handle: ExternalConnectorDriverHandle, request: ExternalConnectorDriverWriteRequest): Promise<void> {
 		this.calls.write++;
+		this.writes.push(request);
 	}
 
 	async heartbeat(): Promise<void> {
@@ -412,9 +425,15 @@ interface Fixture {
 	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
 }
 
-async function fixture(options: { resume?: boolean; capabilityRevision?: number } = {}): Promise<Fixture> {
+async function fixture(
+	options: { resume?: boolean; capabilityRevision?: number; toolGateway?: boolean } = {},
+): Promise<Fixture> {
 	const resolvedBinding = binding();
-	const snapshot = capability(options.resume ?? true, options.capabilityRevision ?? 1);
+	const snapshot = capability(
+		options.resume ?? true,
+		options.capabilityRevision ?? 1,
+		options.toolGateway ?? false,
+	);
 	const store = new FakeStore();
 	store.bindings.set(resolvedBinding.bindingId, resolvedBinding);
 	const driver = new FakeDriver();
@@ -579,6 +598,60 @@ function persistAttempt(value: Fixture): void {
 	value.store.attempts.set(value.attempt.attemptId, value.attempt);
 }
 
+function gatewayCorrelation(): ExecutionCorrelation {
+	return {
+		...correlation,
+		runId: "run-external-tool-gateway",
+		operationId: "run-external-tool-gateway",
+	};
+}
+
+function gatewayRequestFor(
+	value: Fixture,
+	toolCallId: string,
+	originalArguments: FoundationJsonValue,
+): ToolGatewayRequest {
+	return {
+		schemaVersion: 1,
+		toolCallId,
+		toolName: "workspace.read",
+		namespace: "workspace",
+		originalArguments,
+		idempotencyKey: `once-${toolCallId}`,
+		context: {
+			schemaVersion: 1,
+			bindingId: value.attempt.bindingId,
+			bindingEpochId: value.attempt.bindingEpochIds[0]!,
+			taskId: value.attempt.taskId,
+			dispatchId: value.attempt.dispatchId,
+			providerId,
+			attemptId: value.attempt.attemptId,
+			operationId: "run-external-tool-gateway",
+		},
+	};
+}
+
+function gatewayEventsFor(value: Fixture, requests: readonly ToolGatewayRequest[]): FoundationJsonValue[] {
+	return [
+		{
+			schemaVersion: 1,
+			type: "started",
+			externalSessionId: value.driver.handle.externalSessionId,
+			externalTurnId: value.driver.handle.externalTurnId!,
+			producedAt: now,
+		},
+		...requests.map((request) => ({
+			schemaVersion: 1 as const,
+			type: "tool_gateway_request" as const,
+			externalSessionId: value.driver.handle.externalSessionId,
+			externalTurnId: value.driver.handle.externalTurnId!,
+			operationNonce: "operation-nonce-1",
+			request: request as unknown as FoundationJsonValue,
+			producedAt: now,
+		})),
+	];
+}
+
 describe("durable ExternalAgentConnector lifecycle", () => {
 	it("keeps createAttempt pure and enforces persist-before-start", async () => {
 		const value = await fixture();
@@ -621,6 +694,80 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.receiptWrites).toBe(1);
 		expect(value.driver.calls.spawn).toBe(1);
 		expect("ExternalConnectorVendorDriver" in packageEntry).toBe(false);
+	});
+
+	it("persists distinct toolCallId exchanges and replays a duplicate without repeating its effect", async () => {
+		const value = await fixture({ toolGateway: true });
+		persistAttempt(value);
+		const first = gatewayRequestFor(value, "tool-call-1", { path: "docs/one.txt" });
+		const second = gatewayRequestFor(value, "tool-call-2", { path: "docs/two.txt" });
+		value.driver.eventValues = gatewayEventsFor(value, [first, first, second]);
+		const effects: ToolGatewayRequest[] = [];
+		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, async (request) => {
+			effects.push(request);
+			return Result.ok({
+				schemaVersion: 1,
+				toolCallId: request.toolCallId,
+				toolName: request.toolName,
+				ok: true,
+				sideEffectState: "none",
+				toolReceiptRef: `receipt-${request.toolCallId}`,
+			});
+		});
+		try {
+			const completed = await value.connector.runAttempt(value.attempt, {
+				correlation: gatewayCorrelation(),
+			});
+			expect(completed.ok).toBe(true);
+			if (completed.ok) expect(completed.value.status).toBe("succeeded");
+			expect(effects).toEqual([first, second]);
+			expect(value.driver.writes.map((write) => write.result.toolCallId)).toEqual([
+				"tool-call-1",
+				"tool-call-1",
+				"tool-call-2",
+			]);
+			expect(await value.store.listToolGatewayExecutions(value.attempt.attemptId)).toHaveLength(2);
+		} finally {
+			release();
+		}
+	});
+
+	it("fails closed when one durable toolCallId is reused with a conflicting payload", async () => {
+		const value = await fixture({ toolGateway: true });
+		persistAttempt(value);
+		const first = gatewayRequestFor(value, "tool-call-conflict", { path: "docs/one.txt" });
+		const conflict = gatewayRequestFor(value, "tool-call-conflict", { path: "docs/two.txt" });
+		value.driver.eventValues = gatewayEventsFor(value, [first, conflict]);
+		const effects: ToolGatewayRequest[] = [];
+		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, async (request) => {
+			effects.push(request);
+			const result: ToolExecutionResult = {
+				schemaVersion: 1,
+				toolCallId: request.toolCallId,
+				toolName: request.toolName,
+				ok: true,
+				sideEffectState: "none",
+				toolReceiptRef: `receipt-${request.toolCallId}`,
+			};
+			return Result.ok(result);
+		});
+		try {
+			const completed = await value.connector.runAttempt(value.attempt, {
+				correlation: gatewayCorrelation(),
+			});
+			expect(completed.ok).toBe(true);
+			if (completed.ok) {
+				expect(completed.value).toMatchObject({
+					status: "failed",
+					error: { code: "external_event_invalid" },
+				});
+			}
+			expect(effects).toEqual([first]);
+			expect(value.driver.writes).toHaveLength(1);
+			expect(await value.store.listToolGatewayExecutions(value.attempt.attemptId)).toHaveLength(1);
+		} finally {
+			release();
+		}
 	});
 
 	it("repairs the terminal operation after a crash following canonical receipt persistence", async () => {

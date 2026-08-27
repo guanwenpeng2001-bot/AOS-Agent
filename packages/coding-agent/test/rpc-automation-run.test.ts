@@ -40,6 +40,7 @@ import { createExternalConnectorRegistry } from "../src/index.ts";
 import {
 	SessionExternalConnectorDurableStore,
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+	externalConnectorToolGatewayExchangeId,
 	transitionExternalConnectorOperation,
 	type ExternalConnectorDurableStore,
 	type ExternalConnectorOperation,
@@ -461,6 +462,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	readonly #eventValues: readonly FoundationJsonValue[];
 	readonly #connectorToolGatewayRequest: Omit<ToolGatewayRequest, "context"> | undefined;
 	readonly #connectorToolGatewayCanonicalRequest: ToolGatewayRequest | undefined;
+	readonly #connectorToolGatewayCanonicalRequests: readonly ToolGatewayRequest[] | undefined;
 	readonly #connectorToolGatewayAttemptId: string | undefined;
 	readonly #writeFails: boolean;
 	readonly #eventNextHangs: boolean;
@@ -480,6 +482,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 			readonly lookupResult?: ExternalConnectorDriverLookup;
 			readonly connectorToolGatewayRequest?: Omit<ToolGatewayRequest, "context">;
 			readonly connectorToolGatewayCanonicalRequest?: ToolGatewayRequest;
+			readonly connectorToolGatewayCanonicalRequests?: readonly ToolGatewayRequest[];
 			readonly connectorToolGatewayAttemptId?: string;
 			readonly writeFails?: boolean;
 		} = {},
@@ -493,6 +496,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 		this.#lookupResult = options.lookupResult ?? { status: "missing" };
 		this.#connectorToolGatewayRequest = options.connectorToolGatewayRequest;
 		this.#connectorToolGatewayCanonicalRequest = options.connectorToolGatewayCanonicalRequest;
+		this.#connectorToolGatewayCanonicalRequests = options.connectorToolGatewayCanonicalRequests;
 		this.#connectorToolGatewayAttemptId = options.connectorToolGatewayAttemptId;
 		this.#writeFails = options.writeFails ?? false;
 	}
@@ -535,8 +539,9 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 							operationId,
 						},
 					});
+		const requests = this.#connectorToolGatewayCanonicalRequests ?? (request === undefined ? [] : [request]);
 		const values: readonly FoundationJsonValue[] =
-			request === undefined
+			requests.length === 0
 				? this.#eventValues
 				: [
 						...this.#eventValues,
@@ -547,15 +552,15 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 							...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
 							producedAt: "2026-08-27T00:00:00.000Z",
 						},
-						{
+						...requests.map((canonicalRequest) => ({
 							schemaVersion: 1,
 							type: "tool_gateway_request",
 							externalSessionId: handle.externalSessionId,
 							...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
 							operationNonce: handle.operationNonce,
-							request: request as unknown as FoundationJsonValue,
+							request: canonicalRequest as unknown as FoundationJsonValue,
 							producedAt: "2026-08-27T00:00:00.000Z",
-						},
+						})),
 					];
 		let index = 0;
 		return {
@@ -655,6 +660,7 @@ async function installRpcExternalConnector(
 		readonly lookupResult?: ExternalConnectorDriverLookup;
 		readonly connectorToolGatewayRequest?: Omit<ToolGatewayRequest, "context">;
 		readonly connectorToolGatewayCanonicalRequest?: ToolGatewayRequest;
+		readonly connectorToolGatewayCanonicalRequests?: readonly ToolGatewayRequest[];
 		readonly connectorToolGatewayAttemptId?: string;
 		readonly writeFails?: boolean;
 		readonly toolGateway?: boolean;
@@ -702,7 +708,9 @@ async function installRpcExternalConnector(
 		writeMapping: (mapping, correlation) => canonicalStore.writeMapping(mapping, correlation),
 		readReceipt: (attemptId) => canonicalStore.readReceipt(attemptId),
 		writeReceipt: (receipt) => canonicalStore.writeReceipt(receipt),
-		readToolGatewayExecution: (attemptId) => canonicalStore.readToolGatewayExecution(attemptId),
+		readToolGatewayExecution: (attemptId, toolCallId) =>
+			canonicalStore.readToolGatewayExecution(attemptId, toolCallId),
+		listToolGatewayExecutions: (attemptId) => canonicalStore.listToolGatewayExecutions(attemptId),
 		writeToolGatewayIntent: (value) => canonicalStore.writeToolGatewayIntent(value),
 		writeToolGatewayTerminal: (value) => canonicalStore.writeToolGatewayTerminal(value),
 	};
@@ -717,6 +725,7 @@ async function installRpcExternalConnector(
 			lookupResult: options.lookupResult,
 			connectorToolGatewayRequest: options.connectorToolGatewayRequest,
 			connectorToolGatewayCanonicalRequest: options.connectorToolGatewayCanonicalRequest,
+			connectorToolGatewayCanonicalRequests: options.connectorToolGatewayCanonicalRequests,
 			connectorToolGatewayAttemptId: options.connectorToolGatewayAttemptId,
 			writeFails: options.writeFails,
 		},
@@ -2142,11 +2151,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			);
 			expect(fixture.toolGatewayRequests).toEqual([]);
 			expect(fixture.driver.writes).toEqual([]);
-			const identity = externalConnectorProductIdentity(runId!, fixture.selection.providerId);
 			expect(
 				await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 					objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					objectId: identity.attemptId,
 					includePruned: true,
 				}),
 			).toEqual([]);
@@ -2246,7 +2253,10 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 					objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					objectId: identity.attemptId,
+					objectId: externalConnectorToolGatewayExchangeId(
+						identity.attemptId,
+						"rpc-callback-failure-tool-call",
+					),
 					includePruned: true,
 				}),
 			).toHaveLength(2);
@@ -3274,7 +3284,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			terminalStatus: "completed",
 			persistTerminal: true,
 			driverSpawns: 0,
-			gatewayRecords: 2,
+			gatewayRecords: 4,
+			gatewayEffects: 1,
 		},
 		{
 			name: "after Tool Gateway intent before the result",
@@ -3283,8 +3294,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			persistTerminal: false,
 			driverSpawns: 0,
 			gatewayRecords: 1,
+			gatewayEffects: 0,
 		},
-	] as const)("recovers $name without repeating the gateway effect", async (testCase) => {
+	] as const)("crash-reloads and resumes $name without repeating the gateway effect", async (testCase) => {
 		const harness = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 0,
@@ -3331,6 +3343,11 @@ describe("RPC Automation Host run lifecycle", () => {
 					operationId: sourceRunId,
 				},
 			};
+			const secondCanonicalGatewayRequest: ToolGatewayRequest = {
+				...canonicalGatewayRequest,
+				toolCallId: `tool-${testCase.cutpoint}-second`,
+				originalArguments: { path: "docs/second.txt", mode: "metadata" },
+			};
 			await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint, {
 				artifacts,
 			});
@@ -3344,7 +3361,10 @@ describe("RPC Automation Host run lifecycle", () => {
 				const intent = {
 					schemaVersion: 1 as const,
 					type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					id: identity.attemptId,
+					id: externalConnectorToolGatewayExchangeId(
+						identity.attemptId,
+						canonicalGatewayRequest.toolCallId,
+					),
 					phase: "intent" as const,
 					providerId: fixture.selection.providerId,
 					attemptId: identity.attemptId,
@@ -3386,7 +3406,9 @@ describe("RPC Automation Host run lifecycle", () => {
 					toolGateway: true,
 					artifacts: true,
 					images: true,
-					connectorToolGatewayCanonicalRequest: canonicalGatewayRequest,
+					connectorToolGatewayCanonicalRequests: testCase.persistTerminal
+						? [canonicalGatewayRequest, secondCanonicalGatewayRequest]
+						: [canonicalGatewayRequest],
 					supervision: fixture.supervision,
 				});
 				return result;
@@ -3427,7 +3449,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				});
 			});
 			const gatewayCalls = fixture.toolGatewayRequests.length + (restoredFixture?.toolGatewayRequests.length ?? 0);
-			expect(gatewayCalls).toBe(0);
+			expect(gatewayCalls).toBe(testCase.gatewayEffects);
 			expect(restoredFixture?.driver.writes).toEqual(
 				testCase.persistTerminal
 					? [
@@ -3444,16 +3466,35 @@ describe("RPC Automation Host run lifecycle", () => {
 									toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
 								},
 							},
+							{
+								schemaVersion: 1,
+								kind: "tool_gateway_result",
+								operationNonce: "rpc-operation-nonce",
+								result: {
+									schemaVersion: 1,
+									toolCallId: secondCanonicalGatewayRequest.toolCallId,
+									toolName: secondCanonicalGatewayRequest.toolName,
+									ok: true,
+									sideEffectState: "none",
+									toolReceiptRef: `rpc-tool-receipt-${secondCanonicalGatewayRequest.toolCallId}`,
+								},
+							},
 						]
 					: [],
 			);
 			expect(fixture.driver.spawnCalls + (restoredFixture?.driver.spawnCalls ?? 0)).toBe(testCase.driverSpawns);
+			expect(restoredFixture?.driver.connectCalls).toBe(1);
 			const gatewayRecords = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 				objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-				objectId: identity.attemptId,
 				includePruned: true,
 			});
-			expect(gatewayRecords).toHaveLength(testCase.gatewayRecords);
+				expect(
+					gatewayRecords.filter(
+						(record) =>
+							(record.kind === "fact" || record.kind === "intent") &&
+							(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId,
+				),
+			).toHaveLength(testCase.gatewayRecords);
 			const orderedRecords = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 				includePruned: true,
 				order: "oldestFirst",
@@ -3462,16 +3503,20 @@ describe("RPC Automation Host run lifecycle", () => {
 				(record) =>
 					record.kind === "fact" && record.objectType === "attempt" && record.objectId === identity.attemptId,
 			);
-			const gatewayIndices = orderedRecords.flatMap((record, index) =>
-				record.kind !== "retention" &&
-				record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE &&
-				record.objectId === identity.attemptId
-					? [index]
+				const gatewayIndices = orderedRecords.flatMap((record, index) =>
+					(record.kind === "fact" || record.kind === "intent") &&
+						record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE &&
+					(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId
+						? [index]
 					: [],
 			);
 			expect(attemptIndex).toBeGreaterThanOrEqual(0);
 			expect(gatewayIndices[0]).toBeGreaterThan(attemptIndex);
-			if (testCase.persistTerminal) expect(gatewayIndices[1]).toBeGreaterThan(gatewayIndices[0]!);
+			if (testCase.persistTerminal) {
+				expect(gatewayIndices[1]).toBeGreaterThan(gatewayIndices[0]!);
+				expect(gatewayIndices[2]).toBeGreaterThan(gatewayIndices[1]!);
+				expect(gatewayIndices[3]).toBeGreaterThan(gatewayIndices[2]!);
+			}
 			for (const objectType of ["attempt_receipt", "task_result", "run_receipt"]) {
 				const records = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 					objectType,

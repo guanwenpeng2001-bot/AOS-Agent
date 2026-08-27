@@ -91,7 +91,7 @@ export interface ExternalConnectorProductExecution {
 	readonly attemptReceipt: AttemptReceipt;
 	readonly taskResult: TaskResult;
 	readonly runReceipt: RunReceipt;
-	readonly toolGatewayExchange?: ExternalConnectorToolGatewayExchange;
+	readonly toolGatewayExchanges?: readonly ExternalConnectorToolGatewayExchange[];
 }
 
 export interface ExternalConnectorToolGatewayExchange {
@@ -654,6 +654,18 @@ function toolGatewayExchange(terminal: ExternalConnectorToolGatewayTerminal): Ex
 	return cloneDeepFrozen({ request: terminal.request, result: terminal.result });
 }
 
+async function toolGatewayExchanges(
+	store: SessionExternalConnectorDurableStore,
+	attemptId: string,
+): Promise<readonly ExternalConnectorToolGatewayExchange[]> {
+	const executions = await store.listToolGatewayExecutions(attemptId);
+	return Object.freeze(
+		executions.flatMap((execution) =>
+			execution.terminal === undefined ? [] : [toolGatewayExchange(execution.terminal)],
+		),
+	);
+}
+
 /** Execute a pre-accepted current Connector run through the canonical terminal chain. */
 export async function executePreparedExternalConnectorProductRun(
 	prepared: PreparedExternalConnectorProductRun,
@@ -702,10 +714,10 @@ export async function executePreparedExternalConnectorProductRun(
 			},
 			input.runId,
 		);
-		const gateway = await store.readToolGatewayExecution(epoch.attemptId);
-		return gateway?.terminal === undefined
+		const gatewayExchanges = await toolGatewayExchanges(store, epoch.attemptId);
+		return gatewayExchanges.length === 0
 			? execution
-			: Object.freeze({ ...execution, toolGatewayExchange: toolGatewayExchange(gateway.terminal) });
+			: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });
 	} finally {
 		releaseToolGatewayConsumer?.();
 		await settlement.release();
@@ -1155,10 +1167,10 @@ export async function recoverExternalConnectorProductRun(
 				},
 				input.runId,
 			);
-			const gateway = await store.readToolGatewayExecution(identity.attemptId);
-			return gateway?.terminal === undefined
+			const gatewayExchanges = await toolGatewayExchanges(store, identity.attemptId);
+			return gatewayExchanges.length === 0
 				? execution
-				: Object.freeze({ ...execution, toolGatewayExchange: toolGatewayExchange(gateway.terminal) });
+				: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });
 		} finally {
 			releaseToolGatewayConsumer?.();
 			await settlement.release();

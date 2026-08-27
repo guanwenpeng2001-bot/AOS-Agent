@@ -29,6 +29,7 @@ import {
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	cloneExternalConnectorOperation,
+	externalConnectorToolGatewayExchangeId,
 	externalConnectorToolGatewayRequestMatchesExecution,
 	transitionExternalConnectorOperation,
 	type ExternalConnectorDurableStore,
@@ -1633,7 +1634,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (consumer === undefined) {
 				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 			}
-			let execution = await this.#store.readToolGatewayExecution(operation.attemptId);
+			let execution = await this.#store.readToolGatewayExecution(
+				operation.attemptId,
+				request.toolCallId,
+			);
 			if (
 				execution !== undefined &&
 				canonicalFoundationJson(execution.intent.request) !== canonicalFoundationJson(request)
@@ -1647,7 +1651,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				const intent: ExternalConnectorToolGatewayIntent = {
 					schemaVersion: 1,
 					type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					id: operation.attemptId,
+					id: externalConnectorToolGatewayExchangeId(operation.attemptId, request.toolCallId),
 					phase: "intent",
 					providerId: operation.providerId,
 					attemptId: operation.attemptId,
@@ -1659,7 +1663,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				};
 				const writtenIntent = await this.#store.writeToolGatewayIntent(intent);
 				if (!writtenIntent.claimed) {
-					execution = await this.#store.readToolGatewayExecution(operation.attemptId);
+					execution = await this.#store.readToolGatewayExecution(
+						operation.attemptId,
+						request.toolCallId,
+					);
 					if (execution?.terminal === undefined) {
 						throw new ExternalConnectorSupervisorError("tool_gateway_ambiguous", "event", false);
 					}

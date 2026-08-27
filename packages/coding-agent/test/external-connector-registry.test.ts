@@ -637,7 +637,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				operationId: runId,
 			},
 		});
-		expect(execution.toolGatewayExchange).toEqual({
+		expect(execution.toolGatewayExchanges).toEqual([{
 			request: gateway.requests[0],
 			result: {
 				schemaVersion: 1,
@@ -647,14 +647,14 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				sideEffectState: "none",
 				toolReceiptRef: `tool-receipt-tool-call-${runId}`,
 			},
-		});
+		}]);
 		expect(enabled.driver.spawnCalls).toBe(1);
 		expect(enabled.driver.writes).toEqual([
 			{
 				schemaVersion: 1,
 				kind: "tool_gateway_result",
 				operationNonce: expect.any(String),
-				result: execution.toolGatewayExchange?.result,
+				result: execution.toolGatewayExchanges?.[0]?.result,
 			},
 		]);
 
