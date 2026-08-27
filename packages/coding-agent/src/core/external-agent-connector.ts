@@ -384,9 +384,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		let statePersisted = false;
 		try {
 			if (signal?.aborted === true) throw signal.reason;
-			const state = supervisor.launch();
-			await this.#supervision.privateStateStore.write(operation.attemptId, state);
-			statePersisted = true;
+			await supervisor.launch(async (state) => {
+				await this.#supervision.privateStateStore.write(operation.attemptId, state);
+				statePersisted = true;
+			});
 			this.#supervisors.set(operation.attemptId, supervisor);
 			return supervisor;
 		} catch (error) {

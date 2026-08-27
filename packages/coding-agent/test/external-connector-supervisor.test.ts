@@ -23,6 +23,7 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 	readonly containment: "process_group" | "job_object";
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
+	activationCalls = 0;
 	forceCalls = 0;
 	resolveOnForce = true;
 	terminationIdentity: ExternalConnectorProcessIdentity;
@@ -36,6 +37,10 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 		this.exited = new Promise<void>((resolve) => {
 			this.#resolveExit = resolve;
 		});
+	}
+
+	async activate(): Promise<void> {
+		this.activationCalls += 1;
 	}
 
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
@@ -65,7 +70,7 @@ class ControlledProcessController implements ExternalConnectorProcessController 
 	launchRequest: ExternalConnectorProcessLaunchRequest | undefined;
 	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 
-	launch(request: ExternalConnectorProcessLaunchRequest): ExternalConnectorProcessHandle {
+	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
 		this.launchRequest = request;
 		this.lastHandle = new ControlledHandle(request, this.identity);
 		return this.lastHandle;
@@ -132,10 +137,10 @@ function event(
 }
 
 describe("current External Connector robust supervision", () => {
-	it("selects process-group containment on POSIX and Job containment on Windows", () => {
+	it("selects process-group containment on Linux and Job containment on Windows", () => {
 		expect(externalConnectorProcessContainment("linux")).toBe("process_group");
-		expect(externalConnectorProcessContainment("darwin")).toBe("process_group");
 		expect(externalConnectorProcessContainment("win32")).toBe("job_object");
+		expect(() => externalConnectorProcessContainment("darwin")).toThrow("unsupported");
 	});
 
 	for (const segment of ["start", "receipt", "cancel"] as const) {
@@ -147,7 +152,7 @@ describe("current External Connector robust supervision", () => {
 						? { hardMs: 5, idleMs: 50 }
 						: { hardMs: 50, idleMs: 5 },
 				});
-				value.launch();
+				await value.launch(() => Promise.resolve());
 				await expect(value.run(segment, () => new Promise<never>(() => undefined))).rejects.toMatchObject({
 					code: "side_effect_unknown",
 					segment,
@@ -162,7 +167,7 @@ describe("current External Connector robust supervision", () => {
 	it("event idle deadline resets only on bounded event progress", async () => {
 		const controller = new ControlledProcessController();
 		const value = supervisor(controller, { event: { hardMs: 50, idleMs: 5 } });
-		value.launch();
+		await value.launch(() => Promise.resolve());
 		async function* idleEvents(): AsyncGenerator<unknown> {
 			await new Promise<never>(() => undefined);
 		}
@@ -173,7 +178,7 @@ describe("current External Connector robust supervision", () => {
 	it("event hard deadline remains bounded while progress refreshes the idle deadline", async () => {
 		const controller = new ControlledProcessController();
 		const value = supervisor(controller, { event: { hardMs: 12, idleMs: 8 } });
-		value.launch();
+		await value.launch(() => Promise.resolve());
 		async function* progressingEvents(): AsyncGenerator<unknown> {
 			yield event("started");
 			let sequence = 0;
@@ -191,7 +196,7 @@ describe("current External Connector robust supervision", () => {
 		for (const deadline of [{ hardMs: 5, idleMs: 50 }, { hardMs: 50, idleMs: 5 }]) {
 			const controller = new ControlledProcessController();
 			const value = supervisor(controller, { dispose: deadline });
-			value.launch();
+			await value.launch(() => Promise.resolve());
 			controller.lastHandle!.resolveOnForce = false;
 			await expect(value.dispose()).rejects.toMatchObject({
 				code: "reconcile_required",
@@ -222,7 +227,7 @@ describe("current External Connector robust supervision", () => {
 		]) {
 			const controller = new ControlledProcessController();
 			const value = supervisor(controller);
-			value.launch();
+			await value.launch(() => Promise.resolve());
 			async function* source(): AsyncGenerator<unknown> {
 				for (const event of events) yield event;
 			}
@@ -253,7 +258,7 @@ describe("current External Connector robust supervision", () => {
 		]) {
 			const controller = new ControlledProcessController();
 			const value = supervisor(controller, {}, testCase.artifactsAllowed);
-			value.launch();
+			await value.launch(() => Promise.resolve());
 			async function* source(): AsyncGenerator<unknown> {
 				for (const item of testCase.events) yield item;
 			}
@@ -269,7 +274,7 @@ describe("current External Connector robust supervision", () => {
 		const signal = AbortSignal.abort();
 		const operationController = new ControlledProcessController();
 		const operationSupervisor = supervisor(operationController);
-		operationSupervisor.launch();
+		await operationSupervisor.launch(() => Promise.resolve());
 		let operationCalls = 0;
 		await expect(operationSupervisor.run("start", async () => {
 			operationCalls += 1;
@@ -278,7 +283,7 @@ describe("current External Connector robust supervision", () => {
 
 		const eventController = new ControlledProcessController();
 		const eventSupervisor = supervisor(eventController);
-		eventSupervisor.launch();
+		await eventSupervisor.launch(() => Promise.resolve());
 		let eventFactoryCalls = 0;
 		let iteratorCalls = 0;
 		await expect(eventSupervisor.consumeEvents(() => {
@@ -297,7 +302,7 @@ describe("current External Connector robust supervision", () => {
 	it("persists non-detached exact host-private identity and reattaches only that process", async () => {
 		const controller = new ControlledProcessController();
 		const first = supervisor(controller);
-		const state = first.launch();
+		const state = await first.launch(() => Promise.resolve());
 		expect(controller.launchRequest).toMatchObject({
 			detached: false,
 			containment: externalConnectorProcessContainment(),
@@ -309,21 +314,33 @@ describe("current External Connector robust supervision", () => {
 		await restarted.dispose();
 	});
 
+	it("does not activate a launched process until private identity persistence succeeds", async () => {
+		const controller = new ControlledProcessController();
+		const value = supervisor(controller);
+		await expect(value.launch(() => Promise.reject(new Error("private state write failed")))).rejects.toMatchObject({
+			code: "reconcile_required",
+			segment: "start",
+		});
+		expect(controller.lastHandle?.activationCalls).toBe(0);
+		await value.dispose();
+		expect(value.snapshot.cleaned).toBe(true);
+	});
+
 	it("reaps an exact orphan on restart", async () => {
 		const controller = new ControlledProcessController();
 		const first = supervisor(controller);
-		const state = first.launch();
+		const state = await first.launch(() => Promise.resolve());
 		const restarted = supervisor(controller);
 		await restarted.recoverAndReap(state);
 		expect(controller.lastHandle?.forceCalls).toBe(1);
 		expect(restarted.snapshot.cleaned).toBe(true);
 	});
 
-	it("quarantines PID reuse and ambiguous identity without killing the observed process", () => {
+	it("quarantines PID reuse and ambiguous identity without killing the observed process", async () => {
 		for (const status of ["identity_mismatch", "ambiguous"] as const) {
 			const controller = new ControlledProcessController();
 			const first = supervisor(controller);
-			const state = first.launch();
+			const state = await first.launch(() => Promise.resolve());
 			const unrelated = new ControlledHandle(controller.launchRequest!, {
 				...controller.identity,
 				startToken: "reused-pid-start-token",
@@ -341,7 +358,7 @@ describe("current External Connector robust supervision", () => {
 	it("rechecks exact nonce and process identity before force termination", async () => {
 		const controller = new ControlledProcessController();
 		const value = supervisor(controller);
-		value.launch();
+		await value.launch(() => Promise.resolve());
 		controller.lastHandle!.terminationIdentity = {
 			...controller.identity,
 			startToken: "pid-was-reused",
@@ -360,7 +377,7 @@ describe("current External Connector robust supervision", () => {
 		try {
 			const store = new FileExternalConnectorSupervisorPrivateStateStore(path);
 			const controller = new ControlledProcessController();
-			const state = supervisor(controller).launch();
+			const state = await supervisor(controller).launch(() => Promise.resolve());
 			await store.write("attempt-1", state);
 			expect(await store.read("attempt-1")).toEqual(state);
 			expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({

@@ -482,12 +482,13 @@ function mappingFor(value: Fixture): CanonicalExternalConnectorMapping {
 
 async function persistSupervisorIdentity(value: Fixture): Promise<void> {
 	const mapping = mappingFor(value);
-	const handle = value.supervision.processController.launch({
+	const handle = await value.supervision.processController.launch({
 		supervisorRef: mapping.supervisor.ref,
 		operationNonce: mapping.supervisor.nonce,
 		detached: false,
 		containment: value.supervision.options.containment,
 	});
+	await handle.activate();
 	value.supervision.processController.launchCalls = 0;
 	await value.supervision.privateStateStore.write(value.attempt.attemptId, {
 		schemaVersion: 1,
@@ -880,6 +881,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 
 		expect(completed.ok).toBe(false);
 		expect(value.supervision.processController.launchCalls).toBe(1);
+		expect(value.supervision.processController.activationCalls).toBe(0);
 		expect(value.supervision.processController.forceCalls).toBe(1);
 		expect(value.driver.calls.spawn).toBe(0);
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
@@ -895,6 +897,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const completed = await value.connector.runAttempt(value.attempt, { correlation });
 
 		expect(completed.ok).toBe(false);
+		expect(value.supervision.processController.activationCalls).toBe(0);
 		expect(value.supervision.processController.forceCalls).toBe(1);
 		expect(value.driver.calls.spawn).toBe(0);
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toMatchObject({

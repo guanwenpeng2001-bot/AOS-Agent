@@ -19,21 +19,31 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 	readonly containment: "process_group" | "job_object";
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
+	readonly #onActivate: () => void;
 	readonly #onForce: () => boolean;
+	#activated = false;
 	#resolveExit: (() => void) | undefined;
 
 	constructor(
 		request: ExternalConnectorProcessLaunchRequest,
 		identity: ExternalConnectorProcessIdentity,
+		onActivate: () => void,
 		onForce: () => boolean,
 	) {
 		this.operationNonce = request.operationNonce;
 		this.containment = request.containment;
 		this.identity = identity;
+		this.#onActivate = onActivate;
 		this.#onForce = onForce;
 		this.exited = new Promise<void>((resolve) => {
 			this.#resolveExit = resolve;
 		});
+	}
+
+	async activate(): Promise<void> {
+		if (this.#activated) return;
+		this.#activated = true;
+		this.#onActivate();
 	}
 
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
@@ -69,11 +79,12 @@ export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConn
 export class TestExternalConnectorProcessController implements ExternalConnectorProcessController {
 	readonly handles = new Map<number, TestProcessHandle>();
 	launchCalls = 0;
+	activationCalls = 0;
 	forceCalls = 0;
 	forceExits = true;
 	#nextPid = 20_000;
 
-	launch(request: ExternalConnectorProcessLaunchRequest): ExternalConnectorProcessHandle {
+	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
 		this.launchCalls += 1;
 		const pid = this.#nextPid++;
 		const handle = new TestProcessHandle(
@@ -83,6 +94,9 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 				startToken: `start-${pid}`,
 				executableIdentity: "fixture-executable",
 				fileIdentity: "fixture-file",
+			},
+			() => {
+				this.activationCalls += 1;
 			},
 			() => {
 				this.forceCalls += 1;

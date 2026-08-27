@@ -24,7 +24,9 @@ export type ExternalConnectorSupervisorErrorCode =
 export type ExternalConnectorProcessContainment = "process_group" | "job_object";
 
 export function externalConnectorProcessContainment(platform: string = process.platform): ExternalConnectorProcessContainment {
-	return platform === "win32" ? "job_object" : "process_group";
+	if (platform === "linux") return "process_group";
+	if (platform === "win32") return "job_object";
+	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
 }
 
 export interface ExternalConnectorSupervisorReference {
@@ -61,7 +63,9 @@ export interface ExternalConnectorProcessHandle {
 	readonly containment: ExternalConnectorProcessContainment;
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
-	/** Atomically compare the nonce and full live identity before terminating the contained process. */
+	/** Release a parent-death guard only after the private process identity is durable. */
+	activate(): Promise<void>;
+	/** Immediately compare the nonce and full live identity before terminating the contained process. */
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult;
 }
 
@@ -81,8 +85,8 @@ export type ExternalConnectorProcessReattachResult =
 	| { readonly status: "not_found" | "identity_mismatch" | "ambiguous" };
 
 export interface ExternalConnectorProcessController {
-	/** Launch only inside the requested non-detached process group or Windows Job containment. */
-	launch(request: ExternalConnectorProcessLaunchRequest): ExternalConnectorProcessHandle;
+	/** Launch inactive inside the requested non-detached process group or Windows Job containment. */
+	launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle>;
 	/** Reattach only when the nonce and full live identity match; PID-only lookup is forbidden. */
 	reattach?(
 		identity: ExternalConnectorProcessIdentity,
@@ -523,6 +527,7 @@ function validProcessHandle(
 		value.detached === false &&
 		value.containment === containment &&
 		isExternalConnectorProcessIdentity(value.identity) &&
+		typeof value.activate === "function" &&
 		typeof value.forceTerminate === "function" &&
 		isRecord(value.exited) &&
 		typeof value.exited.then === "function"
@@ -599,13 +604,15 @@ export class ExternalConnectorBoundedSupervisor {
 		return this.#privateState === undefined ? undefined : clonePrivateState(this.#privateState);
 	}
 
-	launch(): ExternalConnectorSupervisorPrivateState {
+	async launch(
+		persistBeforeActivation: (state: ExternalConnectorSupervisorPrivateState) => Promise<void>,
+	): Promise<ExternalConnectorSupervisorPrivateState> {
 		if (this.#processHandle !== undefined || this.#phase !== "idle") {
 			throw new Error("External Connector supervisor is single-use");
 		}
 		let handle: ExternalConnectorProcessHandle;
 		try {
-			handle = this.#processController.launch(this.#launchRequest());
+			handle = await this.#processController.launch(this.#launchRequest());
 		} catch {
 			this.#quarantined = true;
 			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
@@ -615,6 +622,12 @@ export class ExternalConnectorBoundedSupervisor {
 			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
 		}
 		this.#bind(handle);
+		try {
+			await persistBeforeActivation(clonePrivateState(this.#privateState!));
+			await handle.activate();
+		} catch {
+			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+		}
 		this.#phase = "running";
 		return clonePrivateState(this.#privateState!);
 	}
