@@ -2,6 +2,7 @@
 
 import { Buffer } from "node:buffer";
 import { FoundationError } from "@aos-agent/agent-core";
+import { LockedAtomicFileStorage } from "./control-plane-atomic-storage.ts";
 import { isExternalConnectorMappingIdentifier } from "./external-session-mapping.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import {
@@ -21,6 +22,12 @@ export type ExternalConnectorSupervisorErrorCode =
 	| "side_effect_unknown"
 	| "reconcile_required";
 export type ExternalConnectorProcessContainment = "process_group" | "job_object";
+
+export function externalConnectorProcessContainment(platform: string = process.platform): ExternalConnectorProcessContainment {
+	if (platform === "linux") return "process_group";
+	if (platform === "win32") return "job_object";
+	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
+}
 
 export interface ExternalConnectorSupervisorReference {
 	readonly schemaVersion: typeof EXTERNAL_CONNECTOR_SUPERVISOR_SCHEMA_VERSION;
@@ -56,15 +63,31 @@ export interface ExternalConnectorProcessHandle {
 	readonly containment: ExternalConnectorProcessContainment;
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
-	forceTerminate(): void;
+	/** Release a parent-death guard only after the private process identity is durable. */
+	activate(): Promise<void>;
+	/** Immediately compare the nonce and full live identity before terminating the contained process. */
+	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult;
 }
+
+export interface ExternalConnectorProcessTerminationRequest {
+	readonly operationNonce: string;
+	readonly processIdentity: ExternalConnectorProcessIdentity;
+}
+
+export type ExternalConnectorProcessTerminationResult =
+	| "termination_requested"
+	| "already_exited"
+	| "identity_mismatch"
+	| "ambiguous";
 
 export type ExternalConnectorProcessReattachResult =
 	| { readonly status: "attached"; readonly handle: ExternalConnectorProcessHandle }
 	| { readonly status: "not_found" | "identity_mismatch" | "ambiguous" };
 
 export interface ExternalConnectorProcessController {
-	launch(request: ExternalConnectorProcessLaunchRequest): ExternalConnectorProcessHandle;
+	/** Launch inactive inside the requested non-detached process group or Windows Job containment. */
+	launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle>;
+	/** Reattach only when the nonce and full live identity match; PID-only lookup is forbidden. */
 	reattach?(
 		identity: ExternalConnectorProcessIdentity,
 		request: ExternalConnectorProcessLaunchRequest,
@@ -75,6 +98,131 @@ export interface ExternalConnectorSupervisorPrivateStateStore {
 	read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined>;
 	write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void>;
 	delete(attemptId: string): Promise<void>;
+}
+
+const EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION = 1 as const;
+
+interface ExternalConnectorSupervisorPrivateStateFile {
+	readonly schemaVersion: typeof EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION;
+	readonly attempts: Readonly<Record<string, ExternalConnectorSupervisorPrivateState>>;
+}
+
+const PRIVATE_STATE_FILE_KEYS = new Set(["schemaVersion", "attempts"]);
+
+function isExternalConnectorSupervisorPrivateStateFile(
+	value: unknown,
+): value is ExternalConnectorSupervisorPrivateStateFile {
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, PRIVATE_STATE_FILE_KEYS) ||
+		value.schemaVersion !== EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION ||
+		!isRecord(value.attempts)
+	) {
+		return false;
+	}
+	return Object.entries(value.attempts).every(
+		([attemptId, state]) =>
+			isExternalConnectorMappingIdentifier(attemptId) && isExternalConnectorSupervisorPrivateState(state),
+	);
+}
+
+function parseExternalConnectorSupervisorPrivateStateFile(
+	content: string | undefined,
+): ExternalConnectorSupervisorPrivateStateFile {
+	let value: unknown;
+	try {
+		value = JSON.parse(content ?? "");
+	} catch {
+		throw new TypeError("External Connector supervisor private state file is invalid");
+	}
+	if (!isExternalConnectorSupervisorPrivateStateFile(value)) {
+		throw new TypeError("External Connector supervisor private state file is invalid");
+	}
+	return value;
+}
+
+function serializeExternalConnectorSupervisorPrivateStateFile(
+	value: ExternalConnectorSupervisorPrivateStateFile,
+): string {
+	return `${JSON.stringify(value)}\n`;
+}
+
+/** Crash-safe restricted local storage for process identity. Never place this file in canonical Session storage. */
+export class FileExternalConnectorSupervisorPrivateStateStore
+	implements ExternalConnectorSupervisorPrivateStateStore
+{
+	readonly #storage: LockedAtomicFileStorage;
+
+	constructor(path: string) {
+		if (typeof path !== "string" || path.length === 0) {
+			throw new TypeError("External Connector supervisor private state path is invalid");
+		}
+		const initial = serializeExternalConnectorSupervisorPrivateStateFile({
+			schemaVersion: EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION,
+			attempts: {},
+		});
+		this.#storage = new LockedAtomicFileStorage(path, initial, {
+			validate: (content) => {
+				parseExternalConnectorSupervisorPrivateStateFile(content);
+			},
+			mode: 0o600,
+			directoryMode: 0o700,
+		});
+	}
+
+	async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
+		this.#assertAttemptId(attemptId);
+		return this.#storage.withLock((content) => {
+			const current = parseExternalConnectorSupervisorPrivateStateFile(content);
+			const state = current.attempts[attemptId];
+			return { result: state === undefined ? undefined : clonePrivateState(state) };
+		});
+	}
+
+	async write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void> {
+		this.#assertAttemptId(attemptId);
+		if (!isExternalConnectorSupervisorPrivateState(state)) {
+			throw new TypeError("External Connector supervisor private state is invalid");
+		}
+		this.#storage.withLock((content) => {
+			const current = parseExternalConnectorSupervisorPrivateStateFile(content);
+			const existing = current.attempts[attemptId];
+			if (existing !== undefined && !samePrivateState(existing, state)) {
+				throw new Error("External Connector supervisor private state identity conflict");
+			}
+			if (existing !== undefined) return { result: undefined };
+			return {
+				result: undefined,
+				next: serializeExternalConnectorSupervisorPrivateStateFile({
+					schemaVersion: EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION,
+					attempts: { ...current.attempts, [attemptId]: clonePrivateState(state) },
+				}),
+			};
+		});
+	}
+
+	async delete(attemptId: string): Promise<void> {
+		this.#assertAttemptId(attemptId);
+		this.#storage.withLock((content) => {
+			const current = parseExternalConnectorSupervisorPrivateStateFile(content);
+			if (current.attempts[attemptId] === undefined) return { result: undefined };
+			const attempts = { ...current.attempts };
+			delete attempts[attemptId];
+			return {
+				result: undefined,
+				next: serializeExternalConnectorSupervisorPrivateStateFile({
+					schemaVersion: EXTERNAL_CONNECTOR_PRIVATE_STATE_FILE_SCHEMA_VERSION,
+					attempts,
+				}),
+			};
+		});
+	}
+
+	#assertAttemptId(attemptId: string): void {
+		if (!isExternalConnectorMappingIdentifier(attemptId)) {
+			throw new TypeError("External Connector supervisor Attempt id is invalid");
+		}
+	}
 }
 
 export class InMemoryExternalConnectorSupervisorPrivateStateStore
@@ -322,6 +470,21 @@ function sameIdentity(left: ExternalConnectorProcessIdentity, right: ExternalCon
 	);
 }
 
+function samePrivateState(
+	left: ExternalConnectorSupervisorPrivateState,
+	right: ExternalConnectorSupervisorPrivateState,
+): boolean {
+	return (
+		left.schemaVersion === right.schemaVersion &&
+		left.reference.schemaVersion === right.reference.schemaVersion &&
+		left.reference.supervisorRef === right.reference.supervisorRef &&
+		left.reference.operationNonce === right.reference.operationNonce &&
+		left.detached === right.detached &&
+		left.containment === right.containment &&
+		sameIdentity(left.processIdentity, right.processIdentity)
+	);
+}
+
 function mergeDeadlines(
 	overrides: ExternalConnectorSupervisorDeadlineOverrides | undefined,
 ): Readonly<Record<ExternalConnectorSupervisorSegment, ExternalConnectorSegmentDeadline>> {
@@ -364,6 +527,7 @@ function validProcessHandle(
 		value.detached === false &&
 		value.containment === containment &&
 		isExternalConnectorProcessIdentity(value.identity) &&
+		typeof value.activate === "function" &&
 		typeof value.forceTerminate === "function" &&
 		isRecord(value.exited) &&
 		typeof value.exited.then === "function"
@@ -405,8 +569,8 @@ export class ExternalConnectorBoundedSupervisor {
 		if (!isExternalConnectorSupervisorReference(options.reference)) {
 			throw new TypeError("External Connector supervisor reference is invalid");
 		}
-		if (options.containment !== "process_group" && options.containment !== "job_object") {
-			throw new TypeError("External Connector process containment is invalid");
+		if (options.containment !== externalConnectorProcessContainment()) {
+			throw new TypeError("External Connector process containment does not match the host platform");
 		}
 		if (typeof options.processController?.launch !== "function") {
 			throw new TypeError("External Connector process controller is invalid");
@@ -440,13 +604,15 @@ export class ExternalConnectorBoundedSupervisor {
 		return this.#privateState === undefined ? undefined : clonePrivateState(this.#privateState);
 	}
 
-	launch(): ExternalConnectorSupervisorPrivateState {
+	async launch(
+		persistBeforeActivation: (state: ExternalConnectorSupervisorPrivateState) => Promise<void>,
+	): Promise<ExternalConnectorSupervisorPrivateState> {
 		if (this.#processHandle !== undefined || this.#phase !== "idle") {
 			throw new Error("External Connector supervisor is single-use");
 		}
 		let handle: ExternalConnectorProcessHandle;
 		try {
-			handle = this.#processController.launch(this.#launchRequest());
+			handle = await this.#processController.launch(this.#launchRequest());
 		} catch {
 			this.#quarantined = true;
 			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
@@ -456,6 +622,12 @@ export class ExternalConnectorBoundedSupervisor {
 			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
 		}
 		this.#bind(handle);
+		try {
+			await persistBeforeActivation(clonePrivateState(this.#privateState!));
+			await handle.activate();
+		} catch {
+			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+		}
 		this.#phase = "running";
 		return clonePrivateState(this.#privateState!);
 	}
@@ -754,13 +926,22 @@ export class ExternalConnectorBoundedSupervisor {
 
 	async #forceAndWait(): Promise<boolean> {
 		const handle = this.#processHandle;
-		if (handle === undefined) return false;
+		const state = this.#privateState;
+		if (handle === undefined || state === undefined) return false;
 		this.#phase = "disposing";
 		if (!this.#forcedTermination) {
 			this.#forcedTermination = true;
+			let termination: ExternalConnectorProcessTerminationResult;
 			try {
-				handle.forceTerminate();
+				termination = handle.forceTerminate(Object.freeze({
+					operationNonce: state.reference.operationNonce,
+					processIdentity: cloneIdentity(state.processIdentity),
+				}));
 			} catch {
+				this.#quarantined = true;
+				return false;
+			}
+			if (termination !== "termination_requested" && termination !== "already_exited") {
 				this.#quarantined = true;
 				return false;
 			}

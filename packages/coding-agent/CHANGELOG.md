@@ -50,6 +50,8 @@
 
 ### Fixed
 
+- External Connector production supervision now activates configured companion processes only after crash-safe private identity persistence, uses non-detached Linux process groups or Windows Job Objects, and re-verifies the operation nonce plus full live process identity immediately before contained-tree termination.
+- External Connector reconciliation now reaps an exactly identified activated companion after a Host crash before canonical mapping persistence, while missing, reused, or ambiguous process identities remain quarantined without termination, private-state deletion, or fabricated receipts.
 - Extension `sendUserMessage()` calls now settle only after the message is queued and propagate delivery failures to the caller.
 - Kept source-checkout child CLI startup, package-command discovery, home-path display, and full workspace test gates portable across Windows and isolated POSIX homes.
 - Canonical prompt preflight now remains observably active through lazy capability discovery, reports rejected preflights, projects active-tool changes synchronously, caps reserved context for small-window models, and omits undefined bash exit codes from durable Session records.

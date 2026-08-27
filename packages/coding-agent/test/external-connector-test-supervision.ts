@@ -4,8 +4,14 @@ import type {
 	ExternalConnectorProcessIdentity,
 	ExternalConnectorProcessLaunchRequest,
 	ExternalConnectorProcessReattachResult,
+	ExternalConnectorProcessTerminationRequest,
+	ExternalConnectorProcessTerminationResult,
+	ExternalConnectorSupervisorPrivateState,
 } from "../src/core/external-connector-supervisor.ts";
-import { InMemoryExternalConnectorSupervisorPrivateStateStore } from "../src/core/external-connector-supervisor.ts";
+import {
+	externalConnectorProcessContainment,
+	InMemoryExternalConnectorSupervisorPrivateStateStore,
+} from "../src/core/external-connector-supervisor.ts";
 
 class TestProcessHandle implements ExternalConnectorProcessHandle {
 	readonly operationNonce: string;
@@ -13,37 +19,91 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 	readonly containment: "process_group" | "job_object";
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
-	readonly #onForce: () => void;
+	readonly #onActivate: () => void;
+	readonly #onForce: () => boolean;
+	#activated = false;
 	#resolveExit: (() => void) | undefined;
 
 	constructor(
 		request: ExternalConnectorProcessLaunchRequest,
 		identity: ExternalConnectorProcessIdentity,
-		onForce: () => void,
+		onActivate: () => void,
+		onForce: () => boolean,
 	) {
 		this.operationNonce = request.operationNonce;
 		this.containment = request.containment;
 		this.identity = identity;
+		this.#onActivate = onActivate;
 		this.#onForce = onForce;
 		this.exited = new Promise<void>((resolve) => {
 			this.#resolveExit = resolve;
 		});
 	}
 
-	forceTerminate(): void {
-		this.#onForce();
-		this.#resolveExit?.();
-		this.#resolveExit = undefined;
+	async activate(): Promise<void> {
+		if (this.#activated) return;
+		this.#activated = true;
+		this.#onActivate();
+	}
+
+	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
+		if (
+			request.operationNonce !== this.operationNonce ||
+			request.processIdentity.pid !== this.identity.pid ||
+			request.processIdentity.startToken !== this.identity.startToken ||
+			request.processIdentity.executableIdentity !== this.identity.executableIdentity ||
+			request.processIdentity.fileIdentity !== this.identity.fileIdentity
+		) {
+			return "identity_mismatch";
+		}
+		if (this.#onForce()) {
+			this.#resolveExit?.();
+			this.#resolveExit = undefined;
+		}
+		return "termination_requested";
+	}
+}
+
+export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConnectorSupervisorPrivateStateStore {
+	failDeletes = 0;
+	failReads = 0;
+	failWrites = 0;
+
+	override async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
+		if (this.failReads > 0) {
+			this.failReads -= 1;
+			throw new Error("injected private identity read failure");
+		}
+		return super.read(attemptId);
+	}
+
+	override async write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void> {
+		if (this.failWrites > 0) {
+			this.failWrites -= 1;
+			throw new Error("injected private identity persistence failure");
+		}
+		await super.write(attemptId, state);
+	}
+
+	override async delete(attemptId: string): Promise<void> {
+		if (this.failDeletes > 0) {
+			this.failDeletes -= 1;
+			throw new Error("injected private identity delete failure");
+		}
+		await super.delete(attemptId);
 	}
 }
 
 export class TestExternalConnectorProcessController implements ExternalConnectorProcessController {
 	readonly handles = new Map<number, TestProcessHandle>();
 	launchCalls = 0;
+	activationCalls = 0;
 	forceCalls = 0;
+	forceExits = true;
+	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 	#nextPid = 20_000;
 
-	launch(request: ExternalConnectorProcessLaunchRequest): ExternalConnectorProcessHandle {
+	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
 		this.launchCalls += 1;
 		const pid = this.#nextPid++;
 		const handle = new TestProcessHandle(
@@ -55,7 +115,11 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 				fileIdentity: "fixture-file",
 			},
 			() => {
+				this.activationCalls += 1;
+			},
+			() => {
 				this.forceCalls += 1;
+				return this.forceExits;
 			},
 		);
 		this.handles.set(pid, handle);
@@ -66,6 +130,7 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 		identity: ExternalConnectorProcessIdentity,
 		request: ExternalConnectorProcessLaunchRequest,
 	): ExternalConnectorProcessReattachResult {
+		if (this.reattachResult !== undefined) return this.reattachResult;
 		const handle = this.handles.get(identity.pid);
 		if (handle === undefined) return { status: "not_found" };
 		if (
@@ -82,12 +147,13 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 
 export function createExternalConnectorTestSupervision() {
 	const processController = new TestExternalConnectorProcessController();
-	const privateStateStore = new InMemoryExternalConnectorSupervisorPrivateStateStore();
+	const privateStateStore = new TestExternalConnectorPrivateStateStore();
+	const containment = externalConnectorProcessContainment();
 	return {
 		processController,
 		privateStateStore,
 		options: {
-			containment: "process_group" as const,
+			containment,
 			processController,
 			privateStateStore,
 			deadlines: {

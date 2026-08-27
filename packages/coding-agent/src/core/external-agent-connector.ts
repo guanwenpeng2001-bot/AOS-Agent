@@ -381,16 +381,32 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		signal?: AbortSignal,
 	): Promise<ExternalConnectorBoundedSupervisor> {
 		const supervisor = this.#createSupervisor(operation);
-		let launched = false;
+		let statePersisted = false;
 		try {
 			if (signal?.aborted === true) throw signal.reason;
-			const state = supervisor.launch();
-			launched = true;
-			await this.#supervision.privateStateStore.write(operation.attemptId, state);
+			await supervisor.launch(async (state) => {
+				await this.#supervision.privateStateStore.write(operation.attemptId, state);
+				statePersisted = true;
+			});
 			this.#supervisors.set(operation.attemptId, supervisor);
 			return supervisor;
 		} catch (error) {
-			if (launched) await supervisor.dispose().catch(() => undefined);
+			const privateState = supervisor.hostPrivateState;
+			if (privateState !== undefined) {
+				try {
+					await supervisor.dispose();
+				} catch (cleanupError) {
+					if (!statePersisted) {
+						await this.#supervision.privateStateStore
+							.write(operation.attemptId, privateState)
+							.catch(() => undefined);
+					}
+					throw externalConnectorSupervisorFailure(cleanupError);
+				}
+				if (supervisor.snapshot.cleaned) {
+					await this.#supervision.privateStateStore.delete(operation.attemptId).catch(() => undefined);
+				}
+			}
 			throw externalConnectorSupervisorFailure(error);
 		}
 	}
@@ -408,20 +424,23 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		await this.#supervision.privateStateStore.delete(attemptId);
 	}
 
-	async #recoverAndReapSupervisor(operation: ExternalConnectorOperation): Promise<ResultValue<void, FoundationError>> {
-		const state = await this.#supervision.privateStateStore.read(operation.attemptId);
-		if (state === undefined) return Result.ok(undefined);
+	async #recoverSupervisorWithoutMapping(operation: ExternalConnectorOperation): Promise<void> {
+		const privateState = await this.#supervision.privateStateStore.read(operation.attemptId);
+		if (privateState === undefined) return;
 		const supervisor = this.#createSupervisor(operation);
-		try {
-			await supervisor.recoverAndReap(state);
-			await this.#supervision.privateStateStore.delete(operation.attemptId);
-			return Result.ok(undefined);
-		} catch (error) {
-			return Result.err(externalConnectorSupervisorFailure(error));
+		await supervisor.recoverAndReap(privateState);
+		if (!supervisor.snapshot.cleaned) {
+			throw externalConnectorSupervisorFailure(
+				new Error("External Connector recovered process did not terminate"),
+			);
 		}
+		await this.#supervision.privateStateStore.delete(operation.attemptId);
+		this.#supervisors.delete(operation.attemptId);
+		this.#driverHandles.delete(operation.attemptId);
+		this.#observationControllers.delete(operation.attemptId);
 	}
 
-	async #reattachOrLaunchSupervisor(
+	async #reattachSupervisor(
 		operation: ExternalConnectorOperation,
 		signal?: AbortSignal,
 	): Promise<ExternalConnectorBoundedSupervisor> {
@@ -433,7 +452,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (active !== undefined) return active;
 		const state = await this.#supervision.privateStateStore.read(operation.attemptId);
 		throwIfAborted();
-		if (state === undefined) return this.#launchSupervisor(operation, signal);
+		if (state === undefined) {
+			throw externalConnectorSupervisorFailure(
+				new ExternalConnectorSupervisorError("reconcile_required", "dispose", false),
+			);
+		}
 		const supervisor = this.#createSupervisor(operation);
 		try {
 			supervisor.reattach(state);
@@ -707,7 +730,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		let supervisor: ExternalConnectorBoundedSupervisor | undefined;
 		let handle: ExternalConnectorDriverHandle | undefined;
 		try {
-			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
+			supervisor = await this.#reattachSupervisor(operation, options?.signal);
 			const connected = await supervisor.run(
 				"start",
 				(signal) => this.#driver.connect(mapping.value, { signal }),
@@ -775,15 +798,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
-		if (operation.status === "reconcile_required") {
-			const reaped = await this.#recoverAndReapSupervisor(operation);
-			if (!reaped.ok) return reaped;
-		}
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
-			supervisor = await this.#reattachOrLaunchSupervisor(operation, options?.signal);
+			supervisor = await this.#reattachSupervisor(operation, options?.signal);
 		} catch {
 			await this.#markReconcile(operation, "driver_failure");
 			return Result.err(externalFailure("side_effect_unknown", "External connector process identity requires reconciliation", attempt.attemptId));
@@ -937,7 +956,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 		let supervisor: ExternalConnectorBoundedSupervisor | undefined;
 		try {
-			supervisor = await this.#reattachOrLaunchSupervisor(operation);
+			supervisor = await this.#reattachSupervisor(operation);
 			const activeHandle = this.#driverHandles.get(attemptId);
 			const connected = activeHandle ?? await supervisor.run(
 				"start",
@@ -1190,6 +1209,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const mapping = await this.#store.readMapping(operation.attemptId);
 		if (mapping === undefined) {
 			await this.#markReconcile(operation, "mapping_missing");
+			await this.#recoverSupervisorWithoutMapping(operation);
 			return Result.err(externalFailure("side_effect_unknown", "External connector durable mapping is missing", operation.attemptId));
 		}
 		if (
