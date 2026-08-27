@@ -12,7 +12,10 @@ import {
 	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
 	SessionLedger,
+	validateBindingEpoch,
 	validateDispatch,
+	validateTaskEnvelope,
+	validateTaskResult,
 	type AgentBinding,
 	type AttemptReceipt,
 	type BindingEpoch,
@@ -45,7 +48,10 @@ import type {
 	ExternalConnectorResolvedSelection,
 	ExternalConnectorSelection,
 } from "./external-agent-registry.ts";
-import { EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE } from "./external-agent-operation.ts";
+import {
+	EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
+	SessionExternalConnectorDurableStore,
+} from "./external-agent-operation.ts";
 
 const DECLARED_AT = "1970-01-01T00:00:00.000Z";
 
@@ -83,6 +89,18 @@ export interface ExternalConnectorProductExecution {
 	readonly runReceipt: RunReceipt;
 }
 
+export interface ExternalConnectorProductRecoveryInput {
+	readonly session: Session;
+	readonly writer?: SessionLedgerWriter;
+	readonly registry: ExternalConnectorRegistry;
+	readonly runId: string;
+	readonly providerId: string;
+	readonly selection?: ExternalConnectorSelection;
+	/** RPC recovery must not silently replace the immutable input of the durable Attempt. */
+	readonly expectedText?: string;
+	readonly signal?: AbortSignal;
+}
+
 export type ExternalConnectorProductErrorCode = "external_binding_invalid" | "external_capability_mismatch";
 
 export class ExternalConnectorProductError extends Error {
@@ -105,6 +123,16 @@ export interface PreparedExternalConnectorProductRun {
 	readonly dispatch: Dispatch;
 	readonly initialBindingEpoch: BindingEpoch;
 	readonly correlation: ExecutionCorrelation;
+}
+
+interface PersistedExternalConnectorProductRun {
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
+	readonly dispatch: Dispatch;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
+	readonly attemptReceipt: AttemptReceipt;
+	readonly timestamp: string;
 }
 
 /** Read-only admission result. No Foundation fact exists until this value is persisted after acceptance. */
@@ -141,6 +169,19 @@ function modelProjectionPreflight(value: unknown): ExternalConnectorModelProject
 function requireValue<T>(result: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: FoundationError }): T {
 	if (!result.ok) throw result.error;
 	return result.value;
+}
+
+function requireFactPayload(
+	record: Awaited<ReturnType<SessionLedger["get"]>>,
+	objectType: string,
+	objectId: string,
+): FoundationJsonValue {
+	if (record === undefined || record.kind !== "fact") {
+		throw new FoundationError("invalid_correlation", `Durable External Connector ${objectType} is missing`, {
+			details: { objectType, objectId },
+		});
+	}
+	return record.payload;
 }
 
 function token(runId: string, providerId: string): string {
@@ -501,68 +542,233 @@ export async function executePreparedExternalConnectorProductRun(
 			...(input.signal === undefined ? {} : { signal: input.signal }),
 		});
 		if (!executed.ok) throw executed.error;
-		const taskResultId = `task_result_${input.runId}`;
-		const settled = await settlement.settle({
-			taskResultId,
-			task,
-			sourceAttemptReceiptIds: [executed.value.receipt.attemptReceiptId],
-			summary: executed.value.receipt.status === "succeeded" ? "External connector run completed" : "External connector run did not complete",
-			artifacts: executed.value.receipt.artifacts,
-			tests: [],
-			evidence: [],
-			producer: {
-				producerKind: "host",
-				providerId: "aos.external-connector.terminal-gate",
-				producedAt: timestamp,
-				correlation: { ...correlation, taskResultId, attemptReceiptId: executed.value.receipt.attemptReceiptId },
+		return await settleExternalConnectorProductRun(
+			settlement,
+			{
+				task,
+				binding,
+				dispatch,
+				initialBindingEpoch: epoch,
+				correlation,
+				attemptReceipt: executed.value.receipt,
+				timestamp,
 			},
-		});
-		if (!settled.ok) throw settled.error;
-		const terminalStatus = executed.value.receipt.sideEffectState !== "none" || executed.value.receipt.status === "failed" || executed.value.receipt.status === "suspended"
-			? "failed" as const
-			: executed.value.receipt.status === "cancelled" ? "cancelled" as const : "completed" as const;
-		const failedTerminalError = terminalStatus === "failed"
-			? executed.value.receipt.error ?? {
+			input.runId,
+		);
+	} finally {
+		await settlement.release();
+	}
+}
+
+async function settleExternalConnectorProductRun(
+	settlement: LayeredResultSettlement,
+	persisted: PersistedExternalConnectorProductRun,
+	runId: string,
+): Promise<ExternalConnectorProductExecution> {
+	const { task, binding, dispatch, initialBindingEpoch, correlation, attemptReceipt, timestamp } = persisted;
+	const taskResultId = `task_result_${runId}`;
+	const settled = await settlement.settle({
+		taskResultId,
+		task,
+		sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
+		summary:
+			attemptReceipt.status === "succeeded"
+				? "External connector run completed"
+				: "External connector run did not complete",
+		artifacts: attemptReceipt.artifacts,
+		tests: [],
+		evidence: [],
+		producer: {
+			producerKind: "host",
+			providerId: "aos.external-connector.terminal-gate",
+			producedAt: timestamp,
+			correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId },
+		},
+	});
+	if (!settled.ok) throw settled.error;
+	const terminalStatus =
+		attemptReceipt.sideEffectState !== "none" ||
+		attemptReceipt.status === "failed" ||
+		attemptReceipt.status === "suspended"
+			? ("failed" as const)
+			: attemptReceipt.status === "cancelled"
+				? ("cancelled" as const)
+				: ("completed" as const);
+	const failedTerminalError =
+		terminalStatus === "failed"
+			? (attemptReceipt.error ?? {
 					code: "side_effect_unknown",
 					message: "External connector terminal outcome could not be proven.",
 					category: "side_effect_unknown" as const,
 					retryable: false,
-				}
+				})
 			: undefined;
-		const finalized = await settlement.finalize({
-			runReceiptId: `run_receipt_${input.runId}`,
-			runId: input.runId,
-			terminalStatus,
-			authority: createHostTerminalGateAuthority("aos.external-connector.terminal-gate", 1),
-			attemptReceiptIds: [executed.value.receipt.attemptReceiptId],
-			taskResultId: settled.value.taskResultId,
-			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			...(terminalStatus === "cancelled" ? {
-				terminalErrorCode: "run_cancelled",
-				terminalError: {
-					code: "run_cancelled",
-					message: "External connector run was cancelled",
-					category: "cancelled" as const,
-					retryable: false,
-				},
-			} : failedTerminalError === undefined ? {} : {
-				terminalErrorCode: failedTerminalError.code,
-				terminalError: failedTerminalError,
-			}),
-			completedAt: timestamp,
+	const finalized = await settlement.finalize({
+		runReceiptId: `run_receipt_${runId}`,
+		runId,
+		terminalStatus,
+		authority: createHostTerminalGateAuthority("aos.external-connector.terminal-gate", 1),
+		attemptReceiptIds: [attemptReceipt.attemptReceiptId],
+		taskResultId: settled.value.taskResultId,
+		usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+		...(terminalStatus === "cancelled"
+			? {
+					terminalErrorCode: "run_cancelled",
+					terminalError: {
+						code: "run_cancelled",
+						message: "External connector run was cancelled",
+						category: "cancelled" as const,
+						retryable: false,
+					},
+				}
+			: failedTerminalError === undefined
+				? {}
+				: {
+						terminalErrorCode: failedTerminalError.code,
+						terminalError: failedTerminalError,
+					}),
+		completedAt: timestamp,
+	});
+	if (!finalized.ok) throw finalized.error;
+	return {
+		task,
+		binding,
+		dispatch,
+		initialBindingEpoch,
+		attemptReceipt,
+		taskResult: settled.value,
+		runReceipt: finalized.value,
+	};
+}
+
+/** Recover one persisted product Attempt without creating another Attempt or issuing vendor start. */
+export async function recoverExternalConnectorProductRun(
+	input: ExternalConnectorProductRecoveryInput,
+): Promise<ExternalConnectorProductExecution> {
+	const identity = externalConnectorProductIdentity(input.runId, input.providerId);
+	const descriptor = input.registry.list().find((candidate) => candidate.providerId === input.providerId);
+	if (descriptor === undefined) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"The persisted External Connector provider is not registered in this Host.",
+		);
+	}
+	const selection = input.selection ?? {
+		providerId: descriptor.providerId,
+		revision: descriptor.revision,
+		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+	};
+	if (selection.providerId !== input.providerId) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"The requested External Connector does not match the persisted Attempt.",
+		);
+	}
+	const selected = await input.registry.select(selection);
+	if (!selected.ok) {
+		throw new ExternalConnectorProductError(
+			"external_capability_mismatch",
+			"The persisted External Connector capability snapshot is unavailable or drifted.",
+		);
+	}
+	const ledger = new SessionLedger(input.session, {
+		ownerId: `external-connector-recovery:${identity.bindingId}`,
+		...(input.writer === undefined ? {} : { writer: input.writer }),
+	});
+	const store = new SessionExternalConnectorDurableStore(ledger);
+	try {
+		const attempt = await store.readAttempt(identity.attemptId);
+		const binding = await store.readBinding(identity.bindingId);
+		const operation = await store.readOperation(identity.attemptId);
+		const executionInput = await store.readExecutionInput(identity.taskId);
+		if (attempt === undefined || binding === undefined || operation === undefined || executionInput === undefined) {
+			throw new FoundationError("invalid_correlation", "External Connector recovery facts are incomplete");
+		}
+		if (input.expectedText !== undefined && executionInput.input.text !== input.expectedText) {
+			throw new ExternalConnectorProductError(
+				"external_binding_invalid",
+				"External Connector recovery input does not match the persisted Attempt.",
+			);
+		}
+		const task = requireValue(
+			validateTaskEnvelope(requireFactPayload(await ledger.get("task", identity.taskId), "task", identity.taskId)),
+		);
+		const dispatch = requireValue(
+			validateDispatch(
+				requireFactPayload(await ledger.get("dispatch", identity.dispatchId), "dispatch", identity.dispatchId),
+			),
+		);
+		const epoch = requireValue(
+			validateBindingEpoch(
+				requireFactPayload(
+					await ledger.get("binding_epoch", identity.bindingEpochId),
+					"binding_epoch",
+					identity.bindingEpochId,
+				),
+			),
+		);
+		if (
+			attempt.taskId !== task.taskId ||
+			attempt.dispatchId !== dispatch.dispatchId ||
+			attempt.bindingId !== binding.bindingId ||
+			attempt.bindingEpochIds[0] !== epoch.bindingEpochId ||
+			dispatch.taskId !== task.taskId ||
+			dispatch.bindingId !== binding.bindingId ||
+			dispatch.taskExecutorProviderId !== selected.value.connector.providerId ||
+			operation.providerId !== selected.value.connector.providerId ||
+			operation.correlation.runId !== input.runId
+		) {
+			throw new FoundationError(
+				"invalid_correlation",
+				"External Connector recovery identity does not match durable facts",
+			);
+		}
+		let attemptReceipt = await store.readReceipt(attempt.attemptId);
+		if (attemptReceipt === undefined) {
+			const recovered =
+				operation.status === "running" && selected.value.capabilitySnapshot.resume
+					? await selected.value.connector.resumeAttempt(attempt, {
+							correlation: operation.correlation,
+							...(input.signal === undefined ? {} : { signal: input.signal }),
+						})
+					: await selected.value.connector.reconcileAttempt(attempt, {
+							correlation: operation.correlation,
+							...(input.signal === undefined ? {} : { signal: input.signal }),
+						});
+			if (!recovered.ok) throw recovered.error;
+			attemptReceipt = recovered.value;
+		}
+		const priorTaskResultRecord = await ledger.get("task_result", `task_result_${input.runId}`);
+		const settlementTimestamp = priorTaskResultRecord === undefined
+			? attemptReceipt.provenance.producedAt
+			: requireValue(validateTaskResult(requireFactPayload(
+				priorTaskResultRecord,
+				"task_result",
+				`task_result_${input.runId}`,
+			))).provenance.producedAt;
+		const settlement = new LayeredResultSettlement(input.session, {
+			ownerId: `external-connector:${binding.bindingId}`,
+			...(input.writer === undefined ? {} : { writer: input.writer }),
 		});
-		if (!finalized.ok) throw finalized.error;
-		return {
-			task,
-			binding,
-			dispatch,
-			initialBindingEpoch: epoch,
-			attemptReceipt: executed.value.receipt,
-			taskResult: settled.value,
-			runReceipt: finalized.value,
-		};
+		try {
+			return await settleExternalConnectorProductRun(
+				settlement,
+				{
+					task,
+					binding,
+					dispatch,
+					initialBindingEpoch: epoch,
+					correlation: operation.correlation,
+					attemptReceipt,
+					timestamp: settlementTimestamp,
+				},
+				input.runId,
+			);
+		} finally {
+			await settlement.release();
+		}
 	} finally {
-		await settlement.release();
+		await ledger.release();
 	}
 }
 
