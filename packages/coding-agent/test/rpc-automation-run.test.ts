@@ -1506,7 +1506,72 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("admits the selected ModelBroker fallback and projects it to the External Connector", async () => {
+	it("projects a disabled primary as an unused fallback through RPC", async () => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "aos_gateway" });
+			await harness.controller.handleCommand({ id: "external-disabled-primary-init", type: "initialize", protocolVersion: 1 });
+			await harness.controller.handleCommand({
+				id: "external-disabled-primary-start",
+				type: "run.start",
+				message: "execute with disabled gateway primary",
+				externalConnector: fixture.selection,
+				modelRoute: {
+					candidates: [
+						{
+							provider: DEFAULT_MODEL.provider,
+							id: "disabled-primary",
+							thinkingLevel: "medium",
+							serviceTier: "standard",
+							enabled: false,
+							available: true,
+						},
+						{
+							provider: DEFAULT_MODEL.provider,
+							id: DEFAULT_MODEL.id,
+							thinkingLevel: "high",
+							serviceTier: "priority",
+						},
+					],
+					fallback: { maxAttempts: 2, on: ["provider_unavailable"] },
+				},
+			});
+
+			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined());
+			const request = fixture.driver.spawnedRequest!;
+			expect(request.modelProjection).toMatchObject({
+				provider: DEFAULT_MODEL.provider,
+				model: DEFAULT_MODEL.id,
+				effort: "high",
+				serviceTier: "priority",
+				fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+			});
+			expect(request.modelProjection?.bindingDigest.value).toMatch(/^[a-f0-9]{64}$/);
+			expect(request.modelTranslation).toMatchObject({
+				sourceBindingDigest: request.modelProjection?.bindingDigest,
+				fields: {
+					provider: { targetField: "spawnProvider", value: DEFAULT_MODEL.provider },
+					model: { targetField: "spawnModel", value: DEFAULT_MODEL.id },
+					effort: { targetField: "spawnEffort", value: "high" },
+					serviceTier: { targetField: "spawnServiceTier", value: "priority" },
+					fallbackDecision: {
+						targetField: "spawnFallbackDecision",
+						value: '{"kind":"primary","reason":"fallback_not_used"}',
+					},
+					bindingDigest: {
+						targetField: "spawnBindingDigest",
+						value: `{"algorithm":"sha256","value":"${request.modelProjection?.bindingDigest.value}"}`,
+					},
+				},
+			});
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })));
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("projects an unavailable primary as a provider-unavailable fallback through RPC", async () => {
 		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
 		try {
 			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "aos_gateway" });
@@ -1556,6 +1621,10 @@ describe("RPC Automation Host run lifecycle", () => {
 					fallbackDecision: {
 						targetField: "spawnFallbackDecision",
 						value: '{"candidateIndex":1,"kind":"fallback","reason":"provider_unavailable"}',
+					},
+					bindingDigest: {
+						targetField: "spawnBindingDigest",
+						value: `{"algorithm":"sha256","value":"${request.modelProjection?.bindingDigest.value}"}`,
 					},
 				},
 			});
