@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -537,6 +537,114 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 	});
 }
 
+interface MainRpcPeer {
+	readonly child: ChildProcessWithoutNullStreams;
+	readonly stderr: () => string;
+	readonly send: (record: object) => void;
+	readonly waitFor: (predicate: (record: unknown) => boolean) => Promise<unknown>;
+	readonly waitForClose: () => Promise<number | null>;
+}
+
+function startMainRpcPeer(
+	cwd: string,
+	options: {
+		readonly phase: "crash" | "resume";
+		readonly sessionId: string;
+		readonly durableStatePath: string;
+		readonly durableMarkerPath: string;
+	},
+): MainRpcPeer {
+	const agentDir = join(cwd, "agent");
+	const child = spawn(process.execPath, sourceProcessArgs(MAIN_RPC_ENTRY), {
+		cwd,
+		env: {
+			...sourceProcessEnv(),
+			AOS_AGENT_CODING_AGENT_DIR: agentDir,
+			AOS_AGENT_CODING_AGENT_SESSION_DIR: join(agentDir, "sessions"),
+			AOS_AGENT_OFFLINE: "1",
+			AOS_AGENT_SKIP_VERSION_CHECK: "1",
+			AOS_MAIN_RPC_PHASE: options.phase,
+			AOS_MAIN_RPC_SESSION_ID: options.sessionId,
+			AOS_MAIN_RPC_DURABLE_STATE: options.durableStatePath,
+			AOS_MAIN_RPC_DURABLE_MARKER: options.durableMarkerPath,
+		},
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	const records: unknown[] = [];
+	const waiters: Array<{
+		readonly predicate: (record: unknown) => boolean;
+		readonly resolve: (record: unknown) => void;
+		readonly reject: (error: Error) => void;
+		readonly timer: ReturnType<typeof setTimeout>;
+	}> = [];
+	let stdout = "";
+	let stderr = "";
+	child.stdout.on("data", (chunk) => {
+		stdout += chunk.toString();
+		for (;;) {
+			const newline = stdout.indexOf("\n");
+			if (newline < 0) break;
+			const line = stdout.slice(0, newline).trim();
+			stdout = stdout.slice(newline + 1);
+			if (line.length === 0) continue;
+			let record: unknown;
+			try {
+				record = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			records.push(record);
+			for (let index = waiters.length - 1; index >= 0; index -= 1) {
+				const waiter = waiters[index]!;
+				if (!waiter.predicate(record)) continue;
+				waiters.splice(index, 1);
+				clearTimeout(waiter.timer);
+				waiter.resolve(record);
+			}
+		}
+	});
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk.toString();
+	});
+	child.on("close", () => {
+		for (const waiter of waiters.splice(0)) {
+			clearTimeout(waiter.timer);
+			waiter.reject(new Error(`main -> RPC closed before the expected record. stderr=${stderr}`));
+		}
+	});
+	return {
+		child,
+		stderr: () => stderr,
+		send: (record) => child.stdin.write(`${JSON.stringify(record)}\n`),
+		waitFor: async (predicate) => {
+			const existing = records.find(predicate);
+			if (existing !== undefined) return existing;
+			return await new Promise<unknown>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					const index = waiters.findIndex((waiter) => waiter.timer === timer);
+					if (index >= 0) waiters.splice(index, 1);
+					reject(new Error(`main -> RPC record timed out. stderr=${stderr}`));
+				}, 60_000);
+				waiters.push({ predicate, resolve, reject, timer });
+			});
+		},
+		waitForClose: async () =>
+			await new Promise<number | null>((resolve) => {
+				if (child.exitCode !== null) {
+					resolve(child.exitCode);
+					return;
+				}
+				child.once("close", resolve);
+			}),
+	};
+}
+
+function isRpcRecord(record: unknown, expected: { readonly id?: string; readonly type?: string }): boolean {
+	if (typeof record !== "object" || record === null) return false;
+	if (expected.id !== undefined && (!("id" in record) || record.id !== expected.id)) return false;
+	return expected.type === undefined || ("type" in record && record.type === expected.type);
+}
+
 describe("AgentRuntimeComposition", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -924,6 +1032,101 @@ describe("AgentRuntimeComposition", () => {
 		});
 		expect(result.stderr).not.toContain("Error:");
 	}, 70_000);
+
+	it("runs and resumes an External Connector through package-root main after a crash", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-main-rpc-external-resume-"));
+		directories.push(cwd);
+		const sessionId = "main-rpc-external-resume";
+		const durableStatePath = join(cwd, "external-supervisor.json");
+		const durableMarkerPath = join(cwd, "external-durable.marker");
+		const selectionSnapshot = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "main-rpc-trusted-connector",
+			revision: 1,
+			protocol: { name: "main-rpc-test", version: "1" },
+			modelAccess: "none",
+			resume: true,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const externalConnector = {
+			providerId: selectionSnapshot.providerId,
+			revision: selectionSnapshot.revision,
+			capabilitySnapshotDigest: selectionSnapshot.digest,
+		};
+		const first = startMainRpcPeer(cwd, {
+			phase: "crash",
+			sessionId,
+			durableStatePath,
+			durableMarkerPath,
+		});
+		first.send({ id: "external-init", type: "initialize", protocolVersion: 1 });
+		await first.waitFor((record) => isRpcRecord(record, { id: "external-init", type: "response" }));
+		first.send({
+			id: "external-start",
+			type: "run.start",
+			message: "durable package-root external run",
+			clientRequestId: "main-rpc-external-request",
+			externalConnector,
+		});
+		const started = await first.waitFor((record) =>
+			isRpcRecord(record, { id: "external-start", type: "response" }),
+		);
+		expect(started).toMatchObject({ success: true, data: { status: "accepted", attempt: 1 } });
+		if (typeof started !== "object" || started === null || !("data" in started)) {
+			throw new Error("External run.start response is missing durable run data");
+		}
+		const data = started.data;
+		if (typeof data !== "object" || data === null || !("runId" in data) || typeof data.runId !== "string") {
+			throw new Error("External run.start response is missing runId");
+		}
+		await vi.waitFor(() => expect(existsSync(durableMarkerPath)).toBe(true));
+		first.child.kill();
+		await first.waitForClose();
+
+		const sessionDir = join(cwd, "agent", "sessions");
+		const sessions = await SessionManager.list(cwd, sessionDir);
+		const sessionPath = sessions.find((session) => session.id === sessionId)?.path;
+		expect(sessionPath).toBeDefined();
+
+		const second = startMainRpcPeer(cwd, {
+			phase: "resume",
+			sessionId: `${sessionId}-reopen`,
+			durableStatePath,
+			durableMarkerPath,
+		});
+		try {
+			second.send({ id: "external-reopen-init", type: "initialize", protocolVersion: 1 });
+			await second.waitFor((record) => isRpcRecord(record, { id: "external-reopen-init", type: "response" }));
+			second.send({
+				id: "external-resume",
+				type: "run.resume",
+				sessionPath,
+				sourceRunId: data.runId,
+				message: "durable package-root external run",
+				externalConnector,
+			});
+			const resumed = await second.waitFor((record) =>
+				isRpcRecord(record, { id: "external-resume", type: "response" }),
+			);
+			if (typeof resumed === "object" && resumed !== null && "success" in resumed && resumed.success === false) {
+				throw new Error(`External run.resume failed: ${JSON.stringify(resumed)} stderr=${second.stderr()}`);
+			}
+			expect(resumed).toMatchObject({ success: true, data: { runId: data.runId } });
+			await vi.waitFor(() => expect(readFileSync(durableMarkerPath, "utf8")).toBe("terminal\n"));
+			second.send({ id: "external-get", type: "run.get", runId: data.runId });
+			const completed = await second.waitFor((record) =>
+				isRpcRecord(record, { id: "external-get", type: "response" }),
+			);
+			expect(completed).toMatchObject({ success: true, data: { receipt: { status: "completed" } } });
+			second.child.stdin.end();
+			await second.waitForClose();
+			expect(second.stderr()).not.toContain("Error:");
+		} finally {
+			if (second.child.exitCode === null) second.child.kill();
+		}
+	}, 130_000);
 
 	it("keeps optional providers off across SDK and RPC when Host composition omits them", async () => {
 		const fixture = await createRuntimeFixture();

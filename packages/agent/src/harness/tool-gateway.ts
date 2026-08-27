@@ -171,7 +171,34 @@ export class FoundationToolGateway implements ToolGateway, FoundationProvider, T
 		if (options.gatewayId.length === 0) throw new TypeError("gatewayId must not be empty");
 		this.providerId = options.gatewayId;
 		this.providers = Object.freeze([...options.providers]);
-		this.routes = Object.freeze(options.providers.flatMap((provider) => provider.routes).map((route) => Object.freeze({ ...route })));
+		const providerIds = new Set<string>();
+		const providersById = new Map<string, ToolGatewayProvider>();
+		for (const provider of this.providers) {
+			if (provider.providerId.length === 0 || providerIds.has(provider.providerId)) {
+				throw new FoundationError("tool_gateway_catalog_invalid", "Tool Gateway provider catalog is invalid");
+			}
+			providerIds.add(provider.providerId);
+			providersById.set(provider.providerId, provider);
+		}
+		const routes = options.providers.flatMap((provider) => provider.routes);
+		const routeKeys = new Set<string>();
+		for (const route of routes) {
+			const routeKey = canonicalFoundationJson([route.namespace ?? "", route.toolName]);
+			if (
+				route.kind.length === 0 ||
+				route.toolName.length === 0 ||
+				route.providerId.length === 0 ||
+				!Number.isSafeInteger(route.revision) ||
+				route.revision <= 0 ||
+				!providerIds.has(route.providerId) ||
+				providersById.get(route.providerId)?.kind !== route.kind ||
+				routeKeys.has(routeKey)
+			) {
+				throw new FoundationError("tool_gateway_catalog_invalid", "Tool Gateway route catalog is invalid");
+			}
+			routeKeys.add(routeKey);
+		}
+		this.routes = Object.freeze(routes.map((route) => Object.freeze({ ...route })));
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
@@ -220,7 +247,10 @@ export class FoundationToolGateway implements ToolGateway, FoundationProvider, T
 	}
 
 	async dispose(): Promise<void> {
-		await Promise.all(this.providers.map((provider) => provider.dispose()));
+		const results = await Promise.allSettled(this.providers.map((provider) => provider.dispose()));
+		if (results.some((result) => result.status === "rejected")) {
+			throw new FoundationError("side_effect_unknown", "Tool Gateway provider cleanup could not be confirmed");
+		}
 	}
 }
 
@@ -445,8 +475,8 @@ export function createSandboxOperationToolGatewayProvider(
 			}
 			const tracked = { operationId: operation.operationId, args: request.originalArguments };
 			inFlight.set(operation.operationId, tracked);
-			options.onOperationPayload?.(operation.operationId, request.originalArguments);
 			try {
+				options.onOperationPayload?.(operation.operationId, request.originalArguments);
 				const started = await sandbox.start(operation, { signal: gatewayOptions.signal });
 				if (!started.ok) return started;
 				const receiptChecked = validateWorkerReceipt(started.value);
@@ -471,10 +501,21 @@ export function createSandboxOperationToolGatewayProvider(
 		async dispose(): Promise<void> {
 			const operations = [...inFlight.values()];
 			inFlight.clear();
-			for (const tracked of operations) {
-				await sandbox.cancel(tracked.operationId);
+			const cancellations = await Promise.allSettled(
+				operations.map((tracked) => sandbox.cancel(tracked.operationId)),
+			);
+			let disposalError: unknown;
+			try {
+				await sandbox.dispose();
+			} catch (error) {
+				disposalError = error;
 			}
-			await sandbox.dispose();
+			const cancellationError = cancellations.find((result) => result.status === "rejected")?.reason;
+			if (disposalError !== undefined || cancellationError !== undefined) {
+				throw new FoundationError("side_effect_unknown", "Sandbox Tool Gateway cleanup could not be confirmed", {
+					cause: disposalError ?? cancellationError,
+				});
+			}
 		},
 	};
 }

@@ -16,9 +16,13 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { EXTERNAL_ERROR_MESSAGES, FoundationError, type ExternalErrorCode } from "@aos-agent/agent-core";
 import lockfile from "proper-lockfile";
 
-export type ControlPlaneStorageErrorCode = "control_state_corrupt" | "control_state_write_failed";
+export type ControlPlaneStorageErrorCode = Extract<
+	ExternalErrorCode,
+	"control_state_corrupt" | "control_state_write_failed"
+>;
 export type ControlPlaneStorageOperation = "write" | "fsync" | "rename" | "permission";
 export type ControlPlaneStorageTarget = "current" | "last-known-good" | "repair";
 
@@ -36,13 +40,11 @@ export interface ControlPlaneStorageOptions {
 	faultInjector?: (context: ControlPlaneStorageFaultContext) => void;
 }
 
-export class ControlPlaneStorageError extends Error {
+export class ControlPlaneStorageError extends FoundationError {
 	readonly code: ControlPlaneStorageErrorCode;
 
 	constructor(code: ControlPlaneStorageErrorCode, cause?: unknown) {
-		super(code === "control_state_corrupt" ? "Control-plane state is corrupt" : "Failed to write control-plane state", {
-			cause,
-		});
+		super(code, EXTERNAL_ERROR_MESSAGES[code], { cause });
 		this.name = "ControlPlaneStorageError";
 		this.code = code;
 	}

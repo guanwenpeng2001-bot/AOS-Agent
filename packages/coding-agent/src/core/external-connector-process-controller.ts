@@ -393,12 +393,13 @@ function sameIdentity(left: ExternalConnectorProcessIdentity, right: ExternalCon
 
 function executableIdentity(
 	path: string,
+	persistedExecutableIdentity?: string,
 ): Pick<ExternalConnectorProcessIdentity, "executableIdentity" | "fileIdentity"> {
 	const resolved = realpathSync(path);
 	const stat = statSync(resolved, { bigint: true });
-	const digest = createHash("sha256").update(readFileSync(resolved)).digest("hex");
 	return {
-		executableIdentity: `sha256:${digest}`,
+		executableIdentity:
+			persistedExecutableIdentity ?? `sha256:${createHash("sha256").update(readFileSync(resolved)).digest("hex")}`,
 		fileIdentity: `file:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`,
 	};
 }
@@ -407,6 +408,7 @@ function inspectLinuxProcess(
 	pid: number,
 	expectedNonce: string,
 	canContinue: () => boolean = () => true,
+	persistedExecutableIdentity?: string,
 ): ProcessInspection {
 	try {
 		if (!canContinue()) return { status: "ambiguous" };
@@ -430,7 +432,7 @@ function inspectLinuxProcess(
 		return {
 			status: "live",
 			value: {
-				identity: { pid, startToken, ...executableIdentity(executablePath) },
+				identity: { pid, startToken, ...executableIdentity(executablePath, persistedExecutableIdentity) },
 				nonceMarkerPresent: command.includes(nonceMarker(expectedNonce)),
 			},
 		};
@@ -443,6 +445,7 @@ function inspectDarwinProcess(
 	pid: number,
 	expectedNonce: string,
 	remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS,
+	persistedExecutableIdentity?: string,
 ): ProcessInspection {
 	const start = inspectDarwinField(pid, "lstart", remainingTimeoutMs);
 	if (start.status !== "value") return { status: start.status };
@@ -464,7 +467,7 @@ function inspectDarwinProcess(
 				identity: {
 					pid,
 					startToken: `darwin:${createHash("sha256").update(start.value).digest("hex")}`,
-					...executableIdentity(executablePath),
+					...executableIdentity(executablePath, persistedExecutableIdentity),
 				},
 				nonceMarkerPresent: markerPattern.test(command.value),
 			},
@@ -548,6 +551,7 @@ function inspectWindowsProcess(
 	expectedNonce: string,
 	shellPath: string,
 	remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS,
+	persistedExecutableIdentity?: string,
 ): ProcessInspection {
 	const timeout = remainingTimeoutMs();
 	if (timeout <= 0) return { status: "ambiguous" };
@@ -582,7 +586,11 @@ function inspectWindowsProcess(
 		return {
 			status: "live",
 			value: {
-				identity: { pid, startToken: value.startToken, ...executableIdentity(value.path) },
+				identity: {
+					pid,
+					startToken: value.startToken,
+					...executableIdentity(value.path, persistedExecutableIdentity),
+				},
 				nonceMarkerPresent: markerPattern.test(value.commandLine),
 			},
 		};
@@ -794,7 +802,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		const inspection = this.#inspect(identity.pid, request.operationNonce);
 		if (inspection.status === "not_found" && this.#platform !== "win32") {
 			const groupStatus = this.#inspectProcessGroup(identity.pid);
-			if (groupStatus !== "live") return { status: groupStatus };
+			return { status: groupStatus === "not_found" ? "not_found" : "ambiguous" };
 		} else if (inspection.status !== "live") {
 			return { status: inspection.status };
 		} else if (!inspection.value.nonceMarkerPresent || !sameIdentity(inspection.value.identity, identity)) {
@@ -844,13 +852,13 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		if (request.operationNonce !== boundNonce || !sameIdentity(request.processIdentity, boundIdentity))
 			return "identity_mismatch";
 		if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
-		const inspection = this.#inspect(boundIdentity.pid, boundNonce, deadlineAt);
+		const inspection = this.#inspect(boundIdentity.pid, boundNonce, deadlineAt, boundIdentity.executableIdentity);
 		if (inspection.status === "not_found" && this.#platform !== "win32") {
 			if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
 			const groupStatus = this.#inspectProcessGroup(boundIdentity.pid);
 			if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
 			if (groupStatus === "not_found") return "already_exited";
-			if (groupStatus === "ambiguous") return "ambiguous";
+			if (groupStatus === "ambiguous" || groupStatus === "live") return "ambiguous";
 		} else if (inspection.status !== "live") {
 			if (inspection.status === "not_found") return "already_exited";
 			return "ambiguous";
@@ -912,20 +920,28 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		);
 	}
 
-	#inspect(pid: number, nonce: string, deadlineAt?: number): ProcessInspection {
+	#inspect(
+		pid: number,
+		nonce: string,
+		deadlineAt?: number,
+		persistedExecutableIdentity?: string,
+	): ProcessInspection {
 		if (this.#platform === "linux") {
 			return inspectLinuxProcess(
 				pid,
 				nonce,
 				deadlineAt === undefined ? undefined : () => this.#remainingHelperMs(deadlineAt) > 0,
+				persistedExecutableIdentity,
 			);
 		}
 		const timeoutMs = deadlineAt === undefined ? ACTIVATION_TIMEOUT_MS : this.#remainingHelperMs(deadlineAt);
 		if (timeoutMs <= 0) return { status: "ambiguous" };
 		const remainingTimeoutMs =
 			deadlineAt === undefined ? () => ACTIVATION_TIMEOUT_MS : () => this.#remainingHelperMs(deadlineAt);
-		if (this.#platform === "darwin") return inspectDarwinProcess(pid, nonce, remainingTimeoutMs);
-		return inspectWindowsProcess(pid, nonce, this.#shellPath!, remainingTimeoutMs);
+		if (this.#platform === "darwin") {
+			return inspectDarwinProcess(pid, nonce, remainingTimeoutMs, persistedExecutableIdentity);
+		}
+		return inspectWindowsProcess(pid, nonce, this.#shellPath!, remainingTimeoutMs, persistedExecutableIdentity);
 	}
 
 	#remainingHelperMs(deadlineAt: number): number {

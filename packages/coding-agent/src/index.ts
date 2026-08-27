@@ -607,6 +607,7 @@ export {
 	type ExternalConnectorDescriptor,
 	type ExternalConnectorProviderClass,
 	type ExternalConnectorRegistration,
+	type ExternalConnectorReadinessStatus,
 	type ExternalConnectorRegistry,
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,

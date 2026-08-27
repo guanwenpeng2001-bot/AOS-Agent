@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { writeFileSync } from "node:fs";
 import {
 	createModelProfileRevision,
 	createConnectorCapabilitySnapshot,
@@ -31,12 +32,30 @@ import {
 	type AgentRuntimeCompositionContext,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
+import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import {
+	externalConnectorProcessContainment,
+	FileExternalConnectorSupervisorPrivateStateStore,
+	type ExternalConnectorProcessController,
+	type ExternalConnectorProcessHandle,
+	type ExternalConnectorProcessIdentity,
+	type ExternalConnectorProcessLaunchRequest,
+	type ExternalConnectorProcessTerminationRequest,
+	type ExternalConnectorProcessTerminationResult,
+} from "../../src/core/external-connector-supervisor.ts";
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "../../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../../src/core/vendor-drivers/types.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fake-worker-child.ts", import.meta.url));
@@ -49,8 +68,9 @@ let canonicalContext: AgentRuntimeCompositionContext | undefined;
 let canonicalToolGateway: ToolGateway | undefined;
 
 function requireCanonicalContext(context: AgentRuntimeCompositionContext): void {
-	if (canonicalContext === undefined) {
+	if (canonicalContext === undefined || context.session !== canonicalContext.session) {
 		canonicalContext = context;
+		canonicalToolGateway = undefined;
 		return;
 	}
 	if (
@@ -275,19 +295,160 @@ function createScheduler(context: AgentRuntimeCompositionContext): TrustedSchedu
 	};
 }
 
-function createConnectorRegistry(toolGateway: ToolGateway) {
+class MainRpcProcessHandle implements ExternalConnectorProcessHandle {
+	readonly detached = false as const;
+	readonly containment = externalConnectorProcessContainment();
+	readonly exited: Promise<void>;
+	readonly operationNonce: string;
+	readonly identity: ExternalConnectorProcessIdentity;
+	readonly #resolveExited: () => void;
+
+	constructor(operationNonce: string, identity: ExternalConnectorProcessIdentity) {
+		this.operationNonce = operationNonce;
+		this.identity = identity;
+		let resolveExited = (): void => undefined;
+		this.exited = new Promise<void>((resolve) => {
+			resolveExited = resolve;
+		});
+		this.#resolveExited = resolveExited;
+	}
+
+	async activate(): Promise<void> {}
+
+	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
+		if (
+			request.operationNonce !== this.operationNonce ||
+			request.processIdentity.pid !== this.identity.pid ||
+			request.processIdentity.startToken !== this.identity.startToken ||
+			request.processIdentity.executableIdentity !== this.identity.executableIdentity ||
+			request.processIdentity.fileIdentity !== this.identity.fileIdentity
+		) {
+			return "identity_mismatch";
+		}
+		this.#resolveExited();
+		return "termination_requested";
+	}
+
+	async forceTerminateBounded(
+		request: ExternalConnectorProcessTerminationRequest,
+	): Promise<ExternalConnectorProcessTerminationResult> {
+		return this.forceTerminate(request);
+	}
+}
+
+class MainRpcProcessController implements ExternalConnectorProcessController {
+	readonly #identity: ExternalConnectorProcessIdentity = Object.freeze({
+		pid: 42_000,
+		startToken: "main-rpc-start-token",
+		executableIdentity: "main-rpc-executable",
+		fileIdentity: "main-rpc-file",
+	});
+
+	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
+		return new MainRpcProcessHandle(request.operationNonce, this.#identity);
+	}
+
+	reattach(
+		identity: ExternalConnectorProcessIdentity,
+		request: ExternalConnectorProcessLaunchRequest,
+	) {
+		if (
+			request.operationNonce !== "main-rpc-durable-operation" ||
+			identity.pid !== this.#identity.pid ||
+			identity.startToken !== this.#identity.startToken ||
+			identity.executableIdentity !== this.#identity.executableIdentity ||
+			identity.fileIdentity !== this.#identity.fileIdentity
+		) {
+			return { status: "identity_mismatch" as const };
+		}
+		return { status: "attached" as const, handle: new MainRpcProcessHandle(request.operationNonce, this.#identity) };
+	}
+}
+
+class MainRpcExternalDriver implements ExternalConnectorVendorDriver {
+	async spawn(request: Parameters<ExternalConnectorVendorDriver["spawn"]>[0]): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: "main-rpc-external-session",
+			externalTurnId: "main-rpc-external-turn",
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
+	}
+
+	async *events(): AsyncIterable<never> {}
+
+	async connect(mapping: Parameters<ExternalConnectorVendorDriver["connect"]>[0]): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: mapping.externalSessionId,
+			...(mapping.externalTurnId === undefined ? {} : { externalTurnId: mapping.externalTurnId }),
+			supervisorRef: mapping.supervisor.ref,
+			operationNonce: mapping.supervisor.nonce,
+		};
+	}
+
+	async lookup(): Promise<ExternalConnectorDriverLookup> {
+		return { status: "missing" };
+	}
+
+	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		const marker = process.env.AOS_MAIN_RPC_DURABLE_MARKER;
+		if (process.env.AOS_MAIN_RPC_PHASE === "crash" && marker !== undefined) {
+			writeFileSync(marker, "durable\n", "utf8");
+			await new Promise<never>(() => undefined);
+		}
+		if (marker !== undefined) writeFileSync(marker, "terminal\n", "utf8");
+		return {
+			externalSessionId: handle.externalSessionId,
+			externalTurnId: handle.externalTurnId,
+			operationNonce: handle.operationNonce,
+			status: "succeeded",
+			artifacts: [],
+			sideEffectState: "none",
+			producedAt: NOW,
+		};
+	}
+
+	async write(): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<undefined> {
+		return undefined;
+	}
+	async dispose(): Promise<void> {}
+}
+
+function createConnectorRegistry(context: AgentRuntimeCompositionContext, toolGateway: ToolGateway) {
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId: "main-rpc-trusted-connector",
 		revision: 1,
 		protocol: { name: "main-rpc-test", version: "1" },
 		modelAccess: "none",
-		resume: false,
+		resume: process.env.AOS_MAIN_RPC_DURABLE_STATE !== undefined,
 		toolGateway: false,
 		artifacts: false,
 		images: false,
 	});
 	const registry = createExternalConnectorRegistry({ toolGateway });
+	const durableStatePath = process.env.AOS_MAIN_RPC_DURABLE_STATE;
+	const connector =
+		durableStatePath === undefined
+			? createExternalConnectorTestRuntime(snapshot)
+			: createDurableExternalAgentConnector({
+					providerId: snapshot.providerId,
+					capability: snapshot,
+					capabilityProbe: async () => Result.ok(snapshot),
+					store: new SessionExternalConnectorDurableStore(
+						new SessionLedger(context.session, { writer: context.harness.t5.writer }),
+					),
+					driver: new MainRpcExternalDriver(),
+					supervision: {
+						containment: externalConnectorProcessContainment(),
+						processController: new MainRpcProcessController(),
+						privateStateStore: new FileExternalConnectorSupervisorPrivateStateStore(durableStatePath),
+					},
+					operationNonce: () => "main-rpc-durable-operation",
+					now: () => NOW,
+				});
 	const registered = registry.registerPrepared({
 		descriptor: {
 			schemaVersion: 1,
@@ -296,7 +457,7 @@ function createConnectorRegistry(toolGateway: ToolGateway) {
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector: createExternalConnectorTestRuntime(snapshot),
+		connector,
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
@@ -363,7 +524,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		if (toolGateway === undefined || toolGateway === canonicalToolGateway) {
 			throw new Error("main RPC External registry did not share the canonical Tool Gateway");
 		}
-		return createConnectorRegistry(toolGateway);
+		return createConnectorRegistry(context, toolGateway);
 	},
 	taskCredentialProvider: (context) => {
 		requireCanonicalContext(context);
@@ -375,11 +536,12 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 	taskCredentialPolicyMaxTtlMs: 60_000,
 });
 
+const durableSessionId = process.env.AOS_MAIN_RPC_SESSION_ID;
 void main([
 	"--mode",
 	"rpc",
 	"--offline",
-	"--no-session",
+	...(durableSessionId === undefined ? ["--no-session"] : ["--session-id", durableSessionId]),
 	"--provider",
 	"google",
 	"--model",

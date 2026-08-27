@@ -1005,10 +1005,10 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 		expect(cancelled).toMatchObject({
 			ok: false,
-			error: {
-				code: "scheduler_attempt_recovery_failed",
-				message: "External connector capability truth could not be rechecked",
-			},
+				error: {
+					code: "external_capability_mismatch",
+					message: "External connector capability truth could not be rechecked",
+				},
 		});
 		expect(fixture.probeCalls()).toBe(4);
 		expect(driver.cancelCalls).toBe(1);
@@ -1078,7 +1078,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 		const cancelled = await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
 
-		expect(cancelled).toMatchObject({ ok: false, error: { code: "scheduler_attempt_recovery_failed" } });
+		expect(cancelled).toMatchObject({ ok: false, error: { code: "external_capability_mismatch" } });
 		expect(Date.now() - startedAt).toBeLessThan(250);
 		expect(abortObserved).toBe(true);
 		expect(driver.cancelCalls).toBe(1);

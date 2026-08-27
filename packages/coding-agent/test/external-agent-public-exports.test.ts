@@ -125,13 +125,48 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
+		code: "tool_gateway_catalog_invalid",
+		meaning: "The Tool Gateway route catalog is duplicate, incomplete, or inconsistent",
+		retryable: "no",
+	},
+	{
+		code: "control_state_corrupt",
+		meaning: "Trusted control-plane state is corrupt and cannot be used safely",
+		retryable: "no",
+	},
+	{
+		code: "control_state_write_failed",
+		meaning: "Trusted control-plane state could not be published atomically",
+		retryable: "no",
+	},
+	{
+		code: "session_transition_failed",
+		meaning: "A transactional Session scope transition failed before commit",
+		retryable: "no",
+	},
+	{
 		code: "external_process_identity_ambiguous",
 		meaning: "A Connector process identity could not be matched uniquely for safe recovery or termination",
 		retryable: "no",
 	},
 	{
+		code: "control_state_migration_failed",
+		meaning: "Trusted control-plane state could not be migrated safely",
+		retryable: "no",
+	},
+	{
+		code: "shutdown_deadline_exceeded",
+		meaning: "Host shutdown exceeded its bounded cleanup deadline",
+		retryable: "no",
+	},
+	{
 		code: "side_effect_unknown",
 		meaning: "An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden",
+		retryable: "no",
+	},
+	{
+		code: "run_terminal_conflict",
+		meaning: "A terminal Run fact conflicts with the canonical Run receipt",
 		retryable: "no",
 	},
 ] as const;
@@ -268,16 +303,14 @@ describe("External Connector public exports", () => {
 	it("documents exactly the public Connector-era external error contract", () => {
 		const publicCodes = publicAutomationErrorCodes();
 		const currentCodes = CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS.map((row) => row.code);
-		expect(publicCodes.filter((code) => code.startsWith("external_") || code === "side_effect_unknown")).toEqual(
-			currentCodes,
-		);
+		expect(publicCodes.filter((code) => EXTERNAL_ERROR_CODES.some((externalCode) => externalCode === code))).toEqual(currentCodes);
 		for (const code of LEGACY_EXTERNAL_AGENT_ERROR_CODES) expect(publicCodes).not.toContain(code);
 		expect(publicCodes).not.toContain("audit_persistence_failed");
 
 		const rpcDocs = readFileSync(fileURLToPath(new URL("../docs/rpc.md", import.meta.url)), "utf8");
 		const documentedRows = [...rpcDocs.matchAll(/^\| `([^`]+)` \| ([^|]+) \| (yes|no) \|$/gmu)]
 			.map((match) => ({ code: match[1], meaning: match[2]?.trim(), retryable: match[3] }))
-			.filter((row) => row.code?.startsWith("external_") || row.code === "side_effect_unknown");
+			.filter((row) => EXTERNAL_ERROR_CODES.some((externalCode) => externalCode === row.code));
 		expect(documentedRows).toEqual(CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS);
 		expect(rpcDocs).not.toMatch(/\bexternal_agent_[a-z0-9_]+\b/u);
 	});
@@ -293,7 +326,7 @@ describe("External Connector public exports", () => {
 	});
 
 	it("publishes every stable External Connector error through Foundation and Automation", () => {
-		expect(FOUNDATION_ERROR_CODES.filter((code) => code.startsWith("external_"))).toEqual(EXTERNAL_ERROR_CODES);
+		expect(FOUNDATION_ERROR_CODES.filter((code) => EXTERNAL_ERROR_CODES.some((externalCode) => externalCode === code))).toEqual(EXTERNAL_ERROR_CODES);
 		const expectedCategories = {
 			external_connector_unavailable: "provider",
 			external_protocol_unsupported: "provider",
@@ -316,7 +349,15 @@ describe("External Connector public exports", () => {
 			external_connector_executable_untrusted: "permission",
 			external_resource_limit_exceeded: "provider",
 			external_frame_oversize: "validation",
+			tool_gateway_catalog_invalid: "validation",
+			control_state_corrupt: "validation",
+			control_state_write_failed: "provider",
+			session_transition_failed: "provider",
 			external_process_identity_ambiguous: "provider",
+			control_state_migration_failed: "provider",
+			shutdown_deadline_exceeded: "provider",
+			side_effect_unknown: "unknown",
+			run_terminal_conflict: "conflict",
 		} as const;
 		for (const code of EXTERNAL_ERROR_CODES) {
 			expect(isAutomationErrorCode(code)).toBe(true);

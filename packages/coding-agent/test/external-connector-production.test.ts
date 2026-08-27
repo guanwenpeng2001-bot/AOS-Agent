@@ -19,6 +19,7 @@ import { ProductionExternalConnectorProcessController } from "../src/core/extern
 import {
 	createProductionExternalAgentConnector,
 	createProductionExternalConnectorSupervision,
+	getProductionExternalConnectorStartupStatus,
 } from "../src/core/external-connector-production.ts";
 import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
 import {
@@ -81,6 +82,12 @@ describe("production External Connector composition", () => {
 			process: processOptions,
 		});
 		expect(connector).toBeInstanceOf(DurableExternalAgentConnector);
+		expect(getProductionExternalConnectorStartupStatus(connector)).toEqual({
+			schemaVersion: 1,
+			trust: "host_configured",
+			readiness: "ready",
+			recovery: [],
+		});
 		const registry = createExternalConnectorRegistry();
 		const registered = await registry.register({
 			descriptor: {
@@ -114,6 +121,83 @@ describe("production External Connector composition", () => {
 			},
 		]);
 		await registry.dispose();
+	});
+
+	it("retains and exposes quarantined startup recovery through registry readiness", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-quarantine-"));
+		const privateStatePath = join(root, "private", "supervisors.json");
+		const attemptId = "attempt-production-quarantine";
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-quarantine-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const privateStore = new FileExternalConnectorSupervisorPrivateStateStore(privateStatePath);
+		await privateStore.write(attemptId, {
+			schemaVersion: 1,
+			reference: { schemaVersion: 1, supervisorRef: "quarantine-supervisor", operationNonce: "quarantine-nonce" },
+			detached: false,
+			containment: externalConnectorProcessContainment(),
+			processIdentity: {
+				pid: 2_147_483_000,
+				startToken: "missing-start",
+				executableIdentity: "sha256:missing",
+				fileIdentity: "file:missing",
+			},
+		});
+		const connector = await createProductionExternalAgentConnector({
+			providerId: capability.providerId,
+			capability,
+			capabilityProbe: async () => Result.ok(capability),
+			store: Object.freeze({
+				readOperation: async () => undefined,
+				readMapping: async () => undefined,
+			}) as unknown as ExternalConnectorDurableStore,
+			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+			privateStatePath,
+			process: processOptions,
+		});
+		const registry = createExternalConnectorRegistry();
+		try {
+			expect(getProductionExternalConnectorStartupStatus(connector)).toEqual({
+				schemaVersion: 1,
+				trust: "host_configured",
+				readiness: "quarantined",
+				recovery: [{ attemptId, status: "quarantined" }],
+			});
+			expect(registry.registerPrepared({
+				descriptor: {
+					schemaVersion: 1,
+					providerId: capability.providerId,
+					providerClass: "external_connector",
+					revision: capability.revision,
+					capabilitySnapshotDigest: capability.digest,
+				},
+				connector,
+				trusted: true,
+			}, capability)).toMatchObject({ ok: true });
+			expect(registry.readiness()).toEqual([{
+				schemaVersion: 1,
+				providerId: capability.providerId,
+				trust: "host_configured",
+				status: "quarantined",
+				reasonCode: "cleanup_unconfirmed",
+			}]);
+			expect(await registry.select({
+				providerId: capability.providerId,
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			})).toMatchObject({ ok: false });
+		} finally {
+			await registry.dispose().catch(() => undefined);
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("requires bounded active capability evidence before production connector publication", async () => {
@@ -172,13 +256,33 @@ describe("production External Connector composition", () => {
 			clock.advanceBy(5);
 			await expect(hanging).rejects.toMatchObject({ code: "side_effect_unknown", segment: "start" });
 
+			let cleanupStarted = false;
+			const cleanupStartedAt = Date.now();
+			await expect(createProductionExternalAgentConnector({
+				...base,
+				capabilityProbe: async () => new Promise<never>(() => undefined),
+				driver: Object.freeze({
+					dispose: async () => {
+						cleanupStarted = true;
+						await new Promise<never>(() => undefined);
+					},
+				}) as unknown as ExternalConnectorVendorDriver,
+				privateStatePath: join(root, "non-cooperative.json"),
+				deadlines: {
+					start: { hardMs: 20, idleMs: 20 },
+					dispose: { hardMs: 20, idleMs: 20 },
+				},
+			})).rejects.toMatchObject({ code: "side_effect_unknown", segment: "start" });
+			expect(cleanupStarted).toBe(true);
+			expect(Date.now() - cleanupStartedAt).toBeLessThan(250);
+
 			await expect(
 				createProductionExternalAgentConnector({
 					...base,
 					capabilityProbe: async () => Result.err(new FoundationError("provider_spawn_failed", "probe failed")),
 					privateStatePath: join(root, "failed.json"),
 				}),
-			).rejects.toMatchObject({ code: "task_executor_invalid_provider_class" });
+			).rejects.toMatchObject({ code: "external_connector_not_ready" });
 
 			await expect(
 				createProductionExternalAgentConnector({
@@ -186,7 +290,7 @@ describe("production External Connector composition", () => {
 					capabilityProbe: async () => Result.ok(mismatched),
 					privateStatePath: join(root, "mismatched.json"),
 				}),
-			).rejects.toMatchObject({ code: "task_executor_invalid_provider_class" });
+			).rejects.toMatchObject({ code: "external_capability_mismatch" });
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -356,6 +460,12 @@ describe("production External Connector composition", () => {
 			connector = created;
 
 			expect(processIsLive(targetPid)).toBe(true);
+			expect(getProductionExternalConnectorStartupStatus(created)).toEqual({
+				schemaVersion: 1,
+				trust: "host_configured",
+				readiness: "ready",
+				recovery: [{ attemptId, status: "reattached" }],
+			});
 			expect(await privateStore.list()).toHaveLength(1);
 			await created.dispose();
 			connector = undefined;

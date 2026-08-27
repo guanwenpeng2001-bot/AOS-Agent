@@ -289,6 +289,8 @@ function externalFailure(
 	code:
 		| "binding_epoch_mismatch"
 		| "binding_required_fact"
+		| "external_binding_invalid"
+		| "external_capability_mismatch"
 		| "external_mapping_conflict"
 		| "external_resume_unsupported"
 		| "external_terminal_ambiguous"
@@ -950,7 +952,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (executionInput === undefined) {
 			return Result.err(
 				externalFailure(
-					"binding_required_fact",
+					"external_binding_invalid",
 					"External connector requires durable canonical input",
 					attempt.attemptId,
 				),
@@ -1020,7 +1022,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			return Result.err(
 				externalFailure(
-					"scheduler_attempt_recovery_failed",
+					"external_capability_mismatch",
 					"External connector Attempt is not safe to start",
 					attempt.attemptId,
 				),
@@ -2038,7 +2040,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await this.#markReconcile(canonicalOperation, "binding_drift");
 			return Result.err(
 				externalFailure(
-					"binding_required_fact",
+					"external_binding_invalid",
 					"External connector binding drift requires reconciliation",
 					canonicalOperation.attemptId,
 				),
@@ -2051,7 +2053,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await this.#markReconcile(canonicalOperation, "capability_drift");
 			return Result.err(
 				externalFailure(
-					"scheduler_attempt_recovery_failed",
+					"external_capability_mismatch",
 					"External connector capability drift requires reconciliation",
 					canonicalOperation.attemptId,
 				),

@@ -662,6 +662,7 @@ async function installRpcExternalConnector(
 		readonly modelAccess: "none" | "agent_owned" | "aos_gateway";
 		readonly unsupportedServiceTier?: boolean;
 		readonly executionInputDelayMs?: number;
+		readonly executionInputGate?: Promise<void>;
 		readonly eventValues?: readonly FoundationJsonValue[];
 		readonly eventNextHangs?: boolean;
 		readonly readHangs?: boolean;
@@ -712,6 +713,7 @@ async function installRpcExternalConnector(
 		readAttempt: (attemptId) => canonicalStore.readAttempt(attemptId),
 		readBinding: (bindingId) => canonicalStore.readBinding(bindingId),
 		readExecutionInput: async (taskId) => {
+			if (options.executionInputGate !== undefined) await options.executionInputGate;
 			if (options.executionInputDelayMs !== undefined) await sleep(options.executionInputDelayMs);
 			return canonicalStore.readExecutionInput(taskId);
 		},
@@ -2765,9 +2767,13 @@ describe("RPC Automation Host run lifecycle", () => {
 	it("settles an External Connector deadline once without launching after the signal wins", async () => {
 		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
 		try {
+			let releaseExecutionInput!: () => void;
+			const executionInputGate = new Promise<void>((resolve) => {
+				releaseExecutionInput = resolve;
+			});
 			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
 				modelAccess: "none",
-				executionInputDelayMs: 100,
+				executionInputGate,
 			});
 			await harness.controller.handleCommand({
 				id: "external-deadline-init",
@@ -2781,6 +2787,8 @@ describe("RPC Automation Host run lifecycle", () => {
 				externalConnector: fixture.selection,
 				deadlineAt: new Date(Date.now() + 25).toISOString(),
 			});
+			await sleep(30);
+			releaseExecutionInput();
 			await vi.waitFor(
 				() => {
 					expect(
@@ -6774,7 +6782,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			const wireMessage = (terminal.receipt as { terminalError?: { message: string } }).terminalError?.message ?? "";
 			expect(wireMessage).not.toContain("secret");
 			expect(wireMessage).not.toContain("abc123");
-			expect(wireMessage).toBe("Run failed.");
+			expect(wireMessage).toBe(
+				"An external side effect may have occurred without conclusive durable evidence.",
+			);
 			expect(JSON.stringify(terminal)).not.toMatch(/secret|abc123/);
 
 			// The Automation transport ledger contains only accepted and started facts.

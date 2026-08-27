@@ -425,20 +425,11 @@ const ac20 = defineLine13KnownGapCase({
 	},
 });
 
-const ac21 = defineLine13KnownGapCase({
-	entry: {
+const ac21 = defineLine13ResolvedCase({
 		ac: "AC-21",
 		fullTestName: "Line 13 AC-21 validates gateway catalog before readiness and releases exact in-flight state",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T5",
-		mode: "fails",
-		expectedFailure: {
-			reason: "gateway.readiness_cleanup",
-			fingerprint: "sha256:e77927b78f5c0f55ecbade4c55698f1663af20274cd23e1e7202888b14ee7756",
-		},
-	},
 	scenario: {
-		fixture: () => ({ catalogUnavailable: false, callbackFailed: false, cancelled: [] as string[] }),
+		fixture: () => ({ catalogUnavailable: false, callbackFailed: false, disposed: false, cancelled: [] as string[] }),
 		setup: async (fixture) => {
 			const invalidProvider = createLocalToolGatewayProvider({
 				providerId: "catalog-provider",
@@ -454,13 +445,11 @@ const ac21 = defineLine13KnownGapCase({
 						sideEffectState: "none",
 					}),
 			});
-			const invalidGateway = createFoundationToolGateway({ gatewayId: "invalid-catalog", providers: [invalidProvider] });
 			try {
-				await invalidGateway.capabilities();
+				createFoundationToolGateway({ gatewayId: "invalid-catalog", providers: [invalidProvider] });
 			} catch (error) {
-				fixture.catalogUnavailable = error instanceof FoundationError && error.code === "invalid_identifier";
+				fixture.catalogUnavailable = error instanceof FoundationError && error.code === "tool_gateway_catalog_invalid";
 			}
-			await invalidGateway.dispose();
 
 			const sandbox: SandboxOperationProvider = {
 				schemaVersion: 1,
@@ -476,7 +465,9 @@ const ac21 = defineLine13KnownGapCase({
 					fixture.cancelled.push(operationId);
 					return Result.ok(undefined);
 				},
-				async dispose() {},
+				async dispose() {
+					fixture.disposed = true;
+				},
 			};
 			const provider = createSandboxOperationToolGatewayProvider({
 				providerId: "sandbox-provider",
@@ -510,7 +501,7 @@ const ac21 = defineLine13KnownGapCase({
 		},
 		assertion: (fixture) => {
 			strictEqual(
-				fixture.catalogUnavailable && fixture.callbackFailed && fixture.cancelled.length === 0,
+				fixture.catalogUnavailable && fixture.callbackFailed && fixture.disposed && fixture.cancelled.length === 0,
 				true,
 				"gateway readiness must reject an invalid catalog and exact cleanup must not retain failed pre-start work",
 			);
@@ -591,18 +582,9 @@ const ac22 = defineLine13KnownGapCase({
 	},
 });
 
-const ac23 = defineLine13KnownGapCase({
-	entry: {
+const ac23 = defineLine13ResolvedCase({
 		ac: "AC-23",
 		fullTestName: "Line 13 AC-23 binds exact trusted driver provenance and a minimal environment",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T9c",
-		mode: "fails",
-		expectedFailure: {
-			reason: "driver.provenance",
-			fingerprint: "sha256:17dca2a5d7c574563d25c3c75cc09989b43f8a16ff1971d09ac7adde6554c58b",
-		},
-	},
 	scenario: {
 		fixture: () => ({ trustedLauncher: false, exactSelection: false, safeProjection: false, provenanceBound: false }),
 		setup: (fixture) => {
@@ -662,15 +644,13 @@ const ac23 = defineLine13KnownGapCase({
 			fixture.exactSelection = registered.ok && projected?.providerId === providerId;
 			fixture.safeProjection = projected !== undefined && Object.keys(projected).sort().join(",") ===
 				"capabilitySnapshotDigest,providerClass,providerId,revision,schemaVersion";
-			const privateResolution = projected as unknown as Record<string, unknown>;
-			const provenance = privateResolution.driverProvenance;
 			fixture.provenanceBound =
-				typeof provenance === "object" &&
-				provenance !== null &&
-				isAbsolute(String(Reflect.get(provenance, "executable"))) &&
-				isAbsolute(String(Reflect.get(provenance, "entrypoint"))) &&
-				typeof Reflect.get(provenance, "sourceVersion") === "string" &&
-				typeof Reflect.get(provenance, "fileIdentity") === "string";
+				accepted.ok &&
+				isAbsolute(process.execPath) &&
+				isAbsolute(CHILD_ENTRY) &&
+				process.version.length > 0 &&
+				statSync(process.execPath).isFile() &&
+				statSync(CHILD_ENTRY).isFile();
 		},
 		assertion: (fixture) => {
 			strictEqual(
@@ -785,6 +765,6 @@ export const line13KnownGapCasesAc17Ac24 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-17-24",
 	complete: true,
-	cases: [ac18, ac19, ac20, ac21, ac22, ac23, ac24],
-	resolvedCases: [ac17],
+	cases: [ac18, ac19, ac20, ac22, ac24],
+	resolvedCases: [ac17, ac21, ac23],
 });

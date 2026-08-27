@@ -256,16 +256,44 @@ const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
 		message: EXTERNAL_ERROR_MESSAGES.external_frame_oversize,
 		category: "parameter",
 	},
+	tool_gateway_catalog_invalid: {
+		message: EXTERNAL_ERROR_MESSAGES.tool_gateway_catalog_invalid,
+		category: "parameter",
+	},
+	control_state_corrupt: {
+		message: EXTERNAL_ERROR_MESSAGES.control_state_corrupt,
+		category: "parameter",
+	},
+	control_state_write_failed: {
+		message: EXTERNAL_ERROR_MESSAGES.control_state_write_failed,
+		category: "transient",
+	},
+	session_transition_failed: {
+		message: EXTERNAL_ERROR_MESSAGES.session_transition_failed,
+		category: "transient",
+	},
 	external_process_identity_ambiguous: {
 		message: EXTERNAL_ERROR_MESSAGES.external_process_identity_ambiguous,
 		category: "side_effect_unknown",
+	},
+	control_state_migration_failed: {
+		message: EXTERNAL_ERROR_MESSAGES.control_state_migration_failed,
+		category: "transient",
+	},
+	shutdown_deadline_exceeded: {
+		message: EXTERNAL_ERROR_MESSAGES.shutdown_deadline_exceeded,
+		category: "deadline",
 	},
 	run_deadline_exceeded: {
 		message: "External connector run deadline was exceeded.",
 		category: "deadline",
 	},
 	side_effect_unknown: {
-		message: "External connector terminal outcome could not be proven.",
+		message: EXTERNAL_ERROR_MESSAGES.side_effect_unknown,
+		category: "side_effect_unknown",
+	},
+	run_terminal_conflict: {
+		message: EXTERNAL_ERROR_MESSAGES.run_terminal_conflict,
 		category: "side_effect_unknown",
 	},
 } as const satisfies Record<

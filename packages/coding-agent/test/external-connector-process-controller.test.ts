@@ -214,7 +214,7 @@ describe("production External Connector process controller", () => {
 	);
 
 	it.skipIf(process.platform === "win32")(
-		"force-contains a live process group after its guardian PID exits",
+		"quarantines a live process group after its guardian PID exits because live identity cannot be proven",
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), "aos-external-process-dead-guardian-"));
 			const companionPidPath = join(root, "companion.pid");
@@ -238,14 +238,14 @@ describe("production External Connector process controller", () => {
 				await expect.poll(() => processIsLive(handle.identity.pid)).toBe(false);
 
 				const reattached = controller.reattach(handle.identity, launchRequest);
-				expect(reattached.status).toBe("attached");
-				if (reattached.status !== "attached") throw new Error("live process group did not reattach");
-				expect(
-					reattached.handle.forceTerminate({
-						operationNonce: launchRequest.operationNonce,
-						processIdentity: handle.identity,
-					}),
-				).toBe("termination_requested");
+				expect(reattached.status).toBe("ambiguous");
+				expect(handle.forceTerminate({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: handle.identity,
+				})).toBe("ambiguous");
+				expect(processIsLive(companionPid)).toBe(true);
+				expect(processIsLive(descendantPid)).toBe(true);
+				process.kill(-handle.identity.pid, "SIGKILL");
 				await waitForExit(handle);
 				await expect.poll(() => processIsLive(companionPid), { timeout: 10_000 }).toBe(false);
 				await expect.poll(() => processIsLive(descendantPid), { timeout: 10_000 }).toBe(false);

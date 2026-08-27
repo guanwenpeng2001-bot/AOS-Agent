@@ -2776,8 +2776,15 @@ Error codes:
 | `external_connector_executable_untrusted` | The Connector executable or module is not from a trusted target | no |
 | `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
 | `external_frame_oversize` | A Connector protocol frame exceeded the configured byte limit | no |
+| `tool_gateway_catalog_invalid` | The Tool Gateway route catalog is duplicate, incomplete, or inconsistent | no |
+| `control_state_corrupt` | Trusted control-plane state is corrupt and cannot be used safely | no |
+| `control_state_write_failed` | Trusted control-plane state could not be published atomically | no |
+| `session_transition_failed` | A transactional Session scope transition failed before commit | no |
 | `external_process_identity_ambiguous` | A Connector process identity could not be matched uniquely for safe recovery or termination | no |
+| `control_state_migration_failed` | Trusted control-plane state could not be migrated safely | no |
+| `shutdown_deadline_exceeded` | Host shutdown exceeded its bounded cleanup deadline | no |
 | `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
+| `run_terminal_conflict` | A terminal Run fact conflicts with the canonical Run receipt | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.

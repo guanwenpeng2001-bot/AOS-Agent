@@ -29,7 +29,9 @@ import {
 	hasHostSupervisedExternalAgentConnectorProof,
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./external-agent-connector.ts";
+import { getProductionExternalConnectorStartupStatus } from "./external-connector-production.ts";
 import {
+	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,
 	type ExternalConnectorSegmentDeadline,
 } from "./external-connector-supervisor.ts";
@@ -70,6 +72,14 @@ export interface ExternalConnectorResolvedSelection {
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
 }
 
+export interface ExternalConnectorReadinessStatus {
+	readonly schemaVersion: 1;
+	readonly providerId: string;
+	readonly trust: "host_configured";
+	readonly status: "ready" | "not_ready" | "quarantined";
+	readonly reasonCode: "ready" | "probe_failed" | "cleanup_unconfirmed";
+}
+
 type ExternalConnectorToolGatewayConsumerBinder = (attemptId: string) => () => void;
 
 const externalConnectorToolGatewayConsumerBinders = new WeakMap<
@@ -91,6 +101,10 @@ export interface ExternalConnectorRegistry {
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>>;
 	list(): readonly ExternalConnectorDescriptor[];
+	/** Passive, side-effect-free readiness projection. */
+	readiness(): readonly ExternalConnectorReadinessStatus[];
+	/** Explicit bounded active probe. It never creates a vendor session or Attempt. */
+	probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus>;
 	dispose(): Promise<void>;
 }
 
@@ -475,7 +489,7 @@ function cloneConnectorDescriptor(value: ExternalConnectorDescriptor): ExternalC
 
 function lifecycleCapabilityError(): FoundationError {
 	return new FoundationError(
-		"scheduler_attempt_recovery_failed",
+		"external_capability_mismatch",
 		"External connector capability truth could not be rechecked",
 	);
 }
@@ -683,6 +697,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	readonly #connectors = new Map<string, RegisteredConnector>();
 	readonly #pendingRegistrations = new Map<string, PendingConnector>();
 	readonly #disposalOperations = new Map<ExternalAgentConnector, Promise<void>>();
+	readonly #readiness = new Map<string, ExternalConnectorReadinessStatus>();
 	readonly #lifetime = new AbortController();
 	readonly #options: ExternalConnectorRegistryOptions;
 	#disposed = false;
@@ -703,6 +718,26 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		return disposal;
 	}
 
+	async #disposeConnectorBounded(
+		connector: ExternalAgentConnector,
+		implementation: RegisteredExternalConnectorImplementation,
+	): Promise<boolean> {
+		try {
+			await runExternalConnectorHostDispose(
+				() => this.#disposeConnectorOnce(connector, implementation),
+				{
+					...(this.#options.capabilityProbeDeadline === undefined
+						? {}
+						: { deadline: this.#options.capabilityProbeDeadline }),
+					...(this.#options.clock === undefined ? {} : { clock: this.#options.clock }),
+				},
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	async #verifyRegisteredConnector(
 		registered: RegisteredConnector,
 		execution?: FoundationProviderExecutionOptions,
@@ -719,6 +754,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (
 			this.#disposed ||
 			this.#connectors.get(registered.descriptor.providerId) !== registered ||
+			this.#readiness.get(registered.descriptor.providerId)?.status === "quarantined" ||
 			(requireCurrentImplementation &&
 				!isCurrentExternalConnectorImplementation(
 					registered.connector,
@@ -742,7 +778,16 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					registered.implementationProof,
 				),
 		});
-		if (!snapshotResult.ok) return snapshotResult;
+		if (!snapshotResult.ok) {
+			this.#readiness.set(registered.descriptor.providerId, Object.freeze({
+				schemaVersion: 1,
+				providerId: registered.descriptor.providerId,
+				trust: "host_configured",
+				status: "not_ready",
+				reasonCode: "probe_failed",
+			}));
+			return snapshotResult;
+		}
 		if (this.#disposed || this.#connectors.get(registered.descriptor.providerId) !== registered) {
 			return Result.err(
 				connectorRegistryError("External connector registry changed while resolving the selection."),
@@ -815,7 +860,17 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				isCurrentImplementation: () =>
 					isCurrentExternalConnectorImplementation(connector, implementation, implementationProof),
 			});
-			if (!snapshotResult.ok) return snapshotResult;
+			if (!snapshotResult.ok) {
+				const cleaned = await this.#disposeConnectorBounded(connector, implementation);
+				this.#readiness.set(descriptor.providerId, Object.freeze({
+					schemaVersion: 1,
+					providerId: descriptor.providerId,
+					trust: "host_configured",
+					status: cleaned ? "not_ready" : "quarantined",
+					reasonCode: cleaned ? "probe_failed" : "cleanup_unconfirmed",
+				}));
+				return snapshotResult;
+			}
 			if (this.#disposed) {
 				try {
 					await this.#disposeConnectorOnce(connector, implementation);
@@ -952,6 +1007,14 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			capabilityTruth: truthResult.value,
 		};
 		this.#connectors.set(descriptor.providerId, stored);
+		const startupStatus = getProductionExternalConnectorStartupStatus(connector);
+		this.#readiness.set(descriptor.providerId, Object.freeze({
+			schemaVersion: 1,
+			providerId: descriptor.providerId,
+			trust: "host_configured",
+			status: startupStatus?.readiness === "quarantined" ? "quarantined" : "ready",
+			reasonCode: startupStatus?.readiness === "quarantined" ? "cleanup_unconfirmed" : "ready",
+		}));
 		return Result.ok(storedDescriptor);
 	}
 
@@ -1076,6 +1139,23 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		return Object.freeze([...this.#connectors.values()].map(({ descriptor }) => descriptor));
 	}
 
+	readiness(): readonly ExternalConnectorReadinessStatus[] {
+		return Object.freeze([...this.#readiness.values()]);
+	}
+
+	async probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus> {
+		const selected = await this.select(selection);
+		const status: ExternalConnectorReadinessStatus = Object.freeze({
+			schemaVersion: 1,
+			providerId: selection.providerId,
+			trust: "host_configured",
+			status: selected.ok ? "ready" : "not_ready",
+			reasonCode: selected.ok ? "ready" : "probe_failed",
+		});
+		this.#readiness.set(selection.providerId, status);
+		return status;
+	}
+
 	dispose(): Promise<void> {
 		if (this.#disposal !== undefined) return this.#disposal;
 		this.#disposed = true;
@@ -1090,6 +1170,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		];
 		this.#connectors.clear();
 		this.#pendingRegistrations.clear();
+		this.#readiness.clear();
 		this.#disposal = Promise.allSettled(
 			connectors.map(({ connector, implementation }) =>
 				this.#disposeConnectorOnce(connector, implementation),

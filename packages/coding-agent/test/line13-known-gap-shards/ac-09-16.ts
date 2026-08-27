@@ -838,6 +838,41 @@ async function prepareAtomicControlStateFixture(fixture: AtomicControlStateFixtu
 	if (existsSync(fixture.identityEscapePath)) fixture.mutatedCommittedFiles.push("identity");
 }
 
+const ac15 = defineLine13ResolvedCase({
+	ac: "AC-15",
+	fullTestName: "Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
+	scenario: {
+		fixture: externalReadinessFixture,
+		assertion: async ({ registry, descriptor }) => {
+			assert.deepEqual(registry.list(), [{
+				schemaVersion: 1,
+				providerId: descriptor.providerId,
+				providerClass: "external_connector",
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			}]);
+			const selected = await registry.select({
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			});
+			assert.equal(selected.ok, true);
+			assert.deepEqual(registry.readiness(), [{
+				schemaVersion: 1,
+				providerId: descriptor.providerId,
+				trust: "host_configured",
+				status: "ready",
+				reasonCode: "ready",
+			}]);
+			assert.equal((await registry.probeReadiness({
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			})).status, "ready");
+		},
+	},
+});
+
 export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-09-16",
@@ -988,47 +1023,9 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-15",
-				fullTestName:
-					"Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
-				baseSha: BASE_SHA,
-				ownerStage: "T9a",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external.readiness_api_missing",
-					fingerprint: "sha256:95fdeb1ac1b991e6876a509559f265a2cd67d19c41aa5008b2885a2dcab1551e",
-				},
-			},
-			scenario: {
-				fixture: externalReadinessFixture,
-				assertion: async ({ registry, descriptor }) => {
-					assert.deepEqual(registry.list(), [
-						{
-							schemaVersion: 1,
-							providerId: descriptor.providerId,
-							providerClass: "external_connector",
-							revision: descriptor.revision,
-							capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-						},
-					]);
-					const selected = await registry.select({
-						providerId: descriptor.providerId,
-						revision: descriptor.revision,
-						capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-					});
-					assert.equal(selected.ok, true);
-					assert.equal(
-						"probeReadiness" in registry,
-						true,
-						"expected the trusted External registry to expose bounded readiness diagnostics",
-					);
-				},
-			},
-		}),
 	],
 	resolvedCases: [
+		ac15,
 		defineLine13ResolvedCase({
 			ac: "AC-13",
 			fullTestName: "Line 13 AC-13 exposes one canonical Session authority from package-root composition",

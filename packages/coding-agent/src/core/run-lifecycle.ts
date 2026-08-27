@@ -673,7 +673,13 @@ export type AutomationErrorCode =
 	| "external_connector_executable_untrusted"
 	| "external_resource_limit_exceeded"
 	| "external_frame_oversize"
+	| "tool_gateway_catalog_invalid"
+	| "control_state_corrupt"
+	| "control_state_write_failed"
+	| "session_transition_failed"
 	| "external_process_identity_ambiguous"
+	| "control_state_migration_failed"
+	| "shutdown_deadline_exceeded"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
 	// contract instead of degrading them into generic model failures.
@@ -714,6 +720,7 @@ export type AutomationErrorCode =
 	| "model_error"
 	| "run_cancelled"
 	| "side_effect_unknown"
+	| "run_terminal_conflict"
 	| "user_aborted"
 	// Task-level Human Gate control-plane errors.
 	| "task_gate_invalid"

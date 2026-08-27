@@ -88,14 +88,64 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		expect(await payloadGateway.execute(request)).toMatchObject({ ok: false, error: { code: "foundation_schema_invalid_shape" } });
 	});
 
-	it("rejects ambiguous routes instead of falling through", async () => {
+	it("rejects duplicate and missing-provider routes at construction", () => {
 		const provider = (providerId: string) => createLocalToolGatewayProvider({
 			providerId,
 			routes: [{ kind: "local", toolName: "read", providerId, revision: 1 }],
 			invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 		});
-		const gateway = createFoundationToolGateway({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] });
-		expect(await gateway.execute({ ...request, namespace: undefined, toolName: "read" })).toMatchObject({ ok: false, error: { code: "invalid_identifier" } });
+		expect(() => createFoundationToolGateway({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] }))
+			.toThrow(expect.objectContaining({ code: "tool_gateway_catalog_invalid" }));
+		const missing = createLocalToolGatewayProvider({
+			providerId: "local-1",
+			routes: [{ kind: "local", toolName: "read", providerId: "missing", revision: 1 }],
+			invoke: async (value) => Result.ok({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" }),
+		});
+		expect(() => createFoundationToolGateway({ gatewayId: "gateway-missing", providers: [missing] }))
+			.toThrow(expect.objectContaining({ code: "tool_gateway_catalog_invalid" }));
+	});
+
+	it("cleans sandbox tracking and always disposes when callbacks throw", async () => {
+		let cancelCalls = 0;
+		let disposeCalls = 0;
+		const sandbox: SandboxOperationProvider = {
+			schemaVersion: 1,
+			providerId: "sandbox-cleanup",
+			providerClass: "operation_worker",
+			capabilities: async () => [],
+			start: async () => new Promise<never>(() => undefined),
+			cancel: async () => {
+				cancelCalls += 1;
+				throw new Error("cancel failed");
+			},
+			dispose: async () => {
+				disposeCalls += 1;
+			},
+		};
+		const throwingProvider = createSandboxOperationToolGatewayProvider({
+			providerId: sandbox.providerId,
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
+			sandbox,
+			translator: createDefaultSandboxOperationTranslator(() => "callback-operation"),
+			onOperationPayload: () => {
+				throw new Error("payload callback failed");
+			},
+		});
+		const throwingGateway = createFoundationToolGateway({ gatewayId: "gateway-callback", providers: [throwingProvider] });
+		await expect(throwingGateway.execute(request)).rejects.toThrow("payload callback failed");
+		await throwingGateway.dispose();
+		expect({ cancelCalls, disposeCalls }).toEqual({ cancelCalls: 0, disposeCalls: 1 });
+
+		const hangingProvider = createSandboxOperationToolGatewayProvider({
+			providerId: sandbox.providerId,
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
+			sandbox,
+			translator: createDefaultSandboxOperationTranslator(() => "hanging-operation"),
+		});
+		const hangingGateway = createFoundationToolGateway({ gatewayId: "gateway-cancel", providers: [hangingProvider] });
+		void hangingGateway.execute(request);
+		await expect(hangingGateway.dispose()).rejects.toMatchObject({ code: "side_effect_unknown" });
+		expect({ cancelCalls, disposeCalls }).toEqual({ cancelCalls: 1, disposeCalls: 2 });
 	});
 
 	it("drives the public consumer-shaped fake through success/failure/cancel/deadline/recovery settlements", async () => {

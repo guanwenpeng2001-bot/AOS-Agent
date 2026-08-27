@@ -23,7 +23,15 @@ export const EXTERNAL_ERROR_CODES = Object.freeze([
 	"external_connector_executable_untrusted",
 	"external_resource_limit_exceeded",
 	"external_frame_oversize",
+	"tool_gateway_catalog_invalid",
+	"control_state_corrupt",
+	"control_state_write_failed",
+	"session_transition_failed",
 	"external_process_identity_ambiguous",
+	"control_state_migration_failed",
+	"shutdown_deadline_exceeded",
+	"side_effect_unknown",
+	"run_terminal_conflict",
 ] as const);
 export type ExternalErrorCode = (typeof EXTERNAL_ERROR_CODES)[number];
 
@@ -50,7 +58,15 @@ export const EXTERNAL_ERROR_MESSAGES: Readonly<Record<ExternalErrorCode, string>
 	external_connector_executable_untrusted: "External connector executable is untrusted.",
 	external_resource_limit_exceeded: "External connector exceeded a supervised resource limit.",
 	external_frame_oversize: "External connector frame exceeds the configured limit.",
+	tool_gateway_catalog_invalid: "Tool Gateway route catalog is invalid.",
+	control_state_corrupt: "Control-plane state is corrupt.",
+	control_state_write_failed: "Control-plane state could not be written safely.",
+	session_transition_failed: "Session transition failed.",
 	external_process_identity_ambiguous: "External connector process identity is ambiguous.",
+	control_state_migration_failed: "Control-plane state migration failed.",
+	shutdown_deadline_exceeded: "Shutdown exceeded its bounded deadline.",
+	side_effect_unknown: "An external side effect may have occurred without conclusive durable evidence.",
+	run_terminal_conflict: "Run terminal state conflicts with the canonical receipt.",
 });
 
 /** Foundation-owned errors. Durable-ledger codes are appended below from the same catalog source. */
@@ -89,7 +105,6 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"tool_pre_hook_denied",
 	"tool_post_validation_failed",
 	...EXTERNAL_ERROR_CODES,
-	"side_effect_unknown",
 	"role_not_found",
 	"role_slug_conflict",
 	"role_revision_immutable",
@@ -250,7 +265,15 @@ const EXTERNAL_ERROR_CATEGORIES: Readonly<Record<ExternalErrorCode, FoundationEr
 	external_connector_executable_untrusted: "permission",
 	external_resource_limit_exceeded: "provider",
 	external_frame_oversize: "validation",
+	tool_gateway_catalog_invalid: "validation",
+	control_state_corrupt: "validation",
+	control_state_write_failed: "provider",
+	session_transition_failed: "provider",
 	external_process_identity_ambiguous: "provider",
+	control_state_migration_failed: "provider",
+	shutdown_deadline_exceeded: "provider",
+	side_effect_unknown: "unknown",
+	run_terminal_conflict: "conflict",
 });
 
 export function foundationErrorCategory(code: FoundationErrorCode): FoundationErrorCategory {
