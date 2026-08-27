@@ -60,6 +60,8 @@ export interface ExternalConnectorProductExecutionInput {
 	readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 	readonly workspace: string;
 	readonly signal?: AbortSignal;
+	/** True when this accepted work requires the Connector's advertised Tool Gateway bridge. */
+	readonly requiresToolGateway?: boolean;
 	readonly gatewayModelRoute?: {
 		readonly provider: string;
 		readonly model: string;
@@ -215,6 +217,12 @@ export async function prepareExternalConnectorProductRun(
 	}
 	const selected = await input.registry.select(input.selection);
 	if (!selected.ok) throw selected.error;
+	if (input.requiresToolGateway === true && !selected.value.capabilityTruth.capabilities.toolGateway) {
+		throw new ExternalConnectorProductError(
+			"external_capability_mismatch",
+			"External connector does not support the required Tool Gateway bridge",
+		);
+	}
 	const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(input.canonicalInput, {
 		capabilities: {
 			artifacts: selected.value.capabilitySnapshot.artifacts,
