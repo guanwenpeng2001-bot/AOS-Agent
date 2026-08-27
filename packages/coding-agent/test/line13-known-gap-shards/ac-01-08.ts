@@ -979,20 +979,9 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-	],
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-07",
-				fullTestName: "Line 13 advertised External Connector tool-gateway capability reaches real product execution",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T5",
-				mode: "fails",
-				expectedFailure: {
-					reason: "external-connector.tool-gateway-product",
-					fingerprint: "sha256:aa26ba49c1d52a139c675bfaaa82280e5dfee58c1ae7269b4bc8acc06bca17f8",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-07",
+			fullTestName: "Line 13 advertised External Connector tool-gateway capability reaches real product execution",
 			scenario: {
 				fixture: () => createCurrentConnectorFixture(true),
 				assertion: async (fixture) => {
@@ -1020,6 +1009,8 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
+	],
+	cases: [
 		defineLine13KnownGapCase({
 			entry: {
 				ac: "AC-08",
