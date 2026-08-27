@@ -641,6 +641,7 @@ async function seedRpcExternalRecovery(
 	fixture: RpcExternalConnectorFixture,
 	runId: string,
 	message: string,
+	cutpoint: "accepted_only" | "receipt_without_operation" | "running" | "start_intent_without_mapping" = "running",
 ): Promise<void> {
 	const session = getAgentCanonicalSession(runtimeHost.session);
 	const writer = runtimeHost.session.agentRuntimeComposition.harness.t5.writer;
@@ -660,6 +661,24 @@ async function seedRpcExternalRecovery(
 		workspace: runtimeHost.session.cwd,
 		now: () => "2026-08-27T00:00:00.000Z",
 	});
+	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+		schemaVersion: 1,
+		kind: "accepted",
+		record: {
+			id: runId,
+			sessionId: runtimeHost.session.sessionId,
+			attempt: 1,
+			status: "accepted",
+			model: { provider: "external_connector", id: fixture.selection.providerId, thinkingLevel: "off" },
+		},
+	});
+	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
+		schemaVersion: 1,
+		kind: "started",
+		runId,
+		startedAt: "2026-08-27T00:00:00.000Z",
+	});
+	if (cutpoint === "accepted_only") return;
 	const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
 	const settlement = new LayeredResultSettlement(session, { writer });
 	try {
@@ -671,6 +690,21 @@ async function seedRpcExternalRecovery(
 			correlation: prepared.correlation,
 		});
 		if (!started.ok) throw started.error;
+		if (cutpoint === "receipt_without_operation") {
+			const controller = new AbortController();
+			controller.abort();
+			const executed = await settlement.executeDispatch({
+				provider: prepared.selected.connector,
+				dispatch: prepared.dispatch,
+				binding: prepared.binding,
+				initialBindingEpoch: prepared.initialBindingEpoch,
+				correlation: prepared.correlation,
+				signal: controller.signal,
+			});
+			if (!executed.ok) throw executed.error;
+			expect(executed.value.receipt.status).toBe("cancelled");
+			return;
+		}
 	} finally {
 		await settlement.release();
 	}
@@ -720,6 +754,7 @@ async function seedRpcExternalRecovery(
 			processIdentity: processHandle.identity,
 		});
 		await processHandle.activate();
+		if (cutpoint === "start_intent_without_mapping") return;
 		await store.writeMapping(
 			cloneCanonicalExternalConnectorMapping({
 				schemaVersion: 1,
@@ -758,23 +793,6 @@ async function seedRpcExternalRecovery(
 	expect(durableTrace).not.toContain('"processIdentity"');
 	expect(durableTrace).not.toContain(`"pid":${privateState.processIdentity.pid}`);
 	expect(durableTrace).not.toContain(privateState.processIdentity.startToken);
-	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
-		schemaVersion: 1,
-		kind: "accepted",
-		record: {
-			id: runId,
-			sessionId: runtimeHost.session.sessionId,
-			attempt: 1,
-			status: "accepted",
-			model: { provider: "external_connector", id: fixture.selection.providerId, thinkingLevel: "off" },
-		},
-	});
-	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
-		schemaVersion: 1,
-		kind: "started",
-		runId,
-		startedAt: prepared.timestamp,
-	});
 }
 
 function gateRegistrySelections(
@@ -2078,6 +2096,132 @@ describe("RPC Automation Host run lifecycle", () => {
 				expect(
 					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType }),
 				).toHaveLength(1);
+			}
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it.each([
+		{
+			name: "accepted-only",
+			cutpoint: "accepted_only",
+			terminalStatus: "completed",
+			mappingCount: 1,
+			restoredSpawnCalls: 1,
+			processLaunchCalls: 1,
+		},
+		{
+			name: "receipt without operation",
+			cutpoint: "receipt_without_operation",
+			terminalStatus: "cancelled",
+			mappingCount: 0,
+			restoredSpawnCalls: 0,
+			processLaunchCalls: 0,
+		},
+		{
+			name: "ambiguous start intent without mapping",
+			cutpoint: "start_intent_without_mapping",
+			terminalStatus: "failed",
+			mappingCount: 0,
+			restoredSpawnCalls: 0,
+			processLaunchCalls: 1,
+		},
+	] as const)("recovers the production-order $name crash cutpoint with one terminal authority", async (testCase) => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			// New SessionManager files become durable after the first assistant
+			// message. Recovery targets an existing persisted Session, so establish
+			// that boundary before appending the production-order accepted facts.
+			await harness.runtimeHost.session.prompt("persist external recovery cutpoint session");
+			const countedObjectTypes = [
+				"attempt",
+				"external_connector_mapping",
+				"attempt_receipt",
+				"task_result",
+				"run_receipt",
+			] as const;
+			const baselineCounts = new Map(
+				await Promise.all(
+					countedObjectTypes.map(async (objectType) => [
+						objectType,
+						(
+							await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+								objectType,
+							})
+						).length,
+					] as const),
+				),
+			);
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+			await harness.controller.handleCommand({
+				id: `external-cutpoint-${testCase.cutpoint}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const sourceRunId = `rpc-external-cutpoint-${testCase.cutpoint}`;
+			const message = `recover ${testCase.name}`;
+			await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint);
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			let restoredFixture: RpcExternalConnectorFixture | undefined;
+			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
+					modelAccess: "none",
+					supervision: fixture.supervision,
+				});
+				return result;
+			});
+
+			const response = await harness.controller.dispatch({
+				id: `external-cutpoint-${testCase.cutpoint}-resume`,
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message,
+				externalConnector: fixture.selection,
+			});
+
+			expect(response, JSON.stringify(response)).toMatchObject({
+				success: true,
+				data: { runId: sourceRunId, attempt: 1, status: "accepted" },
+			});
+			await vi.waitFor(async () => {
+				const allRunReceipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+					objectType: "run_receipt",
+				});
+				const runReceipts = allRunReceipts.filter(
+					(record) =>
+						record.kind === "fact" && (record.payload as { runId?: unknown }).runId === sourceRunId,
+				);
+				expect(runReceipts).toHaveLength(1);
+				expect(runReceipts[0]).toMatchObject({
+					payload: {
+						runId: sourceRunId,
+						terminalStatus: testCase.terminalStatus,
+						...(testCase.terminalStatus === "failed"
+							? { terminalError: { code: "side_effect_unknown", retryable: false } }
+							: {}),
+					},
+				});
+			});
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(restoredFixture?.driver.spawnCalls).toBe(testCase.restoredSpawnCalls);
+			expect(fixture.processController.launchCalls).toBe(testCase.processLaunchCalls);
+			for (const [objectType, expectedCount] of [
+				["attempt", 1],
+				["external_connector_mapping", testCase.mappingCount],
+				["attempt_receipt", 1],
+				["task_result", 1],
+				["run_receipt", 1],
+			] as const) {
+				expect(
+					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType }),
+				).toHaveLength((baselineCounts.get(objectType) ?? 0) + expectedCount);
 			}
 		} finally {
 			await harness.controller.shutdown();
