@@ -1751,10 +1751,11 @@ export class RpcHostController {
 
 		/**
 		 * Project the Broker's ordered selection into the Connector fallback
-		 * contract. The selected position is derived from the immutable ordered
-		 * candidates instead of `candidateIndex`, which refers to the caller's
-		 * pre-priority input order. Duplicate selected references are ambiguous and
-		 * therefore fail closed.
+		 * contract. The Broker excludes disabled candidates, so every enabled
+		 * candidate before the selection was skipped because it was unavailable.
+		 * The selected position is derived from the immutable ordered candidates
+		 * instead of `candidateIndex`, which refers to the caller's pre-priority
+		 * input order. Duplicate selected references are ambiguous and fail closed.
 		 */
 		const externalFallbackDecisionForResolution = (
 			resolution: BrokerModelResolution,

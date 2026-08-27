@@ -137,7 +137,7 @@ export interface ModelBinding {
 	readonly source: ModelResolutionSource;
 	/** Explicit manual/direct selections never silently switch models. */
 	readonly fallbackAllowed: boolean;
-	/** All ordered candidates frozen by the route resolution. */
+	/** All ordered enabled candidates considered by the route resolution. */
 	readonly candidates?: readonly NormalizedModelReference[];
 	readonly fallback?: ModelFallbackPolicy;
 	readonly budget?: ModelBudget;
@@ -564,7 +564,7 @@ function chooseCandidate(
 ): { candidate: NormalizedRouteCandidate; index: number; considered: NormalizedModelReference[] } | ModelError {
 	const indexed = candidates.map((candidate, index) => ({ candidate, index }));
 	indexed.sort((a, b) => a.candidate.priority - b.candidate.priority || a.index - b.index);
-	const considered = indexed.map(({ candidate }) => candidate.reference);
+	const considered = indexed.filter(({ candidate }) => candidate.enabled).map(({ candidate }) => candidate.reference);
 	for (const { candidate, index } of indexed) {
 		if (candidate.enabled && candidate.available) return { candidate, index, considered };
 	}

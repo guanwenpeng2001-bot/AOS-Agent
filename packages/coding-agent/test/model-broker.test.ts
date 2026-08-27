@@ -54,7 +54,23 @@ describe("model-broker", () => {
 		expect(broker.resolve({ role: "coder" }).fallbackAllowed).toBe(true);
 	});
 
-	it("selects the first available route candidate without falling through an explicit route", () => {
+	it("distinguishes disabled candidates from unavailable fallback candidates", () => {
+		const disabledPrimary = resolveModel(
+			{
+				route: [
+					{ provider: "disabled", id: "first", enabled: false, available: true },
+					{ provider: "healthy", id: "second", priority: 1 },
+				],
+			},
+			{ bindingIdFactory: () => "model-binding:disabled-primary" },
+		);
+		expect(disabledPrimary.ok).toBe(true);
+		if (disabledPrimary.ok) {
+			expect(disabledPrimary.resolution.reference).toEqual({ provider: "healthy", id: "second" });
+			expect(disabledPrimary.resolution.candidatesConsidered).toEqual([{ provider: "healthy", id: "second" }]);
+			expect(disabledPrimary.resolution.binding.candidates).toEqual([{ provider: "healthy", id: "second" }]);
+		}
+
 		const routeResult = resolveModel(
 			{
 				route: [
@@ -68,6 +84,14 @@ describe("model-broker", () => {
 		if (routeResult.ok) {
 			expect(routeResult.resolution.reference).toEqual({ provider: "healthy", id: "second" });
 			expect(routeResult.resolution.source).toBe("route");
+			expect(routeResult.resolution.candidatesConsidered).toEqual([
+				{ provider: "offline", id: "first" },
+				{ provider: "healthy", id: "second" },
+			]);
+			expect(routeResult.resolution.binding.candidates).toEqual([
+				{ provider: "offline", id: "first" },
+				{ provider: "healthy", id: "second" },
+			]);
 		}
 
 		const unavailable = resolveModel(
