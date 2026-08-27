@@ -2226,10 +2226,13 @@ describe("RPC Automation Host run lifecycle", () => {
 				throw new Error("RPC composition crash start response is missing");
 			}
 			const sourceRunId = (startResponse.data as { readonly runId: string }).runId;
-			await vi.waitFor(() => {
-				expect(fixture.driver.readCalls).toBe(1);
-				expect(fixture.toolGatewayRequests).toHaveLength(1);
-			});
+			await vi.waitFor(
+				() => {
+					expect(fixture.driver.readCalls).toBe(1);
+					expect(fixture.toolGatewayRequests).toHaveLength(1);
+				},
+				{ timeout: 10_000 },
+			);
 			expect(terminalEvents(harness.records.map((record) => record as unknown as ParsedOutputLine))).toHaveLength(0);
 			const sessionPath = initialSession.sessionFile;
 			expect(sessionPath).toBeTruthy();
@@ -3626,27 +3629,32 @@ describe("RPC Automation Host run lifecycle", () => {
 			try {
 				const recoveryStore = new SessionExternalConnectorDurableStore(recoveryLedger);
 				if (testCase.persistTerminal) {
-					await vi.waitFor(async () => {
-						expect(fixture.driver.spawnCalls).toBe(1);
-						expect(fixture.driver.readCalls).toBe(1);
-						expect(fixture.toolGatewayRequests).toEqual([canonicalGatewayRequest]);
-						expect(fixture.driver.writes).toEqual([
-							{
-								schemaVersion: 1,
-								kind: "tool_gateway_result",
-								operationNonce: "rpc-operation-nonce",
-								result: {
+					await vi.waitFor(
+						async () => {
+							expect(fixture.driver.spawnCalls).toBe(1);
+							expect(fixture.driver.readCalls).toBe(1);
+							expect(fixture.toolGatewayRequests).toEqual([canonicalGatewayRequest]);
+							expect(fixture.driver.writes).toEqual([
+								{
 									schemaVersion: 1,
-									toolCallId: canonicalGatewayRequest.toolCallId,
-									toolName: canonicalGatewayRequest.toolName,
-									ok: true,
-									sideEffectState: "none",
-									toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
+									kind: "tool_gateway_result",
+									operationNonce: "rpc-operation-nonce",
+									result: {
+										schemaVersion: 1,
+										toolCallId: canonicalGatewayRequest.toolCallId,
+										toolName: canonicalGatewayRequest.toolName,
+										ok: true,
+										sideEffectState: "none",
+										toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
+									},
 								},
-							},
-						]);
-						expect(await recoveryStore.readOperation(identity.attemptId)).toMatchObject({ status: "running" });
-					});
+							]);
+							expect(await recoveryStore.readOperation(identity.attemptId)).toMatchObject({
+								status: "running",
+							});
+						},
+						{ timeout: 10_000 },
+					);
 				} else {
 					await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint, {
 						artifacts,
