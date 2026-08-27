@@ -20,12 +20,17 @@ import {
 } from "aos-agent";
 
 const registry = createExternalConnectorRegistry();
-await registry.register({ descriptor, connector, trusted: true });
+await registry.register({ descriptor, connector });
 
 const runtimeComposition = createAgentRuntimeCompositionFactory({
   externalConnectorRegistry: () => registry,
 });
 ```
+
+Trust is derived from Host composition: the Host creates the registry, constructs
+the connector instance, and supplies that registry to the runtime composition.
+Registration has no caller-controlled trust flag, so a connector cannot
+self-attest as trusted.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those

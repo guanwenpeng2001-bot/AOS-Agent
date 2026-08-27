@@ -21,7 +21,11 @@ import type {
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
-import type { ExternalConnectorDescriptor, ExternalConnectorSelection } from "../../core/external-agent-registry.ts";
+import type {
+	ExternalConnectorDescriptor,
+	ExternalConnectorReadinessStatus,
+	ExternalConnectorSelection,
+} from "../../core/external-agent-registry.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
@@ -1006,6 +1010,8 @@ export interface InitializeData {
 	schedulerCommands?: RpcSchedulerCommandType[];
 	/** Safe External Connector descriptors registered by the trusted Host. */
 	externalConnectors?: ReadonlyArray<ExternalConnectorDescriptor>;
+	/** Passive, redacted readiness projected by the trusted Host. */
+	externalConnectorReadiness?: ReadonlyArray<ExternalConnectorReadinessStatus>;
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -1325,6 +1331,7 @@ export type {
 // Re-export the only current External Connector selection surface.
 export type {
 	ExternalConnectorDescriptor,
+	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
 // Re-export public Task Gate types.

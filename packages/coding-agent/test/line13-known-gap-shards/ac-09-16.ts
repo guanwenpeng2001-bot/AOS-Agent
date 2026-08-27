@@ -47,7 +47,12 @@ import {
 import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import ts from "typescript";
 import {
+	createAgentRuntimeCompositionFactory,
 	createAgentSession,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+	createRpcHostController,
 	DefaultResourceLoader,
 	ModelRuntime,
 	ProjectTrustStore,
@@ -57,6 +62,7 @@ import {
 	SchedulerQueueStore,
 	SettingsManager,
 	type CreateAgentSessionResult,
+	type CreateAgentSessionRuntimeFactory,
 } from "../../src/index.ts";
 import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
 import type { ExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
@@ -709,7 +715,7 @@ function currentVersionedPublicExports(): readonly string[] {
 
 interface ExternalReadinessFixture {
 	readonly root: string;
-	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
+	readonly controller: ReturnType<typeof createRpcHostController>;
 	readonly descriptor: {
 		readonly providerId: string;
 		readonly revision: number;
@@ -801,7 +807,43 @@ async function externalReadinessFixture(): Promise<ExternalReadinessFixture> {
 		connector,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
-	return { root, registry, descriptor, effects };
+	const runtimeComposition = createAgentRuntimeCompositionFactory({
+		externalConnectorRegistry: () => registry,
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+	const settingsManager = SettingsManager.inMemory();
+	const services = await createAgentSessionServices({
+		cwd: root,
+		agentDir: root,
+		modelRuntime,
+		settingsManager,
+		runtimeComposition,
+		resourceLoaderOptions: {
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		},
+	});
+	const createRuntime: CreateAgentSessionRuntimeFactory = async (runtimeOptions) => {
+		const created = await createAgentSessionFromServices({
+			services,
+			sessionManager: runtimeOptions.sessionManager,
+			sessionStartEvent: runtimeOptions.sessionStartEvent,
+			noTools: "all",
+		});
+		runtimeOptions.registerCandidateSession(created.session);
+		return { ...created, services, diagnostics: services.diagnostics };
+	};
+	const runtime = await createAgentSessionRuntime(createRuntime, {
+		cwd: root,
+		agentDir: root,
+		session: { mode: "memory", id: "line13-ac15-product-rpc" },
+	});
+	const controller = createRpcHostController(runtime);
+	await controller.start();
+	return { root, controller, descriptor, effects };
 }
 
 interface AtomicControlStateFixture {
@@ -907,42 +949,46 @@ const ac15 = defineLine13ResolvedCase({
 	fullTestName: "Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
 	scenario: {
 		fixture: externalReadinessFixture,
-		assertion: async ({ root, registry, descriptor, effects }) => {
+		assertion: async ({ root, controller, descriptor, effects }) => {
 			const before = { ...effects };
-			assert.deepEqual(registry.list(), [{
+			const expectedDescriptors = [{
 				schemaVersion: 1,
 				providerId: descriptor.providerId,
 				providerClass: "external_connector",
 				revision: descriptor.revision,
 				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-			}]);
-			assert.deepEqual(registry.readiness(), [{
+			}];
+			const expectedReadiness = [{
 				schemaVersion: 1,
 				providerId: descriptor.providerId,
 				trust: "host_configured",
 				status: "quarantined",
 				reasonCode: "cleanup_unconfirmed",
-			}]);
+			}];
+			const first = await controller.dispatch({ id: "ac15-readiness-first", type: "initialize", protocolVersion: 1 });
+			if (first === undefined || first.command !== "initialize" || !first.success) {
+				throw new Error("AC-15 product RPC did not return its initialize readiness projection");
+			}
+			assert.deepEqual(first.data.externalConnectors, expectedDescriptors);
+			assert.deepEqual(first.data.externalConnectorReadiness, expectedReadiness);
 			assert.deepEqual(effects, before);
-			const selected = await registry.select({
-				providerId: descriptor.providerId,
-				revision: descriptor.revision,
-				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			const second = await controller.dispatch({ id: "ac15-readiness-second", type: "initialize", protocolVersion: 1 });
+			if (second === undefined || second.command !== "initialize" || !second.success) {
+				throw new Error("AC-15 product RPC did not repeat its passive readiness projection");
+			}
+			assert.deepEqual(second.data.externalConnectors, expectedDescriptors);
+			assert.deepEqual(second.data.externalConnectorReadiness, expectedReadiness);
+			assert.deepEqual(effects, before);
+			const publicStatus = JSON.stringify({
+				descriptors: second.data.externalConnectors,
+				readiness: second.data.externalConnectorReadiness,
 			});
-			assert.equal(selected.ok, false);
-			assert.equal((await registry.probeReadiness({
-				providerId: descriptor.providerId,
-				revision: descriptor.revision,
-				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-			})).status, "quarantined");
-			assert.deepEqual(effects, before);
-			const publicStatus = JSON.stringify(registry.readiness());
 			for (const privateValue of [root, join(root, "private", "supervisors.json"), process.execPath, "ac15-nonce", "ac15-supervisor"]) {
 				assert.equal(publicStatus.includes(privateValue), false);
 			}
 		},
-		cleanup: async ({ registry, root }) => {
-			await registry.dispose().catch(() => undefined);
+		cleanup: async ({ controller, root }) => {
+			await controller.shutdown().catch(() => undefined);
 			rmSync(root, { recursive: true, force: true });
 		},
 	},

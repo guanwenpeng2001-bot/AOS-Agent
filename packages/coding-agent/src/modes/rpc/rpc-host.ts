@@ -3855,6 +3855,7 @@ export class RpcHostController {
 					const externalConnectorRegistry = currentBinding.session.getExternalConnectorRegistry?.();
 					if (externalConnectorRegistry !== undefined) {
 						initializeData.externalConnectors = externalConnectorRegistry.list();
+						initializeData.externalConnectorReadiness = externalConnectorRegistry.readiness();
 					}
 					const initializeResponse: RpcAutomationResponse = {
 						id,

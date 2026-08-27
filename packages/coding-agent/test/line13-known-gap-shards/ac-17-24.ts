@@ -1,4 +1,4 @@
-import { strictEqual } from "node:assert/strict";
+import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -15,6 +15,11 @@ import {
 	createFoundationToolGateway,
 	createLocalToolGatewayProvider,
 	createSandboxOperationToolGatewayProvider,
+	type AgentBinding,
+	type Attempt,
+	type AttemptReceipt,
+	type ExecutionCorrelation,
+	type FoundationJsonValue,
 	type SandboxOperationProvider,
 } from "@aos-agent/agent-core";
 import { registerFauxProvider } from "@aos-agent/ai/compat";
@@ -31,13 +36,33 @@ import {
 	type SchedulerHostOptions,
 } from "../../src/index.ts";
 import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
-import type { ExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import type {
+	ExternalConnectorDurableStore,
+	ExternalConnectorExecutionInput,
+	ExternalConnectorOperation,
+	ExternalConnectorToolGatewayExecution,
+	ExternalConnectorToolGatewayIntent,
+	ExternalConnectorToolGatewayIntentWrite,
+	ExternalConnectorToolGatewayTerminal,
+} from "../../src/core/external-agent-operation.ts";
 import {
 	createProductionExternalAgentConnector,
 	getProductionExternalConnectorDriverProvenance,
+	getProductionExternalConnectorVendorDriver,
+	getProductionExternalConnectorVendorDriverProcess,
+	getProductionExternalConnectorVendorDriverProvenance,
 } from "../../src/core/external-connector-production.ts";
 import { resolveProductionExternalConnectorDriverProvenance } from "../../src/core/external-connector-process-controller.ts";
-import type { ExternalConnectorVendorDriver } from "../../src/core/vendor-drivers/types.ts";
+import type { CanonicalExternalConnectorMapping } from "../../src/core/external-session-mapping.ts";
+import type {
+	ExternalConnectorDriverEvent,
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorDriverSpawnRequest,
+	ExternalConnectorDriverWriteRequest,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../../src/core/vendor-drivers/types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
@@ -589,6 +614,142 @@ const ac22 = defineLine13KnownGapCase({
 	},
 });
 
+class Line13ProductionDriverStore implements ExternalConnectorDurableStore {
+	async readAttempt(_attemptId: string): Promise<Attempt | undefined> {
+		return undefined;
+	}
+
+	async readBinding(_bindingId: string): Promise<AgentBinding | undefined> {
+		return undefined;
+	}
+
+	async readExecutionInput(_taskId: string): Promise<ExternalConnectorExecutionInput | undefined> {
+		return undefined;
+	}
+
+	async readOperation(_attemptId: string): Promise<ExternalConnectorOperation | undefined> {
+		return undefined;
+	}
+
+	async writeOperation(operation: ExternalConnectorOperation): Promise<ExternalConnectorOperation> {
+		return operation;
+	}
+
+	async readMapping(_attemptId: string): Promise<CanonicalExternalConnectorMapping | undefined> {
+		return undefined;
+	}
+
+	async writeMapping(
+		mapping: CanonicalExternalConnectorMapping,
+		_correlation: ExecutionCorrelation,
+	): Promise<CanonicalExternalConnectorMapping> {
+		return mapping;
+	}
+
+	async readReceipt(_attemptId: string): Promise<AttemptReceipt | undefined> {
+		return undefined;
+	}
+
+	async writeReceipt(receipt: AttemptReceipt): Promise<AttemptReceipt> {
+		return receipt;
+	}
+
+	async readToolGatewayExecution(
+		_attemptId: string,
+		_toolCallId: string,
+	): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+		return undefined;
+	}
+
+	async listToolGatewayExecutions(_attemptId: string): Promise<readonly ExternalConnectorToolGatewayExecution[]> {
+		return [];
+	}
+
+	async writeToolGatewayIntent(
+		intent: ExternalConnectorToolGatewayIntent,
+	): Promise<ExternalConnectorToolGatewayIntentWrite> {
+		return { intent, claimed: true };
+	}
+
+	async writeToolGatewayTerminal(
+		terminal: ExternalConnectorToolGatewayTerminal,
+	): Promise<ExternalConnectorToolGatewayTerminal> {
+		return terminal;
+	}
+}
+
+class Line13ProductionVendorDriver implements ExternalConnectorVendorDriver {
+	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: `external-${request.attempt.attemptId}`,
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
+	}
+
+	async *events(handle: ExternalConnectorDriverHandle): AsyncIterable<FoundationJsonValue> {
+		const started: ExternalConnectorDriverEvent = {
+			schemaVersion: 1,
+			type: "started",
+			externalSessionId: handle.externalSessionId,
+			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+			producedAt: NOW,
+		};
+		yield started;
+	}
+
+	async connect(mapping: CanonicalExternalConnectorMapping): Promise<ExternalConnectorDriverHandle> {
+		return {
+			externalSessionId: mapping.externalSessionId,
+			...(mapping.externalTurnId === undefined ? {} : { externalTurnId: mapping.externalTurnId }),
+			supervisorRef: mapping.supervisor.ref,
+			operationNonce: mapping.supervisor.nonce,
+		};
+	}
+
+	async lookup(mapping: CanonicalExternalConnectorMapping): Promise<ExternalConnectorDriverLookup> {
+		return { status: "running", handle: await this.connect(mapping) };
+	}
+
+	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		return this.terminal(handle, "succeeded");
+	}
+
+	async write(
+		_handle: ExternalConnectorDriverHandle,
+		_request: ExternalConnectorDriverWriteRequest,
+		_options?: { readonly signal?: AbortSignal },
+	): Promise<void> {}
+
+	async heartbeat(
+		_handle: ExternalConnectorDriverHandle,
+		_options?: { readonly signal?: AbortSignal },
+	): Promise<void> {}
+
+	async cancel(
+		handle: ExternalConnectorDriverHandle,
+		_options?: { readonly signal?: AbortSignal },
+	): Promise<ExternalConnectorTerminalEvidence> {
+		return this.terminal(handle, "cancelled");
+	}
+
+	async dispose(_options?: { readonly signal?: AbortSignal }): Promise<void> {}
+
+	private terminal(
+		handle: ExternalConnectorDriverHandle,
+		status: "succeeded" | "cancelled",
+	): ExternalConnectorTerminalEvidence {
+		return {
+			externalSessionId: handle.externalSessionId,
+			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+			operationNonce: handle.operationNonce,
+			status,
+			sideEffectState: "none",
+			producedAt: NOW,
+		};
+	}
+}
+
 const ac23 = defineLine13ResolvedCase({
 		ac: "AC-23",
 		fullTestName: "Line 13 AC-23 binds exact trusted driver provenance and a minimal environment",
@@ -615,6 +776,11 @@ const ac23 = defineLine13ResolvedCase({
 				executableIdentity: digest(process.execPath),
 				moduleIdentity: digest(CHILD_ENTRY),
 			} as const;
+			const processTarget = {
+				executablePath: process.execPath,
+				arguments: [CHILD_ENTRY],
+				trustedProvenance,
+			} as const;
 			let invalidIdentityRejected = false;
 			let invalidVersionRejected = false;
 			try {
@@ -635,19 +801,30 @@ const ac23 = defineLine13ResolvedCase({
 			} catch {
 				invalidVersionRejected = true;
 			}
+			const driver = new Line13ProductionVendorDriver();
 			const connector = await createProductionExternalAgentConnector({
 				providerId,
 				capability: snapshot,
 				capabilityProbe: async () => Result.ok(snapshot),
-				store: Object.freeze({}) as ExternalConnectorDurableStore,
-				driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+				store: new Line13ProductionDriverStore(),
+				driver,
 				privateStatePath: join(root, "private", "supervisors.json"),
-				process: {
-					executablePath: process.execPath,
-					arguments: [CHILD_ENTRY],
-					trustedProvenance,
-				},
+				process: processTarget,
 			});
+			let driverRebindRejected = false;
+			try {
+				await createProductionExternalAgentConnector({
+					providerId,
+					capability: snapshot,
+					capabilityProbe: async () => Result.ok(snapshot),
+					store: new Line13ProductionDriverStore(),
+					driver,
+					privateStatePath: join(root, "private", "rebound-supervisors.json"),
+					process: { ...processTarget, arguments: [CHILD_ENTRY, "--different-target"] },
+				});
+			} catch {
+				driverRebindRejected = true;
+			}
 			const descriptor = {
 				schemaVersion: 1 as const,
 				providerId,
@@ -661,10 +838,45 @@ const ac23 = defineLine13ResolvedCase({
 				connector,
 			}, snapshot);
 			if (!registered.ok) throw registered.error;
-			return { root, connector, registry, descriptor, invalidIdentityRejected, invalidVersionRejected };
+			return {
+				root,
+				connector,
+				driver,
+				registry,
+				descriptor,
+				driverRebindRejected,
+				invalidIdentityRejected,
+				invalidVersionRejected,
+			};
 		},
-		assertion: ({ root, connector, registry, descriptor, invalidIdentityRejected, invalidVersionRejected }) => {
+		assertion: ({
+			root,
+			connector,
+			driver,
+			registry,
+			descriptor,
+			driverRebindRejected,
+			invalidIdentityRejected,
+			invalidVersionRejected,
+		}) => {
 			const provenance = getProductionExternalConnectorDriverProvenance(connector);
+			if (provenance === undefined) throw new Error("Production connector did not retain trusted provenance");
+			const boundDriver = getProductionExternalConnectorVendorDriver(connector);
+			if (boundDriver === undefined) throw new Error("Production connector did not retain its execution driver");
+			strictEqual(boundDriver === driver, false);
+			deepStrictEqual(getProductionExternalConnectorVendorDriverProcess(boundDriver), {
+				executablePath: provenance.executablePath,
+				arguments: [CHILD_ENTRY],
+				trustedProvenance: {
+					modulePath: provenance.modulePath,
+					cwd: provenance.cwd,
+					version: provenance.version,
+					executableIdentity: provenance.executableIdentity,
+					moduleIdentity: provenance.moduleIdentity,
+				},
+			});
+			strictEqual(getProductionExternalConnectorVendorDriverProvenance(boundDriver), provenance);
+			strictEqual(getProductionExternalConnectorVendorDriverProvenance(driver), provenance);
 			strictEqual(provenance?.executablePath, realpathSync(process.execPath));
 			strictEqual(provenance?.modulePath, realpathSync(CHILD_ENTRY));
 			strictEqual(provenance?.cwd, realpathSync(root));
@@ -679,12 +891,20 @@ const ac23 = defineLine13ResolvedCase({
 			strictEqual(provenance?.moduleFileIdentity.startsWith("file:"), true);
 			strictEqual(invalidIdentityRejected, true);
 			strictEqual(invalidVersionRejected, true);
+			strictEqual(driverRebindRejected, true);
 			const projection = JSON.stringify({ descriptors: registry.list(), readiness: registry.readiness() });
 			for (const privateValue of [root, process.execPath, CHILD_ENTRY, process.version, provenance?.moduleIdentity ?? "missing"]) {
 				strictEqual(projection.includes(privateValue), false);
 			}
 			strictEqual(registry.list()[0]?.providerId, descriptor.providerId);
-			strictEqual("getProductionExternalConnectorDriverProvenance" in CodingAgent, false);
+			for (const privateExport of [
+				"getProductionExternalConnectorDriverProvenance",
+				"getProductionExternalConnectorVendorDriver",
+				"getProductionExternalConnectorVendorDriverProcess",
+				"getProductionExternalConnectorVendorDriverProvenance",
+			]) {
+				strictEqual(privateExport in CodingAgent, false);
+			}
 		},
 		cleanup: async ({ root, registry }) => {
 			await registry.dispose();

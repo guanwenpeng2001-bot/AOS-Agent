@@ -25,6 +25,7 @@ import {
 	type ExternalConnectorSupervisorLimits,
 } from "./external-connector-supervisor.ts";
 import type { RuntimeClock } from "./runtime-clock.ts";
+import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {
 	readonly privateStatePath: string;
@@ -48,6 +49,68 @@ export interface ProductionExternalConnectorStartupStatus {
 
 const PRODUCTION_STARTUP_STATUS = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorStartupStatus>();
 const PRODUCTION_DRIVER_PROVENANCE = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorDriverProvenance>();
+const PRODUCTION_VENDOR_DRIVER = new WeakMap<ExternalAgentConnector, ExternalConnectorVendorDriver>();
+
+class BoundProductionExternalConnectorVendorDriver implements ExternalConnectorVendorDriver {
+	readonly process: TrustedProductionExternalConnectorProcess;
+	readonly provenance: ProductionExternalConnectorDriverProvenance;
+	readonly #source: ExternalConnectorVendorDriver;
+
+	constructor(
+		source: ExternalConnectorVendorDriver,
+		process: TrustedProductionExternalConnectorProcess,
+		provenance: ProductionExternalConnectorDriverProvenance,
+	) {
+		this.#source = source;
+		this.process = process;
+		this.provenance = provenance;
+	}
+
+	get modelSupportMatrix(): ExternalConnectorVendorDriver["modelSupportMatrix"] {
+		return this.#source.modelSupportMatrix;
+	}
+
+	spawn(...args: Parameters<ExternalConnectorVendorDriver["spawn"]>): ReturnType<ExternalConnectorVendorDriver["spawn"]> {
+		return this.#source.spawn(...args);
+	}
+
+	events(...args: Parameters<ExternalConnectorVendorDriver["events"]>): ReturnType<ExternalConnectorVendorDriver["events"]> {
+		return this.#source.events(...args);
+	}
+
+	connect(...args: Parameters<ExternalConnectorVendorDriver["connect"]>): ReturnType<ExternalConnectorVendorDriver["connect"]> {
+		return this.#source.connect(...args);
+	}
+
+	lookup(...args: Parameters<ExternalConnectorVendorDriver["lookup"]>): ReturnType<ExternalConnectorVendorDriver["lookup"]> {
+		return this.#source.lookup(...args);
+	}
+
+	read(...args: Parameters<ExternalConnectorVendorDriver["read"]>): ReturnType<ExternalConnectorVendorDriver["read"]> {
+		return this.#source.read(...args);
+	}
+
+	write(...args: Parameters<ExternalConnectorVendorDriver["write"]>): ReturnType<ExternalConnectorVendorDriver["write"]> {
+		return this.#source.write(...args);
+	}
+
+	heartbeat(...args: Parameters<ExternalConnectorVendorDriver["heartbeat"]>): ReturnType<ExternalConnectorVendorDriver["heartbeat"]> {
+		return this.#source.heartbeat(...args);
+	}
+
+	cancel(...args: Parameters<ExternalConnectorVendorDriver["cancel"]>): ReturnType<ExternalConnectorVendorDriver["cancel"]> {
+		return this.#source.cancel(...args);
+	}
+
+	dispose(...args: Parameters<ExternalConnectorVendorDriver["dispose"]>): ReturnType<ExternalConnectorVendorDriver["dispose"]> {
+		return this.#source.dispose(...args);
+	}
+}
+
+const PRODUCTION_VENDOR_DRIVER_BINDING = new WeakMap<
+	ExternalConnectorVendorDriver,
+	BoundProductionExternalConnectorVendorDriver
+>();
 
 /** Safe startup projection retained by the trusted Host; it is never supplied by the Connector. */
 export function getProductionExternalConnectorStartupStatus(
@@ -61,6 +124,87 @@ export function getProductionExternalConnectorDriverProvenance(
 	connector: ExternalAgentConnector,
 ): ProductionExternalConnectorDriverProvenance | undefined {
 	return PRODUCTION_DRIVER_PROVENANCE.get(connector);
+}
+
+/** Private Host evidence that identifies the exact driver used by the connector. */
+export function getProductionExternalConnectorVendorDriver(
+	connector: ExternalAgentConnector,
+): ExternalConnectorVendorDriver | undefined {
+	return PRODUCTION_VENDOR_DRIVER.get(connector);
+}
+
+/** Private Host evidence bound directly to the driver instance used for execution. */
+export function getProductionExternalConnectorVendorDriverProvenance(
+	driver: ExternalConnectorVendorDriver,
+): ProductionExternalConnectorDriverProvenance | undefined {
+	return PRODUCTION_VENDOR_DRIVER_BINDING.get(driver)?.provenance;
+}
+
+/** Private Host evidence binding the execution driver to its exact process target. */
+export function getProductionExternalConnectorVendorDriverProcess(
+	driver: ExternalConnectorVendorDriver,
+): TrustedProductionExternalConnectorProcess | undefined {
+	return PRODUCTION_VENDOR_DRIVER_BINDING.get(driver)?.process;
+}
+
+function canonicalProductionDriverProcess(
+	value: TrustedProductionExternalConnectorProcess,
+	provenance: ProductionExternalConnectorDriverProvenance,
+): TrustedProductionExternalConnectorProcess {
+	if (value.arguments !== undefined && !Array.isArray(value.arguments)) {
+		throw new TypeError("External Connector companion process arguments are invalid");
+	}
+	return Object.freeze({
+		executablePath: provenance.executablePath,
+		...(value.arguments === undefined ? {} : { arguments: Object.freeze([...value.arguments]) }),
+		trustedProvenance: Object.freeze({
+			modulePath: provenance.modulePath,
+			cwd: provenance.cwd,
+			version: provenance.version,
+			executableIdentity: provenance.executableIdentity,
+			moduleIdentity: provenance.moduleIdentity,
+		}),
+	});
+}
+
+function sameProductionDriverProcess(
+	left: TrustedProductionExternalConnectorProcess,
+	right: TrustedProductionExternalConnectorProcess,
+): boolean {
+	const leftArguments = left.arguments ?? [];
+	const rightArguments = right.arguments ?? [];
+	return (
+		left.executablePath === right.executablePath &&
+		leftArguments.length === rightArguments.length &&
+		leftArguments.every((argument, index) => argument === rightArguments[index]) &&
+		left.trustedProvenance.modulePath === right.trustedProvenance.modulePath &&
+		left.trustedProvenance.cwd === right.trustedProvenance.cwd &&
+		left.trustedProvenance.version === right.trustedProvenance.version &&
+		left.trustedProvenance.executableIdentity === right.trustedProvenance.executableIdentity &&
+		left.trustedProvenance.moduleIdentity === right.trustedProvenance.moduleIdentity
+	);
+}
+
+function bindProductionVendorDriver(
+	driver: ExternalConnectorVendorDriver,
+	process: TrustedProductionExternalConnectorProcess,
+): BoundProductionExternalConnectorVendorDriver {
+	const provenance = resolveProductionExternalConnectorDriverProvenance(process);
+	if (provenance === undefined) {
+		throw new TypeError("Production External Connector requires trusted driver provenance");
+	}
+	const canonicalProcess = canonicalProductionDriverProcess(process, provenance);
+	const existing = PRODUCTION_VENDOR_DRIVER_BINDING.get(driver);
+	if (existing !== undefined) {
+		if (!sameProductionDriverProcess(existing.process, canonicalProcess)) {
+			throw new TypeError("External Connector vendor driver is already bound to another trusted process target");
+		}
+		return existing;
+	}
+	const binding = new BoundProductionExternalConnectorVendorDriver(driver, canonicalProcess, provenance);
+	PRODUCTION_VENDOR_DRIVER_BINDING.set(driver, binding);
+	PRODUCTION_VENDOR_DRIVER_BINDING.set(binding, binding);
+	return binding;
 }
 
 /** Compose the production controller and restricted crash-safe private-state file. */
@@ -87,14 +231,14 @@ export async function createProductionExternalAgentConnector(
 	if (typeof options.capabilityProbe !== "function") {
 		throw new TypeError("Production External Connector requires an explicit capability probe.");
 	}
-	const driverProvenance = resolveProductionExternalConnectorDriverProvenance(options.process);
+	const driverBinding = bindProductionVendorDriver(options.driver, options.process);
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
 		capabilityProbe: options.capabilityProbe,
 		store: options.store,
-		driver: options.driver,
-		supervision: createProductionExternalConnectorSupervision(options),
+		driver: driverBinding,
+		supervision: createProductionExternalConnectorSupervision({ ...options, process: driverBinding.process }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});
@@ -132,7 +276,8 @@ export async function createProductionExternalAgentConnector(
 			readiness: recovery.some((result) => result.status === "quarantined") ? "quarantined" : "ready",
 			recovery,
 		}));
-		if (driverProvenance !== undefined) PRODUCTION_DRIVER_PROVENANCE.set(connector, driverProvenance);
+		PRODUCTION_VENDOR_DRIVER.set(connector, driverBinding);
+		PRODUCTION_DRIVER_PROVENANCE.set(connector, driverBinding.provenance);
 		return connector;
 	} catch (error) {
 		try {

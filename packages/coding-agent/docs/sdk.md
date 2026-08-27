@@ -101,7 +101,7 @@ import {
 } from "aos-agent";
 
 const registry = createExternalConnectorRegistry();
-await registry.register({ descriptor, connector, trusted: true });
+await registry.register({ descriptor, connector });
 
 const { session } = await createAgentSession({
   runtimeComposition: createAgentRuntimeCompositionFactory({
@@ -109,6 +109,11 @@ const { session } = await createAgentSession({
   }),
 });
 ```
+
+Trust comes from the Host-owned composition boundary: the Host creates the
+registry, constructs the connector instance, and supplies the registry to the
+runtime. There is no caller-provided trust flag and a connector cannot
+self-attest as trusted.
 
 `ExternalAgentConnector` is the only public external execution contract. It
 implements the shared executor-provider boundary, so external work enters the
