@@ -36,6 +36,7 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	gateCanonicalExternalAgentInputBeforeAcceptance,
+	validateCanonicalExternalAgentInput,
 	type CanonicalExternalAgentInput,
 	type CanonicalExternalAgentRequestFingerprint,
 	type ExternalAgentInputAdmissionOptions,
@@ -54,7 +55,11 @@ import type {
 } from "./external-agent-registry.ts";
 import {
 	EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
+	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	SessionExternalConnectorDurableStore,
+	type ExternalConnectorExecutionInput,
+	type ExternalConnectorToolGatewayIntent,
+	type ExternalConnectorToolGatewayTerminal,
 } from "./external-agent-operation.ts";
 
 const DECLARED_AT = "1970-01-01T00:00:00.000Z";
@@ -108,8 +113,10 @@ export interface ExternalConnectorProductRecoveryInput {
 	readonly runId: string;
 	readonly providerId: string;
 	readonly selection?: ExternalConnectorSelection;
-	/** RPC recovery must not silently replace the immutable input of the durable Attempt. */
-	readonly expectedText?: string;
+	/** RPC recovery must exactly match the immutable canonical input of the durable Attempt. */
+	readonly expectedCanonicalInput: CanonicalExternalAgentInput;
+	/** Omission means the durable Attempt must not contain a Tool Gateway request. */
+	readonly expectedToolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 	readonly signal?: AbortSignal;
 	/**
 	 * Accepted transport facts can precede every product fact. This input is the
@@ -285,7 +292,7 @@ const TOOL_GATEWAY_REQUEST_INPUT_KEYS = new Set([
 
 function materializeToolGatewayRequest(
 	value: ExternalConnectorToolGatewayRequestInput,
-	input: ExternalConnectorProductExecutionInput,
+	runId: string,
 	selection: ExternalConnectorResolvedSelection,
 ): ToolGatewayRequest {
 	if (
@@ -296,7 +303,7 @@ function materializeToolGatewayRequest(
 	) {
 		throw new ExternalConnectorProductError("external_binding_invalid", "External Connector Tool Gateway request is invalid.");
 	}
-	const identity = externalConnectorProductIdentity(input.runId, selection.descriptor.providerId);
+	const identity = externalConnectorProductIdentity(runId, selection.descriptor.providerId);
 	const checked = validateToolGatewayRequest({
 		...value,
 		context: {
@@ -307,7 +314,7 @@ function materializeToolGatewayRequest(
 			dispatchId: identity.dispatchId,
 			providerId: selection.descriptor.providerId,
 			attemptId: identity.attemptId,
-			operationId: input.runId,
+			operationId: runId,
 		},
 	});
 	if (!checked.ok) {
@@ -344,7 +351,7 @@ export async function prepareExternalConnectorProductRun(
 	if (!admitted.ok) throw admitted.error;
 	const toolGatewayRequest = input.toolGatewayRequest === undefined
 		? undefined
-		: materializeToolGatewayRequest(input.toolGatewayRequest, input, selected.value);
+		: materializeToolGatewayRequest(input.toolGatewayRequest, input.runId, selected.value);
 	const route = modelRouteFor(selected.value, input);
 	let modelProjection: ExternalResolvedModelProjection | undefined;
 	let modelTranslation: ExternalTranslatedModelProjection | undefined;
@@ -599,24 +606,113 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 	};
 }
 
+type ExternalConnectorToolGatewayResolution =
+	| { readonly kind: "none" }
+	| { readonly kind: "terminal"; readonly exchange: ExternalConnectorToolGatewayExchange }
+	| { readonly kind: "ambiguous" };
+
+function toolGatewayExchange(
+	terminal: ExternalConnectorToolGatewayTerminal,
+): ExternalConnectorToolGatewayExchange {
+	return cloneDeepFrozen({ request: terminal.request, result: terminal.result });
+}
+
+async function resolvePreparedToolGateway(
+	prepared: PreparedExternalConnectorProductRun,
+	store: SessionExternalConnectorDurableStore,
+): Promise<ExternalConnectorToolGatewayResolution> {
+	const request = prepared.toolGatewayRequest;
+	const existing = await store.readToolGatewayExecution(prepared.initialBindingEpoch.attemptId);
+	if (request === undefined) {
+		if (existing !== undefined) {
+			throw new FoundationError(
+				"invalid_correlation",
+				"Durable Tool Gateway execution exists for an Attempt without a request",
+			);
+		}
+		return { kind: "none" };
+	}
+	if (
+		existing !== undefined &&
+		canonicalFoundationJson(existing.intent.request) !== canonicalFoundationJson(request)
+	) {
+		throw new FoundationError("invalid_correlation", "Durable Tool Gateway request does not match the Attempt");
+	}
+	if (existing?.terminal !== undefined) {
+		return { kind: "terminal", exchange: toolGatewayExchange(existing.terminal) };
+	}
+	if (existing !== undefined) return { kind: "ambiguous" };
+
+	const correlation: ExecutionCorrelation = {
+		...prepared.correlation,
+		toolCallId: request.toolCallId,
+	};
+	const intent: ExternalConnectorToolGatewayIntent = {
+		schemaVersion: 1,
+		type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+		id: prepared.initialBindingEpoch.attemptId,
+		phase: "intent",
+		providerId: prepared.selected.descriptor.providerId,
+		attemptId: prepared.initialBindingEpoch.attemptId,
+		bindingId: prepared.binding.bindingId,
+		bindingEpochId: prepared.initialBindingEpoch.bindingEpochId,
+		correlation,
+		request,
+		createdAt: prepared.timestamp,
+	};
+	const writtenIntent = await store.writeToolGatewayIntent(intent);
+	if (!writtenIntent.claimed) {
+		const replay = await store.readToolGatewayExecution(prepared.initialBindingEpoch.attemptId);
+		return replay?.terminal === undefined
+			? { kind: "ambiguous" }
+			: { kind: "terminal", exchange: toolGatewayExchange(replay.terminal) };
+	}
+
+	const gatewayResult = await prepared.selected.executeToolGateway(
+		request,
+		prepared.input.signal === undefined ? undefined : { signal: prepared.input.signal },
+	);
+	if (!gatewayResult.ok) throw gatewayResult.error;
+	const terminal: ExternalConnectorToolGatewayTerminal = {
+		schemaVersion: 1,
+		type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+		id: intent.id,
+		phase: "terminal",
+		providerId: intent.providerId,
+		attemptId: intent.attemptId,
+		bindingId: intent.bindingId,
+		bindingEpochId: intent.bindingEpochId,
+		correlation,
+		request,
+		result: gatewayResult.value,
+		createdAt: intent.createdAt,
+		completedAt: (prepared.input.now ?? (() => new Date().toISOString()))(),
+	};
+	const durableTerminal = await store.writeToolGatewayTerminal(terminal);
+	return { kind: "terminal", exchange: toolGatewayExchange(durableTerminal) };
+}
+
 /** Execute a pre-accepted current Connector run through the canonical terminal chain. */
 export async function executePreparedExternalConnectorProductRun(
 	prepared: PreparedExternalConnectorProductRun,
 ): Promise<ExternalConnectorProductExecution> {
-	const { input, selected, timestamp, task, binding, dispatch, initialBindingEpoch: epoch, correlation, toolGatewayRequest } = prepared;
+	const { input, selected, timestamp, task, binding, dispatch, initialBindingEpoch: epoch, correlation } = prepared;
+	const ledger = new SessionLedger(input.session, {
+		ownerId: `external-connector-tool-gateway:${binding.bindingId}`,
+		...(input.writer === undefined ? {} : { writer: input.writer }),
+	});
+	const store = new SessionExternalConnectorDurableStore(ledger);
 	const settlement = new LayeredResultSettlement(input.session, {
 		ownerId: `external-connector:${binding.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
 	try {
-		let toolGatewayExchange: ExternalConnectorToolGatewayExchange | undefined;
-		if (toolGatewayRequest !== undefined) {
-			const gatewayResult = await selected.executeToolGateway(
-				toolGatewayRequest,
-				input.signal === undefined ? undefined : { signal: input.signal },
+		const gateway = await resolvePreparedToolGateway(prepared, store);
+		if (gateway.kind === "ambiguous") {
+			throw new FoundationError(
+				"side_effect_unknown",
+				"Tool Gateway intent has no proven terminal result and cannot be repeated",
 			);
-			if (!gatewayResult.ok) throw gatewayResult.error;
-			toolGatewayExchange = cloneDeepFrozen({ request: toolGatewayRequest, result: gatewayResult.value });
 		}
 		const executed = await settlement.executeDispatch({
 			provider: selected.connector,
@@ -640,11 +736,12 @@ export async function executePreparedExternalConnectorProductRun(
 			},
 			input.runId,
 		);
-		return toolGatewayExchange === undefined
+		return gateway.kind === "none"
 			? execution
-			: Object.freeze({ ...execution, toolGatewayExchange });
+			: Object.freeze({ ...execution, toolGatewayExchange: gateway.exchange });
 	} finally {
 		await settlement.release();
+		await ledger.release();
 	}
 }
 
@@ -729,11 +826,14 @@ async function settleExternalConnectorProductRun(
 	};
 }
 
-/** Recover one accepted product Run without replacing an ambiguous vendor side effect. */
-export async function recoverExternalConnectorProductRun(
+interface ExternalConnectorRecoverySelection {
+	readonly selection: ExternalConnectorSelection;
+	readonly selected: ExternalConnectorResolvedSelection;
+}
+
+async function resolveExternalConnectorRecoverySelection(
 	input: ExternalConnectorProductRecoveryInput,
-): Promise<ExternalConnectorProductExecution> {
-	const identity = externalConnectorProductIdentity(input.runId, input.providerId);
+): Promise<ExternalConnectorRecoverySelection> {
 	const descriptor = input.registry.list().find((candidate) => candidate.providerId === input.providerId);
 	if (descriptor === undefined) {
 		throw new ExternalConnectorProductError(
@@ -759,6 +859,89 @@ export async function recoverExternalConnectorProductRun(
 			"The persisted External Connector capability snapshot is unavailable or drifted.",
 		);
 	}
+	return { selection, selected: selected.value };
+}
+
+function optionalCanonicalValuesMatch(left: unknown | undefined, right: unknown | undefined): boolean {
+	if (left === undefined || right === undefined) return left === right;
+	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
+}
+
+function validateExternalConnectorRecoveryExpectedInput(
+	input: ExternalConnectorProductRecoveryInput,
+	selected: ExternalConnectorResolvedSelection,
+	durableExecutionInput: ExternalConnectorExecutionInput | undefined,
+): void {
+	const expectedInput = validateCanonicalExternalAgentInput(input.expectedCanonicalInput);
+	if (!expectedInput.ok) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery input does not match the persisted Attempt.",
+		);
+	}
+	const expectedRequest = input.expectedToolGatewayRequest === undefined
+		? undefined
+		: materializeToolGatewayRequest(input.expectedToolGatewayRequest, input.runId, selected);
+	if (
+		input.reconstruction !== undefined &&
+		canonicalFoundationJson(input.reconstruction.canonicalInput) !== canonicalFoundationJson(expectedInput.value)
+	) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery input does not match its reconstruction.",
+		);
+	}
+	const reconstructionRequest = input.reconstruction?.toolGatewayRequest === undefined
+		? undefined
+		: materializeToolGatewayRequest(input.reconstruction.toolGatewayRequest, input.runId, selected);
+	if (!optionalCanonicalValuesMatch(reconstructionRequest, expectedRequest)) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery Tool Gateway request does not match its reconstruction.",
+		);
+	}
+	if (
+		durableExecutionInput !== undefined &&
+		(
+			canonicalFoundationJson(durableExecutionInput.input) !== canonicalFoundationJson(expectedInput.value) ||
+			!optionalCanonicalValuesMatch(durableExecutionInput.toolGatewayRequest, expectedRequest)
+		)
+	) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery input does not match the persisted Attempt.",
+		);
+	}
+}
+
+/** Validate immutable recovery input before RPC publishes a resumed acceptance. */
+export async function preflightExternalConnectorProductRecovery(
+	input: ExternalConnectorProductRecoveryInput,
+): Promise<void> {
+	const identity = externalConnectorProductIdentity(input.runId, input.providerId);
+	const { selected } = await resolveExternalConnectorRecoverySelection(input);
+	const ledger = new SessionLedger(input.session, {
+		ownerId: `external-connector-recovery-preflight:${identity.bindingId}`,
+		...(input.writer === undefined ? {} : { writer: input.writer }),
+	});
+	try {
+		const store = new SessionExternalConnectorDurableStore(ledger);
+		validateExternalConnectorRecoveryExpectedInput(
+			input,
+			selected,
+			await store.readExecutionInput(identity.taskId),
+		);
+	} finally {
+		await ledger.release();
+	}
+}
+
+/** Recover one accepted product Run without replacing an ambiguous vendor side effect. */
+export async function recoverExternalConnectorProductRun(
+	input: ExternalConnectorProductRecoveryInput,
+): Promise<ExternalConnectorProductExecution> {
+	const identity = externalConnectorProductIdentity(input.runId, input.providerId);
+	const { selection, selected } = await resolveExternalConnectorRecoverySelection(input);
 	const ledger = new SessionLedger(input.session, {
 		ownerId: `external-connector-recovery:${identity.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
@@ -781,6 +964,7 @@ export async function recoverExternalConnectorProductRun(
 					validateBindingEpoch(requireFactPayload(epochRecord, "binding_epoch", identity.bindingEpochId)),
 				);
 		const durableExecutionInput = await store.readExecutionInput(identity.taskId);
+		validateExternalConnectorRecoveryExpectedInput(input, selected, durableExecutionInput);
 		let prepared: PreparedExternalConnectorProductRun;
 		if (
 			durableTask !== undefined &&
@@ -823,7 +1007,7 @@ export async function recoverExternalConnectorProductRun(
 						}),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},
-				selected: selected.value,
+				selected,
 				timestamp: durableTask.createdAt,
 				task: durableTask,
 				binding: durableBinding,
@@ -839,7 +1023,7 @@ export async function recoverExternalConnectorProductRun(
 					attemptId: identity.attemptId,
 					bindingId: identity.bindingId,
 					bindingEpochId: identity.bindingEpochId,
-					providerId: selected.value.connector.providerId,
+					providerId: selected.connector.providerId,
 					revision: 0,
 				},
 				...(durableExecutionInput.toolGatewayRequest === undefined
@@ -870,19 +1054,13 @@ export async function recoverExternalConnectorProductRun(
 					: { gatewayModelRoute: reconstruction.gatewayModelRoute }),
 				now: () => durableTask?.createdAt ?? reconstruction.acceptedAt ?? new Date().toISOString(),
 			});
-			if (admission.selected.connector !== selected.value.connector) {
+			if (admission.selected.connector !== selected.connector) {
 				throw new ExternalConnectorProductError(
 					"external_capability_mismatch",
 					"External Connector authority changed during recovery.",
 				);
 			}
 			prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
-		}
-		if (input.expectedText !== undefined && prepared.input.canonicalInput.text !== input.expectedText) {
-			throw new ExternalConnectorProductError(
-				"external_binding_invalid",
-				"External Connector recovery input does not match the persisted Attempt.",
-			);
 		}
 		const settlement = new LayeredResultSettlement(input.session, {
 			ownerId: `external-connector:${prepared.binding.bindingId}`,
@@ -898,6 +1076,7 @@ export async function recoverExternalConnectorProductRun(
 				...(input.signal === undefined ? {} : { signal: input.signal }),
 			});
 			if (!started.ok) throw started.error;
+			const gateway = await resolvePreparedToolGateway(prepared, store);
 			const operation = await store.readOperation(identity.attemptId);
 			const mapping = await store.readMapping(identity.attemptId);
 			if (
@@ -911,7 +1090,41 @@ export async function recoverExternalConnectorProductRun(
 				);
 			}
 			let attemptReceipt = started.value.receipt ?? await store.readReceipt(started.value.attempt.attemptId);
-			if (attemptReceipt === undefined) {
+			if (gateway.kind === "ambiguous") {
+				if (attemptReceipt !== undefined) {
+					throw new FoundationError(
+						"session_ledger_conflict",
+						"Ambiguous Tool Gateway intent conflicts with a terminal Connector receipt",
+					);
+				}
+				const attemptReceiptId = `attempt_receipt_${started.value.attempt.attemptId}`;
+				attemptReceipt = await store.writeReceipt({
+					schemaVersion: 1,
+					attemptReceiptId,
+					taskId: started.value.attempt.taskId,
+					dispatchId: started.value.attempt.dispatchId,
+					attemptId: started.value.attempt.attemptId,
+					providerId: prepared.selected.connector.providerId,
+					bindingId: started.value.attempt.bindingId,
+					bindingEpochIds: [...started.value.attempt.bindingEpochIds],
+					status: "failed",
+					workerReceiptRefs: [],
+					artifacts: [],
+					error: {
+						code: "side_effect_unknown",
+						message: "Tool Gateway intent has no proven terminal result and cannot be repeated.",
+						category: "side_effect_unknown",
+						retryable: false,
+					},
+					provenance: {
+						producerKind: "external_connector",
+						providerId: prepared.selected.connector.providerId,
+						producedAt: prepared.timestamp,
+						correlation: { ...prepared.correlation, attemptReceiptId },
+					},
+					sideEffectState: "side_effect_unknown",
+				});
+			} else if (attemptReceipt === undefined) {
 				const sideEffectFree = mapping === undefined && (operation === undefined || operation.status === "prepared");
 				if (sideEffectFree) {
 					const executed = await settlement.executeDispatch({
@@ -981,7 +1194,7 @@ export async function recoverExternalConnectorProductRun(
 							),
 						),
 					).provenance.producedAt;
-			return await settleExternalConnectorProductRun(
+			const execution = await settleExternalConnectorProductRun(
 				settlement,
 				{
 					task: prepared.task,
@@ -994,6 +1207,9 @@ export async function recoverExternalConnectorProductRun(
 				},
 				input.runId,
 			);
+			return gateway.kind === "terminal"
+				? Object.freeze({ ...execution, toolGatewayExchange: gateway.exchange })
+				: execution;
 		} finally {
 			await settlement.release();
 		}

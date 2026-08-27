@@ -53,6 +53,7 @@ import {
 	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
 	persistExternalConnectorProductRunAfterAcceptance,
+	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
@@ -5274,8 +5275,18 @@ export class RpcHostController {
 							}
 							const sourceIsExternal = sourceRun.record.model.provider === "external_connector";
 							if (sourceIsExternal) {
-								if (sourceRun.receipt !== undefined) {
-									return resumeFailure(acceptedResponseFromResult(id, "run.resume", sourceRun, true));
+								if (command.images !== undefined && command.images.length > 0) {
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_binding_invalid",
+												"External Connector input rejects raw image payloads; use canonical trusted artifact references.",
+												false,
+											),
+										),
+									);
 								}
 								const registry = currentBinding.session.getExternalConnectorRegistry?.();
 								if (registry === undefined) {
@@ -5369,33 +5380,59 @@ export class RpcHostController {
 										),
 									);
 								}
-								recoveryBinding.externalRuns.set(command.sourceRunId, {
-									cancel: async () => {
-										const cancelled = await selected.value.connector.cancelAttempt(productIdentity.attemptId);
-										if (!cancelled.ok) throw cancelled.error;
-									},
-								});
-								const recovery = recoverExternalConnectorProductRun({
+								const expectedCanonicalInput: CanonicalExternalAgentInput = {
+									schemaVersion: 1,
+									text: command.message,
+									artifacts: command.artifacts ?? [],
+								};
+								const recoveryInput = {
 									session: getAgentCanonicalSession(recoveryBinding.session),
 									writer: recoveryBinding.session.agentRuntimeComposition.harness.t5.writer,
 									registry,
 									runId: command.sourceRunId,
 									providerId,
 									selection,
-									expectedText: command.message,
+									expectedCanonicalInput,
+									...(command.toolGatewayRequest === undefined
+										? {}
+										: { expectedToolGatewayRequest: command.toolGatewayRequest }),
 									signal: recoveryController.signal,
 									reconstruction: {
-										canonicalInput: { schemaVersion: 1, text: command.message, artifacts: command.artifacts ?? [] },
+										canonicalInput: expectedCanonicalInput,
 										inputAdmission: {
-											inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
+											inspectArtifact: (reference: CanonicalExternalAgentArtifactReference) =>
+												hostController.inspectExternalArtifact(reference),
 										},
 										workspace: recoveryBinding.session.cwd,
-										...(command.toolGatewayRequest === undefined ? {} : { toolGatewayRequest: command.toolGatewayRequest }),
+										...(command.toolGatewayRequest === undefined
+											? {}
+											: { toolGatewayRequest: command.toolGatewayRequest }),
 										...(sourceRun.record.startedAt === undefined
 											? {}
 											: { acceptedAt: sourceRun.record.startedAt }),
 									},
+								};
+								try {
+									await preflightExternalConnectorProductRecovery(recoveryInput);
+								} catch (err) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(automationError(id, "run.resume", asAutomationError(err)));
+								}
+								if (sourceRun.receipt !== undefined) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(acceptedResponseFromResult(id, "run.resume", sourceRun, true));
+								}
+								recoveryBinding.externalRuns.set(command.sourceRunId, {
+									cancel: async () => {
+										const cancelled = await selected.value.connector.cancelAttempt(productIdentity.attemptId);
+										if (!cancelled.ok) throw cancelled.error;
+									},
 								});
+								const recovery = recoverExternalConnectorProductRun(recoveryInput);
 								const settlement = recovery.then(() => undefined);
 								recoveryBinding.externalRunSettlements.set(command.sourceRunId, settlement);
 								void settlement

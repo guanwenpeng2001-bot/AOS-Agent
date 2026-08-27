@@ -39,11 +39,13 @@ import type {
 import { createExternalConnectorRegistry } from "../src/index.ts";
 import {
 	SessionExternalConnectorDurableStore,
+	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	transitionExternalConnectorOperation,
 	type ExternalConnectorDurableStore,
 	type ExternalConnectorOperation,
 } from "../src/core/external-agent-operation.ts";
 import {
+	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
 	persistExternalConnectorProductRunAfterAcceptance,
 	prepareExternalConnectorProductRun,
@@ -752,7 +754,18 @@ async function seedRpcExternalRecovery(
 	fixture: RpcExternalConnectorFixture,
 	runId: string,
 	message: string,
-	cutpoint: "accepted_only" | "receipt_without_operation" | "running" | "start_intent_without_mapping" = "running",
+	cutpoint:
+		| "accepted_only"
+		| "receipt_without_operation"
+		| "running"
+		| "start_intent_without_mapping"
+		| "gateway_before_intent"
+		| "gateway_after_intent_before_result"
+		| "gateway_after_result_before_dispatch" = "running",
+	options: {
+		readonly artifacts?: readonly CanonicalExternalAgentArtifactReference[];
+		readonly toolGatewayRequest?: Omit<ToolGatewayRequest, "context">;
+	} = {},
 ): Promise<void> {
 	const session = getAgentCanonicalSession(runtimeHost.session);
 	const writer = runtimeHost.session.agentRuntimeComposition.harness.t5.writer;
@@ -763,13 +776,14 @@ async function seedRpcExternalRecovery(
 		selection: fixture.selection,
 		runId,
 		message,
-		canonicalInput: { schemaVersion: 1, text: message, artifacts: [] },
+		canonicalInput: { schemaVersion: 1, text: message, artifacts: options.artifacts ?? [] },
 		inputAdmission: {
-			inspectArtifact: () => {
-				throw new Error("no artifacts");
-			},
+			inspectArtifact: rpcArtifactInspection,
 		},
 		workspace: runtimeHost.session.cwd,
+		...(options.toolGatewayRequest === undefined
+			? {}
+			: { toolGatewayRequest: options.toolGatewayRequest }),
 		now: () => "2026-08-27T00:00:00.000Z",
 	});
 	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
@@ -791,6 +805,36 @@ async function seedRpcExternalRecovery(
 	});
 	if (cutpoint === "accepted_only") return;
 	const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
+	if (cutpoint === "gateway_before_intent") return;
+	if (cutpoint === "gateway_after_intent_before_result") {
+		const appendFoundationRecord = session.appendFoundationRecord.bind(session);
+		const appendSpy = vi.spyOn(session, "appendFoundationRecord").mockImplementation(async (record) => {
+			if (
+				record.kind === "fact" &&
+				record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE
+			) {
+				throw new Error("raw vendor terminal persistence failure");
+			}
+			return appendFoundationRecord(record);
+		});
+		try {
+			await expect(executePreparedExternalConnectorProductRun(prepared)).rejects.toThrow();
+		} finally {
+			appendSpy.mockRestore();
+		}
+		return;
+	}
+	if (cutpoint === "gateway_after_result_before_dispatch") {
+		const dispatchSpy = vi
+			.spyOn(LayeredResultSettlement.prototype, "executeDispatch")
+			.mockRejectedValueOnce(new Error("crash after Tool Gateway result"));
+		try {
+			await expect(executePreparedExternalConnectorProductRun(prepared)).rejects.toThrow();
+		} finally {
+			dispatchSpy.mockRestore();
+		}
+		return;
+	}
 	const settlement = new LayeredResultSettlement(session, { writer });
 	try {
 		const started = await settlement.startDispatch({
@@ -2610,6 +2654,245 @@ describe("RPC Automation Host run lifecycle", () => {
 					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType }),
 				).toHaveLength((baselineCounts.get(objectType) ?? 0) + expectedCount);
 			}
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it.each([
+		{
+			name: "before Tool Gateway intent",
+			cutpoint: "gateway_before_intent",
+			terminalStatus: "completed",
+			driverSpawns: 1,
+			gatewayRecords: 2,
+		},
+		{
+			name: "after Tool Gateway intent before result",
+			cutpoint: "gateway_after_intent_before_result",
+			terminalStatus: "failed",
+			driverSpawns: 0,
+			gatewayRecords: 1,
+		},
+		{
+			name: "after Tool Gateway result before Connector dispatch",
+			cutpoint: "gateway_after_result_before_dispatch",
+			terminalStatus: "completed",
+			driverSpawns: 1,
+			gatewayRecords: 2,
+		},
+	] as const)("recovers $name without repeating the gateway effect", async (testCase) => {
+		const harness = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 0,
+			externalArtifactAuthority: {
+				workspaceId: "rpc-workspace",
+				inspectArtifact: rpcArtifactInspection,
+			},
+		});
+		try {
+			await harness.runtimeHost.session.prompt("persist Tool Gateway recovery session");
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+			});
+			await harness.controller.handleCommand({
+				id: `gateway-cutpoint-${testCase.cutpoint}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const sourceRunId = `rpc-${testCase.cutpoint}`;
+			const message = `recover ${testCase.name}`;
+			const artifacts = [rpcImageArtifact(), rpcWorkspaceArtifact()];
+			const gatewayRequest = {
+				schemaVersion: 1 as const,
+				toolCallId: `tool-${testCase.cutpoint}`,
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "vendor-raw-canary", mode: "metadata" },
+			};
+			await seedRpcExternalRecovery(
+				harness.runtimeHost,
+				fixture,
+				sourceRunId,
+				message,
+				testCase.cutpoint,
+				{ artifacts, toolGatewayRequest: gatewayRequest },
+			);
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			let restoredFixture: RpcExternalConnectorFixture | undefined;
+			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
+					modelAccess: "none",
+					toolGateway: true,
+					artifacts: true,
+					images: true,
+				});
+				return result;
+			});
+
+			const response = await harness.controller.dispatch({
+				id: `gateway-cutpoint-${testCase.cutpoint}-resume`,
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message,
+				externalConnector: fixture.selection,
+				artifacts,
+				toolGatewayRequest: gatewayRequest,
+			});
+
+			expect(response).toMatchObject({
+				success: true,
+				data: { runId: sourceRunId, attempt: 1, status: "accepted" },
+			});
+			let runReceipts: Awaited<
+				ReturnType<ReturnType<typeof getAgentCanonicalSession>["findFoundationRecords"]>
+			> = [];
+			await vi.waitFor(async () => {
+				runReceipts = (
+					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+						objectType: "run_receipt",
+					})
+				).filter(
+					(record) =>
+						record.kind === "fact" && (record.payload as { runId?: unknown }).runId === sourceRunId,
+				);
+				expect(runReceipts).toHaveLength(1);
+				expect(runReceipts[0]).toMatchObject({
+					payload: {
+						terminalStatus: testCase.terminalStatus,
+						...(testCase.terminalStatus === "failed"
+							? { terminalError: { code: "side_effect_unknown", retryable: false } }
+							: {}),
+					},
+				});
+			});
+			const gatewayCalls = fixture.toolGatewayRequests.length + (restoredFixture?.toolGatewayRequests.length ?? 0);
+			expect(gatewayCalls).toBe(1);
+			expect(fixture.driver.spawnCalls + (restoredFixture?.driver.spawnCalls ?? 0)).toBe(testCase.driverSpawns);
+			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
+			const gatewayRecords = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+				objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+				objectId: identity.attemptId,
+				includePruned: true,
+			});
+			expect(gatewayRecords).toHaveLength(testCase.gatewayRecords);
+			for (const objectType of ["attempt_receipt", "task_result", "run_receipt"]) {
+				const records = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+					objectType,
+				});
+				expect(
+					records.filter(
+						(record) => record.kind === "fact" && record.correlation.runId === sourceRunId,
+					),
+				).toHaveLength(1);
+			}
+			const exposed = JSON.stringify({ response, records: harness.records, runReceipts });
+			expect(exposed).not.toContain("vendor-raw-canary");
+			expect(exposed).not.toContain("raw vendor terminal persistence failure");
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it.each([
+		{ name: "artifact omission", commandId: "gateway-artifact-omission", artifacts: "omit", request: "exact" },
+		{ name: "Tool Gateway request omission", commandId: "gateway-request-omission", artifacts: "exact", request: "omit" },
+		{ name: "Tool Gateway request mismatch", commandId: "gateway-request-mismatch", artifacts: "exact", request: "mismatch" },
+	] as const)("rejects $name from canonical recovery input before effects", async (testCase) => {
+		const harness = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 0,
+			externalArtifactAuthority: {
+				workspaceId: "rpc-workspace",
+				inspectArtifact: rpcArtifactInspection,
+			},
+		});
+		try {
+			await harness.runtimeHost.session.prompt("persist Tool Gateway mismatch session");
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+			});
+			await harness.controller.handleCommand({ id: `${testCase.commandId}-init`, type: "initialize", protocolVersion: 1 });
+			const sourceRunId = `${testCase.commandId}-source`;
+			const message = "preserve the complete immutable recovery input";
+			const artifacts = [rpcImageArtifact(), rpcWorkspaceArtifact()];
+			const gatewayRequest = {
+				schemaVersion: 1 as const,
+				toolCallId: "tool-gateway-mismatch",
+				toolName: "workspace.read",
+				originalArguments: { path: "docs/evidence.txt" },
+			};
+			await seedRpcExternalRecovery(
+				harness.runtimeHost,
+				fixture,
+				sourceRunId,
+				message,
+				"gateway_before_intent",
+				{ artifacts, toolGatewayRequest: gatewayRequest },
+			);
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			const restoredFixtures: RpcExternalConnectorFixture[] = [];
+			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				const restored = await installRpcExternalConnector(harness.runtimeHost, {
+					modelAccess: "none",
+					toolGateway: true,
+					artifacts: true,
+					images: true,
+				});
+				restoredFixtures.push(restored);
+				return result;
+			});
+			const response = await harness.controller.dispatch({
+				id: testCase.commandId,
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message,
+				externalConnector: fixture.selection,
+				artifacts: testCase.artifacts === "omit" ? [] : artifacts,
+				...(testCase.request === "omit"
+					? {}
+					: {
+							toolGatewayRequest:
+								testCase.request === "mismatch"
+									? { ...gatewayRequest, toolName: "workspace.write" }
+									: gatewayRequest,
+						}),
+			});
+			expect(response).toMatchObject({
+				success: false,
+				error: { code: "external_binding_invalid", retryable: false },
+			});
+			expect(fixture.toolGatewayRequests).toHaveLength(0);
+			expect(restoredFixtures.flatMap((restored) => restored.toolGatewayRequests)).toHaveLength(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(restoredFixtures.reduce((calls, restored) => calls + restored.driver.spawnCalls, 0)).toBe(0);
+			const runReceipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+				objectType: "run_receipt",
+			});
+			expect(
+				runReceipts.filter(
+					(record) =>
+						record.kind === "fact" && (record.payload as { runId?: unknown }).runId === sourceRunId,
+				),
+			).toHaveLength(0);
 		} finally {
 			await harness.controller.shutdown();
 			await harness.cleanup();
