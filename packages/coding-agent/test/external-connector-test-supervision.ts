@@ -1,3 +1,13 @@
+import {
+	InMemorySessionStorage,
+	Session,
+	SessionLedger,
+	SessionT5Ledger,
+	type ConnectorCapabilitySnapshot,
+	type ExternalAgentConnector,
+} from "@aos-agent/agent-core";
+import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import type {
 	ExternalConnectorProcessController,
 	ExternalConnectorProcessHandle,
@@ -12,6 +22,26 @@ import {
 	externalConnectorProcessContainment,
 	InMemoryExternalConnectorSupervisorPrivateStateStore,
 } from "../src/core/external-connector-supervisor.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../src/core/vendor-drivers/types.ts";
+
+let registrationRuntimeId = 0;
+
+class RegistrationOnlyDriver implements ExternalConnectorVendorDriver {
+	async spawn(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
+	async *events(): AsyncIterable<never> {}
+	async connect(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
+	async lookup(): Promise<ExternalConnectorDriverLookup> { return { status: "missing" }; }
+	async read(): Promise<ExternalConnectorTerminalEvidence> { throw new Error("registration-only driver"); }
+	async write(): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<undefined> { return undefined; }
+	async dispose(): Promise<void> {}
+}
 
 class TestProcessHandle implements ExternalConnectorProcessHandle {
 	readonly operationNonce: string;
@@ -174,4 +204,22 @@ export function createExternalConnectorTestSupervision() {
 			},
 		},
 	};
+}
+
+/** Host-supervised runtime for composition fixtures that only exercise registration and discovery. */
+export function createExternalConnectorTestRuntime(
+	snapshot: ConnectorCapabilitySnapshot,
+): ExternalAgentConnector {
+	registrationRuntimeId += 1;
+	const fixtureId = registrationRuntimeId;
+	const session = new Session(new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }));
+	const t5 = new SessionT5Ledger(session, { ownerId: `connector-registry-${fixtureId}` });
+	return createDurableExternalAgentConnector({
+		providerId: snapshot.providerId,
+		capability: snapshot,
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		driver: new RegistrationOnlyDriver(),
+		supervision: createExternalConnectorTestSupervision().options,
+		operationNonce: () => `connector-registry-nonce-${fixtureId}`,
+	});
 }

@@ -1,7 +1,8 @@
 /** Trusted production composition for the current External Connector runtime. */
 
 import {
-	DurableExternalAgentConnector,
+	createDurableExternalAgentConnector,
+	type DurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
 } from "./external-agent-connector.ts";
 import {
@@ -47,7 +48,7 @@ export function createProductionExternalConnectorSupervision(
 export async function createProductionExternalAgentConnector(
 	options: ProductionExternalAgentConnectorRuntimeOptions,
 ): Promise<DurableExternalAgentConnector> {
-	const connector = new DurableExternalAgentConnector({
+	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
 		store: options.store,

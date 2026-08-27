@@ -15,7 +15,6 @@ import {
 	createLocalToolGatewayProvider,
 	createSandboxOperationToolGatewayProvider,
 	type SandboxOperationProvider,
-	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { registerFauxProvider } from "@aos-agent/ai/compat";
 import * as CodingAgent from "../../src/index.ts";
@@ -40,6 +39,7 @@ import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { WorkerSupervisorV1 } from "../../src/core/worker-supervisor.ts";
 import type { WorkerBindingV1 } from "../../src/core/worker.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
+import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
 import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import {
@@ -644,19 +644,7 @@ const ac23 = defineLine13KnownGapCase({
 				artifacts: false,
 				images: false,
 			});
-			const connector: ExternalAgentConnector = {
-				schemaVersion: 1,
-				providerId,
-				providerClass: "external_connector",
-				capabilities: async () => [],
-				probeCapabilities: async () => Result.ok(snapshot),
-				createAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
-				runAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
-				resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
-				reconcileAttempt: async () => Result.err(new FoundationError("unsupported_feature", "unused")),
-				cancelAttempt: async () => Result.ok(undefined),
-				dispose: async () => {},
-			};
+			const connector = createExternalConnectorTestRuntime(snapshot);
 			const descriptor = {
 				schemaVersion: 1 as const,
 				providerId,
@@ -665,7 +653,11 @@ const ac23 = defineLine13KnownGapCase({
 				capabilitySnapshotDigest: snapshot.digest,
 			};
 			const registry = createExternalConnectorRegistry();
-			const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+			const registered = registry.registerPrepared({
+				descriptor,
+				connector,
+				trusted: true,
+			}, snapshot);
 			const projected = registry.list()[0];
 			fixture.exactSelection = registered.ok && projected?.providerId === providerId;
 			fixture.safeProjection = projected !== undefined && Object.keys(projected).sort().join(",") ===

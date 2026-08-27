@@ -81,6 +81,14 @@ export type ExternalConnectorDriverEvent =
 	  }
 	| {
 			readonly schemaVersion: 1;
+			readonly type: "heartbeat";
+			readonly externalSessionId: string;
+			readonly externalTurnId?: string;
+			readonly sequence: number;
+			readonly producedAt: string;
+	  }
+	| {
+			readonly schemaVersion: 1;
 			readonly type: "artifact";
 			readonly externalSessionId: string;
 			readonly externalTurnId?: string;
@@ -122,6 +130,10 @@ const EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS = new Set([
 	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
 	"sequence",
 	"phase",
+]);
+const EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS = new Set([
+	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
+	"sequence",
 ]);
 const EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS = new Set([
 	...EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS,
@@ -261,18 +273,20 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 		? EXTERNAL_CONNECTOR_STARTED_EVENT_KEYS
 		: value.type === "progress"
 			? EXTERNAL_CONNECTOR_PROGRESS_EVENT_KEYS
-			: value.type === "artifact"
-				? EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS
-				: undefined;
+			: value.type === "heartbeat"
+				? EXTERNAL_CONNECTOR_HEARTBEAT_EVENT_KEYS
+				: value.type === "artifact"
+					? EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS
+					: undefined;
 	if (keys === undefined || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys.has(key))) {
 		return false;
 	}
-	if (value.type === "progress") {
+	if (value.type === "progress" || value.type === "heartbeat") {
 		return (
 			typeof value.sequence === "number" &&
 			Number.isSafeInteger(value.sequence) &&
 			value.sequence > 0 &&
-			(value.phase === undefined ||
+			(value.type === "heartbeat" || value.phase === undefined ||
 				(typeof value.phase === "string" && EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN.test(value.phase)))
 		);
 	}

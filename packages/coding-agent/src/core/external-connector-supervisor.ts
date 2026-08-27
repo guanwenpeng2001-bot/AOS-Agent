@@ -587,6 +587,8 @@ export class ExternalConnectorBoundedSupervisor {
 	#eventTimes: number[] = [];
 	#startedSeen = false;
 	#lastProgressSequence = 0;
+	#lastHeartbeatSequence = 0;
+	readonly #receiptActivityTimers = new Set<SegmentTimer>();
 	readonly #artifactsAllowed: boolean;
 
 	constructor(options: ExternalConnectorBoundedSupervisorOptions) {
@@ -719,6 +721,7 @@ export class ExternalConnectorBoundedSupervisor {
 		};
 		sourceSignal?.addEventListener("abort", abort, { once: true });
 		const timer = new SegmentTimer(this.#clock, this.#deadlines[segment]);
+		if (segment === "receipt") this.#receiptActivityTimers.add(timer);
 		try {
 			let operationPromise: Promise<T>;
 			try {
@@ -762,6 +765,7 @@ export class ExternalConnectorBoundedSupervisor {
 			}
 			throw new ExternalConnectorSupervisorError("side_effect_unknown", segment, true);
 		} finally {
+			if (segment === "receipt") this.#receiptActivityTimers.delete(timer);
 			timer.close();
 			sourceSignal?.removeEventListener("abort", abort);
 		}
@@ -827,9 +831,10 @@ export class ExternalConnectorBoundedSupervisor {
 					const cleaned = await this.#forceAndWait();
 					throw new ExternalConnectorSupervisorError(cleaned ? "side_effect_unknown" : "reconcile_required", cleaned ? "event" : "dispose", true);
 				}
-				timer.touch();
 				if (outcome.value.done) return;
 				this.#acceptEvent(outcome.value.value, handle);
+				timer.touch();
+				this.#touchReceiptActivity();
 			}
 		} catch (error) {
 			if (error instanceof ExternalConnectorSupervisorError && this.#forcedTermination) throw error;
@@ -894,6 +899,11 @@ export class ExternalConnectorBoundedSupervisor {
 					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 				}
 				this.#lastProgressSequence = value.sequence;
+			} else if (value.type === "heartbeat") {
+				if (value.sequence <= this.#lastHeartbeatSequence) {
+					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+				}
+				this.#lastHeartbeatSequence = value.sequence;
 			} else {
 				if (!this.#artifactsAllowed) {
 					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
@@ -922,6 +932,10 @@ export class ExternalConnectorBoundedSupervisor {
 			event.externalSessionId === handle.externalSessionId &&
 			(event.externalTurnId ?? undefined) === (handle.externalTurnId ?? undefined)
 		);
+	}
+
+	#touchReceiptActivity(): void {
+		for (const timer of this.#receiptActivityTimers) timer.touch();
 	}
 
 	#acceptTerminalEvidence(value: unknown): void {
