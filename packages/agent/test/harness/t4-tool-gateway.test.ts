@@ -25,6 +25,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 			gatewayId: "gateway-1",
 			providers: [createLocalToolGatewayProvider({
 				providerId: "local-1",
+				revision: 1,
 				routes: [{ kind: "local", namespace: "mcp-server", toolName: "read", providerId: "local-1", revision: 1 }],
 				invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 			})],
@@ -62,6 +63,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		};
 		const provider = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
+			revision: 1,
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "operation-1"),
@@ -80,6 +82,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		expect(mismatched).toMatchObject({ ok: false, error: { code: "invalid_identifier" } });
 		const payloadTampered = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
+			revision: 1,
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
 			sandbox,
 			translator: { translate: () => Result.ok({ schemaVersion: 1, operationId: "tampered", providerId: "sandbox-1", bindingId: "binding-1", bindingEpochId: "epoch-1", toolCallId: "call-1", toolName: "read", namespace: "mcp-server", taskId: "task-1", payload: { path: "other.txt" } }) },
@@ -91,6 +94,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 	it("rejects duplicate and missing-provider routes at construction", () => {
 		const provider = (providerId: string) => createLocalToolGatewayProvider({
 			providerId,
+			revision: 1,
 			routes: [{ kind: "local", toolName: "read", providerId, revision: 1 }],
 			invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 		});
@@ -98,6 +102,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 			.toThrow(expect.objectContaining({ code: "tool_gateway_catalog_invalid" }));
 		const missing = createLocalToolGatewayProvider({
 			providerId: "local-1",
+			revision: 1,
 			routes: [{ kind: "local", toolName: "read", providerId: "missing", revision: 1 }],
 			invoke: async (value) => Result.ok({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" }),
 		});
@@ -124,6 +129,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		};
 		const throwingProvider = createSandboxOperationToolGatewayProvider({
 			providerId: sandbox.providerId,
+			revision: 1,
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "callback-operation"),
@@ -138,6 +144,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 
 		const hangingProvider = createSandboxOperationToolGatewayProvider({
 			providerId: sandbox.providerId,
+			revision: 1,
 			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "hanging-operation"),
