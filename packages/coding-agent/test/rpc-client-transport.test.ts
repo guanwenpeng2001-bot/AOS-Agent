@@ -197,7 +197,6 @@ describe("RpcClient TCP transport", () => {
 				undefined,
 				undefined,
 				undefined,
-				undefined,
 				"retry-1",
 			),
 		).rejects.toMatchObject({
@@ -270,7 +269,7 @@ describe("RpcClient TCP transport", () => {
 		clients.push(client);
 		await client.start();
 		await expect(
-			client.startRun("side effect", undefined, undefined, undefined, undefined, undefined, undefined, "request-1"),
+			client.startRun("side effect", undefined, undefined, undefined, undefined, undefined, "request-1"),
 		).rejects.toMatchObject({ code: "rpc_transport_closed" });
 		await client.close();
 		expect(attempt).toBe(1);
@@ -278,7 +277,6 @@ describe("RpcClient TCP transport", () => {
 		await client.start();
 		const retry = await client.startRun(
 			"side effect",
-			undefined,
 			undefined,
 			undefined,
 			undefined,

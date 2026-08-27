@@ -483,6 +483,7 @@ async function installRpcExternalConnector(
 		readonly eventNextHangs?: boolean;
 		readonly readHangs?: boolean;
 		readonly cooperativeCancel?: boolean;
+		readonly supervisionDeadlines?: ReturnType<typeof createExternalConnectorTestSupervision>["options"]["deadlines"];
 		readonly supervisionLimits?: {
 			readonly maxEvents?: number;
 			readonly maxEventsPerWindow?: number;
@@ -542,6 +543,7 @@ async function installRpcExternalConnector(
 		driver,
 		supervision: {
 			...supervision.options,
+			...(options.supervisionDeadlines === undefined ? {} : { deadlines: options.supervisionDeadlines }),
 			...(options.supervisionLimits === undefined ? {} : { limits: options.supervisionLimits }),
 		},
 		now: () => "2026-08-27T00:00:00.000Z",
@@ -1555,6 +1557,13 @@ describe("RPC Automation Host run lifecycle", () => {
 				modelAccess: "none",
 				eventNextHangs: true,
 				readHangs: true,
+				supervisionDeadlines: {
+					start: { hardMs: 30_000, idleMs: 30_000 },
+					event: { hardMs: 30_000, idleMs: 30_000 },
+					receipt: { hardMs: 30_000, idleMs: 30_000 },
+					cancel: { hardMs: 30_000, idleMs: 30_000 },
+					dispose: { hardMs: 1_000, idleMs: 1_000 },
+				},
 			});
 			await harness.controller.handleCommand({ id: "external-live-deadline-init", type: "initialize", protocolVersion: 1 });
 			await harness.controller.handleCommand({
@@ -1562,12 +1571,12 @@ describe("RPC Automation Host run lifecycle", () => {
 				type: "run.start",
 				message: "deadline after driver launch",
 				externalConnector: fixture.selection,
-				deadlineAt: new Date(Date.now() + 100).toISOString(),
+				deadlineAt: new Date(Date.now() + 5_000).toISOString(),
 			});
-			await vi.waitFor(() => expect(fixture.driver.readCalls).toBe(1));
+			await vi.waitFor(() => expect(fixture.driver.readCalls).toBe(1), { timeout: 10_000 });
 			await vi.waitFor(() => expect(harness.records.filter((record) =>
 				record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled"
-			)).toHaveLength(1), { timeout: 5_000 });
+			)).toHaveLength(1), { timeout: 10_000 });
 			const terminal = harness.records.find((record) => record.type === "run.failed");
 			expect(terminal).toMatchObject({
 				type: "run.failed",

@@ -134,7 +134,7 @@ function supervisedFailureEvidence(
 ): ExternalConnectorTerminalEvidence | undefined {
 	let code: "external_event_invalid" | "external_resource_limit_exceeded" | "run_deadline_exceeded";
 	let message: string;
-	let category: "unknown" | "deadline";
+	let category: "side_effect_unknown" | "deadline";
 	if (isDeadlineAbort(sourceSignal)) {
 		code = "run_deadline_exceeded";
 		message = "External connector run deadline was exceeded.";
@@ -147,7 +147,7 @@ function supervisedFailureEvidence(
 		message = error.code === "external_event_invalid"
 			? "External connector emitted invalid supervised output."
 			: "External connector exceeded a supervised resource limit.";
-		category = "unknown";
+		category = "side_effect_unknown";
 	} else {
 		return undefined;
 	}
@@ -1051,6 +1051,36 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			correlation.agentInstanceId !== undefined
 		) {
 			return Result.err(externalFailure("invalid_correlation", "External connector prior receipt does not match its Attempt", attempt.attemptId));
+		}
+		const operation = await this.#store.readOperation(attempt.attemptId);
+		if (operation !== undefined) {
+			if (
+				operation.providerId !== this.providerId ||
+				operation.attemptId !== attempt.attemptId ||
+				operation.bindingId !== attempt.bindingId ||
+				operation.bindingEpochId !== attempt.bindingEpochIds[0] ||
+				operation.correlation.taskId !== attempt.taskId ||
+				operation.correlation.dispatchId !== attempt.dispatchId ||
+				operation.correlation.attemptId !== attempt.attemptId ||
+				operation.correlation.bindingId !== attempt.bindingId ||
+				operation.correlation.bindingEpochId !== attempt.bindingEpochIds[0] ||
+				operation.correlation.providerId !== this.providerId ||
+				operation.correlation.agentInstanceId !== undefined
+			) {
+				return Result.err(externalFailure("invalid_correlation", "External connector operation does not match its canonical receipt", attempt.attemptId));
+			}
+			if (operation.status === "terminal") {
+				if (operation.receiptId !== receiptId) {
+					return Result.err(externalFailure("invalid_correlation", "External connector terminal operation references a different receipt", attempt.attemptId));
+				}
+			} else {
+				await this.#store.writeOperation(
+					transitionExternalConnectorOperation(operation, "terminal", {
+						now: this.#now(),
+						receiptId,
+					}),
+				);
+			}
 		}
 		return Result.ok(checked.value);
 	}
