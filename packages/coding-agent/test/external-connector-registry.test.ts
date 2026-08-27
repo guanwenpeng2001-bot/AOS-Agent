@@ -18,23 +18,26 @@ import {
 	type FoundationJsonValue,
 	type Result as ResultValue,
 	type ToolGatewayRequest,
+	type ToolGatewayProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import type { CapabilityBinding } from "../src/core/capability-registry.ts";
 import type { ExternalAgentConnector } from "../src/index.ts";
 import {
 	authorizePolicyOperation,
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
-import { externalToolPolicyOperation } from "../src/core/foundation-control-plane.ts";
+import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
 } from "../src/index.ts";
 import {
 	executeExternalConnectorProductRun,
+	executePreparedExternalConnectorProductRun,
 	persistExternalConnectorProductRunAfterAcceptance,
 	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
@@ -146,6 +149,7 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	readonly #readHangs: boolean;
 	readonly #returnsCancelEvidence: boolean;
 	readonly #emitToolGatewayRequest: boolean;
+	readonly #toolGatewayRequest: { readonly toolName: string; readonly namespace?: string };
 	#spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 
 	constructor(
@@ -154,12 +158,17 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 			readonly readHangs?: boolean;
 			readonly returnsCancelEvidence?: boolean;
 			readonly throwOnDispose?: boolean;
+			readonly toolGatewayRequest?: { readonly toolName: string; readonly namespace?: string };
 		} = {},
 	) {
 		this.#throwOnDispose = options.throwOnDispose ?? false;
 		this.#readHangs = options.readHangs ?? false;
 		this.#returnsCancelEvidence = options.returnsCancelEvidence ?? false;
 		this.#emitToolGatewayRequest = options.emitToolGatewayRequest ?? false;
+		this.#toolGatewayRequest = options.toolGatewayRequest ?? {
+			toolName: "workspace.read",
+			namespace: "workspace",
+		};
 	}
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
@@ -194,8 +203,10 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 			request: {
 				schemaVersion: 1,
 				toolCallId: `tool-call-${operationId}`,
-				toolName: "workspace.read",
-				namespace: "workspace",
+				toolName: this.#toolGatewayRequest.toolName,
+				...(this.#toolGatewayRequest.namespace === undefined
+					? {}
+					: { namespace: this.#toolGatewayRequest.namespace }),
 				originalArguments: { path: "docs/input.txt" },
 				idempotencyKey: `gateway-${operationId}`,
 				context: {
@@ -345,13 +356,33 @@ const EXTERNAL_POLICY_PROFILE: ExecutionPolicyProfile = {
 	approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny" },
 };
 
-function policyBinding(runId: string) {
+function gatewayCapabilityBinding(runId: string): CapabilityBinding {
+	return {
+		id: `capability-binding-${runId}`,
+		profile: "external-registry-test",
+		createdAt: NOW,
+		descriptors: [{
+			id: "builtin-workspace-read",
+			revision: "1",
+			kind: "builtin_tool",
+			name: "workspace.read",
+			exposedToolName: "workspace.read",
+		}],
+		decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+		toolAllowlist: ["workspace.read"],
+	};
+}
+
+function policyBinding(runId: string, capabilityBinding?: CapabilityBinding) {
 	const resolved = resolveExecutionPolicyProfile({
 		profiles: { [EXTERNAL_POLICY_PROFILE.id]: EXTERNAL_POLICY_PROFILE },
 		defaultProfile: EXTERNAL_POLICY_PROFILE.id,
 		workspaceIdentity: "workspace-zeta",
 		runId,
 		createdAt: NOW,
+		...(capabilityBinding === undefined
+			? {}
+			: { capabilityBinding: { id: capabilityBinding.id } }),
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.binding;
@@ -361,8 +392,12 @@ function productInput(
 	fixture: SupportedConnectorFixture,
 	registry: ReturnType<typeof createExternalConnectorRegistry>,
 	runId: string,
+	capabilityBindingOverride?: CapabilityBinding,
 ): ExternalConnectorProductExecutionInput {
 	const text = `Execute supervised third-party connector run ${runId}`;
+	const capabilityBinding = fixture.snapshot.toolGateway
+		? capabilityBindingOverride ?? gatewayCapabilityBinding(runId)
+		: undefined;
 	return {
 		session: fixture.session,
 		writer: fixture.t5.writer,
@@ -381,7 +416,8 @@ function productInput(
 			},
 		},
 		workspace: "workspace-zeta",
-		policyBinding: policyBinding(runId),
+		policyBinding: policyBinding(runId, capabilityBinding),
+		...(capabilityBinding === undefined ? {} : { capabilityBinding }),
 		now: () => NOW,
 	};
 }
@@ -473,6 +509,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			providers: [
 				createLocalToolGatewayProvider({
 					providerId: PROVIDER_ID,
+					revision: 1,
 					routes: [{
 						kind: "local",
 						namespace: "workspace",
@@ -517,7 +554,12 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				const decision = authorizePolicyOperation({
 					profile: resolved.profile,
 					binding: resolved.binding,
-					operation: externalToolPolicyOperation(request, route),
+					operation: await classifyExternalToolPolicyOperation({
+						request,
+						route,
+						cwd: process.cwd(),
+						roots: { workspace: process.cwd(), agentInternal: [] },
+					}),
 				});
 				return decision.outcome === "allow"
 					? Result.ok(true)
@@ -709,16 +751,18 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 	it("routes only an advertised Connector-originated request through Tool Gateway", async () => {
 		const gateway = { count: 0, requests: [] as ToolGatewayRequest[] };
+		const builtinProviderId = "builtin.zeta-tools";
 		const canonicalToolGateway = createFoundationToolGateway({
 			gatewayId: "zeta-foundation-tool-gateway",
 			providers: [
 				createLocalToolGatewayProvider({
-					providerId: PROVIDER_ID,
+					providerId: builtinProviderId,
+					revision: 1,
 					routes: [{
 						kind: "local",
 						toolName: "workspace.read",
 						namespace: "workspace",
-						providerId: PROVIDER_ID,
+						providerId: builtinProviderId,
 						revision: 1,
 					}],
 					invoke: async (request) => {
@@ -756,13 +800,16 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			toolCallId: `tool-call-${runId}`,
 			toolName: "workspace.read",
 			context: {
-				providerId: PROVIDER_ID,
+				providerId: builtinProviderId,
 				operationId: runId,
 			},
 		});
 		expect(execution.toolGatewayExchanges).toEqual([
 			{
-				request: gateway.requests[0],
+				request: {
+					...gateway.requests[0],
+					context: { ...gateway.requests[0]!.context, providerId: PROVIDER_ID },
+				},
 				result: {
 					schemaVersion: 1,
 					toolCallId: `tool-call-${runId}`,
@@ -802,6 +849,177 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await disabledRegistry.dispose();
 	});
 
+	it("does not expose a catalog route outside the durable CapabilityBinding", async () => {
+		let providerEffects = 0;
+		const providerId = "builtin.product-tools";
+		const canonicalToolGateway = createFoundationToolGateway({
+			gatewayId: "zeta-scoped-local-gateway",
+			providers: [createLocalToolGatewayProvider({
+				providerId,
+				revision: 4,
+				routes: ["workspace.read", "workspace.write"].map((toolName) => ({
+					kind: "local" as const,
+					namespace: "workspace",
+					toolName,
+					providerId,
+					revision: 4,
+				})),
+				invoke: async (request) => {
+					providerEffects += 1;
+					return Result.ok({
+						schemaVersion: 1,
+						toolCallId: request.toolCallId,
+						toolName: request.toolName,
+						ok: true,
+						sideEffectState: "none",
+					});
+				},
+			})],
+		});
+		const fixture = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({
+				emitToolGatewayRequest: true,
+				toolGatewayRequest: { toolName: "workspace.write", namespace: "workspace" },
+			}),
+		});
+		const registry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+
+		const execution = await executeExternalConnectorProductRun(
+			productInput(fixture, registry, "run-zeta-forbidden-extra-route"),
+		);
+
+		expect(execution).toMatchObject({
+			runReceipt: { terminalStatus: "failed", terminalError: { code: "external_tool_route_denied" } },
+			attemptReceipt: { status: "failed", error: { code: "external_tool_route_denied" } },
+		});
+		expect(providerEffects).toBe(0);
+		await registry.dispose();
+	});
+
+	it("trims MCP routes to the exact server and tool revision selected by the durable binding", async () => {
+		let providerEffects = 0;
+		const providerId = "mcp.product-docs";
+		const mcpProvider: ToolGatewayProvider = {
+			providerId,
+			kind: "mcp",
+			revision: 7,
+			routes: ["list", "delete"].map((toolName) => ({
+				kind: "mcp" as const,
+				namespace: "docs",
+				toolName,
+				providerId,
+				revision: 7,
+			})),
+			capabilities: async () => [],
+			execute: async (request) => {
+				providerEffects += 1;
+				return Result.ok({
+					schemaVersion: 1,
+					toolCallId: request.toolCallId,
+					toolName: request.toolName,
+					ok: true,
+					sideEffectState: "none",
+				});
+			},
+			dispose: async () => {},
+		};
+		const canonicalToolGateway = createFoundationToolGateway({
+			gatewayId: "zeta-scoped-mcp-gateway",
+			providers: [mcpProvider],
+		});
+		const fixture = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({
+				emitToolGatewayRequest: true,
+				toolGatewayRequest: { toolName: "delete", namespace: "docs" },
+			}),
+		});
+		const capabilityBinding: CapabilityBinding = {
+			id: "capability-binding-exact-mcp",
+			profile: "external-registry-test",
+			createdAt: NOW,
+			descriptors: [
+				{ id: "mcp-server-docs", revision: "3", kind: "mcp_server", name: "docs", mcpServerId: "docs" },
+				{
+					id: "mcp-tool-docs-list",
+					revision: "5",
+					kind: "mcp_tool",
+					name: "list",
+					exposedToolName: "mcp__docs__list",
+					parentId: "mcp-server-docs",
+					mcpServerId: "docs",
+				},
+			],
+			decisionSummary: { allowed: 2, awaitingApproval: 0, denied: 1 },
+			toolAllowlist: ["mcp__docs__list"],
+		};
+		const registry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+
+		const execution = await executeExternalConnectorProductRun(
+			productInput(fixture, registry, "run-zeta-exact-mcp-trim", capabilityBinding),
+		);
+
+		expect(execution).toMatchObject({
+			runReceipt: { terminalStatus: "failed", terminalError: { code: "external_tool_route_denied" } },
+			attemptReceipt: { status: "failed", error: { code: "external_tool_route_denied" } },
+		});
+		expect(providerEffects).toBe(0);
+		await registry.dispose();
+	});
+
+	it("fails a prepared Connector scope closed when the gateway provider revision changes", async () => {
+		let providerEffects = 0;
+		const providerId = "builtin.revision-tools";
+		const provider = (revision: number) => createLocalToolGatewayProvider({
+			providerId,
+			revision,
+			routes: [{
+				kind: "local",
+				namespace: "workspace",
+				toolName: "workspace.read",
+				providerId,
+				revision,
+			}],
+			invoke: async (request) => {
+				providerEffects += 1;
+				return Result.ok({
+					schemaVersion: 1,
+					toolCallId: request.toolCallId,
+					toolName: request.toolName,
+					ok: true,
+					sideEffectState: "none",
+				});
+			},
+		});
+		const canonicalToolGateway = createFoundationToolGateway({
+			gatewayId: "zeta-revision-gateway",
+			providers: [provider(1)],
+		});
+		const fixture = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
+		});
+		const registry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const admission = await prepareExternalConnectorProductRun(
+			productInput(fixture, registry, "run-zeta-revision-mismatch"),
+		);
+		const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
+		expect(canonicalToolGateway.reload({ providers: [provider(2)] })).toMatchObject({ ok: true });
+
+		const execution = await executePreparedExternalConnectorProductRun(prepared);
+
+		expect(execution).toMatchObject({
+			runReceipt: { terminalStatus: "failed", terminalError: { code: "external_tool_route_denied" } },
+			attemptReceipt: { status: "failed", error: { code: "external_tool_route_denied" } },
+		});
+		expect(providerEffects).toBe(0);
+		await registry.dispose();
+	});
+
 	it.each(["route", "policy"] as const)(
 		"projects Tool Gateway %s denial without collapsing it to unknown side effect",
 		async (kind) => {
@@ -811,6 +1029,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				providers: [
 					createLocalToolGatewayProvider({
 						providerId: PROVIDER_ID,
+						revision: 1,
 						routes: [
 							{
 								kind: "local",

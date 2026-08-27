@@ -397,6 +397,12 @@ export interface PolicyOperationRequest {
 	readonly port?: number;
 	readonly credentialNames?: ReadonlyArray<string>;
 	readonly environmentNames?: ReadonlyArray<string>;
+	/** A structured classifier could not enumerate the command's effects. */
+	readonly requiresSandbox?: boolean;
+	/** True only when the selected Tool Gateway route is a sandbox provider. */
+	readonly sandboxed?: boolean;
+	/** Exact sandbox Tool Gateway provider identity. */
+	readonly sandboxProviderId?: string;
 	/** Opaque credential target identity of a Task Credential operation; matched locally only. */
 	readonly targetId?: string;
 	/** Requested lease TTL of a Task Credential operation; matched locally only. */
@@ -1688,6 +1694,25 @@ function sandboxDecision(
 	binding: PolicyBinding,
 	operation: PolicyOperationRequest,
 ): { outcome?: PolicyDecisionOutcome; reasonCode?: PolicyErrorCode; hardDeny: boolean } {
+	if (operation.requiresSandbox === true) {
+		if (
+			operation.sandboxed !== true ||
+			binding.sandboxProviderId === undefined ||
+			operation.sandboxProviderId !== binding.sandboxProviderId
+		) {
+			return { outcome: "sandbox_required", reasonCode: "sandbox_required", hardDeny: true };
+		}
+		if (binding.sandboxStatus !== "ready") {
+			return { outcome: "deny", reasonCode: "sandbox_unavailable", hardDeny: true };
+		}
+		if (
+			!binding.sandboxCapabilities.filesystem ||
+			!binding.sandboxCapabilities.process ||
+			!binding.sandboxCapabilities.network
+		) {
+			return { outcome: "deny", reasonCode: "sandbox_capability_insufficient", hardDeny: true };
+		}
+	}
 	if (profile.enforcement !== "sandbox") return { hardDeny: false };
 	if (profile.sandboxProvider === undefined || binding.sandboxProviderId === undefined) {
 		return { outcome: "sandbox_required", reasonCode: "sandbox_required", hardDeny: true };
@@ -1827,6 +1852,9 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	const environmentNames = value.environmentNames;
 	const targetId = value.targetId;
 	const ttlMs = value.ttlMs;
+	const requiresSandbox = value.requiresSandbox;
+	const sandboxed = value.sandboxed;
+	const sandboxProviderId = value.sandboxProviderId;
 	const parsedCredentialNames =
 		credentialNames === undefined ? undefined : parseStringArray(credentialNames, isEnvironmentName);
 	const parsedEnvironmentNames =
@@ -1835,6 +1863,10 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	if (environmentNames !== undefined && parsedEnvironmentNames === undefined) return undefined;
 	if (targetId !== undefined && !isSafeOpaqueId(targetId)) return undefined;
 	if (ttlMs !== undefined && !isPositiveInteger(ttlMs)) return undefined;
+	if (requiresSandbox !== undefined && typeof requiresSandbox !== "boolean") return undefined;
+	if (sandboxed !== undefined && typeof sandboxed !== "boolean") return undefined;
+	if (sandboxProviderId !== undefined && !isSafeText(sandboxProviderId)) return undefined;
+	if (requiresSandbox === true && sandboxed === true && sandboxProviderId === undefined) return undefined;
 	return deepFreeze({
 		resource: value.resource,
 		source: value.source,
@@ -1853,6 +1885,9 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		...(port === undefined ? {} : { port }),
 		...(parsedCredentialNames === undefined ? {} : { credentialNames: parsedCredentialNames }),
 		...(parsedEnvironmentNames === undefined ? {} : { environmentNames: parsedEnvironmentNames }),
+		...(requiresSandbox === undefined ? {} : { requiresSandbox }),
+		...(sandboxed === undefined ? {} : { sandboxed }),
+		...(sandboxProviderId === undefined ? {} : { sandboxProviderId }),
 		...(targetId === undefined ? {} : { targetId }),
 		...(ttlMs === undefined ? {} : { ttlMs }),
 	});
@@ -1892,6 +1927,7 @@ function protectedClassification(
 			source: operation.source,
 			effects: operation.effects,
 			paths,
+			...(operation.requiresSandbox === true ? { matchAllPaths: true } : {}),
 		});
 	} catch {
 		throw policyError("protected_path_invalid");

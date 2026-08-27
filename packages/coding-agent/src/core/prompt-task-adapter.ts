@@ -11,6 +11,7 @@ import {
 	type FoundationError,
 	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
+	resolveMcpSelection,
 	SessionLedger,
 	validateDispatch,
 	validateAgentInstance,
@@ -363,6 +364,39 @@ function createBinding(
 	resolved: ResolvedPromptTaskDependencies,
 	timestamp: string,
 ): AgentBinding {
+	const capabilityPayload = resolved.capability.payload;
+	const capabilitySnapshot = capabilityPayload !== null && typeof capabilityPayload === "object" && !Array.isArray(capabilityPayload)
+		? capabilityPayload.snapshot
+		: undefined;
+	const capabilityTools = capabilitySnapshot !== null && typeof capabilitySnapshot === "object" && !Array.isArray(capabilitySnapshot) && Array.isArray(capabilitySnapshot.tools)
+		? capabilitySnapshot.tools
+		: [];
+	if (capabilityTools.some((tool) =>
+		tool !== null && typeof tool === "object" && !Array.isArray(tool) && tool.kind === "mcp_tool"
+	)) {
+		throw new PromptTaskCompositionError(
+			"prompt_task_dependency_invalid",
+			"Prompt Task MCP dependency does not carry an exact Tool Gateway selection",
+			"mcp",
+		);
+	}
+	const mcpSelection = resolveMcpSelection({
+		selector: input.roleRevision.mcpSelector,
+		capabilityBinding: {
+			id: resolved.capability.reference.id,
+			descriptors: [],
+			toolAllowlist: [],
+		},
+		routeCatalog: [],
+	});
+	if (!mcpSelection.ok) {
+		throw new PromptTaskCompositionError(
+			"prompt_task_binding_invalid",
+			"Prompt Task dependency facts could not resolve an exact MCP selection",
+			"mcp",
+			mcpSelection.error,
+		);
+	}
 	const binding = resolveAgentBinding({
 		task,
 		roleRevision: input.roleRevision,
@@ -371,6 +405,7 @@ function createBinding(
 		capabilityRevision: resolved.capability.reference,
 		modelBrokerBindingRevision: resolved.model.reference,
 		policyRevision: resolved.policy.reference,
+		mcpSelection: mcpSelection.value,
 		sourceTrace: PROMPT_TASK_DEPENDENCY_NAMES.map((name) => ({ field: name, layer: "task" as const, referenceId: resolved[name].reference.id, revision: resolved[name].reference.revision })),
 		newBindingId: input.identity.bindingId,
 		now: () => timestamp,

@@ -839,6 +839,7 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 			providers: [
 				createLocalToolGatewayProvider({
 					providerId: snapshot.providerId,
+					revision: 1,
 					routes: [
 						{
 							kind: "local",
@@ -1032,6 +1033,7 @@ async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
 			providers: [
 				createLocalToolGatewayProvider({
 					providerId: snapshot.providerId,
+					revision: 1,
 					routes: [
 						{
 							kind: "local",
@@ -1125,7 +1127,6 @@ async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
 		services,
 		sessionManager,
 		policyProfile: EXTERNAL_POLICY_PROFILE.id,
-		noTools: "all",
 	});
 	sessions.push(initial.session);
 	const initialComposition = initial.runtimeComposition;
@@ -1162,6 +1163,7 @@ async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
 			}
 			return policyBinding;
 		},
+		getCapabilityBinding: () => initial.session.getActiveCapabilityBinding(),
 		recompose: async (canonicalToolGatewayRequests: readonly ToolGatewayRequest[]) => {
 			const attemptId = canonicalToolGatewayRequests[0]?.context.attemptId;
 			if (attemptId === undefined) throw new Error("Line 13 recovery requires a canonical Attempt identity");
@@ -1555,6 +1557,7 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 						},
 						workspace: "workspace-ref",
 						policyBinding: await fixture.preparePolicy(runId),
+						capabilityBinding: fixture.getCapabilityBinding()!,
 						now: () => NOW,
 					});
 					void abandonedExecution.catch(() => undefined);

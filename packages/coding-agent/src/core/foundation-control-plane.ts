@@ -46,7 +46,6 @@ import {
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
-	type PolicyOperationRequest,
 	type PolicyOperationSource,
 	type PublicPolicySummary,
 	resolveTaskCredentialPreflight,
@@ -60,6 +59,7 @@ import {
 	toPublicPolicySummary,
 } from "./execution-policy.ts";
 import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
+import { classifyExternalToolPolicyOperation } from "./external-tool-policy-operation.ts";
 import {
 	createMCPDefaultTransportFactory,
 	MCPLifecycleManager,
@@ -703,46 +703,17 @@ function externalToolGatewayDenied(message = "External connector Tool Gateway po
 	return new FoundationError("external_tool_route_denied", message);
 }
 
-function externalToolPath(request: ToolGatewayRequest, key: "path" | "targetPath"): string | undefined {
-	if (!isRecord(request.originalArguments)) return undefined;
-	const value = request.originalArguments[key];
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-export function externalToolPolicyOperation(
-	request: ToolGatewayRequest,
-	route: ToolGatewayRoute,
-	capabilityId?: string,
-): PolicyOperationRequest {
-	const routeName = route.toolName.startsWith("workspace.")
-		? route.toolName.slice("workspace.".length)
-		: route.namespace === "workspace"
-			? route.toolName
-			: undefined;
-	if (routeName === "read" || routeName === "find" || routeName === "grep" || routeName === "write" || routeName === "edit") {
-		const resource = routeName === "find"
-			? "filesystem.find"
-			: routeName === "grep"
-				? "filesystem.grep"
-				: routeName === "write" || routeName === "edit"
-					? "filesystem.write"
-					: "filesystem.read";
-		return {
-			resource,
-			source: route.kind === "mcp" ? "mcp" : "rpc",
-			id: request.toolCallId,
-			scope: "workspace",
-			...(capabilityId === undefined ? {} : { capabilityId }),
-			...(externalToolPath(request, "path") === undefined ? {} : { path: externalToolPath(request, "path") }),
-			...(externalToolPath(request, "targetPath") === undefined ? {} : { targetPath: externalToolPath(request, "targetPath") }),
-		};
-	}
-	return {
-		resource: "capability.invoke",
-		source: route.kind === "mcp" ? "mcp" : "rpc",
-		id: request.toolCallId,
-		...(capabilityId === undefined ? {} : { capabilityId }),
-	};
+function externalToolRouteNames(route: ToolGatewayRoute): readonly string[] {
+	const workspaceLeaf = route.namespace === "workspace"
+		? route.toolName.startsWith("workspace.")
+			? route.toolName.slice("workspace.".length)
+			: route.toolName
+		: undefined;
+	return [
+		route.toolName,
+		...(route.namespace === undefined ? [] : [`${route.namespace}.${route.toolName}`]),
+		...(workspaceLeaf === undefined ? [] : [workspaceLeaf]),
+	];
 }
 
 function isCanonicalWorkerTimestamp(value: string): boolean {
@@ -1531,16 +1502,16 @@ export class FoundationControlPlane {
 				this.policyBinding === undefined ||
 				durablePolicyBinding.profileId !== this.policyProfile.id ||
 				durablePolicyBinding.profileRevision !== this.policyBinding.profileRevision ||
+				durablePolicyBinding.workspaceIdentity !== this.policyBinding.workspaceIdentity ||
+				durablePolicyBinding.enforcement !== this.policyBinding.enforcement ||
+				durablePolicyBinding.sandboxProviderId !== this.policyBinding.sandboxProviderId ||
 				(durablePolicyBinding.capabilityBindingId !== undefined &&
 					durablePolicyBinding.capabilityBindingId !== this.capabilityBinding?.id)
 			) {
 				throw externalToolGatewayDenied();
 			}
 
-			const routeNames = [
-				route.toolName,
-				...(route.namespace === undefined ? [] : [`${route.namespace}.${route.toolName}`]),
-			];
+			const routeNames = externalToolRouteNames(route);
 			const selector = binding.capabilitySelector;
 			if (
 				(selector.policy === "named" && !(selector.named ?? []).some((name) => routeNames.includes(name))) ||
@@ -1559,7 +1530,7 @@ export class FoundationControlPlane {
 						(descriptor.name === route.toolName || descriptor.exposedToolName === route.toolName)
 					);
 				}
-				return descriptor.exposedToolName === route.toolName || descriptor.exposedToolName === `${route.namespace ?? ""}.${route.toolName}`;
+				return descriptor.exposedToolName !== undefined && routeNames.includes(descriptor.exposedToolName);
 			});
 			if (route.kind === "mcp" && matchingDescriptors.length !== 1) throw externalToolGatewayDenied();
 			if (matchingDescriptors.length > 1) throw externalToolGatewayDenied();
@@ -1579,8 +1550,15 @@ export class FoundationControlPlane {
 			const decision = authorizePolicyOperation({
 				profile: this.policyProfile,
 				binding: durablePolicyBinding,
-				operation: externalToolPolicyOperation(request, route, descriptor?.id),
+				operation: await classifyExternalToolPolicyOperation({
+					request,
+					route,
+					cwd: this.cwd,
+					roots: { workspace: this.cwd, agentInternal: [this.agentDir] },
+					...(descriptor?.id === undefined ? {} : { capabilityId: descriptor.id }),
+				}),
 				capabilityBinding: this.policyCapabilityBinding(),
+				reviewEvidence: this.policyLedger.reviewEvidence({ bindingId: durablePolicyBinding.id }),
 			});
 			this.recordDecision(decision);
 			this.assertDecisionAllowed(decision);

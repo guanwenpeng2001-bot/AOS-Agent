@@ -12,6 +12,7 @@ import {
 	LayeredResultSettlement,
 	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
+	resolveMcpSelection,
 	SessionLedger,
 	validateBindingEpoch,
 	validateDispatch,
@@ -48,9 +49,12 @@ import {
 	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
 import type { PolicyBinding } from "./execution-policy.ts";
+import type { CapabilityBinding } from "./capability-registry.ts";
 import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
 import {
 	bindExternalConnectorToolGatewayConsumer,
+	getExternalConnectorToolGatewayCatalogSnapshot,
+	getExternalConnectorToolGatewayRouteCatalog,
 	settleExternalConnectorRecoveryFailure,
 	type ExternalConnectorRegistry,
 	type ExternalConnectorResolvedSelection,
@@ -77,6 +81,8 @@ export interface ExternalConnectorProductExecutionInput {
 	readonly workspace: string;
 	/** Resolver-owned canonical policy authority for this Run. */
 	readonly policyBinding: PolicyBinding;
+	/** Exact current CapabilityBinding required when the Connector can call tools. */
+	readonly capabilityBinding?: CapabilityBinding;
 	readonly signal?: AbortSignal;
 	readonly gatewayModelRoute?: {
 		readonly provider: string;
@@ -126,6 +132,7 @@ export interface ExternalConnectorProductRecoveryInput {
 		readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 		readonly workspace: string;
 		readonly policyBinding: PolicyBinding;
+		readonly capabilityBinding?: CapabilityBinding;
 		readonly acceptedAt?: string;
 	};
 }
@@ -183,6 +190,31 @@ export interface ExternalConnectorProductAdmission {
 	};
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
+}
+
+function cloneProductCapabilityBinding(value: CapabilityBinding): CapabilityBinding {
+	if (
+		value.id.length === 0 ||
+		value.profile.length === 0 ||
+		value.createdAt.length === 0 ||
+		!Array.isArray(value.descriptors) ||
+		!Array.isArray(value.toolAllowlist) ||
+		value.descriptors.some((descriptor) => descriptor.id.length === 0 || descriptor.revision.length === 0) ||
+		value.toolAllowlist.some((toolName) => toolName.length === 0)
+	) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector capability binding is invalid",
+		);
+	}
+	return cloneDeepFrozen({
+		id: value.id,
+		profile: value.profile,
+		createdAt: value.createdAt,
+		descriptors: value.descriptors.map((descriptor) => ({ ...descriptor })),
+		decisionSummary: { ...value.decisionSummary },
+		toolAllowlist: [...value.toolAllowlist],
+	});
 }
 
 interface ExternalConnectorModelProjectionPreflight {
@@ -336,6 +368,26 @@ export async function prepareExternalConnectorProductRun(
 	}
 	const selected = await input.registry.select(input.selection);
 	if (!selected.ok) throw selected.error;
+	let capabilityBinding: CapabilityBinding | undefined;
+	if (selected.value.capabilitySnapshot.toolGateway) {
+		if (input.capabilityBinding === undefined) {
+			throw new ExternalConnectorProductError(
+				"external_binding_invalid",
+				"External Connector Tool Gateway requires the exact CapabilityBinding",
+			);
+		}
+		capabilityBinding = cloneProductCapabilityBinding(input.capabilityBinding);
+		if (
+			input.policyBinding.capabilityBindingId !== undefined &&
+			input.policyBinding.capabilityBindingId !== capabilityBinding.id
+		) {
+			throw new ExternalConnectorProductError(
+				"external_binding_invalid",
+				"External Connector capability and policy bindings do not match",
+			);
+		}
+		getExternalConnectorToolGatewayRouteCatalog(selected.value);
+	}
 	const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(input.canonicalInput, {
 		capabilities: {
 			artifacts: selected.value.capabilitySnapshot.artifacts,
@@ -374,7 +426,7 @@ export async function prepareExternalConnectorProductRun(
 		modelTranslation = translated.translation;
 	}
 	return {
-		input,
+		input: capabilityBinding === undefined ? input : Object.freeze({ ...input, capabilityBinding }),
 		selected: selected.value,
 		admittedInput: admitted.input,
 		requestFingerprint: admitted.requestFingerprint,
@@ -427,6 +479,41 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 	const timestamp = (input.now ?? (() => new Date().toISOString()))();
 	const identityToken = token(input.runId, selected.descriptor.providerId);
 	const identity = externalConnectorProductIdentity(input.runId, selected.descriptor.providerId);
+	const capabilityBindingId = `capability_binding_${identityToken}`;
+	const selectedCapabilityBinding = input.capabilityBinding;
+	const toolAllowlist = selectedCapabilityBinding?.toolAllowlist ?? [];
+	const capabilityDescriptors = (selectedCapabilityBinding?.descriptors ?? []).flatMap((descriptor) =>
+		descriptor.kind === undefined || descriptor.name === undefined
+			? []
+			: [{
+				id: descriptor.id,
+				revision: descriptor.revision,
+				kind: descriptor.kind,
+				name: descriptor.name,
+				...(descriptor.exposedToolName === undefined ? {} : { exposedToolName: descriptor.exposedToolName }),
+				...(descriptor.parentId === undefined ? {} : { parentId: descriptor.parentId }),
+				...(descriptor.mcpServerId === undefined ? {} : { mcpServerId: descriptor.mcpServerId }),
+			}],
+	);
+	const mcpServerIds = [...new Set(capabilityDescriptors.flatMap((descriptor) =>
+		descriptor.kind === "mcp_server" && descriptor.mcpServerId !== undefined ? [descriptor.mcpServerId] : [],
+	))].sort();
+	const mcpSelector = mcpServerIds.length === 0
+		? { policy: "none" as const }
+		: { policy: "named" as const, named: mcpServerIds };
+	const gatewayCatalog = selected.capabilitySnapshot.toolGateway
+		? getExternalConnectorToolGatewayCatalogSnapshot(selected)
+		: undefined;
+	const routeCatalog = gatewayCatalog?.routes ?? [];
+	const mcpSelection = requireValue(resolveMcpSelection({
+		selector: mcpSelector,
+		capabilityBinding: {
+			id: capabilityBindingId,
+			descriptors: capabilityDescriptors,
+			toolAllowlist,
+		},
+		routeCatalog,
+	}));
 	const modelProfile = createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: `model_profile_external_${identityToken}`,
@@ -456,9 +543,11 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 				revision: modelProfile.revision,
 				fingerprint: modelProfile.fingerprint,
 			},
-			capabilitySelector: { policy: "all" },
+			capabilitySelector: toolAllowlist.length === 0
+				? { policy: "none" }
+				: { policy: "named", named: [...toolAllowlist].sort() },
 			skillSelector: { policy: "all" },
-			mcpSelector: { policy: "all" },
+			mcpSelector,
 		},
 		now: () => DECLARED_AT,
 	});
@@ -520,9 +609,18 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 		capability: {
 			schemaVersion: 1 as const,
 			type: "capability_binding",
-			id: `capability_binding_${identityToken}`,
+			id: capabilityBindingId,
 			revision: 1 as const,
 			snapshotDigest: selected.capabilityTruth.snapshotDigest.value,
+			...(selectedCapabilityBinding === undefined
+				? {}
+				: {
+					sourceBindingId: selectedCapabilityBinding.id,
+					descriptors: selectedCapabilityBinding.descriptors.map((descriptor) => ({ ...descriptor })),
+					toolAllowlist: [...selectedCapabilityBinding.toolAllowlist],
+				}),
+			...(gatewayCatalog === undefined ? {} : { gatewayId: gatewayCatalog.gatewayId }),
+			gatewayCatalogDigest: gatewayCatalog?.catalogDigest.value ?? fingerprintFoundationValue([]).value,
 		},
 		model: {
 			schemaVersion: 1 as const,
@@ -565,6 +663,7 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 			capabilityRevision: refs.capability,
 			modelBrokerBindingRevision: refs.model,
 			policyRevision: refs.policy,
+			mcpSelection,
 			newBindingId: identity.bindingId,
 			now: () => timestamp,
 		}),
@@ -704,7 +803,12 @@ export async function executePreparedExternalConnectorProductRun(
 	let releaseToolGatewayConsumer: (() => void) | undefined;
 	try {
 		if (selected.capabilitySnapshot.toolGateway) {
-			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(selected, epoch.attemptId);
+			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
+				selected,
+				epoch.attemptId,
+				binding,
+				input.policyBinding,
+			);
 		}
 		const started = await settlement.startDispatch({
 			provider: selected.connector,
@@ -1081,6 +1185,9 @@ export async function recoverExternalConnectorProductRun(
 				inputAdmission: reconstruction.inputAdmission,
 				workspace: reconstruction.workspace,
 				policyBinding: reconstruction.policyBinding,
+				...(reconstruction.capabilityBinding === undefined
+					? {}
+					: { capabilityBinding: reconstruction.capabilityBinding }),
 				...(input.signal === undefined ? {} : { signal: input.signal }),
 				...(durableExecutionInput.modelProjection === undefined
 					? {}
@@ -1105,6 +1212,8 @@ export async function recoverExternalConnectorProductRun(
 				releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
 					prepared.selected,
 					identity.attemptId,
+					prepared.binding,
+					prepared.input.policyBinding,
 				);
 			}
 			const started = await settlement.startDispatch({

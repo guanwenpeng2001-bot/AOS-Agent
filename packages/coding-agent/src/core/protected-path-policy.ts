@@ -360,6 +360,8 @@ export function classifyProtectedPathOperation(input: {
 	readonly source: string;
 	readonly effects: ReadonlyArray<PolicyEffect>;
 	readonly paths: ReadonlyArray<string>;
+	/** Raw sandbox commands can affect any protected path in the workspace. */
+	readonly matchAllPaths?: boolean;
 }): ProtectedPathClassification {
 	const effects = normalizeEffects(input.effects);
 	if (effects === undefined || !input.paths.every(isCanonicalWorkspaceRelativePath)) {
@@ -367,7 +369,8 @@ export function classifyProtectedPathOperation(input: {
 	}
 	const paths = [...new Set(input.paths)].sort();
 	const matchedRules = (input.policy?.rules ?? []).filter(
-		(rule) => rule.effects.some((effect) => effects.includes(effect)) && paths.some((candidate) => matchesPattern(rule.pattern, candidate)),
+		(rule) => rule.effects.some((effect) => effects.includes(effect)) &&
+			(input.matchAllPaths === true || paths.some((candidate) => matchesPattern(rule.pattern, candidate))),
 	);
 	let requirement: PolicyReviewRequirement = "none";
 	for (const rule of matchedRules) {

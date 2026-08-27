@@ -2879,6 +2879,7 @@ export class RpcHostController {
 						},
 						workspace: runBinding.session.cwd,
 						policyBinding,
+						...(preflightBinding === undefined ? {} : { capabilityBinding: preflightBinding }),
 						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					});
 				} catch (err) {
@@ -5509,6 +5510,7 @@ export class RpcHostController {
 									return resumeFailure(automationError(id, "run.resume", asAutomationError(err)));
 								}
 								const recoveryPolicyBinding = recoveryBinding.session.getActiveExecutionPolicyBinding();
+								const recoveryCapabilityBinding = recoveryBinding.session.getActiveCapabilityBinding();
 								if (recoveryPolicyBinding === undefined || recoveryPolicyBinding.runId !== command.sourceRunId) {
 									recoveryBinding.activeReservation = undefined;
 									recoveryReservation.release();
@@ -5542,6 +5544,9 @@ export class RpcHostController {
 										},
 										workspace: recoveryBinding.session.cwd,
 										policyBinding: recoveryPolicyBinding,
+										...(recoveryCapabilityBinding === undefined
+											? {}
+											: { capabilityBinding: recoveryCapabilityBinding }),
 										...(sourceRun.record.startedAt === undefined
 											? {}
 											: { acceptedAt: sourceRun.record.startedAt }),

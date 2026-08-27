@@ -77,6 +77,8 @@ export type {
 	TrustedSchedulerRuntimeOptions,
 	TrustedSubagentCompositionFactory,
 	TrustedTaskCredentialProviderFactory,
+	TrustedToolGatewayCatalog,
+	TrustedToolGatewayCatalogFactory,
 	TrustedToolGatewayFactory,
 	TrustedWorkerSandboxComposition,
 	TrustedWorkerSandboxFactory,

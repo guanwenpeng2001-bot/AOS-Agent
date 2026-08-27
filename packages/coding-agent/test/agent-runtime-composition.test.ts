@@ -26,6 +26,8 @@ import {
 	type ScopedModelGateway,
 	type TaskEnvelope,
 	type ToolGateway,
+	type ToolGatewayProvider,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
@@ -134,6 +136,25 @@ function createGateway(sessionId: string): ToolGateway {
 		capabilities: async () => [],
 		dispose: async () => {},
 		execute: async () => Result.err(new FoundationError("tool_guard_denied", "not exercised")),
+	};
+}
+
+function catalogProvider(
+	kind: ToolGatewayProvider["kind"],
+	providerId: string,
+	revision: number,
+	namespace: string,
+	toolName: string,
+	routeRevision = revision,
+): ToolGatewayProvider {
+	return {
+		kind,
+		providerId,
+		revision,
+		routes: [{ kind, providerId, revision: routeRevision, namespace, toolName }],
+		capabilities: async () => [],
+		execute: async () => Result.err(new FoundationError("tool_guard_denied", "not exercised")),
+		dispose: async () => {},
 	};
 }
 
@@ -706,6 +727,53 @@ describe("AgentRuntimeComposition", () => {
 		} finally {
 			await created.session.dispose();
 			await created.session.waitForDispose();
+		}
+	});
+
+	it("publishes one immutable local, MCP, and sandbox catalog and keeps it on invalid replacement", async () => {
+		let generation = 0;
+		const factory = createAgentRuntimeCompositionFactory({
+			toolGatewayCatalog: () => {
+				generation += 1;
+				return {
+					gatewayId: "composition-product-gateway",
+					builtinLocalProviders: [catalogProvider("local", "builtin-product", 1, "workspace", "workspace.read")],
+					mcpProviders: [catalogProvider(
+						"mcp",
+						"mcp-product",
+						2,
+						"docs",
+						"list",
+						generation === 1 ? 2 : 1,
+					)],
+					sandboxProviders: [catalogProvider("sandbox", "sandbox-product", 3, "workspace", "workspace.bash")],
+				};
+			},
+		});
+		const fixture = await createRuntimeFixture(factory);
+		const runtime = await createAgentSessionRuntime(runtimeFactory(fixture), {
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			session: { mode: "memory", id: "composition-product-catalog" },
+		});
+		try {
+			const initial = runtime.runtimeComposition;
+			const catalogGateway = initial.toolGateway as ToolGateway & {
+				readonly getRouteCatalog: () => readonly ToolGatewayRoute[];
+			};
+			const routes = catalogGateway.getRouteCatalog();
+			expect(Object.isFrozen(routes)).toBe(true);
+			expect(routes).toEqual([
+				{ kind: "local", providerId: "builtin-product", revision: 1, namespace: "workspace", toolName: "workspace.read" },
+				{ kind: "mcp", providerId: "mcp-product", revision: 2, namespace: "docs", toolName: "list" },
+				{ kind: "sandbox", providerId: "sandbox-product", revision: 3, namespace: "workspace", toolName: "workspace.bash" },
+			]);
+
+			await expect(runtime.newSession()).rejects.toMatchObject({ code: "tool_gateway_catalog_invalid" });
+			expect(runtime.runtimeComposition).toBe(initial);
+			expect(catalogGateway.getRouteCatalog()).toEqual(routes);
+		} finally {
+			await runtime.dispose();
 		}
 	});
 

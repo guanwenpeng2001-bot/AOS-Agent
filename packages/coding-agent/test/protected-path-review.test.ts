@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { ToolGatewayRequest, ToolGatewayRoute } from "@aos-agent/agent-core";
 import {
 	POLICY_EFFECTS,
 	createPolicyReviewEvidence,
@@ -16,6 +17,7 @@ import {
 } from "../src/core/execution-policy-ledger.ts";
 import { buildExecutionPolicySettings, ExecutionPolicySettingsError } from "../src/core/execution-policy-settings.ts";
 import { resolveHostPathForPolicy } from "../src/core/policy-filesystem.ts";
+import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
 
 const protectedPaths = {
 	rules: [
@@ -75,7 +77,57 @@ class MemorySession implements PolicyLedgerSession {
 	}
 }
 
+function gatewayRequest(toolName: string, originalArguments: ToolGatewayRequest["originalArguments"]): ToolGatewayRequest {
+	return {
+		schemaVersion: 1,
+		toolCallId: `tool-call-${toolName}`,
+		toolName,
+		originalArguments,
+		context: {
+			schemaVersion: 1,
+			bindingId: "binding-product-policy",
+			bindingEpochId: "epoch-product-policy",
+			taskId: "task-product-policy",
+			providerId: "external-product-connector",
+			attemptId: "attempt-product-policy",
+			operationId: "run-product-policy",
+		},
+	};
+}
+
+function gatewayRoute(kind: ToolGatewayRoute["kind"], toolName: string, providerId = "product-local"): ToolGatewayRoute {
+	return { kind, namespace: "workspace", toolName, providerId, revision: 1 };
+}
+
 describe("canonical protected path classification", () => {
+	it("enforces canonical containment through the External Connector product classifier", async () => {
+		const root = await mkdtemp(join(tmpdir(), "aos-product-path-"));
+		const workspace = join(root, "workspace");
+		const outside = join(root, "outside");
+		await mkdir(join(workspace, "existing"), { recursive: true });
+		await mkdir(outside);
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		await symlink(outside, join(workspace, "escape"), linkType);
+		try {
+			const classify = (targetPath: string) => classifyExternalToolPolicyOperation({
+				request: gatewayRequest("workspace.write", { path: targetPath }),
+				route: gatewayRoute("local", "workspace.write"),
+				cwd: workspace,
+				roots: { workspace },
+			});
+
+			await expect(classify("../traversal.txt")).rejects.toMatchObject({ code: "workspace_boundary_violation" });
+			await expect(classify(join(root, "absolute.txt"))).rejects.toMatchObject({ code: "workspace_boundary_violation" });
+			await expect(classify("escape/nonexistent.txt")).rejects.toMatchObject({ code: "workspace_boundary_violation" });
+			await expect(classify(join(workspace, "existing", "new", "file.txt"))).resolves.toMatchObject({
+				canonicalPath: "existing/new/file.txt",
+				effects: ["create"],
+			});
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects traversal and outside absolute paths while accepting contained absolute paths", async () => {
 		const root = await mkdtemp(join(tmpdir(), "aos-protected-path-"));
 		const workspace = join(root, "workspace");
@@ -151,6 +203,71 @@ describe("canonical protected path classification", () => {
 			})).rejects.toMatchObject({ code: "workspace_boundary_violation" });
 		} finally {
 			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("raw Tool Gateway command policy", () => {
+	it("classifies every raw command as potentially mutating and requires the exact ready sandbox", async () => {
+		const workspace = await mkdtemp(join(tmpdir(), "aos-product-command-"));
+		try {
+			const request = gatewayRequest("workspace.bash", { command: "git status" });
+			const localOperation = await classifyExternalToolPolicyOperation({
+				request,
+				route: gatewayRoute("local", "workspace.bash"),
+				cwd: workspace,
+				roots: { workspace },
+			});
+			expect(localOperation).toMatchObject({
+				resource: "process.spawn",
+				requiresSandbox: true,
+				sandboxed: false,
+				effects: ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"],
+			});
+
+			const rawProfile: ExecutionPolicyProfile = {
+				...profile,
+				id: "raw-command",
+				enforcement: "sandbox",
+				sandboxProvider: "product-sandbox",
+				protectedPaths: undefined,
+			};
+			const resolveRaw = (operation: typeof localOperation) => resolveExecutionPolicy({
+				profiles: { [rawProfile.id]: rawProfile },
+				defaultProfile: rawProfile.id,
+				runId: "run-product-command",
+				workspaceIdentity: "workspace-product-command",
+				createdAt: "2026-08-28T01:00:00.000Z",
+				operation,
+				sandbox: {
+					providerConfigured: true,
+					providerId: "product-sandbox",
+					providerStatus: "ready",
+					providerCapabilities: {
+						filesystem: true,
+						process: true,
+						network: true,
+						credentialIsolation: true,
+					},
+				},
+			});
+			const denied = resolveRaw(localOperation);
+			expect(denied.ok && denied.decision).toMatchObject({
+				outcome: "sandbox_required",
+				reasonCode: "sandbox_required",
+				hardDeny: true,
+			});
+
+			const sandboxOperation = await classifyExternalToolPolicyOperation({
+				request,
+				route: gatewayRoute("sandbox", "workspace.bash", "product-sandbox"),
+				cwd: workspace,
+				roots: { workspace },
+			});
+			const allowed = resolveRaw(sandboxOperation);
+			expect(allowed.ok && allowed.decision).toMatchObject({ outcome: "allow" });
+		} finally {
+			await rm(workspace, { recursive: true, force: true });
 		}
 	});
 });

@@ -5,11 +5,14 @@ import {
 	FoundationError,
 	Result,
 	cloneDeepFrozen,
+	fingerprintFoundationValue,
+	validateAgentBinding,
 	validateToolExecutionResult,
 	validateToolGatewayRequest,
 	validateConnectorCapabilitySnapshotForProvider,
 	type ConnectorCapabilitySnapshot,
 	type Attempt,
+	type AgentBinding,
 	type AttemptReceipt,
 	type ExternalAgentConnector,
 	type Fingerprint,
@@ -18,6 +21,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGateway,
 	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import {
 	createExternalCapabilityTruthSnapshot,
@@ -30,9 +34,13 @@ import {
 	getHostSupervisedExternalAgentConnectorImplementation,
 	getHostSupervisedExternalConnectorRecoveryFailureSettler,
 	hasHostSupervisedExternalAgentConnectorProof,
+	type ExternalConnectorToolGatewayConsumer,
+	type ExternalConnectorToolGatewayScope,
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./external-agent-connector.ts";
 import { getProductionExternalConnectorStartupStatus } from "./external-connector-production.ts";
+import type { PolicyBinding } from "./execution-policy.ts";
+import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
 import {
 	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,
@@ -82,7 +90,22 @@ export interface ExternalConnectorReadinessStatus {
 	readonly reasonCode: "ready" | "probe_failed" | "cleanup_unconfirmed";
 }
 
-type ExternalConnectorToolGatewayConsumerBinder = (attemptId: string) => () => void;
+type ExternalConnectorToolGatewayConsumerBinder = (
+	attemptId: string,
+	binding: AgentBinding,
+	policyBinding: PolicyBinding,
+) => () => void;
+
+export interface ExternalConnectorToolGatewayCatalogSnapshot {
+	readonly gatewayId: string;
+	readonly catalogDigest: Fingerprint;
+	readonly routes: readonly ToolGatewayRoute[];
+}
+
+interface CapturedExternalConnectorToolGatewayCatalog {
+	readonly gateway: ToolGateway;
+	readonly scope: ExternalConnectorToolGatewayCatalogSnapshot & { readonly schemaVersion: 1 };
+}
 
 const externalConnectorToolGatewayConsumerBinders = new WeakMap<
 	ExternalConnectorResolvedSelection,
@@ -91,6 +114,10 @@ const externalConnectorToolGatewayConsumerBinders = new WeakMap<
 const externalConnectorRecoveryFailureSettlers = new WeakMap<
 	ExternalConnectorResolvedSelection,
 	(attempt: Attempt, error: FoundationError) => Promise<ResultValue<AttemptReceipt, FoundationError>>
+>();
+const externalConnectorToolGatewayCatalogs = new WeakMap<
+	ExternalConnectorResolvedSelection,
+	CapturedExternalConnectorToolGatewayCatalog
 >();
 
 export interface ExternalConnectorRegistry {
@@ -216,16 +243,231 @@ function externalConnectorToolGatewayDeniedResult(request: ToolGatewayRequest): 
 	});
 }
 
+function routeCatalogForGateway(
+	gateway: ToolGateway,
+): ResultValue<CapturedExternalConnectorToolGatewayCatalog, FoundationError> {
+	const candidate = gateway as ToolGateway & { readonly getRouteCatalog?: () => readonly ToolGatewayRoute[] };
+	if (typeof candidate.getRouteCatalog !== "function") {
+		return Result.err(
+			new FoundationError("external_connector_not_ready", "External connector Tool Gateway catalog is not ready."),
+		);
+	}
+	let routeCatalog: readonly ToolGatewayRoute[];
+	try {
+		routeCatalog = Reflect.apply(candidate.getRouteCatalog, candidate, []);
+	} catch {
+		return Result.err(
+			new FoundationError("external_connector_not_ready", "External connector Tool Gateway catalog is not ready."),
+		);
+	}
+	if (!Array.isArray(routeCatalog)) {
+		return Result.err(connectorRegistryError("External connector Tool Gateway catalog is invalid."));
+	}
+	const routes: ToolGatewayRoute[] = [];
+	const exactRoutes = new Set<string>();
+	for (const route of routeCatalog) {
+		if (
+			!isConnectorRecord(route) ||
+			(route.kind !== "local" && route.kind !== "mcp" && route.kind !== "sandbox" && route.kind !== "external") ||
+			typeof route.toolName !== "string" ||
+			route.toolName.length === 0 ||
+			(route.namespace !== undefined && (typeof route.namespace !== "string" || route.namespace.length === 0)) ||
+			typeof route.providerId !== "string" ||
+			route.providerId.length === 0 ||
+			!Number.isSafeInteger(route.revision) ||
+			(route.revision as number) < 1
+		) {
+			return Result.err(connectorRegistryError("External connector Tool Gateway catalog is invalid."));
+		}
+		const key = JSON.stringify([route.namespace ?? "", route.toolName]);
+		if (exactRoutes.has(key)) {
+			return Result.err(connectorRegistryError("External connector Tool Gateway catalog is ambiguous."));
+		}
+		exactRoutes.add(key);
+		routes.push({
+			kind: route.kind,
+			toolName: route.toolName,
+			...(route.namespace === undefined ? {} : { namespace: route.namespace }),
+			providerId: route.providerId,
+			revision: route.revision as number,
+		});
+	}
+	const frozenRoutes = cloneDeepFrozen(routes);
+	return Result.ok({
+		gateway,
+		scope: cloneDeepFrozen({
+			schemaVersion: 1,
+			gatewayId: gateway.providerId,
+			catalogDigest: fingerprintFoundationValue({ gatewayId: gateway.providerId, routes: frozenRoutes }),
+			routes: frozenRoutes,
+		}),
+	});
+}
+
+function routeNames(route: ToolGatewayRoute): readonly string[] {
+	const workspaceLeaf = route.namespace === "workspace"
+		? route.toolName.startsWith("workspace.")
+			? route.toolName.slice("workspace.".length)
+			: route.toolName
+		: undefined;
+	return Object.freeze([
+		route.toolName,
+		...(route.namespace === undefined ? [] : [`${route.namespace}.${route.toolName}`]),
+		...(workspaceLeaf === undefined ? [] : [workspaceLeaf]),
+		...(route.kind === "mcp" && route.namespace !== undefined
+			? [`mcp__${route.namespace}__${route.toolName}`]
+			: []),
+	]);
+}
+
+function routeSelectedByBinding(route: ToolGatewayRoute, binding: AgentBinding): boolean {
+	const selector = binding.capabilitySelector;
+	const names = routeNames(route);
+	if (selector.policy === "none") return false;
+	if (selector.policy === "named" && !(selector.named ?? []).some((name) => names.includes(name))) return false;
+	if (selector.policy === "except" && (selector.named ?? []).some((name) => names.includes(name))) return false;
+	if (route.kind !== "mcp") return true;
+	if (route.namespace === undefined) return false;
+	const server = binding.mcpSelection.servers.find((candidate) => candidate.serverId === route.namespace);
+	const tool = server?.tools.find((candidate) => candidate.toolId === route.toolName);
+	return tool !== undefined && tool.providerId === route.providerId && tool.routeRevision === route.revision;
+}
+
+function routeSelectedByPolicy(route: ToolGatewayRoute, policy: PolicyBinding): boolean {
+	const identity = route.toolName.toLowerCase();
+	const leaf = identity.slice(identity.lastIndexOf(".") + 1);
+	const workspaceAllowed = (access: "read" | "write"): boolean =>
+		policy.constraints.workspace[access].includes("workspace") &&
+		!policy.constraints.workspace.deny.includes("workspace");
+	if (["read", "find", "grep", "search"].includes(leaf)) return workspaceAllowed("read");
+	if (["write", "create", "edit", "patch", "delete", "remove", "unlink", "move", "rename"].includes(leaf)) {
+		return workspaceAllowed("write");
+	}
+	if (["bash", "shell", "command", "exec", "run", "spawn"].includes(leaf)) {
+		return (
+			route.kind === "sandbox" &&
+			policy.sandboxProviderId === route.providerId &&
+			policy.sandboxStatus === "ready" &&
+			policy.sandboxCapabilities.filesystem &&
+			policy.sandboxCapabilities.process &&
+			policy.sandboxCapabilities.network &&
+			workspaceAllowed("write") &&
+			policy.constraints.process.action !== "deny" &&
+			policy.constraints.network.action !== "deny"
+		);
+	}
+	if (route.namespace === "git" || identity.startsWith("git.")) {
+		if (["status", "diff", "show", "log", "blame"].includes(leaf)) return workspaceAllowed("read");
+		if (leaf === "push") return policy.constraints.network.action !== "deny";
+		return workspaceAllowed("write") && policy.constraints.process.action !== "deny";
+	}
+	if (["connect", "request", "fetch", "download", "upload"].includes(leaf) || identity.startsWith("network.")) {
+		return policy.constraints.network.action !== "deny";
+	}
+	return true;
+}
+
+function scopedToolGatewayConsumer(
+	catalog: CapturedExternalConnectorToolGatewayCatalog,
+	attemptId: string,
+	bindingValue: AgentBinding,
+	policyBinding: PolicyBinding,
+	executeGateway: (
+		request: ToolGatewayRequest,
+		options?: { readonly signal?: AbortSignal },
+	) => Promise<ResultValue<ToolExecutionResult, FoundationError>>,
+): ExternalConnectorToolGatewayConsumer {
+	const checkedBinding = validateAgentBinding(bindingValue);
+	if (!checkedBinding.ok) throw checkedBinding.error;
+	const binding = checkedBinding.value;
+	const policyRevisionPayload = {
+		...createPolicyBindingLedgerRecord(policyBinding),
+		type: "policy_binding" as const,
+		revision: binding.policyRevision.revision,
+	};
+	if (
+		binding.policyRevision.id !== policyBinding.id ||
+		binding.policyRevision.fingerprint === undefined ||
+		binding.policyRevision.fingerprint.value !== fingerprintFoundationValue(policyRevisionPayload).value
+	) {
+		throw connectorRegistryError("External connector PolicyBinding does not match its durable AgentBinding.");
+	}
+	const routes = cloneDeepFrozen(catalog.scope.routes.filter(
+		(route) => routeSelectedByBinding(route, binding) && routeSelectedByPolicy(route, policyBinding),
+	));
+	const scope: ExternalConnectorToolGatewayScope = cloneDeepFrozen({
+		schemaVersion: 1,
+		gatewayId: catalog.scope.gatewayId,
+		catalogDigest: catalog.scope.catalogDigest,
+		bindingId: binding.bindingId,
+		capabilityBindingId: binding.capabilityRevision.id,
+		policyBindingId: binding.policyRevision.id,
+		policyRevision: binding.policyRevision.revision,
+		policyBindingDigest: binding.policyRevision.fingerprint,
+		mcpSelectionDigest: binding.mcpSelection.digest,
+		routes,
+	});
+	const execute = async (
+		request: ToolGatewayRequest,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ResultValue<ToolExecutionResult, FoundationError>> => {
+		const currentCatalog = routeCatalogForGateway(catalog.gateway);
+		if (
+			!currentCatalog.ok ||
+			currentCatalog.value.scope.gatewayId !== catalog.scope.gatewayId ||
+			!sameFingerprint(currentCatalog.value.scope.catalogDigest, catalog.scope.catalogDigest) ||
+			request.context.bindingId !== binding.bindingId ||
+			request.context.attemptId !== attemptId
+		) {
+			return Result.err(new FoundationError("external_tool_route_denied", "External connector Tool Gateway scope changed."));
+		}
+		const matches = routes.filter(
+			(route) => route.toolName === request.toolName && route.namespace === request.namespace,
+		);
+		if (matches.length !== 1) {
+			return Result.err(new FoundationError("external_tool_route_denied", "External connector Tool Gateway route is outside its binding scope."));
+		}
+		return executeGateway({
+			...request,
+			context: { ...request.context, providerId: matches[0]!.providerId },
+		}, options);
+	};
+	Object.defineProperty(execute, "scope", { value: scope, enumerable: true, writable: false, configurable: false });
+	return Object.freeze(execute) as ExternalConnectorToolGatewayConsumer;
+}
+
+/** @internal Exact gateway catalog captured when the connector selection was resolved. */
+export function getExternalConnectorToolGatewayRouteCatalog(
+	selection: ExternalConnectorResolvedSelection,
+): readonly ToolGatewayRoute[] {
+	return getExternalConnectorToolGatewayCatalogSnapshot(selection).routes;
+}
+
+/** @internal Exact gateway identity, digest, and routes captured for a resolved selection. */
+export function getExternalConnectorToolGatewayCatalogSnapshot(
+	selection: ExternalConnectorResolvedSelection,
+): ExternalConnectorToolGatewayCatalogSnapshot {
+	const catalog = externalConnectorToolGatewayCatalogs.get(selection);
+	if (catalog === undefined) throw connectorRegistryError("External connector selection has no Tool Gateway catalog authority.");
+	return cloneDeepFrozen({
+		gatewayId: catalog.scope.gatewayId,
+		catalogDigest: catalog.scope.catalogDigest,
+		routes: catalog.scope.routes,
+	});
+}
+
 /** @internal Bind the private Tool Gateway consumer for a selected durable Attempt. */
 export function bindExternalConnectorToolGatewayConsumer(
 	selection: ExternalConnectorResolvedSelection,
 	attemptId: string,
+	binding: AgentBinding,
+	policyBinding: PolicyBinding,
 ): () => void {
 	const bind = externalConnectorToolGatewayConsumerBinders.get(selection);
 	if (bind === undefined) {
 		throw connectorRegistryError("External connector selection has no Tool Gateway consumer authority.");
 	}
-	return bind(attemptId);
+	return bind(attemptId, binding, policyBinding);
 }
 
 /** @internal Invoke only the recovery-failure authority owned by the selected Connector. */
@@ -611,6 +853,8 @@ function capabilityTruth(
 		);
 	}
 	if (snapshot.toolGateway && toolGateway !== undefined) {
+		const catalog = routeCatalogForGateway(toolGateway);
+		if (!catalog.ok) return catalog;
 		declare("toolGateway", `${toolGateway.providerId}.execute`, toolGateway.execute);
 	}
 	if (snapshot.artifacts) declare("artifacts", `${connectorId}.runAttempt.artifacts`, implementation.runAttempt);
@@ -1055,6 +1299,16 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const verified = await this.#verifyRegisteredConnector(registered, options);
 		if (!verified.ok) return verified;
+		let toolGatewayCatalog: CapturedExternalConnectorToolGatewayCatalog | undefined;
+		if (verified.value.snapshot.toolGateway) {
+			const toolGateway = this.#options.toolGateway;
+			if (toolGateway === undefined) {
+				return Result.err(new FoundationError("external_connector_not_ready", "External connector Tool Gateway is not ready."));
+			}
+			const captured = routeCatalogForGateway(toolGateway);
+			if (!captured.ok) return captured;
+			toolGatewayCatalog = captured.value;
+		}
 		const executeToolGateway = async (
 			request: ToolGatewayRequest,
 			options?: { readonly signal?: AbortSignal },
@@ -1134,7 +1388,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			externalConnectorRecoveryFailureSettlers.set(resolvedSelection, settleRecoveryFailure);
 		}
 		if (verified.value.snapshot.toolGateway) {
-			if (registered.implementation.bindToolGatewayConsumer === undefined) {
+			if (registered.implementation.bindToolGatewayConsumer === undefined || toolGatewayCatalog === undefined) {
 				return Result.err(
 					new FoundationError(
 						"external_connector_not_ready",
@@ -1142,10 +1396,11 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					),
 				);
 			}
-			const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId) =>
+			externalConnectorToolGatewayCatalogs.set(resolvedSelection, toolGatewayCatalog);
+			const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId, binding, policyBinding) =>
 				Reflect.apply(registered.implementation.bindToolGatewayConsumer!, registered.connector, [
 					attemptId,
-					executeToolGateway,
+					scopedToolGatewayConsumer(toolGatewayCatalog, attemptId, binding, policyBinding, executeToolGateway),
 				]);
 			externalConnectorToolGatewayConsumerBinders.set(resolvedSelection, bindToolGatewayConsumer);
 		}

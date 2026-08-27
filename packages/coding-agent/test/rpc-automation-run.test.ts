@@ -831,6 +831,9 @@ async function seedRpcExternalRecovery(
 		},
 		workspace: runtimeHost.session.cwd,
 		policyBinding: canonicalPolicyBinding,
+		...(fixture.snapshot.toolGateway
+			? { capabilityBinding: runtimeHost.session.getActiveCapabilityBinding()! }
+			: {}),
 		...(options.gatewayModelRoute === undefined ? {} : { gatewayModelRoute: options.gatewayModelRoute }),
 		now: () => "2026-08-27T00:00:00.000Z",
 	});
@@ -1120,6 +1123,7 @@ async function createRuntimeHost(options: {
 				providers: [
 					createLocalToolGatewayProvider({
 						providerId: RPC_COMPOSITION_TOOL_PROVIDER_ID,
+						revision: 1,
 						routes: [
 							{
 								kind: "local",
