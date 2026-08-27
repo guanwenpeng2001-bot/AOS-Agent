@@ -487,12 +487,15 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	async dispose(): Promise<void> {}
 }
 
+type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnectorTestSupervision>;
+
 interface RpcExternalConnectorFixture {
 	readonly connector: ReturnType<typeof createDurableExternalAgentConnector>;
 	readonly driver: RpcExternalConnectorDriver;
-	readonly processController: ReturnType<typeof createExternalConnectorTestSupervision>["processController"];
+	readonly processController: RpcExternalConnectorSupervision["processController"];
 	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
 	readonly snapshot: ConnectorCapabilitySnapshot;
+	readonly supervision: RpcExternalConnectorSupervision;
 	readonly selection: {
 		readonly providerId: string;
 		readonly revision: number;
@@ -512,6 +515,7 @@ async function installRpcExternalConnector(
 		readonly cooperativeCancel?: boolean;
 		readonly resume?: boolean;
 		readonly lookupResult?: ExternalConnectorDriverLookup;
+		readonly supervision?: RpcExternalConnectorSupervision;
 		readonly supervisionDeadlines?: ReturnType<typeof createExternalConnectorTestSupervision>["options"]["deadlines"];
 		readonly supervisionLimits?: {
 			readonly maxEvents?: number;
@@ -566,7 +570,7 @@ async function installRpcExternalConnector(
 			lookupResult: options.lookupResult,
 		},
 	);
-	const supervision = createExternalConnectorTestSupervision();
+	const supervision = options.supervision ?? createExternalConnectorTestSupervision();
 	const connector = createDurableExternalAgentConnector({
 		providerId,
 		capability: snapshot,
@@ -623,6 +627,7 @@ async function installRpcExternalConnector(
 		processController: supervision.processController,
 		registry,
 		snapshot,
+		supervision,
 		selection: {
 			providerId,
 			revision: snapshot.revision,
@@ -670,6 +675,10 @@ async function seedRpcExternalRecovery(
 		await settlement.release();
 	}
 	const identity = externalConnectorProductIdentity(runId, fixture.selection.providerId);
+	const supervisorRef = `external_supervisor_${fingerprintFoundationValue({
+		providerId: fixture.selection.providerId,
+		attemptId: identity.attemptId,
+	}).value.slice(0, 32)}`;
 	const ledger = new SessionLedger(session, { writer });
 	const store = new SessionExternalConnectorDurableStore(ledger);
 	try {
@@ -693,10 +702,24 @@ async function seedRpcExternalRecovery(
 		operation = await store.writeOperation(
 			transitionExternalConnectorOperation(operation, "start_intent", { now: prepared.timestamp }),
 		);
-		const supervisorRef = `external_supervisor_${fingerprintFoundationValue({
-			providerId: fixture.selection.providerId,
-			attemptId: identity.attemptId,
-		}).value.slice(0, 32)}`;
+		const processHandle = await fixture.processController.launch({
+			supervisorRef,
+			operationNonce: operation.operationNonce,
+			detached: false,
+			containment: fixture.supervision.options.containment,
+		});
+		await fixture.supervision.privateStateStore.write(identity.attemptId, {
+			schemaVersion: 1,
+			reference: {
+				schemaVersion: 1,
+				supervisorRef,
+				operationNonce: operation.operationNonce,
+			},
+			detached: false,
+			containment: fixture.supervision.options.containment,
+			processIdentity: processHandle.identity,
+		});
+		await processHandle.activate();
 		await store.writeMapping(
 			cloneCanonicalExternalConnectorMapping({
 				schemaVersion: 1,
@@ -720,6 +743,21 @@ async function seedRpcExternalRecovery(
 	} finally {
 		await ledger.release();
 	}
+	const privateState = await fixture.supervision.privateStateStore.read(identity.attemptId);
+	expect(privateState).toBeDefined();
+	if (privateState === undefined) throw new Error("seeded supervisor private state is missing");
+	const seededProcess = [...fixture.processController.handles.values()][0];
+	expect(fixture.processController.launchCalls).toBe(1);
+	expect(fixture.processController.activationCalls).toBe(1);
+	expect(privateState).toMatchObject({
+		reference: { supervisorRef, operationNonce: "rpc-operation-nonce" },
+		processIdentity: { pid: expect.any(Number), startToken: expect.any(String) },
+	});
+	expect(privateState.processIdentity).toEqual(seededProcess?.identity);
+	const durableTrace = JSON.stringify(await session.findFoundationRecords({ order: "oldestFirst" }));
+	expect(durableTrace).not.toContain('"processIdentity"');
+	expect(durableTrace).not.toContain(`"pid":${privateState.processIdentity.pid}`);
+	expect(durableTrace).not.toContain(privateState.processIdentity.startToken);
 	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 		schemaVersion: 1,
 		kind: "accepted",
@@ -1925,6 +1963,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const sourceRunId = "rpc-external-recovery-source";
 			const message = "recover the persisted external attempt";
 			await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message);
+			const seededLaunchCalls = fixture.processController.launchCalls;
 			const sessionPath = harness.runtimeHost.session.sessionFile;
 			expect(sessionPath).toBeTruthy();
 			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
@@ -1935,6 +1974,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
 					modelAccess: "none",
 					resume: true,
+					supervision: fixture.supervision,
 				});
 				return result;
 			});
@@ -1961,6 +2001,8 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(fixture.driver.spawnCalls).toBe(0);
 			expect(fixture.driver.connectCalls).toBe(0);
 			expect(restoredFixture?.driver.spawnCalls).toBe(0);
+			expect(restoredFixture?.processController).toBe(fixture.processController);
+			expect(fixture.processController.launchCalls).toBe(seededLaunchCalls);
 			for (const objectType of ["attempt", "external_connector_mapping", "attempt_receipt"]) {
 				expect(
 					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType }),
@@ -1984,6 +2026,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const sourceRunId = "rpc-external-reconcile-source";
 			const message = "reconcile the persisted external attempt";
 			await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message);
+			const seededLaunchCalls = fixture.processController.launchCalls;
 			const sessionPath = harness.runtimeHost.session.sessionFile;
 			expect(sessionPath).toBeTruthy();
 			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
@@ -1993,6 +2036,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				const result = await originalSwitch!(path, options);
 				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
 					modelAccess: "none",
+					supervision: fixture.supervision,
 					lookupResult: {
 						status: "terminal",
 						evidence: {
@@ -2027,6 +2071,14 @@ describe("RPC Automation Host run lifecycle", () => {
 			});
 			expect(restoredFixture?.driver.spawnCalls).toBe(0);
 			expect(restoredFixture?.driver.connectCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(restoredFixture?.processController).toBe(fixture.processController);
+			expect(fixture.processController.launchCalls).toBe(seededLaunchCalls);
+			for (const objectType of ["attempt", "external_connector_mapping", "attempt_receipt"]) {
+				expect(
+					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType }),
+				).toHaveLength(1);
+			}
 		} finally {
 			await harness.controller.shutdown();
 			await harness.cleanup();
