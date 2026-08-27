@@ -157,6 +157,11 @@ const HOST_SUPERVISED_EXTERNAL_CONNECTOR_PROPERTIES = Object.freeze([
 	"reconcileAttempt",
 ] satisfies readonly HostSupervisedExternalAgentConnectorProperty[]);
 const HOST_SUPERVISED_EXTERNAL_CONNECTORS = new WeakMap<object, HostSupervisedExternalAgentConnectorProof>();
+export type ExternalConnectorRecoveryFailureSettler = (
+	attempt: Attempt,
+	error: FoundationError,
+) => Promise<ResultValue<AttemptReceipt, FoundationError>>;
+const HOST_SUPERVISED_RECOVERY_FAILURE_SETTLERS = new WeakMap<object, ExternalConnectorRecoveryFailureSettler>();
 
 function resolveExternalConnectorProperty(
 	value: object,
@@ -272,6 +277,14 @@ export function hasHostSupervisedExternalAgentConnectorProof(value: unknown): bo
 /** @internal Runtime proof minted only by the Host-supervised durable connector factory. */
 export function isHostSupervisedExternalAgentConnector(value: unknown): value is ExternalAgentConnector {
 	return getHostSupervisedExternalAgentConnectorImplementation(value) !== undefined;
+}
+
+/** @internal Connector-owned recovery-failure receipt authority. */
+export function getHostSupervisedExternalConnectorRecoveryFailureSettler(
+	value: unknown,
+): ExternalConnectorRecoveryFailureSettler | undefined {
+	if (!isHostSupervisedExternalAgentConnector(value)) return undefined;
+	return HOST_SUPERVISED_RECOVERY_FAILURE_SETTLERS.get(value);
 }
 
 export function externalConnectorAttemptId(providerId: string, dispatchId: string): string {
@@ -583,6 +596,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		return this.#exclusive(attempt.attemptId, () => this.#reconcile(attempt, options));
+	}
+
+	settleRecoveryFailure(
+		attempt: Attempt,
+		error: FoundationError,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		return this.#exclusive(attempt.attemptId, () => this.#settleRecoveryFailure(attempt, error));
 	}
 
 	cancelAttempt(attemptId: string): Promise<ResultValue<void, FoundationError>> {
@@ -2309,6 +2329,61 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		);
 		return Result.ok(persisted);
 	}
+
+	async #settleRecoveryFailure(
+		attempt: Attempt,
+		error: FoundationError,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const durable = await this.#requireDurableAttempt(attempt);
+		if (!durable.ok) return durable;
+		const priorReceipt = await this.#requirePriorReceipt(attempt);
+		if (!priorReceipt.ok) return priorReceipt;
+		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		const operation = await this.#store.readOperation(attempt.attemptId);
+		if (operation === undefined || operation.status === "terminal") {
+			return Result.err(
+				externalFailure(
+					"scheduler_attempt_recovery_failed",
+					"External connector recovery failure requires a non-terminal durable operation",
+					attempt.attemptId,
+				),
+			);
+		}
+		const receiptId = `attempt_receipt_${attempt.attemptId}`;
+		const checked = validateAttemptReceiptForProvider(
+			{
+				schemaVersion: 1,
+				attemptReceiptId: receiptId,
+				taskId: attempt.taskId,
+				dispatchId: attempt.dispatchId,
+				attemptId: attempt.attemptId,
+				providerId: this.providerId,
+				bindingId: attempt.bindingId,
+				bindingEpochIds: [...attempt.bindingEpochIds],
+				status: "failed",
+				workerReceiptRefs: [],
+				artifacts: [],
+				error: error.toPublicExecutionError(),
+				provenance: {
+					producerKind: "external_connector",
+					providerId: this.providerId,
+					producedAt: this.#now(),
+					correlation: { ...operation.correlation, attemptReceiptId: receiptId },
+				},
+				sideEffectState: "unknown",
+			},
+			{ providerId: this.providerId, providerClass: this.providerClass },
+		);
+		if (!checked.ok) return checked;
+		const persisted = await this.#store.writeReceipt(checked.value);
+		await this.#store.writeOperation(
+			transitionExternalConnectorOperation(operation, "terminal", {
+				now: this.#now(),
+				receiptId: persisted.attemptReceiptId,
+			}),
+		);
+		return Result.ok(persisted);
+	}
 }
 
 const DURABLE_EXTERNAL_AGENT_CONNECTOR_METHODS = Object.freeze({
@@ -2331,6 +2406,9 @@ export function createDurableExternalAgentConnector(
 	HOST_SUPERVISED_EXTERNAL_CONNECTORS.set(
 		connector,
 		captureHostSupervisedExternalAgentConnector(connector, DURABLE_EXTERNAL_AGENT_CONNECTOR_METHODS),
+	);
+	HOST_SUPERVISED_RECOVERY_FAILURE_SETTLERS.set(connector, (attempt, error) =>
+		connector.settleRecoveryFailure(attempt, error),
 	);
 	return connector;
 }

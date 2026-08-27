@@ -9,6 +9,8 @@ import {
 	validateToolGatewayRequest,
 	validateConnectorCapabilitySnapshotForProvider,
 	type ConnectorCapabilitySnapshot,
+	type Attempt,
+	type AttemptReceipt,
 	type ExternalAgentConnector,
 	type Fingerprint,
 	type FoundationProviderExecutionOptions,
@@ -26,6 +28,7 @@ import {
 } from "./external-model-projection.ts";
 import {
 	getHostSupervisedExternalAgentConnectorImplementation,
+	getHostSupervisedExternalConnectorRecoveryFailureSettler,
 	hasHostSupervisedExternalAgentConnectorProof,
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./external-agent-connector.ts";
@@ -84,6 +87,10 @@ type ExternalConnectorToolGatewayConsumerBinder = (attemptId: string) => () => v
 const externalConnectorToolGatewayConsumerBinders = new WeakMap<
 	ExternalConnectorResolvedSelection,
 	ExternalConnectorToolGatewayConsumerBinder
+>();
+const externalConnectorRecoveryFailureSettlers = new WeakMap<
+	ExternalConnectorResolvedSelection,
+	(attempt: Attempt, error: FoundationError) => Promise<ResultValue<AttemptReceipt, FoundationError>>
 >();
 
 export interface ExternalConnectorRegistry {
@@ -219,6 +226,15 @@ export function bindExternalConnectorToolGatewayConsumer(
 		throw connectorRegistryError("External connector selection has no Tool Gateway consumer authority.");
 	}
 	return bind(attemptId);
+}
+
+/** @internal Invoke only the recovery-failure authority owned by the selected Connector. */
+export function settleExternalConnectorRecoveryFailure(
+	selection: ExternalConnectorResolvedSelection,
+	attempt: Attempt,
+	error: FoundationError,
+): Promise<ResultValue<AttemptReceipt, FoundationError>> | undefined {
+	return externalConnectorRecoveryFailureSettlers.get(selection)?.(attempt, error);
 }
 
 function isConnectorRecord(value: unknown): value is Record<string, unknown> {
@@ -1113,6 +1129,10 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			capabilitySnapshot: verified.value.snapshot,
 			capabilityTruth: verified.value.truth,
 		});
+		const settleRecoveryFailure = getHostSupervisedExternalConnectorRecoveryFailureSettler(registered.connector);
+		if (settleRecoveryFailure !== undefined) {
+			externalConnectorRecoveryFailureSettlers.set(resolvedSelection, settleRecoveryFailure);
+		}
 		if (verified.value.snapshot.toolGateway) {
 			if (registered.implementation.bindToolGatewayConsumer === undefined) {
 				return Result.err(

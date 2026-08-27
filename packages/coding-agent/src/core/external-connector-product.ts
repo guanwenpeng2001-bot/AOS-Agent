@@ -51,6 +51,7 @@ import type { PolicyBinding } from "./execution-policy.ts";
 import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
 import {
 	bindExternalConnectorToolGatewayConsumer,
+	settleExternalConnectorRecoveryFailure,
 	type ExternalConnectorRegistry,
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,
@@ -1158,44 +1159,21 @@ export async function recoverExternalConnectorProductRun(
 					if (recovered?.ok === true) {
 						attemptReceipt = recovered.value;
 					} else {
-						const mappingConflict = recovered?.ok === false && recovered.error.code === "external_mapping_conflict";
-						const terminalAmbiguous =
-							recovered?.ok === false && recovered.error.code === "external_terminal_ambiguous";
-						const attemptReceiptId = `attempt_receipt_${started.value.attempt.attemptId}`;
-						attemptReceipt = await store.writeReceipt({
-							schemaVersion: 1,
-							attemptReceiptId,
-							taskId: started.value.attempt.taskId,
-							dispatchId: started.value.attempt.dispatchId,
-							attemptId: started.value.attempt.attemptId,
-							providerId: prepared.selected.connector.providerId,
-							bindingId: started.value.attempt.bindingId,
-							bindingEpochIds: [...started.value.attempt.bindingEpochIds],
-							status: "failed",
-							workerReceiptRefs: [],
-							artifacts: [],
-							error: {
-								code: mappingConflict
-									? "external_mapping_conflict"
-									: terminalAmbiguous
-										? "external_terminal_ambiguous"
-										: "side_effect_unknown",
-								message: mappingConflict
-									? "External connector durable mapping conflicts with its Attempt."
-									: terminalAmbiguous
-										? "External connector terminal lookup is ambiguous and requires operator reconciliation."
-									: "External connector recovery could not prove a terminal vendor outcome.",
-								category: "side_effect_unknown",
-								retryable: false,
-							},
-							provenance: {
-								producerKind: "external_connector",
-								providerId: prepared.selected.connector.providerId,
-								producedAt: operation?.updatedAt ?? prepared.timestamp,
-								correlation: { ...prepared.correlation, attemptReceiptId },
-							},
-							sideEffectState: "side_effect_unknown",
-						});
+						if (recovered === undefined) {
+							throw new FoundationError(
+								"side_effect_unknown",
+								"External connector recovery has no durable operation authority.",
+							);
+						}
+						const connectorSettlement = settleExternalConnectorRecoveryFailure(
+							prepared.selected,
+							started.value.attempt,
+							recovered.error,
+						);
+						if (connectorSettlement === undefined) throw recovered.error;
+						const settledFailure = await connectorSettlement;
+						if (!settledFailure.ok) throw settledFailure.error;
+						attemptReceipt = settledFailure.value;
 					}
 				}
 			}
