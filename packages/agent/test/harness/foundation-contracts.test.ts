@@ -216,7 +216,11 @@ describe("Foundation identity, schemas, and redaction", () => {
 		expect(foundationErrorCategory("scheduler_no_executor")).toBe("provider");
 		expect(new Set(DURABLE_LEDGER_ERROR_CODES).size).toBe(DURABLE_LEDGER_ERROR_CODES.length);
 		expect([...FOUNDATION_LEDGER_ERROR_CODES]).toEqual([...DURABLE_LEDGER_ERROR_CODES]);
-		expect([...FOUNDATION_ERROR_CODES].filter((code) => code.startsWith("session_")).sort()).toEqual([...DURABLE_LEDGER_ERROR_CODES].sort());
+		expect(
+			[...FOUNDATION_ERROR_CODES]
+				.filter((code) => code.startsWith("session_writer_") || code.startsWith("session_ledger_"))
+				.sort(),
+		).toEqual([...DURABLE_LEDGER_ERROR_CODES].sort());
 	});
 
 	it("canonicalizes key order and fingerprints content deterministically", () => {
