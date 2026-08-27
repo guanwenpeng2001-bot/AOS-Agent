@@ -55,6 +55,7 @@ import {
 	recoverExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
 } from "../../core/external-connector-product.ts";
+import type { ExternalModelFallbackDecision } from "../../core/external-model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
@@ -1748,6 +1749,33 @@ export class RpcHostController {
 				: {}),
 		});
 
+		/**
+		 * Project the Broker's ordered selection into the Connector fallback
+		 * contract. The selected position is derived from the immutable ordered
+		 * candidates instead of `candidateIndex`, which refers to the caller's
+		 * pre-priority input order. Duplicate selected references are ambiguous and
+		 * therefore fail closed.
+		 */
+		const externalFallbackDecisionForResolution = (
+			resolution: BrokerModelResolution,
+		): ExternalModelFallbackDecision | undefined => {
+			if (!resolution.fallbackAllowed) return { kind: "disabled", reason: "fallback_disabled" };
+			const selectedPositions = resolution.candidatesConsidered.flatMap((candidate, index) =>
+				candidate.provider === resolution.reference.provider &&
+				candidate.id === resolution.reference.id &&
+				candidate.api === resolution.reference.api &&
+				candidate.thinkingLevel === resolution.reference.thinkingLevel &&
+				candidate.serviceTier === resolution.reference.serviceTier
+					? [index]
+					: [],
+			);
+			if (selectedPositions.length !== 1) return undefined;
+			const selectedPosition = selectedPositions[0]!;
+			return selectedPosition === 0
+				? { kind: "primary", reason: "fallback_not_used" }
+				: { kind: "fallback", reason: "provider_unavailable", candidateIndex: selectedPosition };
+		};
+
 		const modelSelectionError = (err: unknown, fallback: "route" | "role" = "route"): AutomationError => {
 			const candidate =
 				typeof err === "object" && err !== null
@@ -2743,11 +2771,13 @@ export class RpcHostController {
 					const resolution = modelSelection.resolution;
 					const effort = resolution?.reference.thinkingLevel;
 					const serviceTier = resolution?.reference.serviceTier;
+					const fallbackDecision =
+						resolution === undefined ? undefined : externalFallbackDecisionForResolution(resolution);
 					if (
 						resolution === undefined ||
 						effort === undefined ||
 						serviceTier === undefined ||
-						(resolution.candidateIndex !== undefined && resolution.candidateIndex > 0)
+						fallbackDecision === undefined
 					) {
 						releaseOwnReservation();
 						return startFailure(
@@ -2767,9 +2797,7 @@ export class RpcHostController {
 						model: resolution.reference.id,
 						effort,
 						serviceTier,
-						fallbackDecision: resolution.fallbackAllowed
-							? { kind: "primary", reason: "fallback_not_used" }
-							: { kind: "disabled", reason: "fallback_disabled" },
+						fallbackDecision,
 						bindingDigest: fingerprintFoundationValue(resolution.binding),
 					};
 				}

@@ -616,7 +616,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			artifacts: [],
 		};
 		const bindingDigest = fingerprintFoundationValue({ bindingId: "rpc-local-model-binding" });
-		await executeExternalConnectorProductRun({
+		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
 			writer: current.t5.writer,
 			registry: current.registry,
@@ -635,10 +635,16 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				model: "gateway-model",
 				effort: "medium",
 				serviceTier: "priority",
-				fallbackDecision: { kind: "disabled", reason: "fallback_disabled" },
+				fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
 				bindingDigest,
 			},
 			now: () => NOW,
+		});
+		expect(execution.binding.modelRoute).toMatchObject({
+			provider: "gateway-provider",
+			model: "gateway-model",
+			effort: "medium",
+			serviceTier: "priority",
 		});
 		expect(current.driver.spawnedRequest?.modelProjection).toEqual({
 			schemaVersion: 1,
@@ -646,7 +652,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			model: "gateway-model",
 			effort: "medium",
 			serviceTier: "priority",
-			fallbackDecision: { kind: "disabled", reason: "fallback_disabled" },
+			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
 			bindingDigest,
 		});
 		expect(current.driver.spawnedRequest?.modelTranslation).toEqual({
@@ -659,11 +665,70 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				serviceTier: { targetField: "vendorServiceTier", value: "priority" },
 				fallbackDecision: {
 					targetField: "vendorFallbackDecision",
-					value: '{"kind":"disabled","reason":"fallback_disabled"}',
+					value: '{"kind":"primary","reason":"fallback_not_used"}',
 				},
 				bindingDigest: {
 					targetField: "vendorBindingDigest",
 					value: JSON.stringify(bindingDigest),
+				},
+			},
+		});
+	});
+
+	it("passes an explicitly selected gateway fallback to the current driver", async () => {
+		const current = await fixture({ modelAccess: "aos_gateway" });
+		const canonicalInput: CanonicalExternalAgentInput = {
+			schemaVersion: 1,
+			text: "use the selected gateway fallback",
+			artifacts: [],
+		};
+		const bindingDigest = fingerprintFoundationValue({ bindingId: "rpc-fallback-model-binding" });
+		const execution = await executeExternalConnectorProductRun({
+			session: current.session,
+			writer: current.t5.writer,
+			registry: current.registry,
+			selection: {
+				providerId: current.descriptor.providerId,
+				revision: current.descriptor.revision,
+				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+			},
+			runId: "run-external-model-fallback",
+			message: canonicalInput.text,
+			canonicalInput,
+			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
+			workspace: "workspace-ref",
+			gatewayModelRoute: {
+				provider: "fallback-provider",
+				model: "fallback-model",
+				effort: "high",
+				serviceTier: "priority",
+				fallbackDecision: { kind: "fallback", reason: "provider_unavailable", candidateIndex: 1 },
+				bindingDigest,
+			},
+			now: () => NOW,
+		});
+
+		expect(execution.binding.modelRoute).toMatchObject({
+			provider: "fallback-provider",
+			model: "fallback-model",
+			effort: "high",
+			serviceTier: "priority",
+		});
+		expect(current.driver.spawnedRequest?.modelProjection).toEqual({
+			schemaVersion: 1,
+			provider: "fallback-provider",
+			model: "fallback-model",
+			effort: "high",
+			serviceTier: "priority",
+			fallbackDecision: { kind: "fallback", reason: "provider_unavailable", candidateIndex: 1 },
+			bindingDigest,
+		});
+		expect(current.driver.spawnedRequest?.modelTranslation).toMatchObject({
+			sourceBindingDigest: bindingDigest,
+			fields: {
+				fallbackDecision: {
+					targetField: "vendorFallbackDecision",
+					value: '{"candidateIndex":1,"kind":"fallback","reason":"provider_unavailable"}',
 				},
 			},
 		});
