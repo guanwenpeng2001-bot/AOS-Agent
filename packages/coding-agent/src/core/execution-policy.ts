@@ -25,6 +25,49 @@ import {
 	isTaskCredentialTargetCapabilities,
 	type TaskCredentialTargetCapabilities,
 } from "./task-credential-provider.ts";
+import {
+	calculateProtectedPathPolicyDigest,
+	classifyProtectedPathOperation,
+	cloneProtectedPathPolicy,
+	isCanonicalPolicyTimestamp,
+	isCanonicalWorkspaceRelativePath,
+	isPolicyEffect,
+	narrowProtectedPathPolicy,
+	parseProtectedPathPolicy,
+	resolvePolicyReviewEvidence,
+	type PolicyEffect,
+	type PolicyReviewEvidence,
+	type PolicyReviewRequirement,
+	type ProtectedPathClassification,
+	type ProtectedPathPolicy,
+} from "./protected-path-policy.ts";
+
+export {
+	POLICY_EFFECTS,
+	POLICY_REVIEWER_KINDS,
+	POLICY_REVIEW_REQUIREMENTS,
+	calculatePolicyReviewScopeDigest,
+	classifyProtectedPathOperation,
+	createPolicyReviewEvidence,
+	isCanonicalReviewScopeDigest,
+	isCanonicalWorkspaceRelativePath,
+	isPolicyEffect,
+	isPolicyReviewEvidence,
+	isPolicyReviewRequirement,
+	resolvePolicyReviewEvidence,
+} from "./protected-path-policy.ts";
+export type {
+	PolicyEffect,
+	PolicyReviewDecision,
+	PolicyReviewEvidence,
+	PolicyReviewEvidenceResolution,
+	PolicyReviewerIdentity,
+	PolicyReviewerKind,
+	PolicyReviewRequirement,
+	ProtectedPathClassification,
+	ProtectedPathPolicy,
+	ProtectedPathRule,
+} from "./protected-path-policy.ts";
 
 /**
  * Pure Execution Policy v1 resolver.
@@ -190,7 +233,11 @@ export type PolicyErrorCode =
 	| "sandbox_unavailable"
 	| "sandbox_start_failed"
 	| "sandbox_capability_insufficient"
-	| "policy_ledger_persistence_failed";
+	| "policy_ledger_persistence_failed"
+	| "protected_path_invalid"
+	| "policy_review_required"
+	| "policy_review_rejected"
+	| "policy_review_evidence_invalid";
 
 export const POLICY_ERROR_CODES = Object.freeze([
 	"policy_settings_invalid",
@@ -208,6 +255,10 @@ export const POLICY_ERROR_CODES = Object.freeze([
 	"sandbox_start_failed",
 	"sandbox_capability_insufficient",
 	"policy_ledger_persistence_failed",
+	"protected_path_invalid",
+	"policy_review_required",
+	"policy_review_rejected",
+	"policy_review_evidence_invalid",
 ] as const);
 
 const POLICY_ERROR_MESSAGES: Readonly<Record<PolicyErrorCode, string>> = {
@@ -226,6 +277,10 @@ const POLICY_ERROR_MESSAGES: Readonly<Record<PolicyErrorCode, string>> = {
 	sandbox_start_failed: "The sandbox could not be started.",
 	sandbox_capability_insufficient: "The sandbox does not provide the required capability.",
 	policy_ledger_persistence_failed: "The policy decision could not be recorded safely.",
+	protected_path_invalid: "The protected path scope could not be proven.",
+	policy_review_required: "Protected path review is required before this operation.",
+	policy_review_rejected: "Protected path review rejected this operation.",
+	policy_review_evidence_invalid: "Protected path review evidence is invalid for this operation.",
 };
 
 const ACTION_RANK: Readonly<Record<PolicyAction, number>> = { allow: 0, ask: 1, deny: 2 };
@@ -300,6 +355,7 @@ export interface ExecutionPolicyProfile {
 	readonly network: NetworkPolicy;
 	readonly credentials: CredentialPolicy;
 	readonly approvals: ApprovalPolicy;
+	readonly protectedPaths?: ProtectedPathPolicy;
 	readonly rules?: ReadonlyArray<PolicyRule>;
 }
 
@@ -317,6 +373,7 @@ export interface PolicyProfileNarrowing {
 	readonly network?: Partial<NetworkPolicy>;
 	readonly credentials?: Partial<CredentialPolicy>;
 	readonly approvals?: Partial<ApprovalPolicy>;
+	readonly protectedPaths?: ProtectedPathPolicy;
 	readonly rules?: ReadonlyArray<PolicyRule>;
 }
 
@@ -328,6 +385,11 @@ export interface PolicyOperationRequest {
 	readonly capabilityId?: string;
 	readonly path?: string;
 	readonly targetPath?: string;
+	/** Exact structured effects; raw commands must not infer these from text. */
+	readonly effects?: ReadonlyArray<PolicyEffect>;
+	/** Canonical workspace-relative path produced by the host path classifier. */
+	readonly canonicalPath?: string;
+	readonly canonicalPaths?: ReadonlyArray<string>;
 	readonly command?: string;
 	readonly args?: ReadonlyArray<string>;
 	readonly cwd?: string;
@@ -404,6 +466,7 @@ export interface ResolveExecutionPolicyInput {
 	readonly capability?: CapabilityBindingInput;
 	readonly sandbox?: SandboxPreflight;
 	readonly operation?: PolicyOperationRequest | unknown;
+	readonly reviewEvidence?: PolicyReviewEvidence | ReadonlyArray<PolicyReviewEvidence>;
 	readonly mode?: PolicyInterfaceMode;
 	readonly interfaceMode?: PolicyInterfaceMode;
 	readonly workspaceIdentity?: string;
@@ -433,6 +496,11 @@ export interface PolicyBindingConstraints {
 		readonly action: PolicyAction;
 		readonly allowedNameCount: number;
 	};
+	readonly protectedPaths?: {
+		readonly ruleCount: number;
+		readonly managedLockCount: number;
+		readonly policyDigest: string;
+	};
 }
 
 export interface PolicyBinding {
@@ -460,6 +528,9 @@ export interface PolicyApprovalScope {
 	readonly environmentCount?: number;
 	readonly destinationCount?: number;
 	readonly credentialCount?: number;
+	readonly effectCount?: number;
+	readonly pathCount?: number;
+	readonly scopeDigest?: string;
 }
 
 export interface PolicyApprovalRequest {
@@ -468,9 +539,11 @@ export interface PolicyApprovalRequest {
 	readonly resource: PolicyResource;
 	readonly source: PolicyOperationSource;
 	readonly scope: PolicyApprovalScope;
-	readonly reasonCode: "policy_approval_required";
+	readonly reasonCode: "policy_approval_required" | "policy_review_required";
 	readonly reason: string;
 	readonly createdAt: string;
+	readonly reviewRequirement?: Exclude<PolicyReviewRequirement, "none">;
+	readonly scopeDigest?: string;
 }
 
 export interface PolicyDecision {
@@ -489,6 +562,12 @@ export interface PolicyDecision {
 	readonly requestId?: string;
 	readonly timestamp: string;
 	readonly approval?: PolicyApprovalRequest;
+	readonly effects?: ReadonlyArray<PolicyEffect>;
+	readonly protectedPathCount?: number;
+	readonly matchedProtectedRuleIds?: ReadonlyArray<string>;
+	readonly reviewRequirement?: PolicyReviewRequirement;
+	readonly scopeDigest?: string;
+	readonly reviewEvidence?: ReadonlyArray<PolicyReviewEvidence>;
 	/**
 	 * Safe decision facts for Task Credential resources only: the exact
 	 * normalized requested credential-name set, the credential target
@@ -774,6 +853,7 @@ function cloneProfile(profile: ExecutionPolicyProfile): ExecutionPolicyProfile {
 		network: { action: profile.network.action, allowDestinations: [...profile.network.allowDestinations] },
 		credentials: { action: profile.credentials.action, allowNames: [...profile.credentials.allowNames] },
 		approvals: { ...profile.approvals },
+		...(profile.protectedPaths === undefined ? {} : { protectedPaths: cloneProtectedPathPolicy(profile.protectedPaths) }),
 		...(profile.rules === undefined ? {} : { rules: profile.rules.map((rule) => ({ ...rule })) }),
 	});
 }
@@ -791,6 +871,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 		"network",
 		"credentials",
 		"approvals",
+		"protectedPaths",
 		"rules",
 	];
 	if (Object.keys(value).some((key) => !allowedKeys.includes(key))) return undefined;
@@ -840,6 +921,8 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 	const completeApprovals = approvals as ApprovalPolicy;
 	const rules = parseRules(value.rules);
 	if (rules === undefined) return undefined;
+	const protectedPaths = value.protectedPaths === undefined ? undefined : parseProtectedPathPolicy(value.protectedPaths);
+	if (value.protectedPaths !== undefined && protectedPaths === undefined) return undefined;
 	return cloneProfile({
 		id: value.id,
 		...(value.revision === undefined ? {} : { revision: value.revision }),
@@ -857,13 +940,14 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 		network: { action: networkAction, allowDestinations: networkDestinations },
 		credentials: { action: credentialsAction, allowNames: credentialNames },
 		approvals: completeApprovals,
+		...(protectedPaths === undefined ? {} : { protectedPaths }),
 		...(rules.length > 0 ? { rules } : {}),
 	});
 }
 
 function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 	if (!isRecord(value)) return undefined;
-	const allowed = ["id", "revision", "enforcement", "sandboxProvider", "defaultAction", "workspace", "process", "network", "credentials", "approvals", "rules"];
+	const allowed = ["id", "revision", "enforcement", "sandboxProvider", "defaultAction", "workspace", "process", "network", "credentials", "approvals", "protectedPaths", "rules"];
 	if (Object.keys(value).some((key) => !allowed.includes(key))) return undefined;
 	if (value.id !== undefined && !isSafeOpaqueId(value.id)) return undefined;
 	if (value.revision !== undefined && !isSafeOpaqueId(value.revision)) return undefined;
@@ -961,6 +1045,8 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 	}
 	const approvals = value.approvals === undefined ? undefined : parseApprovals(value.approvals, true);
 	if (value.approvals !== undefined && approvals === undefined) return undefined;
+	const protectedPaths = value.protectedPaths === undefined ? undefined : parseProtectedPathPolicy(value.protectedPaths);
+	if (value.protectedPaths !== undefined && protectedPaths === undefined) return undefined;
 	const rules = value.rules === undefined ? undefined : parseRules(value.rules);
 	if (value.rules !== undefined && rules === undefined) return undefined;
 	return {
@@ -974,6 +1060,7 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 		...(Object.keys(network).length === 0 ? {} : { network }),
 		...(Object.keys(credentials).length === 0 ? {} : { credentials }),
 		...(approvals === undefined ? {} : { approvals }),
+		...(protectedPaths === undefined ? {} : { protectedPaths }),
 		...(rules === undefined ? {} : { rules }),
 	};
 }
@@ -1081,6 +1168,14 @@ function mergeNarrowing(
 		if (approvalPairs.some(([baseAction, requestedAction]) => requestedAction !== undefined && ACTION_RANK[requestedAction] < ACTION_RANK[baseAction])) {
 			return { ok: false, error: policyError("policy_profile_untrusted") };
 		}
+	}
+	let protectedPaths = base.protectedPaths;
+	if (narrowing.protectedPaths !== undefined) {
+		if ((narrowing.protectedPaths.managedLocks?.length ?? 0) > 0) {
+			return { ok: false, error: policyError("policy_profile_untrusted") };
+		}
+		protectedPaths = narrowProtectedPathPolicy(base.protectedPaths, narrowing.protectedPaths);
+		if (protectedPaths === undefined) return { ok: false, error: policyError("policy_profile_untrusted") };
 	}
 	if (base.process.inheritEnvironment === false && narrowing.process?.inheritEnvironment === true) {
 		return { ok: false, error: policyError("policy_profile_untrusted") };
@@ -1210,6 +1305,7 @@ function mergeNarrowing(
 			network,
 			credentials,
 			approvals,
+			...(protectedPaths === undefined ? {} : { protectedPaths }),
 			...(base.rules === undefined ? {} : { rules: base.rules }),
 		}),
 	};
@@ -1315,7 +1411,7 @@ function createBinding(
 		throw policyError("policy_binding_failed");
 	}
 	const createdAt = input.createdAt ?? "1970-01-01T00:00:00.000Z";
-	if (!isSafeText(createdAt)) throw policyError("policy_binding_failed");
+	if (!isCanonicalPolicyTimestamp(createdAt)) throw policyError("policy_binding_failed");
 	const constraints: PolicyBindingConstraints = {
 		workspace: {
 			read: [...profile.workspace.read],
@@ -1330,6 +1426,15 @@ function createBinding(
 		},
 		network: { action: profile.network.action, allowedDestinationCount: profile.network.allowDestinations.length },
 		credentials: { action: profile.credentials.action, allowedNameCount: profile.credentials.allowNames.length },
+		...(profile.protectedPaths === undefined
+			? {}
+			: {
+				protectedPaths: {
+					ruleCount: profile.protectedPaths.rules.length,
+					managedLockCount: profile.protectedPaths.managedLocks?.length ?? 0,
+					policyDigest: calculateProtectedPathPolicyDigest(profile.protectedPaths),
+				},
+			}),
 	};
 	const bindingSeed = {
 		profileId: profile.id,
@@ -1629,6 +1734,7 @@ function createApprovalRequest(
 	operation: PolicyOperationRequest,
 	requestId: string,
 	timestamp: string,
+	classification?: ProtectedPathClassification,
 ): PolicyApprovalRequest {
 	const scope: PolicyApprovalScope = {
 		resource: operation.resource,
@@ -1636,16 +1742,24 @@ function createApprovalRequest(
 		...(operation.environmentNames === undefined ? {} : { environmentCount: operation.environmentNames.length }),
 		...(operation.destination === undefined ? {} : { destinationCount: 1 }),
 		...(operation.credentialNames === undefined ? {} : { credentialCount: operation.credentialNames.length }),
+		...(classification === undefined ? {} : { effectCount: classification.effects.length }),
+		...(classification === undefined ? {} : { pathCount: classification.pathCount }),
+		...(classification?.scopeDigest === undefined ? {} : { scopeDigest: classification.scopeDigest }),
 	};
+	const reviewRequirement = classification?.requirement;
+	const reviewerRequired = reviewRequirement === "reviewer" || reviewRequirement === "team_enforced";
+	const reasonCode = reviewerRequired ? "policy_review_required" : "policy_approval_required";
 	return deepFreeze({
 		id: requestId,
 		bindingId: binding.id,
 		resource: operation.resource,
 		source: operation.source,
 		scope,
-		reasonCode: "policy_approval_required",
-		reason: POLICY_ERROR_MESSAGES.policy_approval_required,
+		reasonCode,
+		reason: POLICY_ERROR_MESSAGES[reasonCode],
 		createdAt: timestamp,
+		...(reviewRequirement === undefined || reviewRequirement === "none" ? {} : { reviewRequirement }),
+		...(classification?.scopeDigest === undefined ? {} : { scopeDigest: classification.scopeDigest }),
 	});
 }
 
@@ -1659,7 +1773,7 @@ export function createPolicyApprovalRequest(input: {
 	if (operation === undefined) throw policyError("policy_settings_invalid");
 	const requestId = input.requestId ?? `${POLICY_REQUEST_PREFIX}${hashText(stableStringify({ bindingId: input.binding.id, operation }))}`;
 	const timestamp = input.timestamp ?? input.binding.createdAt;
-	if (!isSafeText(requestId) || !isSafeText(timestamp)) throw policyError("policy_settings_invalid");
+	if (!isSafeOpaqueId(requestId) || !isCanonicalPolicyTimestamp(timestamp)) throw policyError("policy_settings_invalid");
 	return createApprovalRequest(input.binding, operation, requestId, timestamp);
 }
 
@@ -1673,12 +1787,32 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	if (capabilityId !== undefined && !isSafeText(capabilityId)) return undefined;
 	const path = value.path === undefined ? undefined : isSafeText(value.path) ? value.path : undefined;
 	const targetPath = value.targetPath === undefined ? undefined : isSafeText(value.targetPath) ? value.targetPath : undefined;
+	const effects = value.effects;
+	const parsedEffects = effects === undefined
+		? undefined
+		: Array.isArray(effects) && effects.length > 0 && effects.every(isPolicyEffect)
+			? uniqueInOrder(effects)
+			: undefined;
+	const canonicalPath = value.canonicalPath === undefined
+		? undefined
+		: isCanonicalWorkspaceRelativePath(value.canonicalPath)
+			? value.canonicalPath
+			: undefined;
+	const canonicalPaths = value.canonicalPaths;
+	const parsedCanonicalPaths = canonicalPaths === undefined
+		? undefined
+		: Array.isArray(canonicalPaths) && canonicalPaths.every(isCanonicalWorkspaceRelativePath)
+			? uniqueSorted(canonicalPaths)
+			: undefined;
 	const command = value.command === undefined ? undefined : isSafeText(value.command) ? value.command : undefined;
 	const cwd = value.cwd === undefined ? undefined : isSafeText(value.cwd) ? value.cwd : undefined;
 	const destination = value.destination === undefined ? undefined : isSafeText(value.destination) ? value.destination : undefined;
 	if (
 		(value.path !== undefined && path === undefined) ||
 		(value.targetPath !== undefined && targetPath === undefined) ||
+		(value.effects !== undefined && parsedEffects === undefined) ||
+		(value.canonicalPath !== undefined && canonicalPath === undefined) ||
+		(value.canonicalPaths !== undefined && parsedCanonicalPaths === undefined) ||
 		(value.command !== undefined && command === undefined) ||
 		(value.cwd !== undefined && cwd === undefined) ||
 		(value.destination !== undefined && destination === undefined)
@@ -1709,6 +1843,9 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		...(capabilityId === undefined ? {} : { capabilityId }),
 		...(path === undefined ? {} : { path }),
 		...(targetPath === undefined ? {} : { targetPath }),
+		...(parsedEffects === undefined ? {} : { effects: parsedEffects }),
+		...(canonicalPath === undefined ? {} : { canonicalPath }),
+		...(parsedCanonicalPaths === undefined ? {} : { canonicalPaths: parsedCanonicalPaths }),
 		...(command === undefined ? {} : { command }),
 		...(args === undefined ? {} : { args: args.map((arg) => String(arg)) }),
 		...(cwd === undefined ? {} : { cwd }),
@@ -1721,6 +1858,73 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	});
 }
 
+const PATH_EFFECTS = new Set<PolicyEffect>(["read", "write", "create", "delete", "move", "commit", "merge"]);
+
+function protectedClassification(
+	profile: ExecutionPolicyProfile,
+	binding: PolicyBinding,
+	operation: PolicyOperationRequest,
+): ProtectedPathClassification | undefined {
+	if (profile.protectedPaths === undefined) return undefined;
+	const paths = uniqueSorted([
+		...(operation.canonicalPath === undefined ? [] : [operation.canonicalPath]),
+		...(operation.canonicalPaths ?? []),
+	]);
+	if (operation.effects === undefined) {
+		if (
+			operation.resource === "filesystem.read" ||
+			operation.resource === "filesystem.write" ||
+			operation.resource === "filesystem.find" ||
+			operation.resource === "filesystem.grep"
+		) {
+			throw policyError("protected_path_invalid");
+		}
+		return undefined;
+	}
+	if (operation.effects.some((effect) => PATH_EFFECTS.has(effect)) && paths.length === 0) {
+		throw policyError("protected_path_invalid");
+	}
+	try {
+		return classifyProtectedPathOperation({
+			policy: profile.protectedPaths,
+			bindingId: binding.id,
+			resource: operation.resource,
+			source: operation.source,
+			effects: operation.effects,
+			paths,
+		});
+	} catch {
+		throw policyError("protected_path_invalid");
+	}
+}
+
+function protectedRequestId(classification: ProtectedPathClassification | undefined, fallback: string | undefined): string | undefined {
+	if (classification?.scopeDigest !== undefined) return `${POLICY_REQUEST_PREFIX}${classification.scopeDigest.slice("sha256:".length)}`;
+	return fallback;
+}
+
+function protectedDecisionFacts(
+	classification: ProtectedPathClassification | undefined,
+	reviewEvidence?: ReadonlyArray<PolicyReviewEvidence>,
+): {
+	readonly effects?: ReadonlyArray<PolicyEffect>;
+	readonly protectedPathCount?: number;
+	readonly matchedProtectedRuleIds?: ReadonlyArray<string>;
+	readonly reviewRequirement?: PolicyReviewRequirement;
+	readonly scopeDigest?: string;
+	readonly reviewEvidence?: ReadonlyArray<PolicyReviewEvidence>;
+} {
+	if (classification === undefined) return {};
+	return {
+		effects: [...classification.effects],
+		protectedPathCount: classification.protected ? classification.pathCount : 0,
+		matchedProtectedRuleIds: [...classification.matchedRuleIds],
+		reviewRequirement: classification.requirement,
+		...(classification.scopeDigest === undefined ? {} : { scopeDigest: classification.scopeDigest }),
+		...(reviewEvidence === undefined ? {} : { reviewEvidence: reviewEvidence.map((item) => ({ ...item, reviewer: { ...item.reviewer } })) }),
+	};
+}
+
 export function authorizePolicyOperation(input: {
 	readonly profile: ExecutionPolicyProfile;
 	readonly binding: PolicyBinding;
@@ -1728,12 +1932,15 @@ export function authorizePolicyOperation(input: {
 	readonly capabilityBinding?: CapabilityBindingInput;
 	readonly mode?: PolicyInterfaceMode;
 	readonly projectRules?: ReadonlyArray<PolicyRule>;
+	readonly reviewEvidence?: PolicyReviewEvidence | ReadonlyArray<PolicyReviewEvidence>;
 }): PolicyDecision {
 	const operation = validateOperation(input.operation);
 	if (operation === undefined) throw policyError("policy_settings_invalid");
 	const facts = taskCredentialDecisionFacts(operation);
+	const classification = protectedClassification(input.profile, input.binding, operation);
+	const protectedFacts = protectedDecisionFacts(classification);
 	const capabilityCode = capabilityDecision(operation, input.capabilityBinding);
-	const requestId = operation.id;
+	const requestId = protectedRequestId(classification, operation.id);
 	const timestamp = input.binding.createdAt;
 	if (capabilityCode !== undefined) {
 		return deepFreeze({
@@ -1751,6 +1958,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...protectedFacts,
 			...facts,
 		});
 	}
@@ -1762,6 +1970,7 @@ export function authorizePolicyOperation(input: {
 	if (boundaryCode !== undefined) action = "deny";
 	const configuredApproval = approvalAction(input.profile, operation);
 	if (configuredApproval !== undefined) action = strictest(action, configuredApproval);
+	if (classification?.requirement === "approval") action = strictest(action, "ask");
 	if (boundaryCode !== undefined) {
 		return deepFreeze({
 			bindingId: input.binding.id,
@@ -1778,6 +1987,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...protectedFacts,
 			...facts,
 		});
 	}
@@ -1798,6 +2008,7 @@ export function authorizePolicyOperation(input: {
 			hardDeny: sandbox.hardDeny,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...protectedFacts,
 			...facts,
 		});
 	}
@@ -1819,8 +2030,52 @@ export function authorizePolicyOperation(input: {
 			hardDeny: true,
 			...(requestId === undefined ? {} : { requestId }),
 			timestamp,
+			...protectedFacts,
 			...facts,
 		});
+	}
+	let approvedReviewEvidence: ReadonlyArray<PolicyReviewEvidence> | undefined;
+	if (classification?.requirement === "reviewer" || classification?.requirement === "team_enforced") {
+		const reviewRequestId = requestId;
+		if (input.profile.protectedPaths === undefined || reviewRequestId === undefined) throw policyError("protected_path_invalid");
+		const review = resolvePolicyReviewEvidence({
+			policy: input.profile.protectedPaths,
+			classification,
+			bindingId: input.binding.id,
+			requestId: reviewRequestId,
+			requestCreatedAt: timestamp,
+			evidence: input.reviewEvidence,
+		});
+		if (review.status !== "approved") {
+			const reasonCode: PolicyErrorCode = review.status === "rejected"
+				? "policy_review_rejected"
+				: review.status === "invalid"
+					? "policy_review_evidence_invalid"
+					: "policy_review_required";
+			const approval = review.status === "missing"
+				? createApprovalRequest(input.binding, operation, reviewRequestId, timestamp, classification)
+				: undefined;
+			return deepFreeze({
+				bindingId: input.binding.id,
+				profileId: input.profile.id,
+				profileRevision: input.binding.profileRevision,
+				projectTrust: input.binding.projectTrust,
+				enforcement: input.binding.enforcement,
+				resource: operation.resource,
+				source: operation.source,
+				action: "deny",
+				outcome: "deny",
+				reasonCode,
+				reason: safeReason(reasonCode),
+				hardDeny: true,
+				requestId: reviewRequestId,
+				timestamp,
+				...(approval === undefined ? {} : { approval }),
+				...protectedFacts,
+				...facts,
+			});
+		}
+		approvedReviewEvidence = review.evidence;
 	}
 	if (action === "ask") {
 		const approval = createApprovalRequest(
@@ -1828,6 +2083,7 @@ export function authorizePolicyOperation(input: {
 			operation,
 			requestId ?? `${POLICY_REQUEST_PREFIX}${hashText(stableStringify({ bindingId: input.binding.id, operation }))}`,
 			timestamp,
+			classification,
 		);
 		return deepFreeze({
 			bindingId: input.binding.id,
@@ -1842,9 +2098,10 @@ export function authorizePolicyOperation(input: {
 			reasonCode: "policy_approval_required",
 			reason: safeReason("policy_approval_required"),
 			hardDeny: false,
-			...(requestId === undefined ? { requestId: approval.id } : { requestId }),
+			requestId: approval.id,
 			timestamp,
 			approval,
+			...protectedFacts,
 			...facts,
 		});
 	}
@@ -1861,6 +2118,7 @@ export function authorizePolicyOperation(input: {
 		hardDeny: false,
 		...(requestId === undefined ? {} : { requestId }),
 		timestamp,
+		...protectedDecisionFacts(classification, approvedReviewEvidence),
 		...facts,
 	});
 }
@@ -1962,6 +2220,9 @@ export function freezePolicyBinding(binding: PolicyBinding): PolicyBinding {
 			},
 			network: { ...binding.constraints.network },
 			credentials: { ...binding.constraints.credentials },
+			...(binding.constraints.protectedPaths === undefined
+				? {}
+				: { protectedPaths: { ...binding.constraints.protectedPaths } }),
 		},
 	});
 }
@@ -2045,6 +2306,7 @@ export function resolveExecutionPolicy(input: ResolveExecutionPolicyInput): Poli
 			operation,
 			capabilityBinding,
 			mode: input.mode ?? input.interfaceMode,
+			reviewEvidence: input.reviewEvidence,
 		});
 	} catch (error) {
 		return { ok: false, error: error instanceof PolicyError ? error : policyError("policy_settings_invalid") };
