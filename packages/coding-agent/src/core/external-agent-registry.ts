@@ -1,6 +1,7 @@
 /** Trusted, instance-only External Connector registry. */
 
 import {
+	EXTERNAL_ERROR_MESSAGES,
 	FoundationError,
 	Result,
 	cloneDeepFrozen,
@@ -21,9 +22,11 @@ import {
 	type ExternalCapabilityBehavior,
 	type ExternalCapabilityEvidenceInput,
 	type ExternalCapabilityTruthSnapshot,
+	type ExternalResolvedModelProjection,
 } from "./external-model-projection.ts";
 import {
 	getHostSupervisedExternalAgentConnectorImplementation,
+	hasHostSupervisedExternalAgentConnectorProof,
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./external-agent-connector.ts";
 import {
@@ -98,10 +101,40 @@ export interface ExternalConnectorRegistryOptions {
 	readonly toolGateway?: ToolGateway;
 }
 
+type RegisteredExternalConnectorImplementation = Omit<
+	HostSupervisedExternalAgentConnectorImplementation,
+	"preflightModelProjection" | "bindToolGatewayConsumer"
+> &
+	Partial<
+		Pick<
+			HostSupervisedExternalAgentConnectorImplementation,
+			"preflightModelProjection" | "bindToolGatewayConsumer"
+		>
+	>;
+
+interface CapturedExternalConnectorProperty {
+	readonly key: keyof RegisteredExternalConnectorImplementation;
+	readonly owner: object;
+	readonly descriptor: Readonly<PropertyDescriptor>;
+	readonly value: unknown;
+}
+
+interface ExternalConnectorImplementationProof {
+	readonly kind: "host_supervised" | "public_spi";
+	readonly prototype?: object | null;
+	readonly properties?: readonly CapturedExternalConnectorProperty[];
+}
+
+interface ResolvedExternalConnectorImplementation {
+	readonly implementation: RegisteredExternalConnectorImplementation;
+	readonly proof: ExternalConnectorImplementationProof;
+}
+
 interface RegisteredConnector {
 	readonly descriptor: ExternalConnectorDescriptor;
 	readonly connector: ExternalAgentConnector;
-	readonly implementation: HostSupervisedExternalAgentConnectorImplementation;
+	readonly implementation: RegisteredExternalConnectorImplementation;
+	readonly implementationProof: ExternalConnectorImplementationProof;
 	readonly selectedConnector: ExternalAgentConnector;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
@@ -109,7 +142,8 @@ interface RegisteredConnector {
 
 interface PendingConnector {
 	readonly connector: ExternalAgentConnector;
-	readonly implementation: HostSupervisedExternalAgentConnectorImplementation;
+	readonly implementation: RegisteredExternalConnectorImplementation;
+	readonly implementationProof: ExternalConnectorImplementationProof;
 }
 
 const EXTERNAL_CONNECTOR_DESCRIPTOR_KEYS = new Set([
@@ -155,7 +189,7 @@ function externalConnectorToolGatewayDeniedResult(request: ToolGatewayRequest): 
 		sideEffectState: "none",
 		error: {
 			code: "external_tool_route_denied",
-			message: "External connector Tool Gateway policy or route denied the request.",
+			message: EXTERNAL_ERROR_MESSAGES.external_tool_route_denied,
 			category: "permission",
 			retryable: false,
 		},
@@ -218,22 +252,182 @@ function isExternalConnectorDescriptor(value: unknown): value is ExternalConnect
 	);
 }
 
-function isConstructedExternalConnector(value: unknown): value is ExternalAgentConnector {
-	const implementation = getHostSupervisedExternalAgentConnectorImplementation(value);
-	if (implementation === undefined || !isConnectorRecord(value)) return false;
+const EXTERNAL_CONNECTOR_PUBLIC_PROPERTIES = Object.freeze([
+	"schemaVersion",
+	"providerId",
+	"providerClass",
+	"capabilities",
+	"dispose",
+	"probeCapabilities",
+	"createAttempt",
+	"runAttempt",
+	"cancelAttempt",
+	"resumeAttempt",
+	"reconcileAttempt",
+] as const);
+type ExternalConnectorPublicProperty = (typeof EXTERNAL_CONNECTOR_PUBLIC_PROPERTIES)[number];
+
+function resolveExternalConnectorProperty(
+	value: object,
+	key: ExternalConnectorPublicProperty,
+): { readonly owner: object; readonly descriptor: PropertyDescriptor } | undefined {
+	let owner: object | null = value;
+	while (owner !== null) {
+		const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+		if (descriptor !== undefined) return { owner, descriptor };
+		owner = Object.getPrototypeOf(owner) as object | null;
+	}
+	return undefined;
+}
+
+function sameExternalConnectorProperty(value: object, captured: CapturedExternalConnectorProperty): boolean {
+	const current = readExternalConnectorProperty(value, captured.key as ExternalConnectorPublicProperty);
+	if (current === undefined || current.owner !== captured.owner) return false;
+	const left = current.descriptor;
+	const right = captured.descriptor;
 	return (
-		implementation.schemaVersion === 1 &&
-		isExternalConnectorIdentifier(implementation.providerId) &&
-		implementation.providerClass === "external_connector" &&
-		typeof implementation.capabilities === "function" &&
-		typeof implementation.dispose === "function" &&
-		typeof implementation.createAttempt === "function" &&
-		typeof implementation.runAttempt === "function" &&
-		typeof implementation.cancelAttempt === "function" &&
-		typeof implementation.probeCapabilities === "function" &&
-		typeof implementation.resumeAttempt === "function" &&
-		typeof implementation.reconcileAttempt === "function"
+		left.configurable === right.configurable &&
+		left.enumerable === right.enumerable &&
+		left.writable === right.writable &&
+		left.get === right.get &&
+		left.set === right.set &&
+		Object.is(current.value, captured.value)
 	);
+}
+
+function readExternalConnectorProperty(
+	value: object,
+	key: ExternalConnectorPublicProperty,
+): { readonly owner: object; readonly descriptor: PropertyDescriptor; readonly value: unknown } | undefined {
+	const resolved = resolveExternalConnectorProperty(value, key);
+	if (resolved === undefined) return undefined;
+	if (Object.hasOwn(resolved.descriptor, "value")) return { ...resolved, value: resolved.descriptor.value };
+	if (typeof resolved.descriptor.get !== "function") return undefined;
+	try {
+		return { ...resolved, value: Reflect.get(value, key, value) };
+	} catch {
+		return undefined;
+	}
+}
+
+function capturePublicExternalConnector(
+	value: unknown,
+): { readonly implementation: RegisteredExternalConnectorImplementation; readonly proof: ExternalConnectorImplementationProof } | undefined {
+	if (!isConnectorRecord(value)) return undefined;
+	try {
+		const connector = value as unknown as ExternalAgentConnector;
+		const captured = new Map<ExternalConnectorPublicProperty, {
+			readonly owner: object;
+			readonly descriptor: PropertyDescriptor;
+			readonly value: unknown;
+		}>();
+		for (const key of EXTERNAL_CONNECTOR_PUBLIC_PROPERTIES) {
+			const property = readExternalConnectorProperty(connector, key);
+			if (property === undefined) return undefined;
+			captured.set(key, property);
+		}
+		const schemaVersion = captured.get("schemaVersion")?.value;
+		const providerId = captured.get("providerId")?.value;
+		const providerClass = captured.get("providerClass")?.value;
+		if (schemaVersion !== 1 || !isExternalConnectorIdentifier(providerId) || providerClass !== "external_connector") {
+			return undefined;
+		}
+		const capabilities = captured.get("capabilities")?.value;
+		const dispose = captured.get("dispose")?.value;
+		const probeCapabilities = captured.get("probeCapabilities")?.value;
+		const createAttempt = captured.get("createAttempt")?.value;
+		const runAttempt = captured.get("runAttempt")?.value;
+		const cancelAttempt = captured.get("cancelAttempt")?.value;
+		const resumeAttempt = captured.get("resumeAttempt")?.value;
+		const reconcileAttempt = captured.get("reconcileAttempt")?.value;
+		if (
+			typeof capabilities !== "function" ||
+			typeof dispose !== "function" ||
+			typeof probeCapabilities !== "function" ||
+			typeof createAttempt !== "function" ||
+			typeof runAttempt !== "function" ||
+			typeof cancelAttempt !== "function" ||
+			typeof resumeAttempt !== "function" ||
+			typeof reconcileAttempt !== "function"
+		) {
+			return undefined;
+		}
+		const implementation: RegisteredExternalConnectorImplementation = Object.freeze({
+			schemaVersion,
+			providerId,
+			providerClass,
+			capabilities: () => Reflect.apply(capabilities as ExternalAgentConnector["capabilities"], connector, []),
+			dispose: () => Reflect.apply(dispose as ExternalAgentConnector["dispose"], connector, []),
+			probeCapabilities: (options) =>
+				Reflect.apply(probeCapabilities as ExternalAgentConnector["probeCapabilities"], connector, [options]),
+			createAttempt: (dispatch, binding, context) =>
+				Reflect.apply(createAttempt as ExternalAgentConnector["createAttempt"], connector, [dispatch, binding, context]),
+			runAttempt: (attempt, options) =>
+				Reflect.apply(runAttempt as ExternalAgentConnector["runAttempt"], connector, [attempt, options]),
+			cancelAttempt: (attemptId) =>
+				Reflect.apply(cancelAttempt as ExternalAgentConnector["cancelAttempt"], connector, [attemptId]),
+			resumeAttempt: (attempt, options) =>
+				Reflect.apply(resumeAttempt as ExternalAgentConnector["resumeAttempt"], connector, [attempt, options]),
+			reconcileAttempt: (attempt, options) =>
+				Reflect.apply(reconcileAttempt as ExternalAgentConnector["reconcileAttempt"], connector, [attempt, options]),
+		});
+		const properties = Object.freeze(
+			EXTERNAL_CONNECTOR_PUBLIC_PROPERTIES.map((key) => {
+				const property = captured.get(key);
+				if (property === undefined) throw new Error(`External connector property ${key} is unavailable.`);
+				return Object.freeze({
+					key,
+					owner: property.owner,
+					descriptor: Object.freeze({ ...property.descriptor }),
+					value: property.value,
+				});
+			}),
+		);
+		return {
+			implementation,
+			proof: Object.freeze({
+				kind: "public_spi",
+				prototype: Object.getPrototypeOf(connector) as object | null,
+				properties,
+			}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function resolveExternalConnectorImplementation(value: unknown): ResolvedExternalConnectorImplementation | undefined {
+	if (!isConnectorRecord(value)) return undefined;
+	try {
+		const hostImplementation = getHostSupervisedExternalAgentConnectorImplementation(value);
+		if (hostImplementation !== undefined) {
+			return { implementation: hostImplementation, proof: Object.freeze({ kind: "host_supervised" }) };
+		}
+		if (hasHostSupervisedExternalAgentConnectorProof(value)) return undefined;
+		return capturePublicExternalConnector(value);
+	} catch {
+		return undefined;
+	}
+}
+
+function isCurrentExternalConnectorImplementation(
+	connector: ExternalAgentConnector,
+	implementation: RegisteredExternalConnectorImplementation,
+	proof: ExternalConnectorImplementationProof,
+): boolean {
+	try {
+		if (proof.kind === "host_supervised") {
+			return getHostSupervisedExternalAgentConnectorImplementation(connector) === implementation;
+		}
+		if (Object.getPrototypeOf(connector) !== proof.prototype || proof.properties === undefined) return false;
+		return proof.properties.every((property) => sameExternalConnectorProperty(connector, property));
+	} catch {
+		return false;
+	}
+}
+
+function isConstructedExternalConnector(value: unknown): value is ExternalAgentConnector {
+	return resolveExternalConnectorImplementation(value) !== undefined;
 }
 
 function isExternalConnectorRegistration(value: unknown): value is ExternalConnectorRegistration {
@@ -295,7 +489,7 @@ function connectorRegistryShutdownError(): FoundationError {
 
 function createCapabilityPinnedConnector(
 	connector: ExternalAgentConnector,
-	implementation: HostSupervisedExternalAgentConnectorImplementation,
+	implementation: RegisteredExternalConnectorImplementation,
 	probePinned: (
 		options?: FoundationProviderExecutionOptions,
 	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>,
@@ -335,14 +529,10 @@ function createCapabilityPinnedConnector(
 	const probeCapabilities: ExternalAgentConnector["probeCapabilities"] = (options) => probeSelected(options);
 	const createAttempt: ExternalAgentConnector["createAttempt"] = (dispatch, binding, context) =>
 		Reflect.apply(implementation.createAttempt, connector, [dispatch, binding, context]);
-	const preflightModelProjection: HostSupervisedExternalAgentConnectorImplementation["preflightModelProjection"] = (
-		projection,
-	) => Reflect.apply(implementation.preflightModelProjection, connector, [projection]);
-	return Object.freeze({
+	const base = {
 		schemaVersion: implementation.schemaVersion,
 		providerId: implementation.providerId,
 		providerClass: implementation.providerClass,
-		preflightModelProjection,
 		capabilities,
 		dispose,
 		probeCapabilities,
@@ -351,13 +541,19 @@ function createCapabilityPinnedConnector(
 		cancelAttempt,
 		resumeAttempt,
 		reconcileAttempt,
+	};
+	if (implementation.preflightModelProjection === undefined) return Object.freeze(base);
+	return Object.freeze({
+		...base,
+		preflightModelProjection: (projection: ExternalResolvedModelProjection) =>
+			Reflect.apply(implementation.preflightModelProjection!, connector, [projection]),
 	});
 }
 
 function capabilityTruth(
 	connectorId: string,
 	snapshot: ConnectorCapabilitySnapshot,
-	implementation: HostSupervisedExternalAgentConnectorImplementation,
+	implementation: RegisteredExternalConnectorImplementation,
 	toolGateway: ToolGateway | undefined,
 ): ResultValue<ExternalCapabilityTruthSnapshot, FoundationError> {
 	const evidence: Partial<
@@ -374,12 +570,30 @@ function capabilityTruth(
 		};
 	};
 	if (snapshot.resume) declare("resume", `${connectorId}.resumeAttempt`, implementation.resumeAttempt);
+	if (snapshot.toolGateway && implementation.bindToolGatewayConsumer === undefined) {
+		return Result.err(
+			new FoundationError(
+				"external_connector_not_ready",
+				"External connector Tool Gateway consumer authority is not ready.",
+			),
+		);
+	}
+	if (snapshot.toolGateway && toolGateway === undefined) {
+		return Result.err(
+			new FoundationError("external_connector_not_ready", "External connector Tool Gateway is not ready."),
+		);
+	}
 	if (snapshot.toolGateway && toolGateway !== undefined) {
 		declare("toolGateway", `${toolGateway.providerId}.execute`, toolGateway.execute);
 	}
 	if (snapshot.artifacts) declare("artifacts", `${connectorId}.runAttempt.artifacts`, implementation.runAttempt);
 	if (snapshot.images) declare("images", `${connectorId}.runAttempt.images`, implementation.runAttempt);
 	if (snapshot.modelAccess === "aos_gateway") {
+		if (implementation.preflightModelProjection === undefined) {
+			return Result.err(
+				new FoundationError("external_connector_not_ready", "External connector model gateway is not ready."),
+			);
+		}
 		declare("aosGateway", `${connectorId}.preflightModelProjection`, implementation.preflightModelProjection);
 	}
 	const result = createExternalCapabilityTruthSnapshot({
@@ -404,13 +618,14 @@ function capabilityTruth(
 
 async function probeConnector(
 	connector: ExternalAgentConnector,
-	implementation: HostSupervisedExternalAgentConnectorImplementation,
+	implementation: RegisteredExternalConnectorImplementation,
 	options: {
 		readonly capabilityProbeDeadline?: Partial<ExternalConnectorSegmentDeadline>;
 		readonly clock?: RuntimeClock;
 		readonly execution?: Parameters<ExternalAgentConnector["probeCapabilities"]>[0];
 		readonly registrySignal: AbortSignal;
 		readonly requireCurrentImplementation?: boolean;
+		readonly isCurrentImplementation?: () => boolean;
 	},
 ): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> {
 	try {
@@ -437,7 +652,7 @@ async function probeConnector(
 		);
 		if (
 			options.requireCurrentImplementation !== false &&
-			getHostSupervisedExternalAgentConnectorImplementation(connector) !== implementation
+			(options.isCurrentImplementation === undefined || !options.isCurrentImplementation())
 		) {
 			return Result.err(
 				connectorRegistryError("External connector constructed implementation changed while probing capabilities."),
@@ -479,7 +694,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 
 	async #disposeConnectorOnce(
 		connector: ExternalAgentConnector,
-		implementation: HostSupervisedExternalAgentConnectorImplementation,
+		implementation: RegisteredExternalConnectorImplementation,
 	): Promise<void> {
 		const active = this.#disposalOperations.get(connector);
 		if (active !== undefined) return active;
@@ -505,7 +720,11 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			this.#disposed ||
 			this.#connectors.get(registered.descriptor.providerId) !== registered ||
 			(requireCurrentImplementation &&
-				getHostSupervisedExternalAgentConnectorImplementation(registered.connector) !== registered.implementation) ||
+				!isCurrentExternalConnectorImplementation(
+					registered.connector,
+					registered.implementation,
+					registered.implementationProof,
+				)) ||
 			registered.implementation.providerClass !== "external_connector" ||
 			registered.implementation.providerId !== registered.descriptor.providerId
 		) {
@@ -516,6 +735,12 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			...(execution === undefined ? {} : { execution }),
 			registrySignal: this.#lifetime.signal,
 			requireCurrentImplementation,
+			isCurrentImplementation: () =>
+				isCurrentExternalConnectorImplementation(
+					registered.connector,
+					registered.implementation,
+					registered.implementationProof,
+				),
 		});
 		if (!snapshotResult.ok) return snapshotResult;
 		if (this.#disposed || this.#connectors.get(registered.descriptor.providerId) !== registered) {
@@ -561,12 +786,13 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const descriptor = registration.descriptor;
 		const connector = registration.connector;
-		const implementation = getHostSupervisedExternalAgentConnectorImplementation(connector);
-		if (implementation === undefined) {
+		const resolved = resolveExternalConnectorImplementation(connector);
+		if (resolved === undefined) {
 			return Result.err(
 				connectorRegistryError("External connector constructed implementation changed before registration."),
 			);
 		}
+		const { implementation, proof: implementationProof } = resolved;
 		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.has(descriptor.providerId)) {
 			return Result.err(connectorRegistryError("External connector provider identity is already registered."));
 		}
@@ -580,12 +806,14 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 
-		const pending = Object.freeze({ connector, implementation });
+		const pending = Object.freeze({ connector, implementation, implementationProof });
 		this.#pendingRegistrations.set(descriptor.providerId, pending);
 		try {
 			const snapshotResult = await probeConnector(connector, implementation, {
 				...this.#options,
 				registrySignal: this.#lifetime.signal,
+				isCurrentImplementation: () =>
+					isCurrentExternalConnectorImplementation(connector, implementation, implementationProof),
 			});
 			if (!snapshotResult.ok) return snapshotResult;
 			if (this.#disposed) {
@@ -618,17 +846,18 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const descriptor = registration.descriptor;
 		const connector = registration.connector;
-		const implementation = getHostSupervisedExternalAgentConnectorImplementation(connector);
-		if (implementation === undefined) {
+		const resolved = resolveExternalConnectorImplementation(connector);
+		if (resolved === undefined) {
 			return Result.err(
 				connectorRegistryError("External connector constructed implementation changed before registration."),
 			);
 		}
+		const { implementation, proof: implementationProof } = resolved;
 		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.has(descriptor.providerId)) {
 			return Result.err(connectorRegistryError("External connector provider identity is already registered."));
 		}
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
-		const pending = Object.freeze({ connector, implementation });
+		const pending = Object.freeze({ connector, implementation, implementationProof });
 		this.#pendingRegistrations.set(descriptor.providerId, pending);
 		try {
 			return this.#registerPrepared(registration, capabilitySnapshot);
@@ -653,13 +882,18 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const descriptor = registration.descriptor;
 		const connector = registration.connector;
-		const implementation = getHostSupervisedExternalAgentConnectorImplementation(connector);
 		const pending = this.#pendingRegistrations.get(descriptor.providerId);
+		if (pending === undefined || pending.connector !== connector) {
+			return Result.err(
+				connectorRegistryError(
+					"External connector provider identity is already registered or does not match its constructed instance.",
+				),
+			);
+		}
+		const implementation = pending.implementation;
 		if (
-			implementation === undefined ||
 			this.#connectors.has(descriptor.providerId) ||
-			pending?.connector !== connector ||
-			pending.implementation !== implementation ||
+			!isCurrentExternalConnectorImplementation(connector, implementation, pending.implementationProof) ||
 			descriptor.providerId !== implementation.providerId ||
 			descriptor.providerClass !== implementation.providerClass
 		) {
@@ -712,6 +946,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			descriptor: storedDescriptor,
 			connector,
 			implementation,
+			implementationProof: pending.implementationProof,
 			selectedConnector,
 			capabilitySnapshot: snapshot,
 			capabilityTruth: truthResult.value,
@@ -812,18 +1047,28 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			}
 			return Result.ok(cloneDeepFrozen(checkedResult.value));
 		};
-		const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId) =>
-			Reflect.apply(registered.implementation.bindToolGatewayConsumer, registered.connector, [
-				attemptId,
-				executeToolGateway,
-			]);
 		const resolvedSelection: ExternalConnectorResolvedSelection = Object.freeze({
 			descriptor: registered.descriptor,
 			connector: registered.selectedConnector,
 			capabilitySnapshot: verified.value.snapshot,
 			capabilityTruth: verified.value.truth,
 		});
-		externalConnectorToolGatewayConsumerBinders.set(resolvedSelection, bindToolGatewayConsumer);
+		if (verified.value.snapshot.toolGateway) {
+			if (registered.implementation.bindToolGatewayConsumer === undefined) {
+				return Result.err(
+					new FoundationError(
+						"external_connector_not_ready",
+						"External connector Tool Gateway consumer authority is not ready.",
+					),
+				);
+			}
+			const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId) =>
+				Reflect.apply(registered.implementation.bindToolGatewayConsumer!, registered.connector, [
+					attemptId,
+					executeToolGateway,
+				]);
+			externalConnectorToolGatewayConsumerBinders.set(resolvedSelection, bindToolGatewayConsumer);
+		}
 		return Result.ok(resolvedSelection);
 	}
 
@@ -836,7 +1081,11 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		const connectors: readonly PendingConnector[] = [
-			...Array.from(this.#connectors.values(), ({ connector, implementation }) => ({ connector, implementation })),
+			...Array.from(this.#connectors.values(), ({ connector, implementation, implementationProof }) => ({
+				connector,
+				implementation,
+				implementationProof,
+			})),
 			...this.#pendingRegistrations.values(),
 		];
 		this.#connectors.clear();

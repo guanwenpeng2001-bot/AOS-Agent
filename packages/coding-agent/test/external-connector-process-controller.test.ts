@@ -14,6 +14,7 @@ import {
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessLaunchRequest,
 } from "../src/core/external-connector-supervisor.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../src/core/runtime-clock.ts";
 
 function request(operationNonce = "production-nonce"): ExternalConnectorProcessLaunchRequest {
 	return {
@@ -106,6 +107,40 @@ describe("production External Connector process controller", () => {
 				processIdentity: handle.identity,
 			});
 			rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("fails closed when identity inspection consumes the bounded termination deadline", async () => {
+		let monotonicCalls = 0;
+		const overrunClock: RuntimeClock = {
+			wallNow: () => SYSTEM_RUNTIME_CLOCK.wallNow(),
+			monotonicNow: () => (monotonicCalls++ < 3 ? 0 : 6),
+			setTimeout: (callback, delayMs) => SYSTEM_RUNTIME_CLOCK.setTimeout(callback, delayMs),
+			clearTimeout: (handle) => SYSTEM_RUNTIME_CLOCK.clearTimeout(handle),
+			unrefTimeout: (handle) => SYSTEM_RUNTIME_CLOCK.unrefTimeout(handle),
+			queueMicrotask: (callback) => SYSTEM_RUNTIME_CLOCK.queueMicrotask(callback),
+		};
+		const controller = new ProductionExternalConnectorProcessController({
+			process: fixtureProcess(),
+			clock: overrunClock,
+		});
+		const launchRequest = request("bounded-helper-overrun-nonce");
+		const handle = await controller.launch(launchRequest);
+		try {
+			await handle.activate();
+			await expect(
+				handle.forceTerminateBounded({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: handle.identity,
+				}, { deadlineMs: 5 }),
+			).resolves.toBe("ambiguous");
+			expect(processIsLive(handle.identity.pid)).toBe(true);
+		} finally {
+			handle.forceTerminate({
+				operationNonce: launchRequest.operationNonce,
+				processIdentity: handle.identity,
+			});
+			await waitForExit(handle);
 		}
 	}, 30_000);
 

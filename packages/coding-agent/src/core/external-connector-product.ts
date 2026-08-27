@@ -702,7 +702,9 @@ export async function executePreparedExternalConnectorProductRun(
 	});
 	let releaseToolGatewayConsumer: (() => void) | undefined;
 	try {
-		releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(selected, epoch.attemptId);
+		if (selected.capabilitySnapshot.toolGateway) {
+			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(selected, epoch.attemptId);
+		}
 		const started = await settlement.startDispatch({
 			provider: selected.connector,
 			dispatch,
@@ -1098,10 +1100,12 @@ export async function recoverExternalConnectorProductRun(
 		});
 		let releaseToolGatewayConsumer: (() => void) | undefined;
 		try {
-			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
-				prepared.selected,
-				identity.attemptId,
-			);
+			if (prepared.selected.capabilitySnapshot.toolGateway) {
+				releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
+					prepared.selected,
+					identity.attemptId,
+				);
+			}
 			const started = await settlement.startDispatch({
 				provider: prepared.selected.connector,
 				dispatch: prepared.dispatch,

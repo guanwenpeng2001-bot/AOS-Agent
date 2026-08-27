@@ -360,7 +360,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 	},
 	externalConnectorRegistry: (context, toolGateway) => {
 		requireCanonicalContext(context);
-		if (toolGateway === undefined || toolGateway !== canonicalToolGateway) {
+		if (toolGateway === undefined || toolGateway === canonicalToolGateway) {
 			throw new Error("main RPC External registry did not share the canonical Tool Gateway");
 		}
 		return createConnectorRegistry(toolGateway);

@@ -442,6 +442,7 @@ async function fixture(
 	const connector = new DurableExternalAgentConnector({
 		providerId,
 		capability: snapshot,
+		capabilityProbe: async () => Result.ok(snapshot),
 		store,
 		driver,
 		supervision: supervision.options,
@@ -475,6 +476,7 @@ function restartedConnector(value: Fixture): {
 		connector: new DurableExternalAgentConnector({
 			providerId,
 			capability: value.snapshot,
+			capabilityProbe: async () => Result.ok(value.snapshot),
 			store: value.store,
 			driver,
 			supervision: value.supervision.options,

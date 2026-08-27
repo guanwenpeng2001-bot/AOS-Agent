@@ -17,7 +17,7 @@ import { validateWorkerReceipt, type WorkerReceipt } from "./foundation/results.
 import type { Result as ResultValue } from "./result.ts";
 import { Result } from "./result.ts";
 
-export type ToolGatewayRouteKind = "local" | "sandbox" | "external";
+export type ToolGatewayRouteKind = "local" | "mcp" | "sandbox" | "external";
 
 /** Route identity of one tool exposed by one gateway provider. */
 export interface ToolGatewayRoute {
@@ -46,6 +46,26 @@ export interface ToolGatewayProvider {
 export interface FoundationToolGatewayOptions {
 	readonly gatewayId: string;
 	readonly providers: readonly ToolGatewayProvider[];
+}
+
+/** Read-only route catalog exposed by a composed Foundation gateway. */
+export interface ToolGatewayRouteCatalog {
+	getRouteCatalog(): readonly ToolGatewayRoute[];
+}
+
+/** Composition-owned authorization invoked after route selection and before provider effect. */
+export interface ToolGatewayRequestAuthorizer {
+	authorize(
+		request: ToolGatewayRequest,
+		route: ToolGatewayRoute,
+		options?: { signal?: AbortSignal },
+	): Promise<ResultValue<true, FoundationError>>;
+}
+
+export interface FoundationToolGatewayAuthorityOptions {
+	readonly gateway: ToolGateway;
+	readonly routeCatalog?: readonly ToolGatewayRoute[];
+	readonly authorizer?: ToolGatewayRequestAuthorizer;
 }
 
 export interface ConsumerToolGatewayFakeOptions {
@@ -139,7 +159,7 @@ export function createConsumerToolGatewayFake(options: ConsumerToolGatewayFakeOp
  * request with the frozen exact-shape schema, routes by `(namespace, toolName)`
  * and never falls through to a broader default when no route matches.
  */
-export class FoundationToolGateway implements ToolGateway, FoundationProvider {
+export class FoundationToolGateway implements ToolGateway, FoundationProvider, ToolGatewayRouteCatalog {
 	readonly schemaVersion = 1 as const;
 	readonly providerId: string;
 	readonly providerClass = "gateway" as const;
@@ -150,14 +170,18 @@ export class FoundationToolGateway implements ToolGateway, FoundationProvider {
 	constructor(options: FoundationToolGatewayOptions) {
 		if (options.gatewayId.length === 0) throw new TypeError("gatewayId must not be empty");
 		this.providerId = options.gatewayId;
-		this.providers = options.providers;
-		this.routes = options.providers.flatMap((provider) => provider.routes);
+		this.providers = Object.freeze([...options.providers]);
+		this.routes = Object.freeze(options.providers.flatMap((provider) => provider.routes).map((route) => Object.freeze({ ...route })));
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		const gateway: FoundationProviderCapability = { schemaVersion: 1, id: "tool_gateway", version: 1 };
 		const providerCapabilities = await Promise.all(this.providers.map((provider) => provider.capabilities()));
 		return [gateway, ...providerCapabilities.flat()];
+	}
+
+	getRouteCatalog(): readonly ToolGatewayRoute[] {
+		return this.routes;
 	}
 
 	async execute(
@@ -198,6 +222,97 @@ export class FoundationToolGateway implements ToolGateway, FoundationProvider {
 	async dispose(): Promise<void> {
 		await Promise.all(this.providers.map((provider) => provider.dispose()));
 	}
+}
+
+/**
+ * Foundation authority used by composition roots. It owns route selection and
+ * invokes the composition authorizer before delegating to the underlying
+ * gateway, so provider effects cannot occur before binding/policy checks.
+ */
+export class FoundationToolGatewayAuthority implements ToolGateway, FoundationProvider, ToolGatewayRouteCatalog {
+	readonly schemaVersion = 1 as const;
+	readonly providerId: string;
+	readonly providerClass = "gateway" as const;
+
+	private readonly gateway: ToolGateway;
+	private readonly routes: readonly ToolGatewayRoute[];
+	private authorizer: ToolGatewayRequestAuthorizer | undefined;
+
+	constructor(options: FoundationToolGatewayAuthorityOptions) {
+		this.gateway = options.gateway;
+		this.providerId = options.gateway.providerId;
+		this.authorizer = options.authorizer;
+		const catalog = options.gateway as ToolGateway & Partial<ToolGatewayRouteCatalog>;
+		const routes = options.routeCatalog ?? (typeof catalog.getRouteCatalog === "function" ? catalog.getRouteCatalog() : []);
+		this.routes = Object.freeze(routes.map((route) => Object.freeze({ ...route })));
+	}
+
+	setAuthorizer(authorizer: ToolGatewayRequestAuthorizer | undefined): void {
+		this.authorizer = authorizer;
+	}
+
+	getRouteCatalog(): readonly ToolGatewayRoute[] {
+		return this.routes;
+	}
+
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
+		return this.gateway.capabilities();
+	}
+
+	async execute(
+		request: ToolGatewayRequest,
+		options: { signal?: AbortSignal } = {},
+	): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
+		const checked = validateToolGatewayRequest(request);
+		if (!checked.ok) return checked;
+		const value = checked.value;
+		const namespace = value.namespace ?? "";
+		const matches = this.routes.filter(
+			(route) => (route.namespace ?? "") === namespace && route.toolName === value.toolName,
+		);
+		if (matches.length !== 1) {
+			return Result.err(
+				new FoundationError(
+					"invalid_identifier",
+					matches.length === 0
+						? `no tool route matches ${JSON.stringify(namespace)}/${value.toolName}`
+						: `tool route ${JSON.stringify(namespace)}/${value.toolName} is ambiguous`,
+				),
+			);
+		}
+		const route = matches[0]!;
+		if (value.context.providerId !== undefined && value.context.providerId !== route.providerId) {
+			return Result.err(
+				new FoundationError("invalid_identifier", "tool request provider identity does not match its route"),
+			);
+		}
+		const authorizer = this.authorizer;
+		if (authorizer === undefined) {
+			return Result.err(
+				new FoundationError("external_tool_route_denied", "External connector Tool Gateway authority is not ready"),
+			);
+		}
+		let authorized: ResultValue<true, FoundationError>;
+		try {
+			authorized = await authorizer.authorize(value, route, options);
+		} catch {
+			return Result.err(
+				new FoundationError("external_tool_route_denied", "External connector Tool Gateway policy denied the request"),
+			);
+		}
+		if (!authorized.ok) return authorized;
+		return this.gateway.execute({ ...value, context: { ...value.context, providerId: route.providerId } }, options);
+	}
+
+	async dispose(): Promise<void> {
+		await this.gateway.dispose();
+	}
+}
+
+export function createFoundationToolGatewayAuthority(
+	options: FoundationToolGatewayAuthorityOptions,
+): FoundationToolGatewayAuthority {
+	return new FoundationToolGatewayAuthority(options);
 }
 
 export function createFoundationToolGateway(options: FoundationToolGatewayOptions): FoundationToolGateway {

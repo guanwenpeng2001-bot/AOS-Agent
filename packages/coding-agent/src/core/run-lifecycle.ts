@@ -20,6 +20,8 @@ import {
 	createDurableEvent,
 	type DurableEventEnvelope,
 	FoundationError,
+	EXTERNAL_ERROR_CODES,
+	EXTERNAL_ERROR_MESSAGES,
 	type FoundationFactRecord,
 	FoundationLedgerState,
 	type FoundationRecord,
@@ -31,6 +33,7 @@ import {
 	validateAttemptReceipt,
 	validateRunReceipt as validateCanonicalRunReceipt,
 	validateTaskResult,
+	type ExternalErrorCode,
 } from "@aos-agent/agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
@@ -651,15 +654,26 @@ export type AutomationErrorCode =
 	| "audit_replay_incomplete"
 	| "external_connector_unavailable"
 	| "external_protocol_unsupported"
+	| "external_capability_mismatch"
+	| "external_binding_invalid"
 	| "external_mapping_conflict"
 	| "external_resume_unsupported"
-	| "external_binding_invalid"
-	| "external_capability_mismatch"
 	| "external_event_invalid"
-	| "external_resource_limit_exceeded"
-	| "external_path_outside_workspace"
 	| "external_tool_route_denied"
+	| "external_path_outside_workspace"
+	| "external_review_required"
+	| "external_review_rejected"
+	| "external_credential_unavailable"
 	| "external_terminal_ambiguous"
+	| "external_connector_config_invalid"
+	| "external_connector_not_ready"
+	| "external_connector_readiness_stale"
+	| "external_connector_circuit_open"
+	| "external_connector_dependency_missing"
+	| "external_connector_executable_untrusted"
+	| "external_resource_limit_exceeded"
+	| "external_frame_oversize"
+	| "external_process_identity_ambiguous"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
 	// contract instead of degrading them into generic model failures.
@@ -756,6 +770,7 @@ export function createAutomationError(code: AutomationErrorCode, message: string
 }
 
 export function isAutomationErrorCode(value: unknown): value is AutomationErrorCode {
+	if (typeof value === "string" && EXTERNAL_ERROR_CODES.includes(value as ExternalErrorCode)) return true;
 	return (
 		value === "unsupported_protocol_version" ||
 		value === "host_not_initialized" ||
@@ -779,17 +794,6 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_scope_unavailable" ||
 		value === "audit_run_not_found" ||
 		value === "audit_replay_incomplete" ||
-		value === "external_connector_unavailable" ||
-		value === "external_protocol_unsupported" ||
-		value === "external_mapping_conflict" ||
-		value === "external_resume_unsupported" ||
-		value === "external_binding_invalid" ||
-		value === "external_capability_mismatch" ||
-		value === "external_event_invalid" ||
-		value === "external_resource_limit_exceeded" ||
-		value === "external_path_outside_workspace" ||
-		value === "external_tool_route_denied" ||
-		value === "external_terminal_ambiguous" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||
 		value === "capability_approval_required" ||
@@ -2267,16 +2271,12 @@ export function serializePublicContextDrift(drift: ContextSourceDrift): PublicCo
  * file paths, so it cannot serve as this public serialization boundary.
  */
 export function serializePublicAutomationError(error: AutomationError, message?: string): AutomationError {
+	const publicMessage = Object.hasOwn(EXTERNAL_ERROR_MESSAGES, error.code)
+		? EXTERNAL_ERROR_MESSAGES[error.code as ExternalErrorCode]
+		: message ?? "Run failed.";
 	return createAutomationError(
 		error.code,
-		message ??
-			(error.code === "external_event_invalid"
-				? "External connector emitted invalid supervised output."
-				: error.code === "external_resource_limit_exceeded"
-					? "External connector exceeded a supervised resource limit."
-					: error.code === "external_tool_route_denied"
-						? "External connector Tool Gateway policy or route denied the request."
-					: "Run failed."),
+		publicMessage,
 		error.retryable,
 	);
 }

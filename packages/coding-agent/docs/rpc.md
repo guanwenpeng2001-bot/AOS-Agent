@@ -2757,15 +2757,26 @@ Error codes:
 | `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
 | `external_connector_unavailable` | No trusted External Connector registry is composed, or the selected Connector is not registered | no |
 | `external_protocol_unsupported` | The selected Connector protocol or version is not supported by the trusted Host | no |
+| `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
+| `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
 | `external_mapping_conflict` | Mapping history already conflicts with the persisted External Connector Attempt | no |
 | `external_resume_unsupported` | The source External Connector run cannot be restored as the same durable Attempt | no |
-| `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
-| `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
 | `external_event_invalid` | The Connector emitted invalid or out-of-order supervised output | no |
-| `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
-| `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
 | `external_tool_route_denied` | Tool Gateway policy or route denied a Connector-originated tool request | no |
+| `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
+| `external_review_required` | The Connector operation requires an explicit review decision before execution | no |
+| `external_review_rejected` | The Connector operation was rejected by the required review decision | no |
+| `external_credential_unavailable` | A trusted credential target required by the Connector is unavailable | no |
 | `external_terminal_ambiguous` | Vendor terminal lookup returned ambiguous state; operator reconciliation is required | no |
+| `external_connector_config_invalid` | The trusted Connector configuration is invalid or violates the public registration contract | no |
+| `external_connector_not_ready` | The trusted Connector has not completed the readiness checks required for this operation | no |
+| `external_connector_readiness_stale` | The Connector readiness snapshot is stale and must be refreshed before execution | no |
+| `external_connector_circuit_open` | The Connector retry circuit is open after recent bounded failures | no |
+| `external_connector_dependency_missing` | A trusted dependency required by the Connector is missing or unavailable | no |
+| `external_connector_executable_untrusted` | The Connector executable or module is not from a trusted target | no |
+| `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
+| `external_frame_oversize` | A Connector protocol frame exceeded the configured byte limit | no |
+| `external_process_identity_ambiguous` | A Connector process identity could not be matched uniquely for safe recovery or termination | no |
 | `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 

@@ -1,6 +1,7 @@
 import {
 	createConnectorCapabilitySnapshot,
 	InMemorySessionStorage,
+	Result,
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
@@ -232,6 +233,7 @@ async function fixture(options: {
 	const connector = createDurableExternalAgentConnector({
 		providerId: PROVIDER_ID,
 		capability: snapshot,
+		capabilityProbe: async () => Result.ok(snapshot),
 		store,
 		driver,
 		supervision: {
@@ -565,6 +567,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const restarted = createDurableExternalAgentConnector({
 			providerId: PROVIDER_ID,
 			capability: capability(),
+			capabilityProbe: async () => Result.ok(capability()),
 			store: new SessionExternalConnectorDurableStore(new SessionLedger(current.session, { writer: current.t5.writer })),
 			driver: restartedDriver,
 			supervision: restartedSupervision.options,

@@ -1,7 +1,7 @@
 /** Host-private, process-bound supervision for the current External Connector path. */
 
 import { Buffer } from "node:buffer";
-import { FoundationError } from "@aos-agent/agent-core";
+import { EXTERNAL_ERROR_MESSAGES, FoundationError } from "@aos-agent/agent-core";
 import { LockedAtomicFileStorage } from "./control-plane-atomic-storage.ts";
 import { isExternalConnectorMappingIdentifier } from "./external-session-mapping.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
@@ -19,6 +19,8 @@ export type ExternalConnectorSupervisorErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
 	| "external_tool_route_denied"
+	| "external_frame_oversize"
+	| "external_process_identity_ambiguous"
 	| "terminal_evidence_invalid"
 	| "tool_gateway_ambiguous"
 	| "tool_gateway_callback_failed"
@@ -72,11 +74,25 @@ export interface ExternalConnectorProcessHandle {
 	activate(options?: { readonly signal?: AbortSignal }): Promise<void>;
 	/** Immediately compare the nonce and full live identity before terminating the contained process. */
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult;
+	/**
+	 * Host-bounded termination proof. Implementations must include identity inspection and
+	 * containment checks in the supplied deadline and return an ambiguous result when it
+	 * cannot complete in time.
+	 */
+	readonly forceTerminateBounded: (
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	) => Promise<ExternalConnectorProcessTerminationResult>;
 }
 
 export interface ExternalConnectorProcessTerminationRequest {
 	readonly operationNonce: string;
 	readonly processIdentity: ExternalConnectorProcessIdentity;
+}
+
+export interface ExternalConnectorProcessTerminationOptions {
+	readonly deadlineMs: number;
+	readonly signal?: AbortSignal;
 }
 
 export type ExternalConnectorProcessTerminationResult =
@@ -570,6 +586,7 @@ function validProcessHandle(
 		isExternalConnectorProcessIdentity(value.identity) &&
 		typeof value.activate === "function" &&
 		typeof value.forceTerminate === "function" &&
+		typeof value.forceTerminateBounded === "function" &&
 		isRecord(value.exited) &&
 		typeof value.exited.then === "function"
 	);
@@ -1155,32 +1172,74 @@ export class ExternalConnectorBoundedSupervisor {
 		this.#totalBytes += bytes;
 	}
 
+	#containmentOperation: Promise<boolean> | undefined;
+
 	async #forceAndWait(): Promise<boolean> {
+		if (this.#containmentOperation !== undefined) return this.#containmentOperation;
+		const containment = this.#forceAndWaitWithinDeadline();
+		this.#containmentOperation = containment;
+		return containment;
+	}
+
+	async #forceAndWaitWithinDeadline(): Promise<boolean> {
 		const handle = this.#processHandle;
 		const state = this.#privateState;
 		if (handle === undefined || state === undefined) return false;
 		this.#phase = "disposing";
-		if (!this.#forcedTermination) {
-			this.#forcedTermination = true;
-			let termination: ExternalConnectorProcessTerminationResult;
-			try {
-				termination = handle.forceTerminate(
-					Object.freeze({
+		const deadline = this.#deadlines.dispose;
+		const deadlineStartedAt = this.#clock.monotonicNow();
+		const deadlineAt = deadlineStartedAt + deadline.hardMs;
+		const timer = new SegmentTimer(this.#clock, deadline);
+		const remainingMs = (): number => Math.max(0, deadlineAt - this.#clock.monotonicNow());
+		try {
+			if (!this.#forcedTermination) {
+				this.#forcedTermination = true;
+				let termination: ExternalConnectorProcessTerminationResult;
+				try {
+					const request = Object.freeze({
 						operationNonce: state.reference.operationNonce,
 						processIdentity: cloneIdentity(state.processIdentity),
-					}),
-				);
-			} catch {
+					});
+					const availableMs = Math.floor(remainingMs());
+					if (availableMs <= 0) {
+						this.#quarantined = true;
+						return false;
+					}
+					const boundedController = new AbortController();
+					const bounded = handle.forceTerminateBounded(request, {
+						deadlineMs: availableMs,
+						signal: boundedController.signal,
+					});
+					const result = await Promise.race<
+						| { readonly kind: "result"; readonly value: ExternalConnectorProcessTerminationResult }
+						| { readonly kind: "timeout" }
+					>([
+						bounded.then((value) => ({ kind: "result", value }) as const),
+						timer.expired.then(() => ({ kind: "timeout" }) as const),
+					]);
+					if (result.kind === "timeout") {
+						boundedController.abort();
+						void bounded.catch(() => undefined);
+						this.#quarantined = true;
+						return false;
+					}
+					termination = result.value;
+				} catch {
+					this.#quarantined = true;
+					return false;
+				}
+				if (
+					remainingMs() <= 0 ||
+					(termination !== "termination_requested" && termination !== "already_exited")
+				) {
+					this.#quarantined = true;
+					return false;
+				}
+			}
+			if (remainingMs() <= 0) {
 				this.#quarantined = true;
 				return false;
 			}
-			if (termination !== "termination_requested" && termination !== "already_exited") {
-				this.#quarantined = true;
-				return false;
-			}
-		}
-		const timer = new SegmentTimer(this.#clock, this.#deadlines.dispose);
-		try {
 			const exited = await Promise.race([
 				handle.exited.then(
 					() => true,
@@ -1188,9 +1247,10 @@ export class ExternalConnectorBoundedSupervisor {
 				),
 				timer.expired.then(() => false),
 			]);
-			this.#cleaned = exited;
-			this.#quarantined = !exited;
-			return exited;
+			const withinDeadline = remainingMs() > 0;
+			this.#cleaned = exited && withinDeadline;
+			this.#quarantined = !this.#cleaned;
+			return this.#cleaned;
 		} finally {
 			timer.close();
 		}
@@ -1281,16 +1341,19 @@ export function externalConnectorSupervisorFailure(error: unknown): FoundationEr
 		if (error.code === "external_tool_route_denied") {
 			return new FoundationError(
 				"external_tool_route_denied",
-				"External connector Tool Gateway policy or route denied the request.",
+				EXTERNAL_ERROR_MESSAGES.external_tool_route_denied,
 				{ details: { segment: error.segment } },
 			);
 		}
-		if (error.code === "external_event_invalid" || error.code === "external_resource_limit_exceeded") {
+		if (
+			error.code === "external_event_invalid" ||
+			error.code === "external_resource_limit_exceeded" ||
+			error.code === "external_frame_oversize" ||
+			error.code === "external_process_identity_ambiguous"
+		) {
 			return new FoundationError(
 				error.code,
-				error.code === "external_event_invalid"
-					? "External connector emitted invalid supervised output."
-					: "External connector exceeded a supervised resource limit.",
+				EXTERNAL_ERROR_MESSAGES[error.code],
 				{ details: { segment: error.segment } },
 			);
 		}

@@ -7,6 +7,7 @@
  */
 
 import {
+	EXTERNAL_ERROR_MESSAGES,
 	FoundationError,
 	validateArtifactRef,
 	validatePublicExecutionError,
@@ -172,20 +173,92 @@ const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
 		category: "unknown",
 	},
 	external_event_invalid: {
-		message: "External connector emitted invalid supervised output.",
+		message: EXTERNAL_ERROR_MESSAGES.external_event_invalid,
 		category: "side_effect_unknown",
 	},
+	external_connector_unavailable: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_unavailable,
+		category: "transient",
+	},
 	external_protocol_unsupported: {
-		message: "External connector protocol is unsupported.",
+		message: EXTERNAL_ERROR_MESSAGES.external_protocol_unsupported,
+		category: "parameter",
+	},
+	external_capability_mismatch: {
+		message: EXTERNAL_ERROR_MESSAGES.external_capability_mismatch,
+		category: "parameter",
+	},
+	external_binding_invalid: {
+		message: EXTERNAL_ERROR_MESSAGES.external_binding_invalid,
+		category: "parameter",
+	},
+	external_mapping_conflict: {
+		message: EXTERNAL_ERROR_MESSAGES.external_mapping_conflict,
+		category: "side_effect_unknown",
+	},
+	external_resume_unsupported: {
+		message: EXTERNAL_ERROR_MESSAGES.external_resume_unsupported,
 		category: "parameter",
 	},
 	external_resource_limit_exceeded: {
-		message: "External connector exceeded a supervised resource limit.",
+		message: EXTERNAL_ERROR_MESSAGES.external_resource_limit_exceeded,
 		category: "side_effect_unknown",
 	},
 	external_tool_route_denied: {
-		message: "External connector Tool Gateway policy or route denied the request.",
+		message: EXTERNAL_ERROR_MESSAGES.external_tool_route_denied,
 		category: "permission",
+	},
+	external_path_outside_workspace: {
+		message: EXTERNAL_ERROR_MESSAGES.external_path_outside_workspace,
+		category: "parameter",
+	},
+	external_review_required: {
+		message: EXTERNAL_ERROR_MESSAGES.external_review_required,
+		category: "permission",
+	},
+	external_review_rejected: {
+		message: EXTERNAL_ERROR_MESSAGES.external_review_rejected,
+		category: "permission",
+	},
+	external_credential_unavailable: {
+		message: EXTERNAL_ERROR_MESSAGES.external_credential_unavailable,
+		category: "transient",
+	},
+	external_terminal_ambiguous: {
+		message: EXTERNAL_ERROR_MESSAGES.external_terminal_ambiguous,
+		category: "side_effect_unknown",
+	},
+	external_connector_config_invalid: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_config_invalid,
+		category: "parameter",
+	},
+	external_connector_not_ready: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_not_ready,
+		category: "transient",
+	},
+	external_connector_readiness_stale: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_readiness_stale,
+		category: "transient",
+	},
+	external_connector_circuit_open: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_circuit_open,
+		category: "transient",
+	},
+	external_connector_dependency_missing: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_dependency_missing,
+		category: "transient",
+	},
+	external_connector_executable_untrusted: {
+		message: EXTERNAL_ERROR_MESSAGES.external_connector_executable_untrusted,
+		category: "permission",
+	},
+	external_frame_oversize: {
+		message: EXTERNAL_ERROR_MESSAGES.external_frame_oversize,
+		category: "parameter",
+	},
+	external_process_identity_ambiguous: {
+		message: EXTERNAL_ERROR_MESSAGES.external_process_identity_ambiguous,
+		category: "side_effect_unknown",
 	},
 	run_deadline_exceeded: {
 		message: "External connector run deadline was exceeded.",

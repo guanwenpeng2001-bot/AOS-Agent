@@ -7,13 +7,13 @@ import {
 	SessionLedger,
 	SessionT5Ledger,
 	createConnectorCapabilitySnapshot,
+	createFoundationToolGatewayAuthority,
 	createFoundationToolGateway,
 	createLocalToolGatewayProvider,
 	fingerprintFoundationValue,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
-	type ExternalAgentConnector,
 	type FoundationProviderExecutionOptions,
 	type FoundationJsonValue,
 	type Result as ResultValue,
@@ -22,14 +22,17 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import type { ExternalAgentConnector } from "../src/index.ts";
 import {
+	authorizePolicyOperation,
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
+import { externalToolPolicyOperation } from "../src/core/foundation-control-plane.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
-} from "../src/core/external-agent-registry.ts";
+} from "../src/index.ts";
 import {
 	executeExternalConnectorProductRun,
 	persistExternalConnectorProductRunAfterAcceptance,
@@ -295,7 +298,12 @@ function createSupportedConnector(
 	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${fixtureId}` });
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
-	const capabilityProbe = options.capabilityProbe;
+	const capabilityProbe =
+		options.capabilityProbe ??
+		(async (
+			probeSnapshot: ConnectorCapabilitySnapshot,
+			_options?: FoundationProviderExecutionOptions,
+		): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> => Result.ok(probeSnapshot));
 	const supervisionOptions =
 		options.supervisionDeadlines === undefined
 			? supervision.options
@@ -306,12 +314,8 @@ function createSupportedConnector(
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
-		...(capabilityProbe === undefined
-			? {}
-			: {
-					capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) =>
-						capabilityProbe(snapshot, probeOptions),
-				}),
+		capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) =>
+			capabilityProbe(snapshot, probeOptions),
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver,
 		supervision: supervisionOptions,
@@ -461,6 +465,86 @@ function expectSafeRegistryProbeFailure(
 }
 
 describe("ExternalConnectorRegistry supervised SPI", () => {
+	it("denies a PolicyBinding workspace path before the gateway provider effect", async () => {
+		let providerEffects = 0;
+		const gateway = createFoundationToolGateway({
+			gatewayId: "zeta-foundation-tool-gateway-policy-deny",
+			providers: [
+				createLocalToolGatewayProvider({
+					providerId: PROVIDER_ID,
+					routes: [{
+						kind: "local",
+						namespace: "workspace",
+						toolName: "workspace.read",
+						providerId: PROVIDER_ID,
+						revision: 1,
+					}],
+					invoke: async (request) => {
+						providerEffects += 1;
+						return Result.ok({
+							schemaVersion: 1,
+							toolCallId: request.toolCallId,
+							toolName: request.toolName,
+							ok: true,
+							sideEffectState: "none",
+						});
+					},
+				}),
+			],
+		});
+		const profile: ExecutionPolicyProfile = {
+			id: "external-registry-path-deny",
+			enforcement: "host",
+			defaultAction: "allow",
+			workspace: { read: [], write: [], deny: ["workspace"] },
+			process: { action: "deny", inheritEnvironment: false, allowEnvironment: [] },
+			network: { action: "deny", allowDestinations: [] },
+			credentials: { action: "deny", allowNames: [] },
+			approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny" },
+		};
+		const resolved = resolveExecutionPolicyProfile({
+			profiles: { [profile.id]: profile },
+			defaultProfile: profile.id,
+			workspaceIdentity: "workspace-zeta",
+			runId: "run-zeta-policy-deny",
+			createdAt: NOW,
+		});
+		if (!resolved.ok) throw resolved.error;
+		const authority = createFoundationToolGatewayAuthority({ gateway });
+		authority.setAuthorizer({
+			authorize: async (request, route) => {
+				const decision = authorizePolicyOperation({
+					profile: resolved.profile,
+					binding: resolved.binding,
+					operation: externalToolPolicyOperation(request, route),
+				});
+				return decision.outcome === "allow"
+					? Result.ok(true)
+					: Result.err(new FoundationError("external_tool_route_denied", "External connector path denied by PolicyBinding"));
+			},
+		});
+
+		const result = await authority.execute({
+			schemaVersion: 1,
+			toolCallId: "tool-call-policy-deny",
+			toolName: "workspace.read",
+			namespace: "workspace",
+			originalArguments: { path: "secrets/denied.txt" },
+			context: {
+				schemaVersion: 1,
+				bindingId: "binding-policy-deny",
+				bindingEpochId: "epoch-policy-deny",
+				taskId: "task-policy-deny",
+				providerId: PROVIDER_ID,
+				attemptId: "attempt-policy-deny",
+				operationId: "run-zeta-policy-deny",
+			},
+		});
+
+		expect(result).toMatchObject({ ok: false, error: { code: "external_tool_route_denied" } });
+		expect(providerEffects).toBe(0);
+	});
+
 	it("projects unsupported Connector resume for a terminal source without a second vendor effect", async () => {
 		const fixture = createSupportedConnector();
 		const registry = createExternalConnectorRegistry();
@@ -502,34 +586,36 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await registry.dispose();
 	});
 
-	it("rejects an arbitrary connector before probe and leaves its provider slot available", async () => {
-		const arbitrary = new ArbitraryConnector();
-		const arbitraryDescriptor = descriptor(arbitrary.snapshot);
+	it("registers a structurally conforming public Connector without private factory proof", async () => {
+		const prepared = new ArbitraryConnector("third-party.prepared-connector");
+		const probed = new ArbitraryConnector("third-party.probed-connector");
+		const preparedDescriptor = descriptor(prepared.snapshot);
+		const probedDescriptor = descriptor(probed.snapshot);
 		const registry = createExternalConnectorRegistry();
 
 		expect(
 			registry.registerPrepared(
-				{ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true },
-				arbitrary.snapshot,
+				{ descriptor: preparedDescriptor, connector: prepared, trusted: true },
+				prepared.snapshot,
 			),
-		).toMatchObject({ ok: false });
-		expect(
-			await registry.register({ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true }),
-		).toMatchObject({
-			ok: false,
+		).toMatchObject({ ok: true });
+		expect(await registry.register({ descriptor: probedDescriptor, connector: probed, trusted: true })).toMatchObject({
+			ok: true,
 		});
-		expect(arbitrary.probeCalls).toBe(0);
-		expect(arbitrary.disposeCalls).toBe(0);
-		expect(registry.list()).toEqual([]);
+		expect(prepared.probeCalls).toBe(0);
+		expect(probed.probeCalls).toBe(1);
+		expect(registry.list()).toEqual([preparedDescriptor, probedDescriptor]);
 
-		const supported = createSupportedConnector();
-		expect(await registry.register(registration(supported))).toMatchObject({ ok: true });
-		expect(registry.list()).toEqual([arbitraryDescriptor]);
-		expect(await registry.select(selection(supported.snapshot))).toMatchObject({ ok: true });
+		const selected = await registry.select(selection(probed.snapshot));
+		expect(selected).toMatchObject({ ok: true, value: { descriptor: probedDescriptor } });
+		if (selected.ok) {
+			expect(selected.value.connector.providerId).toBe(probed.providerId);
+			expect("bindToolGatewayConsumer" in selected.value).toBe(false);
+		}
 
 		await registry.dispose();
-		expect(supported.driver.disposeCalls).toBe(1);
-		expect(supported.supervision.processController.launchCalls).toBe(0);
+		expect(prepared.disposeCalls).toBe(1);
+		expect(probed.disposeCalls).toBe(1);
 	});
 
 	it("rejects a factory-created connector whose lifecycle implementation changes before registration", async () => {

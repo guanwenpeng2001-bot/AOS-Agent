@@ -5,6 +5,7 @@ import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
 	createAttempt as createFoundationAttempt,
+	EXTERNAL_ERROR_MESSAGES,
 	fingerprintFoundationValue,
 	FoundationError,
 	Result,
@@ -79,7 +80,7 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	readonly providerId: string;
 	readonly capability: ConnectorCapabilitySnapshot;
 	/** @internal Trusted Host probe used for registry admission and lifecycle truth rechecks. */
-	readonly capabilityProbe?: (
+	readonly capabilityProbe: (
 		options?: FoundationProviderExecutionOptions,
 	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 	readonly store: ExternalConnectorDurableStore;
@@ -263,6 +264,11 @@ export function getHostSupervisedExternalAgentConnectorImplementation(
 	return proof.implementation;
 }
 
+/** @internal Distinguishes a changed factory-created instance from a public SPI implementation. */
+export function hasHostSupervisedExternalAgentConnectorProof(value: unknown): boolean {
+	return typeof value === "object" && value !== null && HOST_SUPERVISED_EXTERNAL_CONNECTORS.has(value);
+}
+
 /** @internal Runtime proof minted only by the Host-supervised durable connector factory. */
 export function isHostSupervisedExternalAgentConnector(value: unknown): value is ExternalAgentConnector {
 	return getHostSupervisedExternalAgentConnectorImplementation(value) !== undefined;
@@ -323,6 +329,8 @@ function supervisedFailureEvidence(
 		| "external_event_invalid"
 		| "external_resource_limit_exceeded"
 		| "external_tool_route_denied"
+		| "external_frame_oversize"
+		| "external_process_identity_ambiguous"
 		| "run_deadline_exceeded"
 		| "side_effect_unknown";
 	let message: string;
@@ -352,13 +360,13 @@ function supervisedFailureEvidence(
 		category = "side_effect_unknown";
 	} else if (
 		error instanceof ExternalConnectorSupervisorError &&
-		(error.code === "external_event_invalid" || error.code === "external_resource_limit_exceeded")
+		(error.code === "external_event_invalid" ||
+			error.code === "external_resource_limit_exceeded" ||
+			error.code === "external_frame_oversize" ||
+			error.code === "external_process_identity_ambiguous")
 	) {
 		code = error.code;
-		message =
-			error.code === "external_event_invalid"
-				? "External connector emitted invalid supervised output."
-				: "External connector exceeded a supervised resource limit.";
+		message = EXTERNAL_ERROR_MESSAGES[error.code];
 		category = "side_effect_unknown";
 	} else {
 		return undefined;
@@ -411,6 +419,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			providerClass: "external_connector",
 		});
 		if (!checked.ok) throw checked.error;
+		if (typeof options.capabilityProbe !== "function") {
+			throw new TypeError("External connector requires an explicit capability probe.");
+		}
 		if (
 			options.supervision === undefined ||
 			(options.supervision.containment !== "process_group" && options.supervision.containment !== "job_object") ||
@@ -423,7 +434,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			throw externalFailure("invalid_correlation", "External connector supervision is invalid");
 		this.providerId = options.providerId;
 		this.#capability = checked.value;
-		this.#capabilityProbe = options.capabilityProbe ?? (() => Promise.resolve(Result.ok(this.#capability)));
+		this.#capabilityProbe = options.capabilityProbe;
 		this.#store = options.store;
 		this.#driver = options.driver;
 		this.#supervision = options.supervision;

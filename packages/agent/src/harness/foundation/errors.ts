@@ -1,5 +1,58 @@
 import type { JsonValue } from "../session/types.ts";
 
+/** Stable External Connector error catalog shared by Foundation and Automation Host. */
+export const EXTERNAL_ERROR_CODES = Object.freeze([
+	"external_connector_unavailable",
+	"external_protocol_unsupported",
+	"external_capability_mismatch",
+	"external_binding_invalid",
+	"external_mapping_conflict",
+	"external_resume_unsupported",
+	"external_event_invalid",
+	"external_tool_route_denied",
+	"external_path_outside_workspace",
+	"external_review_required",
+	"external_review_rejected",
+	"external_credential_unavailable",
+	"external_terminal_ambiguous",
+	"external_connector_config_invalid",
+	"external_connector_not_ready",
+	"external_connector_readiness_stale",
+	"external_connector_circuit_open",
+	"external_connector_dependency_missing",
+	"external_connector_executable_untrusted",
+	"external_resource_limit_exceeded",
+	"external_frame_oversize",
+	"external_process_identity_ambiguous",
+] as const);
+export type ExternalErrorCode = (typeof EXTERNAL_ERROR_CODES)[number];
+
+/** Fixed, public-safe messages for the stable External Connector error catalog. */
+export const EXTERNAL_ERROR_MESSAGES: Readonly<Record<ExternalErrorCode, string>> = Object.freeze({
+	external_connector_unavailable: "External connector is unavailable.",
+	external_protocol_unsupported: "External connector protocol is unsupported.",
+	external_capability_mismatch: "External connector capability snapshot is invalid or changed.",
+	external_binding_invalid: "External connector binding is invalid.",
+	external_mapping_conflict: "External connector mapping conflicts with its durable Attempt.",
+	external_resume_unsupported: "External connector Attempt cannot be resumed.",
+	external_event_invalid: "External connector emitted invalid supervised output.",
+	external_tool_route_denied: "External connector Tool Gateway policy or route denied the request.",
+	external_path_outside_workspace: "External connector path is outside the trusted workspace.",
+	external_review_required: "External connector operation requires review.",
+	external_review_rejected: "External connector operation was rejected by review.",
+	external_credential_unavailable: "External connector credential is unavailable.",
+	external_terminal_ambiguous: "External connector terminal state is ambiguous.",
+	external_connector_config_invalid: "External connector configuration is invalid.",
+	external_connector_not_ready: "External connector is not ready.",
+	external_connector_readiness_stale: "External connector readiness is stale.",
+	external_connector_circuit_open: "External connector circuit is open.",
+	external_connector_dependency_missing: "External connector dependency is unavailable.",
+	external_connector_executable_untrusted: "External connector executable is untrusted.",
+	external_resource_limit_exceeded: "External connector exceeded a supervised resource limit.",
+	external_frame_oversize: "External connector frame exceeds the configured limit.",
+	external_process_identity_ambiguous: "External connector process identity is ambiguous.",
+});
+
 /** Foundation-owned errors. Durable-ledger codes are appended below from the same catalog source. */
 const FOUNDATION_CORE_ERROR_CODES = [
 	"foundation_schema_unsupported_version",
@@ -35,13 +88,7 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"tool_guard_denied",
 	"tool_pre_hook_denied",
 	"tool_post_validation_failed",
-	"external_event_invalid",
-	"external_mapping_conflict",
-	"external_protocol_unsupported",
-	"external_resource_limit_exceeded",
-	"external_resume_unsupported",
-	"external_tool_route_denied",
-	"external_terminal_ambiguous",
+	...EXTERNAL_ERROR_CODES,
 	"side_effect_unknown",
 	"role_not_found",
 	"role_slug_conflict",
@@ -181,12 +228,37 @@ export interface StableErrorRecord { _tag: string; code: string; message: string
 
 export type FoundationErrorCategory = "schema" | "concurrency" | "not_found" | "conflict" | "validation" | "budget" | "permission" | "provider" | "unknown";
 
+const EXTERNAL_ERROR_CATEGORIES: Readonly<Record<ExternalErrorCode, FoundationErrorCategory>> = Object.freeze({
+	external_connector_unavailable: "provider",
+	external_protocol_unsupported: "provider",
+	external_capability_mismatch: "provider",
+	external_binding_invalid: "validation",
+	external_mapping_conflict: "conflict",
+	external_resume_unsupported: "provider",
+	external_event_invalid: "provider",
+	external_tool_route_denied: "permission",
+	external_path_outside_workspace: "validation",
+	external_review_required: "permission",
+	external_review_rejected: "permission",
+	external_credential_unavailable: "provider",
+	external_terminal_ambiguous: "provider",
+	external_connector_config_invalid: "validation",
+	external_connector_not_ready: "provider",
+	external_connector_readiness_stale: "provider",
+	external_connector_circuit_open: "provider",
+	external_connector_dependency_missing: "provider",
+	external_connector_executable_untrusted: "permission",
+	external_resource_limit_exceeded: "provider",
+	external_frame_oversize: "validation",
+	external_process_identity_ambiguous: "provider",
+});
+
 export function foundationErrorCategory(code: FoundationErrorCode): FoundationErrorCategory {
 	if (code.startsWith("foundation_schema") || code.startsWith("structure") || code === "invalid_shape" || code === "unsupported_schema_version") return "schema";
 	if (code.includes("cursor") || code.startsWith("session_writer") || code.startsWith("binding_epoch")) return "concurrency";
 	if (code.endsWith("_not_found")) return "not_found";
 	if (code.endsWith("_conflict")) return "conflict";
-	if (code === "external_tool_route_denied") return "permission";
+	if (Object.hasOwn(EXTERNAL_ERROR_CATEGORIES, code)) return EXTERNAL_ERROR_CATEGORIES[code as ExternalErrorCode];
 	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
 	if (code.startsWith("external_") || code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
 	if (code === "scheduler_lease_lost" || code === "scheduler_claim_expired") return "concurrency";
@@ -286,11 +358,23 @@ export class FoundationError extends Error {
 	}
 
 	redact(): FoundationPublicError {
-		return { code: this.code, category: this.category, message: this.message };
+		return {
+			code: this.code,
+			category: this.category,
+			message: Object.hasOwn(EXTERNAL_ERROR_MESSAGES, this.code)
+				? EXTERNAL_ERROR_MESSAGES[this.code as ExternalErrorCode]
+				: this.message,
+		};
 	}
 
 	toPublicExecutionError(): PublicExecutionError {
-		return { code: this.code, message: this.message, retryable: this.retryable };
+		return {
+			code: this.code,
+			message: Object.hasOwn(EXTERNAL_ERROR_MESSAGES, this.code)
+				? EXTERNAL_ERROR_MESSAGES[this.code as ExternalErrorCode]
+				: this.message,
+			retryable: this.retryable,
+		};
 	}
 
 	toJSON(): FoundationPublicError & { _tag: "FoundationError" } {

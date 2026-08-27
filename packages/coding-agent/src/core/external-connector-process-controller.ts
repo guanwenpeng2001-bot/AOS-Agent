@@ -13,7 +13,9 @@ import {
 	type ExternalConnectorProcessReattachResult,
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
+	type ExternalConnectorProcessTerminationOptions,
 } from "./external-connector-supervisor.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "./runtime-clock.ts";
 
 const ACTIVATION_TIMEOUT_MS = 10_000;
 const PROTOCOL_LIMIT_BYTES = 4_096;
@@ -363,6 +365,7 @@ type ProcessInspection =
 export interface ProductionExternalConnectorProcessControllerOptions {
 	readonly platform?: string;
 	readonly process: ProductionExternalConnectorProcess;
+	readonly clock?: RuntimeClock;
 }
 
 export interface ProductionExternalConnectorProcess {
@@ -400,9 +403,15 @@ function executableIdentity(
 	};
 }
 
-function inspectLinuxProcess(pid: number, expectedNonce: string): ProcessInspection {
+function inspectLinuxProcess(
+	pid: number,
+	expectedNonce: string,
+	canContinue: () => boolean = () => true,
+): ProcessInspection {
 	try {
+		if (!canContinue()) return { status: "ambiguous" };
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		if (!canContinue()) return { status: "ambiguous" };
 		const close = stat.lastIndexOf(")");
 		if (close < 0) return { status: "ambiguous" };
 		const fields = stat
@@ -415,7 +424,9 @@ function inspectLinuxProcess(pid: number, expectedNonce: string): ProcessInspect
 			.toString("utf8")
 			.split("\0")
 			.filter((part) => part.length > 0);
+		if (!canContinue()) return { status: "ambiguous" };
 		const executablePath = realpathSync(`/proc/${pid}/exe`);
+		if (!canContinue()) return { status: "ambiguous" };
 		return {
 			status: "live",
 			value: {
@@ -428,16 +439,21 @@ function inspectLinuxProcess(pid: number, expectedNonce: string): ProcessInspect
 	}
 }
 
-function inspectDarwinProcess(pid: number, expectedNonce: string): ProcessInspection {
-	const start = inspectDarwinField(pid, "lstart");
+function inspectDarwinProcess(
+	pid: number,
+	expectedNonce: string,
+	remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS,
+): ProcessInspection {
+	const start = inspectDarwinField(pid, "lstart", remainingTimeoutMs);
 	if (start.status !== "value") return { status: start.status };
-	const command = inspectDarwinField(pid, "command");
+	const command = inspectDarwinField(pid, "command", remainingTimeoutMs);
 	if (command.status !== "value") return { status: command.status };
-	const secondStart = inspectDarwinField(pid, "lstart");
+	const secondStart = inspectDarwinField(pid, "lstart", remainingTimeoutMs);
 	if (secondStart.status !== "value" || secondStart.value !== start.value) {
 		return { status: secondStart.status === "not_found" ? "not_found" : "ambiguous" };
 	}
-	const executablePath = inspectDarwinExecutable(pid);
+	if (remainingTimeoutMs() <= 0) return { status: "ambiguous" };
+	const executablePath = inspectDarwinExecutable(pid, remainingTimeoutMs);
 	if (executablePath === undefined) return { status: "ambiguous" };
 	try {
 		const marker = nonceMarker(expectedNonce);
@@ -462,11 +478,17 @@ type DarwinFieldInspection =
 	| { readonly status: "value"; readonly value: string }
 	| { readonly status: "not_found" | "ambiguous" };
 
-function inspectDarwinField(pid: number, field: "command" | "lstart"): DarwinFieldInspection {
+function inspectDarwinField(
+	pid: number,
+	field: "command" | "lstart",
+	remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS,
+): DarwinFieldInspection {
+	const timeout = remainingTimeoutMs();
+	if (timeout <= 0) return { status: "ambiguous" };
 	const inspected = spawnSync("/bin/ps", ["-ww", "-p", String(pid), "-o", `${field}=`], {
 		encoding: "utf8",
 		env: externalConnectorMinimalEnvironment("darwin"),
-		timeout: ACTIVATION_TIMEOUT_MS,
+		timeout,
 		maxBuffer: 1024 * 1024,
 	});
 	if (inspected.status === 1 && inspected.stdout.trim().length === 0) return { status: "not_found" };
@@ -475,11 +497,13 @@ function inspectDarwinField(pid: number, field: "command" | "lstart"): DarwinFie
 	return value.length === 0 ? { status: "ambiguous" } : { status: "value", value };
 }
 
-function inspectDarwinExecutable(pid: number): string | undefined {
+function inspectDarwinExecutable(pid: number, remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS): string | undefined {
+	const timeout = remainingTimeoutMs();
+	if (timeout <= 0) return undefined;
 	const inspected = spawnSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], {
 		encoding: "utf8",
 		env: externalConnectorMinimalEnvironment("darwin"),
-		timeout: ACTIVATION_TIMEOUT_MS,
+		timeout,
 		maxBuffer: 1024 * 1024,
 	});
 	if (inspected.status !== 0 || inspected.error !== undefined) return undefined;
@@ -519,14 +543,21 @@ function powershellPath(): string {
 	return path;
 }
 
-function inspectWindowsProcess(pid: number, expectedNonce: string, shellPath: string): ProcessInspection {
+function inspectWindowsProcess(
+	pid: number,
+	expectedNonce: string,
+	shellPath: string,
+	remainingTimeoutMs: () => number = () => ACTIVATION_TIMEOUT_MS,
+): ProcessInspection {
+	const timeout = remainingTimeoutMs();
+	if (timeout <= 0) return { status: "ambiguous" };
 	const inspected = spawnSync(
 		shellPath,
 		["-NoProfile", "-NonInteractive", "-Command", `& {\n${WINDOWS_PROCESS_INSPECTION_SOURCE}\n} '${pid}'`],
 		{
 			encoding: "utf8",
 			env: externalConnectorMinimalEnvironment("win32"),
-			timeout: ACTIVATION_TIMEOUT_MS,
+			timeout,
 			windowsHide: true,
 			maxBuffer: 1024 * 1024,
 		},
@@ -641,6 +672,10 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 	readonly #terminationOperation: (
 		request: ExternalConnectorProcessTerminationRequest,
 	) => ExternalConnectorProcessTerminationResult;
+	readonly #boundedTerminationOperation: (
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	) => Promise<ExternalConnectorProcessTerminationResult>;
 	#activated: boolean;
 
 	constructor(options: {
@@ -653,6 +688,10 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 		readonly forceTerminate: (
 			request: ExternalConnectorProcessTerminationRequest,
 		) => ExternalConnectorProcessTerminationResult;
+		readonly forceTerminateBounded: (
+			request: ExternalConnectorProcessTerminationRequest,
+			options: ExternalConnectorProcessTerminationOptions,
+		) => Promise<ExternalConnectorProcessTerminationResult>;
 	}) {
 		this.operationNonce = options.operationNonce;
 		this.containment = options.containment;
@@ -661,6 +700,7 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 		this.#activated = options.activated;
 		this.#activateOperation = options.activate;
 		this.#terminationOperation = options.forceTerminate;
+		this.#boundedTerminationOperation = options.forceTerminateBounded;
 	}
 
 	async activate(options?: { readonly signal?: AbortSignal }): Promise<void> {
@@ -673,6 +713,13 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
 		return this.#terminationOperation(request);
 	}
+
+	forceTerminateBounded(
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	): Promise<ExternalConnectorProcessTerminationResult> {
+		return this.#boundedTerminationOperation(request, options);
+	}
 }
 
 /** Concrete fail-closed process controller for POSIX process groups and Windows Job Objects. */
@@ -683,9 +730,11 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 	readonly #shellPath: string | undefined;
 	readonly #setsidPath: string | undefined;
 	readonly #processSpec: string;
+	readonly #clock: RuntimeClock;
 
 	constructor(options: ProductionExternalConnectorProcessControllerOptions) {
 		this.#platform = supportedPlatform(options.platform ?? process.platform);
+		this.#clock = options.clock ?? SYSTEM_RUNTIME_CLOCK;
 		this.#environment = externalConnectorMinimalEnvironment(this.#platform);
 		this.#launchStrategy = externalConnectorGuardianLaunchStrategy(this.#platform);
 		this.#processSpec = encodeProcessSpec(options.process, this.#environment);
@@ -728,6 +777,8 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 					await active;
 				},
 				forceTerminate: (termination) => this.#forceTerminate(identity, request.operationNonce, termination),
+				forceTerminateBounded: (termination, terminationOptions) =>
+					this.#forceTerminateBounded(identity, request.operationNonce, termination, terminationOptions),
 			});
 		} catch (error) {
 			child.kill("SIGKILL");
@@ -759,24 +810,50 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				activated: true,
 				activate: () => Promise.resolve(),
 				forceTerminate: (termination) => this.#forceTerminate(identity, request.operationNonce, termination),
+				forceTerminateBounded: (termination, terminationOptions) =>
+					this.#forceTerminateBounded(identity, request.operationNonce, termination, terminationOptions),
 			}),
 		};
+	}
+
+	async #forceTerminateBounded(
+		boundIdentity: ExternalConnectorProcessIdentity,
+		boundNonce: string,
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	): Promise<ExternalConnectorProcessTerminationResult> {
+		if (
+			typeof options.deadlineMs !== "number" ||
+			!Number.isSafeInteger(options.deadlineMs) ||
+			options.deadlineMs <= 0 ||
+			options.signal?.aborted === true
+		) {
+			return "ambiguous";
+		}
+		const deadlineAt = this.#clock.monotonicNow() + options.deadlineMs;
+		const result = this.#forceTerminate(boundIdentity, boundNonce, request, deadlineAt);
+		return Boolean(options.signal?.aborted) || this.#clock.monotonicNow() >= deadlineAt ? "ambiguous" : result;
 	}
 
 	#forceTerminate(
 		boundIdentity: ExternalConnectorProcessIdentity,
 		boundNonce: string,
 		request: ExternalConnectorProcessTerminationRequest,
+		deadlineAt?: number,
 	): ExternalConnectorProcessTerminationResult {
 		if (request.operationNonce !== boundNonce || !sameIdentity(request.processIdentity, boundIdentity))
 			return "identity_mismatch";
-		const inspection = this.#inspect(boundIdentity.pid, boundNonce);
+		if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
+		const inspection = this.#inspect(boundIdentity.pid, boundNonce, deadlineAt);
 		if (inspection.status === "not_found" && this.#platform !== "win32") {
+			if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
 			const groupStatus = this.#inspectProcessGroup(boundIdentity.pid);
+			if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
 			if (groupStatus === "not_found") return "already_exited";
 			if (groupStatus === "ambiguous") return "ambiguous";
 		} else if (inspection.status !== "live") {
-			return inspection.status === "not_found" ? "already_exited" : "ambiguous";
+			if (inspection.status === "not_found") return "already_exited";
+			return "ambiguous";
 		}
 		if (
 			inspection.status === "live" &&
@@ -785,9 +862,12 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 			return "identity_mismatch";
 		}
 		try {
+			if (deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0) return "ambiguous";
 			if (this.#platform === "linux" || this.#platform === "darwin") process.kill(-boundIdentity.pid, "SIGKILL");
 			else process.kill(boundIdentity.pid, "SIGKILL");
-			return "termination_requested";
+			return deadlineAt !== undefined && this.#remainingHelperMs(deadlineAt) <= 0
+				? "ambiguous"
+				: "termination_requested";
 		} catch (error) {
 			return isMissingProcessError(error) ? "already_exited" : "ambiguous";
 		}
@@ -832,16 +912,31 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		);
 	}
 
-	#inspect(pid: number, nonce: string): ProcessInspection {
-		if (this.#platform === "linux") return inspectLinuxProcess(pid, nonce);
-		if (this.#platform === "darwin") return inspectDarwinProcess(pid, nonce);
-		return inspectWindowsProcess(pid, nonce, this.#shellPath!);
+	#inspect(pid: number, nonce: string, deadlineAt?: number): ProcessInspection {
+		if (this.#platform === "linux") {
+			return inspectLinuxProcess(
+				pid,
+				nonce,
+				deadlineAt === undefined ? undefined : () => this.#remainingHelperMs(deadlineAt) > 0,
+			);
+		}
+		const timeoutMs = deadlineAt === undefined ? ACTIVATION_TIMEOUT_MS : this.#remainingHelperMs(deadlineAt);
+		if (timeoutMs <= 0) return { status: "ambiguous" };
+		const remainingTimeoutMs =
+			deadlineAt === undefined ? () => ACTIVATION_TIMEOUT_MS : () => this.#remainingHelperMs(deadlineAt);
+		if (this.#platform === "darwin") return inspectDarwinProcess(pid, nonce, remainingTimeoutMs);
+		return inspectWindowsProcess(pid, nonce, this.#shellPath!, remainingTimeoutMs);
+	}
+
+	#remainingHelperMs(deadlineAt: number): number {
+		const remaining = deadlineAt - this.#clock.monotonicNow();
+		return remaining < 1 ? 0 : Math.min(ACTIVATION_TIMEOUT_MS, Math.floor(remaining));
 	}
 
 	#monitorContainmentExit(pid: number): Promise<void> {
 		return new Promise((resolve) => {
 			const timer = setInterval(() => {
-				const status = this.#platform === "win32" ? this.#inspect(pid, "").status : this.#inspectProcessGroup(pid);
+				const status = this.#platform === "win32" ? this.#inspectProcessPresence(pid) : this.#inspectProcessGroup(pid);
 				if (status === "not_found") {
 					clearInterval(timer);
 					resolve();
@@ -849,6 +944,16 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 			}, 250);
 			timer.unref();
 		});
+	}
+
+	#inspectProcessPresence(pid: number): "live" | "not_found" | "ambiguous" {
+		try {
+			process.kill(pid, 0);
+			return "live";
+		} catch (error) {
+			if (isMissingProcessError(error)) return "not_found";
+			return "ambiguous";
+		}
 	}
 
 	#inspectProcessGroup(processGroupId: number): "live" | "not_found" | "ambiguous" {

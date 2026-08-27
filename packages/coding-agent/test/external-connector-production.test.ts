@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+	FoundationError,
 	Result,
 	createConnectorCapabilitySnapshot,
 	fingerprintFoundationValue,
@@ -25,6 +26,7 @@ import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 } from "../src/core/external-connector-supervisor.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createExternalConnectorRegistry,
@@ -72,6 +74,7 @@ describe("production External Connector composition", () => {
 		const connector = await createProductionExternalAgentConnector({
 			providerId: "production-connector",
 			capability,
+			capabilityProbe: async () => Result.ok(capability),
 			store: Object.freeze({}) as ExternalConnectorDurableStore,
 			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
 			privateStatePath: join(tmpdir(), `aos-external-production-factory-${process.pid}.json`),
@@ -111,6 +114,82 @@ describe("production External Connector composition", () => {
 			},
 		]);
 		await registry.dispose();
+	});
+
+	it("requires bounded active capability evidence before production connector publication", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-capability-probe-"));
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-capability-probe-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const mismatched = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: capability.providerId,
+			revision: 2,
+			protocol: capability.protocol,
+			modelAccess: capability.modelAccess,
+			resume: capability.resume,
+			toolGateway: capability.toolGateway,
+			artifacts: capability.artifacts,
+			images: capability.images,
+		});
+		const base = {
+			providerId: capability.providerId,
+			capability,
+			store: Object.freeze({}) as ExternalConnectorDurableStore,
+			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+			process: processOptions,
+		};
+		try {
+			await expect(
+				createProductionExternalAgentConnector({
+					...base,
+					capabilityProbe: undefined,
+					privateStatePath: join(root, "missing.json"),
+				} as unknown as Parameters<typeof createProductionExternalAgentConnector>[0]),
+			).rejects.toThrow("explicit capability probe");
+
+			const clock = new DeterministicClock();
+			const hanging = createProductionExternalAgentConnector({
+				...base,
+				capabilityProbe: async (options) =>
+					new Promise<never>((_resolve, reject) => {
+						const abort = (): void => reject(new Error("capability probe aborted"));
+						if (options?.signal?.aborted === true) abort();
+						else options?.signal?.addEventListener("abort", abort, { once: true });
+					}),
+				privateStatePath: join(root, "hanging.json"),
+				deadlines: { start: { hardMs: 5, idleMs: 50 } },
+				clock,
+			});
+			clock.advanceBy(5);
+			await expect(hanging).rejects.toMatchObject({ code: "side_effect_unknown", segment: "start" });
+
+			await expect(
+				createProductionExternalAgentConnector({
+					...base,
+					capabilityProbe: async () => Result.err(new FoundationError("provider_spawn_failed", "probe failed")),
+					privateStatePath: join(root, "failed.json"),
+				}),
+			).rejects.toMatchObject({ code: "task_executor_invalid_provider_class" });
+
+			await expect(
+				createProductionExternalAgentConnector({
+					...base,
+					capabilityProbe: async () => Result.ok(mismatched),
+					privateStatePath: join(root, "mismatched.json"),
+				}),
+			).rejects.toMatchObject({ code: "task_executor_invalid_provider_class" });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("propagates the trusted capability probe so registry lifecycle rechecks detect runtime drift", async () => {
@@ -175,7 +254,7 @@ describe("production External Connector composition", () => {
 					capabilitySnapshotDigest: capability.digest,
 				}),
 			).toMatchObject({ ok: false });
-			expect(probeCalls).toBe(2);
+			expect(probeCalls).toBe(3);
 		} finally {
 			await registry.dispose();
 			rmSync(root, { recursive: true, force: true });
@@ -268,6 +347,7 @@ describe("production External Connector composition", () => {
 			const created = await createProductionExternalAgentConnector({
 				providerId,
 				capability,
+				capabilityProbe: async () => Result.ok(capability),
 				store,
 				driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
 				privateStatePath,
@@ -300,20 +380,22 @@ describe("production External Connector composition", () => {
 			const readyPath = join(root, "ready.json");
 			const fixturePath = join(import.meta.dirname, "fixtures", "external-connector-hard-crash-host.ts");
 			const tsxPath = join(import.meta.dirname, "../../../node_modules/tsx/dist/cli.mjs");
+			const hardCrashCapability = createConnectorCapabilitySnapshot({
+				schemaVersion: 1,
+				providerId: "production-hard-crash-connector",
+				revision: 1,
+				protocol: { name: "production-protocol", version: "1" },
+				modelAccess: "agent_owned",
+				resume: true,
+				toolGateway: false,
+				artifacts: false,
+				images: false,
+			});
 			const recover = async (): Promise<void> => {
 				await createProductionExternalAgentConnector({
 					providerId: "production-hard-crash-connector",
-					capability: createConnectorCapabilitySnapshot({
-						schemaVersion: 1,
-						providerId: "production-hard-crash-connector",
-						revision: 1,
-						protocol: { name: "production-protocol", version: "1" },
-						modelAccess: "agent_owned",
-						resume: true,
-						toolGateway: false,
-						artifacts: false,
-						images: false,
-					}),
+					capability: hardCrashCapability,
+					capabilityProbe: async () => Result.ok(hardCrashCapability),
 					store: Object.freeze({
 						readOperation: async () => undefined,
 						readMapping: async () => undefined,

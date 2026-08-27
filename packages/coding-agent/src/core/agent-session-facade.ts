@@ -52,6 +52,7 @@ import type {
 } from "./agent-session.ts";
 import {
 	bindAgentRuntimeSchedulerComposition,
+	bindAgentRuntimeToolGatewayPolicy,
 	createAgentRuntimeCompositionFactory,
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
@@ -713,6 +714,11 @@ export class CanonicalAgentSessionServices {
 			noTools: canonical.noTools,
 			allowedToolNames: canonical.allowedToolNames,
 			excludedToolNames: canonical.excludedToolNames,
+			canonicalSession: this.canonicalSession,
+		});
+		bindAgentRuntimeToolGatewayPolicy(this.runtimeComposition, {
+			authorizeExternalToolGatewayRequest: (request, route) =>
+				this.controlPlane.authorizeExternalToolGatewayRequest(request, route),
 		});
 		const subagents = this.controlPlane.getSubagentComposition();
 		this.productPromptIngress = new ProductPromptIngressV1({

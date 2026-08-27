@@ -29,15 +29,13 @@ import {
 	createExternalConnectorRegistry,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
+	type AgentSession,
 	type CreateAgentSessionRuntimeFactory,
 	type ExternalConnectorRegistry,
 	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
-import {
-	resolveExecutionPolicyProfile,
-	type ExecutionPolicyProfile,
-} from "../../src/core/execution-policy.ts";
+import type { ExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	SessionExternalConnectorDurableStore,
@@ -76,7 +74,12 @@ import {
 	createExternalConnectorTestRuntime,
 	createExternalConnectorTestSupervision,
 } from "../external-connector-test-supervision.ts";
-import type { ExternalConnectorProcessHandle } from "../../src/core/external-connector-supervisor.ts";
+import type {
+	ExternalConnectorProcessHandle,
+	ExternalConnectorProcessTerminationOptions,
+	ExternalConnectorProcessTerminationRequest,
+	ExternalConnectorProcessTerminationResult,
+} from "../../src/core/external-connector-supervisor.ts";
 
 const NOW = "2026-08-25T00:00:00.000Z";
 const LATER = "2026-08-25T00:06:00.000Z";
@@ -90,19 +93,8 @@ const EXTERNAL_POLICY_PROFILE: ExecutionPolicyProfile = {
 	network: { action: "deny", allowDestinations: [] },
 	credentials: { action: "deny", allowNames: [] },
 	approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny" },
+	rules: [{ resource: "filesystem.read", source: "rpc", scope: "workspace", action: "allow" }],
 };
-
-function externalPolicyBinding(runId: string) {
-	const resolved = resolveExecutionPolicyProfile({
-		profiles: { [EXTERNAL_POLICY_PROFILE.id]: EXTERNAL_POLICY_PROFILE },
-		defaultProfile: EXTERNAL_POLICY_PROFILE.id,
-		workspaceIdentity: "workspace-ref",
-		runId,
-		createdAt: NOW,
-	});
-	if (!resolved.ok) throw resolved.error;
-	return resolved.binding;
-}
 
 class Line13CurrentDriver implements ExternalConnectorVendorDriver {
 	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
@@ -149,94 +141,90 @@ class Line13CurrentDriver implements ExternalConnectorVendorDriver {
 	events(handle: ExternalConnectorDriverHandle): AsyncIterable<FoundationJsonValue> {
 		const spawned = this.#spawnedRequest;
 		const operationId = spawned?.correlation.operationId;
-		const values: FoundationJsonValue[] = this.#canonicalToolGatewayRequests === undefined
-			? (
-			!this.#emitToolGatewayRequest || spawned === undefined
-				? []
-				: operationId === undefined
-					? (() => {
-							throw new Error("Line 13 driver requires an operation correlation");
-						})()
-					: (() => {
-							const gatewayRequest = (
-								toolCallId: string,
-								path: string,
-							): ToolGatewayRequest => ({
-								schemaVersion: 1,
-								toolCallId,
-								toolName: "workspace.read",
-								namespace: "workspace",
-								originalArguments: { path, mode: "metadata" },
-								idempotencyKey: `${toolCallId}-once`,
-								context: {
+		const values: FoundationJsonValue[] =
+			this.#canonicalToolGatewayRequests === undefined
+				? !this.#emitToolGatewayRequest || spawned === undefined
+					? []
+					: operationId === undefined
+						? (() => {
+								throw new Error("Line 13 driver requires an operation correlation");
+							})()
+						: (() => {
+								const gatewayRequest = (toolCallId: string, path: string): ToolGatewayRequest => ({
 									schemaVersion: 1,
-									bindingId: spawned.attempt.bindingId,
-									bindingEpochId: spawned.attempt.bindingEpochIds[0]!,
-									taskId: spawned.attempt.taskId,
-									dispatchId: spawned.attempt.dispatchId,
-									providerId: spawned.capability.providerId,
-									attemptId: spawned.attempt.attemptId,
-									operationId,
-								},
-							});
-							const first = gatewayRequest("line13-ac07-tool-call-1", "docs/evidence.txt");
-							const second = gatewayRequest("line13-ac07-tool-call-2", "docs/second.txt");
-							return [
-							{
-								schemaVersion: 1,
-								type: "started",
-								externalSessionId: handle.externalSessionId,
-								...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-								producedAt: NOW,
-							},
-							{
-								schemaVersion: 1,
-								type: "tool_gateway_request",
-								externalSessionId: handle.externalSessionId,
-								...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-								operationNonce: handle.operationNonce,
-								request: first as unknown as FoundationJsonValue,
-								producedAt: NOW,
-							},
-							{
-								schemaVersion: 1,
-								type: "tool_gateway_request",
-								externalSessionId: handle.externalSessionId,
-								...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-								operationNonce: handle.operationNonce,
-								request: first as unknown as FoundationJsonValue,
-								producedAt: NOW,
-							},
-							{
-								schemaVersion: 1,
-								type: "tool_gateway_request",
-								externalSessionId: handle.externalSessionId,
-								...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-								operationNonce: handle.operationNonce,
-								request: second as unknown as FoundationJsonValue,
-								producedAt: NOW,
-							},
-						];
-						})()
-			)
-			: [
-					{
-						schemaVersion: 1,
-						type: "started",
-						externalSessionId: handle.externalSessionId,
-						...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-						producedAt: NOW,
-					},
-					...this.#canonicalToolGatewayRequests.map((request) => ({
-						schemaVersion: 1 as const,
-						type: "tool_gateway_request" as const,
-						externalSessionId: handle.externalSessionId,
-						...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-						operationNonce: handle.operationNonce,
-						request: request as unknown as FoundationJsonValue,
-						producedAt: NOW,
-					})),
-				];
+									toolCallId,
+									toolName: "workspace.read",
+									namespace: "workspace",
+									originalArguments: { path, mode: "metadata" },
+									idempotencyKey: `${toolCallId}-once`,
+									context: {
+										schemaVersion: 1,
+										bindingId: spawned.attempt.bindingId,
+										bindingEpochId: spawned.attempt.bindingEpochIds[0]!,
+										taskId: spawned.attempt.taskId,
+										dispatchId: spawned.attempt.dispatchId,
+										providerId: spawned.capability.providerId,
+										attemptId: spawned.attempt.attemptId,
+										operationId,
+									},
+								});
+								const first = gatewayRequest("line13-ac07-tool-call-1", "docs/evidence.txt");
+								const second = gatewayRequest("line13-ac07-tool-call-2", "docs/second.txt");
+								return [
+									{
+										schemaVersion: 1,
+										type: "started",
+										externalSessionId: handle.externalSessionId,
+										...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+										producedAt: NOW,
+									},
+									{
+										schemaVersion: 1,
+										type: "tool_gateway_request",
+										externalSessionId: handle.externalSessionId,
+										...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+										operationNonce: handle.operationNonce,
+										request: first as unknown as FoundationJsonValue,
+										producedAt: NOW,
+									},
+									{
+										schemaVersion: 1,
+										type: "tool_gateway_request",
+										externalSessionId: handle.externalSessionId,
+										...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+										operationNonce: handle.operationNonce,
+										request: first as unknown as FoundationJsonValue,
+										producedAt: NOW,
+									},
+									{
+										schemaVersion: 1,
+										type: "tool_gateway_request",
+										externalSessionId: handle.externalSessionId,
+										...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+										operationNonce: handle.operationNonce,
+										request: second as unknown as FoundationJsonValue,
+										producedAt: NOW,
+									},
+								];
+							})()
+				: [
+						{
+							schemaVersion: 1,
+							type: "started",
+							externalSessionId: handle.externalSessionId,
+							...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+							producedAt: NOW,
+						},
+						...this.#canonicalToolGatewayRequests.map((request) => ({
+							schemaVersion: 1 as const,
+							type: "tool_gateway_request" as const,
+							externalSessionId: handle.externalSessionId,
+							...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
+							operationNonce: handle.operationNonce,
+							request: request as unknown as FoundationJsonValue,
+							producedAt: NOW,
+						})),
+					];
 		let index = 0;
 		return {
 			[Symbol.asyncIterator]: () => ({
@@ -248,7 +236,9 @@ class Line13CurrentDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 
-	async connect(mapping: Parameters<ExternalConnectorVendorDriver["connect"]>[0]): Promise<ExternalConnectorDriverHandle> {
+	async connect(
+		mapping: Parameters<ExternalConnectorVendorDriver["connect"]>[0],
+	): Promise<ExternalConnectorDriverHandle> {
 		this.connectCalls += 1;
 		return {
 			externalSessionId: mapping.externalSessionId,
@@ -337,6 +327,7 @@ async function createRpcProductFixture(options: {
 			const connector = createDurableExternalAgentConnector({
 				providerId: currentSnapshot.providerId,
 				capability: currentSnapshot,
+				capabilityProbe: async () => Result.ok(currentSnapshot),
 				store: new SessionExternalConnectorDurableStore(
 					new SessionLedger(context.session, { writer: context.harness.t5.writer }),
 				),
@@ -540,10 +531,11 @@ async function createProductCompositionFixture(): Promise<ProductCompositionFixt
 	const settingsManager = SettingsManager.inMemory();
 	const registries: ExternalConnectorRegistry[] = [];
 	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
-		toolGateway: (context) => createFoundationToolGateway({
-			gatewayId: `line13-composition-gateway-${context.sessionId}`,
-			providers: [],
-		}),
+		toolGateway: (context) =>
+			createFoundationToolGateway({
+				gatewayId: `line13-composition-gateway-${context.sessionId}`,
+				providers: [],
+			}),
 		externalConnectorRegistry: (_context, toolGateway) => {
 			const registry = createCompositionConnectorRegistry(toolGateway);
 			registries.push(registry);
@@ -828,7 +820,9 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 	});
 	const toolGatewayRequests: ToolGatewayRequest[] = [];
 	const toolGatewayResults: ToolExecutionResult[] = [];
-	const invokeToolGateway = async (request: ToolGatewayRequest): Promise<Result<ToolExecutionResult, FoundationError>> => {
+	const invokeToolGateway = async (
+		request: ToolGatewayRequest,
+	): Promise<Result<ToolExecutionResult, FoundationError>> => {
 		toolGatewayRequests.push(request);
 		const result: ToolExecutionResult = {
 			schemaVersion: 1,
@@ -841,24 +835,25 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 		toolGatewayResults.push(result);
 		return Result.ok(result);
 	};
-	const createToolGatewayRuntime = () => createFoundationToolGateway({
-		gatewayId: "line13-ac07-tool-gateway",
-		providers: [
-			createLocalToolGatewayProvider({
-				providerId: snapshot.providerId,
-				routes: [
-					{
-						kind: "local",
-						toolName: "workspace.read",
-						namespace: "workspace",
-						providerId: snapshot.providerId,
-						revision: 1,
-					},
-				],
-				invoke: invokeToolGateway,
-			}),
-		],
-	});
+	const createToolGatewayRuntime = () =>
+		createFoundationToolGateway({
+			gatewayId: "line13-ac07-tool-gateway",
+			providers: [
+				createLocalToolGatewayProvider({
+					providerId: snapshot.providerId,
+					routes: [
+						{
+							kind: "local",
+							toolName: "workspace.read",
+							namespace: "workspace",
+							providerId: snapshot.providerId,
+							revision: 1,
+						},
+					],
+					invoke: invokeToolGateway,
+				}),
+			],
+		});
 	const toolGatewayRuntime = createToolGatewayRuntime();
 	const store = new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer }));
 	const supervision = createExternalConnectorTestSupervision();
@@ -891,6 +886,7 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 		const connector = createDurableExternalAgentConnector({
 			providerId: snapshot.providerId,
 			capability: snapshot,
+			capabilityProbe: async () => Result.ok(snapshot),
 			store: runtimeStore,
 			driver,
 			supervision: runtimeSupervision,
@@ -906,7 +902,14 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 			trusted: true,
 		});
 		if (!registered.ok) throw registered.error;
-		return { connector, registry, session: runtimeSession, t5: runtimeT5, store: runtimeStore, toolGateway: runtimeToolGateway };
+		return {
+			connector,
+			registry,
+			session: runtimeSession,
+			t5: runtimeT5,
+			store: runtimeStore,
+			toolGateway: runtimeToolGateway,
+		};
 	};
 	const driver = new Line13CurrentDriver(toolGateway, { readHangs: crashDuringRead });
 	const { connector, registry } = await createRegisteredRuntime(driver, initialSupervision);
@@ -944,7 +947,16 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 					releaseReloadedProcess = resolve;
 				}),
 				activate: async () => undefined,
-				forceTerminate: () => {
+				forceTerminate: (_request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult => {
+					releaseReloadedProcess?.();
+					releaseReloadedProcess = undefined;
+					return "termination_requested";
+				},
+				forceTerminateBounded: async (
+					_request: ExternalConnectorProcessTerminationRequest,
+					options: ExternalConnectorProcessTerminationOptions,
+				): Promise<ExternalConnectorProcessTerminationResult> => {
+					if (options.signal?.aborted === true) return "ambiguous";
 					releaseReloadedProcess?.();
 					releaseReloadedProcess = undefined;
 					return "termination_requested";
@@ -968,6 +980,269 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 				)),
 				driver: restoredDriver,
 			};
+		},
+	};
+}
+
+interface CanonicalCurrentConnectorState {
+	readonly driver: Line13CurrentDriver;
+	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
+	readonly supervisionOptions: ReturnType<typeof createExternalConnectorTestSupervision>["options"];
+	store?: SessionExternalConnectorDurableStore;
+	connector?: ReturnType<typeof createDurableExternalAgentConnector>;
+	registry?: ExternalConnectorRegistry;
+}
+
+/**
+ * AC-07 uses the same composition root as product sessions. Its policy binding
+ * is materialized by the canonical Session control plane and then supplied to
+ * the product run, so the gateway authority cannot be replaced by a fixture
+ * callback or an isolated registry.
+ */
+async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
+	const cwd = mkdtempSync(join(tmpdir(), "aos-line13-ac07-canonical-"));
+	const settingsManager = SettingsManager.inMemory({
+		executionPolicy: {
+			defaultProfile: EXTERNAL_POLICY_PROFILE.id,
+			profiles: { [EXTERNAL_POLICY_PROFILE.id]: EXTERNAL_POLICY_PROFILE },
+		},
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+	const sessionManager = SessionManager.inMemory(cwd, { id: "line13-ac07-session" });
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: "line13-current-connector",
+		revision: 1,
+		protocol: { name: "line13-fixture", version: "1" },
+		modelAccess: "agent_owned",
+		resume: true,
+		toolGateway: true,
+		artifacts: false,
+		images: false,
+	});
+	const descriptor = {
+		schemaVersion: 1 as const,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector" as const,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+	const toolGatewayRequests: ToolGatewayRequest[] = [];
+	const toolGatewayResults: ToolExecutionResult[] = [];
+	const createToolGatewayRuntime = () =>
+		createFoundationToolGateway({
+			gatewayId: "line13-ac07-tool-gateway",
+			providers: [
+				createLocalToolGatewayProvider({
+					providerId: snapshot.providerId,
+					routes: [
+						{
+							kind: "local",
+							toolName: "workspace.read",
+							namespace: "workspace",
+							providerId: snapshot.providerId,
+							revision: 1,
+						},
+					],
+					invoke: async (request: ToolGatewayRequest): Promise<Result<ToolExecutionResult, FoundationError>> => {
+						toolGatewayRequests.push(request);
+						const result: ToolExecutionResult = {
+							schemaVersion: 1,
+							toolCallId: request.toolCallId,
+							toolName: request.toolName,
+							ok: true,
+							sideEffectState: "none",
+							toolReceiptRef: `line13-receipt-${request.toolCallId}`,
+						};
+						toolGatewayResults.push(result);
+						return Result.ok(result);
+					},
+				}),
+			],
+		});
+	const states = new Map<string, CanonicalCurrentConnectorState>();
+	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
+		toolGateway: (context) => {
+			if (states.get(context.sessionId) === undefined) throw new Error("AC-07 canonical gateway state is missing");
+			return createToolGatewayRuntime();
+		},
+		externalConnectorRegistry: (context, toolGateway) => {
+			if (toolGateway === undefined) throw new Error("AC-07 canonical composition omitted the Tool Gateway");
+			const state = states.get(context.sessionId);
+			if (state === undefined) throw new Error("AC-07 canonical connector state is missing");
+			const store = new SessionExternalConnectorDurableStore(
+				new SessionLedger(context.session, { writer: context.harness.t5.writer }),
+			);
+			const connector = createDurableExternalAgentConnector({
+				providerId: snapshot.providerId,
+				capability: snapshot,
+				capabilityProbe: async () => Result.ok(snapshot),
+				store,
+				driver: state.driver,
+				supervision: state.supervisionOptions,
+				now: () => NOW,
+				operationNonce: () => "line13-current-operation-true",
+			});
+			const registry = createExternalConnectorRegistry({ toolGateway });
+			const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+			if (!registered.ok) throw registered.error;
+			state.store = store;
+			state.connector = connector;
+			state.registry = registry;
+			return registry;
+		},
+	});
+	const services = await createAgentSessionServices({
+		cwd,
+		agentDir: cwd,
+		modelRuntime,
+		settingsManager,
+		runtimeComposition,
+		resourceLoaderOptions: {
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		},
+	});
+	const sessions: AgentSession[] = [];
+	const initialSupervision = createExternalConnectorTestSupervision();
+	const initialSupervisionOptions = crashDuringRead
+		? {
+				...initialSupervision.options,
+				deadlines: {
+					...initialSupervision.options.deadlines,
+					receipt: { hardMs: 30_000, idleMs: 30_000 },
+				},
+			}
+		: initialSupervision.options;
+	const initialDriver = new Line13CurrentDriver(true, { readHangs: crashDuringRead });
+	const initialState: CanonicalCurrentConnectorState = {
+		driver: initialDriver,
+		supervision: initialSupervision,
+		supervisionOptions: initialSupervisionOptions,
+	};
+	states.set(sessionManager.getSessionId(), initialState);
+	const initial = await createAgentSessionFromServices({
+		services,
+		sessionManager,
+		policyProfile: EXTERNAL_POLICY_PROFILE.id,
+		noTools: "all",
+	});
+	sessions.push(initial.session);
+	const initialComposition = initial.runtimeComposition;
+	const session = initialComposition.harness.t5.session;
+	const t5 = initialComposition.harness.t5;
+	const registry = initialState.registry;
+	const connector = initialState.connector;
+	const store = initialState.store;
+	const toolGatewayRuntime = initialComposition.toolGateway;
+	if (registry === undefined || connector === undefined || store === undefined || toolGatewayRuntime === undefined) {
+		throw new Error("AC-07 canonical composition did not register its gateway connector");
+	}
+	return {
+		session,
+		t5,
+		registry,
+		connector,
+		descriptor,
+		selection: {
+			providerId: descriptor.providerId,
+			revision: descriptor.revision,
+			capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+		},
+		driver: initialDriver,
+		store,
+		toolGatewayRequests,
+		toolGatewayResults,
+		toolGatewayRuntime,
+		preparePolicy: async (runId: string) => {
+			await initial.session.whenCapabilitiesReady(runId);
+			const policyBinding = initial.session.getActiveExecutionPolicyBinding();
+			if (policyBinding === undefined || policyBinding.runId !== runId) {
+				throw new Error("AC-07 canonical Session did not materialize its Run policy binding");
+			}
+			return policyBinding;
+		},
+		recompose: async (canonicalToolGatewayRequests: readonly ToolGatewayRequest[]) => {
+			const attemptId = canonicalToolGatewayRequests[0]?.context.attemptId;
+			if (attemptId === undefined) throw new Error("Line 13 recovery requires a canonical Attempt identity");
+			const privateState = await initialSupervision.privateStateStore.read(attemptId);
+			if (privateState === undefined) throw new Error("Line 13 recovery requires durable supervisor identity");
+			const restoredSupervision = createExternalConnectorTestSupervision();
+			await restoredSupervision.privateStateStore.write(attemptId, privateState);
+			let releaseReloadedProcess: (() => void) | undefined;
+			const reloadedProcessHandle: ExternalConnectorProcessHandle = {
+				operationNonce: privateState.reference.operationNonce,
+				detached: false,
+				containment: privateState.containment,
+				identity: privateState.processIdentity,
+				exited: new Promise<void>((resolve) => {
+					releaseReloadedProcess = resolve;
+				}),
+				activate: async () => undefined,
+				forceTerminate: () => {
+					releaseReloadedProcess?.();
+					releaseReloadedProcess = undefined;
+					return "termination_requested";
+				},
+				forceTerminateBounded: async (_request, _options) => {
+					releaseReloadedProcess?.();
+					releaseReloadedProcess = undefined;
+					return "termination_requested";
+				},
+			};
+			restoredSupervision.processController.reattachResult = {
+				status: "attached",
+				handle: reloadedProcessHandle,
+			};
+			const restoredDriver = new Line13CurrentDriver(true, { canonicalToolGatewayRequests });
+			const restoredState: CanonicalCurrentConnectorState = {
+				driver: restoredDriver,
+				supervision: restoredSupervision,
+				supervisionOptions: restoredSupervision.options,
+			};
+			states.set(sessionManager.getSessionId(), restoredState);
+			const restored = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				policyProfile: EXTERNAL_POLICY_PROFILE.id,
+				noTools: "all",
+			});
+			sessions.push(restored.session);
+			const restoredComposition = restored.runtimeComposition;
+			const restoredSession = restoredComposition.harness.t5.session;
+			const restoredT5 = restoredComposition.harness.t5;
+			const restoredRegistry = restoredState.registry;
+			const restoredConnector = restoredState.connector;
+			const restoredStore = restoredState.store;
+			const restoredToolGateway = restoredComposition.toolGateway;
+			if (
+				restoredRegistry === undefined ||
+				restoredConnector === undefined ||
+				restoredStore === undefined ||
+				restoredToolGateway === undefined
+			) {
+				throw new Error("AC-07 recomposition did not register its gateway connector");
+			}
+			return {
+				session: restoredSession,
+				t5: restoredT5,
+				registry: restoredRegistry,
+				connector: restoredConnector,
+				store: restoredStore,
+				driver: restoredDriver,
+				toolGateway: restoredToolGateway,
+			};
+		},
+		cleanup: async () => {
+			initialDriver.releaseRead();
+			for (const current of sessions) {
+				await current.dispose();
+				await current.waitForDispose();
+			}
+			rmSync(cwd, { recursive: true, force: true });
 		},
 	};
 }
@@ -1237,7 +1512,7 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			fullTestName:
 				"Line 13 advertised External Connector tool-gateway capability survives crash, reload, resume, and terminal product settlement",
 			scenario: {
-				fixture: () => createCurrentConnectorFixture(true, true),
+				fixture: () => createCanonicalCurrentConnectorFixture(true),
 				assertion: async (fixture) => {
 					const runId = "line13-ac07-tool-gateway";
 					const canonicalInput = {
@@ -1282,12 +1557,19 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 							},
 						},
 						workspace: "workspace-ref",
-						policyBinding: externalPolicyBinding(runId),
+						policyBinding: await fixture.preparePolicy(runId),
 						now: () => NOW,
 					});
 					void abandonedExecution.catch(() => undefined);
 					let operation = await fixture.store.readOperation(identity.attemptId);
-					for (let attempt = 0; attempt < 100 && (operation?.status !== "running" || fixture.driver.readCalls !== 1 || fixture.toolGatewayResults.length !== 2); attempt += 1) {
+					for (
+						let attempt = 0;
+						attempt < 100 &&
+						(operation?.status !== "running" ||
+							fixture.driver.readCalls !== 1 ||
+							fixture.toolGatewayResults.length !== 2);
+						attempt += 1
+					) {
 						await new Promise<void>((resolve) => setImmediate(resolve));
 						operation = await fixture.store.readOperation(identity.attemptId);
 					}
@@ -1332,9 +1614,7 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 					});
 					const gatewayObjectIds = [
 						...new Set(
-							gatewayRecords.flatMap((record) =>
-								record.kind === "retention" ? [] : [record.objectId],
-							),
+							gatewayRecords.flatMap((record) => (record.kind === "retention" ? [] : [record.objectId])),
 						),
 					].sort();
 					assert.deepStrictEqual(
@@ -1404,7 +1684,9 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 							policyBindings: 1,
 							fabricatedPolicyAuthority: false,
 							gatewayObjectIds: expectedRequests
-								.map((request) => externalConnectorToolGatewayExchangeId(identity.attemptId, request.toolCallId))
+								.map((request) =>
+									externalConnectorToolGatewayExchangeId(identity.attemptId, request.toolCallId),
+								)
 								.sort(),
 							attemptStatus: "succeeded",
 							runStatus: "completed",

@@ -7,6 +7,7 @@ import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	ExternalConnectorSupervisorError,
 	externalConnectorProcessContainment,
+	externalConnectorSupervisorFailure,
 	type ExternalConnectorProcessController,
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessIdentity,
@@ -14,6 +15,7 @@ import {
 	type ExternalConnectorProcessReattachResult,
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
+	type ExternalConnectorProcessTerminationOptions,
 	type ExternalConnectorSupervisorLimits,
 	type ExternalConnectorSupervisorSegment,
 } from "../src/core/external-connector-supervisor.ts";
@@ -32,6 +34,12 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 	forceCalls = 0;
 	resolveOnForce = true;
 	terminationIdentity: ExternalConnectorProcessIdentity;
+	boundedTermination:
+		| ((
+				request: ExternalConnectorProcessTerminationRequest,
+				options: ExternalConnectorProcessTerminationOptions,
+		  ) => Promise<ExternalConnectorProcessTerminationResult>)
+		| undefined;
 	#resolveExit: (() => void) | undefined;
 
 	constructor(request: ExternalConnectorProcessLaunchRequest, identity: ExternalConnectorProcessIdentity) {
@@ -74,6 +82,13 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 		this.forceCalls += 1;
 		if (this.resolveOnForce) this.#resolveExit?.();
 		return "termination_requested";
+	}
+
+	forceTerminateBounded(
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	): Promise<ExternalConnectorProcessTerminationResult> {
+		return this.boundedTermination?.(request, options) ?? Promise.resolve(this.forceTerminate(request));
 	}
 }
 
@@ -437,6 +452,37 @@ describe("current External Connector robust supervision", () => {
 		}
 	});
 
+	it("includes bounded identity termination in one disposal deadline and never accepts a late cleanup", async () => {
+		const clock = new DeterministicClock();
+		const controller = new ControlledProcessController();
+		const value = supervisor(controller, { dispose: { hardMs: 5, idleMs: 50 } }, true, clock);
+		await value.launch(() => Promise.resolve());
+		const termination = gate<ExternalConnectorProcessTerminationResult>();
+		let terminationSignal: AbortSignal | undefined;
+		let terminationDeadlineMs: number | undefined;
+		controller.lastHandle!.boundedTermination = async (_request, options) => {
+			terminationSignal = options.signal;
+			terminationDeadlineMs = options.deadlineMs;
+			return termination.promise;
+		};
+
+		const disposing = value.dispose();
+		await drainPromiseJobs();
+		expect(terminationDeadlineMs).toBe(5);
+		expect(terminationSignal?.aborted).toBe(false);
+
+		clock.advanceBy(5);
+		await drainPromiseJobs();
+		await expect(disposing).rejects.toMatchObject({ code: "reconcile_required", segment: "dispose" });
+		expect(terminationSignal?.aborted).toBe(true);
+		expect(value.snapshot).toMatchObject({ cleaned: false, quarantined: true });
+		expect(clock.pendingCount()).toBe(0);
+
+		termination.resolve("termination_requested");
+		await drainPromiseJobs();
+		expect(value.snapshot.cleaned).toBe(false);
+	});
+
 	it("bounds event count, bytes, artifact refs, and rate before force termination", async () => {
 		for (const events of [
 			[event("started"), event("progress", { sequence: 1 }), event("progress", { sequence: 2 })],
@@ -696,4 +742,16 @@ describe("current External Connector robust supervision", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it.each(["external_frame_oversize", "external_process_identity_ambiguous"] as const)(
+		"projects %s through the Foundation supervisor error contract",
+		(code) => {
+			const projected = externalConnectorSupervisorFailure(
+				new ExternalConnectorSupervisorError(code, "event", false),
+			);
+			expect(projected.code).toBe(code);
+			expect(projected.message).not.toContain("event");
+			expect(projected.details).toEqual({ segment: "event" });
+		},
+	);
 });

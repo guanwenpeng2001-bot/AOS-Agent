@@ -1,5 +1,6 @@
 import {
 	InMemorySessionStorage,
+	Result,
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
@@ -16,6 +17,7 @@ import type {
 	ExternalConnectorProcessReattachResult,
 	ExternalConnectorProcessTerminationRequest,
 	ExternalConnectorProcessTerminationResult,
+	ExternalConnectorProcessTerminationOptions,
 	ExternalConnectorSupervisorPrivateState,
 } from "../src/core/external-connector-supervisor.ts";
 import {
@@ -101,6 +103,14 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 			this.#resolveExit = undefined;
 		}
 		return "termination_requested";
+	}
+
+	forceTerminateBounded(
+		request: ExternalConnectorProcessTerminationRequest,
+		options: ExternalConnectorProcessTerminationOptions,
+	): Promise<ExternalConnectorProcessTerminationResult> {
+		if (options.signal?.aborted === true) return Promise.resolve("ambiguous");
+		return Promise.resolve(this.forceTerminate(request));
 	}
 
 	resolveExit(): void {
@@ -244,6 +254,7 @@ export function createExternalConnectorTestRuntime(snapshot: ConnectorCapability
 	return createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
+		capabilityProbe: async () => Result.ok(snapshot),
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver: new RegistrationOnlyDriver(),
 		supervision: createExternalConnectorTestSupervision().options,

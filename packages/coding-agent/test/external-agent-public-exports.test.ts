@@ -1,10 +1,21 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { FOUNDATION_ERROR_CODES, FoundationError } from "@aos-agent/agent-core";
+import {
+	EXTERNAL_ERROR_CODES,
+	EXTERNAL_ERROR_MESSAGES,
+	FOUNDATION_ERROR_CODES,
+	FoundationError,
+} from "@aos-agent/agent-core";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index.ts";
+import {
+	isAutomationErrorCode,
+	serializePublicAutomationError,
+	serializePublicRunReceipt,
+} from "../src/core/run-lifecycle.ts";
+import { cloneExternalConnectorTerminalEvidence } from "../src/core/vendor-drivers/types.ts";
 
 const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 	{
@@ -18,6 +29,17 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
+		code: "external_capability_mismatch",
+		meaning: "The pinned Connector capability snapshot is missing, unsupported, or changed during preflight",
+		retryable: "no",
+	},
+	{
+		code: "external_binding_invalid",
+		meaning:
+			"Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely",
+		retryable: "no",
+	},
+	{
 		code: "external_mapping_conflict",
 		meaning: "Mapping history already conflicts with the persisted External Connector Attempt",
 		retryable: "no",
@@ -28,29 +50,8 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
-		code: "external_binding_invalid",
-		meaning:
-			"Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely",
-		retryable: "no",
-	},
-	{
-		code: "external_capability_mismatch",
-		meaning: "The pinned Connector capability snapshot is missing, unsupported, or changed during preflight",
-		retryable: "no",
-	},
-	{
 		code: "external_event_invalid",
 		meaning: "The Connector emitted invalid or out-of-order supervised output",
-		retryable: "no",
-	},
-	{
-		code: "external_resource_limit_exceeded",
-		meaning: "Connector input or supervised output exceeded a bounded resource limit",
-		retryable: "no",
-	},
-	{
-		code: "external_path_outside_workspace",
-		meaning: "A Connector input or artifact reference resolves outside its trusted workspace",
 		retryable: "no",
 	},
 	{
@@ -59,8 +60,73 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
+		code: "external_path_outside_workspace",
+		meaning: "A Connector input or artifact reference resolves outside its trusted workspace",
+		retryable: "no",
+	},
+	{
+		code: "external_review_required",
+		meaning: "The Connector operation requires an explicit review decision before execution",
+		retryable: "no",
+	},
+	{
+		code: "external_review_rejected",
+		meaning: "The Connector operation was rejected by the required review decision",
+		retryable: "no",
+	},
+	{
+		code: "external_credential_unavailable",
+		meaning: "A trusted credential target required by the Connector is unavailable",
+		retryable: "no",
+	},
+	{
 		code: "external_terminal_ambiguous",
 		meaning: "Vendor terminal lookup returned ambiguous state; operator reconciliation is required",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_config_invalid",
+		meaning: "The trusted Connector configuration is invalid or violates the public registration contract",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_not_ready",
+		meaning: "The trusted Connector has not completed the readiness checks required for this operation",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_readiness_stale",
+		meaning: "The Connector readiness snapshot is stale and must be refreshed before execution",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_circuit_open",
+		meaning: "The Connector retry circuit is open after recent bounded failures",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_dependency_missing",
+		meaning: "A trusted dependency required by the Connector is missing or unavailable",
+		retryable: "no",
+	},
+	{
+		code: "external_connector_executable_untrusted",
+		meaning: "The Connector executable or module is not from a trusted target",
+		retryable: "no",
+	},
+	{
+		code: "external_resource_limit_exceeded",
+		meaning: "Connector input or supervised output exceeded a bounded resource limit",
+		retryable: "no",
+	},
+	{
+		code: "external_frame_oversize",
+		meaning: "A Connector protocol frame exceeded the configured byte limit",
+		retryable: "no",
+	},
+	{
+		code: "external_process_identity_ambiguous",
+		meaning: "A Connector process identity could not be matched uniquely for safe recovery or termination",
 		retryable: "no",
 	},
 	{
@@ -224,5 +290,75 @@ describe("External Connector public exports", () => {
 				"External connector Tool Gateway policy or route denied the request.",
 			).category,
 		).toBe("permission");
+	});
+
+	it("publishes every stable External Connector error through Foundation and Automation", () => {
+		expect(FOUNDATION_ERROR_CODES.filter((code) => code.startsWith("external_"))).toEqual(EXTERNAL_ERROR_CODES);
+		const expectedCategories = {
+			external_connector_unavailable: "provider",
+			external_protocol_unsupported: "provider",
+			external_capability_mismatch: "provider",
+			external_binding_invalid: "validation",
+			external_mapping_conflict: "conflict",
+			external_resume_unsupported: "provider",
+			external_event_invalid: "provider",
+			external_tool_route_denied: "permission",
+			external_path_outside_workspace: "validation",
+			external_review_required: "permission",
+			external_review_rejected: "permission",
+			external_credential_unavailable: "provider",
+			external_terminal_ambiguous: "provider",
+			external_connector_config_invalid: "validation",
+			external_connector_not_ready: "provider",
+			external_connector_readiness_stale: "provider",
+			external_connector_circuit_open: "provider",
+			external_connector_dependency_missing: "provider",
+			external_connector_executable_untrusted: "permission",
+			external_resource_limit_exceeded: "provider",
+			external_frame_oversize: "validation",
+			external_process_identity_ambiguous: "provider",
+		} as const;
+		for (const code of EXTERNAL_ERROR_CODES) {
+			expect(isAutomationErrorCode(code)).toBe(true);
+			const rawMessage = `private external failure ${code} C:\\private\\credential.txt`;
+			const foundation = new FoundationError(code, rawMessage, { retryable: true });
+			expect(foundation.category).toBe(expectedCategories[code]);
+			expect(foundation.toPublicExecutionError()).toEqual({
+				code,
+				message: EXTERNAL_ERROR_MESSAGES[code],
+				retryable: true,
+			});
+			expect(serializePublicAutomationError({ code, message: rawMessage, retryable: true })).toEqual({
+				code,
+				message: EXTERNAL_ERROR_MESSAGES[code],
+				retryable: true,
+			});
+			const evidence = cloneExternalConnectorTerminalEvidence({
+				externalSessionId: "external-session",
+				externalTurnId: "external-turn",
+				operationNonce: "operation-nonce",
+				status: "failed",
+				sideEffectState: "none",
+				producedAt: "2026-08-27T00:00:00.000Z",
+				error: { code, message: rawMessage, retryable: true },
+			});
+			expect(evidence.error).toMatchObject({ code });
+			expect(evidence.error?.message).toBe(EXTERNAL_ERROR_MESSAGES[code]);
+			const receipt = serializePublicRunReceipt({
+				runId: `run-${code}`,
+				sessionId: "session-external",
+				runReceiptId: `receipt-${code}`,
+				attemptReceiptIds: [],
+				sideEffectState: "none",
+				status: "failed",
+				usage: { input: 0, output: 0, total: 0 },
+				terminalError: { code, message: rawMessage, retryable: true },
+			});
+			expect(receipt.terminalError).toEqual({
+				code,
+				message: EXTERNAL_ERROR_MESSAGES[code],
+				retryable: true,
+			});
+		}
 	});
 });

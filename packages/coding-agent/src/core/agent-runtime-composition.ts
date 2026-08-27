@@ -3,6 +3,8 @@ import type {
 	Session,
 	ToolGateway,
 } from "@aos-agent/agent-core";
+import { createCanonicalExternalToolGateway, bindCanonicalExternalToolGatewayPolicy } from "./external-tool-gateway-authority.ts";
+import type { ExternalToolGatewayPolicyAuthority } from "./external-tool-gateway-authority.ts";
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "./capability-registry.ts";
 import type {
@@ -213,8 +215,15 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				"Trusted Scheduler composition",
 			);
 			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
-			const toolGateway = explicitToolGateway ?? subagents?.toolGateway;
-			requireFresh(toolGateway, "Trusted Tool Gateway");
+			const underlyingToolGateway = explicitToolGateway ?? subagents?.toolGateway;
+			requireFresh(underlyingToolGateway, "Trusted Tool Gateway");
+			const toolGateway = underlyingToolGateway === undefined
+				? undefined
+				: createCanonicalExternalToolGateway(underlyingToolGateway);
+			const composedSubagents =
+				subagents === undefined || toolGateway === undefined || subagents.toolGateway !== underlyingToolGateway
+					? subagents
+					: Object.freeze({ ...subagents, toolGateway });
 			const externalConnectorRegistry = requireFresh(
 				snapshot.externalConnectorRegistry?.(publicContext, toolGateway) ?? snapshot.externalConnectorRegistryInstance,
 				"Trusted External Connector registry",
@@ -223,13 +232,13 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
 				"Trusted Task Credential provider",
 			);
-			assertCanonicalProviders(publicContext, toolGateway, subagents, scheduler);
+			assertCanonicalProviders(publicContext, toolGateway, composedSubagents, scheduler);
 			return Object.freeze({
 				...publicContext,
 				factory,
 				...(toolGateway === undefined ? {} : { toolGateway }),
 				...(workerSandboxProvider === undefined ? {} : { workerSandboxProvider }),
-				...(subagents === undefined ? {} : { subagents }),
+				...(composedSubagents === undefined ? {} : { subagents: composedSubagents }),
 				...(scheduler === undefined ? {} : { scheduler }),
 				...(externalConnectorRegistry === undefined
 					? {}
@@ -276,6 +285,14 @@ export function bindAgentRuntimeSchedulerComposition(
 		...composition.scheduler,
 		runLifecycleSession,
 	});
+}
+
+/** @internal Bind the canonical policy authority after AgentSession creates its control plane. */
+export function bindAgentRuntimeToolGatewayPolicy(
+	composition: AgentRuntimeComposition,
+	policy: ExternalToolGatewayPolicyAuthority,
+): void {
+	bindCanonicalExternalToolGatewayPolicy(composition.toolGateway, policy);
 }
 
 /** @internal Compatibility adapter; production roots use the branded public options. */

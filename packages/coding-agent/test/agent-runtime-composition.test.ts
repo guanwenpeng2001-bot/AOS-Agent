@@ -77,6 +77,7 @@ interface RuntimeFixture {
 interface CompositionCaptures {
 	readonly contexts: AgentRuntimeCompositionContext[];
 	readonly gateways: ToolGateway[];
+	readonly composedGateways: ToolGateway[];
 	readonly workers: ReturnType<typeof createTrustedWorkerSandboxComposition>[];
 	readonly subagents: TrustedSubagentCompositionOptionsV1[];
 	readonly schedulers: TrustedSchedulerRuntimeOptions[];
@@ -418,9 +419,8 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 		},
 		externalConnectorRegistry: (context, toolGateway) => {
 			captures.contexts.push(context);
-			if (toolGateway !== captures.gateways.at(-1)) {
-				throw new Error("External registry must receive the canonical composition Tool Gateway");
-			}
+			if (toolGateway === undefined) throw new Error("External registry requires the canonical composition Tool Gateway");
+			captures.composedGateways.push(toolGateway);
 			const registry = createTestExternalConnectorRegistry(context.sessionId, toolGateway);
 			captures.externalRegistries.push(registry);
 			return registry;
@@ -443,6 +443,7 @@ function emptyCaptures(): CompositionCaptures {
 	return {
 		contexts: [],
 		gateways: [],
+		composedGateways: [],
 		workers: [],
 		subagents: [],
 		schedulers: [],
@@ -567,9 +568,10 @@ describe("AgentRuntimeComposition", () => {
 			expect(composition).toBe(created.session.agentRuntimeComposition);
 			expect(composition.session).toBe(getAgentCanonicalSession(created.session));
 			expect(composition.sessionId).toBe("composition-root");
-			expect(composition.toolGateway).toBe(captures.gateways[0]);
+			expect(composition.toolGateway).toBe(captures.composedGateways[0]);
+			expect(composition.toolGateway).not.toBe(captures.gateways[0]);
 			expect(composition.workerSandboxProvider).toBe(captures.workers[0]?.provider);
-			expect(composition.subagents).toBe(captures.subagents[0]);
+			expect(composition.subagents).not.toBe(captures.subagents[0]);
 			expect(composition.scheduler).toMatchObject(captures.schedulers[0] ?? {});
 			expect(composition.scheduler).not.toHaveProperty("runLifecycleSession");
 			expect(composition.externalConnectorRegistry).toBe(captures.externalRegistries[0]);
@@ -880,9 +882,9 @@ describe("AgentRuntimeComposition", () => {
 			expect(created.runtimeComposition.factory).toBe(factory);
 			expect(created.runtimeComposition.session).toBe(session);
 			expect(created.runtimeComposition.harness).toBe(created.harness);
-			expect(created.runtimeComposition.toolGateway).toBe(gateway);
+			expect(created.runtimeComposition.toolGateway).not.toBe(gateway);
 			if (!("operationToolGateway" in created)) throw new Error("Expected composition Tool Gateway");
-			expect(created.operationToolGateway).toBe(gateway);
+			expect(created.operationToolGateway).toBe(created.runtimeComposition.toolGateway);
 		} finally {
 			await created.harness.close();
 			await env.cleanup();

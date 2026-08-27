@@ -3,7 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import {
 	canonicalFoundationJson,
+	fingerprintFoundationValue,
 	FoundationError,
+	validateAgentBinding,
+	validateBindingEpoch,
 	validateDurableEvent,
 	type AgentBinding,
 	type AgentHarness,
@@ -11,6 +14,8 @@ import {
 	type HarnessTool,
 	type Session,
 	type TaskEnvelope,
+	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import {
 	CapabilityError,
@@ -41,6 +46,7 @@ import {
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
+	type PolicyOperationRequest,
 	type PolicyOperationSource,
 	type PublicPolicySummary,
 	resolveTaskCredentialPreflight,
@@ -177,6 +183,8 @@ import type {
  */
 export interface FoundationControlPlaneOptions {
 	harness: AgentHarness;
+	/** Canonical Session used to resolve durable AgentBinding and PolicyBinding facts. */
+	canonicalSession?: Session;
 	sessionManager: SessionManager;
 	sessionLedger?: {
 		getSessionId(): string;
@@ -641,6 +649,102 @@ function hasExactKeys(value: object, required: readonly string[], optional: read
 		Object.keys(value).every((key) => allowed.has(key));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is ReadonlyArray<string> {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isPolicyBindingPayload(value: unknown): value is PolicyBinding {
+	if (!isRecord(value)) return false;
+	if (
+		value.schemaVersion !== 1 ||
+		typeof value.id !== "string" ||
+		typeof value.profileId !== "string" ||
+		typeof value.profileRevision !== "string" ||
+		(value.projectTrust !== "trusted" && value.projectTrust !== "untrusted") ||
+		(value.enforcement !== "legacy" && value.enforcement !== "host" && value.enforcement !== "sandbox") ||
+		typeof value.runId !== "string" ||
+		typeof value.createdAt !== "string" ||
+		typeof value.workspaceIdentity !== "string" ||
+		typeof value.bindingHash !== "string" ||
+		(value.capabilityBindingId !== undefined && typeof value.capabilityBindingId !== "string") ||
+		(value.sandboxProviderId !== undefined && typeof value.sandboxProviderId !== "string")
+	) return false;
+	const sandboxCapabilities = value.sandboxCapabilities;
+	if (!isRecord(sandboxCapabilities) || Object.values(sandboxCapabilities).some((item) => typeof item !== "boolean")) return false;
+	if (
+		value.sandboxStatus !== "not_required" &&
+		value.sandboxStatus !== "unavailable" &&
+		value.sandboxStatus !== "preparing" &&
+		value.sandboxStatus !== "ready" &&
+		value.sandboxStatus !== "failed" &&
+		value.sandboxStatus !== "disposed"
+	) return false;
+	const constraints = value.constraints;
+	if (!isRecord(constraints)) return false;
+	const workspace = constraints.workspace;
+	const process = constraints.process;
+	const network = constraints.network;
+	const credentials = constraints.credentials;
+	if (
+		!isRecord(workspace) || !isStringArray(workspace.read) || !isStringArray(workspace.write) || !isStringArray(workspace.deny) ||
+		!isRecord(process) || (process.action !== "allow" && process.action !== "ask" && process.action !== "deny") || typeof process.inheritEnvironment !== "boolean" || typeof process.allowedEnvironmentCount !== "number" ||
+		(process.cwdScopes !== undefined && !isStringArray(process.cwdScopes)) ||
+		!isRecord(network) || (network.action !== "allow" && network.action !== "ask" && network.action !== "deny") || typeof network.allowedDestinationCount !== "number" ||
+		!isRecord(credentials) || (credentials.action !== "allow" && credentials.action !== "ask" && credentials.action !== "deny") || typeof credentials.allowedNameCount !== "number"
+	) return false;
+	return true;
+}
+
+function externalToolGatewayDenied(message = "External connector Tool Gateway policy denied the request"): FoundationError {
+	return new FoundationError("external_tool_route_denied", message);
+}
+
+function externalToolPath(request: ToolGatewayRequest, key: "path" | "targetPath"): string | undefined {
+	if (!isRecord(request.originalArguments)) return undefined;
+	const value = request.originalArguments[key];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+export function externalToolPolicyOperation(
+	request: ToolGatewayRequest,
+	route: ToolGatewayRoute,
+	capabilityId?: string,
+): PolicyOperationRequest {
+	const routeName = route.toolName.startsWith("workspace.")
+		? route.toolName.slice("workspace.".length)
+		: route.namespace === "workspace"
+			? route.toolName
+			: undefined;
+	if (routeName === "read" || routeName === "find" || routeName === "grep" || routeName === "write" || routeName === "edit") {
+		const resource = routeName === "find"
+			? "filesystem.find"
+			: routeName === "grep"
+				? "filesystem.grep"
+				: routeName === "write" || routeName === "edit"
+					? "filesystem.write"
+					: "filesystem.read";
+		return {
+			resource,
+			source: route.kind === "mcp" ? "mcp" : "rpc",
+			id: request.toolCallId,
+			scope: "workspace",
+			...(capabilityId === undefined ? {} : { capabilityId }),
+			...(externalToolPath(request, "path") === undefined ? {} : { path: externalToolPath(request, "path") }),
+			...(externalToolPath(request, "targetPath") === undefined ? {} : { targetPath: externalToolPath(request, "targetPath") }),
+		};
+	}
+	return {
+		resource: "capability.invoke",
+		source: route.kind === "mcp" ? "mcp" : "rpc",
+		id: request.toolCallId,
+		...(capabilityId === undefined ? {} : { capabilityId }),
+	};
+}
+
 function isCanonicalWorkerTimestamp(value: string): boolean {
 	const timestamp = Date.parse(value);
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
@@ -648,6 +752,7 @@ function isCanonicalWorkerTimestamp(value: string): boolean {
 
 export class FoundationControlPlane {
 	private readonly harness: AgentHarness;
+	private readonly canonicalSession: Session | undefined;
 	private readonly sessionManager: SessionManager;
 	private readonly sessionLedger: NonNullable<FoundationControlPlaneOptions["sessionLedger"]>;
 	private readonly settingsManager: SettingsManager;
@@ -720,6 +825,7 @@ export class FoundationControlPlane {
 
 	constructor(options: FoundationControlPlaneOptions) {
 		this.harness = options.harness;
+		this.canonicalSession = options.canonicalSession;
 		this.sessionManager = options.sessionManager;
 		this.sessionLedger = options.sessionLedger ?? {
 			getSessionId: () => this.sessionManager.getSessionId(),
@@ -1359,6 +1465,129 @@ export class FoundationControlPlane {
 		});
 		this.recordDecision(decision);
 		this.assertDecisionAllowed(decision);
+	}
+
+	/**
+	 * Authorize an External Connector Tool Gateway request against the durable
+	 * AgentBinding and PolicyBinding selected by the canonical Session. The
+	 * authority is intentionally here, at the composition boundary, so a
+	 * registry callback cannot bypass binding, policy, approval, or MCP
+	 * selection before the underlying provider is invoked.
+	 */
+	async authorizeExternalToolGatewayRequest(
+		request: ToolGatewayRequest,
+		route: ToolGatewayRoute,
+	): Promise<void> {
+		try {
+			if (
+				this.canonicalSession === undefined ||
+				request.context.attemptId === undefined ||
+				request.context.operationId === undefined
+			) {
+				throw externalToolGatewayDenied();
+			}
+			await this.ensurePolicyReady(request.context.operationId, undefined, false);
+			const bindingRecord = await this.canonicalSession.getFoundationObject("agent_binding", request.context.bindingId);
+			if (bindingRecord === undefined || bindingRecord.kind !== "fact") throw externalToolGatewayDenied();
+			const checkedBinding = validateAgentBinding(bindingRecord.payload);
+			if (
+				!checkedBinding.ok ||
+				checkedBinding.value.bindingId !== request.context.bindingId ||
+				checkedBinding.value.taskId !== request.context.taskId ||
+				checkedBinding.value.capabilitySelector.policy === "none"
+			) {
+				throw externalToolGatewayDenied();
+			}
+			const binding = checkedBinding.value;
+			const epochRecord = await this.canonicalSession.getFoundationObject("binding_epoch", request.context.bindingEpochId);
+			if (epochRecord === undefined || epochRecord.kind !== "fact") throw externalToolGatewayDenied();
+			const checkedEpoch = validateBindingEpoch(epochRecord.payload);
+			if (
+				!checkedEpoch.ok ||
+				checkedEpoch.value.taskId !== binding.taskId ||
+				checkedEpoch.value.bindingId !== binding.bindingId ||
+				checkedEpoch.value.attemptId !== request.context.attemptId
+			) {
+				throw externalToolGatewayDenied();
+			}
+			const policyReference = binding.policyRevision;
+			if (
+				policyReference.type !== "policy_binding" ||
+				policyReference.fingerprint === undefined
+			) {
+				throw externalToolGatewayDenied();
+			}
+			const policyRecord = await this.canonicalSession.getFoundationObject("policy_binding", policyReference.id);
+			if (policyRecord === undefined || policyRecord.kind !== "fact") throw externalToolGatewayDenied();
+			if (fingerprintFoundationValue(policyRecord.payload).value !== policyReference.fingerprint.value) {
+				throw externalToolGatewayDenied();
+			}
+			if (!isPolicyBindingPayload(policyRecord.payload)) throw externalToolGatewayDenied();
+			const durablePolicyBinding = policyRecord.payload;
+			if (
+				durablePolicyBinding.id !== policyReference.id ||
+				durablePolicyBinding.runId !== request.context.operationId ||
+				this.policyProfile === undefined ||
+				this.policyBinding === undefined ||
+				durablePolicyBinding.profileId !== this.policyProfile.id ||
+				durablePolicyBinding.profileRevision !== this.policyBinding.profileRevision ||
+				(durablePolicyBinding.capabilityBindingId !== undefined &&
+					durablePolicyBinding.capabilityBindingId !== this.capabilityBinding?.id)
+			) {
+				throw externalToolGatewayDenied();
+			}
+
+			const routeNames = [
+				route.toolName,
+				...(route.namespace === undefined ? [] : [`${route.namespace}.${route.toolName}`]),
+			];
+			const selector = binding.capabilitySelector;
+			if (
+				(selector.policy === "named" && !(selector.named ?? []).some((name) => routeNames.includes(name))) ||
+				(selector.policy === "except" && (selector.named ?? []).some((name) => routeNames.includes(name)))
+			) {
+				throw externalToolGatewayDenied();
+			}
+
+			const catalog = this.capabilityCatalog;
+			const selectedCapabilities = this.capabilityBinding;
+			const matchingDescriptors = (catalog?.descriptors ?? []).filter((descriptor) => {
+				if (route.kind === "mcp") {
+					return (
+						descriptor.kind === "mcp_tool" &&
+						descriptor.mcpServerId === route.namespace &&
+						(descriptor.name === route.toolName || descriptor.exposedToolName === route.toolName)
+					);
+				}
+				return descriptor.exposedToolName === route.toolName || descriptor.exposedToolName === `${route.namespace ?? ""}.${route.toolName}`;
+			});
+			if (route.kind === "mcp" && matchingDescriptors.length !== 1) throw externalToolGatewayDenied();
+			if (matchingDescriptors.length > 1) throw externalToolGatewayDenied();
+			const descriptor = matchingDescriptors[0];
+			if (descriptor !== undefined) {
+				const selected = selectedCapabilities?.descriptors.find((ref) => ref.id === descriptor.id);
+				if (
+					selected === undefined ||
+					selected.revision !== descriptor.revision ||
+					(selected.exposedToolName !== undefined && descriptor.exposedToolName !== selected.exposedToolName) ||
+					(route.kind === "mcp" && !selectedCapabilities?.toolAllowlist.includes(descriptor.exposedToolName ?? descriptor.name))
+				) {
+					throw externalToolGatewayDenied();
+				}
+			}
+
+			const decision = authorizePolicyOperation({
+				profile: this.policyProfile,
+				binding: durablePolicyBinding,
+				operation: externalToolPolicyOperation(request, route, descriptor?.id),
+				capabilityBinding: this.policyCapabilityBinding(),
+			});
+			this.recordDecision(decision);
+			this.assertDecisionAllowed(decision);
+		} catch (error) {
+			if (error instanceof FoundationError && error.code === "external_tool_route_denied") throw error;
+			throw externalToolGatewayDenied();
+		}
 	}
 
 	private wrapTool(tool: HarnessTool): HarnessTool {

@@ -23,6 +23,7 @@ import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Mo
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import {
 	getAgentCanonicalSession,
 	getAgentSessionLedger,
@@ -251,6 +252,14 @@ const OPAQUE_APPROVAL_BINDING_ID = `binding:${"a".repeat(43)}`;
 const OPAQUE_REVISION_ID = `rev:${"r".repeat(43)}`;
 const RPC_IMAGE_ID = "4".repeat(64);
 const RPC_FILE_ID = "5".repeat(64);
+const RPC_COMPOSITION_TOOL_PROVIDER_ID = "rpc.current.external";
+
+interface RpcCompositionToolGatewayState {
+	readonly toolGatewayRequests: ToolGatewayRequest[];
+	readonly toolGatewayResults: ToolExecutionResult[];
+}
+
+const rpcCompositionToolGatewayStates = new Map<string, RpcCompositionToolGatewayState>();
 
 function rpcDigest(id: string): ArtifactDigest {
 	return `sha256:${id}`;
@@ -679,7 +688,10 @@ async function installRpcExternalConnector(
 		};
 	},
 ): Promise<RpcExternalConnectorFixture> {
-	const providerId = `rpc.current.${options.modelAccess.replace("_", "-")}`;
+	const providerId =
+		options.toolGateway === true
+			? RPC_COMPOSITION_TOOL_PROVIDER_ID
+			: `rpc.current.${options.modelAccess.replace("_", "-")}`;
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId,
@@ -735,6 +747,7 @@ async function installRpcExternalConnector(
 	const connector = createDurableExternalAgentConnector({
 		providerId,
 		capability: snapshot,
+		capabilityProbe: async () => Result.ok(snapshot),
 		store,
 		driver,
 		supervision: {
@@ -745,41 +758,14 @@ async function installRpcExternalConnector(
 		now: () => "2026-08-27T00:00:00.000Z",
 		operationNonce: () => "rpc-operation-nonce",
 	});
-	const toolGatewayRequests: ToolGatewayRequest[] = [];
-	const toolGatewayResults: ToolExecutionResult[] = [];
-	const toolGateway = options.toolGateway === true
-		? createFoundationToolGateway({
-				gatewayId: `${providerId}.foundation-gateway`,
-				providers: [
-					createLocalToolGatewayProvider({
-						providerId,
-						routes: [{
-							kind: "local",
-							toolName: "workspace.read",
-							namespace: "workspace",
-							providerId,
-							revision: 1,
-						}],
-						invoke: async (request) => {
-							toolGatewayRequests.push(request);
-							const result: ToolExecutionResult = {
-								schemaVersion: 1,
-								toolCallId: request.toolCallId,
-								toolName: request.toolName,
-								ok: true,
-								sideEffectState: "none",
-								toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
-							};
-							toolGatewayResults.push(result);
-							return Result.ok(result);
-						},
-					}),
-				],
-			})
-		: undefined;
-	const registry = createExternalConnectorRegistry({
-		...(toolGateway === undefined ? {} : { toolGateway }),
-	});
+	const compositionState = rpcCompositionToolGatewayStates.get(runtimeHost.session.sessionId);
+	if (options.toolGateway === true && compositionState === undefined) {
+		throw new Error("RPC composition Tool Gateway state is missing");
+	}
+	const toolGatewayRequests = compositionState?.toolGatewayRequests ?? [];
+	const toolGatewayResults = compositionState?.toolGatewayResults ?? [];
+	const registry = runtimeHost.session.getExternalConnectorRegistry();
+	if (registry === undefined) throw new Error("RPC composition External Connector registry is missing");
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
@@ -793,7 +779,6 @@ async function installRpcExternalConnector(
 		trusted: true,
 	});
 	if (!registered.ok) throw registered.error;
-	vi.spyOn(runtimeHost.session, "getExternalConnectorRegistry").mockReturnValue(registry);
 	return {
 		connector,
 		driver,
@@ -1122,6 +1107,49 @@ async function createRuntimeHost(options: {
 			provider === model.provider && modelId === model.id ? model : undefined,
 	} as unknown as ModelRuntime;
 	const resourceLoader = options.resourceLoader ?? testResourceLoader();
+	const runtimeComposition = createAgentRuntimeCompositionFactory({
+		toolGateway: (context) => {
+			const state: RpcCompositionToolGatewayState = {
+				toolGatewayRequests: [],
+				toolGatewayResults: [],
+			};
+			rpcCompositionToolGatewayStates.set(context.sessionId, state);
+			return createFoundationToolGateway({
+				gatewayId: `${context.sessionId}.rpc-foundation-gateway`,
+				providers: [
+					createLocalToolGatewayProvider({
+						providerId: RPC_COMPOSITION_TOOL_PROVIDER_ID,
+						routes: [
+							{
+								kind: "local",
+								namespace: "workspace",
+								toolName: "workspace.read",
+								providerId: RPC_COMPOSITION_TOOL_PROVIDER_ID,
+								revision: 1,
+							},
+						],
+						invoke: async (request) => {
+							state.toolGatewayRequests.push(request);
+							const result: ToolExecutionResult = {
+								schemaVersion: 1,
+								toolCallId: request.toolCallId,
+								toolName: request.toolName,
+								ok: true,
+								sideEffectState: "none",
+								toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
+							};
+							state.toolGatewayResults.push(result);
+							return Result.ok(result);
+						},
+					}),
+				],
+			});
+		},
+		externalConnectorRegistry: (_context, toolGateway) => {
+			if (toolGateway === undefined) throw new Error("RPC composition requires its canonical Tool Gateway");
+			return createExternalConnectorRegistry({ toolGateway });
+		},
+	});
 
 	const openSession = (sessionManager: SessionManager): AgentSession => {
 		return new AgentSession({
@@ -1132,6 +1160,7 @@ async function createRuntimeHost(options: {
 			modelRuntime,
 			resourceLoader,
 			customTools: options.customTools,
+			runtimeComposition,
 		});
 	};
 
@@ -2135,6 +2164,207 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("recomposes the main-to-RPC gateway after a crash cut without duplicating effects", async () => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		let reloadedController: RpcHostController | undefined;
+		try {
+			await harness.runtimeHost.session.prompt("persist composition-owned RPC recovery session");
+			const gatewayRequest: Omit<ToolGatewayRequest, "context"> = {
+				schemaVersion: 1,
+				toolCallId: "rpc-composition-crash-call",
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/composition.txt" },
+				idempotencyKey: "rpc-composition-crash-once",
+			};
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				resume: true,
+				toolGateway: true,
+				connectorToolGatewayRequest: gatewayRequest,
+				readHangs: true,
+			});
+			const initialSession = harness.runtimeHost.session;
+			const initialComposition = initialSession.agentRuntimeComposition;
+			expect(fixture.registry).toBe(initialSession.getExternalConnectorRegistry());
+			expect(initialComposition.toolGateway).toBeDefined();
+
+			await harness.controller.handleCommand({
+				id: "rpc-composition-crash-init",
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			await harness.controller.handleCommand({
+				id: "rpc-composition-crash-start",
+				type: "run.start",
+				message: "composition-owned crash cut",
+				clientRequestId: "rpc-composition-crash-request",
+				externalConnector: fixture.selection,
+			});
+			await vi.waitFor(() =>
+				expect(harness.records).toContainEqual(
+					expect.objectContaining({
+						type: "response",
+						id: "rpc-composition-crash-start",
+						success: true,
+					}),
+				),
+			);
+			const startResponse = harness.records.find(
+				(record) => record.type === "response" && record.id === "rpc-composition-crash-start",
+			);
+			expect(startResponse).toMatchObject({
+				success: true,
+				data: { status: "accepted", attempt: 1 },
+			});
+			if (startResponse === undefined || startResponse.type !== "response" || !("data" in startResponse)) {
+				throw new Error("RPC composition crash start response is missing");
+			}
+			const sourceRunId = (startResponse.data as { readonly runId: string }).runId;
+			await vi.waitFor(() => {
+				expect(fixture.driver.readCalls).toBe(1);
+				expect(fixture.toolGatewayRequests).toHaveLength(1);
+			});
+			expect(terminalEvents(harness.records.map((record) => record as unknown as ParsedOutputLine))).toHaveLength(0);
+			const sessionPath = initialSession.sessionFile;
+			expect(sessionPath).toBeTruthy();
+
+			const reloaded = await harness.reopenController(sessionPath!);
+			reloadedController = reloaded.controller;
+			expect(reloaded.runtimeHost.session).not.toBe(initialSession);
+			expect(reloaded.runtimeHost.session.agentRuntimeComposition).not.toBe(initialComposition);
+			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
+			const canonicalRequest: ToolGatewayRequest = {
+				...gatewayRequest,
+				context: {
+					schemaVersion: 1,
+					bindingId: identity.bindingId,
+					bindingEpochId: identity.bindingEpochId,
+					taskId: identity.taskId,
+					dispatchId: identity.dispatchId,
+					providerId: fixture.selection.providerId,
+					attemptId: identity.attemptId,
+					operationId: sourceRunId,
+				},
+			};
+			const secondCanonicalRequest: ToolGatewayRequest = {
+				...canonicalRequest,
+				toolCallId: "rpc-composition-crash-second-call",
+				originalArguments: { path: "docs/composition-second.txt" },
+			};
+			await installRpcExternalConnector(reloaded.runtimeHost, {
+				modelAccess: "none",
+				resume: true,
+				toolGateway: true,
+				connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
+				supervision: fixture.supervision,
+			});
+			await reloaded.controller.handleCommand({
+				id: "rpc-composition-crash-reload-init",
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const reloadedSession = reloaded.runtimeHost.session;
+			const originalSwitch = vi.mocked(reloaded.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			let restoredFixture: RpcExternalConnectorFixture | undefined;
+			let switchedSession: AgentSession | undefined;
+			vi.spyOn(reloaded.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				switchedSession = reloaded.runtimeHost.session;
+				restoredFixture = await installRpcExternalConnector(reloaded.runtimeHost, {
+					modelAccess: "none",
+					resume: true,
+					toolGateway: true,
+					connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
+					supervision: fixture.supervision,
+				});
+				return result;
+			});
+
+			await reloaded.controller.handleCommand({
+				id: "rpc-composition-crash-resume",
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message: "composition-owned crash cut",
+				externalConnector: fixture.selection,
+			});
+			await vi.waitFor(() => {
+				const resumeRecord = reloaded.records.find(
+					(record) => record.type === "response" && record.id === "rpc-composition-crash-resume",
+				);
+				expect(resumeRecord).toMatchObject({
+					type: "response",
+					success: true,
+					data: { runId: sourceRunId },
+				});
+			});
+			await vi.waitFor(async () => {
+				const receipts = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
+					objectType: "run_receipt",
+				});
+				expect(
+					receipts.filter((record) => record.kind === "fact" && record.correlation.runId === sourceRunId),
+				).toHaveLength(1);
+			});
+			expect(switchedSession).toBeDefined();
+			expect(switchedSession).not.toBe(reloadedSession);
+			expect(switchedSession?.agentRuntimeComposition).not.toBe(initialComposition);
+			expect(restoredFixture).toBeDefined();
+			expect(restoredFixture?.registry).toBe(reloaded.runtimeHost.session.getExternalConnectorRegistry());
+			expect(fixture.driver.spawnCalls).toBe(1);
+			expect(restoredFixture?.driver.spawnCalls).toBe(0);
+			expect(restoredFixture?.driver.connectCalls).toBe(1);
+			expect(fixture.toolGatewayRequests).toHaveLength(1);
+			expect(restoredFixture?.toolGatewayRequests).toHaveLength(1);
+			expect(restoredFixture?.toolGatewayRequests[0]?.toolCallId).toBe(secondCanonicalRequest.toolCallId);
+
+			const gatewayRecords = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
+				objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+				includePruned: true,
+			});
+			const gatewayRecordsForAttempt = gatewayRecords.filter(
+				(record) =>
+					(record.kind === "fact" || record.kind === "intent") &&
+					(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId,
+			);
+			expect(gatewayRecordsForAttempt).toHaveLength(4);
+			expect(
+				new Set(
+					gatewayRecordsForAttempt.map((record) => {
+						if (!("payload" in record)) return undefined;
+						return (record.payload as { readonly request?: { readonly toolCallId?: string } }).request
+							?.toolCallId;
+					}),
+				),
+			).toEqual(new Set([canonicalRequest.toolCallId, secondCanonicalRequest.toolCallId]));
+
+			const replay = await reloaded.controller.dispatch({
+				id: "rpc-composition-crash-replay",
+				type: "run.start",
+				message: "composition-owned crash cut",
+				clientRequestId: "rpc-composition-crash-request",
+				externalConnector: fixture.selection,
+			});
+			expect(replay).toMatchObject({ success: true, data: { runId: sourceRunId, idempotent: true } });
+			const conflict = await reloaded.controller.dispatch({
+				id: "rpc-composition-crash-conflict",
+				type: "run.start",
+				message: "composition-owned conflicting request",
+				clientRequestId: "rpc-composition-crash-request",
+				externalConnector: fixture.selection,
+			});
+			expect(conflict).toMatchObject({ success: false, error: { code: "client_request_conflict" } });
+			expect(fixture.toolGatewayRequests).toHaveLength(1);
+			expect(restoredFixture?.toolGatewayRequests).toHaveLength(1);
+		} finally {
+			await reloadedController?.shutdown();
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
 	it("does not invoke Tool Gateway when the Connector emits no request", async () => {
 		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
 		try {
@@ -2266,10 +2496,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(
 				await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
 					objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					objectId: externalConnectorToolGatewayExchangeId(
-						identity.attemptId,
-						"rpc-callback-failure-tool-call",
-					),
+					objectId: externalConnectorToolGatewayExchangeId(identity.attemptId, "rpc-callback-failure-tool-call"),
 					includePruned: true,
 				}),
 			).toHaveLength(2);
@@ -3334,9 +3561,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				toolGateway: true,
 				artifacts: true,
 				images: true,
-				...(testCase.persistTerminal
-					? { connectorToolGatewayRequest: gatewayRequest, readHangs: true }
-					: {}),
+				...(testCase.persistTerminal ? { connectorToolGatewayRequest: gatewayRequest, readHangs: true } : {}),
 			});
 			await harness.controller.handleCommand({
 				id: `gateway-cutpoint-${testCase.cutpoint}-init`,
@@ -3355,9 +3580,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					artifacts,
 				});
 				const startResponse = harness.records.find(
-					(record) =>
-						record.type === "response" &&
-						record.id === `gateway-cutpoint-${testCase.cutpoint}-start`,
+					(record) => record.type === "response" && record.id === `gateway-cutpoint-${testCase.cutpoint}-start`,
 				);
 				expect(startResponse).toMatchObject({
 					success: true,
@@ -3422,10 +3645,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					await recoveryStore.writeToolGatewayIntent({
 						schemaVersion: 1,
 						type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-						id: externalConnectorToolGatewayExchangeId(
-							identity.attemptId,
-							canonicalGatewayRequest.toolCallId,
-						),
+						id: externalConnectorToolGatewayExchangeId(identity.attemptId, canonicalGatewayRequest.toolCallId),
 						phase: "intent",
 						providerId: fixture.selection.providerId,
 						attemptId: identity.attemptId,
@@ -3549,11 +3769,11 @@ describe("RPC Automation Host run lifecycle", () => {
 				objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 				includePruned: true,
 			});
-				expect(
-					gatewayRecords.filter(
-						(record) =>
-							(record.kind === "fact" || record.kind === "intent") &&
-							(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId,
+			expect(
+				gatewayRecords.filter(
+					(record) =>
+						(record.kind === "fact" || record.kind === "intent") &&
+						(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId,
 				),
 			).toHaveLength(testCase.gatewayRecords);
 			const orderedRecords = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
@@ -3564,11 +3784,11 @@ describe("RPC Automation Host run lifecycle", () => {
 				(record) =>
 					record.kind === "fact" && record.objectType === "attempt" && record.objectId === identity.attemptId,
 			);
-				const gatewayIndices = orderedRecords.flatMap((record, index) =>
-					(record.kind === "fact" || record.kind === "intent") &&
-						record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE &&
-					(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId
-						? [index]
+			const gatewayIndices = orderedRecords.flatMap((record, index) =>
+				(record.kind === "fact" || record.kind === "intent") &&
+				record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE &&
+				(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId
+					? [index]
 					: [],
 			);
 			expect(attemptIndex).toBeGreaterThanOrEqual(0);
