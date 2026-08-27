@@ -12,6 +12,7 @@ import {
 	fingerprintFoundationValue,
 	FingerprintSchema,
 	FoundationError,
+	projectMcpSelectionToSelector,
 	ModelRouteSchema,
 	ResourceSelectorSchema,
 	Result,
@@ -20,6 +21,8 @@ import {
 	validateBudget,
 	validateExactShape,
 	validateImmutableAgentBinding,
+	validateChildMcpSelection,
+	validateMcpSelectionForBinding,
 	validateRoleRevision,
 	validateSecretFreeModelProfile,
 	validateTaskEnvelope,
@@ -28,6 +31,8 @@ import {
 	type Fingerprint,
 	type ModelProfile,
 	type ModelRoute,
+	type McpInheritanceApprovalEvidence,
+	type McpSelection,
 	type ResourceSelector,
 	type Result as ResultValue,
 	type RevisionReference,
@@ -67,6 +72,7 @@ export interface ChildBindingProjectionV1 {
 	readonly fields: readonly ChildBindingProjectionFieldRecordV1[];
 	readonly digest: Fingerprint;
 	readonly createdAt: string;
+	readonly mcpApprovalEvidenceId?: string;
 }
 
 export interface ChildBindingHostPreflightV1 {
@@ -92,6 +98,9 @@ export interface ProjectChildBindingInputV1 {
 	readonly childGitSelector?: ResourceSelector;
 	readonly childPolicyRevision?: RevisionReference;
 	readonly childCapabilityRevision?: RevisionReference;
+	readonly childMcpSelection?: McpSelection;
+	readonly mcpInheritanceApprovalRequired?: boolean;
+	readonly mcpInheritanceApprovalEvidence?: McpInheritanceApprovalEvidence;
 	readonly managedLocks?: readonly ChildBindingProjectionFieldV1[];
 	readonly hostPreflight?: ChildBindingHostPreflightV1;
 }
@@ -114,6 +123,9 @@ const INPUT_KEYS = new Set([
 	"childGitSelector",
 	"childPolicyRevision",
 	"childCapabilityRevision",
+	"childMcpSelection",
+	"mcpInheritanceApprovalRequired",
+	"mcpInheritanceApprovalEvidence",
 	"managedLocks",
 	"hostPreflight",
 ]);
@@ -138,6 +150,7 @@ const ChildBindingProjectionV1Schema = Type.Object(
 		fields: Type.Array(ChildBindingProjectionFieldRecordV1Schema),
 		digest: FingerprintSchema,
 		createdAt: Type.String({ minLength: 1 }),
+		mcpApprovalEvidenceId: Type.Optional(Type.String({ minLength: 1 })),
 	},
 	{ additionalProperties: false },
 );
@@ -283,6 +296,7 @@ function validateInputShape(value: unknown): value is ProjectChildBindingInputV1
 		if (!Array.isArray(value.managedLocks)) return false;
 		if (!value.managedLocks.every((field) => CHILD_BINDING_PROJECTION_FIELDS.includes(field as ChildBindingProjectionFieldV1))) return false;
 	}
+	if (value.mcpInheritanceApprovalRequired !== undefined && typeof value.mcpInheritanceApprovalRequired !== "boolean") return false;
 	return true;
 }
 
@@ -331,6 +345,8 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	if (canonicalFoundationJson(childRoute) !== canonicalFoundationJson(routeFromProfile(childProfile.value))) {
 		return projectionError("Child model route is not frozen from its durable ModelProfile");
 	}
+	const childPolicy = childPolicyRevision.value ?? parentBinding.value.policyRevision;
+	const childCapability = childCapabilityRevision.value ?? parentBinding.value.capabilityRevision;
 
 	const instructionParent = parentRole.value.contextPolicyRef;
 	const instructionChild = childRole.value.contextPolicyRef;
@@ -344,8 +360,43 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	const skillProof = applyManagedLock("skills", locks, selectorProof(parentRole.value.skillSelector, childRole.value.skillSelector));
 	if (skillProof === undefined) return projectionError("Skill selector cannot widen the parent");
 
-	const mcpProof = applyManagedLock("mcp", locks, selectorProof(parentRole.value.mcpSelector, childRole.value.mcpSelector));
-	if (mcpProof === undefined) return projectionError("MCP selector cannot widen the parent");
+	const mcpSelectorProof = selectorProof(parentRole.value.mcpSelector, childRole.value.mcpSelector);
+	if (mcpSelectorProof === undefined) return projectionError("MCP selector cannot widen the parent");
+	let childMcpSelection = input.childMcpSelection;
+	if (childMcpSelection === undefined) {
+		if (!sameJson(childCapability, parentBinding.value.capabilityRevision)) {
+			return projectionError("Child MCP selection is required when the CapabilityBinding changes");
+		}
+		const projected = projectMcpSelectionToSelector(
+			parentBinding.value.mcpSelection,
+			childRole.value.mcpSelector,
+			childCapability.id,
+		);
+		if (!projected.ok) return projectionError("Child MCP selector cannot resolve outside the parent exact set");
+		childMcpSelection = projected.value;
+	}
+	const checkedChildMcpSelection = validateMcpSelectionForBinding(
+		childMcpSelection,
+		childRole.value.mcpSelector,
+		childCapability.id,
+	);
+	if (!checkedChildMcpSelection.ok) return projectionError("Child MCP selection is invalid");
+	const checkedMcpInheritance = validateChildMcpSelection({
+		parentBindingId: parentBinding.value.bindingId,
+		parentSelection: parentBinding.value.mcpSelection,
+		childSelection: checkedChildMcpSelection.value,
+		inheritanceApprovalRequired: input.mcpInheritanceApprovalRequired === true,
+		...(input.mcpInheritanceApprovalEvidence === undefined
+			? {}
+			: { approvalEvidence: input.mcpInheritanceApprovalEvidence }),
+	});
+	if (!checkedMcpInheritance.ok) return projectionError(checkedMcpInheritance.error.message);
+	const mcpBaseProof: ChildBindingTighteningProofV1 =
+		mcpSelectorProof === "equal" && sameJson(parentBinding.value.mcpSelection, checkedChildMcpSelection.value)
+			? "equal"
+			: "narrowed";
+	const mcpProof = applyManagedLock("mcp", locks, mcpBaseProof);
+	if (mcpProof === undefined) return projectionError("Managed Lock forbids changing the parent MCP selection");
 
 	const parentModelValue = {
 		modelProfileRevision: parentBinding.value.modelProfileRevision,
@@ -365,8 +416,6 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	const modelProof = applyManagedLock("model", locks, modelBaseProof);
 	if (modelProof === undefined) return projectionError("Managed Lock forbids changing the parent model");
 
-	const childPolicy = childPolicyRevision.value ?? parentBinding.value.policyRevision;
-	const childCapability = childCapabilityRevision.value ?? parentBinding.value.capabilityRevision;
 	const policyProof = referenceProof(parentBinding.value.policyRevision, childPolicy, input.hostPreflight?.policyTighter === true);
 	const capabilityProof = referenceProof(
 		parentBinding.value.capabilityRevision,
@@ -408,7 +457,7 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	const fields: ChildBindingProjectionFieldRecordV1[] = [
 		fieldRecord("instructions", instructionParent ?? null, instructionChild ?? null, instructionProof),
 		fieldRecord("skills", parentRole.value.skillSelector, childRole.value.skillSelector, skillProof),
-		fieldRecord("mcp", parentRole.value.mcpSelector, childRole.value.mcpSelector, mcpProof),
+		fieldRecord("mcp", parentBinding.value.mcpSelection, checkedChildMcpSelection.value, mcpProof),
 		fieldRecord("model", parentModelValue, childModelValue, modelProof),
 		fieldRecord(
 			"sandbox",
@@ -426,6 +475,9 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 		spawnId: input.spawnId,
 		fields,
 		createdAt: input.createdAt,
+		...(checkedMcpInheritance.value.approvalEvidence === undefined
+			? {}
+			: { mcpApprovalEvidenceId: checkedMcpInheritance.value.approvalEvidence.evidenceId }),
 	};
 	return Result.ok(
 		cloneDeepFrozen({

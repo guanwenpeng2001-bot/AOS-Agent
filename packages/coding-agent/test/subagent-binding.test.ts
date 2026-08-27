@@ -6,6 +6,7 @@ import {
 	fingerprintFoundationValue,
 	InMemorySessionStorage,
 	resolveAgentBinding,
+	resolveMcpSelection,
 	selectorsNarrow,
 	Session,
 	SessionLedger,
@@ -101,11 +102,28 @@ function task(overrides: Partial<TaskEnvelope> = {}): TaskEnvelope {
 }
 
 function parentBinding(parentRole: RoleRevision, profile: ModelProfile, budget?: TaskEnvelope["budget"]): AgentBinding {
+	const mcpSelection = resolveMcpSelection({
+		selector: parentRole.mcpSelector,
+		capabilityBinding: {
+			id: "capability-1",
+			descriptors: ["a", "b", "c"].map((serverId) => ({
+				id: `mcp-server-${serverId}`,
+				revision: "revision-1",
+				kind: "mcp_server",
+				name: serverId,
+				mcpServerId: serverId,
+			})),
+			toolAllowlist: [],
+		},
+		routeCatalog: [],
+	});
+	if (!mcpSelection.ok) throw mcpSelection.error;
 	const result = resolveAgentBinding({
 		task: task({ taskId: "task-parent", budget: budget ?? { tokens: 8000, concurrency: 4 } }),
 		roleRevision: parentRole,
 		modelProfile: profile,
 		...bindingFacts(),
+		mcpSelection: mcpSelection.value,
 		budget: budget ?? { tokens: 8000, concurrency: 4 },
 		newBindingId: "binding-parent",
 		now: () => NOW,
