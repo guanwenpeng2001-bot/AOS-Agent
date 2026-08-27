@@ -8,7 +8,6 @@
 
 import {
 	FoundationError,
-	publicExecutionError,
 	validateArtifactRef,
 	validatePublicExecutionError,
 	type ArtifactRef,
@@ -129,9 +128,107 @@ const EXTERNAL_CONNECTOR_ARTIFACT_EVENT_KEYS = new Set([
 	"artifact",
 ]);
 const EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN = /^[^\u0000-\u001f\u007f]{1,128}$/;
+const EXTERNAL_CONNECTOR_SHA256_DIGEST_PATTERN = /^sha256:[A-Fa-f0-9]{64}$/;
+const EXTERNAL_CONNECTOR_ARTIFACT_MEDIA_TYPES = new Set([
+	"application/json",
+	"application/octet-stream",
+	"application/pdf",
+	"image/gif",
+	"image/jpeg",
+	"image/png",
+	"image/webp",
+	"text/csv",
+	"text/html",
+	"text/markdown",
+	"text/plain",
+]);
+
+const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
+	agent_run_failed: {
+		message: "Run failed.",
+		category: "unknown",
+	},
+	external_event_invalid: {
+		message: "External connector emitted invalid supervised output.",
+		category: "side_effect_unknown",
+	},
+	external_resource_limit_exceeded: {
+		message: "External connector exceeded a supervised resource limit.",
+		category: "side_effect_unknown",
+	},
+	run_deadline_exceeded: {
+		message: "External connector run deadline was exceeded.",
+		category: "deadline",
+	},
+	side_effect_unknown: {
+		message: "External connector terminal outcome could not be proven.",
+		category: "side_effect_unknown",
+	},
+} as const satisfies Record<string, {
+	readonly message: string;
+	readonly category: NonNullable<PublicExecutionError["category"]>;
+}>);
+
+type ExternalConnectorTerminalErrorCode = keyof typeof EXTERNAL_CONNECTOR_TERMINAL_ERRORS;
 
 function isTerminalEvidenceRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+/** Retain only content-addressed identity and bounded metadata from a vendor Artifact reference. */
+function canonicalExternalConnectorArtifactRef(value: unknown): ArtifactRef | undefined {
+	if (
+		!isTerminalEvidenceRecord(value) ||
+		value.schemaVersion !== 1 ||
+		typeof value.artifactId !== "string" ||
+		typeof value.mediaType !== "string" ||
+		typeof value.digest !== "string" ||
+		!EXTERNAL_CONNECTOR_SHA256_DIGEST_PATTERN.test(value.digest)
+	) {
+		return undefined;
+	}
+	const digestValue = value.digest.slice("sha256:".length).toLowerCase();
+	const requestedMediaType = value.mediaType.toLowerCase();
+	const mediaType = EXTERNAL_CONNECTOR_ARTIFACT_MEDIA_TYPES.has(requestedMediaType)
+		? requestedMediaType
+		: "application/octet-stream";
+	const sizeBytes =
+		typeof value.sizeBytes === "number" && Number.isSafeInteger(value.sizeBytes) && value.sizeBytes >= 0
+			? value.sizeBytes
+			: undefined;
+	const canonical: ArtifactRef = {
+		schemaVersion: 1,
+		artifactId: digestValue,
+		mediaType,
+		digest: `sha256:${digestValue}`,
+		...(sizeBytes === undefined ? {} : { sizeBytes }),
+	};
+	return validateArtifactRef(canonical).ok ? canonical : undefined;
+}
+
+function canonicalExternalConnectorTerminalError(
+	status: ExternalConnectorTerminalEvidence["status"],
+	sideEffectState: SideEffectState,
+	error: PublicExecutionError | undefined,
+): PublicExecutionError | undefined {
+	if (status === "succeeded" || status === "cancelled") return undefined;
+	let code: ExternalConnectorTerminalErrorCode;
+	if (status === "suspended") {
+		code = "side_effect_unknown";
+	} else if (error !== undefined && Object.hasOwn(EXTERNAL_CONNECTOR_TERMINAL_ERRORS, error.code)) {
+		code = error.code as ExternalConnectorTerminalErrorCode;
+	} else if (sideEffectState !== "none") {
+		code = "side_effect_unknown";
+	} else {
+		code = "agent_run_failed";
+	}
+	const projection = EXTERNAL_CONNECTOR_TERMINAL_ERRORS[code];
+	return {
+		code,
+		message: projection.message,
+		category: projection.category,
+		retryable: false,
+	};
 }
 
 /** Exact runtime shape for an untrusted driver authority handle. */
@@ -179,7 +276,7 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 				(typeof value.phase === "string" && EXTERNAL_CONNECTOR_EVENT_PHASE_PATTERN.test(value.phase)))
 		);
 	}
-	return value.type !== "artifact" || validateArtifactRef(value.artifact).ok;
+	return value.type !== "artifact" || canonicalExternalConnectorArtifactRef(value.artifact) !== undefined;
 }
 
 /** Exact terminal evidence accepted from an untrusted private vendor driver. */
@@ -202,7 +299,8 @@ export function isExternalConnectorTerminalEvidence(value: unknown): value is Ex
 	}
 	if (
 		value.artifacts !== undefined &&
-		(!Array.isArray(value.artifacts) || value.artifacts.some((artifact) => !validateArtifactRef(artifact).ok))
+		(!Array.isArray(value.artifacts) ||
+			value.artifacts.some((artifact) => canonicalExternalConnectorArtifactRef(artifact) === undefined))
 	) {
 		return false;
 	}
@@ -216,22 +314,26 @@ export function cloneExternalConnectorTerminalEvidence(value: unknown): External
 			"External connector terminal evidence is invalid",
 		);
 	}
+	const artifacts = value.artifacts?.map((artifact) => {
+		const canonical = canonicalExternalConnectorArtifactRef(artifact);
+		if (canonical === undefined) {
+			throw new FoundationError(
+				"foundation_schema_invalid_shape",
+				"External connector terminal artifact evidence is invalid",
+			);
+		}
+		return Object.freeze(canonical);
+	});
+	const error = canonicalExternalConnectorTerminalError(value.status, value.sideEffectState, value.error);
 	return Object.freeze({
 		externalSessionId: value.externalSessionId,
 		...(value.externalTurnId === undefined ? {} : { externalTurnId: value.externalTurnId }),
 		operationNonce: value.operationNonce,
 		status: value.status,
-		...(value.artifacts === undefined
+		...(artifacts === undefined
 			? {}
-			: { artifacts: Object.freeze(value.artifacts.map((artifact) => Object.freeze({ ...artifact }))) }),
-		...(value.error === undefined
-			? {}
-			: {
-					error: Object.freeze(publicExecutionError(value.error.code, value.error.message, {
-						...(value.error.category === undefined ? {} : { category: value.error.category }),
-						retryable: value.error.retryable,
-					})),
-				}),
+			: { artifacts: Object.freeze(artifacts) }),
+		...(error === undefined ? {} : { error: Object.freeze(error) }),
 		sideEffectState: value.sideEffectState,
 		producedAt: value.producedAt,
 	});

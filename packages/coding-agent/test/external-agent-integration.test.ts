@@ -6,6 +6,7 @@ import {
 	SessionT5Ledger,
 	fingerprintFoundationValue,
 	validateAttempt,
+	type ArtifactRef,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
@@ -17,7 +18,10 @@ import {
 	type CanonicalExternalAgentInput,
 } from "../src/index.ts";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { ExecutionAuditAdapter } from "../src/core/execution-audit.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
@@ -26,6 +30,7 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
+import { cloneExternalConnectorTerminalEvidence } from "../src/core/vendor-drivers/types.ts";
 import type {
 	ExternalModelProjectionField,
 	ExternalModelSupportMatrix,
@@ -79,6 +84,7 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 	spawnedAttempt: Attempt | undefined;
 	spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 	terminalError: ExternalConnectorTerminalEvidence["error"];
+	terminalArtifacts: readonly ArtifactRef[] = [];
 	cancelCalls = 0;
 	disposeCalls = 0;
 	lookupCalls = 0;
@@ -137,7 +143,7 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 			externalTurnId: handle.externalTurnId,
 			operationNonce: handle.operationNonce,
 			status: this.terminalError === undefined ? "succeeded" : "failed",
-			artifacts: [],
+			artifacts: this.terminalArtifacts,
 			...(this.terminalError === undefined ? {} : { error: this.terminalError }),
 			sideEffectState: "none",
 			producedAt: NOW,
@@ -295,29 +301,39 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		}
 	});
 
-	it("redacts untrusted vendor errors before canonical and durable settlement", async () => {
-		const canaries = [
-			"connector-secret-canary",
-			"connector-credential-canary",
-			"connector-url-canary",
-			"connector-path-canary",
-			"connector-prompt-canary",
-			"connector-transcript-canary",
-		];
-		const current = await fixture();
+	it("canonicalizes untrusted terminal errors and Artifact metadata before every durable or public surface", async () => {
+		const vendorMessage = "secret is hunter2 at /opt/private";
+		const vendorCode = "vendor_secret_hunter2_at_opt_private";
+		const vendorArtifactId = "artifact-hunter2-at-opt-private";
+		const vendorProducer = "producer-hunter2-at-opt-private";
+		const vendorProvenance = "provenance-hunter2-at-opt-private";
+		const artifactDigest = "a".repeat(64);
+		const canonicalArtifactDigest = "b".repeat(64);
+		const current = await fixture({ artifacts: true });
 		current.driver.terminalError = {
-			code: "external_vendor_failure",
-			message: [
-				`secret=${canaries[0]}`,
-				`credential=${canaries[1]}`,
-				`url=https://vendor.example/${canaries[2]}?token=unsafe`,
-				`path=C:\\Users\\operator\\${canaries[3]}.txt`,
-				`prompt=${canaries[4]}`,
-				`transcript=${canaries[5]}`,
-			].join("\n"),
+			code: vendorCode,
+			message: vendorMessage,
 			category: "transient",
 			retryable: true,
 		};
+		const untrustedArtifact = {
+			schemaVersion: 1 as const,
+			artifactId: vendorArtifactId,
+			mediaType: "text/plain",
+			digest: `sha256:${artifactDigest}`,
+			producer: vendorProducer,
+			sizeBytes: 42,
+			localPath: "/opt/private",
+			provenance: { source: vendorProvenance, message: vendorMessage },
+		};
+		const canonicalArtifact = {
+			schemaVersion: 1 as const,
+			artifactId: canonicalArtifactDigest,
+			mediaType: "image/png",
+			digest: `sha256:${canonicalArtifactDigest}`,
+			sizeBytes: 84,
+		};
+		current.driver.terminalArtifacts = [untrustedArtifact, canonicalArtifact];
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "redact terminal evidence",
@@ -340,33 +356,83 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			now: () => NOW,
 		});
 		const expectedError = {
-			code: "external_vendor_failure",
-			message: [
-				"secret=[redacted]",
-				"credential=[redacted]",
-				"url=[redacted-url]",
-				"path=[redacted-path]",
-				"prompt=[redacted]",
-				"transcript=[redacted]",
-			].join("\n"),
-			category: "transient" as const,
-			retryable: true,
+			code: "agent_run_failed",
+			message: "Run failed.",
+			category: "unknown" as const,
+			retryable: false,
+		};
+		const expectedArtifact = {
+			schemaVersion: 1,
+			artifactId: artifactDigest,
+			mediaType: "text/plain",
+			digest: `sha256:${artifactDigest}`,
+			sizeBytes: 42,
+		};
+		const expectedCanonicalArtifact = {
+			schemaVersion: 1,
+			artifactId: canonicalArtifactDigest,
+			mediaType: "image/png",
+			digest: `sha256:${canonicalArtifactDigest}`,
+			sizeBytes: 84,
 		};
 		expect(execution.attemptReceipt.error).toEqual(expectedError);
 		expect(execution.runReceipt.terminalErrorCode).toBe(expectedError.code);
 		expect(execution.runReceipt.terminalError).toEqual(expectedError);
+		expect(execution.attemptReceipt.artifacts).toEqual([expectedArtifact, expectedCanonicalArtifact]);
+		expect(execution.taskResult.artifacts).toEqual([expectedArtifact, expectedCanonicalArtifact]);
 
-		const publicTrace = JSON.stringify({
+		const rawTerminalState = await current.driver.read(current.driver.handle);
+		const connectorTerminalState = cloneExternalConnectorTerminalEvidence(rawTerminalState);
+		expect(connectorTerminalState.error).toEqual(expectedError);
+		expect(connectorTerminalState.artifacts).toEqual([expectedArtifact, expectedCanonicalArtifact]);
+
+		const metadata = await current.session.getMetadata();
+		const foundationRecords = await current.session.findFoundationRecords({ order: "oldestFirst" });
+		const auditEntries = foundationRecords.map((record) => ({
+			type: "custom",
+			id: `physical-${record.id}`,
+			parentId: null,
+			timestamp: new Date(record.timestamp).toISOString(),
+			customType: FOUNDATION_DURABLE_CUSTOM_TYPE,
+			data: { schemaVersion: 1, kind: "durable", record },
+		})) as unknown as readonly SessionEntry[];
+		const auditReplay = new ExecutionAuditAdapter({
+			getSessionId: () => metadata.id,
+			getEntries: () => [],
+			getPhysicalEntries: () => auditEntries,
+		}).replay("run-external-error-redaction");
+		const rpcReplayResponse = {
+			id: "audit-replay",
+			type: "response",
+			command: "audit.replay",
+			success: true,
+			data: auditReplay,
+		};
+
+		const receiptTrace = JSON.stringify({
 			attemptReceipt: execution.attemptReceipt,
 			taskResult: execution.taskResult,
 			runReceipt: execution.runReceipt,
 		});
-		const durableTrace = JSON.stringify(await current.session.findFoundationRecords({ order: "oldestFirst" }));
-		for (const canary of canaries) {
-			expect(publicTrace).not.toContain(canary);
-			expect(durableTrace).not.toContain(canary);
+		const sessionTrace = JSON.stringify(foundationRecords);
+		const auditTrace = JSON.stringify(auditReplay);
+		const rpcTrace = JSON.stringify(rpcReplayResponse);
+		for (const canary of [
+			vendorMessage,
+			vendorCode,
+			vendorArtifactId,
+			vendorProducer,
+			vendorProvenance,
+			"/opt/private",
+			"hunter2",
+		]) {
+			expect(JSON.stringify(connectorTerminalState)).not.toContain(canary);
+			expect(receiptTrace).not.toContain(canary);
+			expect(sessionTrace).not.toContain(canary);
+			expect(auditTrace).not.toContain(canary);
+			expect(rpcTrace).not.toContain(canary);
 		}
-		expect(durableTrace).toContain(expectedError.code);
+		expect(sessionTrace).toContain(expectedError.code);
 	});
 
 	for (const testCase of [
