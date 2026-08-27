@@ -221,6 +221,20 @@ describe("canonical Automation Run projection", () => {
 			terminalErrorCode: "side_effect_unknown",
 			sideEffectState: "side_effect_unknown",
 		},
+		{
+			name: "external-mapping-conflict",
+			runStatus: "failed",
+			resultStatus: "failed",
+			attemptStatus: "failed",
+			error: {
+				code: "external_mapping_conflict",
+				message: "mapping collision",
+				category: "side_effect_unknown",
+				retryable: false,
+			},
+			terminalErrorCode: "external_mapping_conflict",
+			sideEffectState: "side_effect_unknown",
+		},
 	] as const)("maps the $name outcome from canonical results", (scenario) => {
 		const fixture = chain({ ...scenario, suffix: scenario.name });
 		const projected = project(fixture)[0];

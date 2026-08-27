@@ -12,6 +12,11 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 		retryable: "no",
 	},
 	{
+		code: "external_mapping_conflict",
+		meaning: "Mapping history already conflicts with the persisted External Connector Attempt",
+		retryable: "no",
+	},
+	{
 		code: "external_resume_unsupported",
 		meaning: "The source External Connector run cannot be restored as the same durable Attempt",
 		retryable: "no",
@@ -108,6 +113,7 @@ function publicAutomationErrorCodes(): readonly string[] {
 describe("External Connector public exports", () => {
 	it("exports only the current connector contract and safe product gates", () => {
 		expect(typeof publicApi.createExternalConnectorRegistry).toBe("function");
+		expect(typeof publicApi.createProductionExternalAgentConnector).toBe("function");
 		expect(typeof publicApi.executeExternalConnectorProductRun).toBe("function");
 		expect(typeof publicApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
 		expect(typeof publicApi.projectExternalModelForExecution).toBe("function");
@@ -134,6 +140,8 @@ describe("External Connector public exports", () => {
 			"ExternalExecutionRef",
 			"DurableExternalAgentConnector",
 			"createDurableExternalAgentConnector",
+			"getHostSupervisedExternalAgentConnectorImplementation",
+			"isHostSupervisedExternalAgentConnector",
 			"externalConnectorAttemptId",
 			"ExternalAgentConnectorRuntimeOptions",
 			"ExternalConnectorBoundedSupervisor",

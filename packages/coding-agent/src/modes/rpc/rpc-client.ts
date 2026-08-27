@@ -11,6 +11,8 @@ import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
+import type { ExternalConnectorToolGatewayRequestInput } from "../../core/external-connector-product.ts";
 import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
@@ -811,6 +813,8 @@ export class RpcClient {
 	 * selection. When present the Run is executed by the connector instead of
 	 * the local model loop. Safe immutable identity only; no URL/command/header/credential
 	 * data ever crosses the RPC boundary.
+	 * @param artifacts - Optional canonical artifact references for Connector input.
+	 * @param toolGatewayRequest - Optional canonical Tool Gateway request material.
 	 */
 	async startRun(
 		message: string,
@@ -822,6 +826,8 @@ export class RpcClient {
 		clientRequestId?: string,
 		deadlineAt?: string,
 		externalConnector?: ExternalConnectorSelection,
+		artifacts?: readonly CanonicalExternalAgentArtifactReference[],
+		toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
@@ -832,6 +838,8 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(externalConnector !== undefined ? { externalConnector } : {}),
+			...(artifacts !== undefined ? { artifacts } : {}),
+			...(toolGatewayRequest !== undefined ? { toolGatewayRequest } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
@@ -865,6 +873,8 @@ export class RpcClient {
 	 * @param externalConnector - Optional explicit trusted External Connector
 	 * selection. Resume is executed only when the selected connector advertised
 	 * and implements the canonical resume capability.
+	 * @param artifacts - Optional canonical artifact references for Connector input.
+	 * @param toolGatewayRequest - Optional canonical Tool Gateway request material.
 	 */
 	async resumeRun(
 		sessionPath: string,
@@ -878,6 +888,8 @@ export class RpcClient {
 		clientRequestId?: string,
 		deadlineAt?: string,
 		externalConnector?: ExternalConnectorSelection,
+		artifacts?: readonly CanonicalExternalAgentArtifactReference[],
+		toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput,
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -890,6 +902,8 @@ export class RpcClient {
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
 			...(externalConnector !== undefined ? { externalConnector } : {}),
+			...(artifacts !== undefined ? { artifacts } : {}),
+			...(toolGatewayRequest !== undefined ? { toolGatewayRequest } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});

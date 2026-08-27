@@ -650,6 +650,7 @@ export type AutomationErrorCode =
 	| "audit_run_not_found"
 	| "audit_replay_incomplete"
 	| "external_connector_unavailable"
+	| "external_mapping_conflict"
 	| "external_resume_unsupported"
 	| "external_binding_invalid"
 	| "external_capability_mismatch"
@@ -776,6 +777,7 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "audit_run_not_found" ||
 		value === "audit_replay_incomplete" ||
 		value === "external_connector_unavailable" ||
+		value === "external_mapping_conflict" ||
 		value === "external_resume_unsupported" ||
 		value === "external_binding_invalid" ||
 		value === "external_capability_mismatch" ||

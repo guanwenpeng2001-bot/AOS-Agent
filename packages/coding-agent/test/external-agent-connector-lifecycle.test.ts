@@ -659,7 +659,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
 		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(false);
-		if (!resumed.ok) expect(resumed.error.code).toBe("unsupported_feature");
+		if (!resumed.ok) expect(resumed.error.code).toBe("external_resume_unsupported");
 		expect(value.driver.calls.connect).toBe(0);
 		expect(value.driver.calls.spawn).toBe(0);
 	});
@@ -1200,8 +1200,25 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.mappings.set(value.attempt.attemptId, conflicting);
 		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(false);
+		if (!resumed.ok) expect(resumed.error.code).toBe("external_mapping_conflict");
 		expect(value.driver.calls.connect).toBe(0);
 		expect(value.driver.calls.spawn).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)?.reconcileReason).toBe("mapping_conflict");
+	});
+
+	it("projects a durable mapping write collision as external_mapping_conflict", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.mappings.set(value.attempt.attemptId, {
+			...mappingFor(value),
+			externalSessionId: "conflicting-external-session",
+		});
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed.ok).toBe(false);
+		if (!completed.ok) expect(completed.error.code).toBe("external_mapping_conflict");
+		expect(value.driver.calls).toMatchObject({ spawn: 1, events: 0, read: 0 });
 		expect(value.store.operations.get(value.attempt.attemptId)?.reconcileReason).toBe("mapping_conflict");
 	});
 

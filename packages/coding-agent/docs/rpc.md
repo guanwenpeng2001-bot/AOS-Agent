@@ -1698,6 +1698,12 @@ The `images` field is optional and uses the same `ImageContent` format as `promp
 descriptor. The Host resolves the constructed connector from the trusted
 registry and sends it through the same executor pool as every other provider.
 
+`artifacts` optionally carries canonical metadata-only Artifact references for
+the selected Connector. `toolGatewayRequest` optionally carries the canonical
+Tool Gateway request fields supported by the RPC command type; the Host adds
+execution context after admission. Both fields are included in the immutable
+request and resume reconstruction instead of being dropped by `RpcClient`.
+
 If `deadlineAt` is already expired during command preflight, the command fails
 with `run_deadline_exceeded`; no Run ID, accepted ledger entry, `run.started`,
 or terminal event is created. If the request is accepted, reaching the
@@ -1875,9 +1881,9 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 }
 ```
 
-`run.resume` accepts the same optional `externalConnector` selection and
-`deadlineAt`. The deadline and pinned connector selection participate in
-idempotency and are persisted on the successor attempt. Connector resume
+`run.resume` accepts the same optional `externalConnector` selection,
+`artifacts`, `toolGatewayRequest`, and `deadlineAt`. These fields participate
+in idempotency and are persisted on the successor attempt. Connector resume
 requires matching current capability evidence; drift or unsupported resume
 fails closed and never becomes a new external start.
 
@@ -2750,6 +2756,7 @@ Error codes:
 | `subagent_unavailable` | The current Session has no available Subagent authority | yes |
 | `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
 | `external_connector_unavailable` | No trusted External Connector registry is composed, or the selected Connector is not registered | no |
+| `external_mapping_conflict` | Mapping history already conflicts with the persisted External Connector Attempt | no |
 | `external_resume_unsupported` | The source External Connector run cannot be restored as the same durable Attempt | no |
 | `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
 | `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
