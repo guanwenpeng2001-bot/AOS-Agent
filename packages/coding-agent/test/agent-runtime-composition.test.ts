@@ -334,7 +334,10 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 	};
 }
 
-function createTestExternalConnectorRegistry(sessionId: string): ExternalConnectorRegistry {
+function createTestExternalConnectorRegistry(
+	sessionId: string,
+	toolGateway?: ToolGateway,
+): ExternalConnectorRegistry {
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId: `external-connector-${sessionId}`,
@@ -342,11 +345,13 @@ function createTestExternalConnectorRegistry(sessionId: string): ExternalConnect
 		protocol: { name: "composition-test", version: "1" },
 		modelAccess: "none",
 		resume: false,
-		toolGateway: false,
+		toolGateway: toolGateway !== undefined,
 		artifacts: false,
 		images: false,
 	});
-	const registry = createExternalConnectorRegistry();
+	const registry = createExternalConnectorRegistry({
+		...(toolGateway === undefined ? {} : { toolGateway }),
+	});
 	const registered = registry.registerPrepared({
 		descriptor: {
 			schemaVersion: 1,
@@ -411,9 +416,12 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 			captures.schedulers.push(scheduler);
 			return scheduler;
 		},
-		externalConnectorRegistry: (context) => {
+		externalConnectorRegistry: (context, toolGateway) => {
 			captures.contexts.push(context);
-			const registry = createTestExternalConnectorRegistry(context.sessionId);
+			if (toolGateway !== captures.gateways.at(-1)) {
+				throw new Error("External registry must receive the canonical composition Tool Gateway");
+			}
+			const registry = createTestExternalConnectorRegistry(context.sessionId, toolGateway);
 			captures.externalRegistries.push(registry);
 			return registry;
 		},

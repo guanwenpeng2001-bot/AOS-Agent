@@ -275,7 +275,7 @@ function createScheduler(context: AgentRuntimeCompositionContext): TrustedSchedu
 	};
 }
 
-function createConnectorRegistry() {
+function createConnectorRegistry(toolGateway: ToolGateway) {
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId: "main-rpc-trusted-connector",
@@ -287,7 +287,7 @@ function createConnectorRegistry() {
 		artifacts: false,
 		images: false,
 	});
-	const registry = createExternalConnectorRegistry();
+	const registry = createExternalConnectorRegistry({ toolGateway });
 	const registered = registry.registerPrepared({
 		descriptor: {
 			schemaVersion: 1,
@@ -358,9 +358,12 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		}
 		return scheduler;
 	},
-	externalConnectorRegistry: (context) => {
+	externalConnectorRegistry: (context, toolGateway) => {
 		requireCanonicalContext(context);
-		return createConnectorRegistry();
+		if (toolGateway === undefined || toolGateway !== canonicalToolGateway) {
+			throw new Error("main RPC External registry did not share the canonical Tool Gateway");
+		}
+		return createConnectorRegistry(toolGateway);
 	},
 	taskCredentialProvider: (context) => {
 		requireCanonicalContext(context);

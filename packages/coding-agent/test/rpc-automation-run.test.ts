@@ -10,10 +10,11 @@ import {
 	LayeredResultSettlement,
 	SessionLedger,
 	createConnectorCapabilitySnapshot,
+	createFoundationToolGateway,
+	createLocalToolGatewayProvider,
 	fingerprintFoundationValue,
 	type ConnectorCapabilitySnapshot,
 	type ArtifactDigest,
-	type FoundationError,
 	type FoundationJsonValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
@@ -744,9 +745,41 @@ async function installRpcExternalConnector(
 		now: () => "2026-08-27T00:00:00.000Z",
 		operationNonce: () => "rpc-operation-nonce",
 	});
-	const registry = createExternalConnectorRegistry();
 	const toolGatewayRequests: ToolGatewayRequest[] = [];
 	const toolGatewayResults: ToolExecutionResult[] = [];
+	const toolGateway = options.toolGateway === true
+		? createFoundationToolGateway({
+				gatewayId: `${providerId}.foundation-gateway`,
+				providers: [
+					createLocalToolGatewayProvider({
+						providerId,
+						routes: [{
+							kind: "local",
+							toolName: "workspace.read",
+							namespace: "workspace",
+							providerId,
+							revision: 1,
+						}],
+						invoke: async (request) => {
+							toolGatewayRequests.push(request);
+							const result: ToolExecutionResult = {
+								schemaVersion: 1,
+								toolCallId: request.toolCallId,
+								toolName: request.toolName,
+								ok: true,
+								sideEffectState: "none",
+								toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
+							};
+							toolGatewayResults.push(result);
+							return Result.ok(result);
+						},
+					}),
+				],
+			})
+		: undefined;
+	const registry = createExternalConnectorRegistry({
+		...(toolGateway === undefined ? {} : { toolGateway }),
+	});
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
@@ -758,73 +791,6 @@ async function installRpcExternalConnector(
 		descriptor,
 		connector,
 		trusted: true,
-		...(options.modelAccess === "aos_gateway" ||
-		options.resume === true ||
-		options.toolGateway === true ||
-		options.artifacts === true ||
-		options.images === true
-			? {
-					capabilityEvidence: {
-						...(options.resume === true
-							? {
-									resume: {
-										declaration: { id: "rpc.resume", revision: 1, reachable: true as const },
-										handler: { id: "rpc.resume.handler", invoke: () => undefined },
-									},
-								}
-							: {}),
-						...(options.modelAccess === "aos_gateway"
-							? {
-									aosGateway: {
-										declaration: { id: "rpc.aos-gateway", revision: 1, reachable: true as const },
-										handler: { id: "rpc.aos-gateway.handler", invoke: () => undefined },
-									},
-								}
-							: {}),
-						...(options.toolGateway === true
-							? {
-									toolGateway: {
-										declaration: { id: "rpc.tool-gateway", revision: 1, reachable: true as const },
-										handler: {
-											id: "rpc.tool-gateway.handler",
-											invoke: (
-												request: ToolGatewayRequest,
-											): Result<ToolExecutionResult, FoundationError> => {
-												toolGatewayRequests.push(request);
-												const result: ToolExecutionResult = {
-													schemaVersion: 1,
-													toolCallId: request.toolCallId,
-													toolName: request.toolName,
-													ok: true,
-													sideEffectState: "none",
-													toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
-												};
-												toolGatewayResults.push(result);
-												return Result.ok(result);
-											},
-										},
-									},
-								}
-							: {}),
-						...(options.artifacts === true
-							? {
-									artifacts: {
-										declaration: { id: "rpc.artifacts", revision: 1, reachable: true as const },
-										handler: { id: "rpc.artifacts.handler", invoke: () => undefined },
-									},
-								}
-							: {}),
-						...(options.images === true
-							? {
-									images: {
-										declaration: { id: "rpc.images", revision: 1, reachable: true as const },
-										handler: { id: "rpc.images.handler", invoke: () => undefined },
-									},
-								}
-							: {}),
-					},
-				}
-			: {}),
 	});
 	if (!registered.ok) throw registered.error;
 	vi.spyOn(runtimeHost.session, "getExternalConnectorRegistry").mockReturnValue(registry);
@@ -858,6 +824,14 @@ async function seedRpcExternalRecovery(
 ): Promise<void> {
 	const session = getAgentCanonicalSession(runtimeHost.session);
 	const writer = runtimeHost.session.agentRuntimeComposition.harness.t5.writer;
+	const policyBinding = runtimeHost.session.getActiveExecutionPolicyBinding();
+	if (policyBinding === undefined || policyBinding.runId !== runId) {
+		await runtimeHost.session.whenCapabilitiesReady(runId);
+	}
+	const canonicalPolicyBinding = runtimeHost.session.getActiveExecutionPolicyBinding();
+	if (canonicalPolicyBinding === undefined || canonicalPolicyBinding.runId !== runId) {
+		throw new Error("RPC External Connector fixture requires the canonical Run policy binding");
+	}
 	const admission = await prepareExternalConnectorProductRun({
 		session,
 		writer,
@@ -870,6 +844,7 @@ async function seedRpcExternalRecovery(
 			inspectArtifact: rpcArtifactInspection,
 		},
 		workspace: runtimeHost.session.cwd,
+		policyBinding: canonicalPolicyBinding,
 		...(options.gatewayModelRoute === undefined ? {} : { gatewayModelRoute: options.gatewayModelRoute }),
 		now: () => "2026-08-27T00:00:00.000Z",
 	});
@@ -1100,7 +1075,11 @@ async function createRuntimeHost(options: {
 	customTools?: ToolDefinition[];
 	resourceLoader?: ResourceLoader;
 	externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
-}): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
+}): Promise<{
+	runtimeHost: AgentSessionRuntime;
+	reopen: (sessionPath: string) => AgentSessionRuntime;
+	cleanup: () => Promise<void>;
+}> {
 	const tempDir = join(tmpdir(), `aos-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
@@ -1156,57 +1135,64 @@ async function createRuntimeHost(options: {
 		});
 	};
 
-	let currentSession = openSession(SessionManager.create(tempDir));
-	let prepareRebindCallback:
-		| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
-		| undefined;
-
-	const runtimeHost = {
-		get session(): AgentSession {
-			return currentSession;
-		},
-		set session(next: AgentSession) {
-			currentSession = next;
-		},
-		setPrepareSessionRebind: vi.fn(
-			(
-				cb?:
-					| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
-					| undefined,
-			) => {
-				prepareRebindCallback = cb;
+	const runtimeHosts = new Set<AgentSessionRuntime>();
+	const createHost = (initialSession: AgentSession): AgentSessionRuntime => {
+		let currentSession = initialSession;
+		let prepareRebindCallback:
+			| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
+			| undefined;
+		const host = {
+			get session(): AgentSession {
+				return currentSession;
 			},
-		),
-		switchSession: vi.fn(async (sessionPath: string) => {
-			// Simulate a real session switch: open the persisted ledger, rebuild the
-			// session, and re-run the registered rebind so rpc-mode restores/rebuilds
-			// its coordinator against the restored session's ledger.
-			const previousSession = currentSession;
-			const nextSession = openSession(SessionManager.open(sessionPath));
-			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
-			currentSession = nextSession;
-			preparedRebind?.commit();
-			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
-			await preparedRebind?.prepareActivation?.();
-			await preparedRebind?.activate?.();
-			return { cancelled: false };
-		}),
-		newSession: vi.fn(async () => ({ cancelled: true })),
-		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
-		dispose: vi.fn(async () => {}),
-	} as unknown as AgentSessionRuntime;
+			set session(next: AgentSession) {
+				currentSession = next;
+			},
+			setPrepareSessionRebind: vi.fn(
+				(
+					cb?:
+						| ((nextSession: AgentSession, previousSession: AgentSession) => Promise<PreparedSessionScopeRebind>)
+						| undefined,
+				) => {
+					prepareRebindCallback = cb;
+				},
+			),
+			switchSession: vi.fn(async (sessionPath: string) => {
+				// Simulate a real session switch: open the persisted ledger, rebuild the
+				// session, and re-run the registered rebind so rpc-mode restores/rebuilds
+				// its coordinator against the restored session's ledger.
+				const previousSession = currentSession;
+				const nextSession = openSession(SessionManager.open(sessionPath));
+				const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+				currentSession = nextSession;
+				preparedRebind?.commit();
+				await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+				await preparedRebind?.prepareActivation?.();
+				await preparedRebind?.activate?.();
+				return { cancelled: false };
+			}),
+			newSession: vi.fn(async () => ({ cancelled: true })),
+			fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
+			dispose: vi.fn(async () => {}),
+		} as unknown as AgentSessionRuntime;
+		runtimeHosts.add(host);
+		return host;
+	};
+	const runtimeHost = createHost(openSession(SessionManager.create(tempDir)));
 
 	return {
 		runtimeHost,
+		reopen: (sessionPath) => createHost(openSession(SessionManager.open(sessionPath))),
 		cleanup: async () => {
-			try {
-				if (currentSession.isStreaming) {
-					await currentSession.abort();
+			for (const host of runtimeHosts) {
+				const openedSession = host.session;
+				try {
+					if (openedSession.isStreaming) await openedSession.abort();
+				} catch {
+					// ignore test cleanup failures
 				}
-			} catch {
-				// ignore test cleanup failures
+				openedSession.dispose();
 			}
-			currentSession.dispose();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
@@ -1272,9 +1258,14 @@ async function startInMemoryController(
 	controller: RpcHostController;
 	runtimeHost: AgentSessionRuntime;
 	records: RpcHostOutputRecord[];
+	reopenController: (sessionPath: string) => Promise<{
+		controller: RpcHostController;
+		runtimeHost: AgentSessionRuntime;
+		records: RpcHostOutputRecord[];
+	}>;
 	cleanup: () => Promise<void>;
 }> {
-	const { runtimeHost, cleanup } = await createRuntimeHost(options);
+	const { runtimeHost, reopen, cleanup } = await createRuntimeHost(options);
 	const records: RpcHostOutputRecord[] = [];
 	const controller = new RpcHostController(runtimeHost, {
 		output: outputSink ?? { publish: (record) => records.push(record) },
@@ -1283,7 +1274,28 @@ async function startInMemoryController(
 			: { externalArtifactAuthority: options.externalArtifactAuthority }),
 	});
 	await controller.start();
-	return { controller, runtimeHost, records, cleanup };
+	return {
+		controller,
+		runtimeHost,
+		records,
+		reopenController: async (sessionPath: string) => {
+			const reloadedRuntimeHost = reopen(sessionPath);
+			const reloadedRecords: RpcHostOutputRecord[] = [];
+			const reloadedController = new RpcHostController(reloadedRuntimeHost, {
+				output: { publish: (record) => reloadedRecords.push(record) },
+				...(options.externalArtifactAuthority === undefined
+					? {}
+					: { externalArtifactAuthority: options.externalArtifactAuthority }),
+			});
+			await reloadedController.start();
+			return {
+				controller: reloadedController,
+				runtimeHost: reloadedRuntimeHost,
+				records: reloadedRecords,
+			};
+		},
+		cleanup,
+	};
 }
 
 async function startTcpRpcMode(options: {
@@ -2218,6 +2230,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					schemaVersion: 1,
 					toolCallId: "rpc-callback-failure-tool-call",
 					toolName: "workspace.read",
+					namespace: "workspace",
 					originalArguments: { path: "docs/evidence.txt" },
 					idempotencyKey: "rpc-callback-failure-once",
 				},
@@ -3283,9 +3296,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			cutpoint: "running",
 			terminalStatus: "completed",
 			persistTerminal: true,
-			driverSpawns: 0,
+			driverSpawns: 1,
 			gatewayRecords: 4,
-			gatewayEffects: 1,
+			gatewayEffects: 2,
 		},
 		{
 			name: "after Tool Gateway intent before the result",
@@ -3305,23 +3318,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				inspectArtifact: rpcArtifactInspection,
 			},
 		});
+		let reloadedController: RpcHostController | undefined;
 		try {
 			await harness.runtimeHost.session.prompt("persist Tool Gateway recovery session");
-			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
-				modelAccess: "none",
-				resume: true,
-				toolGateway: true,
-				artifacts: true,
-				images: true,
-			});
-			await harness.controller.handleCommand({
-				id: `gateway-cutpoint-${testCase.cutpoint}-init`,
-				type: "initialize",
-				protocolVersion: 1,
-			});
-			const sourceRunId = `rpc-${testCase.cutpoint}`;
-			const message = `recover ${testCase.name}`;
-			const artifacts = [rpcImageArtifact(), rpcWorkspaceArtifact()];
 			const gatewayRequest = {
 				schemaVersion: 1 as const,
 				toolCallId: `tool-${testCase.cutpoint}`,
@@ -3329,6 +3328,45 @@ describe("RPC Automation Host run lifecycle", () => {
 				namespace: "workspace",
 				originalArguments: { path: "vendor-raw-canary", mode: "metadata" },
 			};
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				resume: true,
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+				...(testCase.persistTerminal
+					? { connectorToolGatewayRequest: gatewayRequest, readHangs: true }
+					: {}),
+			});
+			await harness.controller.handleCommand({
+				id: `gateway-cutpoint-${testCase.cutpoint}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			let sourceRunId = `rpc-${testCase.cutpoint}`;
+			const message = `recover ${testCase.name}`;
+			const artifacts = [rpcImageArtifact(), rpcWorkspaceArtifact()];
+			if (testCase.persistTerminal) {
+				await harness.controller.handleCommand({
+					id: `gateway-cutpoint-${testCase.cutpoint}-start`,
+					type: "run.start",
+					message,
+					externalConnector: fixture.selection,
+					artifacts,
+				});
+				const startResponse = harness.records.find(
+					(record) =>
+						record.type === "response" &&
+						record.id === `gateway-cutpoint-${testCase.cutpoint}-start`,
+				);
+				expect(startResponse).toMatchObject({
+					success: true,
+					data: { attempt: 1, status: "accepted" },
+				});
+				const acceptedRunId = (startResponse as { readonly data?: { readonly runId?: unknown } }).data?.runId;
+				expect(typeof acceptedRunId).toBe("string");
+				sourceRunId = acceptedRunId as string;
+			}
 			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
 			const canonicalGatewayRequest: ToolGatewayRequest = {
 				...gatewayRequest,
@@ -3348,46 +3386,54 @@ describe("RPC Automation Host run lifecycle", () => {
 				toolCallId: `tool-${testCase.cutpoint}-second`,
 				originalArguments: { path: "docs/second.txt", mode: "metadata" },
 			};
-			await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint, {
-				artifacts,
-			});
 			const recoveryLedger = new SessionLedger(getAgentCanonicalSession(harness.runtimeHost.session), {
 				writer: harness.runtimeHost.session.agentRuntimeComposition.harness.t5.writer,
 			});
 			try {
 				const recoveryStore = new SessionExternalConnectorDurableStore(recoveryLedger);
-				const operation = await recoveryStore.readOperation(identity.attemptId);
-				if (operation === undefined) throw new Error("seeded Connector operation is missing");
-				const intent = {
-					schemaVersion: 1 as const,
-					type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-					id: externalConnectorToolGatewayExchangeId(
-						identity.attemptId,
-						canonicalGatewayRequest.toolCallId,
-					),
-					phase: "intent" as const,
-					providerId: fixture.selection.providerId,
-					attemptId: identity.attemptId,
-					bindingId: identity.bindingId,
-					bindingEpochId: identity.bindingEpochId,
-					correlation: { ...operation.correlation, toolCallId: canonicalGatewayRequest.toolCallId },
-					request: canonicalGatewayRequest,
-					createdAt: "2026-08-27T00:00:00.000Z",
-				};
-				await recoveryStore.writeToolGatewayIntent(intent);
 				if (testCase.persistTerminal) {
-					await recoveryStore.writeToolGatewayTerminal({
-						...intent,
-						phase: "terminal",
-						result: {
-							schemaVersion: 1,
-							toolCallId: canonicalGatewayRequest.toolCallId,
-							toolName: canonicalGatewayRequest.toolName,
-							ok: true,
-							sideEffectState: "none",
-							toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
-						},
-						completedAt: "2026-08-27T00:00:00.000Z",
+					await vi.waitFor(async () => {
+						expect(fixture.driver.spawnCalls).toBe(1);
+						expect(fixture.driver.readCalls).toBe(1);
+						expect(fixture.toolGatewayRequests).toEqual([canonicalGatewayRequest]);
+						expect(fixture.driver.writes).toEqual([
+							{
+								schemaVersion: 1,
+								kind: "tool_gateway_result",
+								operationNonce: "rpc-operation-nonce",
+								result: {
+									schemaVersion: 1,
+									toolCallId: canonicalGatewayRequest.toolCallId,
+									toolName: canonicalGatewayRequest.toolName,
+									ok: true,
+									sideEffectState: "none",
+									toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
+								},
+							},
+						]);
+						expect(await recoveryStore.readOperation(identity.attemptId)).toMatchObject({ status: "running" });
+					});
+				} else {
+					await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint, {
+						artifacts,
+					});
+					const operation = await recoveryStore.readOperation(identity.attemptId);
+					if (operation === undefined) throw new Error("seeded Connector operation is missing");
+					await recoveryStore.writeToolGatewayIntent({
+						schemaVersion: 1,
+						type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+						id: externalConnectorToolGatewayExchangeId(
+							identity.attemptId,
+							canonicalGatewayRequest.toolCallId,
+						),
+						phase: "intent",
+						providerId: fixture.selection.providerId,
+						attemptId: identity.attemptId,
+						bindingId: identity.bindingId,
+						bindingEpochId: identity.bindingEpochId,
+						correlation: { ...operation.correlation, toolCallId: canonicalGatewayRequest.toolCallId },
+						request: canonicalGatewayRequest,
+						createdAt: "2026-08-27T00:00:00.000Z",
 					});
 				}
 			} finally {
@@ -3395,12 +3441,27 @@ describe("RPC Automation Host run lifecycle", () => {
 			}
 			const sessionPath = harness.runtimeHost.session.sessionFile;
 			expect(sessionPath).toBeTruthy();
-			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			const reloaded = await harness.reopenController(sessionPath!);
+			reloadedController = reloaded.controller;
+			await installRpcExternalConnector(reloaded.runtimeHost, {
+				modelAccess: "none",
+				resume: true,
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+				supervision: fixture.supervision,
+			});
+			await reloaded.controller.handleCommand({
+				id: `gateway-cutpoint-${testCase.cutpoint}-reload-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const originalSwitch = vi.mocked(reloaded.runtimeHost.switchSession).getMockImplementation();
 			expect(originalSwitch).toBeDefined();
 			let restoredFixture: RpcExternalConnectorFixture | undefined;
-			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+			vi.spyOn(reloaded.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
 				const result = await originalSwitch!(path, options);
-				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
+				restoredFixture = await installRpcExternalConnector(reloaded.runtimeHost, {
 					modelAccess: "none",
 					resume: true,
 					toolGateway: true,
@@ -3414,7 +3475,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				return result;
 			});
 
-			const response = await harness.controller.dispatch({
+			const response = await reloaded.controller.dispatch({
 				id: `gateway-cutpoint-${testCase.cutpoint}-resume`,
 				type: "run.resume",
 				sessionPath: sessionPath!,
@@ -3432,7 +3493,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				[];
 			await vi.waitFor(async () => {
 				runReceipts = (
-					await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+					await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
 						objectType: "run_receipt",
 					})
 				).filter(
@@ -3484,7 +3545,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			);
 			expect(fixture.driver.spawnCalls + (restoredFixture?.driver.spawnCalls ?? 0)).toBe(testCase.driverSpawns);
 			expect(restoredFixture?.driver.connectCalls).toBe(1);
-			const gatewayRecords = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+			const gatewayRecords = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
 				objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 				includePruned: true,
 			});
@@ -3495,7 +3556,7 @@ describe("RPC Automation Host run lifecycle", () => {
 							(record.payload as { readonly attemptId?: unknown } | undefined)?.attemptId === identity.attemptId,
 				),
 			).toHaveLength(testCase.gatewayRecords);
-			const orderedRecords = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+			const orderedRecords = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
 				includePruned: true,
 				order: "oldestFirst",
 			});
@@ -3518,17 +3579,18 @@ describe("RPC Automation Host run lifecycle", () => {
 				expect(gatewayIndices[3]).toBeGreaterThan(gatewayIndices[2]!);
 			}
 			for (const objectType of ["attempt_receipt", "task_result", "run_receipt"]) {
-				const records = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+				const records = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
 					objectType,
 				});
 				expect(
 					records.filter((record) => record.kind === "fact" && record.correlation.runId === sourceRunId),
 				).toHaveLength(1);
 			}
-			const exposed = JSON.stringify({ response, records: harness.records, runReceipts });
+			const exposed = JSON.stringify({ response, records: reloaded.records, runReceipts });
 			expect(exposed).not.toContain("vendor-raw-canary");
 			expect(exposed).not.toContain("raw vendor terminal persistence failure");
 		} finally {
+			await reloadedController?.shutdown();
 			await harness.controller.shutdown();
 			await harness.cleanup();
 		}

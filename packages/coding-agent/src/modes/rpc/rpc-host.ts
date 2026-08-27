@@ -2812,6 +2812,21 @@ export class RpcHostController {
 				externalConnector !== undefined &&
 				externalCanonicalInput !== undefined
 			) {
+				const policyBinding = runBinding.session.getActiveExecutionPolicyBinding();
+				if (policyBinding === undefined || policyBinding.runId !== proposedRunId) {
+					releaseOwnReservation();
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"external_binding_invalid",
+								"The canonical Execution Policy binding is unavailable for this External Connector Run.",
+								false,
+							),
+						),
+					);
+				}
 				let gatewayModelRoute: ExternalConnectorProductAdmission["input"]["gatewayModelRoute"];
 				if (externalConnectorResolved.capabilitySnapshot.modelAccess === "aos_gateway") {
 					const resolution = modelSelection.resolution;
@@ -2863,6 +2878,7 @@ export class RpcHostController {
 							inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
 						},
 						workspace: runBinding.session.cwd,
+						policyBinding,
 						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					});
 				} catch (err) {
@@ -3044,6 +3060,9 @@ export class RpcHostController {
 							id: authoritativeSelection.descriptor.providerId,
 							thinkingLevel: "off",
 						},
+						capabilityBinding: runBinding.session.getActiveCapabilityBinding(),
+						policyBinding: runBinding.session.getActiveExecutionPolicyBinding(),
+						policySummary: runBinding.session.getActiveExecutionPolicySummary(),
 					});
 					handle.setUsageBaseline(usageSnapshot(runBinding));
 				} catch (err) {
@@ -5477,6 +5496,34 @@ export class RpcHostController {
 									text: command.message,
 									artifacts: command.artifacts ?? [],
 								};
+								try {
+									await recoveryBinding.session.whenCapabilitiesReady(
+										command.sourceRunId,
+										recoveryController.signal,
+									);
+								} catch (err) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(automationError(id, "run.resume", asAutomationError(err)));
+								}
+								const recoveryPolicyBinding = recoveryBinding.session.getActiveExecutionPolicyBinding();
+								if (recoveryPolicyBinding === undefined || recoveryPolicyBinding.runId !== command.sourceRunId) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_binding_invalid",
+												"The canonical Execution Policy binding is unavailable for External Connector recovery.",
+												false,
+											),
+										),
+									);
+								}
 								const recoveryInput = {
 									session: getAgentCanonicalSession(recoveryBinding.session),
 									writer: recoveryBinding.session.agentRuntimeComposition.harness.t5.writer,
@@ -5493,6 +5540,7 @@ export class RpcHostController {
 												hostController.inspectExternalArtifact(reference),
 										},
 										workspace: recoveryBinding.session.cwd,
+										policyBinding: recoveryPolicyBinding,
 										...(sourceRun.record.startedAt === undefined
 											? {}
 											: { acceptedAt: sourceRun.record.startedAt }),

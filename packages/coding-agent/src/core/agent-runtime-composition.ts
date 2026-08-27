@@ -80,6 +80,8 @@ export type TrustedSchedulerCompositionFactory = (
 export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
 export type TrustedExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
+	/** The same canonical Foundation Tool Gateway exposed to every executor in this Session. */
+	toolGateway: ToolGateway | undefined,
 ) => ExternalConnectorRegistry;
 export type TrustedTaskCredentialProviderFactory = (
 	context: AgentRuntimeCompositionContext,
@@ -214,7 +216,7 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 			const toolGateway = explicitToolGateway ?? subagents?.toolGateway;
 			requireFresh(toolGateway, "Trusted Tool Gateway");
 			const externalConnectorRegistry = requireFresh(
-				snapshot.externalConnectorRegistry?.(publicContext) ?? snapshot.externalConnectorRegistryInstance,
+				snapshot.externalConnectorRegistry?.(publicContext, toolGateway) ?? snapshot.externalConnectorRegistryInstance,
 				"Trusted External Connector registry",
 			);
 			const taskCredentialProvider = requireFresh(

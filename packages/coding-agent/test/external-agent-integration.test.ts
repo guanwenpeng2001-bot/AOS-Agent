@@ -17,7 +17,14 @@ import {
 	type CanonicalExternalAgentInput,
 } from "../src/index.ts";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
-import { executeExternalConnectorProductRun } from "../src/core/external-connector-product.ts";
+import {
+	executeExternalConnectorProductRun as executeExternalConnectorProductRunWithPolicy,
+	type ExternalConnectorProductExecutionInput,
+} from "../src/core/external-connector-product.ts";
+import {
+	resolveExecutionPolicyProfile,
+	type ExecutionPolicyProfile,
+} from "../src/core/execution-policy.ts";
 import { ExecutionAuditAdapter } from "../src/core/execution-audit.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
@@ -39,6 +46,31 @@ import { createExternalConnectorTestSupervision } from "./external-connector-tes
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "fixture.external-connector";
+
+const EXTERNAL_POLICY_PROFILE: ExecutionPolicyProfile = {
+	id: "external-product-test",
+	enforcement: "host",
+	defaultAction: "deny",
+	workspace: { read: ["workspace"], write: [], deny: ["credentials", "agent-internal"] },
+	process: { action: "deny", inheritEnvironment: false, allowEnvironment: [] },
+	network: { action: "deny", allowDestinations: [] },
+	credentials: { action: "deny", allowNames: [] },
+	approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny" },
+};
+
+function executeExternalConnectorProductRun(
+	input: Omit<ExternalConnectorProductExecutionInput, "policyBinding">,
+) {
+	const resolved = resolveExecutionPolicyProfile({
+		profiles: { [EXTERNAL_POLICY_PROFILE.id]: EXTERNAL_POLICY_PROFILE },
+		defaultProfile: EXTERNAL_POLICY_PROFILE.id,
+		workspaceIdentity: input.workspace,
+		runId: input.runId,
+		createdAt: NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	return executeExternalConnectorProductRunWithPolicy({ ...input, policyBinding: resolved.binding });
+}
 
 function capability(options: {
 	readonly artifacts?: boolean;
@@ -221,28 +253,6 @@ async function fixture(options: {
 		descriptor,
 		connector,
 		trusted: true,
-		...(!snapshot.artifacts && !snapshot.images && snapshot.modelAccess !== "aos_gateway" ? {} : {
-			capabilityEvidence: {
-				...(snapshot.artifacts ? {
-					artifacts: {
-						declaration: { id: "fixture.artifacts", revision: 1, reachable: true as const },
-						handler: { id: "fixture.artifacts.handler", invoke: () => undefined },
-					},
-				} : {}),
-				...(snapshot.images ? {
-					images: {
-						declaration: { id: "fixture.images", revision: 1, reachable: true as const },
-						handler: { id: "fixture.images.handler", invoke: () => undefined },
-					},
-				} : {}),
-				...(snapshot.modelAccess === "aos_gateway" ? {
-					aosGateway: {
-						declaration: { id: "fixture.model-gateway", revision: 1, reachable: true as const },
-						handler: { id: "fixture.model-gateway.handler", invoke: () => undefined },
-					},
-				} : {}),
-			},
-		}),
 	});
 	if (!registered.ok) throw registered.error;
 	return { session, t5, driver, connector, registry, descriptor, supervision };

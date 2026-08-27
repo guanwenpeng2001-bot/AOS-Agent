@@ -7,6 +7,8 @@ import {
 	SessionLedger,
 	SessionT5Ledger,
 	createConnectorCapabilitySnapshot,
+	createFoundationToolGateway,
+	createLocalToolGatewayProvider,
 	fingerprintFoundationValue,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
@@ -15,12 +17,15 @@ import {
 	type FoundationProviderExecutionOptions,
 	type FoundationJsonValue,
 	type Result as ResultValue,
-	type ToolExecutionResult,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import {
+	resolveExecutionPolicyProfile,
+	type ExecutionPolicyProfile,
+} from "../src/core/execution-policy.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
@@ -316,67 +321,35 @@ function createSupportedConnector(
 	return { connector, driver, session, snapshot, supervision, t5 };
 }
 
-function registration(
-	fixture: SupportedConnectorFixture,
-	options: {
-		readonly toolGateway?: {
-			count: number;
-			readonly requests: ToolGatewayRequest[];
-			readonly denial?: "route" | "policy";
-		};
-	} = {},
-): ExternalConnectorRegistration {
-	const toolGateway = options.toolGateway;
+function registration(fixture: SupportedConnectorFixture): ExternalConnectorRegistration {
 	return {
 		descriptor: descriptor(fixture.snapshot),
 		connector: fixture.connector,
 		trusted: true,
-		...(fixture.snapshot.toolGateway
-			? {
-					capabilityEvidence: {
-						toolGateway: {
-							declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
-							handler: {
-								id: "zeta.tool-gateway-handler",
-								invoke: (request: ToolGatewayRequest) => {
-									if (toolGateway !== undefined) {
-										toolGateway.count += 1;
-										toolGateway.requests.push(request);
-										if (toolGateway.denial === "route") {
-											return Result.err(new FoundationError("invalid_identifier", "fixture route denied request"));
-										}
-										if (toolGateway.denial === "policy") {
-											return Result.ok({
-												schemaVersion: 1,
-												toolCallId: request.toolCallId,
-												toolName: request.toolName,
-												ok: false,
-												sideEffectState: "none",
-												error: {
-													code: "tool_guard_denied",
-													message: "fixture policy denied request",
-													category: "permission",
-													retryable: false,
-												},
-											});
-										}
-									}
-									const result: ToolExecutionResult = {
-										schemaVersion: 1,
-										toolCallId: request.toolCallId,
-										toolName: request.toolName,
-										ok: true,
-										sideEffectState: "none",
-										toolReceiptRef: `tool-receipt-${request.toolCallId}`,
-									};
-									return Result.ok(result);
-								},
-							},
-						},
-					},
-				}
-			: {}),
 	};
+}
+
+const EXTERNAL_POLICY_PROFILE: ExecutionPolicyProfile = {
+	id: "external-registry-test",
+	enforcement: "host",
+	defaultAction: "deny",
+	workspace: { read: ["workspace"], write: [], deny: ["credentials", "agent-internal"] },
+	process: { action: "deny", inheritEnvironment: false, allowEnvironment: [] },
+	network: { action: "deny", allowDestinations: [] },
+	credentials: { action: "deny", allowNames: [] },
+	approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny" },
+};
+
+function policyBinding(runId: string) {
+	const resolved = resolveExecutionPolicyProfile({
+		profiles: { [EXTERNAL_POLICY_PROFILE.id]: EXTERNAL_POLICY_PROFILE },
+		defaultProfile: EXTERNAL_POLICY_PROFILE.id,
+		workspaceIdentity: "workspace-zeta",
+		runId,
+		createdAt: NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	return resolved.binding;
 }
 
 function productInput(
@@ -403,6 +376,7 @@ function productInput(
 			},
 		},
 		workspace: "workspace-zeta",
+		policyBinding: policyBinding(runId),
 		now: () => NOW,
 	};
 }
@@ -648,12 +622,41 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 	it("routes only an advertised Connector-originated request through Tool Gateway", async () => {
 		const gateway = { count: 0, requests: [] as ToolGatewayRequest[] };
+		const canonicalToolGateway = createFoundationToolGateway({
+			gatewayId: "zeta-foundation-tool-gateway",
+			providers: [
+				createLocalToolGatewayProvider({
+					providerId: PROVIDER_ID,
+					routes: [{
+						kind: "local",
+						toolName: "workspace.read",
+						namespace: "workspace",
+						providerId: PROVIDER_ID,
+						revision: 1,
+					}],
+					invoke: async (request) => {
+						gateway.count += 1;
+						gateway.requests.push(request);
+						return Result.ok({
+							schemaVersion: 1,
+							toolCallId: request.toolCallId,
+							toolName: request.toolName,
+							ok: true,
+							sideEffectState: "none",
+							toolReceiptRef: `tool-receipt-${request.toolCallId}`,
+						});
+					},
+				}),
+			],
+		});
 		const enabled = createSupportedConnector({
 			toolGateway: true,
 			driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
 		});
-		const enabledRegistry = createExternalConnectorRegistry();
-		expect(await enabledRegistry.register(registration(enabled, { toolGateway: gateway }))).toMatchObject({
+		const unboundRegistry = createExternalConnectorRegistry();
+		expect(await unboundRegistry.register(registration(enabled))).toMatchObject({ ok: false });
+		const enabledRegistry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await enabledRegistry.register(registration(enabled))).toMatchObject({
 			ok: true,
 		});
 
@@ -708,19 +711,59 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(disabled.driver.spawnCalls).toBe(1);
 		expect(disabled.driver.writes).toEqual([]);
 		await enabledRegistry.dispose();
+		await unboundRegistry.dispose();
 		await disabledRegistry.dispose();
 	});
 
 	it.each(["route", "policy"] as const)(
 		"projects Tool Gateway %s denial without collapsing it to unknown side effect",
 		async (kind) => {
-			const gateway = { count: 0, requests: [] as ToolGatewayRequest[], denial: kind };
+			const gateway = { count: 0, requests: [] as ToolGatewayRequest[] };
+			const canonicalToolGateway = createFoundationToolGateway({
+				gatewayId: `zeta-foundation-tool-gateway-${kind}-denied`,
+				providers: [
+					createLocalToolGatewayProvider({
+						providerId: PROVIDER_ID,
+						routes: [
+							{
+								kind: "local",
+								toolName: "workspace.read",
+								namespace: "workspace",
+								providerId: PROVIDER_ID,
+								revision: 1,
+							},
+						],
+						invoke: async (request) => {
+							gateway.count += 1;
+							gateway.requests.push(request);
+							if (kind === "route") {
+								return Result.err(
+									new FoundationError("invalid_identifier", "fixture route denied request"),
+								);
+							}
+							return Result.ok({
+								schemaVersion: 1,
+								toolCallId: request.toolCallId,
+								toolName: request.toolName,
+								ok: false,
+								sideEffectState: "none",
+								error: {
+									code: "tool_guard_denied",
+									message: "fixture policy denied request",
+									category: "permission",
+									retryable: false,
+								},
+							});
+						},
+					}),
+				],
+			});
 			const fixture = createSupportedConnector({
 				toolGateway: true,
 				driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
 			});
-			const registry = createExternalConnectorRegistry();
-			expect(await registry.register(registration(fixture, { toolGateway: gateway }))).toMatchObject({
+			const registry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+			expect(await registry.register(registration(fixture))).toMatchObject({
 				ok: true,
 			});
 

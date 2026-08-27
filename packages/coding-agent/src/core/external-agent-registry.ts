@@ -13,14 +13,13 @@ import {
 	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
 	type ToolExecutionResult,
+	type ToolGateway,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
-	EXTERNAL_CAPABILITY_BEHAVIORS,
 	createExternalCapabilityTruthSnapshot,
 	type ExternalCapabilityBehavior,
 	type ExternalCapabilityEvidenceInput,
-	type ExternalCapabilityHandlerEvidence,
 	type ExternalCapabilityTruthSnapshot,
 } from "./external-model-projection.ts";
 import {
@@ -51,7 +50,6 @@ export interface ExternalConnectorRegistration {
 	readonly descriptor: ExternalConnectorDescriptor;
 	readonly connector: ExternalAgentConnector;
 	readonly trusted: true;
-	readonly capabilityEvidence?: ExternalCapabilityEvidenceInput;
 }
 
 /** A selection must pin every mutable connector capability identity field. */
@@ -96,6 +94,8 @@ export interface ExternalConnectorRegistry {
 export interface ExternalConnectorRegistryOptions {
 	readonly capabilityProbeDeadline?: Partial<ExternalConnectorSegmentDeadline>;
 	readonly clock?: RuntimeClock;
+	/** Canonical Foundation Tool Gateway for this Session composition. */
+	readonly toolGateway?: ToolGateway;
 }
 
 interface RegisteredConnector {
@@ -105,10 +105,6 @@ interface RegisteredConnector {
 	readonly selectedConnector: ExternalAgentConnector;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
-	readonly capabilityHandlers: Readonly<
-		Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>
-	>;
-	readonly capabilityEvidence?: ExternalCapabilityEvidenceInput;
 }
 
 interface PendingConnector {
@@ -123,7 +119,7 @@ const EXTERNAL_CONNECTOR_DESCRIPTOR_KEYS = new Set([
 	"revision",
 	"capabilitySnapshotDigest",
 ]);
-const EXTERNAL_CONNECTOR_REGISTRATION_KEYS = new Set(["descriptor", "connector", "trusted", "capabilityEvidence"]);
+const EXTERNAL_CONNECTOR_REGISTRATION_KEYS = new Set(["descriptor", "connector", "trusted"]);
 const EXTERNAL_CONNECTOR_SELECTION_KEYS = new Set(["providerId", "revision", "capabilitySnapshotDigest"]);
 const RESULT_OK_KEYS = new Set(["ok", "value"]);
 const RESULT_ERROR_KEYS = new Set(["ok", "error"]);
@@ -283,35 +279,6 @@ function cloneConnectorDescriptor(value: ExternalConnectorDescriptor): ExternalC
 	});
 }
 
-function cloneCapabilityEvidence(
-	value: ExternalCapabilityEvidenceInput | undefined,
-): ExternalCapabilityEvidenceInput | undefined {
-	if (value === undefined) return undefined;
-	const cloned: Partial<
-		Record<ExternalCapabilityBehavior, NonNullable<ExternalCapabilityEvidenceInput[ExternalCapabilityBehavior]>>
-	> = {};
-	for (const behavior of EXTERNAL_CAPABILITY_BEHAVIORS) {
-		const item = value[behavior];
-		if (item === undefined) continue;
-		cloned[behavior] = Object.freeze({
-			declaration: Object.freeze({ ...item.declaration }),
-			handler: Object.freeze({ id: item.handler.id, invoke: item.handler.invoke }),
-		});
-	}
-	return Object.freeze(cloned);
-}
-
-function capabilityHandlers(
-	value: ExternalCapabilityEvidenceInput | undefined,
-): Readonly<Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>> {
-	const handlers: Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>> = {};
-	for (const behavior of EXTERNAL_CAPABILITY_BEHAVIORS) {
-		const item = value?.[behavior];
-		if (item !== undefined) handlers[behavior] = item.handler.invoke;
-	}
-	return Object.freeze(handlers);
-}
-
 function lifecycleCapabilityError(): FoundationError {
 	return new FoundationError(
 		"scheduler_attempt_recovery_failed",
@@ -390,8 +357,31 @@ function createCapabilityPinnedConnector(
 function capabilityTruth(
 	connectorId: string,
 	snapshot: ConnectorCapabilitySnapshot,
-	evidence: ExternalCapabilityEvidenceInput | undefined,
+	implementation: HostSupervisedExternalAgentConnectorImplementation,
+	toolGateway: ToolGateway | undefined,
 ): ResultValue<ExternalCapabilityTruthSnapshot, FoundationError> {
+	const evidence: Partial<
+		Record<ExternalCapabilityBehavior, NonNullable<ExternalCapabilityEvidenceInput[ExternalCapabilityBehavior]>>
+	> = {};
+	const declare = (
+		behavior: ExternalCapabilityBehavior,
+		handlerId: string,
+		invoke: (...args: never[]) => unknown,
+	): void => {
+		evidence[behavior] = {
+			declaration: { id: `${connectorId}.${behavior}`, revision: snapshot.revision, reachable: true },
+			handler: { id: handlerId, invoke },
+		};
+	};
+	if (snapshot.resume) declare("resume", `${connectorId}.resumeAttempt`, implementation.resumeAttempt);
+	if (snapshot.toolGateway && toolGateway !== undefined) {
+		declare("toolGateway", `${toolGateway.providerId}.execute`, toolGateway.execute);
+	}
+	if (snapshot.artifacts) declare("artifacts", `${connectorId}.runAttempt.artifacts`, implementation.runAttempt);
+	if (snapshot.images) declare("images", `${connectorId}.runAttempt.images`, implementation.runAttempt);
+	if (snapshot.modelAccess === "aos_gateway") {
+		declare("aosGateway", `${connectorId}.preflightModelProjection`, implementation.preflightModelProjection);
+	}
 	const result = createExternalCapabilityTruthSnapshot({
 		connectorId,
 		protocol: `${snapshot.protocol.name}:${snapshot.protocol.version}`,
@@ -403,7 +393,7 @@ function capabilityTruth(
 			images: snapshot.images,
 			modelAccess: snapshot.modelAccess,
 		},
-		...(evidence === undefined ? {} : { evidence }),
+		evidence,
 	});
 	return result.ok
 		? Result.ok(result.snapshot)
@@ -546,7 +536,8 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const truthResult = capabilityTruth(
 			registered.implementation.providerId,
 			snapshot,
-			registered.capabilityEvidence,
+			registered.implementation,
+			this.#options.toolGateway,
 		);
 		if (!truthResult.ok) return truthResult;
 		if (!sameFingerprint(truthResult.value.snapshotDigest, registered.capabilityTruth.snapshotDigest)) {
@@ -691,10 +682,13 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				),
 			);
 		}
-		const truthResult = capabilityTruth(implementation.providerId, snapshot, registration.capabilityEvidence);
+		const truthResult = capabilityTruth(
+			implementation.providerId,
+			snapshot,
+			implementation,
+			this.#options.toolGateway,
+		);
 		if (!truthResult.ok) return truthResult;
-		const evidence = cloneCapabilityEvidence(registration.capabilityEvidence);
-		const handlers = capabilityHandlers(evidence);
 		const storedDescriptor = cloneConnectorDescriptor(descriptor);
 		if (this.#disposed || this.#pendingRegistrations.get(descriptor.providerId) !== pending) {
 			return Result.err(connectorRegistryError("External connector registry is disposed."));
@@ -721,8 +715,6 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			selectedConnector,
 			capabilitySnapshot: snapshot,
 			capabilityTruth: truthResult.value,
-			capabilityHandlers: handlers,
-			...(evidence === undefined ? {} : { capabilityEvidence: evidence }),
 		};
 		this.#connectors.set(descriptor.providerId, stored);
 		return Result.ok(storedDescriptor);
@@ -764,8 +756,8 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			const checkedRequest = validateToolGatewayRequest(request);
 			if (!checkedRequest.ok) return checkedRequest;
 			const canonicalRequest = cloneDeepFrozen(checkedRequest.value);
-			const handler = registered.capabilityHandlers.toolGateway;
-			if (handler === undefined) {
+			const toolGateway = this.#options.toolGateway;
+			if (toolGateway === undefined) {
 				return Result.err(connectorRegistryError("External connector Tool Gateway handler is unavailable."));
 			}
 			if (options?.signal?.aborted === true) {
@@ -775,7 +767,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			}
 			let result: unknown;
 			try {
-				result = await Reflect.apply(handler, undefined, [canonicalRequest, options ?? {}]);
+				result = await Reflect.apply(toolGateway.execute, toolGateway, [canonicalRequest, options ?? {}]);
 			} catch {
 				return Result.err(
 					new FoundationError("provider_spawn_failed", "External connector Tool Gateway handler failed."),

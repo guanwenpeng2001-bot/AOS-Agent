@@ -47,6 +47,8 @@ import {
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
+import type { PolicyBinding } from "./execution-policy.ts";
+import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
 import {
 	bindExternalConnectorToolGatewayConsumer,
 	type ExternalConnectorRegistry,
@@ -72,6 +74,8 @@ export interface ExternalConnectorProductExecutionInput {
 	readonly canonicalInput: CanonicalExternalAgentInput;
 	readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 	readonly workspace: string;
+	/** Resolver-owned canonical policy authority for this Run. */
+	readonly policyBinding: PolicyBinding;
 	readonly signal?: AbortSignal;
 	readonly gatewayModelRoute?: {
 		readonly provider: string;
@@ -120,6 +124,7 @@ export interface ExternalConnectorProductRecoveryInput {
 	readonly reconstruction?: {
 		readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 		readonly workspace: string;
+		readonly policyBinding: PolicyBinding;
 		readonly acceptedAt?: string;
 	};
 }
@@ -320,6 +325,12 @@ export async function prepareExternalConnectorProductRun(
 		throw new FoundationError(
 			"foundation_schema_invalid_shape",
 			"External connector text must match its canonical input",
+		);
+	}
+	if (input.policyBinding.runId !== input.runId) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector execution requires the canonical policy binding for its Run",
 		);
 	}
 	const selected = await input.registry.select(input.selection);
@@ -524,11 +535,9 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 				: { bindingDigest: input.gatewayModelRoute.bindingDigest.value }),
 		},
 		policy: {
-			schemaVersion: 1 as const,
-			type: "policy_binding",
-			id: `policy_binding_${identityToken}`,
+			...createPolicyBindingLedgerRecord(input.policyBinding),
+			type: "policy_binding" as const,
 			revision: 1 as const,
-			decision: "trusted_connector",
 		},
 	};
 	const refs = {
@@ -540,7 +549,11 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 		),
 		capability: revisionReference("capability_binding", sourcePayloads.capability.id, sourcePayloads.capability),
 		model: revisionReference("model_broker_binding", sourcePayloads.model.id, sourcePayloads.model),
-		policy: revisionReference("policy_binding", sourcePayloads.policy.id, sourcePayloads.policy),
+		policy: revisionReference(
+			"policy_binding",
+			sourcePayloads.policy.id,
+			sourcePayloads.policy as unknown as FoundationJsonValue,
+		),
 	};
 	const binding = requireValue(
 		resolveAgentBinding({
@@ -590,7 +603,13 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 			correlationBase,
 		);
 		await persistImmutable(ledger, "model_broker_binding", refs.model.id, sourcePayloads.model, correlationBase);
-		await persistImmutable(ledger, "policy_binding", refs.policy.id, sourcePayloads.policy, correlationBase);
+		await persistImmutable(
+			ledger,
+			"policy_binding",
+			refs.policy.id,
+			sourcePayloads.policy as unknown as FoundationJsonValue,
+			correlationBase,
+		);
 		const durableExecutionInput = durableExecutionInputForAdmission(admission);
 		await persistImmutable(
 			ledger,
@@ -976,6 +995,31 @@ export async function recoverExternalConnectorProductRun(
 		) {
 			const metadata = await input.session.getMetadata();
 			const durableGatewayModelRoute = gatewayModelRouteFromDurableInput(durableExecutionInput);
+			const policyRecord = await ledger.get("policy_binding", durableBinding.policyRevision.id);
+			const policyPayload = requireFactPayload(
+				policyRecord,
+				"policy_binding",
+				durableBinding.policyRevision.id,
+			);
+			const durablePolicyFingerprint = durableBinding.policyRevision.fingerprint;
+			if (
+				durablePolicyFingerprint === undefined ||
+				fingerprintFoundationValue(policyPayload).value !== durablePolicyFingerprint.value
+			) {
+				throw new ExternalConnectorProductError(
+					"external_binding_invalid",
+					"External Connector durable policy authority does not match its AgentBinding",
+				);
+			}
+			const durablePolicyBinding = createPolicyBindingLedgerRecord(
+				policyPayload as unknown as PolicyBinding,
+			) as PolicyBinding;
+			if (durablePolicyBinding.id !== durableBinding.policyRevision.id || durablePolicyBinding.runId !== input.runId) {
+				throw new ExternalConnectorProductError(
+					"external_binding_invalid",
+					"External Connector durable policy authority does not match its Run",
+				);
+			}
 			prepared = {
 				input: {
 					session: input.session,
@@ -994,6 +1038,7 @@ export async function recoverExternalConnectorProductRun(
 						},
 					},
 					workspace: durableTask.workspace,
+					policyBinding: durablePolicyBinding,
 					...(durableGatewayModelRoute === undefined ? {} : { gatewayModelRoute: durableGatewayModelRoute }),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},
@@ -1032,6 +1077,7 @@ export async function recoverExternalConnectorProductRun(
 				canonicalInput: durableExecutionInput.input,
 				inputAdmission: reconstruction.inputAdmission,
 				workspace: reconstruction.workspace,
+				policyBinding: reconstruction.policyBinding,
 				...(input.signal === undefined ? {} : { signal: input.signal }),
 				...(durableExecutionInput.modelProjection === undefined
 					? {}
