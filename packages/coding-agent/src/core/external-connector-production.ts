@@ -12,7 +12,9 @@ import {
 } from "./external-agent-connector.ts";
 import {
 	ProductionExternalConnectorProcessController,
-	type ProductionExternalConnectorProcess,
+	resolveProductionExternalConnectorDriverProvenance,
+	type ProductionExternalConnectorDriverProvenance,
+	type TrustedProductionExternalConnectorProcess,
 } from "./external-connector-process-controller.ts";
 import {
 	FileExternalConnectorSupervisorPrivateStateStore,
@@ -26,7 +28,7 @@ import type { RuntimeClock } from "./runtime-clock.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {
 	readonly privateStatePath: string;
-	readonly process: ProductionExternalConnectorProcess;
+	readonly process: TrustedProductionExternalConnectorProcess;
 	readonly deadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
 	readonly clock?: RuntimeClock;
@@ -45,12 +47,20 @@ export interface ProductionExternalConnectorStartupStatus {
 }
 
 const PRODUCTION_STARTUP_STATUS = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorStartupStatus>();
+const PRODUCTION_DRIVER_PROVENANCE = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorDriverProvenance>();
 
 /** Safe startup projection retained by the trusted Host; it is never supplied by the Connector. */
 export function getProductionExternalConnectorStartupStatus(
 	connector: ExternalAgentConnector,
 ): ProductionExternalConnectorStartupStatus | undefined {
 	return PRODUCTION_STARTUP_STATUS.get(connector);
+}
+
+/** Private Host evidence; intentionally omitted from the package-root public API. */
+export function getProductionExternalConnectorDriverProvenance(
+	connector: ExternalAgentConnector,
+): ProductionExternalConnectorDriverProvenance | undefined {
+	return PRODUCTION_DRIVER_PROVENANCE.get(connector);
 }
 
 /** Compose the production controller and restricted crash-safe private-state file. */
@@ -77,6 +87,7 @@ export async function createProductionExternalAgentConnector(
 	if (typeof options.capabilityProbe !== "function") {
 		throw new TypeError("Production External Connector requires an explicit capability probe.");
 	}
+	const driverProvenance = resolveProductionExternalConnectorDriverProvenance(options.process);
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
@@ -121,6 +132,7 @@ export async function createProductionExternalAgentConnector(
 			readiness: recovery.some((result) => result.status === "quarantined") ? "quarantined" : "ready",
 			recovery,
 		}));
+		if (driverProvenance !== undefined) PRODUCTION_DRIVER_PROVENANCE.set(connector, driverProvenance);
 		return connector;
 	} catch (error) {
 		try {

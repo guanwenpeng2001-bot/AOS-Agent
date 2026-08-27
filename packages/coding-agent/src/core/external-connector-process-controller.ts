@@ -20,6 +20,7 @@ import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "./runtime-clock.ts";
 const ACTIVATION_TIMEOUT_MS = 10_000;
 const PROTOCOL_LIMIT_BYTES = 4_096;
 const NONCE_MARKER_PREFIX = "AOS_EXTERNAL_CONNECTOR_NONCE=";
+const PROVENANCE_DIGEST_CACHE = new Map<string, string>();
 
 const POSIX_GUARDIAN_SOURCE = String.raw`
 const { spawn } = require("node:child_process");
@@ -51,6 +52,7 @@ process.stdin.on("data", (chunk) => {
 	}
 	active = true;
 	const child = spawn(processSpec.executablePath, processSpec.arguments, {
+		cwd: processSpec.cwd,
 		detached: false,
 		env: processSpec.environment,
 		shell: false,
@@ -216,7 +218,7 @@ public static class AosExternalConnectorJob {
         return quoted.ToString();
     }
 
-    public static AosExternalConnectorJobHandle Start(string executablePath, string[] arguments, string[] environment) {
+    public static AosExternalConnectorJobHandle Start(string executablePath, string[] arguments, string[] environment, string cwd) {
         const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
         const uint CREATE_SUSPENDED = 0x00000004;
         const uint CREATE_NO_WINDOW = 0x08000000;
@@ -256,7 +258,7 @@ public static class AosExternalConnectorJob {
                 false,
                 CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
                 environmentPointer,
-                null,
+                cwd,
                 ref startup,
                 out process
             )) {
@@ -295,7 +297,7 @@ if ($null -eq $activation -or !$activation.StartsWith($prefix)) { exit 72 }
 $processSpecJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($activation.Substring($prefix.Length)))
 $processSpec = $processSpecJson | ConvertFrom-Json
 $environment = @($processSpec.environment.PSObject.Properties | ForEach-Object { $_.Name + "=" + [string]$_.Value })
-$contained = [AosExternalConnectorJob]::Start([string]$processSpec.executablePath, [string[]]@($processSpec.arguments), [string[]]$environment)
+$contained = [AosExternalConnectorJob]::Start([string]$processSpec.executablePath, [string[]]@($processSpec.arguments), [string[]]$environment, [string]$processSpec.cwd)
 [Console]::Out.WriteLine("ACTIVE " + $marker)
 try {
 	while ([AosExternalConnectorJob]::WaitForSingleObject($contained.Process, 3600000) -eq 258) {}
@@ -371,6 +373,32 @@ export interface ProductionExternalConnectorProcessControllerOptions {
 export interface ProductionExternalConnectorProcess {
 	readonly executablePath: string;
 	readonly arguments?: readonly string[];
+	readonly trustedProvenance?: ProductionExternalConnectorTrustedProvenance;
+}
+
+export type TrustedProductionExternalConnectorProcess = ProductionExternalConnectorProcess & {
+	readonly trustedProvenance: ProductionExternalConnectorTrustedProvenance;
+};
+
+export interface ProductionExternalConnectorTrustedProvenance {
+	readonly modulePath: string;
+	readonly cwd: string;
+	readonly version: string;
+	readonly executableIdentity: string;
+	readonly moduleIdentity: string;
+}
+
+export interface ProductionExternalConnectorDriverProvenance {
+	readonly executablePath: string;
+	readonly modulePath: string;
+	readonly cwd: string;
+	readonly version: string;
+	readonly executableIdentity: string;
+	readonly executableFileIdentity: string;
+	readonly moduleIdentity: string;
+	readonly moduleFileIdentity: string;
+	readonly shell: false;
+	readonly environmentKeys: readonly string[];
 }
 
 function supportedPlatform(platform: string): SupportedExternalConnectorPlatform {
@@ -402,6 +430,61 @@ function executableIdentity(
 			persistedExecutableIdentity ?? `sha256:${createHash("sha256").update(readFileSync(resolved)).digest("hex")}`,
 		fileIdentity: `file:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`,
 	};
+}
+
+function fileProvenance(path: string): { readonly path: string; readonly digest: string; readonly fileIdentity: string } {
+	const resolved = realpathSync(path);
+	const stat = statSync(resolved, { bigint: true });
+	const fileIdentity = `file:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+	const cacheKey = `${resolved}\0${fileIdentity}`;
+	let digest = PROVENANCE_DIGEST_CACHE.get(cacheKey);
+	if (digest === undefined) {
+		digest = `sha256:${createHash("sha256").update(readFileSync(resolved)).digest("hex")}`;
+		if (PROVENANCE_DIGEST_CACHE.size >= 64) PROVENANCE_DIGEST_CACHE.clear();
+		PROVENANCE_DIGEST_CACHE.set(cacheKey, digest);
+	}
+	return { path: resolved, digest, fileIdentity };
+}
+
+/** Resolve and validate private Host-owned driver provenance before activation. */
+export function resolveProductionExternalConnectorDriverProvenance(
+	value: ProductionExternalConnectorProcess,
+	platform = process.platform,
+): ProductionExternalConnectorDriverProvenance | undefined {
+	const trusted = value.trustedProvenance;
+	if (trusted === undefined) return undefined;
+	if (
+		!isAbsolute(trusted.modulePath) ||
+		!isAbsolute(trusted.cwd) ||
+		trusted.version.length === 0 ||
+		trusted.executableIdentity.length === 0 ||
+		trusted.moduleIdentity.length === 0
+	) throw new TypeError("External Connector trusted driver provenance is invalid");
+	const executable = fileProvenance(value.executablePath);
+	const module = fileProvenance(trusted.modulePath);
+	if (
+		module.path !== executable.path &&
+		value.arguments?.some((argument) => isAbsolute(argument) && realpathSync(argument) === module.path) !== true
+	) {
+		throw new TypeError("External Connector trusted module is not the configured process target");
+	}
+	const cwd = realpathSync(trusted.cwd);
+	if (!statSync(cwd).isDirectory()) throw new TypeError("External Connector trusted driver cwd is invalid");
+	if (executable.digest !== trusted.executableIdentity || module.digest !== trusted.moduleIdentity) {
+		throw new TypeError("External Connector trusted driver file identity does not match");
+	}
+	return Object.freeze({
+		executablePath: executable.path,
+		modulePath: module.path,
+		cwd,
+		version: trusted.version,
+		executableIdentity: executable.digest,
+		executableFileIdentity: executable.fileIdentity,
+		moduleIdentity: module.digest,
+		moduleFileIdentity: module.fileIdentity,
+		shell: false,
+		environmentKeys: Object.freeze(Object.keys(externalConnectorMinimalEnvironment(platform)).sort()),
+	});
 }
 
 function inspectLinuxProcess(
@@ -1035,9 +1118,11 @@ function encodeProcessSpec(
 	if (!statSync(executablePath).isFile()) {
 		throw new TypeError("External Connector companion executable is not a file");
 	}
+	const provenance = resolveProductionExternalConnectorDriverProvenance(value);
 	const serialized = JSON.stringify({
 		executablePath,
 		arguments: value.arguments === undefined ? [] : [...value.arguments],
+		cwd: provenance?.cwd ?? process.cwd(),
 		environment,
 	});
 	if (Buffer.byteLength(serialized, "utf8") > 1024 * 1024) {

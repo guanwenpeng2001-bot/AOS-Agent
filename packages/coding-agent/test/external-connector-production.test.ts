@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,6 +39,13 @@ import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/t
 const processOptions = {
 	executablePath: process.execPath,
 	arguments: ["-e", "setInterval(function(){},2147483647)"],
+	trustedProvenance: {
+		modulePath: process.execPath,
+		cwd: process.cwd(),
+		version: process.version,
+		executableIdentity: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
+		moduleIdentity: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
+	},
 } as const;
 
 function processIsLive(pid: number): boolean {
@@ -98,7 +106,6 @@ describe("production External Connector composition", () => {
 				capabilitySnapshotDigest: capability.digest,
 			},
 			connector,
-			trusted: true,
 		});
 		if (!registered.ok) throw registered.error;
 		expect(registered).toMatchObject({ ok: true });
@@ -180,7 +187,6 @@ describe("production External Connector composition", () => {
 					capabilitySnapshotDigest: capability.digest,
 				},
 				connector,
-				trusted: true,
 			}, capability)).toMatchObject({ ok: true });
 			expect(registry.readiness()).toEqual([{
 				schemaVersion: 1,
@@ -189,6 +195,16 @@ describe("production External Connector composition", () => {
 				status: "quarantined",
 				reasonCode: "cleanup_unconfirmed",
 			}]);
+			expect(await registry.select({
+				providerId: capability.providerId,
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			})).toMatchObject({ ok: false });
+			expect(await registry.probeReadiness({
+				providerId: capability.providerId,
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			})).toMatchObject({ status: "quarantined", reasonCode: "cleanup_unconfirmed" });
 			expect(await registry.select({
 				providerId: capability.providerId,
 				revision: capability.revision,
@@ -346,7 +362,6 @@ describe("production External Connector composition", () => {
 						capabilitySnapshotDigest: capability.digest,
 					},
 					connector,
-					trusted: true,
 				}),
 			).toMatchObject({ ok: true });
 			drift = true;
@@ -422,7 +437,7 @@ describe("production External Connector composition", () => {
 			createdAt: "2026-08-27T00:00:00.000Z",
 		});
 		const processConfiguration = {
-			executablePath: process.execPath,
+			...processOptions,
 			arguments: [
 				"-e",
 				"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(function(){},2147483647)",
@@ -519,6 +534,7 @@ describe("production External Connector composition", () => {
 							"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(function(){},2147483647)",
 							targetPidPath,
 						],
+						trustedProvenance: processOptions.trustedProvenance,
 					},
 				});
 			};

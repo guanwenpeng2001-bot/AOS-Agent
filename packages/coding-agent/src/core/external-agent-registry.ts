@@ -54,7 +54,6 @@ export interface ExternalConnectorDescriptor {
 export interface ExternalConnectorRegistration {
 	readonly descriptor: ExternalConnectorDescriptor;
 	readonly connector: ExternalAgentConnector;
-	readonly trusted: true;
 }
 
 /** A selection must pin every mutable connector capability identity field. */
@@ -167,7 +166,7 @@ const EXTERNAL_CONNECTOR_DESCRIPTOR_KEYS = new Set([
 	"revision",
 	"capabilitySnapshotDigest",
 ]);
-const EXTERNAL_CONNECTOR_REGISTRATION_KEYS = new Set(["descriptor", "connector", "trusted"]);
+const EXTERNAL_CONNECTOR_REGISTRATION_KEYS = new Set(["descriptor", "connector"]);
 const EXTERNAL_CONNECTOR_SELECTION_KEYS = new Set(["providerId", "revision", "capabilitySnapshotDigest"]);
 const RESULT_OK_KEYS = new Set(["ok", "value"]);
 const RESULT_ERROR_KEYS = new Set(["ok", "error"]);
@@ -450,8 +449,6 @@ function isExternalConnectorRegistration(value: unknown): value is ExternalConne
 		hasOnlyConnectorKeys(value, EXTERNAL_CONNECTOR_REGISTRATION_KEYS) &&
 		Object.hasOwn(value, "descriptor") &&
 		Object.hasOwn(value, "connector") &&
-		Object.hasOwn(value, "trusted") &&
-		value.trusted === true &&
 		isExternalConnectorDescriptor(value.descriptor) &&
 		isConstructedExternalConnector(value.connector)
 	);
@@ -825,7 +822,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!isExternalConnectorRegistration(registration)) {
 			return Result.err(
 				connectorRegistryError(
-					"External connector registration must contain one trusted constructed instance and an exact descriptor.",
+					"External connector registration must contain one Host-constructed instance and an exact descriptor.",
 				),
 			);
 		}
@@ -895,7 +892,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!isExternalConnectorRegistration(registration)) {
 			return Result.err(
 				connectorRegistryError(
-					"External connector registration must contain one trusted constructed instance and an exact descriptor.",
+					"External connector registration must contain one Host-constructed instance and an exact descriptor.",
 				),
 			);
 		}
@@ -931,7 +928,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!isExternalConnectorRegistration(registration)) {
 			return Result.err(
 				connectorRegistryError(
-					"External connector registration must contain one trusted constructed instance and an exact descriptor.",
+					"External connector registration must contain one Host-constructed instance and an exact descriptor.",
 				),
 			);
 		}
@@ -1144,7 +1141,11 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	}
 
 	async probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus> {
+		const existing = this.#readiness.get(selection.providerId);
+		if (existing?.status === "quarantined") return existing;
 		const selected = await this.select(selection);
+		const current = this.#readiness.get(selection.providerId);
+		if (current?.status === "quarantined") return current;
 		const status: ExternalConnectorReadinessStatus = Object.freeze({
 			schemaVersion: 1,
 			providerId: selection.providerId,
@@ -1171,12 +1172,10 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		this.#connectors.clear();
 		this.#pendingRegistrations.clear();
 		this.#readiness.clear();
-		this.#disposal = Promise.allSettled(
-			connectors.map(({ connector, implementation }) =>
-				this.#disposeConnectorOnce(connector, implementation),
-			),
+		this.#disposal = Promise.all(
+			connectors.map(({ connector, implementation }) => this.#disposeConnectorBounded(connector, implementation)),
 		).then((results) => {
-			if (results.some((result) => result.status === "rejected")) {
+			if (results.some((confirmed) => !confirmed)) {
 				throw connectorRegistryShutdownError();
 			}
 		});

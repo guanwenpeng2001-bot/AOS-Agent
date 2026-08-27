@@ -1,9 +1,10 @@
 import { strictEqual } from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	FoundationError,
@@ -30,6 +31,13 @@ import {
 	type SchedulerHostOptions,
 } from "../../src/index.ts";
 import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
+import type { ExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import {
+	createProductionExternalAgentConnector,
+	getProductionExternalConnectorDriverProvenance,
+} from "../../src/core/external-connector-production.ts";
+import { resolveProductionExternalConnectorDriverProvenance } from "../../src/core/external-connector-process-controller.ts";
+import type { ExternalConnectorVendorDriver } from "../../src/core/vendor-drivers/types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
@@ -39,7 +47,6 @@ import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { WorkerSupervisorV1 } from "../../src/core/worker-supervisor.ts";
 import type { WorkerBindingV1 } from "../../src/core/worker.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
-import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
 import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import {
@@ -586,34 +593,8 @@ const ac23 = defineLine13ResolvedCase({
 		ac: "AC-23",
 		fullTestName: "Line 13 AC-23 binds exact trusted driver provenance and a minimal environment",
 	scenario: {
-		fixture: () => ({ trustedLauncher: false, exactSelection: false, safeProjection: false, provenanceBound: false }),
-		setup: (fixture) => {
-			const profileId = "trusted-driver";
-			const supervisor = new WorkerSupervisorV1({
-				executable: process.execPath,
-				entrypoint: CHILD_ENTRY,
-				profileId,
-				profileRevision: 1,
-				capabilities: ["filesystem.read", "process.spawn"],
-				environment: { AOS_DRIVER_PROTOCOL: "line13" },
-			});
-			const accepted = supervisor.preflight({ binding: workerBinding(profileId), runAccepted: true });
-			const unsafe = new WorkerSupervisorV1({
-				executable: "node",
-				entrypoint: CHILD_ENTRY,
-				profileId,
-				profileRevision: 1,
-				capabilities: ["filesystem.read", "process.spawn"],
-				environment: { AOS_DRIVER_TOKEN: "secret" },
-			}).preflight({ binding: workerBinding(profileId), runAccepted: true });
-			fixture.trustedLauncher =
-				accepted.ok &&
-				!unsafe.ok &&
-				unsafe.error.code === "worker_profile_untrusted" &&
-				isAbsolute(process.execPath) &&
-				isAbsolute(CHILD_ENTRY) &&
-				statSync(CHILD_ENTRY).isFile();
-
+		fixture: async () => {
+			const root = mkdtempSync(join(tmpdir(), "aos-line13-ac23-"));
 			const providerId = "line13.driver-connector";
 			const snapshot = createConnectorCapabilitySnapshot({
 				schemaVersion: 1,
@@ -626,7 +607,47 @@ const ac23 = defineLine13ResolvedCase({
 				artifacts: false,
 				images: false,
 			});
-			const connector = createExternalConnectorTestRuntime(snapshot);
+			const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+			const trustedProvenance = {
+				modulePath: CHILD_ENTRY,
+				cwd: root,
+				version: process.version,
+				executableIdentity: digest(process.execPath),
+				moduleIdentity: digest(CHILD_ENTRY),
+			} as const;
+			let invalidIdentityRejected = false;
+			let invalidVersionRejected = false;
+			try {
+				resolveProductionExternalConnectorDriverProvenance({
+					executablePath: process.execPath,
+					arguments: [CHILD_ENTRY],
+					trustedProvenance: { ...trustedProvenance, moduleIdentity: "sha256:wrong" },
+				});
+			} catch {
+				invalidIdentityRejected = true;
+			}
+			try {
+				resolveProductionExternalConnectorDriverProvenance({
+					executablePath: process.execPath,
+					arguments: [CHILD_ENTRY],
+					trustedProvenance: { ...trustedProvenance, version: "" },
+				});
+			} catch {
+				invalidVersionRejected = true;
+			}
+			const connector = await createProductionExternalAgentConnector({
+				providerId,
+				capability: snapshot,
+				capabilityProbe: async () => Result.ok(snapshot),
+				store: Object.freeze({}) as ExternalConnectorDurableStore,
+				driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+				privateStatePath: join(root, "private", "supervisors.json"),
+				process: {
+					executablePath: process.execPath,
+					arguments: [CHILD_ENTRY],
+					trustedProvenance,
+				},
+			});
 			const descriptor = {
 				schemaVersion: 1 as const,
 				providerId,
@@ -638,26 +659,36 @@ const ac23 = defineLine13ResolvedCase({
 			const registered = registry.registerPrepared({
 				descriptor,
 				connector,
-				trusted: true,
 			}, snapshot);
-			const projected = registry.list()[0];
-			fixture.exactSelection = registered.ok && projected?.providerId === providerId;
-			fixture.safeProjection = projected !== undefined && Object.keys(projected).sort().join(",") ===
-				"capabilitySnapshotDigest,providerClass,providerId,revision,schemaVersion";
-			fixture.provenanceBound =
-				accepted.ok &&
-				isAbsolute(process.execPath) &&
-				isAbsolute(CHILD_ENTRY) &&
-				process.version.length > 0 &&
-				statSync(process.execPath).isFile() &&
-				statSync(CHILD_ENTRY).isFile();
+			if (!registered.ok) throw registered.error;
+			return { root, connector, registry, descriptor, invalidIdentityRejected, invalidVersionRejected };
 		},
-		assertion: (fixture) => {
-			strictEqual(
-				fixture.trustedLauncher && fixture.exactSelection && fixture.safeProjection && fixture.provenanceBound,
-				true,
-				"exact adapter selection must retain private absolute driver provenance with an allowlisted environment",
-			);
+		assertion: ({ root, connector, registry, descriptor, invalidIdentityRejected, invalidVersionRejected }) => {
+			const provenance = getProductionExternalConnectorDriverProvenance(connector);
+			strictEqual(provenance?.executablePath, realpathSync(process.execPath));
+			strictEqual(provenance?.modulePath, realpathSync(CHILD_ENTRY));
+			strictEqual(provenance?.cwd, realpathSync(root));
+			strictEqual(provenance?.version, process.version);
+			strictEqual(provenance?.shell, false);
+			const allowedEnvironment = process.platform === "win32" ? ["SystemRoot", "TEMP", "TMP", "WINDIR"] : process.platform === "darwin" ? ["TMPDIR"] : [];
+			const expectedEnvironment = allowedEnvironment.filter((allowedKey) => Object.keys(process.env).some((key) => process.platform === "win32" ? key.toLowerCase() === allowedKey.toLowerCase() : key === allowedKey)).sort();
+			strictEqual(provenance?.environmentKeys.join(","), expectedEnvironment.join(","));
+			strictEqual(provenance?.executableIdentity.startsWith("sha256:"), true);
+			strictEqual(provenance?.moduleIdentity.startsWith("sha256:"), true);
+			strictEqual(provenance?.executableFileIdentity.startsWith("file:"), true);
+			strictEqual(provenance?.moduleFileIdentity.startsWith("file:"), true);
+			strictEqual(invalidIdentityRejected, true);
+			strictEqual(invalidVersionRejected, true);
+			const projection = JSON.stringify({ descriptors: registry.list(), readiness: registry.readiness() });
+			for (const privateValue of [root, process.execPath, CHILD_ENTRY, process.version, provenance?.moduleIdentity ?? "missing"]) {
+				strictEqual(projection.includes(privateValue), false);
+			}
+			strictEqual(registry.list()[0]?.providerId, descriptor.providerId);
+			strictEqual("getProductionExternalConnectorDriverProvenance" in CodingAgent, false);
+		},
+		cleanup: async ({ root, registry }) => {
+			await registry.dispose();
+			rmSync(root, { recursive: true, force: true });
 		},
 	},
 });

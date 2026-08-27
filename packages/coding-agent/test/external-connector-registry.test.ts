@@ -98,6 +98,7 @@ class ArbitraryConnector implements ExternalAgentConnector {
 	readonly providerClass = "external_connector" as const;
 	readonly snapshot: ConnectorCapabilitySnapshot;
 	disposeCalls = 0;
+	disposeHangs = false;
 	probeCalls = 0;
 
 	constructor(providerId = PROVIDER_ID) {
@@ -129,6 +130,7 @@ class ArbitraryConnector implements ExternalAgentConnector {
 	}
 	async dispose() {
 		this.disposeCalls += 1;
+		if (this.disposeHangs) await new Promise<never>(() => undefined);
 	}
 }
 
@@ -329,7 +331,6 @@ function registration(fixture: SupportedConnectorFixture): ExternalConnectorRegi
 	return {
 		descriptor: descriptor(fixture.snapshot),
 		connector: fixture.connector,
-		trusted: true,
 	};
 }
 
@@ -595,11 +596,11 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 		expect(
 			registry.registerPrepared(
-				{ descriptor: preparedDescriptor, connector: prepared, trusted: true },
+				{ descriptor: preparedDescriptor, connector: prepared },
 				prepared.snapshot,
 			),
 		).toMatchObject({ ok: true });
-		expect(await registry.register({ descriptor: probedDescriptor, connector: probed, trusted: true })).toMatchObject({
+		expect(await registry.register({ descriptor: probedDescriptor, connector: probed })).toMatchObject({
 			ok: true,
 		});
 		expect(prepared.probeCalls).toBe(0);
@@ -1224,7 +1225,6 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				return prepared.descriptor;
 			},
 			connector: prepared.connector,
-			trusted: true,
 		};
 		armed = true;
 
@@ -1238,11 +1238,11 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(fixture.driver.disposeCalls).toBe(1);
 	});
 
-	it("fails closed on untrusted, mismatched, and unknown connector facts", async () => {
+	it("fails closed on caller trust claims, mismatched, and unknown connector facts", async () => {
 		const fixture = createSupportedConnector();
 		const base = registration(fixture);
 		for (const invalid of [
-			{ ...base, trusted: false },
+			{ ...base, trusted: true },
 			{ ...base, descriptor: { ...base.descriptor, providerClass: "agent" } },
 			{ ...base, descriptor: { ...base.descriptor, providerId: "other.connector" } },
 			{ ...base, descriptor: { ...base.descriptor, revision: base.descriptor.revision + 1 } },
@@ -1303,6 +1303,21 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(second.driver.disposeCalls).toBe(1);
 	});
 
+	it("bounds arbitrary open-SPI connector cleanup and reports unconfirmed shutdown", async () => {
+		const connector = new ArbitraryConnector("third-party.hanging-dispose");
+		connector.disposeHangs = true;
+		const registry = createExternalConnectorRegistry({ capabilityProbeDeadline: { hardMs: 25, idleMs: 25 } });
+		expect(registry.registerPrepared({ descriptor: descriptor(connector.snapshot), connector }, connector.snapshot)).toMatchObject({ ok: true });
+		const startedAt = Date.now();
+
+		await expect(registry.dispose()).rejects.toMatchObject({
+			code: "side_effect_unknown",
+			message: "External connector registry shutdown could not confirm cleanup.",
+		});
+		expect(Date.now() - startedAt).toBeLessThan(250);
+		expect(connector.disposeCalls).toBe(1);
+	});
+
 	it("does not finish registry disposal before slow forced process cleanup is confirmed", async () => {
 		vi.useFakeTimers();
 		try {
@@ -1316,7 +1331,9 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				},
 			});
 			fixture.supervision.processController.forceExits = false;
-			const registry = createExternalConnectorRegistry();
+			const registry = createExternalConnectorRegistry({
+				capabilityProbeDeadline: { hardMs: 6_000, idleMs: 6_000 },
+			});
 			expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
 			const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-slow-cleanup");
 			const running = persisted.connector.runAttempt(persisted.attempt, {

@@ -458,7 +458,6 @@ function createConnectorRegistry(context: AgentRuntimeCompositionContext, toolGa
 			capabilitySnapshotDigest: snapshot.digest,
 		},
 		connector,
-		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
 	return registry;

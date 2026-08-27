@@ -778,7 +778,6 @@ async function installRpcExternalConnector(
 	const registered = await registry.register({
 		descriptor,
 		connector,
-		trusted: true,
 	});
 	if (!registered.ok) throw registered.error;
 	return {

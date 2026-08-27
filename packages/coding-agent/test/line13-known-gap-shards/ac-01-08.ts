@@ -346,7 +346,6 @@ async function createRpcProductFixture(options: {
 						capabilitySnapshotDigest: currentSnapshot.digest,
 					},
 					connector,
-					trusted: true,
 				},
 				currentSnapshot,
 			);
@@ -517,7 +516,6 @@ function createCompositionConnectorRegistry(toolGateway?: ToolGateway): External
 				capabilitySnapshotDigest: snapshot.digest,
 			},
 			connector: createExternalConnectorTestRuntime(snapshot),
-			trusted: true,
 		},
 		snapshot,
 	);
@@ -899,7 +897,6 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 		const registered = await registry.register({
 			descriptor,
 			connector,
-			trusted: true,
 		});
 		if (!registered.ok) throw registered.error;
 		return {
@@ -1084,7 +1081,7 @@ async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
 				operationNonce: () => "line13-current-operation-true",
 			});
 			const registry = createExternalConnectorRegistry({ toolGateway });
-			const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+			const registered = registry.registerPrepared({ descriptor, connector }, snapshot);
 			if (!registered.ok) throw registered.error;
 			state.store = store;
 			state.connector = connector;

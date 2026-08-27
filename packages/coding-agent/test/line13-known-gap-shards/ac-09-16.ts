@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	linkSync,
@@ -58,6 +59,13 @@ import {
 	type CreateAgentSessionResult,
 } from "../../src/index.ts";
 import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
+import type { ExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import { createProductionExternalAgentConnector } from "../../src/core/external-connector-production.ts";
+import {
+	FileExternalConnectorSupervisorPrivateStateStore,
+	externalConnectorProcessContainment,
+} from "../../src/core/external-connector-supervisor.ts";
+import type { ExternalConnectorVendorDriver } from "../../src/core/vendor-drivers/types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { getAgentCanonicalSession } from "../../src/core/agent-session-facade.ts";
 import {
@@ -72,7 +80,6 @@ import {
 	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
-import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
 
 const BASE_SHA = "db279303b9e894b58acea165ab44f74bfdf0cddb" as const;
 const NOW = "2026-08-25T00:00:00.000Z";
@@ -701,15 +708,19 @@ function currentVersionedPublicExports(): readonly string[] {
 }
 
 interface ExternalReadinessFixture {
+	readonly root: string;
 	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
 	readonly descriptor: {
 		readonly providerId: string;
 		readonly revision: number;
 		readonly capabilitySnapshotDigest: ConnectorCapabilitySnapshot["digest"];
 	};
+	readonly effects: Record<"probe" | "spawn" | "network" | "account" | "task" | "tool", number>;
 }
 
-function externalReadinessFixture(): ExternalReadinessFixture {
+async function externalReadinessFixture(): Promise<ExternalReadinessFixture> {
+	const root = mkdtempSync(join(tmpdir(), "aos-line13-ac15-"));
+	const privateStatePath = join(root, "private", "supervisors.json");
 	const providerId = "line13.readiness-connector";
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
@@ -722,7 +733,61 @@ function externalReadinessFixture(): ExternalReadinessFixture {
 		artifacts: false,
 		images: false,
 	});
-	const connector = createExternalConnectorTestRuntime(snapshot);
+	const effects = { probe: 0, spawn: 0, network: 0, account: 0, task: 0, tool: 0 };
+	await new FileExternalConnectorSupervisorPrivateStateStore(privateStatePath).write("attempt-ac15-quarantine", {
+		schemaVersion: 1,
+		reference: { schemaVersion: 1, supervisorRef: "ac15-supervisor", operationNonce: "ac15-nonce" },
+		detached: false,
+		containment: externalConnectorProcessContainment(),
+		processIdentity: {
+			pid: 2_147_483_000,
+			startToken: "missing",
+			executableIdentity: "sha256:missing",
+			fileIdentity: "file:missing",
+		},
+	});
+	const connector = await createProductionExternalAgentConnector({
+		providerId,
+		capability: snapshot,
+		capabilityProbe: async () => {
+			effects.probe += 1;
+			effects.network += 1;
+			return Result.ok(snapshot);
+		},
+		store: Object.freeze({
+			readOperation: async () => {
+				effects.task += 1;
+				return undefined;
+			},
+			readMapping: async () => {
+				effects.task += 1;
+				return undefined;
+			},
+		}) as unknown as ExternalConnectorDurableStore,
+		driver: Object.freeze({
+			spawn: async () => {
+				effects.spawn += 1;
+				effects.account += 1;
+				throw new Error("AC-15 passive status spawned a driver");
+			},
+			write: async () => {
+				effects.tool += 1;
+			},
+			dispose: async () => undefined,
+		}) as unknown as ExternalConnectorVendorDriver,
+		privateStatePath,
+		process: {
+			executablePath: process.execPath,
+			arguments: ["-e", "setInterval(function(){},2147483647)"],
+			trustedProvenance: {
+				modulePath: process.execPath,
+				cwd: root,
+				version: process.version,
+				executableIdentity: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
+				moduleIdentity: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
+			},
+		},
+	});
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
@@ -734,10 +799,9 @@ function externalReadinessFixture(): ExternalReadinessFixture {
 	const registered = registry.registerPrepared({
 		descriptor,
 		connector,
-		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
-	return { registry, descriptor };
+	return { root, registry, descriptor, effects };
 }
 
 interface AtomicControlStateFixture {
@@ -843,7 +907,8 @@ const ac15 = defineLine13ResolvedCase({
 	fullTestName: "Line 13 AC-15 keeps metadata passive and exposes exact side-effect-free readiness diagnostics",
 	scenario: {
 		fixture: externalReadinessFixture,
-		assertion: async ({ registry, descriptor }) => {
+		assertion: async ({ root, registry, descriptor, effects }) => {
+			const before = { ...effects };
 			assert.deepEqual(registry.list(), [{
 				schemaVersion: 1,
 				providerId: descriptor.providerId,
@@ -851,24 +916,34 @@ const ac15 = defineLine13ResolvedCase({
 				revision: descriptor.revision,
 				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 			}]);
+			assert.deepEqual(registry.readiness(), [{
+				schemaVersion: 1,
+				providerId: descriptor.providerId,
+				trust: "host_configured",
+				status: "quarantined",
+				reasonCode: "cleanup_unconfirmed",
+			}]);
+			assert.deepEqual(effects, before);
 			const selected = await registry.select({
 				providerId: descriptor.providerId,
 				revision: descriptor.revision,
 				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 			});
-			assert.equal(selected.ok, true);
-			assert.deepEqual(registry.readiness(), [{
-				schemaVersion: 1,
-				providerId: descriptor.providerId,
-				trust: "host_configured",
-				status: "ready",
-				reasonCode: "ready",
-			}]);
+			assert.equal(selected.ok, false);
 			assert.equal((await registry.probeReadiness({
 				providerId: descriptor.providerId,
 				revision: descriptor.revision,
 				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-			})).status, "ready");
+			})).status, "quarantined");
+			assert.deepEqual(effects, before);
+			const publicStatus = JSON.stringify(registry.readiness());
+			for (const privateValue of [root, join(root, "private", "supervisors.json"), process.execPath, "ac15-nonce", "ac15-supervisor"]) {
+				assert.equal(publicStatus.includes(privateValue), false);
+			}
+		},
+		cleanup: async ({ registry, root }) => {
+			await registry.dispose().catch(() => undefined);
+			rmSync(root, { recursive: true, force: true });
 		},
 	},
 });

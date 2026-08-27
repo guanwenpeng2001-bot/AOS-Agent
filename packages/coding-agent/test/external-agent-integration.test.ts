@@ -254,7 +254,6 @@ async function fixture(options: {
 	const registered = await registry.register({
 		descriptor,
 		connector,
-		trusted: true,
 	});
 	if (!registered.ok) throw registered.error;
 	return { session, t5, driver, connector, registry, descriptor, supervision };

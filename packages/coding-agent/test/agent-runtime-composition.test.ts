@@ -362,7 +362,6 @@ function createTestExternalConnectorRegistry(
 			capabilitySnapshotDigest: snapshot.digest,
 		},
 		connector: createExternalConnectorTestRuntime(snapshot),
-		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
 	return registry;

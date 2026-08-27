@@ -249,6 +249,10 @@ describe("External Connector public exports", () => {
 		);
 	});
 
+	it("keeps connector trust attestation out of the public registration contract", () => {
+		expect([...publicTypePropertyNames("ExternalConnectorRegistration")].sort()).toEqual(["connector", "descriptor"]);
+	});
+
 	it("does not export legacy Adapter, mapping, or private driver contracts", () => {
 		const exports = publicExportNames();
 		for (const name of [
@@ -279,6 +283,7 @@ describe("External Connector public exports", () => {
 			"ExternalConnectorDriverHandle",
 			"createProductionExternalAgentConnector",
 			"createProductionExternalConnectorSupervision",
+			"getProductionExternalConnectorDriverProvenance",
 			"ProductionExternalAgentConnectorRuntimeOptions",
 			"ProductionExternalConnectorSupervisionOptions",
 			"bindExternalConnectorToolGatewayConsumer",
