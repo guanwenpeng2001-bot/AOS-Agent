@@ -797,6 +797,28 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.receipts.get(value.attempt.attemptId)?.status).toBe("cancelled");
 	});
 
+	it("reconciles persisted cancelling after restart instead of returning success without work", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "cancelling"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		const restarted = restartedConnector(value);
+		restarted.driver.lookupResult = { status: "terminal", evidence: terminalEvidence("cancelled") };
+
+		const first = await restarted.connector.cancelAttempt(value.attempt.attemptId);
+		const second = await restarted.connector.cancelAttempt(value.attempt.attemptId);
+
+		expect(first.ok).toBe(true);
+		expect(second.ok).toBe(true);
+		expect(restarted.driver.calls).toMatchObject({ spawn: 0, lookup: 1, cancel: 0 });
+		expect(value.store.receiptWrites).toBe(1);
+		expect(value.store.receipts.get(value.attempt.attemptId)?.status).toBe("cancelled");
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "terminal",
+			receiptId: `attempt_receipt_${value.attempt.attemptId}`,
+		});
+	});
+
 	it("rejects a connected cancellation handle before invoking driver cancel", async () => {
 		const value = await fixture();
 		persistAttempt(value);

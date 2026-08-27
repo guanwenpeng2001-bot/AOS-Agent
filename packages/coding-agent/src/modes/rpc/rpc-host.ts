@@ -52,6 +52,7 @@ import {
 	externalConnectorProductIdentity,
 	persistExternalConnectorProductRunAfterAcceptance,
 	prepareExternalConnectorProductRun,
+	recoverExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
 } from "../../core/external-connector-product.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
@@ -2313,9 +2314,6 @@ export class RpcHostController {
 					createAutomationError("external_binding_invalid", "The External Connector selection is invalid.", false),
 				);
 			}
-			// RPC run.resume cannot yet recover the source Run's canonical Attempt.
-			// The Connector itself retains durable same-Attempt resume; this product
-			// boundary must reject instead of silently creating a new Attempt.
 			if (deadlineAt !== undefined && !isRunTimestamp(deadlineAt)) {
 				discardRunRequest(precomputedRequestIdentity);
 				return automationError(
@@ -4884,7 +4882,11 @@ export class RpcHostController {
 						};
 						return cancelResponse;
 					}
-					if (currentBinding.activeHandle === undefined || currentBinding.activeHandle.runId !== command.runId) {
+					const recoveringExternalRun = currentBinding.externalRuns.get(command.runId);
+					if (
+						(currentBinding.activeHandle === undefined || currentBinding.activeHandle.runId !== command.runId) &&
+						recoveringExternalRun === undefined
+					) {
 						return automationError(
 							id,
 							"run.cancel",
@@ -4895,14 +4897,14 @@ export class RpcHostController {
 							),
 						);
 					}
-					currentBinding.activeHandle.requestCancel();
+					currentBinding.activeHandle?.requestCancel();
 					// Cancellation is a request, not the terminal transition. An external
 					// agent run forwards one same-Attempt Connector cancel without
 					// aborting the deadline signal; a local run
 					// triggers the existing abort path without waiting for its idle
 					// promise so the command response describes the current running
 					// state. A terminal event is emitted only after canonical lookup.
-					const externalRun = currentBinding.externalRuns.get(command.runId);
+					const externalRun = recoveringExternalRun;
 					if (externalRun !== undefined) {
 						void externalRun.cancel().catch(() => {
 							// The tracked product execution owns canonical terminal or reconciliation output.
@@ -4980,15 +4982,6 @@ export class RpcHostController {
 										),
 									);
 								}
-								return automationError(
-									id,
-									"run.resume",
-									createAutomationError(
-										"external_resume_unsupported",
-										"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
-										false,
-									),
-								);
 							}
 							if (command.clientRequestId !== undefined && !isRunClientRequestId(command.clientRequestId)) {
 								return automationError(
@@ -5177,22 +5170,142 @@ export class RpcHostController {
 									),
 								);
 							}
-							// RPC cannot yet map an external source Run back to its canonical
-							// durable Attempt. Reject here instead of starting a different
-							// execution kind or a new Connector Attempt.
 							const sourceIsExternal = sourceRun.record.model.provider === "external_connector";
 							if (sourceIsExternal) {
-								return resumeFailure(
-									automationError(
-										id,
-										"run.resume",
-										createAutomationError(
-											"external_resume_unsupported",
-											"RPC run.resume cannot restore a current External Connector source as the same durable Attempt.",
-											false,
+								if (sourceRun.receipt !== undefined) {
+									return resumeFailure(acceptedResponseFromResult(id, "run.resume", sourceRun, true));
+								}
+								const registry = currentBinding.session.getExternalConnectorRegistry?.();
+								if (registry === undefined) {
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_connector_unavailable",
+												"No trusted External Connector registry is composed into the restored Host.",
+												false,
+											),
 										),
-									),
-								);
+									);
+								}
+								const providerId = sourceRun.record.model.id;
+								if (
+									command.externalConnector !== undefined &&
+									command.externalConnector.providerId !== providerId
+								) {
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_binding_invalid",
+												"The requested External Connector does not match the persisted Attempt.",
+												false,
+											),
+										),
+									);
+								}
+								let recoveryReservation: RunReservation;
+								try {
+									recoveryReservation = currentBinding.coordinator.reserve();
+								} catch (err) {
+									return resumeFailure(automationError(id, "run.resume", asAutomationError(err)));
+								}
+								currentBinding.activeReservation = recoveryReservation;
+								const recoveryBinding = currentBinding;
+								const recoveryController = new AbortController();
+								recoveryBinding.runAbortControllers.set(command.sourceRunId, recoveryController);
+								if (command.deadlineAt !== undefined) {
+									const timer = setTimeout(
+										() => recoveryController.abort(new AgentOperationError("deadline_exceeded")),
+										Math.max(0, Date.parse(command.deadlineAt) - Date.now()),
+									);
+									if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function")
+										timer.unref();
+									recoveryBinding.runDeadlineTimers.set(command.sourceRunId, timer);
+								}
+								const productIdentity = externalConnectorProductIdentity(command.sourceRunId, providerId);
+								const selectedDescriptor = registry
+									.list()
+									.find((candidate) => candidate.providerId === providerId);
+								if (selectedDescriptor === undefined) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_connector_unavailable",
+												"The persisted External Connector is not registered in the restored Host.",
+												false,
+											),
+										),
+									);
+								}
+								const selection = command.externalConnector ?? {
+									providerId: selectedDescriptor.providerId,
+									revision: selectedDescriptor.revision,
+									capabilitySnapshotDigest: selectedDescriptor.capabilitySnapshotDigest,
+								};
+								const selected = await registry.select(selection);
+								if (!selected.ok) {
+									recoveryBinding.activeReservation = undefined;
+									recoveryReservation.release();
+									clearRunDeadline(recoveryBinding, command.sourceRunId);
+									return resumeFailure(
+										automationError(
+											id,
+											"run.resume",
+											createAutomationError(
+												"external_capability_mismatch",
+												"External Connector capability snapshot is unavailable or drifted.",
+												false,
+											),
+										),
+									);
+								}
+								recoveryBinding.externalRuns.set(command.sourceRunId, {
+									cancel: async () => {
+										const cancelled = await selected.value.connector.cancelAttempt(productIdentity.attemptId);
+										if (!cancelled.ok) throw cancelled.error;
+									},
+								});
+								const recovery = recoverExternalConnectorProductRun({
+									session: getAgentCanonicalSession(recoveryBinding.session),
+									writer: recoveryBinding.session.agentRuntimeComposition.harness.t5.writer,
+									registry,
+									runId: command.sourceRunId,
+									providerId,
+									selection,
+									expectedText: command.message,
+									signal: recoveryController.signal,
+								});
+								const settlement = recovery.then(() => undefined);
+								recoveryBinding.externalRunSettlements.set(command.sourceRunId, settlement);
+								void settlement
+									.finally(() => {
+										recoveryBinding.externalRuns.delete(command.sourceRunId);
+										recoveryBinding.externalRunSettlements.delete(command.sourceRunId);
+										clearRunDeadline(recoveryBinding, command.sourceRunId);
+										if (recoveryBinding.activeReservation === recoveryReservation) {
+											recoveryBinding.activeReservation = undefined;
+											recoveryReservation.release();
+										}
+										recoveryBinding.coordinator = createRunLifecycleCoordinator(
+											getAgentSessionLedger(recoveryBinding.session),
+										);
+									})
+									.catch(() => undefined);
+								return resumeFailure({
+									id,
+									type: "response",
+									command: "run.resume",
+									success: true,
+									data: acceptedDataFromResult(sourceRun, false, "accepted"),
+								});
 							}
 							// An interrupted run may have an accepted record but no terminal
 							// receipt. Preserve #6's binding-drift guard for that recovery path.

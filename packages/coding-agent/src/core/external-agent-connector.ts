@@ -912,7 +912,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (operation.status === "terminal") {
 			return Result.err(externalFailure("scheduler_attempt_recovery_failed", "External connector terminal operation has no canonical receipt", attemptId));
 		}
-		if (operation.status === "cancelling") return Result.ok(undefined);
+		if (operation.status === "cancelling") {
+			const reconciled = await this.#reconcile(attempt);
+			return reconciled.ok ? Result.ok(undefined) : Result.err(reconciled.error);
+		}
 		const binding = await this.#requireBinding(attempt);
 		if (!binding.ok) return Result.err(binding.error);
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
